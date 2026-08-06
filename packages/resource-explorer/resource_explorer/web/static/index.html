@@ -5562,5 +5562,117 @@ async function renderAllDbViewsMermaid() {
   });
 })();
 </script>
+
+<!-- Product/UI feedback widget -->
+<button id="feedback-btn" onclick="openFeedbackModal()"
+        style="position:fixed; bottom:20px; right:20px; z-index:900; padding:.6rem 1rem;
+               background:var(--accent, #38bdf8); color:#0f172a; border:none; border-radius:9999px;
+               font-size:.85rem; font-weight:600; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.4);">
+  💬 Feedback
+</button>
+
+<div id="feedback-modal" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:28rem">
+    <h3 style="margin:0 0 .75rem; font-size:1rem;">Share your feedback</h3>
+    <div style="margin-bottom:.75rem;">
+      <div id="feedback-stars" style="font-size:1.4rem; cursor:pointer; letter-spacing:.15rem;">☆☆☆☆☆</div>
+    </div>
+    <select id="feedback-category" style="width:100%; margin-bottom:.5rem; padding:.4rem; border-radius:.375rem;">
+      <option value="">Category (optional)</option>
+      <option value="bug">Bug</option>
+      <option value="confusing">Confusing</option>
+      <option value="suggestion">Suggestion</option>
+      <option value="praise">Praise</option>
+    </select>
+    <textarea id="feedback-message" placeholder="What's on your mind?" rows="4"
+              style="width:100%; margin-bottom:.5rem; padding:.4rem; border-radius:.375rem; resize:vertical;"></textarea>
+    <input id="feedback-email" type="email" placeholder="Email (optional)"
+           style="width:100%; margin-bottom:.5rem; padding:.4rem; border-radius:.375rem;">
+    <label style="display:flex; align-items:center; gap:.4rem; font-size:.85rem; margin-bottom:.25rem;">
+      <input type="checkbox" id="feedback-wants-response"> I'd like a response
+    </label>
+    <label style="display:flex; align-items:center; gap:.4rem; font-size:.85rem; margin-bottom:.75rem;">
+      <input type="checkbox" id="feedback-consent"> OK to contact me about this feedback
+    </label>
+    <div style="display:flex; justify-content:flex-end; gap:.5rem;">
+      <button onclick="closeFeedbackModal()" style="padding:.4rem .8rem; border-radius:.375rem;">Cancel</button>
+      <button onclick="submitFeedback()" style="padding:.4rem .8rem; border-radius:.375rem;
+              background:var(--accent, #38bdf8); color:#0f172a; border:none; font-weight:600;">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // Per-tab session id, reused across the feedback and any future widgets.
+  const _KEY = 're_session_id';
+  if (!sessionStorage.getItem(_KEY)) {
+    sessionStorage.setItem(_KEY, 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+  }
+  window._feedbackSessionId = sessionStorage.getItem(_KEY);
+})();
+
+let _feedbackRating = 0;
+
+function openFeedbackModal() {
+  _feedbackRating = 0;
+  _renderFeedbackStars();
+  document.getElementById('feedback-category').value = '';
+  document.getElementById('feedback-message').value = '';
+  document.getElementById('feedback-email').value = '';
+  document.getElementById('feedback-wants-response').checked = false;
+  document.getElementById('feedback-consent').checked = false;
+  document.getElementById('feedback-modal').classList.remove('hidden');
+}
+
+function closeFeedbackModal() {
+  document.getElementById('feedback-modal').classList.add('hidden');
+}
+
+function _renderFeedbackStars() {
+  const el = document.getElementById('feedback-stars');
+  el.innerHTML = '';
+  for (let i = 1; i <= 5; i++) {
+    const span = document.createElement('span');
+    span.textContent = i <= _feedbackRating ? '★' : '☆';
+    span.onclick = () => { _feedbackRating = i; _renderFeedbackStars(); };
+    el.appendChild(span);
+  }
+}
+
+function _currentPageId() {
+  const active = document.querySelector('.main-nav-btn.active') || document.querySelector('.entity-tab.active');
+  return active ? active.id : '';
+}
+
+async function submitFeedback() {
+  const body = {
+    session_id: window._feedbackSessionId || '',
+    page: _currentPageId(),
+    rating: _feedbackRating > 0 ? _feedbackRating : null,
+    category: document.getElementById('feedback-category').value,
+    message: document.getElementById('feedback-message').value.trim(),
+    email: document.getElementById('feedback-email').value.trim(),
+    wants_response: document.getElementById('feedback-wants-response').checked,
+    consent_to_contact: document.getElementById('feedback-consent').checked,
+    build_version: '',
+    user_agent: navigator.userAgent,
+    viewport: `${window.innerWidth}x${window.innerHeight}`,
+    locale: navigator.language || '',
+  };
+  try {
+    const resp = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    closeFeedbackModal();
+    showToast('success', 'Thanks for your feedback!', 4000);
+  } catch (e) {
+    showToast('error', `Failed to send feedback: ${e.message}`, 8000);
+  }
+}
+</script>
 </body>
 </html>

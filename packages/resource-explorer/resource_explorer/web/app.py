@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, context, databases, db_servers as db_servers_routes, egeria, projects, query, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, analyses, context, databases, db_servers as db_servers_routes, egeria, feedback, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
 @asynccontextmanager
@@ -42,6 +42,7 @@ app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
 app.include_router(context.router, prefix="/api/context", tags=["context"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
+app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
@@ -55,3 +56,8 @@ async def health() -> dict:
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(_STATIC / "index.html")
+
+
+@app.get("/admin/feedback")
+async def admin_feedback() -> FileResponse:
+    return FileResponse(_STATIC / "admin-feedback.html")

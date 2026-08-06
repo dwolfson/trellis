@@ -129,6 +129,24 @@ class RegistryConfig(BaseSettings):
     model_config = SettingsConfigDict(populate_by_name=True)
 
 
+class FeedbackConfig(BaseSettings):
+    """Product/UI feedback storage + minimal admin gating.
+
+    Kept as its own database file (separate from the project/resource
+    registry) since feedback is an operationally distinct support/triage
+    workflow — see resource_explorer/feedback_store.py.
+
+    admin_token / admin_users are NOT a general auth system — see
+    resource_explorer/web/admin_auth.py. Leaving both unset means every
+    admin-only feedback endpoint denies all requests (fail closed).
+    """
+    database_url: str = Field(default="sqlite:///data/feedback.db", alias="FEEDBACK_DATABASE_URL")
+    admin_users: list[str] = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
+    admin_token: str = Field(default="", alias="FEEDBACK_ADMIN_TOKEN")
+
+    model_config = SettingsConfigDict(populate_by_name=True)
+
+
 class ExplorerConfig(BaseSettings):
     milvus: MilvusConfig = Field(default_factory=MilvusConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -141,6 +159,7 @@ class ExplorerConfig(BaseSettings):
     egeria: EgeriaConfig = Field(default_factory=EgeriaConfig)
     prefect: PrefectConfig = Field(default_factory=PrefectConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
+    feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",
