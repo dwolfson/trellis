@@ -1,0 +1,53 @@
+# governance_report_map.yaml
+#
+# Maps Dr.Egeria template families → report_spec names to run for outcome verification.
+# OutcomeReporter uses this after plan execution to select and run relevant reports.
+#
+# Keys are normalised family names (lowercase, spaces allowed).
+# Values are lists of report_spec names as they appear in the QuestionSpecIndex.
+
+glossary:
+  - Glossaries
+  - Glossary-Terms
+
+actor manager:
+  - Actor-Profiles
+  - Actor-Roles
+  - Org-Chart
+  - Team-Members
+
+collections:
+  - Collections
+  - Collection Members
+
+projects:
+  - Projects
+
+governance officer:
+  - Governance-Zones
+  - Governance Basics
+  - Governance Def
+  - Governance Definitions
+  - Governance Policies
+
+data designer:
+  - Data-Dictionaries
+  - Data-Structures
+  - Data-Fields
+  - Data-Classes
+
+digital product manager:
+  - Digital-Products
+  - Digital-Product-Catalog
+
+solution architect:
+  - Solution-Blueprint
+
+external reference:
+  - External-References
+
+# Fallback applied when no family-specific match is found.
+# These broad reports catch most newly created objects.
+_fallback:
+  - Default
+  - Referenceable

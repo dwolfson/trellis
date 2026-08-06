@@ -1,0 +1,131 @@
+{
+  "TypeDef": {
+    "family": "General",
+    "target_type": "Type Definition",
+    "description": "Egeria open metadata type definitions",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What metadata types does Egeria define?",
+          "What is the type definition for [type name]?",
+          "What attributes does the [type] type have?",
+          "What are the valid statuses for [type]?",
+          "What relationship types connect [type A] to [type B]?"
+        ]
+      }
+    ]
+  },
+  "Asset-Types": {
+    "family": "General",
+    "target_type": "Asset Type",
+    "description": "Egeria asset type hierarchy",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What asset types does Egeria support?",
+          "Which asset type should I use for [use case]?",
+          "What is the type hierarchy for [asset type]?",
+          "What properties does the [asset type] type carry?"
+        ]
+      }
+    ]
+  },
+  "Help-Terms": {
+    "family": "General",
+    "target_type": "Help Term",
+    "description": "Dr.Egeria command help and usage",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What Dr.Egeria commands are available for [task]?",
+          "What parameters does the [command] command require?",
+          "How do I use the [command] command?",
+          "Give me an example of the [command] command.",
+          "What is the syntax for [command]?"
+        ]
+      }
+    ]
+  },
+  "IntegrationConnectors": {
+    "family": "DevOps",
+    "target_type": "Integration Connector",
+    "description": "Integration connectors running in Egeria",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What integration connectors are available?",
+          "What does [connector] integrate with?",
+          "How do I configure [connector]?",
+          "What metadata does [connector] produce?",
+          "What is the connection configuration for [connector]?"
+        ]
+      }
+    ]
+  },
+  "Data-Specifications": {
+    "family": "DataDesigner",
+    "target_type": "Data Specification",
+    "description": "Data specifications defined in Egeria",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What data specifications are defined for [system or domain]?",
+          "What data structure does [spec] define?",
+          "What fields are in [specification]?"
+        ]
+      }
+    ]
+  },
+  "Valid-Values": {
+    "family": "General",
+    "target_type": "Valid Value",
+    "description": "Valid value sets for metadata properties",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What valid values are defined for [property]?",
+          "What type does [property] accept?",
+          "Is [value] a valid value for [property]?",
+          "What are the allowed values for [field]?"
+        ]
+      }
+    ]
+  },
+  "OMAGServers": {
+    "family": "DevOps",
+    "target_type": "OMAG Server",
+    "description": "OMAG servers registered in the platform",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What OMAG servers are running?",
+          "What is the status of [server]?",
+          "What services does [server] expose?",
+          "What type of server is [server]?"
+        ]
+      }
+    ]
+  },
+  "Registered-Services": {
+    "family": "DevOps",
+    "target_type": "Registered Service",
+    "description": "Services registered on the OMAG platform",
+    "question_spec": [
+      {
+        "perspectives": ["Developer"],
+        "questions": [
+          "What services are registered on [platform]?",
+          "What is the URL marker for [service]?",
+          "What access services are available?"
+        ]
+      }
+    ]
+  }
+}

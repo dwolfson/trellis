@@ -1,0 +1,515 @@
+"""
+RAG retrieval module for combining vector search with context building.
+
+This module handles retrieving relevant code snippets and building
+context for LLM queries.
+"""
+
+from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+from loguru import logger
+import asyncio
+
+from advisor.vector_store import get_vector_store
+from advisor.embeddings import get_embedding_generator
+from advisor.config import get_full_config
+from advisor.multi_collection_store import get_multi_collection_store
+from advisor.query_cache import get_query_cache
+
+
+class RAGRetriever:
+    """Retrieves and formats context for RAG queries."""
+
+    def __init__(
+        self,
+        top_k: Optional[int] = None,
+        min_score: Optional[float] = None,
+        max_context_length: Optional[int] = None,
+        use_multi_collection: bool = True,
+        enable_cache: bool = True
+    ):
+        """
+        Initialize RAG retriever.
+
+        Args:
+            top_k: Number of results to retrieve
+            min_score: Minimum similarity score threshold
+            max_context_length: Maximum context length in characters
+            use_multi_collection: Use multi-collection search with routing
+            enable_cache: Enable query result caching
+        """
+        config = get_full_config()
+        rag_config = config.get("rag")
+
+        self.vector_store = get_vector_store()
+        self.multi_store = get_multi_collection_store() if use_multi_collection else None
+        self.embedding_gen = get_embedding_generator()
+        self.use_multi_collection = use_multi_collection
+        self.enable_cache = enable_cache
+        self.cache = get_query_cache() if enable_cache else None
+
+        self.top_k = top_k or rag_config.retrieval.top_k
+        self.min_score = min_score or rag_config.retrieval.min_score
+        self.max_context_length = max_context_length or rag_config.context.max_length
+
+        mode = "multi-collection" if use_multi_collection else "single-collection"
+        cache_status = "with caching" if enable_cache else "no cache"
+        logger.info(f"Initialized RAG retriever ({mode}, {cache_status}): top_k={self.top_k}, min_score={self.min_score}")
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        min_score: Optional[float] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
+    ) -> List[Any]:  # Returns List[SearchResult]
+        """
+        Retrieve relevant code snippets for a query.
+
+        Args:
+            query: User query
+            top_k: Number of results (overrides default)
+            min_score: Minimum score (overrides default)
+            filters: Optional metadata filters
+            intent: Optional query intent
+            boosted_collections: Collections to boost
+            feedback_adjustments: Feedback loop adjustments
+
+        Returns:
+            List of retrieved SearchResult objects
+        """
+        top_k = top_k or self.top_k
+        min_score = min_score or self.min_score
+
+        logger.info(f"Retrieving context for query: {query[:100]}...")
+
+        # Check cache first
+        if self.enable_cache and self.cache:
+            cached_results = self.cache.get(
+                query,
+                top_k=top_k,
+                min_score=min_score,
+                use_multi=self.use_multi_collection
+            )
+            if cached_results is not None:
+                logger.info(f"Retrieved {len(cached_results)} results from cache")
+                return cached_results
+
+        # Use multi-collection search if enabled
+        if self.use_multi_collection and self.multi_store:
+            logger.debug("Using multi-collection search with intelligent routing")
+            
+            # Search with routing
+            multi_result = self.multi_store.search_with_routing(
+                query=query,
+                top_k=top_k,
+                min_score=min_score,
+                filters=filters,
+                intent=intent,
+                boosted_collections=boosted_collections,
+                feedback_adjustments=feedback_adjustments
+            )
+            
+            results = multi_result.results
+            
+            # Log routing info
+            logger.info(f"Searched collections: {multi_result.collections_searched}")
+            logger.debug(f"Collection scores: {multi_result.collection_scores}")
+            
+        else:
+            logger.debug("Using single-collection search")
+            
+            # Generate query embedding
+            query_embedding = self.embedding_gen.generate_embedding(query)
+
+            # Search vector store
+            results = self.vector_store.search(
+                collection_name="code_elements",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filters=filters
+            )
+
+        # Log scores for debugging
+        if results:
+            scores = [r.score for r in results]
+            logger.debug(f"Result scores: {scores}")
+            logger.debug(f"Min score threshold: {min_score}")
+
+        # Filter by minimum score (multi-collection already filters, but double-check)
+        filtered_results = [
+            r for r in results
+            if r.score >= min_score
+        ]
+
+        logger.info(f"Retrieved {len(filtered_results)} results (filtered from {len(results)})")
+
+        # Cache the results for future queries
+        if self.enable_cache and self.cache and filtered_results:
+            self.cache.set(
+                query,
+                filtered_results,
+                top_k=top_k,
+                min_score=min_score,
+                use_multi=self.use_multi_collection
+            )
+        
+        return filtered_results
+
+    async def retrieve_async(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        min_score: Optional[float] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Any]:  # Returns List[SearchResult]
+        """
+        Retrieve relevant code snippets for a query asynchronously.
+
+        Args:
+            query: User query
+            top_k: Number of results (overrides default)
+            min_score: Minimum score (overrides default)
+            filters: Optional metadata filters
+
+        Returns:
+            List of retrieved SearchResult objects
+        """
+        # For now, run the sync version in an executor to avoid blocking
+        # In the future, this could use true async vector store operations
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            self.retrieve,
+            query,
+            top_k,
+            min_score,
+            filters
+        )
+
+        return filtered_results
+
+    def build_context(
+        self,
+        results: List[Any],  # SearchResult objects
+        include_metadata: bool = True,
+        format_style: str = "detailed"
+    ) -> str:
+        """
+        Build formatted context from retrieval results.
+
+        Args:
+            results: Retrieved SearchResult objects
+            include_metadata: Whether to include metadata
+            format_style: "detailed" or "compact"
+
+        Returns:
+            Formatted context string
+        """
+        if not results:
+            return "No relevant code found."
+
+        context_parts = []
+        total_length = 0
+
+        for i, result in enumerate(results, 1):
+            # Extract fields from SearchResult object
+            code = result.text
+            # Access metadata dictionary
+            metadata = result.metadata
+            file_path = metadata.get("file_path", "unknown")
+            element_type = metadata.get("type", "unknown")  # Note 'type' vs 'element_type'
+            name = metadata.get("name", "unnamed")
+            score = result.score
+
+            # Format based on style
+            if format_style == "detailed":
+                part = self._format_detailed(
+                    i, code, file_path, element_type, name, score, include_metadata
+                )
+            else:
+                part = self._format_compact(
+                    i, code, file_path, name, include_metadata
+                )
+
+            # Check length limit
+            if total_length + len(part) > self.max_context_length:
+                logger.warning(f"Context length limit reached at {i}/{len(results)} results")
+                break
+
+            context_parts.append(part)
+            total_length += len(part)
+
+        context = "\n\n".join(context_parts)
+        logger.info(f"Built context: {len(context_parts)} snippets, {total_length} chars")
+
+        return context
+
+    def _fetch_relational_metadata(self, name: str, file_path: str, element_type: str) -> str:
+        """Fetch parent class, inheritance tree, and sibling methods from Postgres symbol store."""
+        try:
+            from advisor.db_consolidated import get_db_manager
+            db_manager = get_db_manager()
+            
+            relational_info = []
+            
+            # 1. If it's a method/function, find its parent class, sibling methods, and parent class inheritance
+            if element_type in ("method", "function") or "method" in element_type:
+                sql = "SELECT parent_class FROM code_symbols WHERE name = %s AND (kind = 'method' OR kind = 'function') LIMIT 1"
+                rows = db_manager.execute_query(sql, (name,))
+                if rows and rows[0].get("parent_class"):
+                    parent_class = rows[0]["parent_class"]
+                    relational_info.append(f"**Parent Class:** `{parent_class}`")
+                    
+                    # Find sibling methods
+                    sql_siblings = "SELECT name, signature FROM code_symbols WHERE parent_class = %s AND kind = 'method' AND name != %s LIMIT 5"
+                    sib_rows = db_manager.execute_query(sql_siblings, (parent_class, name))
+                    if sib_rows:
+                        sib_names = [f"`{r['name']}{r['signature']}`" for r in sib_rows]
+                        relational_info.append(f"**Sibling Methods:** {', '.join(sib_names)}")
+                        
+                    # Find parent class inheritance
+                    sql_parents = "SELECT target_name FROM code_relationships WHERE source_name = %s AND relationship_type = 'inherits_from'"
+                    parent_rows = db_manager.execute_query(sql_parents, (parent_class,))
+                    if parent_rows:
+                        parents = [f"`{r['target_name']}`" for r in parent_rows]
+                        relational_info.append(f"**Parent Class Inherits From:** {', '.join(parents)}")
+            
+            # 2. If it's a class, find its parent classes, child classes, and methods
+            elif element_type == "class" or "class" in element_type:
+                sql_parents = "SELECT target_name FROM code_relationships WHERE source_name = %s AND relationship_type = 'inherits_from'"
+                parent_rows = db_manager.execute_query(sql_parents, (name,))
+                if parent_rows:
+                    parents = [f"`{r['target_name']}`" for r in parent_rows]
+                    relational_info.append(f"**Inherits From:** {', '.join(parents)}")
+                    
+                sql_children = "SELECT source_name FROM code_relationships WHERE target_name = %s AND relationship_type = 'inherits_from'"
+                child_rows = db_manager.execute_query(sql_children, (name,))
+                if child_rows:
+                    children = [f"`{r['source_name']}`" for r in child_rows]
+                    relational_info.append(f"**Subclasses:** {', '.join(children)}")
+                
+                sql_methods = "SELECT name, signature FROM code_symbols WHERE parent_class = %s AND kind = 'method' LIMIT 5"
+                method_rows = db_manager.execute_query(sql_methods, (name,))
+                if method_rows:
+                    methods = [f"`{r['name']}{r['signature']}`" for r in method_rows]
+                    relational_info.append(f"**Defined Methods:** {', '.join(methods)}")
+            
+            if relational_info:
+                return "\n".join(relational_info)
+        except Exception as e:
+            logger.debug(f"Failed to fetch relational metadata: {e}")
+        return ""
+
+    def _format_detailed(
+        self,
+        index: int,
+        code: str,
+        file_path: str,
+        element_type: str,
+        name: str,
+        score: float,
+        include_metadata: bool
+    ) -> str:
+        """Format result in detailed style."""
+        parts = [f"### Result {index}"]
+
+        if include_metadata:
+            parts.append(f"**File:** `{file_path}`")
+            parts.append(f"**Type:** {element_type}")
+            parts.append(f"**Name:** {name}")
+            parts.append(f"**Relevance:** {score:.3f}")
+            
+            # Fetch relational metadata
+            rel_metadata = self._fetch_relational_metadata(name, file_path, element_type)
+            if rel_metadata:
+                parts.append(rel_metadata)
+
+        parts.append("**Code:**")
+        parts.append(f"```python\n{code}\n```")
+
+        return "\n".join(parts)
+
+    def _format_compact(
+        self,
+        index: int,
+        code: str,
+        file_path: str,
+        name: str,
+        include_metadata: bool
+    ) -> str:
+        """Format result in compact style."""
+        if include_metadata:
+            header = f"[{index}] {name} ({file_path})"
+        else:
+            header = f"[{index}]"
+
+        return f"{header}\n```python\n{code}\n```"
+
+    def retrieve_and_build_context(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        min_score: Optional[float] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        format_style: str = "detailed",
+        include_metadata: bool = True,
+        prioritize_docs: bool = False,
+        intent: Optional[str] = None,
+        boosted_collections: Optional[List[str]] = None,
+        feedback_adjustments: Optional[Dict[str, float]] = None
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Retrieve and build context in one step.
+
+        Args:
+            query: User query
+            top_k: Number of results
+            min_score: Minimum score
+            filters: Metadata filters
+            format_style: Context format style
+            include_metadata: Include metadata in context
+            prioritize_docs: Prioritize documentation collections over code
+            intent: Optional query intent
+            boosted_collections: Collections to boost
+            feedback_adjustments: Feedback loop adjustments
+
+        Returns:
+            Tuple of (formatted_context, sources_as_dicts)
+        """
+        # If prioritizing docs, add collection filter for documentation
+        if prioritize_docs and self.use_multi_collection and self.multi_store:
+            logger.info("Prioritizing documentation collections for this query")
+            # The multi-collection router will handle this via domain terms
+            # We just need to pass the flag through
+        
+        results = self.retrieve(
+            query=query,
+            top_k=top_k,
+            min_score=min_score,
+            filters=filters,
+            intent=intent,
+            boosted_collections=boosted_collections,
+            feedback_adjustments=feedback_adjustments
+        )
+
+        context = self.build_context(
+            results=results,
+            include_metadata=include_metadata,
+            format_style=format_style
+        )
+
+        # Convert SearchResult objects to dictionaries for easier handling
+        sources = []
+        for result in results:
+            source_dict = {
+                "text": result.text,
+                "score": result.score,
+                "file_path": result.metadata.get("file_path", "unknown"),
+                "name": result.metadata.get("name", "unnamed"),
+                "type": result.metadata.get("type", "unknown"),
+                "module": result.metadata.get("module", ""),
+                "collection": result.metadata.get("_collection") or result.metadata.get("collection", "N/A"),
+                "_collection": result.metadata.get("_collection") or result.metadata.get("collection", "N/A")
+            }
+            sources.append(source_dict)
+
+        return context, sources
+
+    def get_file_context(
+        self,
+        file_path: str,
+        element_types: Optional[List[str]] = None
+    ) -> str:
+        """
+        Get all code elements from a specific file.
+
+        Args:
+            file_path: Path to file
+            element_types: Optional filter by element types
+
+        Returns:
+            Formatted context for the file
+        """
+        filters = {"file_path": file_path}
+
+        if element_types:
+            filters["element_type"] = {"$in": element_types}
+
+        # Use a generic query to get all elements
+        results = self.retrieve(
+            query="code",
+            top_k=100,  # Get many results
+            min_score=0.0,  # No score filtering
+            filters=filters
+        )
+
+        if not results:
+            return f"No code found in {file_path}"
+
+        context = self.build_context(
+            results=results,
+            include_metadata=True,
+            format_style="detailed"
+        )
+
+        return context
+
+    def get_similar_code(
+        self,
+        code_snippet: str,
+        top_k: Optional[int] = None,
+        exclude_exact_match: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Find code similar to a given snippet.
+
+        Args:
+            code_snippet: Code to find similar examples for
+            top_k: Number of results
+            exclude_exact_match: Exclude exact matches
+
+        Returns:
+            List of similar code snippets as dictionaries
+        """
+        results = self.retrieve(
+            query=code_snippet,
+            top_k=(top_k or self.top_k) + (1 if exclude_exact_match else 0),
+            min_score=self.min_score
+        )
+
+        if exclude_exact_match and results:
+            # Remove exact matches (score very close to 1.0)
+            results = [r for r in results if r.score < 0.999]
+
+        # Convert SearchResult objects to dictionaries
+        similar_code = []
+        for result in results[:top_k or self.top_k]:
+            code_dict = {
+                "text": result.text,
+                "score": result.score,
+                "file_path": result.metadata.get("file_path", "unknown"),
+                "name": result.metadata.get("name", "unnamed"),
+                "type": result.metadata.get("type", "unknown"),
+                "module": result.metadata.get("module", ""),
+            }
+            similar_code.append(code_dict)
+
+        return similar_code
+
+
+# Global retriever instance
+_rag_retriever: Optional[RAGRetriever] = None
+
+
+def get_rag_retriever() -> RAGRetriever:
+    """Get or create the global RAG retriever instance."""
+    global _rag_retriever
+
+    if _rag_retriever is None:
+        _rag_retriever = RAGRetriever()
+
+    return _rag_retriever
