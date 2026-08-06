@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-_DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "technology_type_processes.yaml"
+_DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "configdata" / "technology_type_processes.yaml"
 
 KIND_SURVEY_EXISTING = "survey_existing"
 KIND_CATALOG_AND_SURVEY = "catalog_and_survey"

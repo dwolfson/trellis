@@ -1,7 +1,7 @@
 """Selects which Milvus collections to search for a given query and project."""
 from __future__ import annotations
 
-from config.collection_config import AGENT_COLLECTION_MAP
+from resource_explorer.configdata.collection_config import AGENT_COLLECTION_MAP
 from resource_explorer.query_processor import QueryIntent
 from resource_explorer.registry import ProjectRegistry
 

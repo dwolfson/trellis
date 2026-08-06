@@ -215,7 +215,7 @@ class OnboardingWizard:
         is available, otherwise by heuristic on path names — and appends any missing
         collection types to plan.proposed_collections.
         """
-        from config.collection_config import COLLECTION_TYPES
+        from resource_explorer.configdata.collection_config import COLLECTION_TYPES
 
         if not extra_docs_paths:
             return plan

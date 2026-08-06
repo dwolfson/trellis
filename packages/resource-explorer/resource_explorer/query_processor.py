@@ -26,11 +26,11 @@ class QueryProcessor:
     """
     Classifies a query string into a QueryIntent.
 
-    Loads patterns from config/routing.yaml. First match (by priority) wins.
+    Loads patterns from configdata/routing.yaml. First match (by priority) wins.
     Falls back to GENERAL for unmatched queries.
     """
 
-    _DEFAULT_CONFIG = Path(__file__).parent.parent / "config" / "routing.yaml"
+    _DEFAULT_CONFIG = Path(__file__).parent / "configdata" / "routing.yaml"
 
     def __init__(self, routing_config_path: str | Path | None = None) -> None:
         path = Path(routing_config_path) if routing_config_path else self._DEFAULT_CONFIG

@@ -7,7 +7,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress
 
-from config.collection_config import CollectionType
+from resource_explorer.configdata.collection_config import CollectionType
 from resource_explorer.multi_collection_store import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
 
@@ -207,7 +207,7 @@ class IngestionPipeline:
         """
         from resource_explorer.github.client import GitHubClient
         from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
-        from config.collection_config import COLLECTION_TYPES
+        from resource_explorer.configdata.collection_config import COLLECTION_TYPES
 
         code_ctypes = [
             COLLECTION_TYPES[name]

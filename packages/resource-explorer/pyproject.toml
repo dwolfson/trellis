@@ -91,7 +91,7 @@ ast = [
 resource-explorer = "resource_explorer.cli.main:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["resource_explorer", "config"]
+packages = ["resource_explorer"]
 
 [build-system]
 requires = ["hatchling"]

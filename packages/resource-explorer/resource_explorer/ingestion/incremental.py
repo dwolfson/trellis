@@ -50,7 +50,7 @@ class IncrementalIndexer:
             return
 
         # Find which collection types are touched by the changed files
-        from config.collection_config import COLLECTION_TYPES
+        from resource_explorer.configdata.collection_config import COLLECTION_TYPES
         affected_names = set()
         for path in changed_files:
             ext = PurePath(path).suffix.lower()

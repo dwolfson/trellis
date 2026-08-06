@@ -167,7 +167,7 @@ def _ingest_web_docs(project, docs_url: str, registry) -> None:
     from resource_explorer.ingestion.doc_parser import DocParser, DocChunk
     from resource_explorer.ingestion.data_prep import DataPrep
     from resource_explorer.multi_collection_store import MultiCollectionStore
-    from config.collection_config import COLLECTION_TYPES
+    from resource_explorer.configdata.collection_config import COLLECTION_TYPES
 
     ctype = COLLECTION_TYPES.get("web_docs")
     if not ctype:

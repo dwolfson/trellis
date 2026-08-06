@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from config.collection_config import COLLECTION_TYPES
+from resource_explorer.configdata.collection_config import COLLECTION_TYPES
 from resource_explorer.ingestion.code_parser import CodeChunk, CodeParser
 from resource_explorer.ingestion.doc_parser import DocChunk, DocParser
 from resource_explorer.ingestion.api_parser import APIChunk, APIParser
@@ -231,7 +231,7 @@ class TestIngestionPipelineDispatch:
         assert any("v1.0.0" in c.text for c in chunks)
 
     def test_unknown_collection_type_returns_zero(self, pipeline):
-        from config.collection_config import CollectionType
+        from resource_explorer.configdata.collection_config import CollectionType
         fake_ctype = CollectionType(
             name="unknown_type", description="", file_extensions=[".xyz"],
             chunk_size=100, chunk_overlap=10, min_file_count=1,

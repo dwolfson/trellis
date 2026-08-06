@@ -6,7 +6,7 @@ from pathlib import PurePath
 
 from github.Repository import Repository
 
-from config.collection_config import COLLECTION_TYPES, CollectionType
+from resource_explorer.configdata.collection_config import COLLECTION_TYPES, CollectionType
 from resource_explorer.github.client import GitHubClient
 
 
