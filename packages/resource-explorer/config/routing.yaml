@@ -1,0 +1,160 @@
+# Intent classification rules — ordered by priority (first match wins).
+# Used by QueryProcessor to route queries to the right agent.
+
+intent_patterns:
+  survey_meta:
+    priority: CRITICAL
+    description: Questions about survey history, analysis runs, data sources, annotations, RFAs, and context
+    patterns:
+      - '(what|which|show|list).{0,40}(analys|survey|scan|assessment).{0,30}(run|done|performed|completed|available)'
+      - '(when|last time).{0,30}(survey|scan|analys|assess)'
+      - '(survey|analysis|scan) (history|log|record|result)'
+      - 'where.{0,20}(data|schema|metric|annotation).{0,20}(come from|source|from)'
+      - '(source|origin).{0,30}(data|schema|annotation|metric)'
+      - '(what|show|list).{0,30}(annotation|rfa|request for action)'
+      - '(open|pending|unanswered).{0,20}(rfa|request)'
+      - '(how many|count).{0,20}(annotation|rfa|survey)'
+      - '(activity|audit).{0,20}log'
+      - '(what|who).{0,30}(catalog|cataloged|published|egeria)'
+      - 'egeria.{0,30}(survey|scan|status|result|annotati)'
+      - '(data|schema).{0,20}(freshness|staleness|age|last updated)'
+      - '(context|environment|owner|steward|sensitivity).{0,20}(for|of|set|stored)'
+
+  statistical:
+    priority: CRITICAL
+    description: Questions about numbers, trends, counts, history
+    patterns:
+      - "how many (commits|contributors|committers|stars|forks|releases|files|lines)"
+      - "when was (the last|first) (commit|release|update)"
+      - "show (me )?(a )?(graph|chart|plot|trend)"
+      - "commit (history|frequency|cadence|activity|trend)"
+      - "release (cadence|frequency|history)"
+      - "most active (contributors?|committers?)"
+      - '(top|main|primary|key) (contribut\w+|committ?\w+)'
+      - 'who (are the |have been )?(contribut\w+|committ?\w+)'
+      - "who (contributed|committed|commited|works on|is working on)"
+      - '(list|show) (the )?(contribut\w+|committ?\w+)'
+      - 'contribut\w+ (to|for|of)'
+      - 'committ?\w+ (to|for|of)'
+      - "lines of code"
+      - "growth (over time|trend)"
+      - "(stars|forks|watchers|issues|releases|contributors|committers)"
+      - "activity (over|in|last|this)"
+      - "weekly|monthly (commits|activity|contributions)"
+
+  dependency:
+    priority: HIGH
+    description: Questions about project dependencies, packages, requirements
+    patterns:
+      - 'go\.mod|pyproject\.toml|package\.json|requirements\.txt'
+      - 'shared dep'
+      - '(list|show|what are).{0,30}(dep|package|librar|requirement)'
+      - 'what.{0,40}(use|require|depend on|import).{0,20}(package|librar|dep|module)'
+      - '(package|librar|dep).{0,30}(use|require|need|depend)'
+      - '(runtime|dev|optional|indirect)\s+dep'
+      - 'which projects?.{0,20}(use|depend on|require|import)'
+      - 'what (package|librar|dep|requirement|module)'
+
+  integration:
+    priority: HIGH
+    description: Ecosystem fit, interoperability, and cross-project integration
+    patterns:
+      - '(work|use|integrate|combine|connect) .+ (with|and|together)'
+      - '(compatible|interoperable|plug.?in).*(with|for)'
+      - 'use .+ alongside'
+      - '(stack|pipeline|workflow).+(using|with).+and'
+      - '(can|does|will) .+ (work|integrate|connect|talk) (with|to|alongside)'
+      - '(together|in tandem)'
+      - '(interop|integration).+(between|of)'
+
+  comparison:
+    priority: HIGH
+    description: Side-by-side comparison of two or more projects
+    patterns:
+      - "compare (.+) (and|vs|versus|to|with) (.+)"
+      - "difference between (.+) and (.+)"
+      - "which (project|one|repo) (is|has|does|has more|is more)"
+      - "better than|worse than|similar to"
+      - "pros and cons"
+      - "(more|fewer|less) (stars|forks|commits|contributors|issues|releases) than"
+      - "which (has|have|is|are) (more|fewer|less|better|worse|faster|slower)"
+      - "statistical(ly)? compar"
+      - '(side.by.side|head.to.head)'
+      - '\bversus\b'
+      - 'vs\.?\s+\w'
+
+  health:
+    priority: HIGH
+    description: Community activity, maintenance status, contributor health
+    patterns:
+      - "(is|how).*(actively|well) maintained"
+      - "actively maintained"
+      - "community health"
+      - "bus factor"
+      - "contributor diversity"
+      - "response time (for )?(issues?|prs?|pull requests?)"
+      - "last (active|activity|commit|update)"
+      - "abandoned|archived|dead"
+
+  code_inventory:
+    priority: HIGH
+    description: Structural questions about classes, methods, functions, signatures
+    patterns:
+      - 'how many (class\w*|method\w*|function\w*|interface\w*)'
+      - 'list (all )?(class\w*|method\w*|function\w*|interface\w*)'
+      - 'what class\w* (are|exist|does .+ have)'
+      - 'show (me )?(all |the )?(class\w*|method\w*|function\w*|api surface|public interface|public api)'
+      - 'signature (of|for) .+'
+      - 'what (does|is) (the )?(\w+\.)?\w+ (class|method|function|interface) (do|return|take)'
+      - '(class|method|function|interface) (called|named) .+'
+      - 'count (class\w*|method\w*|function\w*)'
+      - 'find (class|method|function) .+'
+
+  examples:
+    priority: NORMAL
+    description: Requests to generate complete, runnable code examples for a project
+    patterns:
+      - 'generate (a |an |me |some )?(python )?(example|sample|snippet|code|demo)'
+      - 'write (me )?(a |an )?(python )?(example|code|script|snippet|demo)'
+      - 'give (me )?(a |an )?(python )?(example|demo|sample|working example)'
+      - '(show me|how do i|how to|can you show).{0,40}(in python|using python|with python)'
+      - 'code (example|sample|snippet|demo) (for|to|showing|that|using)'
+      - 'sample (code|program|script|notebook) (for|to|that|showing)'
+      - 'working (code )?(example|demo|sample)'
+      - 'example (of how to|showing how to|that demonstrates|for using|for calling)'
+      - '(create|build|write).{0,30}python.{0,30}(script|program|example|sample)'
+      - '\w.{3,60} (example|usage example|demo)(\?)?$'
+
+  code_search:
+    priority: NORMAL
+    description: Questions about code, methods, functions, APIs
+    patterns:
+      - 'how (do I|to|can I) (implement|build) \w'
+      - 'how (do i|to|can i).{0,50}(use|call|invoke|work with)\b'
+      - 'show (me )?(the )?(source |implementation |code (for|of))'
+      - 'show (me )?(an? )?(example|sample|demo) of (creating|building|using|calling|making|working with)\b'
+      - 'what does (method|function|class|module) .+ do'
+      - 'how is .+ implemented'
+      - 'source code for'
+      - 'api (for|to)'
+
+  conceptual:
+    priority: NORMAL
+    description: Architecture, concepts, getting started, configuration
+    patterns:
+      - "what is"
+      - "how does .+ work"
+      - "explain"
+      - "getting started"
+      - "architecture"
+      - "design"
+      - "concepts?"
+      - "configuration"
+      - "install"
+      - "setup"
+      - "overview"
+
+  general:
+    priority: LOW
+    description: Fallback — standard RAG retrieval across all relevant collections
+    patterns: []

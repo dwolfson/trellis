@@ -1,0 +1,50 @@
+milvus:
+  uri: "${MILVUS_URI:http://localhost:19530}"
+  token: "${MILVUS_TOKEN:}"
+
+llm:
+  backend: "${LLM_BACKEND:ollama}"       # ollama | openai | anthropic
+  ollama:
+    base_url: "${OLLAMA_BASE_URL:http://localhost:11434}"
+    model: "${OLLAMA_MODEL:llama3.1:8b}"
+    temperature: 0.1
+  openai:
+    model: "${OPENAI_MODEL:gpt-4o-mini}"
+    temperature: 0.1
+  anthropic:
+    model: "${ANTHROPIC_MODEL:claude-haiku-4-5-20251001}"
+    temperature: 0.1
+
+embeddings:
+  model: "${EMBEDDING_MODEL:all-MiniLM-L6-v2}"
+  device: "${EMBEDDING_DEVICE:auto}"     # auto | mps | cuda | cpu
+  dimension: 384
+
+rag:
+  top_k: 10
+  min_score: 0.30
+  max_collections_per_query: 3
+
+cache:
+  ttl_seconds: 3600
+  max_size: 1000
+  backend: memory                        # memory | redis
+
+github:
+  requests_per_hour: 5000               # GitHub API rate limit (authenticated)
+  clone_timeout_seconds: 300
+
+observability:
+  mlflow:
+    enabled: true
+    tracking_uri: "${MLFLOW_TRACKING_URI:http://localhost:5025}"
+    experiment_name: resource-explorer
+  phoenix:
+    enabled: true
+    collector_endpoint: "${PHOENIX_COLLECTOR_ENDPOINT:http://localhost:6006/v1/traces}"
+  metrics_db: data/metrics.db
+
+agents:
+  max_iterations: 20
+  max_retries: 10
+  stream_responses: true
