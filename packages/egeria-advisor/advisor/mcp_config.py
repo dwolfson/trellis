@@ -24,7 +24,7 @@ from typing import TypedDict
 
 from loguru import logger
 
-_DEFAULT_MCP_CONFIG_PATH = Path(__file__).parent.parent / "config" / "mcp_servers.json"
+_DEFAULT_MCP_CONFIG_PATH = Path(__file__).parent / "configdata" / "mcp_servers.json"
 
 
 class PyegeriaPlatformConfig(TypedDict):

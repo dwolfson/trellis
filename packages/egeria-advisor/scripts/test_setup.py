@@ -66,7 +66,7 @@ def test_config():
         print(f"    - MLflow: {settings.mlflow_tracking_uri}")
         
         # Try loading YAML config
-        config_path = Path("config/advisor.yaml")
+        config_path = Path(__file__).parent.parent / "advisor" / "configdata" / "advisor.yaml"
         if config_path.exists():
             config = load_config(config_path)
             print(f"  ✓ YAML config loaded from {config_path}")

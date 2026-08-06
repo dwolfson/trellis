@@ -27,8 +27,8 @@ from loguru import logger
 # Configuration helpers
 # ---------------------------------------------------------------------------
 
-_CFG_PATH  = Path(__file__).parent.parent / "config" / "advisor.yaml"
-_MCP_PATH  = Path(__file__).parent.parent / "config" / "mcp_servers.json"
+_CFG_PATH  = Path(__file__).parent / "configdata" / "advisor.yaml"
+_MCP_PATH  = Path(__file__).parent / "configdata" / "mcp_servers.json"
 
 _cfg_cache: Optional[Dict[str, Any]] = None
 

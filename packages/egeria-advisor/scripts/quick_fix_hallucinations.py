@@ -25,7 +25,7 @@ console = Console()
 
 def update_config():
     """Update advisor.yaml with better settings."""
-    config_path = Path("config/advisor.yaml")
+    config_path = Path(__file__).parent.parent / "advisor" / "configdata" / "advisor.yaml"
     
     console.print(Panel.fit(
         "[bold cyan]Quick Fix: Update Configuration[/bold cyan]\n"

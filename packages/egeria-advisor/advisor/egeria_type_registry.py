@@ -25,8 +25,8 @@ from typing import Dict, List, Optional
 from loguru import logger
 
 _REGISTRY_CANDIDATES = [
-    Path(__file__).parent.parent / "config" / "report_specs" / "report_specs_annotated.json",
-    Path(__file__).parent.parent / "config" / "report_specs_annotated.json",
+    Path(__file__).parent / "configdata" / "report_specs" / "report_specs_annotated.json",
+    Path(__file__).parent / "configdata" / "report_specs_annotated.json",
 ]
 
 # Common industry terminology that doesn't textually match Egeria's own type name.

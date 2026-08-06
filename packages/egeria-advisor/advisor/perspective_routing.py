@@ -31,7 +31,7 @@ class PerspectiveRoutingEngine:
 
     def __init__(self, policy_path: Optional[Path] = None):
         if policy_path is None:
-            policy_path = Path(__file__).parent.parent / "config" / "routing_policies.yaml"
+            policy_path = Path(__file__).parent / "configdata" / "routing_policies.yaml"
         self.policy_path = policy_path
         self.policies: Dict[str, Any] = {}
         self.load_policies()

@@ -16,7 +16,7 @@ def _load_perspective_families() -> dict[str, list[str]]:
     with values being dicts of {normalised_family: boost} where boost is 2 for level='both'
     and 1 for level='basic'.  Comment lines (starting with #) are skipped.
     """
-    csv_path = Path(__file__).parent.parent.parent / "config" / "perspective_template_families.csv"
+    csv_path = Path(__file__).parent.parent / "configdata" / "perspective_template_families.csv"
     result: dict[str, dict[str, int]] = {}
     try:
         with open(csv_path, newline="", encoding="utf-8") as f:

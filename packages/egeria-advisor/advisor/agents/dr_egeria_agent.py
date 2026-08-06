@@ -403,7 +403,7 @@ class DrEgeriaActionAgent:
         result = agent.handle("Create a glossary called Business Terms for our data stewards")
     """
 
-    def __init__(self, config_path: str = "config/mcp_servers.json"):
+    def __init__(self, config_path: str = str(Path(__file__).parent.parent / "configdata" / "mcp_servers.json")):
         self._config_path = config_path
         self._template_index = TemplateIndex()
         self._egeria_conn: Optional[Dict[str, str]] = None  # lazy

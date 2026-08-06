@@ -164,9 +164,9 @@ class QuestionSpecIndex:
     # Paths relative to the egeria-advisor project root.
     # Add new per-perspective or per-domain JSON files here; no other code change needed.
     _JSON_SOURCES = [
-        "config/report_specs/report_specs_annotated.json",
-        "config/report_specs/plain_spec_question_specs_batch1.json",
-        "config/report_specs/developer_question_specs.json",
+        "advisor/configdata/report_specs/report_specs_annotated.json",
+        "advisor/configdata/report_specs/plain_spec_question_specs_batch1.json",
+        "advisor/configdata/report_specs/developer_question_specs.json",
     ]
 
     def __init__(self, project_root: Optional[str] = None) -> None:
@@ -396,14 +396,14 @@ class ReportPipeline:
     All public methods are synchronous to match the existing RAG dispatch pattern.
     """
 
-    def __init__(self, config_path: str = "config/mcp_servers.json"):
+    def __init__(self, config_path: str = str(Path(__file__).parent / "configdata" / "mcp_servers.json")):
         self._config_path = config_path
         self._agent = None          # lazy MCP agent
         self._egeria_specs_tried = False  # attempt once per process lifetime
         # Read report tuning params from advisor.yaml (with safe fallbacks)
         try:
             import yaml as _yaml
-            _cfg_path = Path(__file__).parent.parent / "config" / "advisor.yaml"
+            _cfg_path = Path(__file__).parent / "configdata" / "advisor.yaml"
             with open(_cfg_path) as _f:
                 _cfg = _yaml.safe_load(_f)
             _rep = _cfg.get("reports", {})

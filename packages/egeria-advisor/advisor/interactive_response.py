@@ -48,7 +48,7 @@ class InteractiveResponseHandler:
             config_path: Path to routing.yaml config file
         """
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "config" / "routing.yaml"
+            config_path = Path(__file__).parent / "configdata" / "routing.yaml"
         
         self.config = self._load_config(config_path)
         self.confidence_thresholds = self.config.get('confidence_thresholds', {})

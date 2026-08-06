@@ -23,7 +23,7 @@ from loguru import logger
 
 
 def _catalog_path() -> Path:
-    return Path(__file__).parent.parent / "config" / "dr_egeria_actions.yaml"
+    return Path(__file__).parent / "configdata" / "dr_egeria_actions.yaml"
 
 
 @lru_cache(maxsize=1)

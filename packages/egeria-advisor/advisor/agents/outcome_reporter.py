@@ -32,7 +32,7 @@ def _load_report_map() -> Dict[str, List[str]]:
     if _report_map is not None:
         return _report_map
 
-    cfg_path = Path(__file__).parent.parent.parent / "config" / "governance_report_map.yaml"
+    cfg_path = Path(__file__).parent.parent / "configdata" / "governance_report_map.yaml"
     try:
         with open(cfg_path) as f:
             _report_map = yaml.safe_load(f) or {}

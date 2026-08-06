@@ -36,7 +36,7 @@ from loguru import logger
 def _sessions_path() -> Path:
     default = Path.home() / "egeria-plans" / "sessions"
     try:
-        cfg_file = Path(__file__).parent.parent / "config" / "advisor.yaml"
+        cfg_file = Path(__file__).parent / "configdata" / "advisor.yaml"
         with open(cfg_file) as f:
             cfg = yaml.safe_load(f)
         gp = cfg.get("governance_plans", {})

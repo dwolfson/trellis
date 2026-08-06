@@ -30,8 +30,11 @@ def _egeria_python_path_from_yaml() -> Path:
       2. ~/localGit/egeria-python
     """
     candidates = [
-        Path(__file__).parent.parent / "config" / "advisor.yaml",
-        Path("config/advisor.yaml"),
+        Path(__file__).parent / "configdata" / "advisor.yaml",
+        # Fallback for unusual launch contexts where __file__ resolution above
+        # might not apply — config/ moved to advisor/configdata/ in the Trellis
+        # workspace move, so this must point there too, not the old location.
+        Path.cwd() / "advisor" / "configdata" / "advisor.yaml",
     ]
     for config_path in candidates:
         if config_path.exists():
@@ -324,7 +327,7 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
         Configuration dictionary
     """
     if config_path is None:
-        config_path = Path("config/advisor.yaml")
+        config_path = Path(__file__).parent / "configdata" / "advisor.yaml"
 
     if not config_path.exists():
         logger.warning(f"Config file not found: {config_path}, using defaults")

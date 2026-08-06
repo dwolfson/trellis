@@ -22,8 +22,8 @@ from loguru import logger
 
 _CACHE_TTL_SECONDS = 86_400  # 24 hours
 
-_CSV_PATH = Path(__file__).parent.parent / "config" / "perspectives.csv"
-_MCP_CFG  = Path(__file__).parent.parent / "config" / "mcp_servers.json"
+_CSV_PATH = Path(__file__).parent / "configdata" / "perspectives.csv"
+_MCP_CFG  = Path(__file__).parent / "configdata" / "mcp_servers.json"
 
 
 # ---------------------------------------------------------------------------

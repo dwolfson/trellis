@@ -1,0 +1,52 @@
+{
+  "mcpServers": {
+    "dr-egeria": {
+      "command": "/Users/dwolfson/localGit/egeria-python/.venv/bin/python",
+      "args": [
+        "/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs/compose-configs/egeria-quickstart/PyegeriaWebHandler/mcp_server.py"
+      ],
+      "env": {
+        "EGERIA_USER": "erinoverview",
+        "EGERIA_USER_PASSWORD": "secret",
+        "EGERIA_VIEW_SERVER": "qs-view-server",
+        "EGERIA_VIEW_SERVER_URL": "https://localhost:9443",
+        "EGERIA_ROOT_PATH": "/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs/exchange-quickstart",
+        "EGERIA_INBOX_PATH": "loading-bay/dr-egeria-inbox",
+        "EGERIA_OUTBOX_PATH": "distribution-hub/dr-egeria-outbox"
+      },
+      "enabled": true,
+      "description": "Dr. Egeria MCP server — Dr. Egeria command execution (dr_egeria_run_block, egeria_execute_command, egeria_list_commands, egeria_refresh_specs, egeria_list_glossaries, egeria_list_collections) plus report tools (overridden by pyegeria server)"
+    },
+    "pyegeria": {
+      "command": "/Users/dwolfson/localGit/egeria-python/.venv/bin/python",
+      "args": [
+        "/Users/dwolfson/localGit/egeria-python/pyegeria/core/mcp_server.py"
+      ],
+      "env": {
+        "EGERIA_USER": "erinoverview",
+        "EGERIA_VIEW_SERVER": "qs-view-server",
+        "EGERIA_PASSWORD": "secret",
+        "EGERIA_VIEW_SERVER_URL": "https://localhost:9443",
+        "PYEGERIA_USER_REPORT_SPECS_DIR": "/Users/dwolfson/localGit/egeria-v6/trellis/config/report_specs"
+      },
+      "enabled": true,
+      "description": "PyEgeria MCP server — report discovery and execution (list_reports, find_report_specs, run_report, describe_report). Connects last so its tool definitions win over dr-egeria's for shared tool names."
+    },
+    "_example_remote_sse": {
+      "transport": "sse",
+      "url": "https://egeria.example.com:9443/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer ${EGERIA_TOKEN}"
+      },
+      "enabled": false,
+      "description": "Example remote Egeria MCP server via SSE transport. Set enabled=true and fill in url/headers to use a non-local Egeria instance."
+    }
+  },
+  "settings": {
+    "auto_discover_tools": true,
+    "tool_timeout": 60,
+    "max_concurrent_tools": 3,
+    "enable_tool_caching": true,
+    "cache_ttl": 300
+  }
+}

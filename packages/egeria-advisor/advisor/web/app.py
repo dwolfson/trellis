@@ -28,8 +28,8 @@ from pydantic import BaseModel
 
 _STATIC = Path(__file__).parent / "static"
 _SPEC_FILES = [
-    Path(__file__).parent.parent.parent / "config" / "report_specs" / "plain_spec_question_specs_batch1.json",
-    Path(__file__).parent.parent.parent / "config" / "report_specs" / "report_specs_annotated.json",
+    Path(__file__).parent.parent / "configdata" / "report_specs" / "plain_spec_question_specs_batch1.json",
+    Path(__file__).parent.parent / "configdata" / "report_specs" / "report_specs_annotated.json",
 ]
 
 def _cors_origin_regex() -> str:
@@ -557,7 +557,7 @@ async def system_status() -> Dict[str, Any]:
     """Return connection status for Egeria MCP servers."""
     mcp_status: List[Dict[str, Any]] = []
     try:
-        cfg_path = Path(__file__).parent.parent.parent / "config" / "mcp_servers.json"
+        cfg_path = Path(__file__).parent.parent / "configdata" / "mcp_servers.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
             for name, srv in cfg.get("mcpServers", {}).items():

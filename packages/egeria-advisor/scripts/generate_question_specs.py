@@ -32,9 +32,9 @@ from loguru import logger
 
 # --- Configuration ---
 
-SPECS_INPUT = Path("data/repos/egeria-python/config/report_specs.json")
-SPECS_OUTPUT = Path("config/report_specs_annotated.json")
-CONFIG_PATH = Path("config/advisor.yaml")
+SPECS_INPUT = Path("data/repos/egeria-python/config/report_specs.json")  # unrelated repo, not moved
+SPECS_OUTPUT = Path(__file__).parent.parent / "advisor" / "configdata" / "report_specs_annotated.json"
+CONFIG_PATH = Path(__file__).parent.parent / "advisor" / "configdata" / "advisor.yaml"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "llama3.1:8b"
 TEMPERATURE = 0.3

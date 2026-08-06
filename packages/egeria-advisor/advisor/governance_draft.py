@@ -46,7 +46,7 @@ def _drafts_path() -> Path:
     base = Path.home() / "egeria-plans"
     default = base / "drafts"
     try:
-        cfg_file = Path(__file__).parent.parent / "config" / "advisor.yaml"
+        cfg_file = Path(__file__).parent / "configdata" / "advisor.yaml"
         with open(cfg_file) as f:
             cfg = yaml.safe_load(f)
         gp = cfg.get("governance_plans", {})

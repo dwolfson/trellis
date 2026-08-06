@@ -235,7 +235,7 @@ SPECIAL_RULES = {
 
 # Configuration loading
 _config_cache: Optional[Dict[str, Any]] = None
-_config_file_path = Path(__file__).parent.parent / "config" / "routing.yaml"
+_config_file_path = Path(__file__).parent / "configdata" / "routing.yaml"
 
 
 def _load_config() -> Dict[str, Any]:

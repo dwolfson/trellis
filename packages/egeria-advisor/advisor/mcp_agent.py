@@ -233,7 +233,7 @@ class MCPAgent:
         """
         if config is None:
             if config_path is None:
-                config_path = "config/mcp_servers.json"
+                config_path = str(Path(__file__).parent / "configdata" / "mcp_servers.json")
             
             if os.path.exists(config_path):
                 self.config = MCPConfig.from_file(config_path)

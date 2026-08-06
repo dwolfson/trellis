@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-_MCP_CONFIG_PATH = "config/mcp_servers.json"
+_MCP_CONFIG_PATH = str(Path(__file__).parent / "configdata" / "mcp_servers.json")
 
 # Egeria property names that hold the human-readable display name, in priority order
 _NAME_PROPS = ("name", "displayName", "knownName", "title")

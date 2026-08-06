@@ -551,10 +551,10 @@ class EndToEndTestRunner:
     
     def _check_config_file(self) -> Tuple[str, str, Dict]:
         """Check config file"""
-        config_path = Path("config/advisor.yaml")
+        config_path = Path(__file__).parent.parent / "advisor" / "configdata" / "advisor.yaml"
         if config_path.exists():
             return "PASS", str(config_path), {}
-        return "FAIL", "config/advisor.yaml not found", {}
+        return "FAIL", f"{config_path} not found", {}
     
     def _check_config_loading(self) -> Tuple[str, str, Dict]:
         """Check config loading"""

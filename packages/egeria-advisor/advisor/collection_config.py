@@ -87,7 +87,7 @@ class CollectionMetadata:
 
 # Configuration loading for domain terms
 _routing_config_cache: Optional[Dict[str, Any]] = None
-_routing_config_path = Path(__file__).parent.parent / "config" / "routing.yaml"
+_routing_config_path = Path(__file__).parent / "configdata" / "routing.yaml"
 
 
 def _load_routing_config() -> Dict[str, Any]:

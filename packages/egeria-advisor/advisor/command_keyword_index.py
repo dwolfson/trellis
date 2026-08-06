@@ -65,7 +65,7 @@ class CommandKeywordIndex:
         self._entries = []
 
     def _load_catalog(self) -> None:
-        catalog_path = Path(__file__).parent.parent / "config" / "dr_egeria_actions.yaml"
+        catalog_path = Path(__file__).parent / "configdata" / "dr_egeria_actions.yaml"
         try:
             with open(catalog_path) as f:
                 data = yaml.safe_load(f) or {}
