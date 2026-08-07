@@ -383,6 +383,12 @@
 
       <!-- Annotation Types view -->
       <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Curate — Groups view -->
+      <div id="curate-groups-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Curate — Schedules view -->
+      <div id="curate-schedules-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
     </div>
 
     <!-- Chat panel resize handle -->
@@ -1166,9 +1172,7 @@ function setEntityMode(mode) {
 }
 
 // ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
-const INTENT_PLACEHOLDER_TEXT = {
-  curate: 'Curate — coming in this rewrite (Step 8).',
-};
+const INTENT_PLACEHOLDER_TEXT = {};
 
 function setNavIntent(intent) {
   currentNavIntent = intent;
@@ -1192,6 +1196,12 @@ function setNavIntent(intent) {
     showMainView('context');
   } else if (intent === 'understanding') {
     showUnderstandingPane();
+  } else if (intent === 'curate') {
+    // Curate is a small landing menu over 3 existing/new destinations
+    // (Annotation Types, Groups, Schedules) rather than one pane — see
+    // _curateSubnavHtml(). Annotation Types is the most complete existing
+    // piece, so it's the default landing content.
+    showMainView('annotations');
   } else {
     showIntentPlaceholder(intent);
   }
@@ -3911,9 +3921,11 @@ function showMainView(tab) {
   const contextView   = document.getElementById('context-view');
   const surveyDefsView = document.getElementById('survey-definitions-view');
   const annotationTypesView = document.getElementById('annotation-types-view');
+  const curateGroupsView = document.getElementById('curate-groups-view');
+  const curateSchedulesView = document.getElementById('curate-schedules-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, curateGroupsView, curateSchedulesView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
 
@@ -3958,6 +3970,12 @@ function showMainView(tab) {
   } else if (tab === 'annotations') {
     annotationTypesView.classList.remove('hidden');
     loadAnnotationTypesView(_selectedAnnotationType);
+  } else if (tab === 'curate-groups') {
+    curateGroupsView.classList.remove('hidden');
+    loadCurateGroupsPanel();
+  } else if (tab === 'curate-schedules') {
+    curateSchedulesView.classList.remove('hidden');
+    loadCurateSchedulesPanel();
   } else {
     placeholderView.classList.remove('hidden');
   }
@@ -5758,8 +5776,31 @@ function selectAnnotationType(typeName) {
   loadAnnotationTypesView(typeName);
 }
 
+// ── Curate — a small landing menu over 3 destinations (Annotation Types,
+// Groups, Schedules), each its own top-level pane in showMainView's
+// hide-list rather than a nested sub-router — keeps the same single-active-
+// pane architecture as every other intent, just with a shared subnav strip
+// prepended to each destination's own render so the 3 read as one Curate
+// "section". Clicking a subnav button calls showMainView() directly (NOT
+// setNavIntent()) so currentNavIntent stays 'curate' and the top #intent-nav
+// button stays highlighted while browsing between them. ──────────────────
+function _curateSubnavHtml(active) {
+  const tabs = [
+    { tab: 'annotations',       label: '📝 Annotation Types' },
+    { tab: 'curate-groups',     label: '🗂 Groups' },
+    { tab: 'curate-schedules',  label: '⏱ Schedules' },
+  ];
+  return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
+    ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
 function loadAnnotationTypesView(typeName = null) {
   const view = document.getElementById('annotation-types-view');
+  const subnav = _curateSubnavHtml('annotations');
   if (!typeName) {
     let rowsHtml = '';
     _annotationsList.forEach(ann => {
@@ -5773,7 +5814,7 @@ function loadAnnotationTypesView(typeName = null) {
       `;
     });
 
-    view.innerHTML = `
+    view.innerHTML = subnav + `
       <div class="p-6 space-y-6">
         <div class="flex items-center justify-between">
           <div>
@@ -5812,7 +5853,7 @@ function loadAnnotationTypesView(typeName = null) {
     <span class="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-750 rounded font-mono text-xs">${p}</span>
   `).join('') || '<span class="text-slate-500 text-xs">No properties defined.</span>';
 
-  view.innerHTML = `
+  view.innerHTML = subnav + `
     <div class="p-6 space-y-6">
       <div class="flex items-start justify-between border-b border-slate-800 pb-4">
         <div>
@@ -5867,6 +5908,150 @@ function loadAnnotationTypesView(typeName = null) {
       </div>
     </div>
   `;
+}
+
+// ── Curate — Groups (thin: list/create/delete only — per-resource group
+// assignment already exists via POST /{slug}/group but has no UI here yet;
+// deliberately out of scope for this "thin assembly" pass) ─────────────────
+async function loadCurateGroupsPanel() {
+  const view = document.getElementById('curate-groups-view');
+  view.innerHTML = _curateSubnavHtml('curate-groups') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading groups…</div>';
+  try {
+    const res = await fetch('/api/projects/groups');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _groups = await res.json();
+    renderCurateGroupsPanel();
+  } catch(e) {
+    view.innerHTML = _curateSubnavHtml('curate-groups') +
+      `<div class="text-red-400 text-xs p-4">Failed to load groups: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderCurateGroupsPanel() {
+  const view = document.getElementById('curate-groups-view');
+  const rows = _groups.map(g => {
+    const counts = `${g.projects.length} repo${g.projects.length!==1?'s':''} · ${g.databases.length} db${g.databases.length!==1?'s':''} · ${g.filesystems.length} fs`;
+    return `<tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+      <td class="px-4 py-3 font-semibold text-slate-200">${_esc(g.display_name)}</td>
+      <td class="px-4 py-3 font-mono text-purple-400 text-xs">${_esc(g.slug)}</td>
+      <td class="px-4 py-3 text-slate-350 text-xs max-w-xs truncate">${_esc(g.description) || '—'}</td>
+      <td class="px-4 py-3 text-slate-450 text-xs">${counts}</td>
+      <td class="px-4 py-3 text-right">
+        <button onclick="deleteCurateGroup('${_esc(g.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _curateSubnavHtml('curate-groups') + `
+    <div class="p-6 space-y-6">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">🗂 Resource Groups</h1>
+        <p class="text-xs text-slate-400 mt-1">Group repos, databases, and filesystems that belong together (e.g. one product's resources). Assign a resource to a group from its own record — group management here is create/delete only.</p>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">+ New Group</div>
+        <div class="flex gap-2 flex-wrap items-end">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Slug</label>
+            <input id="new-group-slug" type="text" placeholder="my-product" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-36">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Display name</label>
+            <input id="new-group-name" type="text" placeholder="My Product" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-48">
+          </div>
+          <div class="flex-1 min-w-40">
+            <label class="block text-[10px] text-slate-500 mb-0.5">Description (optional)</label>
+            <input id="new-group-desc" type="text" placeholder="" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full">
+          </div>
+          <button onclick="createCurateGroup()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
+        </div>
+        <div id="new-group-feedback" class="text-xs text-slate-500"></div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
+              <th class="px-4 py-3">Display Name</th>
+              <th class="px-4 py-3">Slug</th>
+              <th class="px-4 py-3">Description</th>
+              <th class="px-4 py-3">Members</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500 text-xs">No groups yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function createCurateGroup() {
+  const slug = document.getElementById('new-group-slug').value.trim();
+  const displayName = document.getElementById('new-group-name').value.trim();
+  const description = document.getElementById('new-group-desc').value.trim();
+  const fb = document.getElementById('new-group-feedback');
+  if (!slug || !displayName) { fb.textContent = 'Slug and display name are both required.'; return; }
+  fb.textContent = 'Creating…';
+  try {
+    const res = await fetch('/api/projects/groups', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug, display_name: displayName, description }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    fb.textContent = '';
+    loadCurateGroupsPanel();
+  } catch(e) {
+    fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function deleteCurateGroup(slug) {
+  try {
+    const res = await fetch(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    showToast('success', `Group deleted — ${data.resources_unassigned} resource(s) unassigned.`, 4000);
+    loadCurateGroupsPanel();
+  } catch(e) {
+    showToast('error', `Failed to delete group: ${_esc(e.message)}`, 6000);
+  }
+}
+
+// ── Curate — Schedules (resurrected from the retired Analyses tab — see
+// loadSchedulesSection/loadSchedulesEditor above, which were left in place
+// but uncalled since 2026-07-09 pending exactly this kind of re-wiring).
+// Honesty note: Step 3 externalized analysis_catalog.py's DATA (YAML +
+// reclassified intents) but did NOT change what each entry represents —
+// the original reason this was disabled (some catalog entries, e.g.
+// database's Index Health/Privilege Audit, don't correspond to fully-
+// implemented behavior the way Survey Definitions' live steps do) still
+// applies. Resurrecting per the plan's explicit instruction, but with a
+// visible caveat rather than presenting it as fully reliable. ─────────────
+async function loadCurateSchedulesPanel() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  const view = document.getElementById('curate-schedules-view');
+  if (!entityType || !slug || entityType === 'filesystem') {
+    view.innerHTML = _curateSubnavHtml('curate-schedules') +
+      '<div class="text-slate-500 text-xs py-8 text-center">Select a repo or database to manage its analysis schedules.<br>(Filesystem scheduling isn\'t built yet.)</div>';
+    return;
+  }
+  view.innerHTML = _curateSubnavHtml('curate-schedules') + `
+    <div class="p-6 space-y-4">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⏱ Analysis Schedules — ${_esc(slug)}</h1>
+        <div class="text-xs text-amber-500/80 mt-1">⚠ Some listed analyses may not be fully implemented yet — cross-check
+          against 🔎 Discovery's Survey Definitions before relying on a scheduled run.</div>
+      </div>
+      <div id="schedules-section"></div>
+    </div>`;
+  loadSchedulesSection(slug, entityType);
 }
 
 function showRegisterAnnotationModal() {
