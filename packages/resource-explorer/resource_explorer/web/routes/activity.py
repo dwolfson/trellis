@@ -2,10 +2,20 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from resource_explorer.registry import ProjectRegistry
 
 router = APIRouter()
+
+RFA_STATUSES = {"open", "deferred", "reassigned", "completed"}
+
+
+class RfaActionUpdateRequest(BaseModel):
+    status: str
+    assignee: str = ""
+    defer_until: str = ""
+    resolution_note: str = ""
 
 
 def _registry() -> ProjectRegistry:
@@ -37,14 +47,29 @@ def list_rfas(
     entity_slug: str | None = Query(None),
     limit: int = Query(500, le=2000),
 ) -> list[dict]:
-    """Return all RequestForAction annotations across all activity log entries."""
-    entries = _registry().list_activity(entity_type=entity_type, entity_slug=entity_slug, limit=limit)
+    """Return all RequestForAction annotations across all activity log entries.
+
+    Each RFA gets a stable `id` (f"{entry_id}::{annotation_index}", minted
+    positionally the same way every time this flattens the same entry's
+    annotations) and has any locally-recorded response action
+    (see PATCH /rfas/{rfa_id}) overlaid onto it: `rfa_status` (defaults to
+    "open" if nothing's been recorded yet), `assignee`, `defer_until`,
+    `resolution_note`, `action_updated_at`. `status` (Egeria/local
+    provenance, e.g. "local") is unrelated and untouched — don't confuse
+    the two."""
+    registry = _registry()
+    entries = registry.list_activity(entity_type=entity_type, entity_slug=entity_slug, limit=limit)
+    overrides = registry.list_rfa_action_overrides()
     rfas = []
     for entry in entries:
-        for ann in (entry.get("annotations") or []):
+        for idx, ann in enumerate(entry.get("annotations") or []):
             if "RequestForAction" in (ann.get("annotation_type") or ""):
+                rfa_id = f"{entry['id']}::{idx}"
+                override = overrides.get(rfa_id)
                 rfas.append({
+                    "id": rfa_id,
                     "entry_id": entry["id"],
+                    "annotation_index": idx,
                     "ts": entry["ts"],
                     "entity_type": entry.get("entity_type", ""),
                     "entity_slug": entry.get("entity_slug", ""),
@@ -54,8 +79,42 @@ def list_rfas(
                     "count": ann.get("count", 1),
                     "summary": ann.get("summary", ""),
                     "status": ann.get("status", "local"),
+                    "rfa_status": override["rfa_status"] if override else "open",
+                    "assignee": override["assignee"] if override else "",
+                    "defer_until": override["defer_until"] if override else "",
+                    "resolution_note": override["resolution_note"] if override else "",
+                    "action_updated_at": override["updated_at"] if override else "",
                 })
     return rfas
+
+
+@router.patch("/rfas/{rfa_id}")
+def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
+    """Record a response action (defer / reassign / complete / reopen) against
+    an RFA. Local-only tracking — this does NOT write back to Egeria as a
+    native ToDo/governance action; see rfa_actions' docstring in registry.py."""
+    if body.status not in RFA_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(RFA_STATUSES)}")
+    try:
+        entry_id, idx_str = rfa_id.rsplit("::", 1)
+        annotation_index = int(idx_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}'")
+
+    registry = _registry()
+    if registry.get_activity(entry_id) is None:
+        raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
+
+    registry.upsert_rfa_action(
+        rfa_id=rfa_id,
+        entry_id=entry_id,
+        annotation_index=annotation_index,
+        status=body.status,
+        assignee=body.assignee,
+        defer_until=body.defer_until,
+        resolution_note=body.resolution_note,
+    )
+    return {"status": "success", "id": rfa_id, "rfa_status": body.status}
 
 
 @router.get("/{entry_id}")

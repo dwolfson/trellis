@@ -3013,7 +3013,9 @@ async function loadRfaPanel(containerId = 'rfa-view') {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rfas = await res.json();
     renderRfaPanel(rfas, containerId);
-    _updateRfaDrawerBadge(rfas.length);
+    // Badge counts OPEN items only — deferred/reassigned/completed have
+    // been responded to, they shouldn't keep nagging the badge.
+    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open').length);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -3028,25 +3030,47 @@ function _updateRfaDrawerBadge(count) {
 
 function renderRfaPanel(rfas, containerId = 'rfa-view') {
   const view = document.getElementById(containerId);
-  const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+  const showResolved = localStorage.getItem('pe_rfa_show_resolved') === '1';
+  const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
     <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">RequestForAction — Open Questions</span>
-    <button onclick="loadRfaPanel('${containerId}')" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">↺ Refresh</button>
+    <div class="flex items-center gap-2">
+      <label class="text-xs text-slate-500 flex items-center gap-1 cursor-pointer select-none">
+        <input type="checkbox" id="rfa-show-resolved-toggle" ${showResolved ? 'checked' : ''}
+          onchange="_toggleRfaShowResolved(this.checked, '${containerId}')">
+        Show resolved
+      </label>
+      <button onclick="loadRfaPanel('${containerId}')" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">↺ Refresh</button>
+    </div>
   </div>`;
 
-  if (!rfas.length) {
-    view.innerHTML = header + '<div class="text-slate-600 text-xs text-center py-12">No RequestForAction annotations found.<br>Run a survey on a resource to generate RFAs.</div>';
+  // Defer/Reassign/Complete are recorded via rfa.rfa_status (see PATCH
+  // /api/activity/rfas/{id}) — resolved items stay out of the default view
+  // (and out of the drawer badge count) so the list reflects what still
+  // needs a response, not the full history. "Show resolved" reveals them.
+  const visible = showResolved ? rfas : rfas.filter(r => r.rfa_status === 'open');
+
+  if (!visible.length) {
+    const msg = (rfas.length && !showResolved)
+      ? 'No open RequestForAction items.<br>Toggle "Show resolved" above to see deferred / reassigned / completed ones.'
+      : 'No RequestForAction annotations found.<br>Run a survey on a resource to generate RFAs.';
+    view.innerHTML = header + `<div class="text-slate-600 text-xs text-center py-12">${msg}</div>`;
     return;
   }
 
   // Group by entity
   const byEntity = {};
-  for (const rfa of rfas) {
+  for (const rfa of visible) {
     const key = rfa.entity_slug || rfa.entity_type || 'unknown';
     if (!byEntity[key]) byEntity[key] = { name: rfa.entity_name || key, type: rfa.entity_type, rfas: [] };
     byEntity[key].rfas.push(rfa);
   }
 
   const entityIcon = { repo:'📁', database:'🗄', server:'🖥', filesystem:'📂', file:'📄' };
+  const statusBadge = {
+    deferred:   '<span class="text-xs bg-sky-900/50 text-sky-300 px-1.5 py-0 rounded ml-1">⏸ deferred</span>',
+    reassigned: '<span class="text-xs bg-violet-900/50 text-violet-300 px-1.5 py-0 rounded ml-1">👤 reassigned</span>',
+    completed:  '<span class="text-xs bg-emerald-900/50 text-emerald-300 px-1.5 py-0 rounded ml-1">✓ completed</span>',
+  };
   let html = `${header}<div class="p-4 space-y-4">`;
 
   for (const [entitySlug, g] of Object.entries(byEntity)) {
@@ -3057,46 +3081,144 @@ function renderRfaPanel(rfas, containerId = 'rfa-view') {
         <span class="text-amber-500/70 normal-case font-normal ml-1">${totalCount} action${totalCount!==1?'s':''}</span>
       </div>
       <div class="space-y-2">`;
-    for (let i = 0; i < g.rfas.length; i++) {
-      const rfa = g.rfas[i];
+    for (const rfa of g.rfas) {
+      // rfa.id (f"{entry_id}::{annotation_index}", minted by the backend —
+      // see GET /api/activity/rfas) is the stable identity PATCH targets;
+      // safeId is only a DOM-id-safe derivative for element lookups.
+      const safeId = rfa.id.replace(/[^a-zA-Z0-9]/g, '_');
       const ts  = (rfa.ts || '').replace('T',' ').substring(0,10);
-      const rfaId = `rfa-ans-${i}-${(rfa.entry_id||'').replace(/[^a-z0-9]/gi,'_').substring(0,12)}`;
       const countBadge = rfa.count > 1
         ? `<span class="text-xs bg-amber-900/50 text-amber-300 px-1.5 py-0 rounded ml-1">${rfa.count}</span>` : '';
-      html += `<div class="rfa-row">
+      let detailLine = '';
+      if (rfa.rfa_status === 'deferred' && rfa.defer_until) detailLine = `Deferred until ${_esc(rfa.defer_until)}`;
+      else if (rfa.rfa_status === 'reassigned' && rfa.assignee) detailLine = `Reassigned to ${_esc(rfa.assignee)}`;
+      else if (rfa.rfa_status === 'completed') detailLine = rfa.resolution_note ? `Resolved: ${_esc(rfa.resolution_note)}` : 'Resolved';
+      const actionButtons = rfa.rfa_status === 'open'
+        ? `<button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'defer', '${containerId}')" class="text-xs text-sky-500 hover:text-sky-300 transition-colors">⏸ Defer</button>
+           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'reassign', '${containerId}')" class="text-xs text-violet-500 hover:text-violet-300 transition-colors">👤 Reassign</button>
+           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'complete', '${containerId}')" class="text-xs text-emerald-500 hover:text-emerald-300 transition-colors">✓ Complete</button>`
+        : `<button onclick="submitRfaAction('${_esc(rfa.id)}', 'open', {}, '${containerId}')" class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Reopen</button>`;
+
+      html += `<div class="rfa-row" data-rfa-id="${_esc(rfa.id)}">
         <div class="flex items-start justify-between gap-2">
           <div class="flex-1 min-w-0">
             <div class="text-xs font-medium text-amber-300">
-              ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}
+              ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}${statusBadge[rfa.rfa_status] || ''}
             </div>
             <div class="text-xs text-slate-300 mt-0.5">${_esc(rfa.summary)}</div>
+            ${detailLine ? `<div class="text-xs text-slate-500 mt-0.5 italic">${detailLine}</div>` : ''}
           </div>
           <div class="shrink-0 text-xs text-slate-600 whitespace-nowrap">${ts}</div>
         </div>
-        <div id="${rfaId}" class="rfa-answer-form hidden">
+
+        <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
+
+        <div class="flex gap-3 flex-wrap items-center mt-1.5">
+          ${actionButtons}
+          <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
+            class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            ✏ Record answer
+          </button>
+        </div>
+        <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
           <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
             rows="2" placeholder="Enter answer or context…"></textarea>
           <div class="flex gap-2 mt-1.5">
-            <button onclick="saveRfaAnswer('${rfaId}')"
+            <button onclick="saveRfaAnswer('rfa-ans-${safeId}')"
               class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
               Save →
             </button>
-            <button onclick="document.getElementById('${rfaId}').classList.add('hidden')"
+            <button onclick="document.getElementById('rfa-ans-${safeId}').classList.add('hidden')"
               class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
               Cancel
             </button>
           </div>
         </div>
-        <button onclick="document.getElementById('${rfaId}').classList.toggle('hidden')"
-          class="text-xs text-amber-500 hover:text-amber-300 mt-1.5 transition-colors">
-          ✏ Record answer
-        </button>
       </div>`;
     }
     html += `</div></div>`;
   }
   html += '</div>';
   view.innerHTML = html;
+}
+
+function _toggleRfaShowResolved(checked, containerId) {
+  localStorage.setItem('pe_rfa_show_resolved', checked ? '1' : '0');
+  loadRfaPanel(containerId);
+}
+
+// ── RFA response actions (defer / reassign / complete / reopen) — local-only
+// tracking via rfa_actions (see registry.py's docstring there); NOT yet a
+// real Egeria ToDo/governance action, deliberately out of scope this slice.
+function _showRfaActionForm(rfaId, kind, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const formEl = document.getElementById(`rfa-action-form-${safeId}`);
+  if (!formEl) return;
+  const cancelBtn = `<button onclick="document.getElementById('rfa-action-form-${safeId}').classList.add('hidden')"
+    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">Cancel</button>`;
+  let inner = '';
+  if (kind === 'defer') {
+    inner = `<input type="date" id="rfa-defer-date-${safeId}"
+        class="bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-sky-400">
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="_submitRfaDefer('${rfaId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-sky-700 hover:bg-sky-600 text-white transition-colors">Defer →</button>
+        ${cancelBtn}
+      </div>`;
+  } else if (kind === 'reassign') {
+    inner = `<input type="text" id="rfa-assignee-${safeId}" placeholder="Assignee (name or email)"
+        class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-violet-400">
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="_submitRfaReassign('${rfaId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white transition-colors">Reassign →</button>
+        ${cancelBtn}
+      </div>`;
+  } else if (kind === 'complete') {
+    inner = `<textarea id="rfa-resolution-${safeId}" placeholder="Resolution note (optional)" rows="2"
+        class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-emerald-400 resize-none"></textarea>
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="_submitRfaComplete('${rfaId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors">Complete →</button>
+        ${cancelBtn}
+      </div>`;
+  }
+  formEl.innerHTML = inner;
+  formEl.classList.remove('hidden');
+}
+
+function _submitRfaDefer(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const val = document.getElementById(`rfa-defer-date-${safeId}`)?.value;
+  if (!val) { showToast('info', 'Pick a defer-until date first.', 3000); return; }
+  submitRfaAction(rfaId, 'deferred', { defer_until: val }, containerId);
+}
+
+function _submitRfaReassign(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const val = document.getElementById(`rfa-assignee-${safeId}`)?.value.trim();
+  if (!val) { showToast('info', 'Enter an assignee first.', 3000); return; }
+  submitRfaAction(rfaId, 'reassigned', { assignee: val }, containerId);
+}
+
+function _submitRfaComplete(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const val = document.getElementById(`rfa-resolution-${safeId}`)?.value.trim() || '';
+  submitRfaAction(rfaId, 'completed', { resolution_note: val }, containerId);
+}
+
+async function submitRfaAction(rfaId, status, extra, containerId) {
+  try {
+    const res = await fetch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, ...extra }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', `RFA marked ${_esc(status)}.`, 3000);
+    loadRfaPanel(containerId);
+  } catch(e) {
+    showToast('error', `Failed to update RFA: ${_esc(e.message)}`, 6000);
+  }
 }
 
 function saveRfaAnswer(rfaId) {

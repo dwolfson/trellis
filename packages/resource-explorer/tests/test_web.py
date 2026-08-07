@@ -184,6 +184,102 @@ class TestQueryRouter:
         rag_mock.query.assert_called_once_with("what is this project?", project_slug="myproj")
 
 
+# ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────
+
+def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_annotations=None):
+    from resource_explorer.registry import ActivityEntry
+    annotations = [
+        {"annotation_type": "RequestForActionAnnotation", "analysis_name": "Security Scan",
+         "count": 1, "summary": f"Finding {i}", "status": "local"}
+        for i in range(num_rfas)
+    ]
+    if extra_annotations:
+        annotations.extend(extra_annotations)
+    registry.write_activity(ActivityEntry(
+        id=entry_id, ts="2026-08-01T00:00:00", operation="survey", intent="assessment",
+        entity_type="repo", entity_slug="myproj", entity_name="My Project",
+        annotations=annotations,
+    ))
+
+
+class TestRfaRouter:
+    def test_list_rfas_defaults_to_open(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.get("/api/activity/rfas")
+        assert resp.status_code == 200
+        rfas = resp.json()
+        assert len(rfas) == 1
+        assert rfas[0]["id"] == "entry-1::0"
+        assert rfas[0]["rfa_status"] == "open"
+        assert rfas[0]["assignee"] == ""
+
+    def test_ids_are_stable_and_positional(self, client, registry):
+        _write_rfa_activity_entry(registry, num_rfas=3, extra_annotations=[
+            {"annotation_type": "ClassificationAnnotation", "summary": "not an rfa"},
+        ])
+        rfas = client.get("/api/activity/rfas").json()
+        assert [r["id"] for r in rfas] == ["entry-1::0", "entry-1::1", "entry-1::2"]
+
+    def test_patch_defer_persists_and_overlays_on_relist(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.patch("/api/activity/rfas/entry-1::0", json={
+            "status": "deferred", "defer_until": "2026-09-01",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["rfa_status"] == "deferred"
+
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "deferred"
+        assert rfas[0]["defer_until"] == "2026-09-01"
+        assert rfas[0]["action_updated_at"]  # timestamp recorded
+
+    def test_patch_reassign_persists_assignee(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={
+            "status": "reassigned", "assignee": "dwolfson",
+        })
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "reassigned"
+        assert rfas[0]["assignee"] == "dwolfson"
+
+    def test_patch_complete_with_resolution_note(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={
+            "status": "completed", "resolution_note": "Fixed in PR #42",
+        })
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "completed"
+        assert rfas[0]["resolution_note"] == "Fixed in PR #42"
+
+    def test_patch_reopen_from_completed(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={"status": "completed"})
+        resp = client.patch("/api/activity/rfas/entry-1::0", json={"status": "open"})
+        assert resp.status_code == 200
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "open"
+
+    def test_patch_rejects_invalid_status(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.patch("/api/activity/rfas/entry-1::0", json={"status": "bogus"})
+        assert resp.status_code == 400
+
+    def test_patch_rejects_malformed_id(self, client, registry):
+        resp = client.patch("/api/activity/rfas/not-a-valid-id", json={"status": "completed"})
+        assert resp.status_code == 400
+
+    def test_patch_404s_for_unknown_entry(self, client, registry):
+        resp = client.patch("/api/activity/rfas/nonexistent-entry::0", json={"status": "completed"})
+        assert resp.status_code == 404
+
+    def test_other_rfas_in_same_entry_unaffected(self, client, registry):
+        _write_rfa_activity_entry(registry, num_rfas=2)
+        client.patch("/api/activity/rfas/entry-1::0", json={"status": "completed"})
+        rfas = {r["id"]: r for r in client.get("/api/activity/rfas").json()}
+        assert rfas["entry-1::0"]["rfa_status"] == "completed"
+        assert rfas["entry-1::1"]["rfa_status"] == "open"
+
+
 # ── /api/analyses/{resource_type} + /perspectives + /egeria-status ─────────────
 
 class TestAnalysisCatalogRouter:

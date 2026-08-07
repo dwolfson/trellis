@@ -7,7 +7,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -842,6 +842,18 @@ class ProjectRegistry:
                     process_qualified_name TEXT DEFAULT '',
                     cached_at              TEXT NOT NULL,
                     PRIMARY KEY (entity_type, entity_slug, technology_type)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS rfa_actions (
+                    id                TEXT PRIMARY KEY,
+                    entry_id          TEXT NOT NULL,
+                    annotation_index  INTEGER NOT NULL,
+                    rfa_status        TEXT NOT NULL DEFAULT 'open',
+                    assignee          TEXT DEFAULT '',
+                    defer_until       TEXT DEFAULT '',
+                    resolution_note   TEXT DEFAULT '',
+                    updated_at        TEXT NOT NULL DEFAULT ''
                 )
             """)
             conn.execute("""
@@ -2081,6 +2093,58 @@ class ProjectRegistry:
                 "WHERE id = ?",
                 (status, summary, summary, detail, detail, entry_id),
             )
+
+    # ── RFA actions (local response tracking — see PATCH /api/activity/rfas/{rfa_id}
+    # in web/routes/activity.py) ─────────────────────────────────────────────
+    #
+    # RFAs themselves aren't first-class rows — GET /rfas flattens
+    # RequestForAction-tagged entries out of each activity_log row's
+    # annotations_json at read time. This table is keyed on the same
+    # synthetic id that flatten step mints positionally
+    # (f"{entry_id}::{annotation_index}"), and overlays a real, updatable
+    # status/assignee/defer/resolution onto each flattened RFA. This is a
+    # stepping stone toward real Egeria ToDo/governance actions, not that
+    # integration itself — full alignment with Egeria's native action model
+    # is deliberately out of scope for this slice.
+
+    def upsert_rfa_action(
+        self,
+        rfa_id: str,
+        entry_id: str,
+        annotation_index: int,
+        status: str,
+        assignee: str = "",
+        defer_until: str = "",
+        resolution_note: str = "",
+    ) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO rfa_actions
+                   (id, entry_id, annotation_index, rfa_status, assignee, defer_until, resolution_note, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     rfa_status=excluded.rfa_status,
+                     assignee=excluded.assignee,
+                     defer_until=excluded.defer_until,
+                     resolution_note=excluded.resolution_note,
+                     updated_at=excluded.updated_at""",
+                (rfa_id, entry_id, annotation_index, status, assignee, defer_until, resolution_note, updated_at),
+            )
+
+    def get_rfa_action(self, rfa_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM rfa_actions WHERE id = ?", (rfa_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_rfa_action_overrides(self) -> dict[str, dict]:
+        """All rfa_actions rows, keyed by id — used to overlay live status
+        onto the read-time-flattened RFA list without a per-row query."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM rfa_actions").fetchall()
+        return {r["id"]: dict(r) for r in rows}
 
     def update_governance_state(self, entity_type: str, slug: str, state: str) -> None:
         """Update the governance state of a registered resource."""
