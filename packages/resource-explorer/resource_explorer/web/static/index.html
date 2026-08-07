@@ -48,15 +48,6 @@
     #resize-handle:hover, #resize-handle.dragging { background:#0e7490; }
     .resize-handle-v { width:4px; flex-shrink:0; cursor:col-resize; background:#1e293b; transition:background .15s; }
     .resize-handle-v:hover, .resize-handle-v.dragging { background:#0e7490; }
-    /* Entity tabs */
-    .entity-tab { padding:.4rem .75rem; font-size:.72rem; font-weight:600; color:#64748b; border-bottom:2px solid transparent; transition:color .12s,border-color .12s; flex:1; text-align:center; }
-    .entity-tab.active { color:#22d3ee; border-bottom-color:#22d3ee; background:#0f172a; }
-    .entity-tab:hover:not(.active) { color:#94a3b8; background:#1e293b; }
-    /* Main view nav (legacy — kept only for the hidden compatibility shim, see body comment) */
-    #main-nav { border-bottom:1px solid #1e293b; background:#0f172a; }
-    .main-nav-btn { padding:.35rem .9rem; font-size:.72rem; font-weight:500; color:#64748b; border-bottom:2px solid transparent; transition:color .15s,border-color .15s; white-space:nowrap; }
-    .main-nav-btn.active { color:#22d3ee; border-bottom-color:#22d3ee; }
-    .main-nav-btn:hover:not(.active) { color:#94a3b8; }
     /* Intent nav (new primary navigation) */
     .nav-intent-btn { padding:.35rem .8rem; font-size:.75rem; font-weight:600; color:#94a3b8; border-radius:.375rem; transition:color .12s,background .12s; white-space:nowrap; }
     .nav-intent-btn.active { color:#22d3ee; background:#0e7490; background:rgba(14,116,144,.35); }
@@ -136,10 +127,6 @@
     .analysis-card:hover { border-color:#0e7490; }
     .analysis-card.recommended { border-color:#0e7490; }
     .analysis-tag { font-size:.58rem; padding:.1rem .3rem; border-radius:.2rem; font-weight:500; white-space:nowrap; }
-    .tag-scouting   { background:#0c4a6e; color:#7dd3fc; }
-    .tag-assessment { background:#4a1d96; color:#c4b5fd; }
-    .tag-discovery  { background:#064e3b; color:#6ee7b7; }
-    .tag-enrichment { background:#78350f; color:#fcd34d; }
     .tag-fast  { background:#0f172a; color:#64748b; border:1px solid #1e293b; }
     .tag-mins  { background:#0f172a; color:#f59e0b; border:1px solid #1e293b; }
     .tag-async { background:#0f172a; color:#60a5fa; border:1px solid #1e293b; }
@@ -169,18 +156,6 @@
 
 <!-- Toast container (fixed overlay, survives all re-renders) -->
 <div id="toast-container"></div>
-
-<!-- TEMPORARY compatibility shim: several legacy selectProject/selectDatabase/
-     selectFilesystem/etc. call sites still toggle classes on these ids from
-     the old main-nav bar, which no longer renders anywhere in the new intent
-     shell. Keeping harmless, permanently-hidden stub elements here is lower
-     risk than rewriting ~20 scattered call sites mid-rewrite. Removed, along
-     with every call site, in Step 9's cleanup pass alongside entityMode. -->
-<div id="main-nav" class="hidden" aria-hidden="true">
-  <span id="nav-report"></span>
-  <span id="nav-db-survey"></span>
-  <span id="nav-filesystem-survey"></span>
-</div>
 
 <!-- Header -->
 <header class="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
@@ -294,18 +269,6 @@
         </button>
       </div>
       <div id="filesystem-list" class="px-2 flex flex-col gap-0.5 pb-2"></div>
-    </div>
-
-    <!-- Annotations section (hidden initially) -->
-    <div id="annotations-section" class="hidden flex flex-col overflow-y-auto flex-1">
-      <div class="px-2 pt-2 pb-1 flex items-center gap-1">
-        <button onclick="showRegisterAnnotationModal()"
-          class="text-xs px-2 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap font-medium w-full text-center"
-          title="Register a new annotation type">
-          + Annotation Type
-        </button>
-      </div>
-      <div id="annotation-list" class="px-2 flex flex-col gap-0.5 pb-2"></div>
     </div>
 
   </aside>
@@ -1066,9 +1029,8 @@
 let selectedProject  = null;
 let selectedDatabase = null;
 let selectedFilesystem = null;
-let entityMode       = 'repo';   // 'repo' | 'db' | 'filesystem' — legacy, drives only the (currently unreachable) Annotations sidebar section until Step 8 relocates it under Curate
 let currentNavIntent  = 'scouting';  // 'scouting'|'discovery'|'assessment'|'analysis'|'enrichment'|'understanding'|'curate' — the new primary nav axis
-let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent (replaces entityMode as the sidebar-list driver)
+let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent
 let activePerspectives = new Set();  // 'dba'|'data_scientist'|'steward'|'security' — concurrent, not exclusive (unlike intent/facet); empty set = no filter ("all")
 let compareSet       = new Set();
 let lastQueryHash    = null;
@@ -1136,42 +1098,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (stored) document.getElementById('sidebar').style.width = stored + 'px';
 });
 
-// ── entity mode ────────────────────────────────────────────────────────────────
-function setEntityMode(mode) {
-  entityMode = mode;
-  document.getElementById('tab-repos').classList.toggle('active', mode === 'repo');
-  document.getElementById('tab-dbs').classList.toggle('active', mode === 'db');
-  document.getElementById('tab-filesystems').classList.toggle('active', mode === 'filesystem');
-  document.getElementById('tab-annotations').classList.toggle('active', mode === 'annotations');
-
-  document.getElementById('repos-section').classList.toggle('hidden', mode !== 'repo');
-  document.getElementById('databases-section').classList.toggle('hidden', mode !== 'db');
-  document.getElementById('filesystems-section').classList.toggle('hidden', mode !== 'filesystem');
-  document.getElementById('annotations-section').classList.toggle('hidden', mode !== 'annotations');
-
-  // Hide charts when switching mode (re-shown on selection)
-  document.getElementById('charts-section').classList.add('hidden');
-
-  const isAnnotations = (mode === 'annotations');
-  document.getElementById('main-nav').classList.toggle('hidden', isAnnotations);
-  document.getElementById('chat-input-container').classList.toggle('hidden', isAnnotations);
-  
-  if (isAnnotations) {
-    selectedProject = null;
-    selectedDatabase = null;
-    document.querySelectorAll('.project-btn, .db-btn, .fs-btn').forEach(b => b.classList.remove('selected', 'compare-selected'));
-    document.getElementById('scope-badge').classList.add('hidden');
-    document.getElementById('db-scope-badge').classList.add('hidden');
-    document.getElementById('nav-db-survey').classList.add('hidden');
-    document.getElementById('nav-filesystem-survey').classList.add('hidden');
-    
-    showMainView('annotations');
-  } else {
-    showMainView('chat');
-  }
-}
-
-// ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
+// ── intent navigation (primary nav) ─────────────────────────────────────────────
 const INTENT_PLACEHOLDER_TEXT = {};
 
 function setNavIntent(intent) {
@@ -1562,7 +1489,6 @@ function selectProject(slug) {
   document.querySelectorAll('.db-btn').forEach(b => b.classList.remove('selected'));
   document.getElementById('scope-badge').classList.add('hidden');
   document.getElementById('db-scope-badge').classList.add('hidden');
-  document.getElementById('nav-db-survey').classList.add('hidden');
 
   if (slug) {
     document.querySelector(`.project-btn[data-slug="${slug}"]`)?.classList.add('selected');
@@ -1575,9 +1501,6 @@ function selectProject(slug) {
     document.getElementById('egeria-panel').classList.add('hidden');
     document.getElementById('chart-container').classList.remove('hidden');
     showChart(currentChart);
-    // Main nav
-    document.getElementById('main-nav').classList.remove('hidden');
-    document.getElementById('nav-report').classList.remove('hidden');
     _reportLoaded = false;
     setNavIntent(currentNavIntent);
     if (pendingClarification) {
@@ -1588,7 +1511,6 @@ function selectProject(slug) {
     }
   } else {
     document.getElementById('charts-section').classList.add('hidden');
-    document.getElementById('main-nav').classList.add('hidden');
     document.querySelectorAll('.project-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
     setNavIntent(currentNavIntent);
   }
@@ -1824,10 +1746,6 @@ function selectServer(slug) {
   document.getElementById('db-scope-badge').classList.add('hidden');
   document.getElementById('charts-section').classList.add('hidden');
 
-  // Show main-nav with Activity always; hide db-survey, report
-  document.getElementById('main-nav').classList.remove('hidden');
-  document.getElementById('nav-report').classList.add('hidden');
-  document.getElementById('nav-db-survey').classList.add('hidden');
 
   // Show server detail in the db-survey view
   showMainView('db-survey');
@@ -1980,7 +1898,6 @@ function selectDatabase(slug) {
   document.querySelectorAll('.project-btn').forEach(b => b.classList.remove('selected', 'compare-selected'));
   document.getElementById('scope-badge').classList.add('hidden');
   document.getElementById('db-scope-badge').classList.add('hidden');
-  document.getElementById('nav-report').classList.remove('hidden');
 
   if (slug) {
     document.querySelector(`.db-btn[data-slug="${slug}"]`)?.classList.add('selected');
@@ -1993,16 +1910,10 @@ function selectDatabase(slug) {
     document.getElementById('egeria-panel').classList.add('hidden');
     document.getElementById('chart-container').classList.remove('hidden');
     showDbChart(currentDbChart);
-    // Main nav — show db-survey tab, hide repo-only report tab
-    document.getElementById('main-nav').classList.remove('hidden');
-    document.getElementById('nav-report').classList.add('hidden');
-    document.getElementById('nav-db-survey').classList.remove('hidden');
     _dbSurveyLoaded = false;
     setNavIntent(currentNavIntent);
   } else {
     document.getElementById('charts-section').classList.add('hidden');
-    document.getElementById('main-nav').classList.add('hidden');
-    document.getElementById('nav-db-survey').classList.add('hidden');
     document.querySelectorAll('.db-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
     setNavIntent(currentNavIntent);
   }
@@ -5228,9 +5139,6 @@ function selectFilesystem(slug) {
   
   document.getElementById('scope-badge').classList.add('hidden');
   document.getElementById('db-scope-badge').classList.add('hidden');
-  document.getElementById('nav-report').classList.add('hidden');
-  document.getElementById('nav-db-survey').classList.add('hidden');
-  document.getElementById('nav-filesystem-survey').classList.remove('hidden');
 
   if (slug) {
     const fs = _fsMap[slug] || {};
@@ -5238,13 +5146,10 @@ function selectFilesystem(slug) {
     document.getElementById('db-scope-badge').textContent = '💾 ' + (fs.display_name || slug);
     document.getElementById('db-scope-badge').classList.remove('hidden');
     
-    document.getElementById('main-nav').classList.remove('hidden');
     _fsSurveyLoaded = false;
     setNavIntent(currentNavIntent);
   } else {
     document.getElementById('charts-section').classList.add('hidden');
-    document.getElementById('main-nav').classList.add('hidden');
-    document.getElementById('nav-filesystem-survey').classList.add('hidden');
     document.querySelectorAll('.fs-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
     setNavIntent(currentNavIntent);
   }
@@ -5746,33 +5651,13 @@ async function loadAnnotationTypes() {
   try {
     const res = await fetch('/api/analyses/annotation-types');
     _annotationsList = await res.json();
-    renderAnnotationList();
   } catch (e) {
     console.error("Failed to load annotation types", e);
   }
 }
 
-function renderAnnotationList() {
-  const list = document.getElementById('annotation-list');
-  list.innerHTML = '';
-  _annotationsList.forEach(ann => {
-    const btn = document.createElement('button');
-    btn.className = 'ann-btn w-full text-left px-3 py-1.5 rounded text-sm hover:bg-slate-700 transition-colors flex items-center justify-between text-slate-300';
-    if (_selectedAnnotationType === ann.type) {
-      btn.classList.add('bg-slate-705', 'bg-cyan-950', 'text-cyan-400');
-    }
-    btn.onclick = () => selectAnnotationType(ann.type);
-    btn.innerHTML = `
-      <span class="truncate font-medium">${ann.display_name}</span>
-      <span class="text-xs text-slate-500 font-mono">${ann.type.substring(0, 6)}…</span>
-    `;
-    list.appendChild(btn);
-  });
-}
-
 function selectAnnotationType(typeName) {
   _selectedAnnotationType = typeName;
-  renderAnnotationList();
   loadAnnotationTypesView(typeName);
 }
 

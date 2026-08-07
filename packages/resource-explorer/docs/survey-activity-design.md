@@ -31,6 +31,8 @@ Egeria Resource Explorer is a tool for discovering, understanding, and catalogin
 
 Four distinct user intents drive the design. The names below are the canonical intent labels used throughout this document for routing, filtering, and analysis tagging — modeled after the intent classification pattern in egeria-advisor (where `LIVE_DATA`, `CODE_HELP`, `CONCEPT`, `WRITE_COMMAND` route queries to different handlers).
 
+> **Update (intent-shell rewrite):** the web UI now implements **seven** intents, not four — Scouting/Assessment/Discovery/Enrichment below plus **Analysis** (structural/quantitative work split out of Assessment — dependency scans, data profiling, API extraction: real work, but not a *scored evaluation* the way Assessment is), **Understanding** (chart-based trend visualization, previously a sidebar fixture with no intent of its own), and **Curate** (catalog maintenance — annotation type registry, resource groups, analysis schedules). The four intents' original rationale below is still valid for what it covers; treat this as an addition, not a correction. See `CLAUDE.md`'s "Seven User Intents" table for the canonical current list, and `resource_explorer/configdata/analysis_catalog.yaml`'s header comment for the reclassification this drove in the analysis catalog.
+
 **Scouting** is about breadth. Given a newly-discovered server or file system, a data engineer or DevOps practitioner wants to quickly understand what's there: how many databases, how many rows, who manages it, when it was last updated, is it actively used or a candidate for decommissioning? Scouting works across many resources at once and delivers results fast. The output is a broad inventory, not deep analysis.
 
 **Assessment** is about depth, applied selectively. After scouting identifies something worth understanding, a data steward, data scientist, AI engineer, or security specialist runs assessments to understand the risks, quality, completeness, and lineage of a specific resource. Assessments can be shallow or deep, broad or focused (security-only, quality-only, lineage-only), and are often run incrementally — first a quick Egeria native survey to see what annotations it produces, then targeted custom analyses to answer specific questions. Assessments are also temporal: running the same analysis repeatedly and tracking how things change over time is as valuable as the initial result.
@@ -39,7 +41,7 @@ Four distinct user intents drive the design. The names below are the canonical i
 
 **Enrichment** is not automated at all. Many critical facts about a resource cannot be derived from scanning: Is this database in a production system or a research sandbox? Who is the responsible DBA? What organization owns it? Where is it geographically located? Is it backed up? Egeria's `RequestForAction` annotation is the right primitive here — a structured prompt for a human to supply a specific piece of information, tracked until answered and then promoted into the catalog as permanent metadata. This requires a UI for managing open RFAs, assigning them to people, recording answers, and closing them.
 
-The four intents also serve as **persona filters** in the analysis menu (D4): a DBA performing an Assessment sees different recommended analyses than a data scientist performing Discovery. Persona is distinct from intent — a persona (DBA, data scientist, steward, security engineer) represents who the user is; intent represents what they are trying to accomplish right now.
+Intent and persona are cross-cutting in the analysis menu (D4): a DBA performing an Assessment sees different recommended analyses than a data scientist performing Discovery. Persona is distinct from intent — a persona (DBA, data scientist, steward, security engineer) represents who the user is; intent represents what they are trying to accomplish right now. In the current UI, persona ("perspective") is multi-select/concurrent (you can hold more than one at once) while intent is exclusive-select — see `resource_explorer/surveyors/analysis_catalog_reader.py`'s `list_perspectives()`.
 
 
 ### What we are currently doing (and the problems)
@@ -64,11 +66,16 @@ The right axes are **what analysis was done** and **what intent drove it**.
 
 **Analysis** is the unit of work: a specific examination of a specific resource that produces a specific set of annotations. An analysis has a name, a description, a list of annotation types it produces, and optionally a source (Egeria governance action, local SQL, external tool). The same analysis may be available from multiple sources — when that happens, we prefer Egeria's result but show the local result when Egeria is unavailable.
 
-**Intent** is the reason the analysis was run. Four intents (matching the user activity model in the Background section):
+**Intent** is the reason the analysis was run. Seven intents in the current implementation (see the Background section's update note) — the original four, plus Analysis/Understanding/Curate:
 - **Scouting** — broad, fast, run across many resources at once; produces a summary view
-- **Assessment** — deep, targeted, run on specific resources; produces detailed annotations
-- **Discovery** — produces annotations structured to support search and retrieval
-- **Enrichment** — captures human-provided context; writes it to Egeria as structured properties or closes open RFAs
+- **Discovery** — produces annotations structured to support search and retrieval; launches Egeria Survey Definitions
+- **Assessment** — deep, targeted, run on specific resources; scored evaluation against criteria; produces detailed annotations
+- **Analysis** — structural/quantitative work on a specific resource (dependencies, data profiling, API extraction) — not a scored evaluation, so kept distinct from Assessment
+- **Enrichment** — captures human-provided context via the Context form; writes it to Egeria as structured properties
+- **Understanding** — chart-based visualization of trends over time (stars, commits, schema, table sizes, etc.)
+- **Curate** — catalog maintenance: annotation type registry, resource groups, analysis schedules
+
+RFA (RequestForAction) response handling — assigning, deferring, completing — is **not** one of the seven; it's a persistent drawer independent of the active intent (see D5-equivalent in the current UI, `#rfa-drawer` in `index.html`).
 
 **In almost all cases, analysis results should be stored in Egeria**, even when the analysis itself was run locally. Egeria is the catalog of record. Local SQLite is a cache and queue — useful for offline work and fast reads, but not the authoritative store.
 
@@ -95,7 +102,7 @@ ActivityEntry {
   id:              uuid
   ts:              ISO timestamp
   operation:       'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh'
-  intent:          'scouting' | 'assessment' | 'discovery' | 'enrichment'
+  intent:          'scouting' | 'discovery' | 'assessment' | 'analysis' | 'enrichment' | 'understanding' | 'curate'
   entity_type:     'repo' | 'database' | 'server' | 'filesystem' | 'file'
   entity_slug:     internal slug
   entity_name:     display name
@@ -141,14 +148,14 @@ Both Egeria-provided surveys and our own local analyses should be organized and 
 Egeria's `AutomatedCuration.find_technology_types()` and `get_tech_type_detail()` are the source for Egeria-provided analyses. Our own analyses are registered in a local catalog using the same schema. When Egeria and our own tool can both run the same analysis (e.g., row counts), we show one entry with a note about the source preference.
 
 The menu should support:
-- **Filtering by intent** — scouting / assessment / discovery / enrichment
+- **Filtering by intent** — scouting / discovery / assessment / analysis / enrichment / understanding / curate
 - **Filtering by persona** — DBA (performance, security, index health), data scientist (quality, profiling, growth), steward (lineage, classification, RFA status), security (privilege audit, sensitive data)
 - **Search** across analysis names and descriptions
 - **"Run all scouting analyses"** as a single action — the primary entry point for new resources
 
 Separate catalog and survey actions: cataloging (registering an asset in Egeria) happens once; surveys can be run many times with different intents. These should be distinct UI actions.
 
-**Open question:** What does `get_tech_type_detail("PostgreSQL Server")` actually return from our Egeria instance? This must be prototyped against the live system before finalizing the menu design.
+**Resolved:** `get_tech_type_detail()`'s real shape was prototyped and is now wrapped by `EgeriaTechTypeCatalog.get_produced_annotation_types()` (`resource_explorer/surveyors/egeria_tech_type_catalog.py`), which deduplicates `producedAnnotationType` entries out of `resourceList`/`governanceActionProcesses`. It's consumed by both `survey_definitions.py` (Discovery) and `analysis_catalog_reader.py`'s live-Egeria merge (Assessment/Analysis) — fail-soft, so Egeria being unreachable falls back to the local catalog rather than blocking the menu.
 
 ---
 
@@ -301,7 +308,7 @@ Migration path: SQLite → PostgreSQL. The registry, activity log, analysis resu
 - Every scout/survey/catalog/publish/RFA operation writes an entry
 - Pending Egeria surveys show in the log with status `pending`; polling updates them
 - Repo publishes and database catalogs use the same entry structure
-- Filter by entity type (All / Repos / Databases / Files), intent (Scouting / Assessment / Discovery / Enrichment), and status
+- Filter by entity type (All / Repos / Databases / Files), intent (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate), and status
 - Retroactively populate from `project_egeria_surveys` and `database_surveys` on first run
 
 **Effort:** Medium
@@ -316,6 +323,8 @@ Migration path: SQLite → PostgreSQL. The registry, activity log, analysis resu
 
 **RFA panel:** A cross-resource view of all open RequestForAction annotations. Sortable by resource, age, persona, and assigned person. Inline form to record an answer; answer written back to Egeria on submit.
 
+> **Status:** built as a persistent `#rfa-drawer` (reachable from anywhere, not a per-resource tab) with real defer/reassign/complete/reopen response actions — see `rfa_actions` table and `PATCH /api/activity/rfas/{rfa_id}`. **Not yet accurate to this doc's original phrasing:** response actions and the free-text "record answer" form are both local-only right now (SQLite `rfa_actions` table / activity log), not written back to Egeria as `RequestForActionProperties` updates or native `ToDo` actions — that write-back is a real, tracked follow-up, not this doc's original design realized. Don't assume "answered" or "completed" here means Egeria's own record changed.
+
 **Effort:** Medium
 
 ---
@@ -325,8 +334,8 @@ Migration path: SQLite → PostgreSQL. The registry, activity log, analysis resu
 **Goal:** Users see a unified, organized menu of available analyses for any resource, drawn from both Egeria and our own analysis catalog.
 
 **Prerequisites:**
-- Prototype `find_technology_types` and `get_tech_type_detail` against the live Egeria instance and document what they return
-- Define the local analysis catalog schema (mirrors the Egeria output format)
+- ~~Prototype `find_technology_types` and `get_tech_type_detail` against the live Egeria instance and document what they return~~ — done, see D1's "Resolved" note above and `egeria_tech_type_catalog.py`
+- ~~Define the local analysis catalog schema (mirrors the Egeria output format)~~ — done, `configdata/analysis_catalog.yaml` + `analysis_catalog_reader.py`
 
 **What ships:**
 - Analysis menu per resource with intent and persona filters

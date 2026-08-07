@@ -9,7 +9,7 @@ This file provides guidance to Claude Code when working in this repository.
 It is the successor to [Project Explorer](https://github.com/LF-AI/project-explorer), extended with:
 - Egeria-first architecture: surveys write to Egeria as the catalog of record
 - Unified activity log across all resource types
-- Intent-based UI (Scouting / Assessment / Discovery / Enrichment)
+- Intent-based UI (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate)
 - Persona-aware analysis menu (DBA, data scientist, steward, security)
 - RequestForAction lifecycle management for human-provided context
 - Temporal analysis: track how resources change over time
@@ -59,16 +59,23 @@ External services:
 - **Arize Phoenix** (optional) — `python -m phoenix.server.main` → `localhost:6006`
 - **MLflow** (optional) — `mlflow server --port 5025` → `localhost:5025`
 
-## Four User Intents
+## Seven User Intents
 
-These are the canonical intent labels used throughout the codebase for routing, filtering, and analysis tagging. They appear in the UI, the activity log schema, the analysis catalog, and the query router.
+These are the canonical intent labels used throughout the codebase for routing, filtering, and analysis tagging. They appear in the UI's `#intent-nav` primary navigation, the activity log schema, the analysis catalog (`configdata/analysis_catalog.yaml`), and the query router.
+
+Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the intent-based web UI rewrite — Analysis, Understanding, and Curate were added to give structural/quantitative work, data visualization, and catalog-maintenance work their own homes instead of being folded into Assessment or a sidebar.
 
 | Intent | What the user is doing | Speed | Output |
 |--------|----------------------|-------|--------|
 | **Scouting** | Broad inventory across many resources | Fast | Summary view |
-| **Assessment** | Deep analysis of a specific resource | Slow / async | Detailed annotations |
-| **Discovery** | Find resources by what surveys revealed | Fast | Search results |
-| **Enrichment** | Provide human context; answer RFAs | Human-paced | Egeria asset properties |
+| **Discovery** | Find resources by what surveys revealed, launch Egeria Survey Definitions | Fast | Search results / survey launch |
+| **Assessment** | Scored evaluation of a specific resource against criteria | Slow / async | Detailed annotations |
+| **Analysis** | Structural/quantitative analysis (not scored) — dependencies, profiling, API extraction | Fast–minutes | Structured data |
+| **Enrichment** | Provide human context (Context form) | Human-paced | Egeria asset properties |
+| **Understanding** | Visualize trends over time — charts (stars, commits, schema, etc.) | Fast | Charts |
+| **Curate** | Maintain the catalog itself — annotation type registry, resource groups, analysis schedules | Human-paced | Registry updates |
+
+RFA (RequestForAction) is **not** one of the seven intents — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself.
 
 ## Architecture
 
@@ -76,7 +83,7 @@ These are the canonical intent labels used throughout the codebase for routing, 
 
 ```
 User Query
-  → Intent classification (Scouting / Assessment / Discovery / Enrichment)
+  → Intent classification (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate)
   → Resource type context (repo / database / filesystem)
   → QueryCache                    ← cache hit → return immediately
   → QueryProcessor                ← classifies sub-intent
@@ -125,12 +132,13 @@ The activity log lives in `activity_log` SQLite table. It is the NEW replacement
 
 ### Web UI
 
-`resource_explorer/web/static/index.html` — single-page app:
-- Left sidebar: resource types (Repos / Databases / File Systems)
-- Intent selector: Scouting / Assessment / Discovery / Enrichment tab strip
-- Main panel: survey report, analysis menu, or discovery results depending on intent
+`resource_explorer/web/static/index.html` — single-page app, intent-based shell:
+- `#intent-nav`: the 7-intent tab strip (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate) — the primary navigation axis, replacing the old resource-type-first sidebar tabs
+- Left sidebar: a resource-type **facet** (Repos / Databases / File Systems) that filters within whichever intent is active — `resourceTypeFacet` + `setResourceTypeFacet()`, not the primary nav
+- Perspective row: concurrent, multi-select persona filter (`dba` / `data_scientist` / `steward` / `security`, data-driven from the analysis catalog) — cross-cutting, not exclusive like intent/facet
+- Main panel: content depends on the active intent (survey report, analysis catalog cards, Survey Definitions, context form, charts, or the Curate landing pages)
+- Persistent side surfaces, independent of the intent panel: `#chat-panel` (RAG-backed Q&A, scope-aware) and `#rfa-drawer` (RequestForAction response actions — defer/reassign/complete), both toggleable from `#intent-nav`, both stay open across intent switches
 - Activity panel: persistent log, always accessible from header
-- Chat area: RAG-backed Q&A, scope-aware (selected resource or all)
 
 ### Egeria Integration
 
@@ -170,16 +178,24 @@ resource_explorer/
 │   └── *.py               # Specialist agents (stats, code, doc, health, compare, examples)
 ├── cli/
 │   └── main.py            # Typer CLI
+├── configdata/
+│   ├── technology_type_processes.yaml  # Egeria Technology Type -> native process table
+│   └── analysis_catalog.yaml           # Analysis menu, tagged by the 7 intents (see analysis_catalog_reader.py)
 ├── web/
 │   ├── app.py             # FastAPI application
-│   ├── static/index.html  # Single-page UI (TO BE REDESIGNED — intent-based shell)
+│   ├── static/index.html  # Single-page UI — intent-based shell (#intent-nav, 7 intents; see "Seven User Intents" above)
 │   └── routes/
-│       ├── query.py       # POST /api/query/
-│       ├── projects.py    # GET/POST /api/projects/
-│       ├── stats.py       # GET /api/stats/{slug}/charts/{type}
-│       ├── egeria.py      # Egeria survey + annotation routes
-│       ├── databases.py   # Database management routes
-│       └── db_servers.py  # DB server management routes
+│       ├── query.py               # POST /api/query/
+│       ├── projects.py            # GET/POST /api/projects/, groups CRUD
+│       ├── stats.py                # GET /api/stats/{slug}/charts/{type} — backs Understanding
+│       ├── egeria.py               # Egeria survey + annotation + catalog-elements + whoami routes
+│       ├── databases.py            # Database management routes
+│       ├── db_servers.py           # DB server management routes
+│       ├── analyses.py             # GET /api/analyses/{resource_type} + /perspectives + /egeria-status — backs Assessment/Analysis
+│       ├── activity.py             # Activity log + GET/PATCH /api/activity/rfas — backs the RFA drawer
+│       ├── context.py              # GET/POST /api/context/{type}/{slug} — backs Enrichment
+│       ├── schedules.py            # Analysis schedule CRUD — backs Curate's Schedules pane
+│       └── survey_definitions.py   # Egeria Survey Definition candidates/run — backs Discovery
 ├── tui/app.py             # Textual TUI
 ├── dashboard/graphs.py    # Plotly figure builders
 ├── surveyors/             # Survey framework
@@ -188,6 +204,9 @@ resource_explorer/
 │   ├── survey_orchestrator.py
 │   ├── egeria_publisher.py
 │   ├── egeria_reader.py
+│   ├── egeria_tech_type_catalog.py    # EgeriaTechTypeCatalog — live Technology Type queries
+│   ├── technology_type_processes.py   # Reader for configdata/technology_type_processes.yaml
+│   ├── analysis_catalog_reader.py     # Reader for configdata/analysis_catalog.yaml + optional live-Egeria merge
 │   ├── survey_definition_reader.py    # Generic Survey Definition (GovernanceActionProcess) reader
 │   ├── survey_definition_executor.py  # Generic dispatch loop + ResourceTypeAdapter interface
 │   ├── repo_survey_definition_adapter.py  # re_analysis_step -> repo sub-surveyor mapping
@@ -238,7 +257,7 @@ resource_explorer/
 14. `server_connection()` in `connection.py` connects to the `postgres` system DB for listing databases
 15. `HybridDatabaseSurveyor` must run the local scan immediately after triggering the Egeria native survey — Egeria surveys are async and produce no immediate schema data
 16. Activity log entries must be written for ALL operations — scouting, survey, catalog, publish, RFA — not just for Egeria publishes
-17. The four intent labels are canonical: `scouting`, `assessment`, `discovery`, `enrichment` — use these exact strings in the activity log schema, UI filters, and analysis catalog tags
+17. The seven intent labels are canonical: `scouting`, `discovery`, `assessment`, `analysis`, `enrichment`, `understanding`, `curate` — use these exact strings in the activity log schema, UI filters, and analysis catalog tags. `discovery` and `enrichment` intentionally have zero entries in the analysis catalog (Discovery is served by `survey_definitions.py`, Enrichment by `context.py`) — that's by design, not a gap.
 
 ## Testing
 
