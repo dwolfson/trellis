@@ -308,27 +308,6 @@
       <div id="annotation-list" class="px-2 flex flex-col gap-0.5 pb-2"></div>
     </div>
 
-    <!-- Charts section (shared, adapts per entity type) -->
-    <div id="charts-section" class="hidden px-3 pt-3 pb-2 border-t border-slate-700 mt-auto shrink-0">
-      <!-- Repo chart tabs -->
-      <div id="repo-chart-tabs" class="flex gap-1 flex-wrap mb-2">
-        <button onclick="showChart('stars')"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
-        <button onclick="showChart('commits')"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
-        <button onclick="showChart('languages')"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
-        <button onclick="showChart('health')"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
-        <button onclick="showChart('file_types')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
-        <button onclick="showEgeria()"            class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
-      </div>
-      <!-- DB chart tabs -->
-      <div id="db-chart-tabs" class="hidden flex gap-1 flex-wrap mb-2">
-        <button onclick="showDbChart('schema_distribution')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
-        <button onclick="showDbChart('table_sizes')"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
-        <button onclick="showDbChart('column_types')"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
-        <button onclick="showDbChart('survey_history')"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
-      </div>
-      <div id="chart-container" class="chart-box rounded bg-slate-900"></div>
-      <div id="egeria-panel" class="egeria-panel hidden"></div>
-    </div>
   </aside>
 
   <div id="resize-handle" title="Drag to resize"></div>
@@ -347,6 +326,33 @@
 
       <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
       <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Understanding view — charts, relocated verbatim out of the sidebar (Step 7).
+           Same #charts-section/#chart-container/#egeria-panel ids and the same
+           showChart()/showDbChart()/showEgeria() JS as before the move — only the
+           DOM location changed, not the rendering logic (see loadUnderstandingCharts()). -->
+      <div id="understanding-view" class="flex-1 overflow-y-auto hidden flex flex-col p-4">
+        <div id="charts-section" class="shrink-0">
+          <!-- Repo chart tabs -->
+          <div id="repo-chart-tabs" class="flex gap-1 flex-wrap mb-2">
+            <button onclick="showChart('stars')"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
+            <button onclick="showChart('commits')"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
+            <button onclick="showChart('languages')"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
+            <button onclick="showChart('health')"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
+            <button onclick="showChart('file_types')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
+            <button onclick="showEgeria()"            class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
+          </div>
+          <!-- DB chart tabs -->
+          <div id="db-chart-tabs" class="hidden flex gap-1 flex-wrap mb-2">
+            <button onclick="showDbChart('schema_distribution')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
+            <button onclick="showDbChart('table_sizes')"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
+            <button onclick="showDbChart('column_types')"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
+            <button onclick="showDbChart('survey_history')"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
+          </div>
+          <div id="chart-container" class="chart-box rounded bg-slate-900"></div>
+          <div id="egeria-panel" class="egeria-panel hidden"></div>
+        </div>
+      </div>
 
       <!-- Survey report view (repos) -->
       <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
@@ -1161,8 +1167,7 @@ function setEntityMode(mode) {
 
 // ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
 const INTENT_PLACEHOLDER_TEXT = {
-  understanding: 'Understanding — coming in this rewrite (Step 7).',
-  curate:        'Curate — coming in this rewrite (Step 8).',
+  curate: 'Curate — coming in this rewrite (Step 8).',
 };
 
 function setNavIntent(intent) {
@@ -1185,6 +1190,8 @@ function setNavIntent(intent) {
     // RFA is no longer part of Enrichment — it moved to the persistent
     // drawer in Step 5. This is now just the Context form.
     showMainView('context');
+  } else if (intent === 'understanding') {
+    showUnderstandingPane();
   } else {
     showIntentPlaceholder(intent);
   }
@@ -1209,10 +1216,46 @@ function showScoutingPane() {
   }
 }
 
-function showIntentEmptyState(what) {
+function showIntentEmptyState(what, forWhatPurpose = 'Scouting summary') {
   showMainView('intent-placeholder');
   document.getElementById('intent-placeholder-view').innerHTML =
-    `<div class="text-slate-600 text-sm text-center py-16">Select ${what} in the sidebar to see its Scouting summary.</div>`;
+    `<div class="text-slate-600 text-sm text-center py-16">Select ${_esc(what)} in the sidebar to see its ${_esc(forWhatPurpose)}.</div>`;
+}
+
+// ── Understanding — charts, relocated out of the sidebar (Step 7). Same
+// resourceTypeFacet-driven empty-state pattern as showScoutingPane(); the
+// actual chart-tab wiring/rendering (showChart/showDbChart/showEgeria,
+// Plotly calls) is untouched, just called from loadUnderstandingCharts()
+// once the pane is confirmed visible via showMainView('understanding'). ──
+function showUnderstandingPane() {
+  if (resourceTypeFacet === 'repo') {
+    if (!selectedProject) { showIntentEmptyState('a repo', 'charts'); return; }
+    showMainView('understanding');
+  } else if (resourceTypeFacet === 'db') {
+    if (!selectedDatabase) { showIntentEmptyState('a database', 'charts'); return; }
+    showMainView('understanding');
+  } else if (resourceTypeFacet === 'filesystem') {
+    // No filesystem chart tabs exist yet (repo-chart-tabs/db-chart-tabs only)
+    // — not a bug, just not built. Say so rather than showing a blank panel.
+    showMainView('intent-placeholder');
+    document.getElementById('intent-placeholder-view').innerHTML =
+      '<div class="text-slate-600 text-sm text-center py-16">Charts aren\'t built for filesystems yet — repo and database charts only.</div>';
+  }
+}
+
+function loadUnderstandingCharts() {
+  document.getElementById('charts-section').classList.remove('hidden');
+  document.getElementById('chart-container').classList.remove('hidden');
+  document.getElementById('egeria-panel').classList.add('hidden');
+  if (resourceTypeFacet === 'repo') {
+    document.getElementById('repo-chart-tabs').classList.remove('hidden');
+    document.getElementById('db-chart-tabs').classList.add('hidden');
+    showChart(currentChart);
+  } else if (resourceTypeFacet === 'db') {
+    document.getElementById('repo-chart-tabs').classList.add('hidden');
+    document.getElementById('db-chart-tabs').classList.remove('hidden');
+    showDbChart(currentDbChart);
+  }
 }
 
 // ── identity indicator (read-only — see #whoami-badge's HTML comment) ──────────
@@ -3859,6 +3902,7 @@ function showMainView(tab) {
   const placeholderView = document.getElementById('intent-placeholder-view');
   const assessmentView = document.getElementById('assessment-view');
   const analysisView   = document.getElementById('analysis-view');
+  const understandingView = document.getElementById('understanding-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -3869,7 +3913,7 @@ function showMainView(tab) {
   const annotationTypesView = document.getElementById('annotation-types-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
 
@@ -3881,6 +3925,9 @@ function showMainView(tab) {
   } else if (tab === 'analysis') {
     analysisView.classList.remove('hidden');
     loadAnalysisPanel();
+  } else if (tab === 'understanding') {
+    understandingView.classList.remove('hidden');
+    loadUnderstandingCharts();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
