@@ -208,6 +208,100 @@ class TestRunDueDatabaseSurvey:
         assert "connection refused" in entries[0]["detail"]
 
 
+class TestRunDueDispatch:
+    """Regression coverage for the dispatch gap found while wiring up
+    start_time: scheduler.py used to run the same generic local scan for
+    EVERY database analysis_id regardless of what was actually scheduled —
+    scheduling an Egeria-native re-survey or a Discovery Survey Definition
+    candidate silently ran the wrong thing. Now dispatches by what
+    analysis_id actually is."""
+
+    @pytest.fixture
+    def registered_database_cataloged_in_egeria(self, registry):
+        registry.register_database(DatabaseEntity(
+            slug="mydb-egeria",
+            display_name="My Egeria DB",
+            db_type="postgresql",
+            host="localhost",
+            port=5432,
+            database_name="mydb",
+            db_user="admin",
+            db_password="secret",
+            egeria_asset_guid="guid-1234",
+        ))
+        return "mydb-egeria"
+
+    def test_egeria_native_entry_dispatches_to_trigger_survey_by_guid_not_local_scan(
+        self, registry, registered_database_cataloged_in_egeria,
+    ):
+        _make_due(registry, "database", registered_database_cataloged_in_egeria, analysis_id="egeria_db_survey")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_local, \
+             patch("resource_explorer.surveyors.database.egeria_database_surveyor.EgeriaDatabaseSurveyor") as MockSurveyor:
+            MockSurveyor.return_value.trigger_survey_by_guid.return_value = "action-guid-1"
+            scheduler._run_due()
+
+        mock_local.assert_not_called()  # must NOT silently run the generic local scan
+        MockSurveyor.return_value.trigger_survey_by_guid.assert_called_once()
+        entries = registry.list_activity(entity_slug=registered_database_cataloged_in_egeria)
+        assert entries[0]["status"] == "ok"
+
+    def test_egeria_native_entry_passes_next_run_as_start_time(
+        self, registry, registered_database_cataloged_in_egeria,
+    ):
+        _make_due(registry, "database", registered_database_cataloged_in_egeria, analysis_id="egeria_db_survey")
+        next_run = registry.get_schedules("database", registered_database_cataloged_in_egeria)[0]["next_run"]
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.egeria_database_surveyor.EgeriaDatabaseSurveyor") as MockSurveyor:
+            MockSurveyor.return_value.trigger_survey_by_guid.return_value = "action-guid-1"
+            scheduler._run_due()
+
+        _, kwargs = MockSurveyor.return_value.trigger_survey_by_guid.call_args
+        assert kwargs["start_time"].isoformat() == next_run
+
+    def test_egeria_native_entry_without_asset_guid_produces_clear_error(self, registry):
+        registry.register_database(DatabaseEntity(
+            slug="mydb-not-cataloged", display_name="Not Cataloged", db_type="postgresql",
+            host="localhost", port=5432, database_name="mydb",
+            db_user="admin", db_password="secret",  # has creds, but no egeria_asset_guid
+        ))
+        _make_due(registry, "database", "mydb-not-cataloged", analysis_id="egeria_db_survey")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug="mydb-not-cataloged")
+        assert entries[0]["status"] == "error"
+        assert "not yet cataloged in Egeria" in entries[0]["detail"]
+
+    def test_discovery_candidate_dispatches_to_run_survey_definition(self, registry, registered_database_with_credentials):
+        qualified_name = "PostgreSQLSurvey::custom-candidate"  # not in the local catalog
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id=qualified_name)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_local, \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.return_value = {"errors": []}
+            scheduler._run_due()
+
+        mock_local.assert_not_called()
+        mock_run_def.assert_called_once()
+        _, kwargs = mock_run_def.call_args
+        assert kwargs["survey_definition_ref"] == qualified_name
+        entries = registry.list_activity(entity_slug=registered_database_with_credentials)
+        assert entries[0]["status"] == "ok"
+
+    def test_discovery_candidate_errors_are_recorded(self, registry, registered_database_with_credentials):
+        qualified_name = "PostgreSQLSurvey::custom-candidate"
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id=qualified_name)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.return_value = {"errors": ["step 2 failed"]}
+            scheduler._run_due()
+
+        entries = registry.list_activity(entity_slug=registered_database_with_credentials)
+        assert entries[0]["status"] == "error"
+        assert "step 2 failed" in entries[0]["detail"]
+
+
 class TestRunDueMisc:
     def test_no_due_schedules_is_a_noop(self, registry):
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):

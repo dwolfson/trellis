@@ -2299,7 +2299,10 @@ class ProjectRegistry:
     # status/assignee/defer/resolution onto each flattened RFA. This is a
     # stepping stone toward real Egeria ToDo/governance actions, not that
     # integration itself — full alignment with Egeria's native action model
-    # is deliberately out of scope for this slice.
+    # is deliberately out of scope for this slice. See
+    # docs/rfa-egeria-todo-followup.md for what that integration would
+    # actually require, confirmed against pyegeria's real ToDo/PersonAction
+    # API (assign_action/reassign_action/add_action_target) — not built yet.
 
     def upsert_rfa_action(
         self,
