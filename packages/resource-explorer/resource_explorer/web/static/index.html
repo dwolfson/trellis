@@ -345,6 +345,9 @@
       <!-- Assessment view — card list from analysis_catalog, filtered to intent=assessment -->
       <div id="assessment-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
+      <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
+      <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
       <!-- Survey report view (repos) -->
       <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
@@ -1158,7 +1161,6 @@ function setEntityMode(mode) {
 
 // ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
 const INTENT_PLACEHOLDER_TEXT = {
-  analysis:      'Analysis — coming in this rewrite (Step 4).',
   enrichment:    'Enrichment — coming in this rewrite (Step 6).',
   understanding: 'Understanding — coming in this rewrite (Step 7).',
   curate:        'Curate — coming in this rewrite (Step 8).',
@@ -1178,6 +1180,8 @@ function setNavIntent(intent) {
     showMainView('survey-definitions');
   } else if (intent === 'assessment') {
     showMainView('assessment');
+  } else if (intent === 'analysis') {
+    showMainView('analysis');
   } else {
     showIntentPlaceholder(intent);
   }
@@ -1300,11 +1304,23 @@ function _resourceTypeFacetLabel() {
 }
 
 async function loadAssessmentPanel() {
-  const view = document.getElementById('assessment-view');
-  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading Assessment catalog…</div>';
+  await _loadAnalysisCatalogPanel('assessment', 'assessment-view', 'Assessment');
+}
+
+async function loadAnalysisPanel() {
+  await _loadAnalysisCatalogPanel('analysis', 'analysis-view', 'Analysis');
+}
+
+// Shared by Assessment and Analysis — same fetch/filter/render pipeline,
+// differing only by which intent= they ask the catalog for and which pane
+// they render into. See renderAnalysisCatalogCards() below for the card
+// markup itself, shared the same way.
+async function _loadAnalysisCatalogPanel(intent, viewId, title) {
+  const view = document.getElementById(viewId);
+  view.innerHTML = `<div class="text-slate-500 text-xs py-8 text-center">Loading ${_esc(title)} catalog…</div>`;
   try {
     const resourceType = _facetToResourceType(resourceTypeFacet);
-    const res = await fetch(`/api/analyses/${resourceType}?intent=assessment`);
+    const res = await fetch(`/api/analyses/${resourceType}?intent=${intent}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     let analyses = await res.json();
     // Perspective filtering happens client-side: the backend's `perspective`
@@ -1318,8 +1334,8 @@ async function loadAssessmentPanel() {
     }
     const egeriaStatus = await _fetchEgeriaMergeStatus(resourceType);
     renderAnalysisCatalogCards(analyses, view, {
-      title: 'Assessment',
-      emptyText: `No Assessment-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
+      title,
+      emptyText: `No ${title}-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
       egeriaStatus,
     });
   } catch(e) {
@@ -1379,7 +1395,7 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
       </div>
       <div class="flex flex-wrap gap-1">${speedTag}${sourceTag}${perspTags}</div>
       <div class="mt-auto pt-1">
-        <button onclick='_runAssessmentCard(${JSON.stringify(a.id)})'
+        <button onclick='_runAnalysisCatalogCard(${JSON.stringify(a.id)})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
           Run →
         </button>
@@ -1397,7 +1413,7 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
 // reflection of how surveys actually work today, not a shortcut; unifying
 // survey launch onto something more granular is separately-scoped, larger
 // work (RE's own backlog item #5), not part of this slice.
-function _runAssessmentCard(_analysisId) {
+function _runAnalysisCatalogCard(_analysisId) {
   if (resourceTypeFacet === 'repo') {
     if (!selectedProject) { showToast('info', 'Select a repo first.', 4000); return; }
     fetch(`/api/egeria/${selectedProject}/survey`, { method: 'POST' })
@@ -3709,6 +3725,7 @@ function showMainView(tab) {
   // calls it; kept only so nothing else silently breaks mid-rewrite.
   const placeholderView = document.getElementById('intent-placeholder-view');
   const assessmentView = document.getElementById('assessment-view');
+  const analysisView   = document.getElementById('analysis-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -3719,7 +3736,7 @@ function showMainView(tab) {
   const annotationTypesView = document.getElementById('annotation-types-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
 
@@ -3728,6 +3745,9 @@ function showMainView(tab) {
   } else if (tab === 'assessment') {
     assessmentView.classList.remove('hidden');
     loadAssessmentPanel();
+  } else if (tab === 'analysis') {
+    analysisView.classList.remove('hidden');
+    loadAnalysisPanel();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
