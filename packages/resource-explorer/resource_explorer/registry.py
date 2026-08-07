@@ -2012,6 +2012,7 @@ class ProjectRegistry:
     def list_activity(
         self,
         entity_type: str | None = None,
+        entity_slug: str | None = None,
         intent: str | None = None,
         operation: str | None = None,
         status: str | None = None,
@@ -2023,6 +2024,9 @@ class ProjectRegistry:
         if entity_type:
             filters.append("entity_type = ?")
             params.append(entity_type)
+        if entity_slug:
+            filters.append("entity_slug = ?")
+            params.append(entity_slug)
         if intent:
             filters.append("intent = ?")
             params.append(intent)

@@ -50,11 +50,16 @@
     .entity-tab { padding:.4rem .75rem; font-size:.72rem; font-weight:600; color:#64748b; border-bottom:2px solid transparent; transition:color .12s,border-color .12s; flex:1; text-align:center; }
     .entity-tab.active { color:#22d3ee; border-bottom-color:#22d3ee; background:#0f172a; }
     .entity-tab:hover:not(.active) { color:#94a3b8; background:#1e293b; }
-    /* Main view nav */
+    /* Main view nav (legacy — kept only for the hidden compatibility shim, see body comment) */
     #main-nav { border-bottom:1px solid #1e293b; background:#0f172a; }
     .main-nav-btn { padding:.35rem .9rem; font-size:.72rem; font-weight:500; color:#64748b; border-bottom:2px solid transparent; transition:color .15s,border-color .15s; white-space:nowrap; }
     .main-nav-btn.active { color:#22d3ee; border-bottom-color:#22d3ee; }
     .main-nav-btn:hover:not(.active) { color:#94a3b8; }
+    /* Intent nav (new primary navigation) */
+    .nav-intent-btn { padding:.35rem .8rem; font-size:.75rem; font-weight:600; color:#94a3b8; border-radius:.375rem; transition:color .12s,background .12s; white-space:nowrap; }
+    .nav-intent-btn.active { color:#22d3ee; background:#0e7490; background:rgba(14,116,144,.35); }
+    .nav-intent-btn:hover:not(.active) { color:#e2e8f0; background:#334155; }
+    #chat-panel { transition:width .15s ease; }
     /* Survey report */
     .rpt-section { margin-bottom:1.25rem; }
     .rpt-section-title { font-size:.65rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#475569; margin-bottom:.4rem; }
@@ -163,6 +168,18 @@
 <!-- Toast container (fixed overlay, survives all re-renders) -->
 <div id="toast-container"></div>
 
+<!-- TEMPORARY compatibility shim: several legacy selectProject/selectDatabase/
+     selectFilesystem/etc. call sites still toggle classes on these ids from
+     the old main-nav bar, which no longer renders anywhere in the new intent
+     shell. Keeping harmless, permanently-hidden stub elements here is lower
+     risk than rewriting ~20 scattered call sites mid-rewrite. Removed, along
+     with every call site, in Step 9's cleanup pass alongside entityMode. -->
+<div id="main-nav" class="hidden" aria-hidden="true">
+  <span id="nav-report"></span>
+  <span id="nav-db-survey"></span>
+  <span id="nav-filesystem-survey"></span>
+</div>
+
 <!-- Header -->
 <header class="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
   <div class="flex items-center gap-3">
@@ -181,18 +198,31 @@
   </div>
 </header>
 
+<!-- Intent navigation (primary nav — replaces the old resource-type sidebar tabs) -->
+<nav id="intent-nav" class="flex items-center gap-1 px-3 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0 overflow-x-auto">
+  <button onclick="setNavIntent('scouting')"      data-nav-intent="scouting"      class="nav-intent-btn active">🔭 Scouting</button>
+  <button onclick="setNavIntent('discovery')"     data-nav-intent="discovery"     class="nav-intent-btn">🔎 Discovery</button>
+  <button onclick="setNavIntent('assessment')"    data-nav-intent="assessment"    class="nav-intent-btn">✅ Assessment</button>
+  <button onclick="setNavIntent('analysis')"      data-nav-intent="analysis"      class="nav-intent-btn">📈 Analysis</button>
+  <button onclick="setNavIntent('enrichment')"    data-nav-intent="enrichment"    class="nav-intent-btn">✍️ Enrichment</button>
+  <button onclick="setNavIntent('understanding')" data-nav-intent="understanding" class="nav-intent-btn">📊 Understanding</button>
+  <button onclick="setNavIntent('curate')"        data-nav-intent="curate"        class="nav-intent-btn">🗂 Curate</button>
+  <span class="flex-1"></span>
+  <button onclick="toggleRfaDrawer()" id="rfa-drawer-toggle" class="nav-intent-btn">📝 RFAs<span id="rfa-drawer-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
+  <button onclick="toggleChatPanel()" id="chat-toggle-btn" class="nav-intent-btn">💬 Chat</button>
+</nav>
+
 <!-- Main layout -->
 <div class="flex flex-1 overflow-hidden">
 
   <!-- Sidebar -->
   <aside id="sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="width:24rem;min-width:12rem;max-width:50vw">
 
-    <!-- Entity type tabs -->
-    <div class="flex shrink-0 border-b border-slate-700">
-      <button onclick="setEntityMode('repo')" id="tab-repos" class="entity-tab active">📁 Repos</button>
-      <button onclick="setEntityMode('db')"   id="tab-dbs"   class="entity-tab">🗄 Databases</button>
-      <button onclick="setEntityMode('filesystem')" id="tab-filesystems" class="entity-tab">💾 Filesystems</button>
-      <button onclick="setEntityMode('annotations')" id="tab-annotations" class="entity-tab">📝 Annotations</button>
+    <!-- Resource-type facet chips (drives which sidebar list + which content is shown within the active intent) -->
+    <div class="flex gap-1.5 px-3 pt-2.5 pb-2 border-b border-slate-700 shrink-0">
+      <button onclick="setResourceTypeFacet('repo')" data-facet="repo" class="filter-chip active">📁 Repos</button>
+      <button onclick="setResourceTypeFacet('db')" data-facet="db" class="filter-chip">🗄 DBs</button>
+      <button onclick="setResourceTypeFacet('filesystem')" data-facet="filesystem" class="filter-chip">💾 FS</button>
     </div>
 
     <!-- Repos section -->
@@ -283,82 +313,86 @@
 
   <div id="resize-handle" title="Drag to resize"></div>
 
-  <!-- Main panel -->
-  <main class="flex flex-col flex-1 overflow-hidden">
+  <!-- Main panel: intent content column + persistent chat side panel -->
+  <main class="flex flex-1 overflow-hidden">
 
-    <!-- Main view tabs -->
-    <div class="shrink-0 flex items-center border-b border-slate-800 w-full">
-      <div id="main-nav" class="hidden flex items-center">
-        <button onclick="showMainView('chat')"      id="nav-chat"      class="main-nav-btn active">💬 Chat</button>
-        <button onclick="showMainView('report')"    id="nav-report"    class="main-nav-btn">📊 Survey Report</button>
-        <button onclick="showMainView('survey-definitions')" id="nav-survey-definitions" class="main-nav-btn">☁ Survey Definitions</button>
-        <button onclick="showMainView('context')"   id="nav-context"   class="main-nav-btn">📋 Context</button>
-        <button onclick="showMainView('db-survey')" id="nav-db-survey" class="main-nav-btn hidden">🗄 DB Survey</button>
-        <button onclick="showMainView('filesystem-survey')" id="nav-filesystem-survey" class="main-nav-btn hidden">💾 FS Survey</button>
-      </div>
-      <button onclick="showMainView('activity')"  id="nav-activity"  class="main-nav-btn ml-auto">📋 Activity <span id="activity-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
-      <button onclick="showMainView('rfa')"       id="nav-rfa"       class="main-nav-btn">📝 RFAs</button>
-    </div>
+    <!-- Intent content column -->
+    <div id="intent-content" class="flex flex-col flex-1 overflow-hidden">
 
-    <!-- Chat view -->
-    <div id="chat-view" class="flex flex-col flex-1 overflow-hidden">
-      <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
-      <div id="thinking" class="hidden px-4 py-1">
-        <div class="flex items-center gap-2 text-slate-400 text-sm">
-          <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
-          <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
-          <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
-          <span class="text-xs">Thinking…</span>
+      <!-- Placeholder pane for intents not yet wired to real content -->
+      <div id="intent-placeholder-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Survey report view (repos) -->
+      <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Database survey view -->
+      <div id="db-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Filesystem survey view -->
+      <div id="filesystem-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+      <div id="activity-view" class="flex-1 overflow-y-auto hidden flex flex-col">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Operation Activity Log</span>
+          <button onclick="clearActivityLog()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">Clear</button>
+        </div>
+        <div id="activity-list" class="flex-1 overflow-y-auto">
+          <div class="text-slate-600 text-xs text-center py-12">No operations yet. Run a survey or publish to Egeria to see activity here.</div>
         </div>
       </div>
+
+      <!-- RFA panel view (legacy full-page render target — superseded by the RFA drawer, kept until Step 5) -->
+      <div id="rfa-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Survey Definitions view (Egeria-authored) -->
+      <div id="survey-definitions-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Context gathering form view -->
+      <div id="context-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Annotation Types view -->
+      <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
     </div>
 
-    <!-- Survey report view (repos) -->
-    <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+    <!-- Persistent chat panel -->
+    <aside id="chat-panel" class="flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 transition-all overflow-hidden" style="width:24rem">
+      <div id="chat-view" class="flex flex-col flex-1 overflow-hidden">
+        <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
+        <div id="thinking" class="hidden px-4 py-1">
+          <div class="flex items-center gap-2 text-slate-400 text-sm">
+            <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
+            <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
+            <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
+            <span class="text-xs">Thinking…</span>
+          </div>
+        </div>
+      </div>
 
-    <!-- Database survey view -->
-    <div id="db-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+      <!-- Input -->
+      <div id="chat-input-container" class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
+        <div class="flex gap-2">
+          <textarea id="query-input" rows="2"
+            class="flex-1 resize-none bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm placeholder-slate-400 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors"
+            placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button id="send-btn" onclick="sendQuery()"
+            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-colors self-end">
+            Send
+          </button>
+        </div>
+        <div class="mt-1 flex items-center justify-between">
+          <span id="intent-badge" class="text-xs text-slate-500"></span>
+          <span class="text-xs text-slate-600">Enter=send · Shift+Enter=newline · f=feedback</span>
+        </div>
+      </div>
+    </aside>
 
-    <!-- Filesystem survey view -->
-    <div id="filesystem-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
-    <div id="activity-view" class="flex-1 overflow-y-auto hidden flex flex-col">
+    <!-- RFA slide-out drawer (persistent, reachable from #intent-nav regardless of active intent) -->
+    <aside id="rfa-drawer" class="hidden flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 overflow-hidden" style="width:26rem">
       <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Operation Activity Log</span>
-        <button onclick="clearActivityLog()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">Clear</button>
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Open RFAs</span>
+        <button onclick="toggleRfaDrawer()" class="text-slate-500 hover:text-slate-300 text-sm">✕</button>
       </div>
-      <div id="activity-list" class="flex-1 overflow-y-auto">
-        <div class="text-slate-600 text-xs text-center py-12">No operations yet. Run a survey or publish to Egeria to see activity here.</div>
-      </div>
-    </div>
-
-    <!-- RFA panel view -->
-    <div id="rfa-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
-
-    <!-- Survey Definitions view (Egeria-authored) -->
-    <div id="survey-definitions-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
-
-    <!-- Context gathering form view -->
-    <div id="context-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
-
-    <!-- Annotation Types view -->
-    <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
-
-    <!-- Input -->
-    <div id="chat-input-container" class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
-      <div class="flex gap-2">
-        <textarea id="query-input" rows="2"
-          class="flex-1 resize-none bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm placeholder-slate-400 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors"
-          placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"></textarea>
-        <button id="send-btn" onclick="sendQuery()"
-          class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-colors self-end">
-          Send
-        </button>
-      </div>
-      <div class="mt-1 flex items-center justify-between">
-        <span id="intent-badge" class="text-xs text-slate-500"></span>
-        <span class="text-xs text-slate-600">Enter=send · Shift+Enter=newline · f=feedback</span>
-      </div>
-    </div>
+      <div id="rfa-drawer-list" class="flex-1 overflow-y-auto"></div>
+    </aside>
   </main>
 </div>
 
@@ -988,7 +1022,9 @@
 let selectedProject  = null;
 let selectedDatabase = null;
 let selectedFilesystem = null;
-let entityMode       = 'repo';   // 'repo' | 'db' | 'filesystem'
+let entityMode       = 'repo';   // 'repo' | 'db' | 'filesystem' — legacy, drives only the (currently unreachable) Annotations sidebar section until Step 8 relocates it under Curate
+let currentNavIntent  = 'scouting';  // 'scouting'|'discovery'|'assessment'|'analysis'|'enrichment'|'understanding'|'curate' — the new primary nav axis
+let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent (replaces entityMode as the sidebar-list driver)
 let compareSet       = new Set();
 let lastQueryHash    = null;
 let lastAssistantEl  = null;
@@ -1023,7 +1059,15 @@ document.addEventListener('DOMContentLoaded', () => {
   loadFilesystems();
   loadAnnotationTypes();
   loadActivityLog();
+  loadRfaPanel();  // populates the header RFA-drawer badge count without opening the drawer
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
+  // Restore chat panel open/collapsed state (defaults to open)
+  if (localStorage.getItem('pe_chat_panel_open') === '0') {
+    document.getElementById('chat-panel').style.width = '0';
+  } else {
+    document.getElementById('chat-toggle-btn').classList.add('active');
+  }
+  setNavIntent('scouting');
   document.getElementById('query-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
   });
@@ -1078,6 +1122,88 @@ function setEntityMode(mode) {
   } else {
     showMainView('chat');
   }
+}
+
+// ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
+const INTENT_PLACEHOLDER_TEXT = {
+  assessment:    'Assessment — coming in this rewrite (Step 2).',
+  discovery:     'Discovery — coming in this rewrite (Step 2).',
+  analysis:      'Analysis — coming in this rewrite (Step 4).',
+  enrichment:    'Enrichment — coming in this rewrite (Step 6).',
+  understanding: 'Understanding — coming in this rewrite (Step 7).',
+  curate:        'Curate — coming in this rewrite (Step 8).',
+};
+
+function setNavIntent(intent) {
+  currentNavIntent = intent;
+  document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => {
+    b.classList.toggle('active', b.dataset.navIntent === intent);
+  });
+  if (intent === 'scouting') {
+    showScoutingPane();
+  } else {
+    showIntentPlaceholder(intent);
+  }
+}
+
+function showIntentPlaceholder(intent) {
+  showMainView('intent-placeholder');
+  document.getElementById('intent-placeholder-view').innerHTML =
+    `<div class="text-slate-600 text-sm text-center py-16">${_esc(INTENT_PLACEHOLDER_TEXT[intent] || 'Coming soon.')}</div>`;
+}
+
+function showScoutingPane() {
+  if (resourceTypeFacet === 'repo') {
+    if (!selectedProject) { showIntentEmptyState('a repo'); return; }
+    showMainView('report');
+  } else if (resourceTypeFacet === 'db') {
+    if (!selectedDatabase) { showIntentEmptyState('a database'); return; }
+    showMainView('db-survey');
+  } else if (resourceTypeFacet === 'filesystem') {
+    if (!selectedFilesystem) { showIntentEmptyState('a filesystem'); return; }
+    showMainView('filesystem-survey');
+  }
+}
+
+function showIntentEmptyState(what) {
+  showMainView('intent-placeholder');
+  document.getElementById('intent-placeholder-view').innerHTML =
+    `<div class="text-slate-600 text-sm text-center py-16">Select ${what} in the sidebar to see its Scouting summary.</div>`;
+}
+
+function setResourceTypeFacet(type) {
+  resourceTypeFacet = type;
+  document.querySelectorAll('#sidebar [data-facet]').forEach(b => {
+    b.classList.toggle('active', b.dataset.facet === type);
+  });
+  document.getElementById('repos-section').classList.toggle('hidden', type !== 'repo');
+  document.getElementById('databases-section').classList.toggle('hidden', type !== 'db');
+  document.getElementById('filesystems-section').classList.toggle('hidden', type !== 'filesystem');
+  // Re-render whatever intent is currently active against the newly-selected resource type
+  setNavIntent(currentNavIntent);
+}
+
+// ── persistent chat panel + RFA drawer toggles ──────────────────────────────────
+function toggleChatPanel() {
+  const panel = document.getElementById('chat-panel');
+  const open = panel.style.width !== '0px' && panel.style.width !== '0rem';
+  panel.style.width = open ? '0' : '24rem';
+  document.getElementById('chat-toggle-btn').classList.toggle('active', !open);
+  localStorage.setItem('pe_chat_panel_open', open ? '0' : '1');
+}
+
+function openChatPanel() {
+  const panel = document.getElementById('chat-panel');
+  const alreadyOpen = panel.style.width !== '0px' && panel.style.width !== '0rem';
+  if (!alreadyOpen) toggleChatPanel();
+}
+
+function toggleRfaDrawer() {
+  const drawer = document.getElementById('rfa-drawer');
+  const willOpen = drawer.classList.contains('hidden');
+  drawer.classList.toggle('hidden', !willOpen);
+  document.getElementById('rfa-drawer-toggle').classList.toggle('active', willOpen);
+  if (willOpen) loadRfaPanel('rfa-drawer-list');
 }
 
 // ── projects ───────────────────────────────────────────────────────────────────
@@ -1143,7 +1269,7 @@ function selectProject(slug) {
     document.getElementById('main-nav').classList.remove('hidden');
     document.getElementById('nav-report').classList.remove('hidden');
     _reportLoaded = false;
-    showMainView('chat');
+    setNavIntent(currentNavIntent);
     if (pendingClarification) {
       const q = pendingClarification;
       pendingClarification = null;
@@ -1154,6 +1280,7 @@ function selectProject(slug) {
     document.getElementById('charts-section').classList.add('hidden');
     document.getElementById('main-nav').classList.add('hidden');
     document.querySelectorAll('.project-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
+    setNavIntent(currentNavIntent);
   }
 }
 
@@ -1561,12 +1688,13 @@ function selectDatabase(slug) {
     document.getElementById('nav-report').classList.add('hidden');
     document.getElementById('nav-db-survey').classList.remove('hidden');
     _dbSurveyLoaded = false;
-    showMainView('db-survey');
+    setNavIntent(currentNavIntent);
   } else {
     document.getElementById('charts-section').classList.add('hidden');
     document.getElementById('main-nav').classList.add('hidden');
     document.getElementById('nav-db-survey').classList.add('hidden');
     document.querySelectorAll('.db-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
+    setNavIntent(currentNavIntent);
   }
 }
 
@@ -2094,7 +2222,7 @@ async function submitRegisterDb() {
     if (res.ok) {
       hideRegisterDbModal();
       await loadDatabases();
-      setEntityMode('db');
+      setResourceTypeFacet('db');
       selectDatabase(slug);
     } else {
       const data = await res.json().catch(() => ({}));
@@ -2164,7 +2292,7 @@ async function submitRegisterServer() {
     if (res.ok) {
       hideRegisterServerModal();
       await loadDatabases();
-      setEntityMode('db');
+      setResourceTypeFacet('db');
     } else {
       const data = await res.json().catch(() => ({}));
       errEl.textContent = data.detail || `Registration failed (HTTP ${res.status})`;
@@ -2306,7 +2434,7 @@ async function addSelectedDatabases() {
   }
   hideDiscoverModal();
   await loadDatabases();
-  setEntityMode('db');
+  setResourceTypeFacet('db');
   if (added) appendMessage('assistant', `Added **${added}** database(s) from server **${slug}**.`);
 }
 
@@ -2623,23 +2751,32 @@ function toggleOpRow(id, toggleEl) {
 
 // ── RFA panel ──────────────────────────────────────────────────────────────────
 
-async function loadRfaPanel() {
-  const view = document.getElementById('rfa-view');
+async function loadRfaPanel(containerId = 'rfa-view') {
+  const view = document.getElementById(containerId);
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading RequestForAction annotations…</div>';
   try {
     const res = await fetch('/api/activity/rfas');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderRfaPanel(await res.json());
+    const rfas = await res.json();
+    renderRfaPanel(rfas, containerId);
+    _updateRfaDrawerBadge(rfas.length);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
 }
 
-function renderRfaPanel(rfas) {
-  const view = document.getElementById('rfa-view');
+function _updateRfaDrawerBadge(count) {
+  const badge = document.getElementById('rfa-drawer-badge');
+  if (!badge) return;
+  badge.textContent = count > 0 ? String(count) : '';
+  badge.classList.toggle('hidden', count === 0);
+}
+
+function renderRfaPanel(rfas, containerId = 'rfa-view') {
+  const view = document.getElementById(containerId);
   const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
     <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">RequestForAction — Open Questions</span>
-    <button onclick="loadRfaPanel()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">↺ Refresh</button>
+    <button onclick="loadRfaPanel('${containerId}')" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">↺ Refresh</button>
   </div>`;
 
   if (!rfas.length) {
@@ -3326,7 +3463,13 @@ async function saveContextForm(slug, entityType) {
 // ── main view tabs ─────────────────────────────────────────────────────────────
 
 function showMainView(tab) {
-  const chatView      = document.getElementById('chat-view');
+  // NOTE: chat is no longer one of these panes — it's a persistent side panel
+  // (#chat-panel) toggled independently via toggleChatPanel(), decoupled from
+  // this router entirely. Likewise RFA's primary surface is now the drawer
+  // (#rfa-drawer, toggleRfaDrawer()) — 'rfa' as a tab argument here still
+  // works (renders into the legacy #rfa-view) but nothing in the new nav
+  // calls it; kept only so nothing else silently breaks mid-rewrite.
+  const placeholderView = document.getElementById('intent-placeholder-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -3335,31 +3478,22 @@ function showMainView(tab) {
   const contextView   = document.getElementById('context-view');
   const surveyDefsView = document.getElementById('survey-definitions-view');
   const annotationTypesView = document.getElementById('annotation-types-view');
-  const navChat       = document.getElementById('nav-chat');
-  const navReport     = document.getElementById('nav-report');
-  const navDbSurvey   = document.getElementById('nav-db-survey');
-  const navFsSurvey   = document.getElementById('nav-filesystem-survey');
   const navActivity   = document.getElementById('nav-activity');
-  const navRfa        = document.getElementById('nav-rfa');
-  const navContext    = document.getElementById('nav-context');
-  const navSurveyDefs = document.getElementById('nav-survey-definitions');
 
-  [chatView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
-  [navChat, navReport, navDbSurvey, navFsSurvey, navRfa, navContext, navSurveyDefs].forEach(b => b?.classList.remove('active'));
+  [placeholderView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
 
-  if (tab === 'report') {
+  if (tab === 'intent-placeholder') {
+    placeholderView.classList.remove('hidden');
+  } else if (tab === 'report') {
     reportView.classList.remove('hidden');
-    navReport.classList.add('active');
     if (!_reportLoaded) loadSurveyReport();
   } else if (tab === 'db-survey') {
     dbSurveyView.classList.remove('hidden');
-    navDbSurvey.classList.add('active');
     if (!_dbSurveyLoaded) loadDbSurveyReport();
   } else if (tab === 'filesystem-survey') {
     fsSurveyView.classList.remove('hidden');
-    navFsSurvey.classList.add('active');
     if (!_fsSurveyLoaded) loadFilesystemSurveyReport();
   } else if (tab === 'activity') {
     activityView.classList.remove('hidden');
@@ -3372,22 +3506,18 @@ function showMainView(tab) {
     loadActivityLog();
   } else if (tab === 'rfa') {
     rfaView.classList.remove('hidden');
-    navRfa?.classList.add('active');
     loadRfaPanel();
   } else if (tab === 'context') {
     contextView.classList.remove('hidden');
-    navContext?.classList.add('active');
     loadContextPanel();
   } else if (tab === 'survey-definitions') {
     surveyDefsView.classList.remove('hidden');
-    navSurveyDefs?.classList.add('active');
     loadSurveyDefinitionsPanel();
   } else if (tab === 'annotations') {
     annotationTypesView.classList.remove('hidden');
     loadAnnotationTypesView(_selectedAnnotationType);
   } else {
-    chatView.classList.remove('hidden');
-    navChat.classList.add('active');
+    placeholderView.classList.remove('hidden');
   }
 }
 
@@ -3634,7 +3764,7 @@ function renderSurveyReport(data) {
 }
 
 function askAboutSurvey() {
-  showMainView('chat');
+  openChatPanel();
   const input = document.getElementById('query-input');
   input.value = `Summarize the survey results for ${selectedProject}`;
   input.focus();
@@ -4650,12 +4780,13 @@ function selectFilesystem(slug) {
     
     document.getElementById('main-nav').classList.remove('hidden');
     _fsSurveyLoaded = false;
-    showMainView('filesystem-survey');
+    setNavIntent(currentNavIntent);
   } else {
     document.getElementById('charts-section').classList.add('hidden');
     document.getElementById('main-nav').classList.add('hidden');
     document.getElementById('nav-filesystem-survey').classList.add('hidden');
     document.querySelectorAll('.fs-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
+    setNavIntent(currentNavIntent);
   }
 }
 
@@ -5641,8 +5772,8 @@ function _renderFeedbackStars() {
 }
 
 function _currentPageId() {
-  const active = document.querySelector('.main-nav-btn.active') || document.querySelector('.entity-tab.active');
-  return active ? active.id : '';
+  const active = document.querySelector('#intent-nav .nav-intent-btn.active');
+  return active ? active.dataset.navIntent : currentNavIntent;
 }
 
 async function submitFeedback() {
