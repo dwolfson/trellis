@@ -1161,7 +1161,6 @@ function setEntityMode(mode) {
 
 // ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
 const INTENT_PLACEHOLDER_TEXT = {
-  enrichment:    'Enrichment — coming in this rewrite (Step 6).',
   understanding: 'Understanding — coming in this rewrite (Step 7).',
   curate:        'Curate — coming in this rewrite (Step 8).',
 };
@@ -1182,6 +1181,10 @@ function setNavIntent(intent) {
     showMainView('assessment');
   } else if (intent === 'analysis') {
     showMainView('analysis');
+  } else if (intent === 'enrichment') {
+    // RFA is no longer part of Enrichment — it moved to the persistent
+    // drawer in Step 5. This is now just the Context form.
+    showMainView('context');
   } else {
     showIntentPlaceholder(intent);
   }
@@ -3723,8 +3726,16 @@ const _CTX_FIELDS = [
 
 async function loadContextPanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
-  if (!slug) return;
   const view = document.getElementById('context-view');
+  if (!slug) {
+    // Pre-existing gap, fixed here since Step 6 wires this panel directly to
+    // the Enrichment intent tab: previously this just returned silently,
+    // leaving whatever was in #context-view before (blank on first load,
+    // stale on a facet switch with nothing selected) instead of a real
+    // empty state like Discovery/Survey Definitions already have.
+    view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to record its context.</div>';
+    return;
+  }
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading context…</div>';
   try {
     const res = await fetch(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
