@@ -97,10 +97,16 @@ class TestIncrementalIndexer:
         indexer.refresh(project)
         assert registry.get("myproj").last_commit_sha == "newsha"
 
-    def test_refresh_identifies_affected_collections(self, registry, project, capsys):
+    def test_refresh_uses_real_delete_by_filter_not_collection_drop(self, registry, project, capsys):
+        """Migration plan decision D4: a plain code-file change re-indexes via
+        delete_by_metadata + a changed_files-filtered re-ingest — NOT the old
+        collection-level drop_collection + full rebuild. This is the one
+        behavior the old Milvus-mocked test suite could never verify (Milvus
+        made delete-by-metadata-filter awkward, which is exactly why the
+        collection-drop workaround existed in the first place)."""
         indexer = self._make_indexer(registry)
         repo = MagicMock()
-        # Changed: one Python file → affects python_code collection
+        # Changed: one Python file → affects python_code collection only
         f = MagicMock(filename="src/main.py")
         repo.compare.return_value.files = [f]
         indexer.client.get_repo.return_value = repo
@@ -111,14 +117,61 @@ class TestIncrementalIndexer:
              patch("resource_explorer.ingestion.incremental.MultiCollectionStore") as MockStore, \
              patch("resource_explorer.ingestion.incremental.ProjectRegistry", return_value=registry):
             mock_pipeline = MagicMock()
-            mock_pipeline._ingest_collection.return_value = 10
+            mock_pipeline._ingest_collection.return_value = 3
             mock_pipeline._count_repo_stats.return_value = (42, 1000)
             MockPipeline.return_value = mock_pipeline
             mock_store = MagicMock()
+            mock_store.delete_by_metadata.return_value = 2
             MockStore.return_value = mock_store
 
             indexer.refresh(project)
 
-            # Should have dropped and re-indexed affected collections
-            assert mock_store.drop_collection.called
+            # Real row-level delete, not a collection drop
+            assert not mock_store.drop_collection.called
+            mock_store.delete_by_metadata.assert_called_once_with(
+                "myproj_python_code", "file_path", ["src/main.py"]
+            )
+            # Re-ingest was scoped to just the changed file
             assert mock_pipeline._ingest_collection.called
+            _, kwargs = mock_pipeline._ingest_collection.call_args
+            assert kwargs.get("changed_files") == {"src/main.py"}
+            # markdown_docs was untouched (not affected by a .py change) and
+            # stays put; python_code was updated in place, not dropped/rebuilt
+            assert set(registry.get("myproj").collections) == {"myproj_markdown_docs", "myproj_python_code"}
+
+    def test_refresh_release_notes_still_uses_full_rebuild(self, registry, capsys):
+        """release_notes chunks have no file_path (they're per-GitHub-release,
+        not per-file) — delete-by-filter can't target them, so they must keep
+        the old collection-level drop+rebuild path."""
+        from resource_explorer.registry import Project as _Project
+        p = _Project(
+            slug="relproj", display_name="Rel Project",
+            github_url="https://github.com/test/relproj",
+            collections=["relproj_release_notes"],
+        )
+        registry.add(p)
+
+        indexer = self._make_indexer(registry)
+        repo = MagicMock()
+        f = MagicMock(filename="src/main.py")
+        repo.compare.return_value.files = [f]
+        indexer.client.get_repo.return_value = repo
+        indexer.client.get_latest_commit_sha.return_value = "newsha"
+        registry.update_commit_sha("relproj", "oldsha")
+
+        with patch("resource_explorer.ingestion.incremental.IngestionPipeline") as MockPipeline, \
+             patch("resource_explorer.ingestion.incremental.MultiCollectionStore") as MockStore, \
+             patch("resource_explorer.ingestion.incremental.ProjectRegistry", return_value=registry):
+            mock_pipeline = MagicMock()
+            mock_pipeline._ingest_collection.return_value = 5
+            mock_pipeline._count_repo_stats.return_value = (10, 100)
+            MockPipeline.return_value = mock_pipeline
+            mock_store = MagicMock()
+            MockStore.return_value = mock_store
+
+            indexer.refresh(p)
+
+            mock_store.drop_collection.assert_called_once_with("relproj_release_notes")
+            assert not mock_store.delete_by_metadata.called
+            _, kwargs = mock_pipeline._ingest_collection.call_args
+            assert "changed_files" not in kwargs

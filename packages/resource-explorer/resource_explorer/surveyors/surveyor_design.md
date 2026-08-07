@@ -104,7 +104,7 @@ explorer/surveyors/
 ### Key Design Principles
 
 1. **Separation of concerns** — Sub-surveyors produce plain Python dataclasses (`SurveyResult`), no Egeria dependency. `EgeriaPublisher` handles all API calls. Surveys are useful standalone even without Egeria running.
-2. **Reuse existing data** — Sub-surveyors read from the SQLite registry and Milvus (already indexed). They do not re-download from GitHub. The `project-explorer add` / `refresh` pipeline feeds the survey.
+2. **Reuse existing data** — Sub-surveyors read from the SQLite registry and pgvector (already indexed). They do not re-download from GitHub. The `project-explorer add` / `refresh` pipeline feeds the survey.
 3. **Asset auto-registration** — `EgeriaPublisher` finds or creates the GitHub repo as a `SourceControlLibrary` in Egeria before attaching the `SurveyReport` (see Q2).
 4. **CLI integration** — New `project-explorer survey <project> [--publish]` command. Without `--publish` the survey prints as markdown. With `--publish` it also pushes to Egeria (see Q4).
 5. **Governance action integration** — `--publish` also exposes an option to trigger a defined Egeria governance action process (via pyegeria) to catalog the asset, not just record the survey. This keeps cataloguing as a deliberate user choice rather than automatic.
@@ -128,7 +128,7 @@ explorer/surveyors/
 ## Decisions
 
 ### Q1: Data source for survey ✓
-**Decision:** Read from local SQLite/Milvus (fast, offline-capable). Add `--refresh` flag to force a fresh pull from GitHub before surveying.
+**Decision:** Read from local SQLite/pgvector (fast, offline-capable). Add `--refresh` flag to force a fresh pull from GitHub before surveying.
 
 ---
 
@@ -179,7 +179,7 @@ If none are set, pyegeria falls back to its own `config/config.json`. `EgeriaPub
 For projects indexed before the inventory table was added, the surveyor falls back to three partial sources:
 
 1. `project_code_symbols` (SQLite) — Python/JS/Java/Go source files only
-2. `MultiCollectionStore.list_source_files(collections)` (Milvus) — markdown, examples, release notes, PDFs (stored as `file_path` in `metadata_json`)
+2. `MultiCollectionStore.list_source_files(collections)` (pgvector) — markdown, examples, release notes, PDFs (stored as `file_path` in `metadata_json`)
 3. `project_dependencies.source_file` (SQLite) — package manifest files (pyproject.toml, requirements.txt, package.json, …)
 
 Web URLs (from `web_docs` collection) are excluded from classification since they are not local files.

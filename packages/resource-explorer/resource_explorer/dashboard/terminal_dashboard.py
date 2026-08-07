@@ -7,7 +7,7 @@ from rich.table import Table
 
 def print_status(console: Console) -> None:
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
 
     console.print("\n[bold]Resource Explorer — Environment Status[/bold]\n")
 
@@ -41,7 +41,6 @@ def _check_services(console: Console) -> None:
     import httpx
     services = {
         "Ollama": "http://localhost:11434",
-        "Milvus": "http://localhost:9091/healthz",
         "Phoenix": "http://localhost:6006",
         "MLflow": "http://localhost:5025",
     }
@@ -52,4 +51,17 @@ def _check_services(console: Console) -> None:
         except Exception:
             status = "[dim]down[/dim]"
         console.print(f"  {name:12} {status}")
+    console.print(f"  {'pgvector':12} {_check_pgvector()}")
     console.print()
+
+
+def _check_pgvector() -> str:
+    """Real Postgres connectivity probe, replacing the old Milvus :9091/healthz
+    check (no pgvector equivalent — this connects directly instead)."""
+    try:
+        from resource_explorer.vector_store_pg import _get_shared_store
+        store = _get_shared_store()
+        store.connect()
+        return "[green]up[/green]"
+    except Exception:
+        return "[dim]down[/dim]"

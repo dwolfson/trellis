@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine
 
 
 class ProjectStatus(str, Enum):
@@ -275,6 +275,19 @@ class PostgresCursorWrapper:
         sql_trans = sql.replace('?', '%s')
         sql_trans = re.sub(r'(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)', r'%(\1)s', sql_trans)
         sql_trans = re.sub(r'(?i)\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b', 'SERIAL PRIMARY KEY', sql_trans)
+        # GROUP_CONCAT(expr[, sep]) -> STRING_AGG(expr, sep) — Postgres has no
+        # GROUP_CONCAT. Assumes a single, non-nested-comma argument (true of
+        # every current call site); SQLite's default separator is ',',
+        # matching STRING_AGG's required (no-default) separator argument.
+        def _group_concat_to_string_agg(m):
+            expr, sep = m.group(1), m.group(2) or "','"
+            return f"STRING_AGG({expr}, {sep})"
+
+        sql_trans = re.sub(
+            r'(?i)\bGROUP_CONCAT\(\s*([^,()]+?)\s*(?:,\s*([^()]+?)\s*)?\)',
+            _group_concat_to_string_agg,
+            sql_trans,
+        )
         return sql_trans
 
     def execute(self, sql: str, params: Any = None):
@@ -309,10 +322,19 @@ class PostgresCursorWrapper:
 
 
 class ProjectRegistry:
-    def __init__(self, db_path: str = "data/registry.db") -> None:
+    def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
+        """database_url, when given, is used verbatim — bypassing the
+        db_path sentinel/config-lookup logic below entirely. Added for the
+        real-Postgres integration test tier (Phase 8): db_path's own
+        sentinel special-casing has no way to point a ProjectRegistry at an
+        explicit, isolated Postgres URL (e.g. a throwaway test schema)
+        without either mutating global config or forcing SQLite.
+        """
         self.db_path = db_path
-        from resource_explorer.config import get_config
-        if db_path == "data/registry.db":
+        if database_url is not None:
+            self.database_url = database_url
+        elif db_path == "data/registry.db":
+            from resource_explorer.config import get_config
             try:
                 config = get_config()
                 self.database_url = config.registry.database_url
@@ -343,10 +365,29 @@ class ProjectRegistry:
         finally:
             conn.close()
 
-    def _get_table_columns(self, table_name: str) -> set[str]:
-        inspector = inspect(self.engine)
+    def _get_table_columns(self, conn, table_name: str) -> set[str]:
+        """Columns currently on table_name, read through the SAME open
+        transaction as the caller's CREATE TABLE — not a fresh connection via
+        inspect(self.engine). That distinction matters on Postgres: a table
+        just CREATEd in this transaction is invisible to a separate
+        connection/inspector until commit, which made every "add column if
+        missing" migration below think a brand-new table was missing columns
+        it had literally just been created with, and crash trying to
+        ALTER TABLE ADD a column that already existed. SQLite's PRAGMA
+        table_info happened to dodge this (same-connection visibility), which
+        is why the bug was invisible until this ran against real Postgres.
+        """
         try:
-            return {col["name"] for col in inspector.get_columns(table_name)}
+            if conn.is_postgres:
+                rows = conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = ? AND table_schema = current_schema()",
+                    (table_name,),
+                ).fetchall()
+                return {r["column_name"] for r in rows}
+            else:
+                rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                return {r["name"] for r in rows}
         except Exception:
             return set()
 
@@ -377,7 +418,7 @@ class ProjectRegistry:
                 )
             """)
             # Migrations: add new columns to existing databases
-            existing = self._get_table_columns("projects")
+            existing = self._get_table_columns(conn, "projects")
             for col, defn in [
                 ("last_commit_sha", "TEXT DEFAULT ''"),
                 ("subproject_path", "TEXT DEFAULT ''"),
@@ -426,7 +467,7 @@ class ProjectRegistry:
                 )
             """)
             # Migrations: add new columns to existing databases
-            existing_stats = self._get_table_columns("project_stats")
+            existing_stats = self._get_table_columns(conn, "project_stats")
             for col, defn in [
                 ("avg_release_interval_days", "INTEGER DEFAULT 0"),
                 ("repo_size_kb", "INTEGER DEFAULT 0"),
@@ -489,7 +530,7 @@ class ProjectRegistry:
                 )
             """)
             # Migrations: add additions / deletions to existing project_commits rows
-            existing_commits = self._get_table_columns("project_commits")
+            existing_commits = self._get_table_columns(conn, "project_commits")
             for col, defn in [
                 ("additions", "INTEGER DEFAULT NULL"),
                 ("deletions", "INTEGER DEFAULT NULL"),
@@ -524,7 +565,7 @@ class ProjectRegistry:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     project_slug TEXT DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    created_at TEXT NOT NULL
                 )
             """)
             conn.execute(
@@ -569,7 +610,7 @@ class ProjectRegistry:
                 "ON project_file_type_counts(project_slug)"
             )
             # Migration: add details_json if not present (existing databases)
-            existing_ftc = self._get_table_columns("project_file_type_counts")
+            existing_ftc = self._get_table_columns(conn, "project_file_type_counts")
             if "details_json" not in existing_ftc:
                 conn.execute(
                     "ALTER TABLE project_file_type_counts ADD COLUMN details_json TEXT DEFAULT NULL"
@@ -602,7 +643,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add annotation_count if not present (existing databases)
-            existing_es = self._get_table_columns("project_egeria_surveys")
+            existing_es = self._get_table_columns(conn, "project_egeria_surveys")
             if "annotation_count" not in existing_es:
                 conn.execute(
                     "ALTER TABLE project_egeria_surveys ADD COLUMN annotation_count INTEGER DEFAULT NULL"
@@ -662,7 +703,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add credential/egeria/survey-count columns to existing databases tables
-            existing_db = self._get_table_columns("databases")
+            existing_db = self._get_table_columns(conn, "databases")
             for col, defval in [
                 ("db_user", "''"),
                 ("db_password", "''"),
@@ -704,7 +745,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add group_slug to db_servers
-            existing_srv = self._get_table_columns("db_servers")
+            existing_srv = self._get_table_columns(conn, "db_servers")
             if "group_slug" not in existing_srv:
                 conn.execute("ALTER TABLE db_servers ADD COLUMN group_slug TEXT DEFAULT ''")
             # Database survey results table
@@ -723,7 +764,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add source column to existing database_surveys tables
-            existing_ds = self._get_table_columns("database_surveys")
+            existing_ds = self._get_table_columns(conn, "database_surveys")
             if "source" not in existing_ds:
                 conn.execute("ALTER TABLE database_surveys ADD COLUMN source TEXT DEFAULT 'local'")
             conn.execute(
@@ -754,7 +795,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add new columns to existing file_systems tables
-            existing_fs = self._get_table_columns("file_systems")
+            existing_fs = self._get_table_columns(conn, "file_systems")
             for col, defval in [
                 ("egeria_url", "''"),
                 ("egeria_server", "''"),
@@ -881,7 +922,7 @@ class ProjectRegistry:
             # _run_due(), which now also writes a real ActivityEntry for
             # every scheduled run (previously only logged to Python's own
             # logger — a real gap, not by design; see scheduler.py).
-            existing_sched = self._get_table_columns("resource_schedules")
+            existing_sched = self._get_table_columns(conn, "resource_schedules")
             if "last_run_status" not in existing_sched:
                 conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_status TEXT DEFAULT ''")
             if "last_run_activity_id" not in existing_sched:
@@ -1385,12 +1426,27 @@ class ProjectRegistry:
     def remove(self, slug: str) -> None:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
-            conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
+            # Children before parent — every table below has a real FK to
+            # projects.slug, which SQLite silently ignores by default
+            # (foreign_keys pragma is off) but Postgres enforces. This was
+            # ALSO incomplete on SQLite itself: project_dependencies,
+            # project_file_type_counts, project_file_inventory,
+            # project_egeria_surveys, and project_data_profiles were never
+            # cleaned up here at all, silently leaking orphaned rows on every
+            # remove() — invisible on SQLite (no FK enforcement to surface
+            # it), a hard FK-violation crash on Postgres. Found live during
+            # Phase 4 Postgres cutover testing; fixed for both backends.
             conn.execute("DELETE FROM project_stats WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_commits WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_symbols WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_file_type_counts WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_file_inventory WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_egeria_surveys WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_data_profiles WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
 
     # ── alias management ──────────────────────────────────────────────────────
 
@@ -1399,8 +1455,11 @@ class ProjectRegistry:
         normalized = alias.lower().replace(" ", "_").replace("-", "_")
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO project_aliases (alias, project_slug, confirmed_by, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO project_aliases (alias, project_slug, confirmed_by, created_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (alias) DO UPDATE SET "
+                "project_slug = excluded.project_slug, confirmed_by = excluded.confirmed_by, "
+                "created_at = excluded.created_at",
                 (normalized, self._normalize_slug(slug), confirmed_by, datetime.utcnow().isoformat()),
             )
 
@@ -1514,8 +1573,15 @@ class ProjectRegistry:
         """Return one row per survey run with total file count and timestamp, for trending."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
+            # MAX(source), not a bare `source` — SQLite's lax GROUP BY (any
+            # selected column not in GROUP BY silently picks *a* row's value)
+            # let this slide; Postgres correctly rejects it. source is
+            # expected constant per surveyed_at run, so MAX just reproduces
+            # SQLite's old behavior explicitly, without changing the
+            # docstring's "one row per survey run" grouping granularity by
+            # also grouping on source.
             rows = conn.execute(
-                "SELECT surveyed_at, SUM(file_count) as total_files, source "
+                "SELECT surveyed_at, SUM(file_count) as total_files, MAX(source) as source "
                 "FROM project_file_type_counts WHERE project_slug = ? "
                 "GROUP BY surveyed_at ORDER BY surveyed_at ASC",
                 (slug,),
@@ -1754,10 +1820,14 @@ class ProjectRegistry:
         norms = [self._normalize_slug(s) for s in slugs]
         with self._conn() as conn:
             placeholders = ",".join("?" * len(norms))
+            # HAVING references COUNT(*) directly, not the project_count
+            # alias — SQLite allows referencing a SELECT-list alias in
+            # HAVING, Postgres does not (HAVING is evaluated before aliases
+            # are available in standard SQL semantics).
             rows = conn.execute(
                 f"SELECT dep_name, ecosystem, GROUP_CONCAT(project_slug) as projects, COUNT(*) as project_count "  # noqa: S608
                 f"FROM project_dependencies WHERE project_slug IN ({placeholders}) "
-                f"GROUP BY dep_name, ecosystem HAVING project_count >= 2 ORDER BY project_count DESC, dep_name",
+                f"GROUP BY dep_name, ecosystem HAVING COUNT(*) >= 2 ORDER BY project_count DESC, dep_name",
                 norms,
             ).fetchall()
         return [dict(r) for r in rows]
@@ -1912,8 +1982,11 @@ class ProjectRegistry:
         """Remove a database entity and all its survey records."""
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
-            conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
+            # Child before parent — database_surveys has a real FK to
+            # databases.slug; SQLite silently allows the reverse order
+            # (foreign_keys pragma off by default), Postgres does not.
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
         self,
@@ -2452,8 +2525,11 @@ class ProjectRegistry:
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO project_groups (slug, display_name, description, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO project_groups (slug, display_name, description, created_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (slug) DO UPDATE SET "
+                "display_name = excluded.display_name, description = excluded.description, "
+                "created_at = excluded.created_at",
                 (slug, display_name, description, datetime.utcnow().isoformat()),
             )
 

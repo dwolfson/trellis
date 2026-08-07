@@ -72,6 +72,43 @@ class TestCRUD:
         conn.close()
         assert row is None
 
+    def test_remove_cleans_up_every_fk_child_table(self, db, sample_project):
+        """remove() previously only cleaned up 5 of the 10 tables with a real
+        FK to projects.slug — project_dependencies, project_file_type_counts,
+        project_file_inventory, project_egeria_surveys, and
+        project_data_profiles were silently left orphaned. Invisible on
+        SQLite (no FK enforcement), a hard FK-violation crash on Postgres —
+        found live during Phase 4 cutover testing. Also verifies delete
+        ordering: children must go before the parent `projects` row, which
+        Postgres enforces and SQLite (foreign_keys pragma off) does not."""
+        db.add(sample_project)
+        conn = sqlite3.connect(db.db_path)
+        conn.execute(
+            "INSERT INTO project_dependencies (project_slug, dep_name, dep_version, dep_type, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("test_project", "requests", "2.31.0", "pip", "2024-01-01T00:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO project_file_type_counts (project_slug, surveyed_at, type_label, file_count) "
+            "VALUES (?, ?, ?, ?)",
+            ("test_project", "2024-01-01T00:00:00", ".py", 10),
+        )
+        conn.execute(
+            "INSERT INTO project_file_inventory (project_slug, file_path, indexed_at) "
+            "VALUES (?, ?, ?)",
+            ("test_project", "README.md", "2024-01-01T00:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        db.remove("test-project")
+
+        conn = sqlite3.connect(db.db_path)
+        for table in ("project_dependencies", "project_file_type_counts", "project_file_inventory"):
+            row = conn.execute(f"SELECT * FROM {table} WHERE project_slug = ?", ("test_project",)).fetchone()
+            assert row is None, f"{table} row survived remove()"
+        conn.close()
+
 
 class TestStatusUpdates:
     def test_update_status(self, db, sample_project):
@@ -293,3 +330,100 @@ class TestSchedules:
 
     def test_delete_nonexistent_schedule_returns_false(self, db):
         assert db.delete_schedule("repo", "myproj", "nonexistent") is False
+
+
+class TestAliases:
+    """add_alias's project_aliases upsert was one of the two SQLite-only
+    INSERT OR REPLACE statements converted to ON CONFLICT DO UPDATE for
+    Postgres compatibility (migration plan Phase 3) — these specifically
+    exercise both the insert and the update-on-conflict path."""
+
+    def test_add_alias_then_resolve(self, db, sample_project):
+        db.add(sample_project)
+        db.add_alias("tp", "test-project")
+        assert db.resolve_alias("tp") == "test_project"
+
+    def test_resolve_missing_alias_returns_none(self, db):
+        assert db.resolve_alias("ghost") is None
+
+    def test_add_alias_normalizes_spaces_and_hyphens(self, db, sample_project):
+        db.add(sample_project)
+        db.add_alias("Test Project", "test-project")
+        assert db.resolve_alias("test-project") == "test_project"
+        assert db.resolve_alias("test project") == "test_project"
+
+    def test_add_alias_conflict_updates_existing_row(self, db, sample_project):
+        """The ON CONFLICT path: re-adding the same alias for a different
+        project must update the mapping in place, not raise a PK violation."""
+        db.add(sample_project)
+        db.add(Project(slug="other-project", display_name="Other", github_url="https://github.com/a/other"))
+        db.add_alias("tp", "test-project", confirmed_by="user")
+        db.add_alias("tp", "other-project", confirmed_by="admin")
+        assert db.resolve_alias("tp") == "other_project"
+        aliases = db.list_aliases()
+        assert len(aliases) == 1  # updated in place, not duplicated
+        assert aliases[0]["confirmed_by"] == "admin"
+
+    def test_remove_alias(self, db, sample_project):
+        db.add(sample_project)
+        db.add_alias("tp", "test-project")
+        assert db.remove_alias("tp") is True
+        assert db.resolve_alias("tp") is None
+
+    def test_remove_nonexistent_alias_returns_false(self, db):
+        assert db.remove_alias("ghost") is False
+
+    def test_list_aliases_filtered_by_slug(self, db, sample_project):
+        db.add(sample_project)
+        db.add(Project(slug="other-project", display_name="Other", github_url="https://github.com/a/other"))
+        db.add_alias("tp", "test-project")
+        db.add_alias("op", "other-project")
+        result = db.list_aliases(slug="test-project")
+        assert [a["alias"] for a in result] == ["tp"]
+
+
+class TestProjectGroups:
+    """create_group's project_groups upsert is the other SQLite-only
+    INSERT OR REPLACE converted to ON CONFLICT DO UPDATE for Postgres
+    compatibility (migration plan Phase 3)."""
+
+    def test_create_and_get_group(self, db):
+        db.create_group("platform", "Platform Team", "Core platform repos")
+        group = db.get_group("platform")
+        assert group is not None
+        assert group.display_name == "Platform Team"
+        assert group.description == "Core platform repos"
+
+    def test_get_missing_group_returns_none(self, db):
+        assert db.get_group("ghost") is None
+
+    def test_create_group_conflict_renames_in_place(self, db):
+        """The ON CONFLICT path: re-creating the same slug must update the
+        existing row (rename), not raise a PK violation or duplicate it."""
+        db.create_group("platform", "Platform Team", "v1 description")
+        db.create_group("platform", "Platform Team (renamed)", "v2 description")
+        group = db.get_group("platform")
+        assert group.display_name == "Platform Team (renamed)"
+        assert group.description == "v2 description"
+        assert len(db.list_groups()) == 1
+
+    def test_list_groups_ordered_by_display_name(self, db):
+        db.create_group("z", "Zebra Group")
+        db.create_group("a", "Apple Group")
+        names = [g.display_name for g in db.list_groups()]
+        assert names == ["Apple Group", "Zebra Group"]
+
+    def test_delete_group_ungroups_members(self, db, sample_project):
+        db.create_group("platform", "Platform Team")
+        db.add(sample_project)
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET group_slug = ? WHERE slug = ?", ("platform", "test_project")
+            )
+        assert db.delete_group("platform") == 1
+        assert db.get_group("platform") is None
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT group_slug FROM projects WHERE slug = ?", ("test_project",)
+            ).fetchone()
+        assert row["group_slug"] == ""

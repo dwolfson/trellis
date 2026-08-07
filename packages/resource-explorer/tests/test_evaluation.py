@@ -6,7 +6,7 @@ Tests correctness across four dimensions:
   3. Agent response validation — do responses contain expected content?
   4. Comparison routing — does the compare agent find both projects?
 
-All tests run without LLM or Milvus calls. Agent response tests use the
+All tests run without LLM or pgvector calls. Agent response tests use the
 fallback data-formatting path (mocked BeeAI) so they exercise real data
 assembly logic against fixture data.
 """

@@ -12,11 +12,11 @@ This guide covers installation, configuration, Egeria integration, scheduled ana
 |-----------|---------|-------|
 | Python | 3.12 | 3.13 supported |
 | uv | any recent | package manager |
-| SQLite | 3.35+ | ships with Python |
-| Milvus | 2.4+ | required for RAG; Milvus Lite supported |
+| PostgreSQL/pgvector | pg17 | RE's own vector store + registry — required for RAG; shared with Egeria Advisor's `egeria_advisor` database in a Trellis checkout, or a standalone instance for a from-scratch environment |
+| SQLite | 3.35+ | ships with Python; optional fallback for the registry only, via `REGISTRY_DATABASE_URL` |
 | Ollama | any | default LLM backend; can use OpenAI/Anthropic instead |
 | Egeria | 5.x | required for catalog/survey; optional for RAG-only use |
-| PostgreSQL | 12+ | only needed for database surveying |
+| PostgreSQL (target databases) | 12+ | only needed for surveying *external* databases via the database surveyor — unrelated to RE's own storage backend above |
 
 ---
 
@@ -62,12 +62,22 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-opus-4-8
 ```
 
-### Milvus
+### pgvector / registry
 
 ```bash
-MILVUS__URI=./data/milvus.db   # Milvus Lite (single file, no server needed)
-# or
-MILVUS__URI=http://localhost:19530  # Full Milvus server
+# Defaults already point at the shared egeria_advisor Postgres instance
+# (localhost:5442, database egeria_advisor, schema resource_explorer) — no
+# .env entries needed in a Trellis checkout. Override for a from-scratch
+# environment:
+PGVECTOR_HOST=localhost
+PGVECTOR_PORT=5442
+PGVECTOR_DBNAME=egeria_advisor
+PGVECTOR_USER=egeria_advisor
+PGVECTOR_PASSWORD=advisor
+
+# Registry defaults to the same Postgres instance/database, own schema. To
+# fall back to local SQLite instead:
+REGISTRY_DATABASE_URL=sqlite:///data/registry.db
 ```
 
 ### Egeria
@@ -106,14 +116,20 @@ PHOENIX_ENDPOINT=http://localhost:6006
 
 ## Starting external services
 
-### Milvus Lite (simplest — no Docker needed)
+### pgvector (usually already running)
 
-Set `MILVUS__URI=./data/milvus.db` in `.env`. Milvus Lite runs in-process.
-
-### Full Milvus (Docker)
+In a Trellis monorepo checkout, the shared instance is normally already up — managed by `egeria-workspaces-fs`'s `compose-configs/shared-infra/shared-infra.yaml`. Check with:
 
 ```bash
-docker run -d --name milvus -p 19530:19530 milvusdb/milvus:v2.4.0
+docker ps --filter name=egeria-shared-postgres
+```
+
+### Standalone pgvector (from-scratch environment, Docker)
+
+```bash
+docker run -d --name resource-explorer-pgvector -p 5442:5432 \
+  -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_advisor -e POSTGRES_PASSWORD=advisor \
+  pgvector/pgvector:pg17
 ```
 
 ### Ollama
@@ -169,7 +185,7 @@ Back up this file to preserve all registered resources, survey history, activity
 ```bash
 uv run resource-explorer add-project https://github.com/org/repo
 
-# Then index it (downloads + chunks + stores in Milvus)
+# Then index it (downloads + chunks + stores in pgvector)
 uv run resource-explorer index my-repo
 ```
 
@@ -294,16 +310,16 @@ uv run resource-explorer survey my-repo
 uv run resource-explorer survey my-repo
 ```
 
-### Milvus connection refused
+### pgvector connection refused
 
-If using the full Milvus server, verify it's running:
+Verify the shared instance is running:
 
 ```bash
-docker ps | grep milvus
-curl http://localhost:9091/healthz
+docker ps --filter name=egeria-shared-postgres
+psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c '\dn'   # should list resource_explorer schema
 ```
 
-Switch to Milvus Lite for development: set `MILVUS__URI=./data/milvus.db` in `.env`.
+If it's down and owned by `egeria-workspaces-fs`, start it via that project's own compose file — never a new one owned by Resource Explorer. For a standalone from-scratch instance, see "Standalone pgvector" above.
 
 ### Tests failing
 
@@ -311,7 +327,7 @@ Switch to Milvus Lite for development: set `MILVUS__URI=./data/milvus.db` in `.e
 uv run pytest tests/ -v --tb=short
 ```
 
-Pre-existing external-service tests (Milvus, Egeria, GitHub) are skipped when the services are unavailable. All 208 core tests should pass without external services.
+Pre-existing external-service tests (pgvector, Egeria, GitHub) are skipped when the services are unavailable. All core tests should pass without external services.
 
 ---
 

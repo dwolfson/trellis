@@ -30,7 +30,8 @@ All imports use `from resource_explorer.X import Y`. The package was ported from
 |---|---|---|
 | Agent framework | `beeai-framework[rag]` | `RequirementAgent` with `@tool`-decorated functions |
 | Agent runtime | `agentstack-sdk` | A2A server |
-| Vector store | `pymilvus` | Multi-tenant via collection namespacing |
+| Vector store | `pgvector` (PostgreSQL) | Multi-tenant via one table per collection, `resource_explorer` schema — shared with Egeria Advisor's `egeria_advisor` database |
+| Registry | PostgreSQL (default) / SQLite (fallback) | Same shared Postgres database, `resource_explorer` schema; `REGISTRY_DATABASE_URL` overrides to SQLite |
 | Document parsing | `docling` | PDF, web, DOCX, Markdown |
 | Embeddings | `sentence-transformers` | `all-MiniLM-L6-v2`, 384-dim, MPS on Apple Silicon |
 | LLM default | `ollama` | Metal GPU on Apple Silicon; pluggable |
@@ -49,11 +50,13 @@ uv sync
 uv sync --extra dev --extra phoenix
 
 cp .env.example .env
-# Edit .env: set GITHUB_TOKEN, MILVUS_URI, LLM_BACKEND, Egeria connection, etc.
+# Edit .env: set GITHUB_TOKEN, LLM_BACKEND, Egeria connection, etc.
+# pgvector/registry defaults already point at the shared egeria_advisor
+# Postgres instance — no .env entries needed in a Trellis checkout.
 ```
 
 External services:
-- **Milvus** at `localhost:19530` (or Milvus Lite via `MILVUS__URI=./data/milvus.db`)
+- **pgvector** — shared Postgres instance (`egeria-shared-postgres`, port 5442) in a Trellis checkout, normally already running (managed by `egeria-workspaces-fs`'s `compose-configs/shared-infra/shared-infra.yaml`); a standalone `pgvector/pgvector:pg17` container for a from-scratch environment
 - **Ollama** at `localhost:11434` — `ollama pull llama3.1:8b`
 - **Egeria** at `EGERIA_PLATFORM_URL` — required for survey/catalog; optional for RAG-only use
 - **Arize Phoenix** (optional) — `python -m phoenix.server.main` → `localhost:6006`
@@ -96,11 +99,11 @@ User Query
       ├── statistical  → StatsAgent (GitHub API + SQLite time-series)
       ├── comparison   → CompareAgent (multi-project RAG + structured diff)
       ├── examples     → ExamplesAgent (generates runnable Python code)
-      ├── code_search  → CodeAgent (code collections in Milvus)
+      ├── code_search  → CodeAgent (code collections in pgvector)
       ├── conceptual   → DocAgent (markdown + web docs)
       ├── health       → HealthAgent (community metrics)
       ├── schema       → survey metadata query (databases / file systems)
-      └── general      → RAG (CollectionRouter → Milvus → LLM)
+      └── general      → RAG (CollectionRouter → pgvector → LLM)
   → LLM generation (Ollama or API backend)
   → Response formatting
   → Async: MLflow + Phoenix tracing, metrics write, cache store
@@ -169,15 +172,16 @@ resource_explorer/
 │                          # database_surveys
 ├── rag_system.py          # Main orchestrator — entry point for all queries
 ├── query_processor.py     # Intent classifier + agent router
-├── collection_router.py   # Selects relevant Milvus collections per query
+├── collection_router.py   # Selects relevant pgvector collections per query
 ├── query_cache.py         # LRU cache with optional Redis backend
 ├── llm_client.py          # LLMBackend protocol + Ollama/OpenAI/Anthropic impls
 ├── embeddings.py          # SentenceTransformer wrapper (MPS-aware)
-├── multi_collection_store.py  # Milvus multi-tenant operations
+├── vector_store_base.py   # BaseVectorStore ABC
+├── vector_store_pg.py     # PgVectorStore + MultiCollectionStore (pgvector multi-tenant operations)
 ├── prompt_templates.py    # Per-agent prompt templates
 ├── agentstack_server.py   # AgentStack A2A server
 ├── github/                # GitHub API client + stats fetcher
-├── ingestion/             # Ingestion pipeline (GitHub repos → Milvus)
+├── ingestion/             # Ingestion pipeline (GitHub repos → pgvector)
 ├── agents/                # BeeAI RequirementAgent implementations
 │   ├── base.py            # BaseExplorerAgent
 │   ├── tools.py           # @tool functions
@@ -248,7 +252,7 @@ resource_explorer/
 
 ## Key Design Rules (inherited from Project Explorer + new)
 
-1. Classify intent before touching the vector store — statistical queries never hit Milvus
+1. Classify intent before touching the vector store — statistical queries never hit pgvector
 2. Min retrieval score = 0.30 — below this, say "I don't have enough information"
 3. Query cache is the highest-ROI latency win — implement before optimizing retrieval
 4. Observability (MLflow, Phoenix) runs in background threads — never block the response
@@ -256,7 +260,7 @@ resource_explorer/
 6. Chunk size is content-specific — code ≠ prose ≠ examples
 7. Use single-quoted YAML strings for regex patterns containing backslashes
 8. A2A `Server` supports exactly one agent per instance
-9. Milvus `VARCHAR` `max_length` is a UTF-8 byte limit — truncate via `encoded[:max_bytes].decode('utf-8', errors='ignore')`
+9. *(Historical — Milvus backend removed, migrated to pgvector; kept for context, not renumbered.)* Milvus `VARCHAR` `max_length` was a UTF-8 byte limit — truncated via `encoded[:max_bytes].decode('utf-8', errors='ignore')`. pgvector's `TEXT`/`JSONB` columns have no equivalent length constraint, so this truncation step no longer applies.
 10. BeeAI `FunctionTool` objects have no `.func` attribute — use `_raw()` helpers for fallback calls
 11. `AssetMaker` constructor: `(view_server, platform_url, user_id, user_password)` — view_server first
 12. `EgeriaPublisher` annotation class names: `RequestForActionProperties` (no "Annotation" suffix), `QualityAnnotationProperties` (not "QualityScore")

@@ -39,7 +39,7 @@ integration:
   - '(stack|pipeline|workflow) .* (using|with) .+ and .+'
 ```
 # Open questions before implementation
-* What if one project isn't indexed? — Integration questions require both projects to have content in Milvus. The agent should check and give a useful message if one is missing.
+* What if one project isn't indexed? — Integration questions require both projects to have content in pgvector. The agent should check and give a useful message if one is missing.
 * Two slugs vs. one slug + pattern — "What project is healthier?" has no explicit second project. This needs either cross-project comparison (compare all projects) or a clarification response. Probably the latter is safer initially.
 * Scoring integration quality — A "How do I use X with Y" answer synthesized from two codebases may not be grounded in actual integration documentation. The agent should caveat when it's inferring rather than citing explicit docs.
 * Display name aliases — "Docling" is straightforward. "Data Prep Toolkit" requires matching a 3-word name against a slug data_prep_kit_git. Worth considering whether projects should have user-defined aliases in the registry.
@@ -93,7 +93,7 @@ Focuses on ecosystem fit rather than feature comparison.
 | Query Type | Primary Source | Secondary Source |
 |---|---|---|
 | Numeric comparison | `project_stats` table (SQLite) | GitHub API via `query_project_stats` tool |
-| Conceptual comparison | Milvus collections (`markdown_docs`, `web_docs`) | `api_reference` collections |
+| Conceptual comparison | pgvector collections (`markdown_docs`, `web_docs`) | `api_reference` collections |
 | Integration fit | `markdown_docs` (README, guides) | `project_commits` shared-author lookup |
 | Shared contributors | `project_commits` table | `query_top_committers` tool |
 

@@ -393,7 +393,7 @@ Migration path: SQLite → PostgreSQL. The registry, activity log, analysis resu
 
 ## Explicitly Out of Scope (for this document)
 
-- Changes to Project Explorer's RAG pipeline, Milvus store, or chat interface
+- Changes to Project Explorer's RAG pipeline, pgvector store, or chat interface
 - Multi-user authentication and per-user access control
 - Real-time collaborative annotation
 - TUI for the new tool (web UI first)

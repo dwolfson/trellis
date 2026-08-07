@@ -394,10 +394,10 @@ def run() -> None:
         except Exception as exc:
             console.print(f"[yellow]warn:[/yellow] Could not pre-warm embeddings: {exc}")
 
-        # Pre-warm Milvus client — best-effort, non-fatal.
+        # Pre-warm the pgvector connection pool — best-effort, non-fatal.
         try:
-            from resource_explorer.multi_collection_store import MultiCollectionStore
-            MultiCollectionStore()._get_client()
+            from resource_explorer.vector_store_pg import _get_shared_store
+            _get_shared_store().connect()
         except Exception:
             pass
 

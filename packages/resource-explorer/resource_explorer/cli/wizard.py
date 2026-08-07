@@ -89,7 +89,7 @@ class OnboardingWizard:
                     self.registry.update_extra_docs_paths(slug, extra_docs_paths)
                 plan = self._augment_plan_for_extra_paths(plan, effective_extra, local_path)
                 # Drop existing collections so re-ingestion starts clean (no duplicate vectors)
-                from resource_explorer.multi_collection_store import MultiCollectionStore
+                from resource_explorer.vector_store_pg import MultiCollectionStore
                 store = MultiCollectionStore()
                 for c in project.collections:
                     store.drop_collection(c)

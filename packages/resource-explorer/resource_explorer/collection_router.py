@@ -1,4 +1,4 @@
-"""Selects which Milvus collections to search for a given query and project."""
+"""Selects which pgvector collections to search for a given query and project."""
 from __future__ import annotations
 
 from resource_explorer.configdata.collection_config import AGENT_COLLECTION_MAP

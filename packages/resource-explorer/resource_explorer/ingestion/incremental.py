@@ -5,7 +5,7 @@ from pathlib import PurePath
 
 from resource_explorer.github.client import GitHubClient
 from resource_explorer.ingestion.pipeline import IngestionPipeline
-from resource_explorer.multi_collection_store import MultiCollectionStore
+from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import Project, ProjectRegistry, ProjectStatus
 
 
@@ -16,10 +16,21 @@ class IncrementalIndexer:
       2. Compare against stored last_commit_sha in registry
       3. git diff --name-only last_sha..HEAD → list of changed files
       4. Determine which collection types are affected by the changed files
-      5. Drop and re-ingest only affected collections
+      5. Delete-then-reinsert just the changed files' chunks per affected
+         collection (real row-level delete-by-filter — migration plan
+         decision D4), falling back to collection-level drop+full-rebuild
+         only where per-file precision doesn't apply: release_notes (chunks
+         have no file_path — they're per-GitHub-release, not per-file) and
+         doc collections drawing from extra_docs_paths (those chunks'
+         file_path uses a different display-prefix scheme than the
+         subproject-relative paths GitHub's compare API returns, so a
+         precise match can't be guaranteed without risking a silent
+         under-delete).
 
-    Re-indexes at collection granularity (not per-file) to avoid the complexity
-    of Milvus delete-by-metadata-filter on arbitrary schemas.
+    Previously always re-indexed at collection granularity (drop + full
+    rebuild) specifically because Milvus made delete-by-metadata-filter
+    awkward on arbitrary schemas — pgvector makes it a plain SQL DELETE, so
+    that workaround is gone for the common case.
     """
 
     def __init__(self) -> None:
@@ -90,6 +101,16 @@ class IncrementalIndexer:
 
         _doc_ctypes = frozenset({"markdown_docs", "web_docs", "api_reference", "examples", "pdfs"})
 
+        # Subproject-relative view of changed_files, for matching against
+        # chunk metadata["file_path"] (which is relative to local_root, i.e.
+        # to the subproject subdir when one is set) — GitHub's compare API
+        # returns full-repo-relative paths.
+        if subproject_path:
+            prefix = subproject_path.rstrip("/") + "/"
+            relative_changed = {f[len(prefix):] for f in changed_files if f.startswith(prefix)}
+        else:
+            relative_changed = set(changed_files)
+
         with tempfile.TemporaryDirectory() as tmp:
             local_root = None
             resolved_extra: list[tuple[str, Path]] = []
@@ -105,16 +126,36 @@ class IncrementalIndexer:
 
             for name, ctype in project_ctypes.items():
                 collection_name = f"{project.slug}_{name}"
-                store.drop_collection(collection_name)
                 extra = resolved_extra if (name in _doc_ctypes and resolved_extra) else []
-                count = pipeline._ingest_collection(
-                    repo, project.slug, collection_name, ctype,
-                    local_root if name != "release_notes" else None,
-                    extra_paths=extra,
-                )
-                if count > 0:
+
+                # release_notes chunks have no file_path (they're per-GitHub-
+                # release, not per-file) and doc collections drawing from
+                # extra_docs_paths use a different path scheme than
+                # relative_changed can match — both fall back to the
+                # original collection-level drop+full-rebuild.
+                use_full_rebuild = name == "release_notes" or bool(extra)
+
+                if use_full_rebuild:
+                    store.drop_collection(collection_name)
+                    count = pipeline._ingest_collection(
+                        repo, project.slug, collection_name, ctype,
+                        local_root if name != "release_notes" else None,
+                        extra_paths=extra,
+                    )
+                    if count > 0:
+                        surviving.append(collection_name)
+                        print(f"  {collection_name}: {count} chunks (full rebuild)")
+                else:
+                    # Real row-level delete-then-reinsert: only the changed
+                    # files' chunks are touched, everything else in the
+                    # collection is left alone (migration plan decision D4).
+                    deleted = store.delete_by_metadata(collection_name, "file_path", list(relative_changed))
+                    count = pipeline._ingest_collection(
+                        repo, project.slug, collection_name, ctype, local_root,
+                        changed_files=relative_changed,
+                    )
                     surviving.append(collection_name)
-                    print(f"  {collection_name}: {count} chunks")
+                    print(f"  {collection_name}: -{deleted} +{count} chunks (partial update)")
 
             if local_root is not None:
                 file_count, loc = pipeline._count_repo_stats(local_root)

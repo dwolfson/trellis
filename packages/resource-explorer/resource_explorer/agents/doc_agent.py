@@ -30,7 +30,7 @@ class DocAgent(BaseExplorerAgent):
         try:
             return self._run_agent(prompt)
         except Exception:
-            from resource_explorer.multi_collection_store import MultiCollectionStore
+            from resource_explorer.vector_store_pg import MultiCollectionStore
             from resource_explorer.prompt_templates import build_rag_prompt
             from resource_explorer.llm_client import get_llm
             results = MultiCollectionStore().search(query, collections)

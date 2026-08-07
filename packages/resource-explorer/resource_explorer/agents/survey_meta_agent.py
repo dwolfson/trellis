@@ -1,6 +1,6 @@
 """Survey metadata agent — answers questions about analysis runs, data sources, and annotations.
 
-Does not use BeeAI or Milvus. Queries the local SQLite registry directly and
+Does not use BeeAI or pgvector. Queries the local registry directly and
 uses the LLM to compose a natural-language answer from the structured data.
 """
 from __future__ import annotations

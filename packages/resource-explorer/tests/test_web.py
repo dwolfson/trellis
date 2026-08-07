@@ -81,7 +81,7 @@ class TestProjectsRouter:
         assert resp.status_code == 404
 
     def test_delete_project(self, client):
-        with patch("resource_explorer.multi_collection_store.MultiCollectionStore") as mock_store:
+        with patch("resource_explorer.vector_store_pg.MultiCollectionStore") as mock_store:
             mock_store.return_value.drop_collection = MagicMock()
             resp = client.delete("/api/projects/myproj")
         assert resp.status_code == 200
