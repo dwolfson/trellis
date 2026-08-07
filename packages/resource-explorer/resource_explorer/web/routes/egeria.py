@@ -12,6 +12,25 @@ from resource_explorer.registry import ProjectRegistry
 router = APIRouter()
 
 
+# ── identity ───────────────────────────────────────────────────────────────────
+# RE has no per-user auth today (see resource_explorer/config.py::EgeriaConfig) —
+# every request connects to Egeria as the same fixed service-account identity
+# from config/.env, not a logged-in individual. This endpoint just surfaces
+# that configured identity read-only for the header indicator; it is
+# deliberately NOT a login mechanism. Real per-user login was raised and
+# explicitly deferred as its own, larger piece of scope — see the Trellis
+# design docs before building an actual auth flow against this.
+@router.get("/whoami")
+def whoami() -> dict:
+    from resource_explorer.config import get_config
+    cfg = get_config().egeria
+    return {
+        "user_id": cfg.user_id,
+        "view_server": cfg.view_server,
+        "platform_url": cfg.platform_url,
+    }
+
+
 # ── response models ───────────────────────────────────────────────────────────
 
 class SurveyRow(BaseModel):

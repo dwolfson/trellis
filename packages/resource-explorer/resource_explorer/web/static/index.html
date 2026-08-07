@@ -196,6 +196,11 @@
       📋 Activity
       <span id="activity-badge-hdr" class="hidden bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span>
     </button>
+    <!-- Read-only identity indicator — RE has no per-user login yet (see
+         egeria.py::whoami's comment); this just surfaces the fixed Egeria
+         service-account identity currently configured via .env. Clicking it
+         explains how that's configured rather than opening a login form. -->
+    <span id="whoami-badge" class="text-xs text-slate-500 cursor-help" onclick="_showWhoamiInfo()" title="Click for how this is configured">⏳ Connecting…</span>
     <span class="text-xs text-slate-500">Multi-agent RAG · <a href="/docs" target="_blank" class="text-cyan-600 hover:underline">API docs</a></span>
   </div>
 </header>
@@ -1083,6 +1088,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadActivityLog();
   loadRfaPanel();  // populates the header RFA-drawer badge count without opening the drawer
   loadPerspectiveChips();
+  loadWhoami();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
   // Restore chat panel open/collapsed state (defaults to open)
   if (localStorage.getItem('pe_chat_panel_open') === '0') {
@@ -1192,6 +1198,31 @@ function showIntentEmptyState(what) {
   showMainView('intent-placeholder');
   document.getElementById('intent-placeholder-view').innerHTML =
     `<div class="text-slate-600 text-sm text-center py-16">Select ${what} in the sidebar to see its Scouting summary.</div>`;
+}
+
+// ── identity indicator (read-only — see #whoami-badge's HTML comment) ──────────
+async function loadWhoami() {
+  const badge = document.getElementById('whoami-badge');
+  try {
+    const res = await fetch('/api/egeria/whoami');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const who = await res.json();
+    badge.textContent = `🔑 Connected as: ${who.user_id}`;
+    badge.dataset.viewServer = who.view_server;
+    badge.dataset.platformUrl = who.platform_url;
+  } catch(e) {
+    badge.textContent = '⚠ Not connected to Egeria';
+  }
+}
+
+function _showWhoamiInfo() {
+  const badge = document.getElementById('whoami-badge');
+  const vs = badge.dataset.viewServer || '?';
+  const url = badge.dataset.platformUrl || '?';
+  showToast('info',
+    `Connected to Egeria view server <b>${_esc(vs)}</b> at <b>${_esc(url)}</b> as a single shared service account. ` +
+    `This isn't per-user login yet — change it via <code>EGERIA_USER_ID</code>/<code>EGERIA_USER_PASSWORD</code> in .env, not from this UI.`,
+    10000);
 }
 
 // ── perspective (concurrent, cross-cutting — see #perspective-row's HTML comment) ─
