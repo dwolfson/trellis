@@ -6021,13 +6021,34 @@ let _feedbackBtnDragged = false;  // declared here so the button's inline onclic
 (function _initDraggableFeedbackBtn() {
   const btn = document.getElementById('feedback-btn');
   if (!btn) return;
+  // Clamp to the CURRENT viewport, not just the one the position was saved
+  // from — a stored position from a taller/wider window (or a stray
+  // out-of-bounds value from earlier testing) can otherwise place the
+  // button below the fold or off-screen with no visible way to reach it
+  // again. Bug found live: a leftover pe_feedback_btn_pos put the button
+  // at top:1333px on an ~800px-tall viewport.
+  const _clampBtnPos = (left, top) => ({
+    left: Math.max(4, Math.min(left, window.innerWidth - (btn.offsetWidth || 113) - 4)),
+    top: Math.max(4, Math.min(top, window.innerHeight - (btn.offsetHeight || 40) - 4)),
+  });
   const stored = JSON.parse(localStorage.getItem('pe_feedback_btn_pos') || 'null');
   if (stored) {
-    btn.style.left = stored.left + 'px';
-    btn.style.top = stored.top + 'px';
+    const { left, top } = _clampBtnPos(stored.left, stored.top);
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
     btn.style.right = 'auto';
     btn.style.bottom = 'auto';
+    if (left !== stored.left || top !== stored.top) {
+      localStorage.setItem('pe_feedback_btn_pos', JSON.stringify({ left, top }));
+    }
   }
+  // Re-clamp on viewport resize too, so shrinking the window never strands it.
+  window.addEventListener('resize', () => {
+    if (btn.style.right !== 'auto') return; // still in its default corner — nothing to clamp
+    const { left, top } = _clampBtnPos(parseFloat(btn.style.left), parseFloat(btn.style.top));
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
+  });
   let dragging = false, startX, startY, origLeft, origTop;
   btn.addEventListener('mousedown', e => {
     dragging = true; _feedbackBtnDragged = false;
