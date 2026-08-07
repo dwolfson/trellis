@@ -874,6 +874,18 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug, analysis_id)
                 )
             """)
+            # Migration: last_run_status/last_run_activity_id — added so the
+            # Admin Schedules overview can show success/error at a glance
+            # without scanning activity_log. Populated by
+            # update_schedule_after_run(), written by scheduler.py's
+            # _run_due(), which now also writes a real ActivityEntry for
+            # every scheduled run (previously only logged to Python's own
+            # logger — a real gap, not by design; see scheduler.py).
+            existing_sched = self._get_table_columns("resource_schedules")
+            if "last_run_status" not in existing_sched:
+                conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_status TEXT DEFAULT ''")
+            if "last_run_activity_id" not in existing_sched:
+                conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_activity_id TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS survey_definition_cache (
                     entity_type            TEXT NOT NULL,
@@ -1141,9 +1153,16 @@ class ProjectRegistry:
             )
 
     def update_schedule_after_run(
-        self, entity_type: str, entity_slug: str, analysis_id: str
+        self,
+        entity_type: str,
+        entity_slug: str,
+        analysis_id: str,
+        status: str = "ok",
+        activity_id: str = "",
     ) -> None:
-        """Record last_run = now and advance next_run by the configured interval."""
+        """Record last_run = now, advance next_run by the configured interval,
+        and record the outcome (status/activity_id) of that run — see the
+        resource_schedules migration comment for why."""
         from datetime import timezone
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
@@ -1156,9 +1175,10 @@ class ProjectRegistry:
                 return
             next_run = self._next_run_iso(row["schedule"], enabled=True)
             conn.execute(
-                "UPDATE resource_schedules SET last_run=?, next_run=? "
+                "UPDATE resource_schedules SET last_run=?, next_run=?, "
+                "last_run_status=?, last_run_activity_id=? "
                 "WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
-                (now, next_run, entity_type, entity_slug, analysis_id),
+                (now, next_run, status, activity_id, entity_type, entity_slug, analysis_id),
             )
 
     def get_schedules(self, entity_type: str, entity_slug: str) -> list[dict]:
@@ -1168,6 +1188,28 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_all_schedules(self) -> list[dict]:
+        """Every scheduled analysis across every resource — backs the Admin
+        Schedules overview. Errors first (whatever needs follow-up surfaces
+        immediately), then soonest-due, so the dashboard reads as a triage
+        list rather than an alphabetical dump."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_schedules
+                   ORDER BY CASE WHEN last_run_status = 'error' THEN 0 ELSE 1 END,
+                            next_run ASC"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_schedule(self, entity_type: str, entity_slug: str, analysis_id: str) -> bool:
+        """Remove a schedule entirely — returns False if none existed."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM resource_schedules WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
+                (entity_type, entity_slug, analysis_id),
+            )
+        return cur.rowcount > 0
 
     def get_due_schedules(self) -> list[dict]:
         """Return all enabled schedules that are past their next_run time."""

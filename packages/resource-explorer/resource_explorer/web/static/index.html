@@ -6224,34 +6224,124 @@ async function deleteAdminGroup(slug) {
   }
 }
 
-// ── Admin — Schedules (resurrected from the retired Analyses tab — see
-// loadSchedulesSection/loadSchedulesEditor above, which were left in place
-// but uncalled since 2026-07-09 pending exactly this kind of re-wiring).
-// Honesty note: Step 3 externalized analysis_catalog.py's DATA (YAML +
-// reclassified intents) but did NOT change what each entry represents —
-// the original reason this was disabled (some catalog entries, e.g.
-// database's Index Health/Privilege Audit, don't correspond to fully-
-// implemented behavior the way Survey Definitions' live steps do) still
-// applies. Resurrecting per the plan's explicit instruction, but with a
-// visible caveat rather than presenting it as fully reliable. ─────────────
+// ── Admin — Schedules: a global monitoring overview, not an editor. Setting
+// or changing a cadence happens per-analysis via the ⏱ Schedule action on
+// Assessment/Analysis/Discovery cards — this page's job is watching
+// everything that's scheduled at once: has it run, did it succeed, what
+// needs follow-up. Reuses the exact same backend as the per-card action
+// (resource_schedules / schedules.py) via the new GET /api/schedules/ — same
+// data, just queried/rendered globally instead of per-resource. Superseded
+// the old per-resource editor (loadSchedulesSection/loadSchedulesEditor
+// above, left in place but now genuinely unused) after direct user
+// feedback: scheduling itself belongs wherever you found the analysis, but
+// an admin overview for monitoring is still real, separate value.
+// Honesty note carried forward from the original per-resource version: not
+// every listed analysis is fully implemented (e.g. some database entries
+// predate Survey Definitions' real live steps) — cross-check against
+// Discovery before trusting a scheduled run does what its name suggests. ──
 async function loadAdminSchedulesPanel() {
-  const [entityType, slug] = _surveyDefEntityAndSlug();
   const view = document.getElementById('admin-schedules-view');
-  if (!entityType || !slug || entityType === 'filesystem') {
+  view.innerHTML = _adminSubnavHtml('admin-schedules') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading schedules…</div>';
+  try {
+    const [schedules, repoCatalog, dbCatalog, fsCatalog] = await Promise.all([
+      fetch('/api/schedules/').then(r => r.json()),
+      fetch('/api/analyses/repo').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/analyses/database').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/analyses/filesystem').then(r => r.ok ? r.json() : []).catch(() => []),
+    ]);
+    const nameById = {};
+    for (const a of [...repoCatalog, ...dbCatalog, ...fsCatalog]) nameById[a.id] = a.name;
+    renderAdminSchedulesPanel(schedules, nameById);
+  } catch(e) {
     view.innerHTML = _adminSubnavHtml('admin-schedules') +
-      '<div class="text-slate-500 text-xs py-8 text-center">Select a repo or database to manage its analysis schedules.<br>(Filesystem scheduling isn\'t built yet.)</div>';
-    return;
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
+}
+
+function renderAdminSchedulesPanel(schedules, nameById) {
+  const view = document.getElementById('admin-schedules-view');
+  const icon = { repo: '📁', database: '🗄', filesystem: '💾' };
+
+  const rows = schedules.map(s => {
+    const analysisName = nameById[s.analysis_id] || s.analysis_id;
+    const statusBadge = !s.last_run_status
+      ? '<span class="text-slate-600 text-xs">— not run yet</span>'
+      : s.last_run_status === 'error'
+        ? `<button onclick="_showScheduleErrorDetail('${_esc(s.last_run_activity_id)}')" class="text-xs text-red-400 hover:text-red-300 underline decoration-dotted transition-colors">⚠ error</button>`
+        : '<span class="text-emerald-400 text-xs">✓ ok</span>';
+    const cadenceLabel = s.enabled ? s.schedule : `${s.schedule} (disabled)`;
+    return `<tr class="hover:bg-slate-800/40 border-b border-slate-800">
+      <td class="px-3 py-2 text-xs text-slate-300 whitespace-nowrap">${icon[s.entity_type] || '•'} ${_esc(s.entity_slug)}</td>
+      <td class="px-3 py-2 text-xs text-slate-300">${_esc(analysisName)}</td>
+      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${_esc(cadenceLabel)}</td>
+      <td class="px-3 py-2">${statusBadge}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.last_run || '—').replace('T', ' ').substring(0, 16)}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.next_run || '—').replace('T', ' ').substring(0, 16)}</td>
+      <td class="px-3 py-2 text-right">
+        <button onclick="_deleteAdminSchedule('${s.entity_type}','${_esc(s.entity_slug)}','${_esc(s.analysis_id)}')"
+          class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors" title="Remove this schedule">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+
   view.innerHTML = _adminSubnavHtml('admin-schedules') + `
     <div class="p-6 space-y-4">
       <div>
-        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⏱ Analysis Schedules — ${_esc(slug)}</h1>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⏱ Schedules — overview</h1>
+        <p class="text-xs text-slate-400 mt-1">Every scheduled analysis across every resource. To add or change a
+          schedule, use the ⏱ Schedule action on the analysis card itself (Assessment / Analysis / Discovery) —
+          this page is for monitoring, not editing individual cadences.</p>
         <div class="text-xs text-amber-500/80 mt-1">⚠ Some listed analyses may not be fully implemented yet — cross-check
-          against 🔎 Discovery's Survey Definitions before relying on a scheduled run.</div>
+          against 🔎 Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.</div>
       </div>
-      <div id="schedules-section"></div>
+      <div id="sched-error-detail" class="hidden text-xs bg-red-950/40 border border-red-900 rounded p-3 text-red-300"></div>
+      <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
+              <th class="px-3 py-2">Resource</th>
+              <th class="px-3 py-2">Analysis</th>
+              <th class="px-3 py-2">Cadence</th>
+              <th class="px-3 py-2">Last run</th>
+              <th class="px-3 py-2">When</th>
+              <th class="px-3 py-2">Next run</th>
+              <th class="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-xs">No schedules configured yet — set one from an analysis card\'s ⏱ Schedule action.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
     </div>`;
-  loadSchedulesSection(slug, entityType);
+}
+
+async function _showScheduleErrorDetail(activityId) {
+  const el = document.getElementById('sched-error-detail');
+  if (!el) return;
+  if (!activityId) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.textContent = 'Loading…';
+  try {
+    const res = await fetch(`/api/activity/${activityId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const entry = await res.json();
+    el.innerHTML = `<div class="font-semibold mb-1">${_esc(entry.summary)}</div><div>${_esc(entry.detail || 'No further detail recorded.')}</div>`;
+  } catch(e) {
+    el.textContent = `Failed to load error detail: ${e.message}`;
+  }
+}
+
+async function _deleteAdminSchedule(entityType, slug, analysisId) {
+  try {
+    const res = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Schedule removed.', 3000);
+    loadAdminSchedulesPanel();
+  } catch(e) {
+    showToast('error', `Failed to remove schedule: ${_esc(e.message)}`, 5000);
+  }
 }
 
 function showRegisterAnnotationModal() {

@@ -290,6 +290,50 @@ class TestCurateNotesRouter:
         assert resp.status_code == 404
 
 
+# ── /api/schedules — per-resource + global overview ─────────────────────────────
+
+class TestSchedulesRouter:
+    def test_save_and_get_schedule(self, client):
+        resp = client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "weekly"})
+        assert resp.status_code == 200
+        listed = client.get("/api/schedules/repo/myproj").json()
+        assert len(listed) == 1
+        assert listed[0]["schedule"] == "weekly"
+
+    def test_save_schedule_rejects_invalid_cadence(self, client):
+        resp = client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "hourly"})
+        assert resp.status_code == 422
+
+    def test_list_all_schedules_global(self, client):
+        client.post("/api/schedules/repo/proj-a", json={"analysis_id": "security_scan", "schedule": "daily"})
+        client.post("/api/schedules/database/db-a", json={"analysis_id": "schema_inventory", "schedule": "weekly"})
+        resp = client.get("/api/schedules/")
+        assert resp.status_code == 200
+        slugs = {r["entity_slug"] for r in resp.json()}
+        assert slugs == {"proj-a", "db-a"}
+
+    def test_delete_schedule(self, client):
+        client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "daily"})
+        resp = client.delete("/api/schedules/repo/myproj/security_scan")
+        assert resp.status_code == 200
+        assert client.get("/api/schedules/repo/myproj").json() == []
+
+    def test_delete_nonexistent_schedule_404s(self, client):
+        resp = client.delete("/api/schedules/repo/myproj/nonexistent")
+        assert resp.status_code == 404
+
+    def test_global_list_route_not_shadowed_by_per_resource_route(self, client):
+        # Regression guard: GET / (0-segment) vs GET /{entity_type}/{slug}
+        # (2-segment) are structurally distinct, but worth a guard given this
+        # codebase's history of route-declaration-order bugs elsewhere.
+        client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "daily"})
+        all_resp = client.get("/api/schedules/")
+        per_resource_resp = client.get("/api/schedules/repo/myproj")
+        assert all_resp.status_code == 200 and per_resource_resp.status_code == 200
+        assert len(all_resp.json()) == 1
+        assert len(per_resource_resp.json()) == 1
+
+
 class TestRfaRouter:
     def test_list_rfas_defaults_to_open(self, client, registry):
         _write_rfa_activity_entry(registry)

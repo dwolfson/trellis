@@ -17,10 +17,28 @@ class ScheduleEntry(BaseModel):
     enabled: bool = True
 
 
+@router.get("/")
+def list_all_schedules() -> list[dict]:
+    """Every scheduled analysis across every resource — backs the Admin
+    Schedules overview. Errors surface first; see
+    ProjectRegistry.list_all_schedules()'s docstring."""
+    return ProjectRegistry().list_all_schedules()
+
+
 @router.get("/{entity_type}/{slug}")
 def get_schedules(entity_type: str, slug: str) -> list[dict]:
     """Return all schedules configured for a resource."""
     return ProjectRegistry().get_schedules(entity_type, slug)
+
+
+@router.delete("/{entity_type}/{slug}/{analysis_id}")
+def delete_schedule(entity_type: str, slug: str, analysis_id: str) -> dict:
+    """Remove a schedule entirely (vs. disabling it) — useful for cleaning up
+    stale schedules pointing at a resource that no longer exists."""
+    from fastapi import HTTPException
+    if not ProjectRegistry().delete_schedule(entity_type, slug, analysis_id):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"status": "success"}
 
 
 @router.post("/{entity_type}/{slug}")

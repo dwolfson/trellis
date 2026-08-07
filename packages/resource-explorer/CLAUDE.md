@@ -77,7 +77,9 @@ Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the i
 
 **Enrichment vs. Curate** — easy to conflate, deliberately distinct: Enrichment records *facts about* the resource (a one-time/periodic form); Curate is *ongoing curatorial work* to make the resource discoverable and reusable (tags, feedback, running commentary). Digital-product evaluation, sample-dataset creation, and a dedicated quality-remediation workflow were named as Curate capabilities but are NOT built — each needs its own design pass; see `docs/curate-followups.md`.
 
-**System/catalog configuration is not an intent.** Annotation Types registry, resource Groups, and the Schedules editor are reachable from the header's **⚙ Admin** button (same pattern as 📋 Activity — decoupled from `#intent-nav`/`currentNavIntent`), not from one of the seven intents — they configure how the system behaves, not something a user does to curate a specific resource. Scheduling a specific analysis, by contrast, IS per-resource and lives as a "⏱ Schedule" action directly on each analysis card in Assessment/Analysis/Discovery — both paths hit the same `schedules.py`/`resource_schedules` backend.
+**System/catalog configuration is not an intent.** Annotation Types registry, resource Groups, and the Schedules overview are reachable from the header's **⚙ Admin** button (same pattern as 📋 Activity — decoupled from `#intent-nav`/`currentNavIntent`), not from one of the seven intents — they configure how the system behaves, not something a user does to curate a specific resource.
+
+**Scheduling vs. monitoring schedules are two different surfaces on purpose.** Setting/changing a cadence for a specific analysis is per-resource and lives as a "⏱ Schedule" action directly on each analysis card in Assessment/Analysis/Discovery. Admin's Schedules pane is a *global, read-mostly overview* (`GET /api/schedules/`) across every resource — what's scheduled, whether the last run succeeded, drill into errors, remove stale schedules — not a duplicate editor. Both hit the same `schedules.py`/`resource_schedules` backend. The scheduler (`scheduler.py`) writes a real `ActivityEntry` for every run it executes, success or failure, and records the outcome on the schedule row itself (`last_run_status`/`last_run_activity_id`) — this was a real gap before (only logged to Python's own logger, invisible from the UI, violating rule 16 below), not a deliberate omission.
 
 RFA (RequestForAction) is **not** one of the seven intents either — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself.
 
@@ -199,7 +201,7 @@ resource_explorer/
 │       ├── activity.py             # Activity log + GET/PATCH /api/activity/rfas — backs the RFA drawer
 │       ├── context.py              # GET/POST /api/context/{type}/{slug} — backs Enrichment
 │       ├── curate.py               # Tags/feedback/curator-notes CRUD — backs Curate
-│       ├── schedules.py            # Analysis schedule CRUD — backs the per-card ⏱ Schedule action (Assessment/Analysis/Discovery) and Admin's Schedules pane
+│       ├── schedules.py            # Analysis schedule CRUD + GET /api/schedules/ (global) — backs the per-card ⏱ Schedule action and Admin's Schedules monitoring overview
 │       └── survey_definitions.py   # Egeria Survey Definition candidates/run — backs Discovery
 ├── tui/app.py             # Textual TUI
 ├── dashboard/graphs.py    # Plotly figure builders
