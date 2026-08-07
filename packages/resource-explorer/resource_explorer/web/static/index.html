@@ -171,6 +171,15 @@
       📋 Activity
       <span id="activity-badge-hdr" class="hidden bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span>
     </button>
+    <!-- System/catalog configuration (Annotation Types, Groups, Schedules) —
+         deliberately NOT one of the 7 intents (see _adminSubnavHtml's
+         comment): this is config for how the system behaves, not something
+         a user does to curate a specific resource. Same header-level,
+         decoupled-from-#intent-nav pattern as Activity above. -->
+    <button onclick="showMainView('annotations')" id="nav-admin-hdr"
+      class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700">
+      ⚙ Admin
+    </button>
     <!-- Read-only identity indicator — RE has no per-user login yet (see
          egeria.py::whoami's comment); this just surfaces the fixed Egeria
          service-account identity currently configured via .env. Clicking it
@@ -344,14 +353,18 @@
       <!-- Context gathering form view -->
       <div id="context-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
-      <!-- Annotation Types view -->
+      <!-- Annotation Types view (Admin, reachable from the header ⚙ Admin button) -->
       <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
-      <!-- Curate — Groups view -->
-      <div id="curate-groups-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Groups view (Admin) -->
+      <div id="admin-groups-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
-      <!-- Curate — Schedules view -->
-      <div id="curate-schedules-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Schedules view (Admin) -->
+      <div id="admin-schedules-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Curate view — tags, resource-level feedback, curator notes
+           (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
+      <div id="curate-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
     </div>
 
     <!-- Chat panel resize handle -->
@@ -1124,11 +1137,12 @@ function setNavIntent(intent) {
   } else if (intent === 'understanding') {
     showUnderstandingPane();
   } else if (intent === 'curate') {
-    // Curate is a small landing menu over 3 existing/new destinations
-    // (Annotation Types, Groups, Schedules) rather than one pane — see
-    // _curateSubnavHtml(). Annotation Types is the most complete existing
-    // piece, so it's the default landing content.
-    showMainView('annotations');
+    // Curate is about making a resource easier to find and more trustworthy
+    // to reuse (tags, resource-level feedback, curator notes) — distinct
+    // from Enrichment (facts about the resource) and distinct from the old
+    // admin-flavored content that used to live here (Annotation Types /
+    // Groups / Schedules, now under the header's ⚙ Admin button instead).
+    showCuratePane();
   } else {
     showIntentPlaceholder(intent);
   }
@@ -1193,6 +1207,16 @@ function loadUnderstandingCharts() {
     document.getElementById('db-chart-tabs').classList.remove('hidden');
     showDbChart(currentDbChart);
   }
+}
+
+// ── Curate — make a resource easier to find and more trustworthy to reuse:
+// tags, resource-level feedback, curator notes. Distinct from Enrichment
+// (facts about the resource) and from the header's ⚙ Admin area (system
+// config). Applies across all 3 resource types, unlike Understanding. ─────
+function showCuratePane() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  if (!entityType || !slug) { showIntentEmptyState('a database, repo, or filesystem', 'tags, feedback, and curator notes'); return; }
+  showMainView('curate');
 }
 
 // ── identity indicator (read-only — see #whoami-badge's HTML comment) ──────────
@@ -1298,6 +1322,15 @@ async function loadAnalysisPanel() {
 // differing only by which intent= they ask the catalog for and which pane
 // they render into. See renderAnalysisCatalogCards() below for the card
 // markup itself, shared the same way.
+// Which resource is selected for the currently-active facet — used both by
+// the existing Run-button guard and by the new per-card Schedule action.
+function _currentSelectedSlug() {
+  if (resourceTypeFacet === 'repo') return selectedProject;
+  if (resourceTypeFacet === 'db') return selectedDatabase;
+  if (resourceTypeFacet === 'filesystem') return selectedFilesystem;
+  return null;
+}
+
 async function _loadAnalysisCatalogPanel(intent, viewId, title) {
   const view = document.getElementById(viewId);
   view.innerHTML = `<div class="text-slate-500 text-xs py-8 text-center">Loading ${_esc(title)} catalog…</div>`;
@@ -1316,10 +1349,26 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title) {
         (a.perspectives || []).some(p => activePerspectives.has(p)));
     }
     const egeriaStatus = await _fetchEgeriaMergeStatus(resourceType);
+    // Per-card Schedule action needs to know each analysis's current
+    // schedule, if any — reuses the existing GET /api/schedules endpoint
+    // (same one the old Admin Schedules editor used) rather than a new one.
+    const slug = _currentSelectedSlug();
+    let schedules = {};
+    if (slug) {
+      try {
+        const schedRes = await fetch(`/api/schedules/${resourceType}/${encodeURIComponent(slug)}`);
+        if (schedRes.ok) {
+          for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
+        }
+      } catch { /* non-fatal — cards just show the unscheduled state */ }
+    }
     renderAnalysisCatalogCards(analyses, view, {
       title,
       emptyText: `No ${title}-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
       egeriaStatus,
+      entityType: resourceType,
+      slug,
+      schedules,
     });
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
@@ -1346,7 +1395,8 @@ async function _fetchEgeriaMergeStatus(resourceType) {
 // intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
 // pattern already established in renderSurveyDefinitionsPanel, rather than
 // inventing a second card style.
-function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus }) {
+function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules }) {
+  schedules = schedules || {};
   // Only "unavailable" means a live-Egeria merge was actually attempted and
   // failed — "not_applicable" (no Technology Type mapped for this resource
   // type yet) and "ok" say nothing, so the panel doesn't cry wolf.
@@ -1371,22 +1421,63 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
       ? '<span class="analysis-tag tag-egeria">☁ Egeria</span>'
       : '<span class="analysis-tag">🏠 Local</span>';
     const speedTag = `<span class="analysis-tag ${speedTagClass[a.run_time] || ''}">${_esc(a.run_time)}</span>`;
+    // Scheduling is a cross-cutting, per-analysis action — available from
+    // whichever card surfaced it (Assessment, Analysis, or Discovery),
+    // rather than a separate admin page. Reuses the same schedules backend
+    // the old Admin Schedules editor used (GET/POST /api/schedules/...) —
+    // no new backend for this.
+    const safeId = String(a.id).replace(/[^a-zA-Z0-9]/g, '_');
+    const sched = schedules[a.id];
+    const schedLabel = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
+    const scheduleButton = slug
+      ? `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(a.id)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
+           class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${schedLabel}</button>`
+      : `<button onclick="showToast('info', 'Select a resource first.', 4000)"
+           class="text-xs px-2.5 py-1 rounded bg-slate-800 text-slate-600 transition-colors whitespace-nowrap" title="Select a resource to schedule this analysis">⏱ Schedule</button>`;
     return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
       <div class="flex-1 min-w-0">
         <div class="text-xs font-semibold text-slate-200">${_esc(a.name)}${a.recommended ? ' <span class="text-cyan-400" title="Recommended">★</span>' : ''}</div>
         <div class="text-xs text-slate-400 mt-0.5">${_esc(a.description)}</div>
       </div>
       <div class="flex flex-wrap gap-1">${speedTag}${sourceTag}${perspTags}</div>
-      <div class="mt-auto pt-1">
+      <div class="mt-auto pt-1 flex flex-wrap gap-1.5 items-center">
         <button onclick='_runAnalysisCatalogCard(${JSON.stringify(a.id)})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
           Run →
         </button>
+        ${scheduleButton}
       </div>
+      <div id="sched-form-${safeId}" class="hidden mt-1"></div>
     </div>`;
   }).join('');
 
   view.innerHTML = header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+}
+
+function _showScheduleForm(analysisId, entityType, slug, currentSchedule) {
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const formEl = document.getElementById(`sched-form-${safeId}`);
+  if (!formEl) return;
+  const opts = ['manual', 'daily', 'weekly', 'monthly']
+    .map(o => `<option value="${o}" ${o === currentSchedule ? 'selected' : ''}>${o}</option>`).join('');
+  formEl.innerHTML = `<div class="flex items-center gap-1.5">
+    <select id="sched-select-${safeId}" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1.5 py-1">${opts}</select>
+    <button onclick='_submitSchedule(${JSON.stringify(analysisId)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)})'
+      class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors">Save</button>
+    <button onclick="document.getElementById('sched-form-${safeId}').classList.add('hidden')"
+      class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">Cancel</button>
+  </div>`;
+  formEl.classList.remove('hidden');
+}
+
+async function _submitSchedule(analysisId, entityType, slug) {
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const schedule = document.getElementById(`sched-select-${safeId}`).value;
+  await saveSchedule(entityType, slug, analysisId, schedule, schedule !== 'manual');
+  showToast('success', `Schedule set to ${_esc(schedule)}.`, 3000);
+  const badge = document.getElementById(`sched-badge-${safeId}`);
+  if (badge) badge.textContent = schedule === 'manual' ? '⏱ Schedule' : `⏱ ${schedule}`;
+  document.getElementById(`sched-form-${safeId}`)?.classList.add('hidden');
 }
 
 // "Run" doesn't (yet) trigger just this one named analysis — RE's survey
@@ -3324,7 +3415,17 @@ async function loadSurveyDefinitionsPanel() {
   try {
     const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderSurveyDefinitionsPanel(await res.json(), entityType, slug);
+    // Per-candidate Schedule action (see renderSurveyDefinitionsPanel) needs
+    // to know each candidate's current schedule, if any — same schedules
+    // backend the analysis-catalog cards use, keyed here by qualified_name.
+    let schedules = {};
+    try {
+      const schedRes = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}`);
+      if (schedRes.ok) {
+        for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
+      }
+    } catch { /* non-fatal — cards just show the unscheduled state */ }
+    renderSurveyDefinitionsPanel(await res.json(), entityType, slug, schedules);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -3370,7 +3471,8 @@ function _surveyDefEgeriaProducedTypesHtml(step) {
   </div>`;
 }
 
-function renderSurveyDefinitionsPanel(data, entityType, slug) {
+function renderSurveyDefinitionsPanel(data, entityType, slug, schedules) {
+  schedules = schedules || {};
   const view = document.getElementById('survey-definitions-view');
   const candidates = data.candidates || [];
   // Candidate objects (author-written descriptions, Egeria-sourced annotation
@@ -3414,11 +3516,24 @@ function renderSurveyDefinitionsPanel(data, entityType, slug) {
       </div>
       <div class="text-xs text-slate-500 mt-1.5">${(c.steps || []).length} step(s), in order:</div>
       <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
-      <div class="mt-auto pt-2">
+      <div class="mt-auto pt-2 flex flex-wrap gap-1.5 items-center">
         <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${i})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
           Run →
         </button>
+        ${(() => {
+          // Scheduling this directly against the real Survey Definition
+          // (keyed by qualified_name, not a static catalog id) is exactly
+          // the redesign this section's own comment above has been waiting
+          // on since 2026-07-09 — see the "Schedules editor: hidden for
+          // now" note a few lines up.
+          const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+          const sched = schedules[c.qualified_name];
+          const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
+          return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
+              class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>
+            <div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+        })()}
       </div>
     </div>`;
   }).join('');
@@ -3811,6 +3926,194 @@ async function saveContextForm(slug, entityType) {
   }
 }
 
+// ── Curate panel — tags, resource-level feedback, curator notes ────────────────
+// All three sections live on one scrollable page (not sub-tabbed like Admin) —
+// they're small enough, and read naturally together as "curating this resource."
+// Digital-product evaluation, sample datasets, and quality remediation are
+// deliberately not here yet — see docs/curate-followups.md.
+
+let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each load
+
+async function loadCuratePanel() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  const view = document.getElementById('curate-view');
+  if (!entityType || !slug) return;  // showCuratePane() already gates this; defensive only
+  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const [tags, feedback, notes, allTags] = await Promise.all([
+      fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
+      fetch(`/api/curate/feedback/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
+      fetch(`/api/curate/notes/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
+      fetch('/api/curate/tags').then(r => r.json()),
+    ]);
+    _curateAllTagsCache = allTags;
+    renderCuratePanel(entityType, slug, tags, feedback, notes);
+  } catch(e) {
+    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderCuratePanel(entityType, slug, tags, feedback, notes) {
+  const view = document.getElementById('curate-view');
+  const icon = { repo: '📁', database: '🗄', filesystem: '💾' }[entityType] || '•';
+
+  const tagChips = tags.map(t => `<span class="analysis-tag" style="display:inline-flex;align-items:center;gap:.3rem;background:#1e293b;color:#a5b4fc;padding:.2rem .5rem;">
+      ${_esc(t)}
+      <button onclick="removeCurateTag('${entityType}','${_esc(slug)}','${_esc(t)}')" class="text-slate-500 hover:text-red-400" title="Remove tag">×</button>
+    </span>`).join(' ') || '<span class="text-slate-600 text-xs">No tags yet.</span>';
+
+  const tagDatalist = _curateAllTagsCache.map(t => `<option value="${_esc(t.tag)}">`).join('');
+
+  const feedbackHtml = feedback.length ? feedback.map(f => `
+    <div class="rpt-section" style="margin-bottom:.5rem;">
+      <div class="flex items-center gap-2 text-xs">
+        ${f.rating ? `<span class="text-amber-400">${'★'.repeat(f.rating)}${'☆'.repeat(5-f.rating)}</span>` : ''}
+        ${f.category ? `<span class="analysis-tag">${_esc(f.category)}</span>` : ''}
+        <span class="text-slate-600">${(f.created_at||'').replace('T',' ').substring(0,16)}</span>
+      </div>
+      <div class="text-xs text-slate-300 mt-1">${_esc(f.message)}</div>
+    </div>`).join('') : '<div class="text-slate-600 text-xs text-center py-4">No feedback recorded yet.</div>';
+
+  const notesHtml = notes.length ? notes.map(n => `
+    <div class="rpt-section" style="margin-bottom:.5rem;">
+      <div class="flex items-start justify-between gap-2">
+        <div class="text-xs text-slate-300 flex-1">${_esc(n.note)}</div>
+        <button onclick="deleteCurateNote('${n.id}', '${entityType}','${_esc(slug)}')" class="text-xs text-slate-600 hover:text-red-400 shrink-0" title="Delete note">×</button>
+      </div>
+      <div class="text-xs text-slate-600 mt-1">${(n.created_at||'').replace('T',' ').substring(0,16)}</div>
+    </div>`).join('') : '<div class="text-slate-600 text-xs text-center py-4">No curator notes yet.</div>';
+
+  view.innerHTML = `
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Curate — ${icon} ${_esc(slug)}</span>
+    </div>
+    <div class="p-4 space-y-6 max-w-2xl">
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏷 Tags — make this easier to find</div>
+        <div class="flex flex-wrap gap-1.5 mb-2">${tagChips}</div>
+        <div class="flex gap-2">
+          <input id="curate-new-tag" list="curate-tag-datalist" type="text" placeholder="Add a tag…"
+            class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 flex-1"
+            onkeydown="if(event.key==='Enter'){event.preventDefault(); addCurateTag('${entityType}','${_esc(slug)}');}">
+          <datalist id="curate-tag-datalist">${tagDatalist}</datalist>
+          <button onclick="addCurateTag('${entityType}','${_esc(slug)}')" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Add</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">💬 Feedback</div>
+        ${feedbackHtml}
+        <div class="mt-2 space-y-1.5">
+          <div class="flex items-center gap-2">
+            <select id="curate-feedback-rating" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1.5 py-1">
+              <option value="">No rating</option>
+              <option value="5">★★★★★</option>
+              <option value="4">★★★★☆</option>
+              <option value="3">★★★☆☆</option>
+              <option value="2">★★☆☆☆</option>
+              <option value="1">★☆☆☆☆</option>
+            </select>
+            <select id="curate-feedback-category" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1.5 py-1">
+              <option value="">Category (optional)</option>
+              <option value="quality">Quality</option>
+              <option value="documentation">Documentation</option>
+              <option value="usefulness">Usefulness</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <textarea id="curate-feedback-message" rows="2" placeholder="Leave feedback about this resource…"
+            class="w-full bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 resize-none"></textarea>
+          <button onclick="addCurateFeedback('${entityType}','${_esc(slug)}')" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Submit feedback</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">📝 Curator Notes</div>
+        <div class="text-xs text-slate-700 mb-2">Ongoing commentary about discoverability, quality, or readiness — distinct from Enrichment's context notes.</div>
+        ${notesHtml}
+        <div class="mt-2 flex gap-2">
+          <textarea id="curate-new-note" rows="2" placeholder="Add a curator note…"
+            class="w-full bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 resize-none"></textarea>
+        </div>
+        <button onclick="addCurateNote('${entityType}','${_esc(slug)}')" class="mt-1.5 px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Add note</button>
+      </div>
+
+      <div class="text-xs text-slate-700 border-t border-slate-800 pt-3">
+        Not here yet: digital-product evaluation, sample dataset creation, and a dedicated quality-remediation workflow — each needs its own design pass. See <code>docs/curate-followups.md</code>.
+      </div>
+    </div>`;
+}
+
+async function addCurateTag(entityType, slug) {
+  const input = document.getElementById('curate-new-tag');
+  const tag = input.value.trim();
+  if (!tag) return;
+  try {
+    const res = await fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    input.value = '';
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to add tag: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function removeCurateTag(entityType, slug, tag) {
+  try {
+    await fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to remove tag: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function addCurateFeedback(entityType, slug) {
+  const ratingVal = document.getElementById('curate-feedback-rating').value;
+  const category = document.getElementById('curate-feedback-category').value;
+  const message = document.getElementById('curate-feedback-message').value.trim();
+  if (!message) { showToast('info', 'Enter a feedback message first.', 3000); return; }
+  try {
+    const res = await fetch(`/api/curate/feedback/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating: ratingVal ? parseInt(ratingVal) : null, category, message }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Feedback recorded.', 3000);
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to save feedback: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function addCurateNote(entityType, slug) {
+  const ta = document.getElementById('curate-new-note');
+  const note = ta.value.trim();
+  if (!note) return;
+  try {
+    const res = await fetch(`/api/curate/notes/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to add note: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function deleteCurateNote(noteId, entityType, slug) {
+  try {
+    await fetch(`/api/curate/notes/${noteId}`, { method: 'DELETE' });
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to delete note: ${_esc(e.message)}`, 5000);
+  }
+}
+
 // ── main view tabs ─────────────────────────────────────────────────────────────
 
 function showMainView(tab) {
@@ -3832,13 +4135,15 @@ function showMainView(tab) {
   const contextView   = document.getElementById('context-view');
   const surveyDefsView = document.getElementById('survey-definitions-view');
   const annotationTypesView = document.getElementById('annotation-types-view');
-  const curateGroupsView = document.getElementById('curate-groups-view');
-  const curateSchedulesView = document.getElementById('curate-schedules-view');
+  const adminGroupsView = document.getElementById('admin-groups-view');
+  const adminSchedulesView = document.getElementById('admin-schedules-view');
+  const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, curateGroupsView, curateSchedulesView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, curateView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
+  document.getElementById('nav-admin-hdr')?.classList.remove('active');
 
   if (tab === 'intent-placeholder') {
     placeholderView.classList.remove('hidden');
@@ -3880,13 +4185,19 @@ function showMainView(tab) {
     loadSurveyDefinitionsPanel();
   } else if (tab === 'annotations') {
     annotationTypesView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAnnotationTypesView(_selectedAnnotationType);
-  } else if (tab === 'curate-groups') {
-    curateGroupsView.classList.remove('hidden');
-    loadCurateGroupsPanel();
-  } else if (tab === 'curate-schedules') {
-    curateSchedulesView.classList.remove('hidden');
-    loadCurateSchedulesPanel();
+  } else if (tab === 'admin-groups') {
+    adminGroupsView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminGroupsPanel();
+  } else if (tab === 'admin-schedules') {
+    adminSchedulesView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminSchedulesPanel();
+  } else if (tab === 'curate') {
+    curateView.classList.remove('hidden');
+    loadCuratePanel();
   } else {
     placeholderView.classList.remove('hidden');
   }
@@ -5661,19 +5972,23 @@ function selectAnnotationType(typeName) {
   loadAnnotationTypesView(typeName);
 }
 
-// ── Curate — a small landing menu over 3 destinations (Annotation Types,
+// ── Admin — a small landing menu over 3 destinations (Annotation Types,
 // Groups, Schedules), each its own top-level pane in showMainView's
 // hide-list rather than a nested sub-router — keeps the same single-active-
 // pane architecture as every other intent, just with a shared subnav strip
-// prepended to each destination's own render so the 3 read as one Curate
+// prepended to each destination's own render so the 3 read as one Admin
 // "section". Clicking a subnav button calls showMainView() directly (NOT
-// setNavIntent()) so currentNavIntent stays 'curate' and the top #intent-nav
-// button stays highlighted while browsing between them. ──────────────────
-function _curateSubnavHtml(active) {
+// setNavIntent()) so currentNavIntent is untouched and #nav-admin-hdr stays
+// highlighted while browsing between them — same pattern as Activity's
+// header button, and deliberately NOT one of the 7 intents: this is
+// system/catalog configuration, not something a user does to curate a
+// specific resource (that's the real Curate intent — see showCuratePane()
+// below). Reachable from the header's ⚙ Admin button, not #intent-nav. ────
+function _adminSubnavHtml(active) {
   const tabs = [
     { tab: 'annotations',       label: '📝 Annotation Types' },
-    { tab: 'curate-groups',     label: '🗂 Groups' },
-    { tab: 'curate-schedules',  label: '⏱ Schedules' },
+    { tab: 'admin-groups',     label: '🗂 Groups' },
+    { tab: 'admin-schedules',  label: '⏱ Schedules' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -5685,7 +6000,7 @@ function _curateSubnavHtml(active) {
 
 function loadAnnotationTypesView(typeName = null) {
   const view = document.getElementById('annotation-types-view');
-  const subnav = _curateSubnavHtml('annotations');
+  const subnav = _adminSubnavHtml('annotations');
   if (!typeName) {
     let rowsHtml = '';
     _annotationsList.forEach(ann => {
@@ -5795,26 +6110,26 @@ function loadAnnotationTypesView(typeName = null) {
   `;
 }
 
-// ── Curate — Groups (thin: list/create/delete only — per-resource group
+// ── Admin — Groups (thin: list/create/delete only — per-resource group
 // assignment already exists via POST /{slug}/group but has no UI here yet;
 // deliberately out of scope for this "thin assembly" pass) ─────────────────
-async function loadCurateGroupsPanel() {
-  const view = document.getElementById('curate-groups-view');
-  view.innerHTML = _curateSubnavHtml('curate-groups') +
+async function loadAdminGroupsPanel() {
+  const view = document.getElementById('admin-groups-view');
+  view.innerHTML = _adminSubnavHtml('admin-groups') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading groups…</div>';
   try {
     const res = await fetch('/api/projects/groups');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _groups = await res.json();
-    renderCurateGroupsPanel();
+    renderAdminGroupsPanel();
   } catch(e) {
-    view.innerHTML = _curateSubnavHtml('curate-groups') +
+    view.innerHTML = _adminSubnavHtml('admin-groups') +
       `<div class="text-red-400 text-xs p-4">Failed to load groups: ${_esc(e.message)}</div>`;
   }
 }
 
-function renderCurateGroupsPanel() {
-  const view = document.getElementById('curate-groups-view');
+function renderAdminGroupsPanel() {
+  const view = document.getElementById('admin-groups-view');
   const rows = _groups.map(g => {
     const counts = `${g.projects.length} repo${g.projects.length!==1?'s':''} · ${g.databases.length} db${g.databases.length!==1?'s':''} · ${g.filesystems.length} fs`;
     return `<tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
@@ -5823,12 +6138,12 @@ function renderCurateGroupsPanel() {
       <td class="px-4 py-3 text-slate-350 text-xs max-w-xs truncate">${_esc(g.description) || '—'}</td>
       <td class="px-4 py-3 text-slate-450 text-xs">${counts}</td>
       <td class="px-4 py-3 text-right">
-        <button onclick="deleteCurateGroup('${_esc(g.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
+        <button onclick="deleteAdminGroup('${_esc(g.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
       </td>
     </tr>`;
   }).join('');
 
-  view.innerHTML = _curateSubnavHtml('curate-groups') + `
+  view.innerHTML = _adminSubnavHtml('admin-groups') + `
     <div class="p-6 space-y-6">
       <div>
         <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">🗂 Resource Groups</h1>
@@ -5850,7 +6165,7 @@ function renderCurateGroupsPanel() {
             <label class="block text-[10px] text-slate-500 mb-0.5">Description (optional)</label>
             <input id="new-group-desc" type="text" placeholder="" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full">
           </div>
-          <button onclick="createCurateGroup()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
+          <button onclick="createAdminGroup()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
         </div>
         <div id="new-group-feedback" class="text-xs text-slate-500"></div>
       </div>
@@ -5874,7 +6189,7 @@ function renderCurateGroupsPanel() {
     </div>`;
 }
 
-async function createCurateGroup() {
+async function createAdminGroup() {
   const slug = document.getElementById('new-group-slug').value.trim();
   const displayName = document.getElementById('new-group-name').value.trim();
   const description = document.getElementById('new-group-desc').value.trim();
@@ -5891,25 +6206,25 @@ async function createCurateGroup() {
       throw new Error(err.detail || `HTTP ${res.status}`);
     }
     fb.textContent = '';
-    loadCurateGroupsPanel();
+    loadAdminGroupsPanel();
   } catch(e) {
     fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
   }
 }
 
-async function deleteCurateGroup(slug) {
+async function deleteAdminGroup(slug) {
   try {
     const res = await fetch(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     showToast('success', `Group deleted — ${data.resources_unassigned} resource(s) unassigned.`, 4000);
-    loadCurateGroupsPanel();
+    loadAdminGroupsPanel();
   } catch(e) {
     showToast('error', `Failed to delete group: ${_esc(e.message)}`, 6000);
   }
 }
 
-// ── Curate — Schedules (resurrected from the retired Analyses tab — see
+// ── Admin — Schedules (resurrected from the retired Analyses tab — see
 // loadSchedulesSection/loadSchedulesEditor above, which were left in place
 // but uncalled since 2026-07-09 pending exactly this kind of re-wiring).
 // Honesty note: Step 3 externalized analysis_catalog.py's DATA (YAML +
@@ -5919,15 +6234,15 @@ async function deleteCurateGroup(slug) {
 // implemented behavior the way Survey Definitions' live steps do) still
 // applies. Resurrecting per the plan's explicit instruction, but with a
 // visible caveat rather than presenting it as fully reliable. ─────────────
-async function loadCurateSchedulesPanel() {
+async function loadAdminSchedulesPanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
-  const view = document.getElementById('curate-schedules-view');
+  const view = document.getElementById('admin-schedules-view');
   if (!entityType || !slug || entityType === 'filesystem') {
-    view.innerHTML = _curateSubnavHtml('curate-schedules') +
+    view.innerHTML = _adminSubnavHtml('admin-schedules') +
       '<div class="text-slate-500 text-xs py-8 text-center">Select a repo or database to manage its analysis schedules.<br>(Filesystem scheduling isn\'t built yet.)</div>';
     return;
   }
-  view.innerHTML = _curateSubnavHtml('curate-schedules') + `
+  view.innerHTML = _adminSubnavHtml('admin-schedules') + `
     <div class="p-6 space-y-4">
       <div>
         <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⏱ Analysis Schedules — ${_esc(slug)}</h1>

@@ -202,6 +202,94 @@ def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_an
     ))
 
 
+# ── /api/curate — tags, resource feedback, curator notes ───────────────────────
+
+class TestCurateTagsRouter:
+    def test_add_list_remove_tag(self, client):
+        resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "Gold-Tier"})
+        assert resp.status_code == 200
+        assert resp.json()["tag"] == "gold-tier"  # normalized lowercase
+
+        listed = client.get("/api/curate/tags/repo/myproj").json()
+        assert listed == ["gold-tier"]
+
+        resp = client.delete("/api/curate/tags/repo/myproj/gold-tier")
+        assert resp.status_code == 200
+        assert client.get("/api/curate/tags/repo/myproj").json() == []
+
+    def test_add_tag_rejects_empty(self, client):
+        resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "   "})
+        assert resp.status_code == 400
+
+    def test_list_all_tags_with_counts(self, client):
+        client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
+        client.post("/api/curate/tags/database/db-a", json={"tag": "gold-tier"})
+        tags = {t["tag"]: t["count"] for t in client.get("/api/curate/tags").json()}
+        assert tags["gold-tier"] == 2
+
+    def test_resources_by_tag(self, client):
+        client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
+        resp = client.get("/api/curate/tags/gold-tier/resources")
+        assert resp.status_code == 200
+        assert {"entity_type": "repo", "entity_slug": "proj-a"} in resp.json()
+
+    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client):
+        # Regression guard: /tags/{tag}/resources and /tags/{entity_type}/{slug}
+        # are both 2-segment paths — declaration order matters (see curate.py's
+        # comment). A resource literally named "resources" would be the edge
+        # case that breaks if the order were ever flipped back.
+        client.post("/api/curate/tags/repo/myproj", json={"tag": "gold-tier"})
+        resp = client.get("/api/curate/tags/repo/myproj")
+        assert resp.status_code == 200
+        assert resp.json() == ["gold-tier"]
+
+
+class TestCurateFeedbackRouter:
+    def test_add_and_list_feedback(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={
+            "rating": 4, "category": "quality", "message": "Schema looks stale",
+        })
+        assert resp.status_code == 200
+        listed = client.get("/api/curate/feedback/repo/myproj").json()
+        assert len(listed) == 1
+        assert listed[0]["message"] == "Schema looks stale"
+
+    def test_rejects_empty_message(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"message": ""})
+        assert resp.status_code == 400
+
+    def test_rejects_out_of_range_rating(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"rating": 9, "message": "x"})
+        assert resp.status_code == 400
+
+    def test_feedback_without_rating_is_allowed(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"message": "just a note"})
+        assert resp.status_code == 200
+        assert resp.json()["rating"] is None
+
+
+class TestCurateNotesRouter:
+    def test_add_list_delete_note(self, client):
+        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "Needs a better README"})
+        assert resp.status_code == 200
+        note_id = resp.json()["id"]
+
+        listed = client.get("/api/curate/notes/repo/myproj").json()
+        assert len(listed) == 1
+
+        resp = client.delete(f"/api/curate/notes/{note_id}")
+        assert resp.status_code == 200
+        assert client.get("/api/curate/notes/repo/myproj").json() == []
+
+    def test_rejects_empty_note(self, client):
+        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "  "})
+        assert resp.status_code == 400
+
+    def test_delete_nonexistent_note_404s(self, client):
+        resp = client.delete("/api/curate/notes/nonexistent-id")
+        assert resp.status_code == 404
+
+
 class TestRfaRouter:
     def test_list_rfas_defaults_to_open(self, client, registry):
         _write_rfa_activity_entry(registry)

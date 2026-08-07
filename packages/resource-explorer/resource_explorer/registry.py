@@ -5,6 +5,7 @@ import json
 import math
 import re
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -822,6 +823,46 @@ class ProjectRegistry:
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_tags (
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    tag          TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, entity_slug, tag)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_feedback (
+                    id           TEXT PRIMARY KEY,
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    rating       INTEGER DEFAULT NULL,
+                    category     TEXT DEFAULT '',
+                    message      TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_feedback_entity "
+                "ON resource_feedback(entity_type, entity_slug)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_curator_notes (
+                    id           TEXT PRIMARY KEY,
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    note         TEXT NOT NULL,
+                    created_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_curator_notes_entity "
+                "ON resource_curator_notes(entity_type, entity_slug)"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
                     entity_type  TEXT NOT NULL,
                     entity_slug  TEXT NOT NULL,
@@ -958,6 +999,117 @@ class ProjectRegistry:
         ctx = json.loads(row["context_json"] or "{}")
         ctx["_saved_at"] = row["ts"]
         return ctx
+
+    # ── Curate — tags, resource-level feedback, curator notes ──────────────────
+    # Discoverability/reuse-readiness for a resource, distinct from Enrichment's
+    # resource_context (facts about the resource). See web/routes/curate.py.
+
+    def add_resource_tag(self, entity_type: str, entity_slug: str, tag: str) -> None:
+        from datetime import timezone
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_tags (entity_type, entity_slug, tag, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug, tag) DO NOTHING""",
+                (entity_type, entity_slug, tag, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def remove_resource_tag(self, entity_type: str, entity_slug: str, tag: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM resource_tags WHERE entity_type=? AND entity_slug=? AND tag=?",
+                (entity_type, entity_slug, tag),
+            )
+
+    def list_resource_tags(self, entity_type: str, entity_slug: str) -> list[str]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT tag FROM resource_tags WHERE entity_type=? AND entity_slug=? ORDER BY tag",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [r["tag"] for r in rows]
+
+    def list_all_tags(self) -> list[dict]:
+        """Distinct tags across all resources with their usage count — backs
+        autocomplete and browse-by-tag ("making the resource easier to find")."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT tag, COUNT(*) as count FROM resource_tags GROUP BY tag ORDER BY tag"
+            ).fetchall()
+        return [{"tag": r["tag"], "count": r["count"]} for r in rows]
+
+    def list_resources_by_tag(self, tag: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT entity_type, entity_slug FROM resource_tags WHERE tag=? ORDER BY entity_type, entity_slug",
+                (tag,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_resource_feedback(
+        self, entity_type: str, entity_slug: str, rating: int | None, category: str, message: str
+    ) -> dict:
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "rating": rating,
+            "category": category,
+            "message": message,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_feedback
+                   (id, entity_type, entity_slug, rating, category, message, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def list_resource_feedback(self, entity_type: str, entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_feedback WHERE entity_type=? AND entity_slug=?
+                   ORDER BY created_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_curator_note(self, entity_type: str, entity_slug: str, note: str) -> dict:
+        """Ongoing curator commentary (discoverability, quality, readiness) —
+        deliberately a separate stream from resource_context's 'notes' field,
+        which is a one-time context-gathering fact, not a running log."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "note": note,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_curator_notes (id, entity_type, entity_slug, note, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def list_curator_notes(self, entity_type: str, entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_curator_notes WHERE entity_type=? AND entity_slug=?
+                   ORDER BY created_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_curator_note(self, note_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM resource_curator_notes WHERE id=?", (note_id,))
+        return cur.rowcount > 0
 
     _SCHEDULE_DAYS: dict[str, int] = {"daily": 1, "weekly": 7, "monthly": 30}
 

@@ -128,3 +128,91 @@ class TestSchemaMigration:
         p = db.get("old")
         assert p is not None
         assert p.last_commit_sha == ""  # default applied by migration
+
+
+class TestCurateTags:
+    def test_add_and_list_tags(self, db):
+        db.add_resource_tag("repo", "myproj", "gold-tier")
+        db.add_resource_tag("repo", "myproj", "customer-facing")
+        assert db.list_resource_tags("repo", "myproj") == ["customer-facing", "gold-tier"]
+
+    def test_duplicate_tag_is_idempotent(self, db):
+        db.add_resource_tag("repo", "myproj", "gold-tier")
+        db.add_resource_tag("repo", "myproj", "gold-tier")
+        assert db.list_resource_tags("repo", "myproj") == ["gold-tier"]
+
+    def test_remove_tag(self, db):
+        db.add_resource_tag("repo", "myproj", "gold-tier")
+        db.remove_resource_tag("repo", "myproj", "gold-tier")
+        assert db.list_resource_tags("repo", "myproj") == []
+
+    def test_remove_nonexistent_tag_is_a_noop(self, db):
+        db.remove_resource_tag("repo", "myproj", "nonexistent")  # should not raise
+
+    def test_list_all_tags_with_counts(self, db):
+        db.add_resource_tag("repo", "proj-a", "gold-tier")
+        db.add_resource_tag("repo", "proj-b", "gold-tier")
+        db.add_resource_tag("database", "db-a", "pii")
+        tags = {t["tag"]: t["count"] for t in db.list_all_tags()}
+        assert tags == {"gold-tier": 2, "pii": 1}
+
+    def test_list_resources_by_tag(self, db):
+        db.add_resource_tag("repo", "proj-a", "gold-tier")
+        db.add_resource_tag("database", "db-a", "gold-tier")
+        resources = db.list_resources_by_tag("gold-tier")
+        assert {"entity_type": "repo", "entity_slug": "proj-a"} in resources
+        assert {"entity_type": "database", "entity_slug": "db-a"} in resources
+
+    def test_tags_scoped_per_resource(self, db):
+        db.add_resource_tag("repo", "proj-a", "gold-tier")
+        assert db.list_resource_tags("repo", "proj-b") == []
+
+
+class TestCurateFeedback:
+    def test_add_and_list_feedback(self, db):
+        entry = db.add_resource_feedback("repo", "myproj", 4, "quality", "Schema looks stale")
+        assert entry["rating"] == 4
+        assert entry["category"] == "quality"
+        listed = db.list_resource_feedback("repo", "myproj")
+        assert len(listed) == 1
+        assert listed[0]["message"] == "Schema looks stale"
+
+    def test_feedback_without_rating(self, db):
+        entry = db.add_resource_feedback("repo", "myproj", None, "", "Just a note")
+        assert entry["rating"] is None
+
+    def test_feedback_ordered_newest_first(self, db):
+        db.add_resource_feedback("repo", "myproj", None, "", "first")
+        db.add_resource_feedback("repo", "myproj", None, "", "second")
+        listed = db.list_resource_feedback("repo", "myproj")
+        assert listed[0]["message"] == "second"
+
+    def test_feedback_scoped_per_resource(self, db):
+        db.add_resource_feedback("repo", "proj-a", None, "", "a's feedback")
+        assert db.list_resource_feedback("repo", "proj-b") == []
+
+
+class TestCuratorNotes:
+    def test_add_and_list_notes(self, db):
+        entry = db.add_curator_note("repo", "myproj", "Needs a better README before promoting")
+        assert entry["note"] == "Needs a better README before promoting"
+        listed = db.list_curator_notes("repo", "myproj")
+        assert len(listed) == 1
+
+    def test_notes_ordered_newest_first(self, db):
+        db.add_curator_note("repo", "myproj", "first")
+        db.add_curator_note("repo", "myproj", "second")
+        listed = db.list_curator_notes("repo", "myproj")
+        assert listed[0]["note"] == "second"
+
+    def test_delete_note(self, db):
+        entry = db.add_curator_note("repo", "myproj", "temp note")
+        assert db.delete_curator_note(entry["id"]) is True
+        assert db.list_curator_notes("repo", "myproj") == []
+
+    def test_delete_nonexistent_note_returns_false(self, db):
+        assert db.delete_curator_note("nonexistent-id") is False
+
+    def test_notes_scoped_per_resource(self, db):
+        db.add_curator_note("repo", "proj-a", "a's note")
+        assert db.list_curator_notes("repo", "proj-b") == []

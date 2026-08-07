@@ -63,7 +63,7 @@ External services:
 
 These are the canonical intent labels used throughout the codebase for routing, filtering, and analysis tagging. They appear in the UI's `#intent-nav` primary navigation, the activity log schema, the analysis catalog (`configdata/analysis_catalog.yaml`), and the query router.
 
-Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the intent-based web UI rewrite — Analysis, Understanding, and Curate were added to give structural/quantitative work, data visualization, and catalog-maintenance work their own homes instead of being folded into Assessment or a sidebar.
+Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the intent-based web UI rewrite — Analysis, Understanding, and Curate were added to give structural/quantitative work, data visualization, and discoverability/reuse-readiness work their own homes instead of being folded into Assessment or a sidebar.
 
 | Intent | What the user is doing | Speed | Output |
 |--------|----------------------|-------|--------|
@@ -71,11 +71,15 @@ Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the i
 | **Discovery** | Find resources by what surveys revealed, launch Egeria Survey Definitions | Fast | Search results / survey launch |
 | **Assessment** | Scored evaluation of a specific resource against criteria | Slow / async | Detailed annotations |
 | **Analysis** | Structural/quantitative analysis (not scored) — dependencies, profiling, API extraction | Fast–minutes | Structured data |
-| **Enrichment** | Provide human context (Context form) | Human-paced | Egeria asset properties |
+| **Enrichment** | Provide human context (Context form) — facts about the resource: environment, ownership, sensitivity | Human-paced | Egeria asset properties |
 | **Understanding** | Visualize trends over time — charts (stars, commits, schema, etc.) | Fast | Charts |
-| **Curate** | Maintain the catalog itself — annotation type registry, resource groups, analysis schedules | Human-paced | Registry updates |
+| **Curate** | Make a resource easier to find and more trustworthy to reuse — search tags, resource-level feedback, curator notes | Human-paced | `resource_tags`/`resource_feedback`/`resource_curator_notes` |
 
-RFA (RequestForAction) is **not** one of the seven intents — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself.
+**Enrichment vs. Curate** — easy to conflate, deliberately distinct: Enrichment records *facts about* the resource (a one-time/periodic form); Curate is *ongoing curatorial work* to make the resource discoverable and reusable (tags, feedback, running commentary). Digital-product evaluation, sample-dataset creation, and a dedicated quality-remediation workflow were named as Curate capabilities but are NOT built — each needs its own design pass; see `docs/curate-followups.md`.
+
+**System/catalog configuration is not an intent.** Annotation Types registry, resource Groups, and the Schedules editor are reachable from the header's **⚙ Admin** button (same pattern as 📋 Activity — decoupled from `#intent-nav`/`currentNavIntent`), not from one of the seven intents — they configure how the system behaves, not something a user does to curate a specific resource. Scheduling a specific analysis, by contrast, IS per-resource and lives as a "⏱ Schedule" action directly on each analysis card in Assessment/Analysis/Discovery — both paths hit the same `schedules.py`/`resource_schedules` backend.
+
+RFA (RequestForAction) is **not** one of the seven intents either — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself.
 
 ## Architecture
 
@@ -136,9 +140,9 @@ The activity log lives in `activity_log` SQLite table. It is the NEW replacement
 - `#intent-nav`: the 7-intent tab strip (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate) — the primary navigation axis, replacing the old resource-type-first sidebar tabs
 - Left sidebar: a resource-type **facet** (Repos / Databases / File Systems) that filters within whichever intent is active — `resourceTypeFacet` + `setResourceTypeFacet()`, not the primary nav
 - Perspective row: concurrent, multi-select persona filter (`dba` / `data_scientist` / `steward` / `security`, data-driven from the analysis catalog) — cross-cutting, not exclusive like intent/facet
-- Main panel: content depends on the active intent (survey report, analysis catalog cards, Survey Definitions, context form, charts, or the Curate landing pages)
+- Main panel: content depends on the active intent (survey report, analysis catalog cards, Survey Definitions, context form, charts, or the Curate tags/feedback/notes pane)
 - Persistent side surfaces, independent of the intent panel: `#chat-panel` (RAG-backed Q&A, scope-aware) and `#rfa-drawer` (RequestForAction response actions — defer/reassign/complete), both toggleable from `#intent-nav`, both stay open across intent switches
-- Activity panel: persistent log, always accessible from header
+- Header-level, also decoupled from `#intent-nav`: 📋 Activity (persistent log) and ⚙ Admin (Annotation Types / Groups / Schedules — system config, not one of the 7 intents; see the Enrichment-vs-Curate note above)
 
 ### Egeria Integration
 
@@ -194,7 +198,8 @@ resource_explorer/
 │       ├── analyses.py             # GET /api/analyses/{resource_type} + /perspectives + /egeria-status — backs Assessment/Analysis
 │       ├── activity.py             # Activity log + GET/PATCH /api/activity/rfas — backs the RFA drawer
 │       ├── context.py              # GET/POST /api/context/{type}/{slug} — backs Enrichment
-│       ├── schedules.py            # Analysis schedule CRUD — backs Curate's Schedules pane
+│       ├── curate.py               # Tags/feedback/curator-notes CRUD — backs Curate
+│       ├── schedules.py            # Analysis schedule CRUD — backs the per-card ⏱ Schedule action (Assessment/Analysis/Discovery) and Admin's Schedules pane
 │       └── survey_definitions.py   # Egeria Survey Definition candidates/run — backs Discovery
 ├── tui/app.py             # Textual TUI
 ├── dashboard/graphs.py    # Plotly figure builders
