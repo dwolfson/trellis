@@ -184,6 +184,43 @@ class TestQueryRouter:
         rag_mock.query.assert_called_once_with("what is this project?", project_slug="myproj")
 
 
+# ── /api/analyses/{resource_type} + /perspectives + /egeria-status ─────────────
+
+class TestAnalysisCatalogRouter:
+    def test_list_analyses_for_database(self, client):
+        resp = client.get("/api/analyses/database")
+        assert resp.status_code == 200
+        ids = {a["id"] for a in resp.json()}
+        assert "schema_inventory" in ids
+
+    def test_filters_by_intent(self, client):
+        resp = client.get("/api/analyses/database?intent=curate")
+        assert resp.status_code == 200
+        ids = {a["id"] for a in resp.json()}
+        assert ids == {"egeria_db_survey"}
+
+    def test_list_perspectives_route_reachable(self, client):
+        # Regression guard: /perspectives must be declared before /{resource_type}
+        # or Starlette's declaration-order matching swallows it.
+        resp = client.get("/api/analyses/perspectives")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+        assert "perspectives" not in resp.json()  # i.e. it wasn't routed as resource_type="perspectives"
+
+    def test_egeria_status_route(self, client):
+        client.get("/api/analyses/database")  # populate the status this route reflects
+        resp = client.get("/api/analyses/database/egeria-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resource_type"] == "database"
+        assert body["status"] in {"not_applicable", "unavailable", "ok", "unknown"}
+
+    def test_egeria_status_not_applicable_for_unmapped_resource_type(self, client):
+        client.get("/api/analyses/repo")
+        resp = client.get("/api/analyses/repo/egeria-status")
+        assert resp.json()["status"] == "not_applicable"
+
+
 # ── /api/analyses/annotation-types ─────────────────────────────────────────────
 
 class TestAnnotationTypesRouter:

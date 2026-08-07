@@ -1316,12 +1316,30 @@ async function loadAssessmentPanel() {
         (a.perspectives || []).includes('all') ||
         (a.perspectives || []).some(p => activePerspectives.has(p)));
     }
+    const egeriaStatus = await _fetchEgeriaMergeStatus(resourceType);
     renderAnalysisCatalogCards(analyses, view, {
       title: 'Assessment',
       emptyText: `No Assessment-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
+      egeriaStatus,
     });
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Reflects whether the backend's live-Egeria catalog merge actually ran for
+// this resource type (see analysis_catalog_reader.get_egeria_merge_status):
+// "not_applicable" (no Technology Type mapped yet — not an error, say
+// nothing), "unavailable" (mapped but the live call failed — show the
+// indicator so the panel doesn't silently look complete), "ok" (succeeded).
+async function _fetchEgeriaMergeStatus(resourceType) {
+  try {
+    const res = await fetch(`/api/analyses/${resourceType}/egeria-status`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.status;
+  } catch {
+    return null;
   }
 }
 
@@ -1329,9 +1347,16 @@ async function loadAssessmentPanel() {
 // intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
 // pattern already established in renderSurveyDefinitionsPanel, rather than
 // inventing a second card style.
-function renderAnalysisCatalogCards(analyses, view, { title, emptyText }) {
+function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus }) {
+  // Only "unavailable" means a live-Egeria merge was actually attempted and
+  // failed — "not_applicable" (no Technology Type mapped for this resource
+  // type yet) and "ok" say nothing, so the panel doesn't cry wolf.
+  const unavailableNote = egeriaStatus === 'unavailable'
+    ? `<span class="text-amber-400 text-xs" title="Could not reach Egeria to merge its native analyses into this list — showing local catalog only.">⚠ live Egeria data unavailable</span>`
+    : '';
   const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
     <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">${_esc(title)} — ${_esc(_resourceTypeFacetLabel())}</span>
+    ${unavailableNote}
   </div>`;
 
   if (!analyses.length) {

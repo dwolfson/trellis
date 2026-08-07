@@ -28,7 +28,7 @@ class SurveyMetaAgent:
 
     def _gather_context(self, query: str, slug: str | None) -> dict:
         from resource_explorer.registry import ProjectRegistry
-        from resource_explorer.analysis_catalog import get_analyses
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
         registry = ProjectRegistry()
         q = query.lower()

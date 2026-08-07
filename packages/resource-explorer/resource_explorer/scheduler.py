@@ -6,9 +6,10 @@ that wakes every _CHECK_INTERVAL_SECONDS, finds analyses whose next_run has pass
 runs them, and advances their next_run timestamp.
 
 Supported entity_type values: 'repo', 'database'
-Supported analysis actions: anything stored in analysis_catalog.py whose action
-is 'survey'. 'publish' (Egeria write-back) is intentionally excluded from scheduled
-runs — those require a live Egeria connection and explicit operator intent.
+Supported analysis actions: anything in configdata/analysis_catalog.yaml (read via
+resource_explorer.surveyors.analysis_catalog_reader) whose action is 'survey'.
+'publish' (Egeria write-back) is intentionally excluded from scheduled runs — those
+require a live Egeria connection and explicit operator intent.
 """
 from __future__ import annotations
 
