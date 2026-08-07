@@ -218,13 +218,13 @@
      intent, this doesn't route to different content, it filters/shapes what's shown
      within whatever intent is active. Only Assessment/Analysis consume this so far
      (Steps 2/4), via analysis_catalog's existing perspective filter — see setNavIntent
-     comment. Scouting ignores it entirely for now, same as the other unwired intents. -->
+     comment. Scouting ignores it entirely for now, same as the other unwired intents.
+     Chips are populated dynamically from GET /api/analyses/perspectives (see
+     loadPerspectiveChips()) rather than hardcoded, since the real set is bigger than
+     any one static list and shouldn't silently drift out of sync with the backend. -->
 <div id="perspective-row" class="flex items-center gap-1.5 px-3 py-1 bg-slate-800/60 border-b border-slate-700 shrink-0 overflow-x-auto">
   <span class="text-xs text-slate-500 mr-0.5">Perspective:</span>
-  <button onclick="togglePerspective('dba')" data-perspective="dba" class="filter-chip">🗄 DBA</button>
-  <button onclick="togglePerspective('data_scientist')" data-perspective="data_scientist" class="filter-chip">🔬 Data Scientist</button>
-  <button onclick="togglePerspective('steward')" data-perspective="steward" class="filter-chip">🛡 Steward</button>
-  <button onclick="togglePerspective('security')" data-perspective="security" class="filter-chip">🔒 Security</button>
+  <span id="perspective-chips"></span>
 </div>
 
 <!-- Main layout -->
@@ -1082,7 +1082,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAnnotationTypes();
   loadActivityLog();
   loadRfaPanel();  // populates the header RFA-drawer badge count without opening the drawer
-  _restorePerspectives();
+  loadPerspectiveChips();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
   // Restore chat panel open/collapsed state (defaults to open)
   if (localStorage.getItem('pe_chat_panel_open') === '0') {
@@ -1195,6 +1195,23 @@ function showIntentEmptyState(what) {
 }
 
 // ── perspective (concurrent, cross-cutting — see #perspective-row's HTML comment) ─
+async function loadPerspectiveChips() {
+  const container = document.getElementById('perspective-chips');
+  try {
+    const res = await fetch('/api/analyses/perspectives');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const perspectives = await res.json();
+    const ACRONYMS = new Set(['dba', 'api', 'sql', 'db', 'pii', 'gdpr']);
+    container.innerHTML = perspectives.map(p => {
+      const label = p.split('_').map(w => ACRONYMS.has(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      return `<button onclick="togglePerspective('${p}')" data-perspective="${p}" class="filter-chip">${_esc(label)}</button>`;
+    }).join('');
+  } catch(e) {
+    container.innerHTML = '<span class="text-xs text-slate-600">Failed to load perspectives</span>';
+  }
+  _restorePerspectives();  // chips must exist before restoring .active state onto them
+}
+
 function togglePerspective(p) {
   if (activePerspectives.has(p)) activePerspectives.delete(p); else activePerspectives.add(p);
   document.querySelectorAll('#perspective-row [data-perspective]').forEach(b => {

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from resource_explorer.analysis_catalog import get_analyses
+from resource_explorer.analysis_catalog import get_analyses, list_perspectives
 
 router = APIRouter()
 
@@ -104,6 +104,16 @@ def delete_annotation_type(type_name: str) -> dict:
         raise HTTPException(status_code=404, detail="Annotation type not found")
     registry.delete_annotation_type(type_name)
     return {"status": "success"}
+
+
+@router.get("/perspectives")
+def list_perspectives_route() -> list[str]:
+    """Distinct perspective values actually in the catalog — backs the UI's
+    perspective selector so it's never a hardcoded, silently-stale list.
+    NOTE: declared before /{resource_type} deliberately — Starlette matches
+    routes in declaration order, so a literal path after a path-param catch-all
+    at the same position would never be reached."""
+    return list_perspectives()
 
 
 @router.get("/{resource_type}")

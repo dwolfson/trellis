@@ -225,3 +225,25 @@ def get_analyses(
     if perspective and perspective != "all":
         analyses = [a for a in analyses if "all" in a["perspectives"] or perspective in a["perspectives"]]
     return analyses
+
+
+def list_perspectives() -> list[str]:
+    """Return the distinct, real (non-"all") perspective values actually used
+    across the catalog, sorted. Backs the UI's perspective selector so it's
+    data-driven rather than a hardcoded list that silently drifts out of sync
+    with what the catalog actually contains — see GET /api/analyses/perspectives.
+
+    NOTE: this is a stopgap sourced from RE's own local catalog only. It does
+    NOT yet reflect Egeria's native Perspective type, nor Egeria Advisor's own
+    perspective set (developer/data_engineer/data_steward/governance_officer)
+    — those are a real, larger unification the Trellis design work has already
+    flagged as its own thread. Re-implement this in
+    resource_explorer/surveyors/analysis_catalog_reader.py when Step 3
+    externalizes this file, and revisit the source once that unification
+    happens rather than assuming this stopgap is the final answer.
+    """
+    values: set[str] = set()
+    for entries in _CATALOG.values():
+        for entry in entries:
+            values.update(p for p in entry["perspectives"] if p != "all")
+    return sorted(values)
