@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.registry import DatabaseEntity, Project, ProjectRegistry
 from resource_explorer import scheduler
 
 
@@ -29,6 +29,34 @@ def registered_project(registry):
         description="",
     ))
     return "myproj"
+
+
+@pytest.fixture
+def registered_database_with_credentials(registry):
+    registry.register_database(DatabaseEntity(
+        slug="mydb",
+        display_name="My DB",
+        db_type="postgresql",
+        host="localhost",
+        port=5432,
+        database_name="mydb",
+        db_user="admin",
+        db_password="secret",
+    ))
+    return "mydb"
+
+
+@pytest.fixture
+def registered_database_without_credentials(registry):
+    registry.register_database(DatabaseEntity(
+        slug="mydb-no-creds",
+        display_name="My DB (no creds)",
+        db_type="postgresql",
+        host="localhost",
+        port=5432,
+        database_name="mydb",
+    ))
+    return "mydb-no-creds"
 
 
 def _make_due(registry, entity_type, slug, analysis_id="security_scan"):
@@ -127,6 +155,57 @@ class TestRunDueFailure:
         assert entries[0]["status"] == "error"
         assert "not found" in entries[0]["detail"]
         assert registry.get_schedules("repo", "deleted-repo-slug")[0]["last_run_status"] == "error"
+
+
+class TestRunDueDatabaseSurvey:
+    """Regression coverage for the real bug reported live: scheduled database
+    surveys crashed with a bare KeyError('user') because scheduler.py passed
+    an empty credentials dict with no resolution step. Fixed to resolve
+    db.db_user/db.db_password the same way the manual survey route does."""
+
+    def test_missing_credentials_produces_clear_error_not_a_crash(self, registry, registered_database_without_credentials):
+        _make_due(registry, "database", registered_database_without_credentials, analysis_id="schema_inventory")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug=registered_database_without_credentials)
+        assert len(entries) == 1
+        assert entries[0]["status"] == "error"
+        assert "No stored database credentials" in entries[0]["detail"]
+        assert registry.get_schedules("database", registered_database_without_credentials)[0]["last_run_status"] == "error"
+
+    def test_stored_credentials_are_used_for_the_survey(self, registry, registered_database_with_credentials):
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="schema_inventory")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_run:
+            mock_run.return_value = {}
+            scheduler._run_due()
+
+        mock_run.assert_called_once()
+        _, kwargs = mock_run.call_args
+        assert kwargs["credentials"] == {"user": "admin", "password": "secret"}
+
+    def test_successful_database_survey_writes_ok_entry(self, registry, registered_database_with_credentials):
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="schema_inventory")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey", return_value={}):
+            scheduler._run_due()
+
+        entries = registry.list_activity(entity_slug=registered_database_with_credentials)
+        assert entries[0]["status"] == "ok"
+        rows = registry.get_schedules("database", registered_database_with_credentials)
+        assert rows[0]["last_run_status"] == "ok"
+
+    def test_survey_exception_with_valid_credentials_is_recorded_as_error(self, registry, registered_database_with_credentials):
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="schema_inventory")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_run:
+            mock_run.side_effect = RuntimeError("connection refused")
+            scheduler._run_due()
+
+        entries = registry.list_activity(entity_slug=registered_database_with_credentials)
+        assert entries[0]["status"] == "error"
+        assert "connection refused" in entries[0]["detail"]
 
 
 class TestRunDueMisc:

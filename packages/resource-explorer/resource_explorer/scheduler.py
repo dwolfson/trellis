@@ -147,13 +147,27 @@ def _run_db_survey(slug: str, registry) -> tuple[str, str, list[str]]:
     db = registry.get_database(slug)
     if not db:
         return (slug, "", [f"Database '{slug}' not found — schedule may be stale"])
-    # Use stored credentials from config/env; pass empty dict so DatabaseSurveyor
-    # falls back to its own credential resolution (env vars / config).
+
+    # Same resolution as the manual survey route (web/routes/databases.py) —
+    # stored db_user/db_password at registration, nothing else. There is no
+    # separate env-var/config fallback inside database_connection() (it does
+    # a raw credentials["user"]/["password"] lookup) — a prior version of
+    # this comment claimed one existed and didn't, which is exactly why this
+    # crashed with a bare KeyError instead of a clear message.
+    if not db.db_user or not db.db_password:
+        return (db.display_name, db.host, [
+            "No stored database credentials for this schedule — register the "
+            "database with db_user/db_password, or run its survey manually "
+            "with credentials, before scheduling it."
+        ])
+
     from resource_explorer.surveyors.database.database_surveyor import run_database_survey
 
     errors: list[str] = []
     try:
-        run_database_survey(slug, credentials={}, registry=registry)
+        run_database_survey(
+            slug, credentials={"user": db.db_user, "password": db.db_password}, registry=registry
+        )
     except Exception as exc:
         errors.append(str(exc))
     return (db.display_name, db.host, errors)
