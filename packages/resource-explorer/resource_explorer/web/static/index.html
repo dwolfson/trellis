@@ -43,9 +43,11 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #0f172a; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-    /* Resizable sidebar */
+    /* Resizable sidebar / chat panel / RFA drawer */
     #resize-handle { width:4px; flex-shrink:0; cursor:col-resize; background:#1e293b; transition:background .15s; }
     #resize-handle:hover, #resize-handle.dragging { background:#0e7490; }
+    .resize-handle-v { width:4px; flex-shrink:0; cursor:col-resize; background:#1e293b; transition:background .15s; }
+    .resize-handle-v:hover, .resize-handle-v.dragging { background:#0e7490; }
     /* Entity tabs */
     .entity-tab { padding:.4rem .75rem; font-size:.72rem; font-weight:600; color:#64748b; border-bottom:2px solid transparent; transition:color .12s,border-color .12s; flex:1; text-align:center; }
     .entity-tab.active { color:#22d3ee; border-bottom-color:#22d3ee; background:#0f172a; }
@@ -212,6 +214,19 @@
   <button onclick="toggleChatPanel()" id="chat-toggle-btn" class="nav-intent-btn">💬 Chat</button>
 </nav>
 
+<!-- Perspective (cross-cutting, concurrent — you can hold more than one at once; unlike
+     intent, this doesn't route to different content, it filters/shapes what's shown
+     within whatever intent is active. Only Assessment/Analysis consume this so far
+     (Steps 2/4), via analysis_catalog's existing perspective filter — see setNavIntent
+     comment. Scouting ignores it entirely for now, same as the other unwired intents. -->
+<div id="perspective-row" class="flex items-center gap-1.5 px-3 py-1 bg-slate-800/60 border-b border-slate-700 shrink-0 overflow-x-auto">
+  <span class="text-xs text-slate-500 mr-0.5">Perspective:</span>
+  <button onclick="togglePerspective('dba')" data-perspective="dba" class="filter-chip">🗄 DBA</button>
+  <button onclick="togglePerspective('data_scientist')" data-perspective="data_scientist" class="filter-chip">🔬 Data Scientist</button>
+  <button onclick="togglePerspective('steward')" data-perspective="steward" class="filter-chip">🛡 Steward</button>
+  <button onclick="togglePerspective('security')" data-perspective="security" class="filter-chip">🔒 Security</button>
+</div>
+
 <!-- Main layout -->
 <div class="flex flex-1 overflow-hidden">
 
@@ -353,8 +368,11 @@
       <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
     </div>
 
+    <!-- Chat panel resize handle -->
+    <div id="chat-resize-handle" class="resize-handle-v" title="Drag to resize"></div>
+
     <!-- Persistent chat panel -->
-    <aside id="chat-panel" class="flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 transition-all overflow-hidden" style="width:24rem">
+    <aside id="chat-panel" class="flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 overflow-hidden" style="width:24rem">
       <div id="chat-view" class="flex flex-col flex-1 overflow-hidden">
         <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
         <div id="thinking" class="hidden px-4 py-1">
@@ -384,6 +402,9 @@
         </div>
       </div>
     </aside>
+
+    <!-- RFA drawer resize handle (hidden alongside the drawer) -->
+    <div id="rfa-resize-handle" class="hidden resize-handle-v" title="Drag to resize"></div>
 
     <!-- RFA slide-out drawer (persistent, reachable from #intent-nav regardless of active intent) -->
     <aside id="rfa-drawer" class="hidden flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 overflow-hidden" style="width:26rem">
@@ -1025,6 +1046,7 @@ let selectedFilesystem = null;
 let entityMode       = 'repo';   // 'repo' | 'db' | 'filesystem' — legacy, drives only the (currently unreachable) Annotations sidebar section until Step 8 relocates it under Curate
 let currentNavIntent  = 'scouting';  // 'scouting'|'discovery'|'assessment'|'analysis'|'enrichment'|'understanding'|'curate' — the new primary nav axis
 let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent (replaces entityMode as the sidebar-list driver)
+let activePerspectives = new Set();  // 'dba'|'data_scientist'|'steward'|'security' — concurrent, not exclusive (unlike intent/facet); empty set = no filter ("all")
 let compareSet       = new Set();
 let lastQueryHash    = null;
 let lastAssistantEl  = null;
@@ -1060,6 +1082,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAnnotationTypes();
   loadActivityLog();
   loadRfaPanel();  // populates the header RFA-drawer badge count without opening the drawer
+  _restorePerspectives();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
   // Restore chat panel open/collapsed state (defaults to open)
   if (localStorage.getItem('pe_chat_panel_open') === '0') {
@@ -1171,6 +1194,30 @@ function showIntentEmptyState(what) {
     `<div class="text-slate-600 text-sm text-center py-16">Select ${what} in the sidebar to see its Scouting summary.</div>`;
 }
 
+// ── perspective (concurrent, cross-cutting — see #perspective-row's HTML comment) ─
+function togglePerspective(p) {
+  if (activePerspectives.has(p)) activePerspectives.delete(p); else activePerspectives.add(p);
+  document.querySelectorAll('#perspective-row [data-perspective]').forEach(b => {
+    b.classList.toggle('active', activePerspectives.has(b.dataset.perspective));
+  });
+  localStorage.setItem('pe_perspectives', JSON.stringify([...activePerspectives]));
+  // Re-render whatever's currently showing, if it's perspective-aware (Assessment/
+  // Analysis, once Steps 2/4 land) — a no-op elsewhere, same pattern as setNavIntent.
+  if (currentNavIntent === 'assessment' || currentNavIntent === 'analysis') {
+    setNavIntent(currentNavIntent);
+  }
+}
+
+function _restorePerspectives() {
+  try {
+    const stored = JSON.parse(localStorage.getItem('pe_perspectives') || '[]');
+    activePerspectives = new Set(stored);
+    document.querySelectorAll('#perspective-row [data-perspective]').forEach(b => {
+      b.classList.toggle('active', activePerspectives.has(b.dataset.perspective));
+    });
+  } catch(e) { /* ignore malformed storage */ }
+}
+
 function setResourceTypeFacet(type) {
   resourceTypeFacet = type;
   document.querySelectorAll('#sidebar [data-facet]').forEach(b => {
@@ -1202,6 +1249,7 @@ function toggleRfaDrawer() {
   const drawer = document.getElementById('rfa-drawer');
   const willOpen = drawer.classList.contains('hidden');
   drawer.classList.toggle('hidden', !willOpen);
+  document.getElementById('rfa-resize-handle').classList.toggle('hidden', !willOpen);
   document.getElementById('rfa-drawer-toggle').classList.toggle('active', willOpen);
   if (willOpen) loadRfaPanel('rfa-drawer-list');
 }
@@ -5673,29 +5721,55 @@ async function renderAllDbViewsMermaid() {
   }
 }
 
-// ── resize ────────────────────────────────────────────────────────────────────
-(function _initResize() {
-  const handle  = document.getElementById('resize-handle');
-  const sidebar = document.getElementById('sidebar');
-  if (!handle || !sidebar) return;
+// ── resize (sidebar, chat panel, RFA drawer — all resizable, left as the
+//    default rather than the exception per design decision) ───────────────────
+function _makeResizable(handle, panel, storageKey, { min = 240, max = 640, anchor = 'left' } = {}) {
+  if (!handle || !panel) return;
+  const stored = localStorage.getItem(storageKey);
+  if (stored) panel.style.width = stored + 'px';
   let dragging = false;
   handle.addEventListener('mousedown', e => { dragging = true; handle.classList.add('dragging'); e.preventDefault(); });
   document.addEventListener('mousemove', e => {
     if (!dragging) return;
-    const w = Math.max(192, Math.min(e.clientX, window.innerWidth * 0.6));
-    sidebar.style.width = w + 'px';
+    let w;
+    if (anchor === 'right') {
+      // Panel's right edge is fixed (it's flush against the window or a
+      // sibling panel to its right); width = distance from the cursor to
+      // that fixed right edge, recomputed live so it's correct even when
+      // another panel (e.g. the RFA drawer) is open beside it.
+      const rect = panel.getBoundingClientRect();
+      w = rect.right - e.clientX;
+    } else {
+      w = e.clientX;
+    }
+    w = Math.max(min, Math.min(w, max));
+    panel.style.width = w + 'px';
   });
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
     handle.classList.remove('dragging');
-    localStorage.setItem('pe_sidebar_w', parseInt(sidebar.style.width));
+    localStorage.setItem(storageKey, parseInt(panel.style.width));
   });
-})();
+}
+
+_makeResizable(document.getElementById('resize-handle'), document.getElementById('sidebar'),
+  'pe_sidebar_w', { min: 192, max: window.innerWidth * 0.6, anchor: 'left' });
+_makeResizable(document.getElementById('chat-resize-handle'), document.getElementById('chat-panel'),
+  'pe_chat_panel_w', { min: 260, max: 720, anchor: 'right' });
+_makeResizable(document.getElementById('rfa-resize-handle'), document.getElementById('rfa-drawer'),
+  'pe_rfa_drawer_w', { min: 280, max: 760, anchor: 'right' });
+
+// NOTE: the draggable-feedback-button init lives in the second <script> block
+// below, near the rest of the feedback-widget JS -- #feedback-btn's markup
+// isn't in the DOM yet at this point in the document, so initializing it here
+// would silently no-op (getElementById returns null before its own HTML has
+// been parsed).
+let _feedbackBtnDragged = false;  // declared here so the button's inline onclick (which appears before the second script block runs) can always read it safely
 </script>
 
 <!-- Product/UI feedback widget -->
-<button id="feedback-btn" onclick="openFeedbackModal()"
+<button id="feedback-btn" onclick="if (!_feedbackBtnDragged) openFeedbackModal(); _feedbackBtnDragged = false;"
         style="position:fixed; bottom:20px; right:20px; z-index:900; padding:.6rem 1rem;
                background:var(--accent, #38bdf8); color:#0f172a; border:none; border-radius:9999px;
                font-size:.85rem; font-weight:600; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.4);">
@@ -5741,6 +5815,54 @@ async function renderAllDbViewsMermaid() {
     sessionStorage.setItem(_KEY, 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36));
   }
   window._feedbackSessionId = sessionStorage.getItem(_KEY);
+})();
+
+// Draggable feedback button — user-repositionable so it never permanently
+// blocks the chat toggle or anything else fixed in a screen corner.
+// _feedbackBtnDragged itself is declared in the first <script> block (so the
+// button's inline onclick, defined before this block runs, can always read
+// it) — this IIFE only wires up the actual drag behavior, and has to live
+// here specifically because #feedback-btn's markup isn't in the DOM yet at
+// the point the first script block executes.
+(function _initDraggableFeedbackBtn() {
+  const btn = document.getElementById('feedback-btn');
+  if (!btn) return;
+  const stored = JSON.parse(localStorage.getItem('pe_feedback_btn_pos') || 'null');
+  if (stored) {
+    btn.style.left = stored.left + 'px';
+    btn.style.top = stored.top + 'px';
+    btn.style.right = 'auto';
+    btn.style.bottom = 'auto';
+  }
+  let dragging = false, startX, startY, origLeft, origTop;
+  btn.addEventListener('mousedown', e => {
+    dragging = true; _feedbackBtnDragged = false;
+    const rect = btn.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    origLeft = rect.left; origTop = rect.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _feedbackBtnDragged = true;
+    if (!_feedbackBtnDragged) return;
+    const left = Math.max(4, Math.min(origLeft + dx, window.innerWidth - btn.offsetWidth - 4));
+    const top  = Math.max(4, Math.min(origTop + dy, window.innerHeight - btn.offsetHeight - 4));
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
+    btn.style.right = 'auto';
+    btn.style.bottom = 'auto';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (_feedbackBtnDragged) {
+      localStorage.setItem('pe_feedback_btn_pos', JSON.stringify({
+        left: parseFloat(btn.style.left), top: parseFloat(btn.style.top),
+      }));
+    }
+  });
 })();
 
 let _feedbackRating = 0;
