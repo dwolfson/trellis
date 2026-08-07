@@ -342,6 +342,9 @@
       <!-- Placeholder pane for intents not yet wired to real content -->
       <div id="intent-placeholder-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
+      <!-- Assessment view — card list from analysis_catalog, filtered to intent=assessment -->
+      <div id="assessment-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
       <!-- Survey report view (repos) -->
       <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
@@ -1155,8 +1158,6 @@ function setEntityMode(mode) {
 
 // ── intent navigation (new primary nav — replaces setEntityMode's role) ────────
 const INTENT_PLACEHOLDER_TEXT = {
-  assessment:    'Assessment — coming in this rewrite (Step 2).',
-  discovery:     'Discovery — coming in this rewrite (Step 2).',
   analysis:      'Analysis — coming in this rewrite (Step 4).',
   enrichment:    'Enrichment — coming in this rewrite (Step 6).',
   understanding: 'Understanding — coming in this rewrite (Step 7).',
@@ -1170,6 +1171,13 @@ function setNavIntent(intent) {
   });
   if (intent === 'scouting') {
     showScoutingPane();
+  } else if (intent === 'discovery') {
+    // Survey Definitions panel is reused verbatim — it already resolves the
+    // selected resource itself and shows its own "select a resource" empty
+    // state, so no wrapper empty-state logic is needed here unlike Scouting.
+    showMainView('survey-definitions');
+  } else if (intent === 'assessment') {
+    showMainView('assessment');
   } else {
     showIntentPlaceholder(intent);
   }
@@ -1276,6 +1284,115 @@ function setResourceTypeFacet(type) {
   document.getElementById('filesystems-section').classList.toggle('hidden', type !== 'filesystem');
   // Re-render whatever intent is currently active against the newly-selected resource type
   setNavIntent(currentNavIntent);
+}
+
+// ── Assessment (and, from Step 4, Analysis) — shared analysis_catalog card-list ──
+// resourceTypeFacet uses 'repo'|'db'|'filesystem' (matching the existing sidebar
+// section ids); the backend's analysis_catalog keys on 'repo'|'database'|
+// 'filesystem' (matching Egeria's own vocabulary) — these are deliberately
+// different naming conventions for different audiences, not a bug; map between
+// them here rather than renaming either one.
+function _facetToResourceType(facet) {
+  return facet === 'db' ? 'database' : facet;
+}
+function _resourceTypeFacetLabel() {
+  return { repo: 'Repos', db: 'Databases', filesystem: 'Filesystems' }[resourceTypeFacet] || resourceTypeFacet;
+}
+
+async function loadAssessmentPanel() {
+  const view = document.getElementById('assessment-view');
+  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading Assessment catalog…</div>';
+  try {
+    const resourceType = _facetToResourceType(resourceTypeFacet);
+    const res = await fetch(`/api/analyses/${resourceType}?intent=assessment`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let analyses = await res.json();
+    // Perspective filtering happens client-side: the backend's `perspective`
+    // param only accepts one value, but the UI's perspective selector is
+    // concurrent/multi-select (OR semantics — an analysis matches if it's
+    // tagged "all" or any currently-active perspective).
+    if (activePerspectives.size) {
+      analyses = analyses.filter(a =>
+        (a.perspectives || []).includes('all') ||
+        (a.perspectives || []).some(p => activePerspectives.has(p)));
+    }
+    renderAnalysisCatalogCards(analyses, view, {
+      title: 'Assessment',
+      emptyText: `No Assessment-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
+    });
+  } catch(e) {
+    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Shared by Assessment and (Step 4) Analysis — same card shape, different
+// intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
+// pattern already established in renderSurveyDefinitionsPanel, rather than
+// inventing a second card style.
+function renderAnalysisCatalogCards(analyses, view, { title, emptyText }) {
+  const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
+    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">${_esc(title)} — ${_esc(_resourceTypeFacetLabel())}</span>
+  </div>`;
+
+  if (!analyses.length) {
+    view.innerHTML = header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
+    return;
+  }
+
+  const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
+  const cards = analyses.map(a => {
+    const perspTags = (a.perspectives || []).filter(p => p !== 'all')
+      .map(p => `<span class="analysis-tag">${_esc(p.replace(/_/g, ' '))}</span>`).join(' ');
+    const sourceTag = a.source === 'egeria'
+      ? '<span class="analysis-tag tag-egeria">☁ Egeria</span>'
+      : '<span class="analysis-tag">🏠 Local</span>';
+    const speedTag = `<span class="analysis-tag ${speedTagClass[a.run_time] || ''}">${_esc(a.run_time)}</span>`;
+    return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-semibold text-slate-200">${_esc(a.name)}${a.recommended ? ' <span class="text-cyan-400" title="Recommended">★</span>' : ''}</div>
+        <div class="text-xs text-slate-400 mt-0.5">${_esc(a.description)}</div>
+      </div>
+      <div class="flex flex-wrap gap-1">${speedTag}${sourceTag}${perspTags}</div>
+      <div class="mt-auto pt-1">
+        <button onclick='_runAssessmentCard(${JSON.stringify(a.id)})'
+          class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
+          Run →
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  view.innerHTML = header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+}
+
+// "Run" doesn't (yet) trigger just this one named analysis — RE's survey
+// pipeline runs all local sub-surveyors for a resource type together, not
+// individual catalog entries in isolation, so every card's Run button
+// triggers the same per-resource-type survey action. This is an honest
+// reflection of how surveys actually work today, not a shortcut; unifying
+// survey launch onto something more granular is separately-scoped, larger
+// work (RE's own backlog item #5), not part of this slice.
+function _runAssessmentCard(_analysisId) {
+  if (resourceTypeFacet === 'repo') {
+    if (!selectedProject) { showToast('info', 'Select a repo first.', 4000); return; }
+    fetch(`/api/egeria/${selectedProject}/survey`, { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          showToast('success', `Survey complete for <strong>${_esc(selectedProject)}</strong>. Check Scouting for the report.`, 6000);
+        } else {
+          showToast('error', `Survey failed: ${_esc(data.error || (data.errors || []).join('; ') || 'unknown error')}`, 8000);
+        }
+      })
+      .catch(e => showToast('error', `Survey request failed: ${_esc(e.message)}`, 8000));
+    showToast('running', `Surveying <strong>${_esc(selectedProject)}</strong>…`, 0);
+  } else if (resourceTypeFacet === 'db') {
+    if (!selectedDatabase) { showToast('info', 'Select a database first.', 4000); return; }
+    showSurveyDbModal(selectedDatabase);
+  } else if (resourceTypeFacet === 'filesystem') {
+    if (!selectedFilesystem) { showToast('info', 'Select a filesystem first.', 4000); return; }
+    showSurveyFsModal(selectedFilesystem);
+  }
 }
 
 // ── persistent chat panel + RFA drawer toggles ──────────────────────────────────
@@ -3566,6 +3683,7 @@ function showMainView(tab) {
   // works (renders into the legacy #rfa-view) but nothing in the new nav
   // calls it; kept only so nothing else silently breaks mid-rewrite.
   const placeholderView = document.getElementById('intent-placeholder-view');
+  const assessmentView = document.getElementById('assessment-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -3576,12 +3694,15 @@ function showMainView(tab) {
   const annotationTypesView = document.getElementById('annotation-types-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
 
   if (tab === 'intent-placeholder') {
     placeholderView.classList.remove('hidden');
+  } else if (tab === 'assessment') {
+    assessmentView.classList.remove('hidden');
+    loadAssessmentPanel();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
