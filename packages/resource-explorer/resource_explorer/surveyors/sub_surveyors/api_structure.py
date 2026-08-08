@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
-from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation, SchemaAnalysisAnnotation
+from resource_explorer.surveyors.survey_report import (
+    Annotation,
+    ResourceMeasureAnnotation,
+    SchemaAnalysisAnnotation,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +37,12 @@ class ApiStructureSurveyor(BaseSurveyor):
     it runs — and its annotations reflect current data — on every repo survey
     without any separate opt-in scheduling (migration plan decision D7).
     """
+
+    def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
+        super().__init__(project, registry)
+        # See SecuritySurveyor's identical constructor comment — shared
+        # run-timestamp from SurveyOrchestrator (Phase B, D1).
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
 
     @property
     def step_name(self) -> str:
@@ -112,6 +123,17 @@ class ApiStructureSurveyor(BaseSurveyor):
                     },
                 )
             )
+
+            try:
+                self.registry.store_api_structure_snapshot(
+                    slug,
+                    symbol_count=len(rows),
+                    by_language={lang: len(syms) for lang, syms in by_lang.items()},
+                    relationship_count=len(relationships),
+                    surveyed_at=self._surveyed_at,
+                )
+            except Exception as exc:
+                log.warning("Could not persist API structure snapshot for %s: %s", slug, exc)
 
         except Exception as exc:
             log.exception("ApiStructureSurveyor failed for %s", self.project.slug)

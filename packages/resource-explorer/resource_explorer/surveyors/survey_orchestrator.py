@@ -60,11 +60,21 @@ class SurveyOrchestrator:
         if project is None:
             raise ValueError(f"Project '{project_slug}' not found in registry.")
 
+        surveyed_at_dt = datetime.utcnow()
+        # Shared run-timestamp, passed into the surveyors that persist
+        # structured findings at survey time (Phase B, D1) — lets one
+        # orchestrator run's writes across those tables be correlated,
+        # instead of each independently stamping datetime.utcnow() seconds
+        # apart. Dependency/DataProfiler persistence isn't threaded here —
+        # those write at ingest/refresh time via IngestionPipeline, a
+        # separate code path this orchestrator doesn't touch.
+        surveyed_at = surveyed_at_dt.isoformat()
+
         result = SurveyResult(
             project_slug=project.slug,
             project_display_name=project.display_name,
             github_url=project.github_url,
-            surveyed_at=datetime.utcnow(),
+            surveyed_at=surveyed_at_dt,
         )
 
         all_surveyors = {
@@ -80,9 +90,9 @@ class SurveyOrchestrator:
             "repo_language": LanguageSurveyor(project, self._registry),
             "repo_health": HealthSurveyor(project, self._registry),
             "repo_dependency": DependencySurveyor(project, self._registry),
-            "repo_documentation": DocumentationSurveyor(project, self._registry),
-            "repo_security": SecuritySurveyor(project, self._registry),
-            "repo_api_structure": ApiStructureSurveyor(project, self._registry),
+            "repo_documentation": DocumentationSurveyor(project, self._registry, surveyed_at=surveyed_at),
+            "repo_security": SecuritySurveyor(project, self._registry, surveyed_at=surveyed_at),
+            "repo_api_structure": ApiStructureSurveyor(project, self._registry, surveyed_at=surveyed_at),
         }
 
         if steps is None:
@@ -108,6 +118,14 @@ class SurveyOrchestrator:
             len(result.annotations),
             len(result.errors),
         )
+
+        # Any survey counts as "surveyed" — coarse scan or deep, full or
+        # step-filtered — so this is unconditional, unlike the self-logging
+        # below which only applies to a full (steps=None) run.
+        try:
+            self._registry.update_project_surveyed_at(project.slug)
+        except Exception as exc:
+            log.warning("Could not update last_surveyed_at for %s: %s", project.slug, exc)
 
         # Self-logging only applies to a full survey. A step-filtered (partial)
         # run is always driven by a caller that writes its own, more specific

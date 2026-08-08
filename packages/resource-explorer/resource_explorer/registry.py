@@ -45,6 +45,7 @@ class Project:
     last_indexed_at: str = ""
     last_stats_fetched_at: str = ""
     last_commit_sha: str = ""
+    last_surveyed_at: str = ""  # mirrors DatabaseEntity/FileSystemEntity — "" = never surveyed
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     error_message: str = ""
     subproject_path: str = ""   # relative subdir to index, e.g. "commands" — "" means full repo
@@ -407,6 +408,7 @@ class ProjectRegistry:
                     last_indexed_at TEXT DEFAULT '',
                     last_stats_fetched_at TEXT DEFAULT '',
                     last_commit_sha TEXT DEFAULT '',
+                    last_surveyed_at TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     error_message TEXT DEFAULT '',
                     subproject_path TEXT DEFAULT '',
@@ -421,6 +423,7 @@ class ProjectRegistry:
             existing = self._get_table_columns(conn, "projects")
             for col, defn in [
                 ("last_commit_sha", "TEXT DEFAULT ''"),
+                ("last_surveyed_at", "TEXT DEFAULT ''"),
                 ("subproject_path", "TEXT DEFAULT ''"),
                 ("parent_slug", "TEXT DEFAULT ''"),
                 ("extra_docs_paths", "TEXT DEFAULT '[]'"),
@@ -712,6 +715,98 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_data_profiles_slug "
                 "ON project_data_profiles(project_slug)"
             )
+            # Phase B: per-analysis-type history tables, all copying
+            # project_file_type_counts's proven append pattern (no UNIQUE
+            # constraint, one index on project_slug — every run just adds
+            # new rows tagged with a shared surveyed_at).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_data_profile_snapshots (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug        TEXT NOT NULL,
+                    surveyed_at         TEXT NOT NULL,
+                    total_files         INTEGER NOT NULL,
+                    total_size_bytes    INTEGER NOT NULL,
+                    format_breakdown_json TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_data_profile_snapshots_slug "
+                "ON project_data_profile_snapshots(project_slug)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_security_findings (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug  TEXT NOT NULL,
+                    surveyed_at   TEXT NOT NULL,
+                    check_name    TEXT NOT NULL,
+                    status        TEXT NOT NULL,
+                    summary       TEXT NOT NULL,
+                    detail_json   TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_security_findings_slug "
+                "ON project_security_findings(project_slug)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_documentation_findings (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug  TEXT NOT NULL,
+                    surveyed_at   TEXT NOT NULL,
+                    finding_type  TEXT NOT NULL,
+                    label         TEXT NOT NULL,
+                    confidence    INTEGER DEFAULT 100,
+                    detail_json   TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documentation_findings_slug "
+                "ON project_documentation_findings(project_slug)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_api_structure_snapshots (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug        TEXT NOT NULL,
+                    surveyed_at         TEXT NOT NULL,
+                    symbol_count        INTEGER NOT NULL,
+                    by_language_json    TEXT DEFAULT NULL,
+                    relationship_count  INTEGER DEFAULT 0,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_api_structure_snapshots_slug "
+                "ON project_api_structure_snapshots(project_slug)"
+            )
+            # One-time repair for project_dependencies rows written before
+            # this Phase B change: upsert_dependencies() used to compute
+            # datetime.utcnow() inside its per-row list comprehension, so
+            # every row in what was conceptually one ingest run got its own
+            # microsecond-distinct indexed_at. That breaks
+            # query_dependencies()'s new MAX(indexed_at) latest-batch filter
+            # down to "1 row" for any repo with legacy data. Provably safe
+            # to collapse: before this fix, upsert_dependencies() always did
+            # DELETE-then-INSERT, so at any point in time every existing row
+            # for one project_slug WAS genuinely one batch — not a guess.
+            # Self-limiting: COUNT(DISTINCT indexed_at) == COUNT(*) is the
+            # exact signature of "every row uniquely timestamped" (the bug);
+            # once collapsed onto one shared timestamp that's no longer true
+            # (unless the project only ever had 1 dependency — a harmless
+            # no-op), so this never touches legitimate future multi-batch
+            # history and is safe to run unconditionally on every startup.
+            dep_groups = conn.execute(
+                "SELECT project_slug, COUNT(*) as n, COUNT(DISTINCT indexed_at) as d, MAX(indexed_at) as max_ts "
+                "FROM project_dependencies GROUP BY project_slug"
+            ).fetchall()
+            for g in dep_groups:
+                if g["n"] > 1 and g["n"] == g["d"]:
+                    conn.execute(
+                        "UPDATE project_dependencies SET indexed_at = ? WHERE project_slug = ?",
+                        (g["max_ts"], g["project_slug"]),
+                    )
             # Database entities table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS databases (
@@ -1316,16 +1411,16 @@ class ProjectRegistry:
                     slug, display_name, github_url, description, homepage_url,
                     docs_url, github_token_encrypted, collections, status,
                     last_indexed_at, last_stats_fetched_at, last_commit_sha,
-                    created_at, error_message, subproject_path, parent_slug,
-                    extra_docs_paths, egeria_asset_guid, governance_state,
-                    group_slug
+                    last_surveyed_at, created_at, error_message, subproject_path,
+                    parent_slug, extra_docs_paths, egeria_asset_guid,
+                    governance_state, group_slug
                 ) VALUES (
                     :slug, :display_name, :github_url, :description, :homepage_url,
                     :docs_url, :github_token_encrypted, :collections, :status,
                     :last_indexed_at, :last_stats_fetched_at, :last_commit_sha,
-                    :created_at, :error_message, :subproject_path, :parent_slug,
-                    :extra_docs_paths, :egeria_asset_guid, :governance_state,
-                    :group_slug
+                    :last_surveyed_at, :created_at, :error_message, :subproject_path,
+                    :parent_slug, :extra_docs_paths, :egeria_asset_guid,
+                    :governance_state, :group_slug
                 )""",
                 data,
             )
@@ -1381,6 +1476,17 @@ class ProjectRegistry:
             conn.execute(
                 "UPDATE projects SET last_commit_sha = ? WHERE slug = ?",
                 (sha, slug),
+            )
+
+    def update_project_surveyed_at(self, slug: str) -> None:
+        """Update the last_surveyed_at timestamp for a repo — mirrors
+        update_database_surveyed_at(). Any survey (coarse scan or deep),
+        not just a full one, counts as "surveyed"."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET last_surveyed_at = ? WHERE slug = ?",
+                (datetime.utcnow().isoformat(), slug),
             )
 
     def update_ingestion_stats(self, slug: str, file_count: int, lines_of_code: int) -> None:
@@ -1759,6 +1865,192 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── Phase B: per-analysis-type snapshot/finding history ────────────────
+    # Each trio below (store/upsert, query latest, query history) copies
+    # project_file_type_counts's proven append pattern — see that table's
+    # own upsert_file_type_counts()/query_file_type_counts()/
+    # query_file_type_history() for the template this mirrors.
+
+    def store_data_profile_snapshot(
+        self, slug: str, total_files: int, total_size_bytes: int,
+        format_breakdown: dict | None = None, surveyed_at: str | None = None,
+    ) -> None:
+        """One aggregate row per DataProfilerSurveyor run, for trending —
+        separate from project_data_profiles (per-file latest detail,
+        unchanged) since converting that table to history would require
+        dropping its UNIQUE(project_slug, file_path) constraint."""
+        slug = self._normalize_slug(slug)
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_data_profile_snapshots "
+                "(project_slug, surveyed_at, total_files, total_size_bytes, format_breakdown_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (slug, surveyed_at, total_files, total_size_bytes,
+                 json.dumps(format_breakdown) if format_breakdown else None),
+            )
+
+    def query_data_profile_history(self, slug: str) -> list[dict]:
+        """One row per DataProfilerSurveyor run, for trending."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, total_files, total_size_bytes "
+                "FROM project_data_profile_snapshots WHERE project_slug = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_security_findings(self, slug: str, findings: list[dict], surveyed_at: str | None = None) -> None:
+        """Append one SecuritySurveyor run's findings. findings: list of
+        {check_name, status, summary, detail: dict|None}."""
+        if not findings:
+            return
+        slug = self._normalize_slug(slug)
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO project_security_findings "
+                "(project_slug, surveyed_at, check_name, status, summary, detail_json) "
+                "VALUES (:project_slug, :surveyed_at, :check_name, :status, :summary, :detail_json)",
+                [
+                    {
+                        "project_slug": slug, "surveyed_at": surveyed_at,
+                        "check_name": f["check_name"], "status": f["status"], "summary": f["summary"],
+                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
+                    }
+                    for f in findings
+                ],
+            )
+
+    def query_security_findings(self, slug: str) -> list[dict]:
+        """Return the most recent SecuritySurveyor run's findings."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            latest_ts = conn.execute(
+                "SELECT MAX(surveyed_at) FROM project_security_findings WHERE project_slug = ?",
+                (slug,),
+            ).fetchone()[0]
+            if not latest_ts:
+                return []
+            rows = conn.execute(
+                "SELECT check_name, status, summary, detail_json, surveyed_at "
+                "FROM project_security_findings WHERE project_slug = ? AND surveyed_at = ? "
+                "ORDER BY check_name",
+                (slug, latest_ts),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_security_findings_history(self, slug: str) -> list[dict]:
+        """One row per SecuritySurveyor run: count of 'gap' findings, for trending."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, "
+                "SUM(CASE WHEN status = 'gap' THEN 1 ELSE 0 END) as gap_count, "
+                "COUNT(*) as total_checks "
+                "FROM project_security_findings WHERE project_slug = ? "
+                "GROUP BY surveyed_at ORDER BY surveyed_at ASC",
+                (slug,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_documentation_findings(self, slug: str, findings: list[dict], surveyed_at: str | None = None) -> None:
+        """Append one DocumentationSurveyor run's findings. findings: list of
+        {finding_type, label, confidence, detail: dict|None}."""
+        if not findings:
+            return
+        slug = self._normalize_slug(slug)
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO project_documentation_findings "
+                "(project_slug, surveyed_at, finding_type, label, confidence, detail_json) "
+                "VALUES (:project_slug, :surveyed_at, :finding_type, :label, :confidence, :detail_json)",
+                [
+                    {
+                        "project_slug": slug, "surveyed_at": surveyed_at,
+                        "finding_type": f["finding_type"], "label": f["label"],
+                        "confidence": f.get("confidence", 100),
+                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
+                    }
+                    for f in findings
+                ],
+            )
+
+    def query_documentation_findings(self, slug: str) -> list[dict]:
+        """Return the most recent DocumentationSurveyor run's findings."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            latest_ts = conn.execute(
+                "SELECT MAX(surveyed_at) FROM project_documentation_findings WHERE project_slug = ?",
+                (slug,),
+            ).fetchone()[0]
+            if not latest_ts:
+                return []
+            rows = conn.execute(
+                "SELECT finding_type, label, confidence, detail_json, surveyed_at "
+                "FROM project_documentation_findings WHERE project_slug = ? AND surveyed_at = ? "
+                "ORDER BY finding_type, label",
+                (slug, latest_ts),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # Ranks documentation quality labels for trending — DocumentationSurveyor's
+    # own vocabulary (surveyors/sub_surveyors/documentation.py); kept here
+    # rather than imported to avoid a registry->surveyors import (registry is
+    # the lower layer).
+    _DOC_QUALITY_RANK = {"Minimal": 1, "Partial": 2, "Comprehensive": 3}
+
+    def query_documentation_findings_history(self, slug: str) -> list[dict]:
+        """One row per DocumentationSurveyor run: the overall quality label
+        and its numeric rank, for trending."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, label FROM project_documentation_findings "
+                "WHERE project_slug = ? AND finding_type = 'quality_score' "
+                "ORDER BY surveyed_at ASC",
+                (slug,),
+            ).fetchall()
+        return [
+            {"surveyed_at": r["surveyed_at"], "quality": r["label"],
+             "quality_rank": self._DOC_QUALITY_RANK.get(r["label"], 0)}
+            for r in rows
+        ]
+
+    def store_api_structure_snapshot(
+        self, slug: str, symbol_count: int, by_language: dict | None = None,
+        relationship_count: int = 0, surveyed_at: str | None = None,
+    ) -> None:
+        """One aggregate row per ApiStructureSurveyor run, for trending —
+        the "latest results" view reads live from project_code_symbols/
+        project_code_relationships instead (always current, no snapshot
+        needed for that)."""
+        slug = self._normalize_slug(slug)
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_api_structure_snapshots "
+                "(project_slug, surveyed_at, symbol_count, by_language_json, relationship_count) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (slug, surveyed_at, symbol_count,
+                 json.dumps(by_language) if by_language else None, relationship_count),
+            )
+
+    def query_api_structure_history(self, slug: str) -> list[dict]:
+        """One row per ApiStructureSurveyor run, for trending."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, symbol_count, relationship_count "
+                "FROM project_api_structure_snapshots WHERE project_slug = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
         """Return file paths and sizes from the inventory for a project.
 
@@ -1867,19 +2159,22 @@ class ProjectRegistry:
     # ── dependency graph ──────────────────────────────────────────────────────
 
     def upsert_dependencies(self, slug: str, deps: list[dict]) -> None:
-        """Store parsed dependency list for a project, replacing any prior data."""
+        """Append a new ingest/refresh's dependency list. Historical runs are
+        kept for trending (mirrors upsert_file_type_counts's pattern) —
+        this used to DELETE the prior row set before inserting, destroying
+        any ability to see dependency count over time. indexed_at is the
+        shared run-timestamp within one call (same value for every row),
+        matching query_file_type_counts's surveyed_at-batch convention."""
         if not deps:
             return
         slug = self._normalize_slug(slug)
+        indexed_at = datetime.utcnow().isoformat()
         with self._conn() as conn:
-            conn.execute(
-                "DELETE FROM project_dependencies WHERE project_slug = ?", (slug,)
-            )
             conn.executemany(
                 "INSERT INTO project_dependencies "
                 "(project_slug, dep_name, dep_version, dep_type, ecosystem, source_file, indexed_at) "
                 "VALUES (:project_slug, :dep_name, :dep_version, :dep_type, :ecosystem, :source_file, :indexed_at)",
-                [{**d, "project_slug": slug, "indexed_at": datetime.utcnow().isoformat()} for d in deps],
+                [{**d, "project_slug": slug, "indexed_at": indexed_at} for d in deps],
             )
 
     def query_dependencies(
@@ -1888,10 +2183,20 @@ class ProjectRegistry:
         dep_type: str | None = None,
         ecosystem: str | None = None,
     ) -> list[dict]:
+        """Return the most recent ingest/refresh's dependency rows only —
+        upsert_dependencies() now appends rather than replacing, so without
+        this MAX(indexed_at) filter every historical run's rows would show
+        up together (matches query_file_type_counts's latest-batch pattern)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
-            filters = ["project_slug = ?"]
-            params: list = [slug]
+            latest_ts = conn.execute(
+                "SELECT MAX(indexed_at) FROM project_dependencies WHERE project_slug = ?",
+                (slug,),
+            ).fetchone()[0]
+            if not latest_ts:
+                return []
+            filters = ["project_slug = ?", "indexed_at = ?"]
+            params: list = [slug, latest_ts]
             if dep_type and dep_type != "all":
                 filters.append("dep_type = ?")
                 params.append(dep_type)
@@ -1903,6 +2208,19 @@ class ProjectRegistry:
                 f"SELECT dep_name, dep_version, dep_type, ecosystem, source_file "  # noqa: S608
                 f"FROM project_dependencies WHERE {where} ORDER BY ecosystem, dep_type, dep_name",
                 params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_dependencies_history(self, slug: str) -> list[dict]:
+        """Return one row per ingest/refresh run with total dependency count
+        and timestamp, for trending — mirrors query_file_type_history()."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT indexed_at AS surveyed_at, COUNT(*) as total_dependencies "
+                "FROM project_dependencies WHERE project_slug = ? "
+                "GROUP BY indexed_at ORDER BY indexed_at ASC",
+                (slug,),
             ).fetchall()
         return [dict(r) for r in rows]
 

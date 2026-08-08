@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
-from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation, RequestForActionAnnotation
+from resource_explorer.surveyors.survey_report import (
+    Annotation,
+    ClassificationAnnotation,
+    RequestForActionAnnotation,
+)
 
 log = logging.getLogger(__name__)
 
@@ -37,12 +42,21 @@ class SecuritySurveyor(BaseSurveyor):
     ClassificationAnnotation for each artifact present.
     """
 
+    def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
+        super().__init__(project, registry)
+        # Shared run-timestamp from SurveyOrchestrator, so this run's
+        # findings can be correlated with other surveyors' writes from the
+        # same orchestrator.run() call (Phase B, D1) — defaults to a fresh
+        # timestamp so this surveyor stays independently callable/testable.
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+
     @property
     def step_name(self) -> str:
         return STEP
 
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
+        findings: list[dict] = []
         try:
             with self.registry._conn() as conn:
                 path_rows = conn.execute(
@@ -76,6 +90,11 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=100,
                     )
                 )
+                findings.append({
+                    "check_name": "security_policy", "status": "pass",
+                    "summary": "Security policy file present",
+                    "detail": {"candidate_classifications": ["HasSecurityPolicy"]},
+                })
             else:
                 results.append(
                     RequestForActionAnnotation(
@@ -87,6 +106,14 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=90,
                     )
                 )
+                findings.append({
+                    "check_name": "security_policy", "status": "gap",
+                    "summary": "No SECURITY.md found",
+                    "detail": {
+                        "action_requested": "Add a SECURITY.md file describing the vulnerability disclosure process",
+                        "action_target_name": "SECURITY.md",
+                    },
+                })
 
             # ── CI configuration ──────────────────────────────────────────────
             has_ci = any(
@@ -108,6 +135,11 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=95,
                     )
                 )
+                findings.append({
+                    "check_name": "ci_config", "status": "pass",
+                    "summary": f"CI configuration present: {', '.join(ci_found)}",
+                    "detail": {"candidate_classifications": ci_found},
+                })
             else:
                 results.append(
                     RequestForActionAnnotation(
@@ -119,6 +151,14 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=85,
                     )
                 )
+                findings.append({
+                    "check_name": "ci_config", "status": "gap",
+                    "summary": "No CI configuration detected",
+                    "detail": {
+                        "action_requested": "Add a CI configuration (e.g. GitHub Actions workflow)",
+                        "action_target_name": ".github/workflows/",
+                    },
+                })
 
             # ── License ───────────────────────────────────────────────────────
             has_license = bool(license_from_stats) or bool(filenames & _LICENSE_FILES)
@@ -132,6 +172,11 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=100,
                     )
                 )
+                findings.append({
+                    "check_name": "license", "status": "pass",
+                    "summary": f"License: {license_label}",
+                    "detail": {"candidate_classifications": [license_label]},
+                })
             else:
                 results.append(
                     RequestForActionAnnotation(
@@ -143,6 +188,19 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=90,
                     )
                 )
+                findings.append({
+                    "check_name": "license", "status": "gap",
+                    "summary": "No license file detected",
+                    "detail": {
+                        "action_requested": "Add a LICENSE file to clarify terms of use",
+                        "action_target_name": "LICENSE",
+                    },
+                })
+
+            try:
+                self.registry.upsert_security_findings(self.project.slug, findings, surveyed_at=self._surveyed_at)
+            except Exception as exc:
+                log.warning("Could not persist security findings for %s: %s", self.project.slug, exc)
 
         except Exception as exc:
             log.exception("SecuritySurveyor failed for %s", self.project.slug)

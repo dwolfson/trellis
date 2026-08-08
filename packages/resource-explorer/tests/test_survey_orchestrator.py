@@ -69,6 +69,17 @@ class TestStepsNone:
             for p in patchers.values():
                 p.stop()
 
+    def test_updates_last_surveyed_at(self, registry, project):
+        _mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                assert registry.get(project).last_surveyed_at == ""
+                SurveyOrchestrator(registry).run(project)
+                assert registry.get(project).last_surveyed_at != ""
+        finally:
+            for p in patchers.values():
+                p.stop()
+
 
 class TestStepsFiltered:
     def test_runs_only_named_step_and_does_not_self_log(self, registry, project):
@@ -108,6 +119,17 @@ class TestStepsFiltered:
                 for m in mocks.values():
                     m.return_value.run.assert_not_called()
                 assert result.annotations == []
+        finally:
+            for p in patchers.values():
+                p.stop()
+
+    def test_step_filtered_run_also_updates_last_surveyed_at(self, registry, project):
+        _mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                assert registry.get(project).last_surveyed_at == ""
+                SurveyOrchestrator(registry).run(project, steps=["repo_health"])
+                assert registry.get(project).last_surveyed_at != ""
         finally:
             for p in patchers.values():
                 p.stop()
