@@ -221,7 +221,7 @@ class FileClassifierSurveyor(BaseSurveyor):
         every file in the repo).  Falls back to three partial sources for projects
         that pre-date the inventory table:
           • project_code_symbols  — Python/JS/Java/Go source files
-          • Milvus metadata       — markdown, examples, release notes, web docs, PDFs
+          • pgvector metadata     — markdown, examples, release notes, web docs, PDFs
           • project_dependencies.source_file — package manifests
         """
         slug = self.project.slug
@@ -252,13 +252,13 @@ class FileClassifierSurveyor(BaseSurveyor):
 
         project = self.registry.get(slug)
         if project and project.collections:
-            from resource_explorer.multi_collection_store import MultiCollectionStore
+            from resource_explorer.vector_store_pg import MultiCollectionStore
             store = MultiCollectionStore()
-            milvus_paths = store.list_source_files(project.collections)
-            paths.update(p for p in milvus_paths if p and not p.startswith("http"))
+            vector_paths = store.list_source_files(project.collections)
+            paths.update(p for p in vector_paths if p and not p.startswith("http"))
 
         log.debug(
-            "_collect_file_paths: %s → %d code + %d dep + %d milvus = %d total (partial)",
+            "_collect_file_paths: %s → %d code + %d dep + %d pgvector = %d total (partial)",
             slug, code_count, len(dep_paths),
             len(paths) - code_count - len(dep_paths), len(paths),
         )

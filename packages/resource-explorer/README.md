@@ -17,10 +17,13 @@ cp .env.example .env          # set GITHUB_TOKEN, EGERIA_*, LLM_BACKEND, …
 uv run resource-explorer web  # → http://localhost:8810
 ```
 
-Start the external services Egeria integration requires:
+Start the external services required for RAG and Egeria integration:
 ```bash
-# Milvus (for RAG)
-docker run -p 19530:19530 milvusdb/milvus:v2.4.0
+# pgvector — shared with Egeria Advisor's egeria_advisor Postgres database.
+# In a Trellis monorepo checkout this is normally already running, managed
+# by egeria-workspaces-fs's compose-configs/shared-infra/shared-infra.yaml
+# (port 5442). For a from-scratch environment without it:
+docker run -p 5442:5432 -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_advisor -e POSTGRES_PASSWORD=advisor pgvector/pgvector:pg17
 
 # Ollama (default LLM backend)
 ollama pull llama3.1:8b && ollama serve
@@ -75,4 +78,4 @@ resource-explorer chat     # interactive CLI chat
 
 ## Tech stack
 
-Python 3.12+, FastAPI, SQLite, pyegeria, psycopg2, Milvus, BeeAI, Ollama (default LLM), Tailwind CSS, Plotly.js.
+Python 3.12+, FastAPI, PostgreSQL/pgvector (registry + vector store, shared with Egeria Advisor), pyegeria, psycopg2, BeeAI, Ollama (default LLM), Tailwind CSS, Plotly.js.

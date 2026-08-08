@@ -46,7 +46,7 @@ graph TD
     Worker_A -->|Publish Report| Egeria
     Worker_B -->|Publish Report| Egeria
     Worker_C -->|Publish Report| Egeria
-    Worker_C -->|Index Vectors| Milvus[(Milvus Store)]
+    Worker_C -->|Index Vectors| PgVector[(pgvector Store)]
 ```
 
 ---

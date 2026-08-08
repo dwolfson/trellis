@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from resource_explorer.analysis_catalog import get_analyses
+from resource_explorer.surveyors.analysis_catalog_reader import (
+    get_analyses,
+    get_egeria_merge_status,
+    list_perspectives,
+)
 
 router = APIRouter()
 
@@ -106,6 +110,16 @@ def delete_annotation_type(type_name: str) -> dict:
     return {"status": "success"}
 
 
+@router.get("/perspectives")
+def list_perspectives_route() -> list[str]:
+    """Distinct perspective values actually in the catalog — backs the UI's
+    perspective selector so it's never a hardcoded, silently-stale list.
+    NOTE: declared before /{resource_type} deliberately — Starlette matches
+    routes in declaration order, so a literal path after a path-param catch-all
+    at the same position would never be reached."""
+    return list_perspectives()
+
+
 @router.get("/{resource_type}")
 def list_analyses(
     resource_type: str,
@@ -114,8 +128,20 @@ def list_analyses(
 ) -> list[dict]:
     """Return available analyses for a resource type.
 
-    resource_type: 'repo' | 'database'
-    intent:       scouting | assessment | discovery | enrichment
+    resource_type: 'repo' | 'database' | 'filesystem'
+    intent:       scouting | assessment | discovery | analysis | enrichment | understanding | curate
     perspective:  all | dba | data_scientist | steward | security
     """
-    return get_analyses(resource_type, intent=intent, perspective=perspective)
+    result = get_analyses(resource_type, intent=intent, perspective=perspective)
+    return result
+
+
+@router.get("/{resource_type}/egeria-status")
+def get_analyses_egeria_status(resource_type: str) -> dict:
+    """Outcome of the most recent live-Egeria merge attempt for this
+    resource_type, so the UI can show a "live Egeria data unavailable"
+    indicator only when a merge was actually attempted and failed — not for
+    resource types that were never wired up to a Technology Type at all.
+    Call GET /{resource_type} first; this reflects that call's outcome, it
+    does not trigger a fresh one."""
+    return {"resource_type": resource_type, "status": get_egeria_merge_status(resource_type)}

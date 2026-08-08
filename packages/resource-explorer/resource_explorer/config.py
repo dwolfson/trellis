@@ -5,9 +5,32 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class MilvusConfig(BaseSettings):
-    uri: str = "http://localhost:19530"
-    token: str = ""
+class PgVectorConfig(BaseSettings):
+    """Connection to the shared egeria_advisor Postgres/pgvector instance.
+
+    Same physical database Egeria Advisor uses (host=localhost port=5442
+    dbname=egeria_advisor) — see egeria-advisor/advisor/config.py:242-246 —
+    but RE's tables live in their own `resource_explorer` schema (migration
+    plan decision D1), namespaced away from EA's flat `public` schema.
+    Defaults match the shared instance managed by egeria-workspaces-fs's
+    compose-configs/shared-infra/shared-infra.yaml; override via env for a
+    from-scratch environment that doesn't have it.
+    """
+    host: str = Field(default="localhost", alias="PGVECTOR_HOST")
+    port: int = Field(default=5442, alias="PGVECTOR_PORT")
+    dbname: str = Field(default="egeria_advisor", alias="PGVECTOR_DBNAME")
+    # NOT named "user": with populate_by_name=True, pydantic-settings also
+    # accepts the bare field name as an env var — and the near-universal
+    # shell env var $USER (e.g. $USER=dwolfson) silently won any real
+    # PGVECTOR_USER default, which is exactly what happened during Phase 1
+    # live verification. db_user avoids the collision outright.
+    db_user: str = Field(default="egeria_advisor", alias="PGVECTOR_USER")
+    password: str = Field(default="advisor", alias="PGVECTOR_PASSWORD")
+    schema_name: str = Field(default="resource_explorer", alias="PGVECTOR_SCHEMA")
+    max_connections: int = Field(default=10, alias="PGVECTOR_MAX_CONNECTIONS")
+    ef_search: int = Field(default=100, alias="PGVECTOR_EF_SEARCH")
+
+    model_config = SettingsConfigDict(populate_by_name=True)
 
 
 class OllamaConfig(BaseSettings):
@@ -124,7 +147,22 @@ class PrefectConfig(BaseSettings):
 
 
 class RegistryConfig(BaseSettings):
-    database_url: str = Field(default="sqlite:///data/registry.db", alias="REGISTRY_DATABASE_URL")
+    """Registry storage location. Defaults to the same shared Postgres
+    instance/database Egeria Advisor uses (see PgVectorConfig) — search_path
+    pinned to `resource_explorer` via the connection URL's `options` query
+    param (`-csearch_path=resource_explorer`), so registry.py's ~27
+    CREATE TABLE/INSERT/SELECT statements stay schema-agnostic; no
+    per-statement schema-qualification needed. Override REGISTRY_DATABASE_URL
+    directly (e.g. back to sqlite:///data/registry.db) for a from-scratch
+    environment without the shared instance.
+    """
+    database_url: str = Field(
+        default=(
+            "postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor"
+            "?options=-csearch_path%3Dresource_explorer"
+        ),
+        alias="REGISTRY_DATABASE_URL",
+    )
 
     model_config = SettingsConfigDict(populate_by_name=True)
 
@@ -148,7 +186,7 @@ class FeedbackConfig(BaseSettings):
 
 
 class ExplorerConfig(BaseSettings):
-    milvus: MilvusConfig = Field(default_factory=MilvusConfig)
+    pgvector: PgVectorConfig = Field(default_factory=PgVectorConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)

@@ -62,7 +62,7 @@ def remove(
     slug: str = typer.Argument(help="Project slug to remove"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
-    """Remove a project and drop all its Milvus collections."""
+    """Remove a project and drop all its pgvector collections."""
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -71,7 +71,7 @@ def remove(
         raise typer.Exit(1)
     if not yes:
         typer.confirm(f"Remove '{project.display_name}' and all its collections?", abort=True)
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     store = MultiCollectionStore()
     for collection in project.collections:
         store.drop_collection(collection)
@@ -130,7 +130,7 @@ def add_docs(
 ):
     """Attach a documentation site or homepage to an already-registered project."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
 
     registry = ProjectRegistry()
     project = registry.get(slug)
@@ -166,7 +166,7 @@ def _ingest_web_docs(project, docs_url: str, registry) -> None:
     """Fetch a docs site via Docling and insert into the project's web_docs collection."""
     from resource_explorer.ingestion.doc_parser import DocParser, DocChunk
     from resource_explorer.ingestion.data_prep import DataPrep
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     from resource_explorer.configdata.collection_config import COLLECTION_TYPES
 
     ctype = COLLECTION_TYPES.get("web_docs")

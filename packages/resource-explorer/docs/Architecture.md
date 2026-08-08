@@ -10,7 +10,7 @@ Resource Explorer is an Egeria-first tool for discovering, assessing, and catalo
 
 The system has two layers:
 1. **Survey layer** — ingests structure and metadata from resources (repos, databases, file systems) and writes to SQLite + Egeria
-2. **Query layer** — answers natural-language questions using survey metadata, RAG (Milvus), and specialized agents
+2. **Query layer** — answers natural-language questions using survey metadata, RAG (pgvector), and specialized agents
 
 ---
 
@@ -19,24 +19,25 @@ The system has two layers:
 ```
 resource_explorer/
 ├── config.py                  # Pydantic settings (ExplorerConfig)
-├── registry.py                # SQLite registry — all tables, all read/write methods
+├── registry.py                # Registry — all tables, all read/write methods (Postgres by default, SQLite fallback)
 ├── activity_logger.py         # Thin helpers for writing activity log entries
 ├── analysis_catalog.py        # Local analysis registry (intent/persona/source tags)
 ├── scheduler.py               # Background daemon thread — executes due analyses
 │
 ├── rag_system.py              # Main query orchestrator
 ├── query_processor.py         # Intent classifier (routing.yaml) + agent router
-├── collection_router.py       # Selects relevant Milvus collections per query
+├── collection_router.py       # Selects relevant pgvector collections per query
 ├── query_cache.py             # LRU cache with optional Redis backend
 ├── llm_client.py              # LLMBackend protocol + Ollama/OpenAI/Anthropic impls
 ├── embeddings.py              # SentenceTransformer wrapper (MPS-aware)
-├── multi_collection_store.py  # Milvus multi-tenant operations
+├── vector_store_base.py       # BaseVectorStore ABC
+├── vector_store_pg.py         # PgVectorStore + MultiCollectionStore (pgvector multi-tenant operations)
 ├── prompt_templates.py        # Per-agent prompt templates
 ├── agentstack_server.py       # AgentStack A2A server
 │
 ├── github/                    # GitHub API client + stats fetcher
 │
-├── ingestion/                 # Ingestion pipeline (GitHub repos → Milvus)
+├── ingestion/                 # Ingestion pipeline (GitHub repos → pgvector)
 │   ├── pipeline.py            # IngestionPipeline — downloads, chunks, indexes
 │   └── incremental.py        # IncrementalIndexer — commit-diff based re-index
 │
@@ -122,15 +123,15 @@ User query (Web / CLI / A2A)
       ├── code_search  → CodeAgent
       ├── conceptual   → DocAgent
       ├── health       → HealthAgent
-      └── general      → RAG (CollectionRouter → Milvus → LLM)
+      └── general      → RAG (CollectionRouter → pgvector → LLM)
   → LLM generation (Ollama / OpenAI / Anthropic)
   → Response
   → Async: MLflow + Phoenix tracing, cache store
 ```
 
-`survey_meta` is evaluated first. It handles questions about when a resource was last surveyed, what analyses are scheduled, what RFAs are open, or what the resource context contains — all answered from local SQLite without hitting Milvus.
+`survey_meta` is evaluated first. It handles questions about when a resource was last surveyed, what analyses are scheduled, what RFAs are open, or what the resource context contains — all answered from the registry without hitting pgvector.
 
-For database and file-system resources, RAG searches survey metadata stored in Milvus (schema, annotations) rather than raw content — unless content has been explicitly ingested.
+For database and file-system resources, RAG searches survey metadata stored in pgvector (schema, annotations) rather than raw content — unless content has been explicitly ingested.
 
 ---
 
@@ -241,7 +242,7 @@ The field was renamed from `personas` to `perspectives` — filter accordingly.
 
 ## Key Design Rules
 
-1. Classify intent before touching the vector store — statistical queries never hit Milvus.
+1. Classify intent before touching the vector store — statistical queries never hit pgvector.
 2. Min retrieval score = 0.30 — below this, return "I don't have enough information."
 3. Query cache is the highest-ROI latency win — implement before optimizing retrieval.
 4. Observability runs in background threads — never block the query response.

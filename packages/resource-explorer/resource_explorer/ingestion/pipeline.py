@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from resource_explorer.configdata.collection_config import CollectionType
-from resource_explorer.multi_collection_store import MultiCollectionStore
+from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
 
 
@@ -146,12 +146,22 @@ class IngestionPipeline:
         ctype: CollectionType,
         local_root: Path | None = None,
         extra_paths: list[tuple[str, Path]] | None = None,
+        changed_files: set[str] | None = None,
     ) -> int:
         """
         Ingest one collection type. local_root is the extracted repo directory;
         if None (incremental single-collection re-index), downloads on the spot.
         extra_paths is a list of (display_prefix, abs_path) for repo paths outside
         the code subproject; used by doc/example collections only.
+
+        changed_files, when given, restricts insertion to chunks whose
+        metadata["file_path"] is in the set — every parser below still walks
+        the full local_root (cheap, disk-based; not worth threading a file
+        filter through each one), but only the changed files' chunks actually
+        get written. Callers pair this with a delete_by_metadata() targeting
+        the same file set first, so the net effect is a real per-file
+        replace instead of insert-only drift (migration plan decision D4).
+        None (the default) ingests everything, unchanged from before.
         """
         from resource_explorer.ingestion.data_prep import DataPrep
 
@@ -191,6 +201,8 @@ class IngestionPipeline:
                 chunks = _file_dispatch[ctype.name](local_root, project_slug, ctype)
 
         chunks = DataPrep().filter(chunks)
+        if changed_files is not None:
+            chunks = [c for c in chunks if c.metadata.get("file_path") in changed_files]
         if not chunks:
             return 0
 
@@ -199,7 +211,7 @@ class IngestionPipeline:
 
     def extract_symbols_only(self, project_slug: str, github_url: str, collections: list[str]) -> int:
         """
-        Download the repo and extract code symbols to SQLite without touching Milvus.
+        Download the repo and extract code symbols to SQLite without touching pgvector.
 
         Used to backfill symbols for projects that were indexed before code intelligence
         was added, and by 'refresh --symbols' when code hasn't changed.

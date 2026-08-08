@@ -1,7 +1,3 @@
-milvus:
-  uri: "${MILVUS_URI:http://localhost:19530}"
-  token: "${MILVUS_TOKEN:}"
-
 llm:
   backend: "${LLM_BACKEND:ollama}"       # ollama | openai | anthropic
   ollama:

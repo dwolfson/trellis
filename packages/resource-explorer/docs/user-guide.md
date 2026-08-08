@@ -154,7 +154,7 @@ The Chat panel provides RAG-backed Q&A scoped to the selected resource (or all r
 | statistical | StatsAgent | GitHub metrics, commit trends |
 | comparison | CompareAgent | Side-by-side project comparison |
 | examples | ExamplesAgent | Generates runnable Python code |
-| code_search | CodeAgent | Searches code collections in Milvus |
+| code_search | CodeAgent | Searches code collections in pgvector |
 | health | HealthAgent | Community health metrics |
 | conceptual | DocAgent | Architecture, documentation |
 | general | RAG | Searches all relevant collections |

@@ -5,13 +5,14 @@ import json
 import math
 import re
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine
 
 
 class ProjectStatus(str, Enum):
@@ -274,6 +275,19 @@ class PostgresCursorWrapper:
         sql_trans = sql.replace('?', '%s')
         sql_trans = re.sub(r'(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)', r'%(\1)s', sql_trans)
         sql_trans = re.sub(r'(?i)\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b', 'SERIAL PRIMARY KEY', sql_trans)
+        # GROUP_CONCAT(expr[, sep]) -> STRING_AGG(expr, sep) — Postgres has no
+        # GROUP_CONCAT. Assumes a single, non-nested-comma argument (true of
+        # every current call site); SQLite's default separator is ',',
+        # matching STRING_AGG's required (no-default) separator argument.
+        def _group_concat_to_string_agg(m):
+            expr, sep = m.group(1), m.group(2) or "','"
+            return f"STRING_AGG({expr}, {sep})"
+
+        sql_trans = re.sub(
+            r'(?i)\bGROUP_CONCAT\(\s*([^,()]+?)\s*(?:,\s*([^()]+?)\s*)?\)',
+            _group_concat_to_string_agg,
+            sql_trans,
+        )
         return sql_trans
 
     def execute(self, sql: str, params: Any = None):
@@ -308,10 +322,19 @@ class PostgresCursorWrapper:
 
 
 class ProjectRegistry:
-    def __init__(self, db_path: str = "data/registry.db") -> None:
+    def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
+        """database_url, when given, is used verbatim — bypassing the
+        db_path sentinel/config-lookup logic below entirely. Added for the
+        real-Postgres integration test tier (Phase 8): db_path's own
+        sentinel special-casing has no way to point a ProjectRegistry at an
+        explicit, isolated Postgres URL (e.g. a throwaway test schema)
+        without either mutating global config or forcing SQLite.
+        """
         self.db_path = db_path
-        from resource_explorer.config import get_config
-        if db_path == "data/registry.db":
+        if database_url is not None:
+            self.database_url = database_url
+        elif db_path == "data/registry.db":
+            from resource_explorer.config import get_config
             try:
                 config = get_config()
                 self.database_url = config.registry.database_url
@@ -342,10 +365,29 @@ class ProjectRegistry:
         finally:
             conn.close()
 
-    def _get_table_columns(self, table_name: str) -> set[str]:
-        inspector = inspect(self.engine)
+    def _get_table_columns(self, conn, table_name: str) -> set[str]:
+        """Columns currently on table_name, read through the SAME open
+        transaction as the caller's CREATE TABLE — not a fresh connection via
+        inspect(self.engine). That distinction matters on Postgres: a table
+        just CREATEd in this transaction is invisible to a separate
+        connection/inspector until commit, which made every "add column if
+        missing" migration below think a brand-new table was missing columns
+        it had literally just been created with, and crash trying to
+        ALTER TABLE ADD a column that already existed. SQLite's PRAGMA
+        table_info happened to dodge this (same-connection visibility), which
+        is why the bug was invisible until this ran against real Postgres.
+        """
         try:
-            return {col["name"] for col in inspector.get_columns(table_name)}
+            if conn.is_postgres:
+                rows = conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = ? AND table_schema = current_schema()",
+                    (table_name,),
+                ).fetchall()
+                return {r["column_name"] for r in rows}
+            else:
+                rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                return {r["name"] for r in rows}
         except Exception:
             return set()
 
@@ -376,7 +418,7 @@ class ProjectRegistry:
                 )
             """)
             # Migrations: add new columns to existing databases
-            existing = self._get_table_columns("projects")
+            existing = self._get_table_columns(conn, "projects")
             for col, defn in [
                 ("last_commit_sha", "TEXT DEFAULT ''"),
                 ("subproject_path", "TEXT DEFAULT ''"),
@@ -425,7 +467,7 @@ class ProjectRegistry:
                 )
             """)
             # Migrations: add new columns to existing databases
-            existing_stats = self._get_table_columns("project_stats")
+            existing_stats = self._get_table_columns(conn, "project_stats")
             for col, defn in [
                 ("avg_release_interval_days", "INTEGER DEFAULT 0"),
                 ("repo_size_kb", "INTEGER DEFAULT 0"),
@@ -488,7 +530,7 @@ class ProjectRegistry:
                 )
             """)
             # Migrations: add additions / deletions to existing project_commits rows
-            existing_commits = self._get_table_columns("project_commits")
+            existing_commits = self._get_table_columns(conn, "project_commits")
             for col, defn in [
                 ("additions", "INTEGER DEFAULT NULL"),
                 ("deletions", "INTEGER DEFAULT NULL"),
@@ -523,7 +565,7 @@ class ProjectRegistry:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     project_slug TEXT DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    created_at TEXT NOT NULL
                 )
             """)
             conn.execute(
@@ -568,7 +610,7 @@ class ProjectRegistry:
                 "ON project_file_type_counts(project_slug)"
             )
             # Migration: add details_json if not present (existing databases)
-            existing_ftc = self._get_table_columns("project_file_type_counts")
+            existing_ftc = self._get_table_columns(conn, "project_file_type_counts")
             if "details_json" not in existing_ftc:
                 conn.execute(
                     "ALTER TABLE project_file_type_counts ADD COLUMN details_json TEXT DEFAULT NULL"
@@ -601,7 +643,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add annotation_count if not present (existing databases)
-            existing_es = self._get_table_columns("project_egeria_surveys")
+            existing_es = self._get_table_columns(conn, "project_egeria_surveys")
             if "annotation_count" not in existing_es:
                 conn.execute(
                     "ALTER TABLE project_egeria_surveys ADD COLUMN annotation_count INTEGER DEFAULT NULL"
@@ -661,7 +703,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add credential/egeria/survey-count columns to existing databases tables
-            existing_db = self._get_table_columns("databases")
+            existing_db = self._get_table_columns(conn, "databases")
             for col, defval in [
                 ("db_user", "''"),
                 ("db_password", "''"),
@@ -703,7 +745,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add group_slug to db_servers
-            existing_srv = self._get_table_columns("db_servers")
+            existing_srv = self._get_table_columns(conn, "db_servers")
             if "group_slug" not in existing_srv:
                 conn.execute("ALTER TABLE db_servers ADD COLUMN group_slug TEXT DEFAULT ''")
             # Database survey results table
@@ -722,7 +764,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add source column to existing database_surveys tables
-            existing_ds = self._get_table_columns("database_surveys")
+            existing_ds = self._get_table_columns(conn, "database_surveys")
             if "source" not in existing_ds:
                 conn.execute("ALTER TABLE database_surveys ADD COLUMN source TEXT DEFAULT 'local'")
             conn.execute(
@@ -753,7 +795,7 @@ class ProjectRegistry:
                 )
             """)
             # Migration: add new columns to existing file_systems tables
-            existing_fs = self._get_table_columns("file_systems")
+            existing_fs = self._get_table_columns(conn, "file_systems")
             for col, defval in [
                 ("egeria_url", "''"),
                 ("egeria_server", "''"),
@@ -822,6 +864,46 @@ class ProjectRegistry:
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_tags (
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    tag          TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, entity_slug, tag)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_tags_tag ON resource_tags(tag)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_feedback (
+                    id           TEXT PRIMARY KEY,
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    rating       INTEGER DEFAULT NULL,
+                    category     TEXT DEFAULT '',
+                    message      TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_feedback_entity "
+                "ON resource_feedback(entity_type, entity_slug)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_curator_notes (
+                    id           TEXT PRIMARY KEY,
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    note         TEXT NOT NULL,
+                    created_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_curator_notes_entity "
+                "ON resource_curator_notes(entity_type, entity_slug)"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
                     entity_type  TEXT NOT NULL,
                     entity_slug  TEXT NOT NULL,
@@ -833,6 +915,18 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug, analysis_id)
                 )
             """)
+            # Migration: last_run_status/last_run_activity_id — added so the
+            # Admin Schedules overview can show success/error at a glance
+            # without scanning activity_log. Populated by
+            # update_schedule_after_run(), written by scheduler.py's
+            # _run_due(), which now also writes a real ActivityEntry for
+            # every scheduled run (previously only logged to Python's own
+            # logger — a real gap, not by design; see scheduler.py).
+            existing_sched = self._get_table_columns(conn, "resource_schedules")
+            if "last_run_status" not in existing_sched:
+                conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_status TEXT DEFAULT ''")
+            if "last_run_activity_id" not in existing_sched:
+                conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_activity_id TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS survey_definition_cache (
                     entity_type            TEXT NOT NULL,
@@ -842,6 +936,18 @@ class ProjectRegistry:
                     process_qualified_name TEXT DEFAULT '',
                     cached_at              TEXT NOT NULL,
                     PRIMARY KEY (entity_type, entity_slug, technology_type)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS rfa_actions (
+                    id                TEXT PRIMARY KEY,
+                    entry_id          TEXT NOT NULL,
+                    annotation_index  INTEGER NOT NULL,
+                    rfa_status        TEXT NOT NULL DEFAULT 'open',
+                    assignee          TEXT DEFAULT '',
+                    defer_until       TEXT DEFAULT '',
+                    resolution_note   TEXT DEFAULT '',
+                    updated_at        TEXT NOT NULL DEFAULT ''
                 )
             """)
             conn.execute("""
@@ -947,6 +1053,117 @@ class ProjectRegistry:
         ctx["_saved_at"] = row["ts"]
         return ctx
 
+    # ── Curate — tags, resource-level feedback, curator notes ──────────────────
+    # Discoverability/reuse-readiness for a resource, distinct from Enrichment's
+    # resource_context (facts about the resource). See web/routes/curate.py.
+
+    def add_resource_tag(self, entity_type: str, entity_slug: str, tag: str) -> None:
+        from datetime import timezone
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_tags (entity_type, entity_slug, tag, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug, tag) DO NOTHING""",
+                (entity_type, entity_slug, tag, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def remove_resource_tag(self, entity_type: str, entity_slug: str, tag: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM resource_tags WHERE entity_type=? AND entity_slug=? AND tag=?",
+                (entity_type, entity_slug, tag),
+            )
+
+    def list_resource_tags(self, entity_type: str, entity_slug: str) -> list[str]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT tag FROM resource_tags WHERE entity_type=? AND entity_slug=? ORDER BY tag",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [r["tag"] for r in rows]
+
+    def list_all_tags(self) -> list[dict]:
+        """Distinct tags across all resources with their usage count — backs
+        autocomplete and browse-by-tag ("making the resource easier to find")."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT tag, COUNT(*) as count FROM resource_tags GROUP BY tag ORDER BY tag"
+            ).fetchall()
+        return [{"tag": r["tag"], "count": r["count"]} for r in rows]
+
+    def list_resources_by_tag(self, tag: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT entity_type, entity_slug FROM resource_tags WHERE tag=? ORDER BY entity_type, entity_slug",
+                (tag,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_resource_feedback(
+        self, entity_type: str, entity_slug: str, rating: int | None, category: str, message: str
+    ) -> dict:
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "rating": rating,
+            "category": category,
+            "message": message,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_feedback
+                   (id, entity_type, entity_slug, rating, category, message, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def list_resource_feedback(self, entity_type: str, entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_feedback WHERE entity_type=? AND entity_slug=?
+                   ORDER BY created_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_curator_note(self, entity_type: str, entity_slug: str, note: str) -> dict:
+        """Ongoing curator commentary (discoverability, quality, readiness) —
+        deliberately a separate stream from resource_context's 'notes' field,
+        which is a one-time context-gathering fact, not a running log."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "note": note,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_curator_notes (id, entity_type, entity_slug, note, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def list_curator_notes(self, entity_type: str, entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_curator_notes WHERE entity_type=? AND entity_slug=?
+                   ORDER BY created_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_curator_note(self, note_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM resource_curator_notes WHERE id=?", (note_id,))
+        return cur.rowcount > 0
+
     _SCHEDULE_DAYS: dict[str, int] = {"daily": 1, "weekly": 7, "monthly": 30}
 
     def _next_run_iso(self, schedule: str, enabled: bool) -> str:
@@ -977,9 +1194,16 @@ class ProjectRegistry:
             )
 
     def update_schedule_after_run(
-        self, entity_type: str, entity_slug: str, analysis_id: str
+        self,
+        entity_type: str,
+        entity_slug: str,
+        analysis_id: str,
+        status: str = "ok",
+        activity_id: str = "",
     ) -> None:
-        """Record last_run = now and advance next_run by the configured interval."""
+        """Record last_run = now, advance next_run by the configured interval,
+        and record the outcome (status/activity_id) of that run — see the
+        resource_schedules migration comment for why."""
         from datetime import timezone
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
@@ -992,9 +1216,10 @@ class ProjectRegistry:
                 return
             next_run = self._next_run_iso(row["schedule"], enabled=True)
             conn.execute(
-                "UPDATE resource_schedules SET last_run=?, next_run=? "
+                "UPDATE resource_schedules SET last_run=?, next_run=?, "
+                "last_run_status=?, last_run_activity_id=? "
                 "WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
-                (now, next_run, entity_type, entity_slug, analysis_id),
+                (now, next_run, status, activity_id, entity_type, entity_slug, analysis_id),
             )
 
     def get_schedules(self, entity_type: str, entity_slug: str) -> list[dict]:
@@ -1004,6 +1229,28 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_all_schedules(self) -> list[dict]:
+        """Every scheduled analysis across every resource — backs the Admin
+        Schedules overview. Errors first (whatever needs follow-up surfaces
+        immediately), then soonest-due, so the dashboard reads as a triage
+        list rather than an alphabetical dump."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM resource_schedules
+                   ORDER BY CASE WHEN last_run_status = 'error' THEN 0 ELSE 1 END,
+                            next_run ASC"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_schedule(self, entity_type: str, entity_slug: str, analysis_id: str) -> bool:
+        """Remove a schedule entirely — returns False if none existed."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM resource_schedules WHERE entity_type=? AND entity_slug=? AND analysis_id=?",
+                (entity_type, entity_slug, analysis_id),
+            )
+        return cur.rowcount > 0
 
     def get_due_schedules(self) -> list[dict]:
         """Return all enabled schedules that are past their next_run time."""
@@ -1179,12 +1426,27 @@ class ProjectRegistry:
     def remove(self, slug: str) -> None:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
-            conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
+            # Children before parent — every table below has a real FK to
+            # projects.slug, which SQLite silently ignores by default
+            # (foreign_keys pragma is off) but Postgres enforces. This was
+            # ALSO incomplete on SQLite itself: project_dependencies,
+            # project_file_type_counts, project_file_inventory,
+            # project_egeria_surveys, and project_data_profiles were never
+            # cleaned up here at all, silently leaking orphaned rows on every
+            # remove() — invisible on SQLite (no FK enforcement to surface
+            # it), a hard FK-violation crash on Postgres. Found live during
+            # Phase 4 Postgres cutover testing; fixed for both backends.
             conn.execute("DELETE FROM project_stats WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_commits WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_symbols WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_file_type_counts WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_file_inventory WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_egeria_surveys WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_data_profiles WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
 
     # ── alias management ──────────────────────────────────────────────────────
 
@@ -1193,8 +1455,11 @@ class ProjectRegistry:
         normalized = alias.lower().replace(" ", "_").replace("-", "_")
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO project_aliases (alias, project_slug, confirmed_by, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO project_aliases (alias, project_slug, confirmed_by, created_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (alias) DO UPDATE SET "
+                "project_slug = excluded.project_slug, confirmed_by = excluded.confirmed_by, "
+                "created_at = excluded.created_at",
                 (normalized, self._normalize_slug(slug), confirmed_by, datetime.utcnow().isoformat()),
             )
 
@@ -1308,8 +1573,15 @@ class ProjectRegistry:
         """Return one row per survey run with total file count and timestamp, for trending."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
+            # MAX(source), not a bare `source` — SQLite's lax GROUP BY (any
+            # selected column not in GROUP BY silently picks *a* row's value)
+            # let this slide; Postgres correctly rejects it. source is
+            # expected constant per surveyed_at run, so MAX just reproduces
+            # SQLite's old behavior explicitly, without changing the
+            # docstring's "one row per survey run" grouping granularity by
+            # also grouping on source.
             rows = conn.execute(
-                "SELECT surveyed_at, SUM(file_count) as total_files, source "
+                "SELECT surveyed_at, SUM(file_count) as total_files, MAX(source) as source "
                 "FROM project_file_type_counts WHERE project_slug = ? "
                 "GROUP BY surveyed_at ORDER BY surveyed_at ASC",
                 (slug,),
@@ -1548,10 +1820,14 @@ class ProjectRegistry:
         norms = [self._normalize_slug(s) for s in slugs]
         with self._conn() as conn:
             placeholders = ",".join("?" * len(norms))
+            # HAVING references COUNT(*) directly, not the project_count
+            # alias — SQLite allows referencing a SELECT-list alias in
+            # HAVING, Postgres does not (HAVING is evaluated before aliases
+            # are available in standard SQL semantics).
             rows = conn.execute(
                 f"SELECT dep_name, ecosystem, GROUP_CONCAT(project_slug) as projects, COUNT(*) as project_count "  # noqa: S608
                 f"FROM project_dependencies WHERE project_slug IN ({placeholders}) "
-                f"GROUP BY dep_name, ecosystem HAVING project_count >= 2 ORDER BY project_count DESC, dep_name",
+                f"GROUP BY dep_name, ecosystem HAVING COUNT(*) >= 2 ORDER BY project_count DESC, dep_name",
                 norms,
             ).fetchall()
         return [dict(r) for r in rows]
@@ -1706,8 +1982,11 @@ class ProjectRegistry:
         """Remove a database entity and all its survey records."""
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
-            conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
+            # Child before parent — database_surveys has a real FK to
+            # databases.slug; SQLite silently allows the reverse order
+            # (foreign_keys pragma off by default), Postgres does not.
             conn.execute("DELETE FROM database_surveys WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
         self,
@@ -2012,6 +2291,7 @@ class ProjectRegistry:
     def list_activity(
         self,
         entity_type: str | None = None,
+        entity_slug: str | None = None,
         intent: str | None = None,
         operation: str | None = None,
         status: str | None = None,
@@ -2023,6 +2303,9 @@ class ProjectRegistry:
         if entity_type:
             filters.append("entity_type = ?")
             params.append(entity_type)
+        if entity_slug:
+            filters.append("entity_slug = ?")
+            params.append(entity_slug)
         if intent:
             filters.append("intent = ?")
             params.append(intent)
@@ -2077,6 +2360,61 @@ class ProjectRegistry:
                 "WHERE id = ?",
                 (status, summary, summary, detail, detail, entry_id),
             )
+
+    # ── RFA actions (local response tracking — see PATCH /api/activity/rfas/{rfa_id}
+    # in web/routes/activity.py) ─────────────────────────────────────────────
+    #
+    # RFAs themselves aren't first-class rows — GET /rfas flattens
+    # RequestForAction-tagged entries out of each activity_log row's
+    # annotations_json at read time. This table is keyed on the same
+    # synthetic id that flatten step mints positionally
+    # (f"{entry_id}::{annotation_index}"), and overlays a real, updatable
+    # status/assignee/defer/resolution onto each flattened RFA. This is a
+    # stepping stone toward real Egeria ToDo/governance actions, not that
+    # integration itself — full alignment with Egeria's native action model
+    # is deliberately out of scope for this slice. See
+    # docs/rfa-egeria-todo-followup.md for what that integration would
+    # actually require, confirmed against pyegeria's real ToDo/PersonAction
+    # API (assign_action/reassign_action/add_action_target) — not built yet.
+
+    def upsert_rfa_action(
+        self,
+        rfa_id: str,
+        entry_id: str,
+        annotation_index: int,
+        status: str,
+        assignee: str = "",
+        defer_until: str = "",
+        resolution_note: str = "",
+    ) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO rfa_actions
+                   (id, entry_id, annotation_index, rfa_status, assignee, defer_until, resolution_note, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     rfa_status=excluded.rfa_status,
+                     assignee=excluded.assignee,
+                     defer_until=excluded.defer_until,
+                     resolution_note=excluded.resolution_note,
+                     updated_at=excluded.updated_at""",
+                (rfa_id, entry_id, annotation_index, status, assignee, defer_until, resolution_note, updated_at),
+            )
+
+    def get_rfa_action(self, rfa_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM rfa_actions WHERE id = ?", (rfa_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_rfa_action_overrides(self) -> dict[str, dict]:
+        """All rfa_actions rows, keyed by id — used to overlay live status
+        onto the read-time-flattened RFA list without a per-row query."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM rfa_actions").fetchall()
+        return {r["id"]: dict(r) for r in rows}
 
     def update_governance_state(self, entity_type: str, slug: str, state: str) -> None:
         """Update the governance state of a registered resource."""
@@ -2187,8 +2525,11 @@ class ProjectRegistry:
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO project_groups (slug, display_name, description, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO project_groups (slug, display_name, description, created_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (slug) DO UPDATE SET "
+                "display_name = excluded.display_name, description = excluded.description, "
+                "created_at = excluded.created_at",
                 (slug, display_name, description, datetime.utcnow().isoformat()),
             )
 

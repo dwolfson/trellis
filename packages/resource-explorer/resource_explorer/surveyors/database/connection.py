@@ -386,6 +386,13 @@ def database_connection(db_entity: DatabaseEntity, credentials: dict):
             schema = conn.get_schema_info()
     """
     if db_entity.db_type == "postgresql":
+        if not credentials.get("user") or not credentials.get("password"):
+            raise ValueError(
+                "Database credentials are required to connect ('user'/'password' both "
+                "missing or empty) — there is no other fallback (env vars, config) inside "
+                "this function; callers must resolve credentials themselves first "
+                "(e.g. from DatabaseEntity.db_user/db_password)."
+            )
         conn = PostgreSQLConnection(
             host=db_entity.host,
             port=db_entity.port,

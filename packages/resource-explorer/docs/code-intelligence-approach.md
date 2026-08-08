@@ -19,7 +19,7 @@ These questions have precise, structured answers that require AST-level understa
 Two complementary additions:
 
 1. **`CodeSymbolExtractor`** — runs during ingestion alongside the existing chunker; uses Python's `ast` module for Python files and regex for other languages; writes extracted symbols to a new SQLite table.
-2. **`query_code_symbols` tool** — a BeeAI `@tool` that answers counting, listing, and signature queries against the symbol table, without touching Milvus.
+2. **`query_code_symbols` tool** — a BeeAI `@tool` that answers counting, listing, and signature queries against the symbol table, without touching pgvector.
 
 The vector store keeps its role for semantic ("what does X do?") queries. The symbol table handles structural ("list X", "how many X", "signature of X") queries.
 
@@ -187,7 +187,7 @@ for file_path, content in files:
 registry.upsert_code_symbols(slug, all_symbols)
 ```
 
-On `refresh`, the symbol table for affected collections is cleared and repopulated alongside the Milvus re-ingestion.
+On `refresh`, the symbol table for affected collections is cleared and repopulated alongside the pgvector re-ingestion.
 
 ---
 
@@ -370,7 +370,7 @@ code_inventory:
 
 ## Counting and Listing Examples
 
-After implementation, these queries resolve via `query_code_symbols` without any Milvus lookup:
+After implementation, these queries resolve via `query_code_symbols` without any pgvector lookup:
 
 | Query | Tool call | Expected output |
 |---|---|---|

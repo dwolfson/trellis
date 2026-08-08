@@ -202,7 +202,7 @@ async def refresh_project(slug: str) -> RefreshResult:
 @router.delete("/{slug}")
 async def remove_project(slug: str) -> dict:
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:

@@ -1,6 +1,6 @@
 """Survey metadata agent — answers questions about analysis runs, data sources, and annotations.
 
-Does not use BeeAI or Milvus. Queries the local SQLite registry directly and
+Does not use BeeAI or pgvector. Queries the local registry directly and
 uses the LLM to compose a natural-language answer from the structured data.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ class SurveyMetaAgent:
 
     def _gather_context(self, query: str, slug: str | None) -> dict:
         from resource_explorer.registry import ProjectRegistry
-        from resource_explorer.analysis_catalog import get_analyses
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
         registry = ProjectRegistry()
         q = query.lower()

@@ -194,15 +194,26 @@ class EgeriaDatabaseSurveyor:
             "survey_action_guid": survey_action_guid,
         }
 
-    def trigger_survey_by_guid(self, db_guid: str) -> str:
+    def trigger_survey_by_guid(self, db_guid: str, start_time: datetime | None = None) -> str:
         """Initiate Egeria's native PostgreSQL database survey using a stored GUID.
 
         Use this when the database is already cataloged in Egeria (db_guid known).
         Egeria uses its stored connection details — no credentials required here.
+
+        start_time: when set, Egeria's own engine host defers execution to that
+        moment (pyegeria converts it to epoch-millis on the wire) instead of
+        firing immediately — this is what lets scheduler.py hand off precise
+        timing to Egeria instead of relying purely on RE's own poll loop. Only
+        honored on the dynamically-discovered-process branch of
+        _initiate_survey; the native-survey fallback (_initiate_native_survey,
+        already a workaround for a separate pyegeria bug — see its own
+        docstring) calls a private pyegeria method with no start_time
+        parameter at all, so start_time is silently not applied if that
+        fallback is the one that ends up running.
         """
         self.connect()
         try:
-            action_guid = self._initiate_survey("PostgreSQL Relational Database", db_guid)
+            action_guid = self._initiate_survey("PostgreSQL Relational Database", db_guid, start_time=start_time)
             log.info(f"Egeria database survey initiated: {action_guid}")
             return action_guid
         except Exception as exc:
@@ -320,11 +331,16 @@ class EgeriaDatabaseSurveyor:
 
         return {"asset_guid": db_guid, "report_guid": report_guid, "annotation_count": len(annotations)}
 
-    def _initiate_survey(self, tech_type: str, target_guid: str) -> str:
+    def _initiate_survey(self, tech_type: str, target_guid: str, start_time: datetime | None = None) -> str:
         """Dynamically find a user-authored Survey Definition process for tech_type
         and initiate it as a GovernanceActionProcess; if none is found (or it fails
         to initiate), fall back to the native survey GovernanceActionType
         configured for this tech_type in config/technology_type_processes.yaml.
+
+        start_time: passed straight through to initiate_gov_action_process on
+        the dynamically-discovered-process branch only — see
+        trigger_survey_by_guid's docstring for why the fallback branch can't
+        honor it.
         """
         process_name = self._find_survey_process_name(tech_type)
         if process_name:
@@ -338,9 +354,11 @@ class EgeriaDatabaseSurveyor:
                 ]
                 guid = self._automated_curation.initiate_gov_action_process(
                     action_type_qualified_name=process_name,
-                    action_targets=targets
+                    action_targets=targets,
+                    start_time=start_time,
                 )
-                log.info(f"Initiated dynamically discovered survey process {process_name} on {target_guid}: {guid}")
+                log.info(f"Initiated dynamically discovered survey process {process_name} on {target_guid}: {guid}"
+                         + (f" (start_time={start_time.isoformat()})" if start_time else ""))
                 return guid
             except Exception as exc:
                 log.warning(f"Failed to initiate dynamically discovered survey process {process_name}: {exc}. Trying fallback...")
@@ -355,6 +373,11 @@ class EgeriaDatabaseSurveyor:
             raise RuntimeError(
                 f"No native survey process configured for technology_type={tech_type!r} — "
                 "add an entry to config/technology_type_processes.yaml."
+            )
+        if start_time:
+            log.info(
+                f"start_time={start_time.isoformat()} requested but the native-survey fallback path "
+                f"(pyegeria's private _async_initiate_survey) has no start_time parameter — firing immediately."
             )
         return self._initiate_native_survey(native.qualified_name, target_guid)
 

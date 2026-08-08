@@ -81,7 +81,7 @@ class TestProjectsRouter:
         assert resp.status_code == 404
 
     def test_delete_project(self, client):
-        with patch("resource_explorer.multi_collection_store.MultiCollectionStore") as mock_store:
+        with patch("resource_explorer.vector_store_pg.MultiCollectionStore") as mock_store:
             mock_store.return_value.drop_collection = MagicMock()
             resp = client.delete("/api/projects/myproj")
         assert resp.status_code == 200
@@ -182,6 +182,271 @@ class TestQueryRouter:
             })
         assert resp.status_code == 200
         rag_mock.query.assert_called_once_with("what is this project?", project_slug="myproj")
+
+
+# ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────
+
+def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_annotations=None):
+    from resource_explorer.registry import ActivityEntry
+    annotations = [
+        {"annotation_type": "RequestForActionAnnotation", "analysis_name": "Security Scan",
+         "count": 1, "summary": f"Finding {i}", "status": "local"}
+        for i in range(num_rfas)
+    ]
+    if extra_annotations:
+        annotations.extend(extra_annotations)
+    registry.write_activity(ActivityEntry(
+        id=entry_id, ts="2026-08-01T00:00:00", operation="survey", intent="assessment",
+        entity_type="repo", entity_slug="myproj", entity_name="My Project",
+        annotations=annotations,
+    ))
+
+
+# ── /api/curate — tags, resource feedback, curator notes ───────────────────────
+
+class TestCurateTagsRouter:
+    def test_add_list_remove_tag(self, client):
+        resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "Gold-Tier"})
+        assert resp.status_code == 200
+        assert resp.json()["tag"] == "gold-tier"  # normalized lowercase
+
+        listed = client.get("/api/curate/tags/repo/myproj").json()
+        assert listed == ["gold-tier"]
+
+        resp = client.delete("/api/curate/tags/repo/myproj/gold-tier")
+        assert resp.status_code == 200
+        assert client.get("/api/curate/tags/repo/myproj").json() == []
+
+    def test_add_tag_rejects_empty(self, client):
+        resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "   "})
+        assert resp.status_code == 400
+
+    def test_list_all_tags_with_counts(self, client):
+        client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
+        client.post("/api/curate/tags/database/db-a", json={"tag": "gold-tier"})
+        tags = {t["tag"]: t["count"] for t in client.get("/api/curate/tags").json()}
+        assert tags["gold-tier"] == 2
+
+    def test_resources_by_tag(self, client):
+        client.post("/api/curate/tags/repo/proj-a", json={"tag": "gold-tier"})
+        resp = client.get("/api/curate/tags/gold-tier/resources")
+        assert resp.status_code == 200
+        assert {"entity_type": "repo", "entity_slug": "proj-a"} in resp.json()
+
+    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client):
+        # Regression guard: /tags/{tag}/resources and /tags/{entity_type}/{slug}
+        # are both 2-segment paths — declaration order matters (see curate.py's
+        # comment). A resource literally named "resources" would be the edge
+        # case that breaks if the order were ever flipped back.
+        client.post("/api/curate/tags/repo/myproj", json={"tag": "gold-tier"})
+        resp = client.get("/api/curate/tags/repo/myproj")
+        assert resp.status_code == 200
+        assert resp.json() == ["gold-tier"]
+
+
+class TestCurateFeedbackRouter:
+    def test_add_and_list_feedback(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={
+            "rating": 4, "category": "quality", "message": "Schema looks stale",
+        })
+        assert resp.status_code == 200
+        listed = client.get("/api/curate/feedback/repo/myproj").json()
+        assert len(listed) == 1
+        assert listed[0]["message"] == "Schema looks stale"
+
+    def test_rejects_empty_message(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"message": ""})
+        assert resp.status_code == 400
+
+    def test_rejects_out_of_range_rating(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"rating": 9, "message": "x"})
+        assert resp.status_code == 400
+
+    def test_feedback_without_rating_is_allowed(self, client):
+        resp = client.post("/api/curate/feedback/repo/myproj", json={"message": "just a note"})
+        assert resp.status_code == 200
+        assert resp.json()["rating"] is None
+
+
+class TestCurateNotesRouter:
+    def test_add_list_delete_note(self, client):
+        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "Needs a better README"})
+        assert resp.status_code == 200
+        note_id = resp.json()["id"]
+
+        listed = client.get("/api/curate/notes/repo/myproj").json()
+        assert len(listed) == 1
+
+        resp = client.delete(f"/api/curate/notes/{note_id}")
+        assert resp.status_code == 200
+        assert client.get("/api/curate/notes/repo/myproj").json() == []
+
+    def test_rejects_empty_note(self, client):
+        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "  "})
+        assert resp.status_code == 400
+
+    def test_delete_nonexistent_note_404s(self, client):
+        resp = client.delete("/api/curate/notes/nonexistent-id")
+        assert resp.status_code == 404
+
+
+# ── /api/schedules — per-resource + global overview ─────────────────────────────
+
+class TestSchedulesRouter:
+    def test_save_and_get_schedule(self, client):
+        resp = client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "weekly"})
+        assert resp.status_code == 200
+        listed = client.get("/api/schedules/repo/myproj").json()
+        assert len(listed) == 1
+        assert listed[0]["schedule"] == "weekly"
+
+    def test_save_schedule_rejects_invalid_cadence(self, client):
+        resp = client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "hourly"})
+        assert resp.status_code == 422
+
+    def test_list_all_schedules_global(self, client):
+        client.post("/api/schedules/repo/proj-a", json={"analysis_id": "security_scan", "schedule": "daily"})
+        client.post("/api/schedules/database/db-a", json={"analysis_id": "schema_inventory", "schedule": "weekly"})
+        resp = client.get("/api/schedules/")
+        assert resp.status_code == 200
+        slugs = {r["entity_slug"] for r in resp.json()}
+        assert slugs == {"proj-a", "db-a"}
+
+    def test_delete_schedule(self, client):
+        client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "daily"})
+        resp = client.delete("/api/schedules/repo/myproj/security_scan")
+        assert resp.status_code == 200
+        assert client.get("/api/schedules/repo/myproj").json() == []
+
+    def test_delete_nonexistent_schedule_404s(self, client):
+        resp = client.delete("/api/schedules/repo/myproj/nonexistent")
+        assert resp.status_code == 404
+
+    def test_global_list_route_not_shadowed_by_per_resource_route(self, client):
+        # Regression guard: GET / (0-segment) vs GET /{entity_type}/{slug}
+        # (2-segment) are structurally distinct, but worth a guard given this
+        # codebase's history of route-declaration-order bugs elsewhere.
+        client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "daily"})
+        all_resp = client.get("/api/schedules/")
+        per_resource_resp = client.get("/api/schedules/repo/myproj")
+        assert all_resp.status_code == 200 and per_resource_resp.status_code == 200
+        assert len(all_resp.json()) == 1
+        assert len(per_resource_resp.json()) == 1
+
+
+class TestRfaRouter:
+    def test_list_rfas_defaults_to_open(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.get("/api/activity/rfas")
+        assert resp.status_code == 200
+        rfas = resp.json()
+        assert len(rfas) == 1
+        assert rfas[0]["id"] == "entry-1::0"
+        assert rfas[0]["rfa_status"] == "open"
+        assert rfas[0]["assignee"] == ""
+
+    def test_ids_are_stable_and_positional(self, client, registry):
+        _write_rfa_activity_entry(registry, num_rfas=3, extra_annotations=[
+            {"annotation_type": "ClassificationAnnotation", "summary": "not an rfa"},
+        ])
+        rfas = client.get("/api/activity/rfas").json()
+        assert [r["id"] for r in rfas] == ["entry-1::0", "entry-1::1", "entry-1::2"]
+
+    def test_patch_defer_persists_and_overlays_on_relist(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.patch("/api/activity/rfas/entry-1::0", json={
+            "status": "deferred", "defer_until": "2026-09-01",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["rfa_status"] == "deferred"
+
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "deferred"
+        assert rfas[0]["defer_until"] == "2026-09-01"
+        assert rfas[0]["action_updated_at"]  # timestamp recorded
+
+    def test_patch_reassign_persists_assignee(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={
+            "status": "reassigned", "assignee": "dwolfson",
+        })
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "reassigned"
+        assert rfas[0]["assignee"] == "dwolfson"
+
+    def test_patch_complete_with_resolution_note(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={
+            "status": "completed", "resolution_note": "Fixed in PR #42",
+        })
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "completed"
+        assert rfas[0]["resolution_note"] == "Fixed in PR #42"
+
+    def test_patch_reopen_from_completed(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={"status": "completed"})
+        resp = client.patch("/api/activity/rfas/entry-1::0", json={"status": "open"})
+        assert resp.status_code == 200
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "open"
+
+    def test_patch_rejects_invalid_status(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.patch("/api/activity/rfas/entry-1::0", json={"status": "bogus"})
+        assert resp.status_code == 400
+
+    def test_patch_rejects_malformed_id(self, client, registry):
+        resp = client.patch("/api/activity/rfas/not-a-valid-id", json={"status": "completed"})
+        assert resp.status_code == 400
+
+    def test_patch_404s_for_unknown_entry(self, client, registry):
+        resp = client.patch("/api/activity/rfas/nonexistent-entry::0", json={"status": "completed"})
+        assert resp.status_code == 404
+
+    def test_other_rfas_in_same_entry_unaffected(self, client, registry):
+        _write_rfa_activity_entry(registry, num_rfas=2)
+        client.patch("/api/activity/rfas/entry-1::0", json={"status": "completed"})
+        rfas = {r["id"]: r for r in client.get("/api/activity/rfas").json()}
+        assert rfas["entry-1::0"]["rfa_status"] == "completed"
+        assert rfas["entry-1::1"]["rfa_status"] == "open"
+
+
+# ── /api/analyses/{resource_type} + /perspectives + /egeria-status ─────────────
+
+class TestAnalysisCatalogRouter:
+    def test_list_analyses_for_database(self, client):
+        resp = client.get("/api/analyses/database")
+        assert resp.status_code == 200
+        ids = {a["id"] for a in resp.json()}
+        assert "schema_inventory" in ids
+
+    def test_filters_by_intent(self, client):
+        resp = client.get("/api/analyses/database?intent=curate")
+        assert resp.status_code == 200
+        ids = {a["id"] for a in resp.json()}
+        assert ids == {"egeria_db_survey"}
+
+    def test_list_perspectives_route_reachable(self, client):
+        # Regression guard: /perspectives must be declared before /{resource_type}
+        # or Starlette's declaration-order matching swallows it.
+        resp = client.get("/api/analyses/perspectives")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+        assert "perspectives" not in resp.json()  # i.e. it wasn't routed as resource_type="perspectives"
+
+    def test_egeria_status_route(self, client):
+        client.get("/api/analyses/database")  # populate the status this route reflects
+        resp = client.get("/api/analyses/database/egeria-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resource_type"] == "database"
+        assert body["status"] in {"not_applicable", "unavailable", "ok", "unknown"}
+
+    def test_egeria_status_not_applicable_for_unmapped_resource_type(self, client):
+        client.get("/api/analyses/repo")
+        resp = client.get("/api/analyses/repo/egeria-status")
+        assert resp.json()["status"] == "not_applicable"
 
 
 # ── /api/analyses/annotation-types ─────────────────────────────────────────────

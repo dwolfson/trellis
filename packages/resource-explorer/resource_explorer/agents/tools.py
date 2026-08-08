@@ -11,7 +11,7 @@ from beeai_framework.tools import tool
     "Call multiple times with different queries or collections to gather more context."
 ))
 def vector_search(query: str, collection_names: str) -> str:
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     collections = [c.strip() for c in collection_names.split(",") if c.strip()]
     if not collections:
         return "Error: no collection names provided."
@@ -279,9 +279,9 @@ def get_symbol_detail(project_slug: str, name: str) -> str:
 
 
 def _generate_summary(project_slug: str, symbol: dict, db_path: str) -> str:
-    """Search for the symbol's source in Milvus and ask the LLM for a one-sentence summary."""
+    """Search for the symbol's source in pgvector and ask the LLM for a one-sentence summary."""
     try:
-        from resource_explorer.multi_collection_store import MultiCollectionStore
+        from resource_explorer.vector_store_pg import MultiCollectionStore
         from resource_explorer.collection_router import CollectionRouter
         from resource_explorer.llm_client import get_llm
         import sqlite3
@@ -464,7 +464,7 @@ def query_contributor_profile(project_slug: str, author: str, days: int = 90) ->
 
 
 def _build_example_context_raw(project_slug: str, topic: str) -> str:
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -474,8 +474,7 @@ def _build_example_context_raw(project_slug: str, topic: str) -> str:
     candidate_collections = [f"{slug}_{ctype}" for ctype in collection_types]
 
     store = MultiCollectionStore()
-    client = store._get_client()
-    existing = [c for c in candidate_collections if client.has_collection(c)]
+    existing = [c for c in candidate_collections if store.collection_exists(c)]
     if not existing:
         return f"No indexed collections found for '{slug}'. Run: project-explorer add/refresh {slug}"
 

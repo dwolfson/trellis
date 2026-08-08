@@ -175,7 +175,7 @@ class TestIngestionPipelineDispatch:
     def pipeline(self, tmp_path):
         from resource_explorer.ingestion.pipeline import IngestionPipeline
         from resource_explorer.registry import ProjectRegistry
-        from resource_explorer.multi_collection_store import MultiCollectionStore
+        from resource_explorer.vector_store_pg import MultiCollectionStore
 
         pipeline = IngestionPipeline.__new__(IngestionPipeline)
         pipeline.registry = ProjectRegistry(db_path=str(tmp_path / "test.db"))

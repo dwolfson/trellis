@@ -10,9 +10,8 @@ dependencies = [
     "agentstack-sdk>=0.7.0",
     "beeai-framework[rag]>=0.1.77",
     "openinference-instrumentation-beeai>=0.1.15",
-    # Vector store
-    "langchain-milvus>=0.1.10",
-    "pymilvus[milvus-lite]>=2.4.0",
+    # Vector store (pgvector, shared with Egeria Advisor's egeria_advisor Postgres db)
+    "pgvector>=0.3.0",
     # Embeddings & LLM
     "sentence-transformers>=3.3.0",
     "ollama>=0.4.0",

@@ -125,7 +125,7 @@ resource-explorer survey --all --publish
 | 5 | `LanguageSurveyor` | `project_stats`, `project_code_symbols` | `ClassificationAnnotation` — primary/secondary language, project type |
 | 6 | `HealthSurveyor` | `project_stats`, `project_commits` | `QualityScoreAnnotation` — activity, community, release cadence, freshness |
 | 7 | `DependencySurveyor` | `project_dependencies` | `DataClassAnnotation` per ecosystem + totals |
-| 8 | `DocumentationSurveyor` | Milvus collections, `project_file_inventory` | `ClassificationAnnotation` — doc presence, hygiene files |
+| 8 | `DocumentationSurveyor` | pgvector collections, `project_file_inventory` | `ClassificationAnnotation` — doc presence, hygiene files |
 | 9 | `SecuritySurveyor` | `project_file_inventory` | `RequestForAction` for missing SECURITY.md, CI config, license |
 | 10 | `ApiStructureSurveyor` | `project_code_symbols` | `SchemaAnalysisAnnotation` per language — module tree, public symbols |
 

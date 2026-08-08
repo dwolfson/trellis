@@ -99,8 +99,8 @@ COLLECTION_TYPES: dict[str, CollectionType] = {
 AGENT_COLLECTION_MAP: dict[str, list[str]] = {
     "code": ["python_code", "javascript_code", "java_code", "go_code", "examples"],
     "doc": ["markdown_docs", "web_docs", "api_reference", "pdfs"],
-    "stats": [],  # stats agent uses SQLite, not Milvus
+    "stats": [],  # stats agent uses the registry, not pgvector
     "compare": ["markdown_docs", "python_code", "javascript_code", "java_code", "go_code"],
-    "health": [],  # health agent uses GitHub API, not Milvus
+    "health": [],  # health agent uses GitHub API, not pgvector
     "general": list(COLLECTION_TYPES.keys()),
 }

@@ -43,18 +43,16 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #0f172a; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-    /* Resizable sidebar */
+    /* Resizable sidebar / chat panel / RFA drawer */
     #resize-handle { width:4px; flex-shrink:0; cursor:col-resize; background:#1e293b; transition:background .15s; }
     #resize-handle:hover, #resize-handle.dragging { background:#0e7490; }
-    /* Entity tabs */
-    .entity-tab { padding:.4rem .75rem; font-size:.72rem; font-weight:600; color:#64748b; border-bottom:2px solid transparent; transition:color .12s,border-color .12s; flex:1; text-align:center; }
-    .entity-tab.active { color:#22d3ee; border-bottom-color:#22d3ee; background:#0f172a; }
-    .entity-tab:hover:not(.active) { color:#94a3b8; background:#1e293b; }
-    /* Main view nav */
-    #main-nav { border-bottom:1px solid #1e293b; background:#0f172a; }
-    .main-nav-btn { padding:.35rem .9rem; font-size:.72rem; font-weight:500; color:#64748b; border-bottom:2px solid transparent; transition:color .15s,border-color .15s; white-space:nowrap; }
-    .main-nav-btn.active { color:#22d3ee; border-bottom-color:#22d3ee; }
-    .main-nav-btn:hover:not(.active) { color:#94a3b8; }
+    .resize-handle-v { width:4px; flex-shrink:0; cursor:col-resize; background:#1e293b; transition:background .15s; }
+    .resize-handle-v:hover, .resize-handle-v.dragging { background:#0e7490; }
+    /* Intent nav (new primary navigation) */
+    .nav-intent-btn { padding:.35rem .8rem; font-size:.75rem; font-weight:600; color:#94a3b8; border-radius:.375rem; transition:color .12s,background .12s; white-space:nowrap; }
+    .nav-intent-btn.active { color:#22d3ee; background:#0e7490; background:rgba(14,116,144,.35); }
+    .nav-intent-btn:hover:not(.active) { color:#e2e8f0; background:#334155; }
+    #chat-panel { transition:width .15s ease; }
     /* Survey report */
     .rpt-section { margin-bottom:1.25rem; }
     .rpt-section-title { font-size:.65rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#475569; margin-bottom:.4rem; }
@@ -129,10 +127,6 @@
     .analysis-card:hover { border-color:#0e7490; }
     .analysis-card.recommended { border-color:#0e7490; }
     .analysis-tag { font-size:.58rem; padding:.1rem .3rem; border-radius:.2rem; font-weight:500; white-space:nowrap; }
-    .tag-scouting   { background:#0c4a6e; color:#7dd3fc; }
-    .tag-assessment { background:#4a1d96; color:#c4b5fd; }
-    .tag-discovery  { background:#064e3b; color:#6ee7b7; }
-    .tag-enrichment { background:#78350f; color:#fcd34d; }
     .tag-fast  { background:#0f172a; color:#64748b; border:1px solid #1e293b; }
     .tag-mins  { background:#0f172a; color:#f59e0b; border:1px solid #1e293b; }
     .tag-async { background:#0f172a; color:#60a5fa; border:1px solid #1e293b; }
@@ -177,9 +171,50 @@
       📋 Activity
       <span id="activity-badge-hdr" class="hidden bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span>
     </button>
+    <!-- System/catalog configuration (Annotation Types, Groups, Schedules) —
+         deliberately NOT one of the 7 intents (see _adminSubnavHtml's
+         comment): this is config for how the system behaves, not something
+         a user does to curate a specific resource. Same header-level,
+         decoupled-from-#intent-nav pattern as Activity above. -->
+    <button onclick="showMainView('annotations')" id="nav-admin-hdr"
+      class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700">
+      ⚙ Admin
+    </button>
+    <!-- Read-only identity indicator — RE has no per-user login yet (see
+         egeria.py::whoami's comment); this just surfaces the fixed Egeria
+         service-account identity currently configured via .env. Clicking it
+         explains how that's configured rather than opening a login form. -->
+    <span id="whoami-badge" class="text-xs text-slate-500 cursor-help" onclick="_showWhoamiInfo()" title="Click for how this is configured">⏳ Connecting…</span>
     <span class="text-xs text-slate-500">Multi-agent RAG · <a href="/docs" target="_blank" class="text-cyan-600 hover:underline">API docs</a></span>
   </div>
 </header>
+
+<!-- Intent navigation (primary nav — replaces the old resource-type sidebar tabs) -->
+<nav id="intent-nav" class="flex items-center gap-1 px-3 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0 overflow-x-auto">
+  <button onclick="setNavIntent('scouting')"      data-nav-intent="scouting"      class="nav-intent-btn active">🔭 Scouting</button>
+  <button onclick="setNavIntent('discovery')"     data-nav-intent="discovery"     class="nav-intent-btn">🔎 Discovery</button>
+  <button onclick="setNavIntent('assessment')"    data-nav-intent="assessment"    class="nav-intent-btn">✅ Assessment</button>
+  <button onclick="setNavIntent('analysis')"      data-nav-intent="analysis"      class="nav-intent-btn">📈 Analysis</button>
+  <button onclick="setNavIntent('enrichment')"    data-nav-intent="enrichment"    class="nav-intent-btn">✍️ Enrichment</button>
+  <button onclick="setNavIntent('understanding')" data-nav-intent="understanding" class="nav-intent-btn">📊 Understanding</button>
+  <button onclick="setNavIntent('curate')"        data-nav-intent="curate"        class="nav-intent-btn">🗂 Curate</button>
+  <span class="flex-1"></span>
+  <button onclick="toggleRfaDrawer()" id="rfa-drawer-toggle" class="nav-intent-btn">📝 RFAs<span id="rfa-drawer-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
+  <button onclick="toggleChatPanel()" id="chat-toggle-btn" class="nav-intent-btn">💬 Chat</button>
+</nav>
+
+<!-- Perspective (cross-cutting, concurrent — you can hold more than one at once; unlike
+     intent, this doesn't route to different content, it filters/shapes what's shown
+     within whatever intent is active. Only Assessment/Analysis consume this so far
+     (Steps 2/4), via analysis_catalog's existing perspective filter — see setNavIntent
+     comment. Scouting ignores it entirely for now, same as the other unwired intents.
+     Chips are populated dynamically from GET /api/analyses/perspectives (see
+     loadPerspectiveChips()) rather than hardcoded, since the real set is bigger than
+     any one static list and shouldn't silently drift out of sync with the backend. -->
+<div id="perspective-row" class="flex items-center gap-1.5 px-3 py-1 bg-slate-800/60 border-b border-slate-700 shrink-0 overflow-x-auto">
+  <span class="text-xs text-slate-500 mr-0.5">Perspective:</span>
+  <span id="perspective-chips"></span>
+</div>
 
 <!-- Main layout -->
 <div class="flex flex-1 overflow-hidden">
@@ -187,12 +222,11 @@
   <!-- Sidebar -->
   <aside id="sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="width:24rem;min-width:12rem;max-width:50vw">
 
-    <!-- Entity type tabs -->
-    <div class="flex shrink-0 border-b border-slate-700">
-      <button onclick="setEntityMode('repo')" id="tab-repos" class="entity-tab active">📁 Repos</button>
-      <button onclick="setEntityMode('db')"   id="tab-dbs"   class="entity-tab">🗄 Databases</button>
-      <button onclick="setEntityMode('filesystem')" id="tab-filesystems" class="entity-tab">💾 Filesystems</button>
-      <button onclick="setEntityMode('annotations')" id="tab-annotations" class="entity-tab">📝 Annotations</button>
+    <!-- Resource-type facet chips (drives which sidebar list + which content is shown within the active intent) -->
+    <div class="flex gap-1.5 px-3 pt-2.5 pb-2 border-b border-slate-700 shrink-0">
+      <button onclick="setResourceTypeFacet('repo')" data-facet="repo" class="filter-chip active">📁 Repos</button>
+      <button onclick="setResourceTypeFacet('db')" data-facet="db" class="filter-chip">🗄 DBs</button>
+      <button onclick="setResourceTypeFacet('filesystem')" data-facet="filesystem" class="filter-chip">💾 FS</button>
     </div>
 
     <!-- Repos section -->
@@ -246,119 +280,139 @@
       <div id="filesystem-list" class="px-2 flex flex-col gap-0.5 pb-2"></div>
     </div>
 
-    <!-- Annotations section (hidden initially) -->
-    <div id="annotations-section" class="hidden flex flex-col overflow-y-auto flex-1">
-      <div class="px-2 pt-2 pb-1 flex items-center gap-1">
-        <button onclick="showRegisterAnnotationModal()"
-          class="text-xs px-2 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap font-medium w-full text-center"
-          title="Register a new annotation type">
-          + Annotation Type
-        </button>
-      </div>
-      <div id="annotation-list" class="px-2 flex flex-col gap-0.5 pb-2"></div>
-    </div>
-
-    <!-- Charts section (shared, adapts per entity type) -->
-    <div id="charts-section" class="hidden px-3 pt-3 pb-2 border-t border-slate-700 mt-auto shrink-0">
-      <!-- Repo chart tabs -->
-      <div id="repo-chart-tabs" class="flex gap-1 flex-wrap mb-2">
-        <button onclick="showChart('stars')"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
-        <button onclick="showChart('commits')"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
-        <button onclick="showChart('languages')"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
-        <button onclick="showChart('health')"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
-        <button onclick="showChart('file_types')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
-        <button onclick="showEgeria()"            class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
-      </div>
-      <!-- DB chart tabs -->
-      <div id="db-chart-tabs" class="hidden flex gap-1 flex-wrap mb-2">
-        <button onclick="showDbChart('schema_distribution')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
-        <button onclick="showDbChart('table_sizes')"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
-        <button onclick="showDbChart('column_types')"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
-        <button onclick="showDbChart('survey_history')"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
-      </div>
-      <div id="chart-container" class="chart-box rounded bg-slate-900"></div>
-      <div id="egeria-panel" class="egeria-panel hidden"></div>
-    </div>
   </aside>
 
   <div id="resize-handle" title="Drag to resize"></div>
 
-  <!-- Main panel -->
-  <main class="flex flex-col flex-1 overflow-hidden">
+  <!-- Main panel: intent content column + persistent chat side panel -->
+  <main class="flex flex-1 overflow-hidden">
 
-    <!-- Main view tabs -->
-    <div class="shrink-0 flex items-center border-b border-slate-800 w-full">
-      <div id="main-nav" class="hidden flex items-center">
-        <button onclick="showMainView('chat')"      id="nav-chat"      class="main-nav-btn active">💬 Chat</button>
-        <button onclick="showMainView('report')"    id="nav-report"    class="main-nav-btn">📊 Survey Report</button>
-        <button onclick="showMainView('survey-definitions')" id="nav-survey-definitions" class="main-nav-btn">☁ Survey Definitions</button>
-        <button onclick="showMainView('context')"   id="nav-context"   class="main-nav-btn">📋 Context</button>
-        <button onclick="showMainView('db-survey')" id="nav-db-survey" class="main-nav-btn hidden">🗄 DB Survey</button>
-        <button onclick="showMainView('filesystem-survey')" id="nav-filesystem-survey" class="main-nav-btn hidden">💾 FS Survey</button>
-      </div>
-      <button onclick="showMainView('activity')"  id="nav-activity"  class="main-nav-btn ml-auto">📋 Activity <span id="activity-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
-      <button onclick="showMainView('rfa')"       id="nav-rfa"       class="main-nav-btn">📝 RFAs</button>
-    </div>
+    <!-- Intent content column -->
+    <div id="intent-content" class="flex flex-col flex-1 overflow-hidden">
 
-    <!-- Chat view -->
-    <div id="chat-view" class="flex flex-col flex-1 overflow-hidden">
-      <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
-      <div id="thinking" class="hidden px-4 py-1">
-        <div class="flex items-center gap-2 text-slate-400 text-sm">
-          <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
-          <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
-          <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
-          <span class="text-xs">Thinking…</span>
+      <!-- Placeholder pane for intents not yet wired to real content -->
+      <div id="intent-placeholder-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Assessment view — card list from analysis_catalog, filtered to intent=assessment -->
+      <div id="assessment-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
+      <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Understanding view — charts, relocated verbatim out of the sidebar (Step 7).
+           Same #charts-section/#chart-container/#egeria-panel ids and the same
+           showChart()/showDbChart()/showEgeria() JS as before the move — only the
+           DOM location changed, not the rendering logic (see loadUnderstandingCharts()). -->
+      <div id="understanding-view" class="flex-1 overflow-y-auto hidden flex flex-col p-4">
+        <div id="charts-section" class="shrink-0">
+          <!-- Repo chart tabs -->
+          <div id="repo-chart-tabs" class="flex gap-1 flex-wrap mb-2">
+            <button onclick="showChart('stars')"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
+            <button onclick="showChart('commits')"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
+            <button onclick="showChart('languages')"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
+            <button onclick="showChart('health')"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
+            <button onclick="showChart('file_types')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
+            <button onclick="showEgeria()"            class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
+          </div>
+          <!-- DB chart tabs -->
+          <div id="db-chart-tabs" class="hidden flex gap-1 flex-wrap mb-2">
+            <button onclick="showDbChart('schema_distribution')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
+            <button onclick="showDbChart('table_sizes')"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
+            <button onclick="showDbChart('column_types')"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
+            <button onclick="showDbChart('survey_history')"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
+          </div>
+          <div id="chart-container" class="chart-box rounded bg-slate-900"></div>
+          <div id="egeria-panel" class="egeria-panel hidden"></div>
         </div>
       </div>
+
+      <!-- Survey report view (repos) -->
+      <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Database survey view -->
+      <div id="db-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Filesystem survey view -->
+      <div id="filesystem-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+      <div id="activity-view" class="flex-1 overflow-y-auto hidden flex flex-col">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Operation Activity Log</span>
+          <button onclick="clearActivityLog()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">Clear</button>
+        </div>
+        <div id="activity-list" class="flex-1 overflow-y-auto">
+          <div class="text-slate-600 text-xs text-center py-12">No operations yet. Run a survey or publish to Egeria to see activity here.</div>
+        </div>
+      </div>
+
+      <!-- RFA panel view (legacy full-page render target — superseded by the RFA drawer, kept until Step 5) -->
+      <div id="rfa-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Survey Definitions view (Egeria-authored) -->
+      <div id="survey-definitions-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Context gathering form view -->
+      <div id="context-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Annotation Types view (Admin, reachable from the header ⚙ Admin button) -->
+      <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Groups view (Admin) -->
+      <div id="admin-groups-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Schedules view (Admin) -->
+      <div id="admin-schedules-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Curate view — tags, resource-level feedback, curator notes
+           (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
+      <div id="curate-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
     </div>
 
-    <!-- Survey report view (repos) -->
-    <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+    <!-- Chat panel resize handle -->
+    <div id="chat-resize-handle" class="resize-handle-v" title="Drag to resize"></div>
 
-    <!-- Database survey view -->
-    <div id="db-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+    <!-- Persistent chat panel -->
+    <aside id="chat-panel" class="flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 overflow-hidden" style="width:24rem">
+      <div id="chat-view" class="flex flex-col flex-1 overflow-hidden">
+        <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
+        <div id="thinking" class="hidden px-4 py-1">
+          <div class="flex items-center gap-2 text-slate-400 text-sm">
+            <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
+            <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
+            <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
+            <span class="text-xs">Thinking…</span>
+          </div>
+        </div>
+      </div>
 
-    <!-- Filesystem survey view -->
-    <div id="filesystem-survey-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
-    <div id="activity-view" class="flex-1 overflow-y-auto hidden flex flex-col">
+      <!-- Input -->
+      <div id="chat-input-container" class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
+        <div class="flex gap-2">
+          <textarea id="query-input" rows="2"
+            class="flex-1 resize-none bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm placeholder-slate-400 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors"
+            placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button id="send-btn" onclick="sendQuery()"
+            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-colors self-end">
+            Send
+          </button>
+        </div>
+        <div class="mt-1 flex items-center justify-between">
+          <span id="intent-badge" class="text-xs text-slate-500"></span>
+          <span class="text-xs text-slate-600">Enter=send · Shift+Enter=newline · f=feedback</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- RFA drawer resize handle (hidden alongside the drawer) -->
+    <div id="rfa-resize-handle" class="hidden resize-handle-v" title="Drag to resize"></div>
+
+    <!-- RFA slide-out drawer (persistent, reachable from #intent-nav regardless of active intent) -->
+    <aside id="rfa-drawer" class="hidden flex flex-col border-l border-slate-700 bg-slate-900 shrink-0 overflow-hidden" style="width:26rem">
       <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Operation Activity Log</span>
-        <button onclick="clearActivityLog()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">Clear</button>
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Open RFAs</span>
+        <button onclick="toggleRfaDrawer()" class="text-slate-500 hover:text-slate-300 text-sm">✕</button>
       </div>
-      <div id="activity-list" class="flex-1 overflow-y-auto">
-        <div class="text-slate-600 text-xs text-center py-12">No operations yet. Run a survey or publish to Egeria to see activity here.</div>
-      </div>
-    </div>
-
-    <!-- RFA panel view -->
-    <div id="rfa-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
-
-    <!-- Survey Definitions view (Egeria-authored) -->
-    <div id="survey-definitions-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
-
-    <!-- Context gathering form view -->
-    <div id="context-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
-
-    <!-- Annotation Types view -->
-    <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
-
-    <!-- Input -->
-    <div id="chat-input-container" class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
-      <div class="flex gap-2">
-        <textarea id="query-input" rows="2"
-          class="flex-1 resize-none bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm placeholder-slate-400 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors"
-          placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"></textarea>
-        <button id="send-btn" onclick="sendQuery()"
-          class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-colors self-end">
-          Send
-        </button>
-      </div>
-      <div class="mt-1 flex items-center justify-between">
-        <span id="intent-badge" class="text-xs text-slate-500"></span>
-        <span class="text-xs text-slate-600">Enter=send · Shift+Enter=newline · f=feedback</span>
-      </div>
-    </div>
+      <div id="rfa-drawer-list" class="flex-1 overflow-y-auto"></div>
+    </aside>
   </main>
 </div>
 
@@ -988,7 +1042,9 @@
 let selectedProject  = null;
 let selectedDatabase = null;
 let selectedFilesystem = null;
-let entityMode       = 'repo';   // 'repo' | 'db' | 'filesystem'
+let currentNavIntent  = 'scouting';  // 'scouting'|'discovery'|'assessment'|'analysis'|'enrichment'|'understanding'|'curate' — the new primary nav axis
+let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent
+let activePerspectives = new Set();  // 'dba'|'data_scientist'|'steward'|'security' — concurrent, not exclusive (unlike intent/facet); empty set = no filter ("all")
 let compareSet       = new Set();
 let lastQueryHash    = null;
 let lastAssistantEl  = null;
@@ -1023,7 +1079,17 @@ document.addEventListener('DOMContentLoaded', () => {
   loadFilesystems();
   loadAnnotationTypes();
   loadActivityLog();
+  loadRfaPanel();  // populates the header RFA-drawer badge count without opening the drawer
+  loadPerspectiveChips();
+  loadWhoami();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
+  // Restore chat panel open/collapsed state (defaults to open)
+  if (localStorage.getItem('pe_chat_panel_open') === '0') {
+    document.getElementById('chat-panel').style.width = '0';
+  } else {
+    document.getElementById('chat-toggle-btn').classList.add('active');
+  }
+  setNavIntent('scouting');
   document.getElementById('query-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
   });
@@ -1045,39 +1111,427 @@ document.addEventListener('DOMContentLoaded', () => {
   if (stored) document.getElementById('sidebar').style.width = stored + 'px';
 });
 
-// ── entity mode ────────────────────────────────────────────────────────────────
-function setEntityMode(mode) {
-  entityMode = mode;
-  document.getElementById('tab-repos').classList.toggle('active', mode === 'repo');
-  document.getElementById('tab-dbs').classList.toggle('active', mode === 'db');
-  document.getElementById('tab-filesystems').classList.toggle('active', mode === 'filesystem');
-  document.getElementById('tab-annotations').classList.toggle('active', mode === 'annotations');
+// ── intent navigation (primary nav) ─────────────────────────────────────────────
+const INTENT_PLACEHOLDER_TEXT = {};
 
-  document.getElementById('repos-section').classList.toggle('hidden', mode !== 'repo');
-  document.getElementById('databases-section').classList.toggle('hidden', mode !== 'db');
-  document.getElementById('filesystems-section').classList.toggle('hidden', mode !== 'filesystem');
-  document.getElementById('annotations-section').classList.toggle('hidden', mode !== 'annotations');
-
-  // Hide charts when switching mode (re-shown on selection)
-  document.getElementById('charts-section').classList.add('hidden');
-
-  const isAnnotations = (mode === 'annotations');
-  document.getElementById('main-nav').classList.toggle('hidden', isAnnotations);
-  document.getElementById('chat-input-container').classList.toggle('hidden', isAnnotations);
-  
-  if (isAnnotations) {
-    selectedProject = null;
-    selectedDatabase = null;
-    document.querySelectorAll('.project-btn, .db-btn, .fs-btn').forEach(b => b.classList.remove('selected', 'compare-selected'));
-    document.getElementById('scope-badge').classList.add('hidden');
-    document.getElementById('db-scope-badge').classList.add('hidden');
-    document.getElementById('nav-db-survey').classList.add('hidden');
-    document.getElementById('nav-filesystem-survey').classList.add('hidden');
-    
-    showMainView('annotations');
+function setNavIntent(intent) {
+  currentNavIntent = intent;
+  document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => {
+    b.classList.toggle('active', b.dataset.navIntent === intent);
+  });
+  if (intent === 'scouting') {
+    showScoutingPane();
+  } else if (intent === 'discovery') {
+    // Survey Definitions panel is reused verbatim — it already resolves the
+    // selected resource itself and shows its own "select a resource" empty
+    // state, so no wrapper empty-state logic is needed here unlike Scouting.
+    showMainView('survey-definitions');
+  } else if (intent === 'assessment') {
+    showMainView('assessment');
+  } else if (intent === 'analysis') {
+    showMainView('analysis');
+  } else if (intent === 'enrichment') {
+    // RFA is no longer part of Enrichment — it moved to the persistent
+    // drawer in Step 5. This is now just the Context form.
+    showMainView('context');
+  } else if (intent === 'understanding') {
+    showUnderstandingPane();
+  } else if (intent === 'curate') {
+    // Curate is about making a resource easier to find and more trustworthy
+    // to reuse (tags, resource-level feedback, curator notes) — distinct
+    // from Enrichment (facts about the resource) and distinct from the old
+    // admin-flavored content that used to live here (Annotation Types /
+    // Groups / Schedules, now under the header's ⚙ Admin button instead).
+    showCuratePane();
   } else {
-    showMainView('chat');
+    showIntentPlaceholder(intent);
   }
+}
+
+function showIntentPlaceholder(intent) {
+  showMainView('intent-placeholder');
+  document.getElementById('intent-placeholder-view').innerHTML =
+    `<div class="text-slate-600 text-sm text-center py-16">${_esc(INTENT_PLACEHOLDER_TEXT[intent] || 'Coming soon.')}</div>`;
+}
+
+function showScoutingPane() {
+  if (resourceTypeFacet === 'repo') {
+    if (!selectedProject) { showIntentEmptyState('a repo'); return; }
+    showMainView('report');
+  } else if (resourceTypeFacet === 'db') {
+    if (!selectedDatabase) { showIntentEmptyState('a database'); return; }
+    showMainView('db-survey');
+  } else if (resourceTypeFacet === 'filesystem') {
+    if (!selectedFilesystem) { showIntentEmptyState('a filesystem'); return; }
+    showMainView('filesystem-survey');
+  }
+}
+
+function showIntentEmptyState(what, forWhatPurpose = 'Scouting summary') {
+  showMainView('intent-placeholder');
+  document.getElementById('intent-placeholder-view').innerHTML =
+    `<div class="text-slate-600 text-sm text-center py-16">Select ${_esc(what)} in the sidebar to see its ${_esc(forWhatPurpose)}.</div>`;
+}
+
+// ── Understanding — charts, relocated out of the sidebar (Step 7). Same
+// resourceTypeFacet-driven empty-state pattern as showScoutingPane(); the
+// actual chart-tab wiring/rendering (showChart/showDbChart/showEgeria,
+// Plotly calls) is untouched, just called from loadUnderstandingCharts()
+// once the pane is confirmed visible via showMainView('understanding'). ──
+function showUnderstandingPane() {
+  if (resourceTypeFacet === 'repo') {
+    if (!selectedProject) { showIntentEmptyState('a repo', 'charts'); return; }
+    showMainView('understanding');
+  } else if (resourceTypeFacet === 'db') {
+    if (!selectedDatabase) { showIntentEmptyState('a database', 'charts'); return; }
+    showMainView('understanding');
+  } else if (resourceTypeFacet === 'filesystem') {
+    // No filesystem chart tabs exist yet (repo-chart-tabs/db-chart-tabs only)
+    // — not a bug, just not built. Say so rather than showing a blank panel.
+    showMainView('intent-placeholder');
+    document.getElementById('intent-placeholder-view').innerHTML =
+      '<div class="text-slate-600 text-sm text-center py-16">Charts aren\'t built for filesystems yet — repo and database charts only.</div>';
+  }
+}
+
+function loadUnderstandingCharts() {
+  document.getElementById('charts-section').classList.remove('hidden');
+  document.getElementById('chart-container').classList.remove('hidden');
+  document.getElementById('egeria-panel').classList.add('hidden');
+  if (resourceTypeFacet === 'repo') {
+    document.getElementById('repo-chart-tabs').classList.remove('hidden');
+    document.getElementById('db-chart-tabs').classList.add('hidden');
+    showChart(currentChart);
+  } else if (resourceTypeFacet === 'db') {
+    document.getElementById('repo-chart-tabs').classList.add('hidden');
+    document.getElementById('db-chart-tabs').classList.remove('hidden');
+    showDbChart(currentDbChart);
+  }
+}
+
+// ── Curate — make a resource easier to find and more trustworthy to reuse:
+// tags, resource-level feedback, curator notes. Distinct from Enrichment
+// (facts about the resource) and from the header's ⚙ Admin area (system
+// config). Applies across all 3 resource types, unlike Understanding. ─────
+function showCuratePane() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  if (!entityType || !slug) { showIntentEmptyState('a database, repo, or filesystem', 'tags, feedback, and curator notes'); return; }
+  showMainView('curate');
+}
+
+// ── identity indicator (read-only — see #whoami-badge's HTML comment) ──────────
+async function loadWhoami() {
+  const badge = document.getElementById('whoami-badge');
+  try {
+    const res = await fetch('/api/egeria/whoami');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const who = await res.json();
+    badge.textContent = `🔑 Connected as: ${who.user_id}`;
+    badge.dataset.viewServer = who.view_server;
+    badge.dataset.platformUrl = who.platform_url;
+  } catch(e) {
+    badge.textContent = '⚠ Not connected to Egeria';
+  }
+}
+
+function _showWhoamiInfo() {
+  const badge = document.getElementById('whoami-badge');
+  const vs = badge.dataset.viewServer || '?';
+  const url = badge.dataset.platformUrl || '?';
+  showToast('info',
+    `Connected to Egeria view server <b>${_esc(vs)}</b> at <b>${_esc(url)}</b> as a single shared service account. ` +
+    `This isn't per-user login yet — change it via <code>EGERIA_USER_ID</code>/<code>EGERIA_USER_PASSWORD</code> in .env, not from this UI.`,
+    10000);
+}
+
+// ── perspective (concurrent, cross-cutting — see #perspective-row's HTML comment) ─
+async function loadPerspectiveChips() {
+  const container = document.getElementById('perspective-chips');
+  try {
+    const res = await fetch('/api/analyses/perspectives');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const perspectives = await res.json();
+    const ACRONYMS = new Set(['dba', 'api', 'sql', 'db', 'pii', 'gdpr']);
+    container.innerHTML = perspectives.map(p => {
+      const label = p.split('_').map(w => ACRONYMS.has(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      return `<button onclick="togglePerspective('${p}')" data-perspective="${p}" class="filter-chip">${_esc(label)}</button>`;
+    }).join('');
+  } catch(e) {
+    container.innerHTML = '<span class="text-xs text-slate-600">Failed to load perspectives</span>';
+  }
+  _restorePerspectives();  // chips must exist before restoring .active state onto them
+}
+
+function togglePerspective(p) {
+  if (activePerspectives.has(p)) activePerspectives.delete(p); else activePerspectives.add(p);
+  document.querySelectorAll('#perspective-row [data-perspective]').forEach(b => {
+    b.classList.toggle('active', activePerspectives.has(b.dataset.perspective));
+  });
+  localStorage.setItem('pe_perspectives', JSON.stringify([...activePerspectives]));
+  // Re-render whatever's currently showing, if it's perspective-aware (Assessment/
+  // Analysis, once Steps 2/4 land) — a no-op elsewhere, same pattern as setNavIntent.
+  if (currentNavIntent === 'assessment' || currentNavIntent === 'analysis') {
+    setNavIntent(currentNavIntent);
+  }
+}
+
+function _restorePerspectives() {
+  try {
+    const stored = JSON.parse(localStorage.getItem('pe_perspectives') || '[]');
+    activePerspectives = new Set(stored);
+    document.querySelectorAll('#perspective-row [data-perspective]').forEach(b => {
+      b.classList.toggle('active', activePerspectives.has(b.dataset.perspective));
+    });
+  } catch(e) { /* ignore malformed storage */ }
+}
+
+function setResourceTypeFacet(type) {
+  resourceTypeFacet = type;
+  document.querySelectorAll('#sidebar [data-facet]').forEach(b => {
+    b.classList.toggle('active', b.dataset.facet === type);
+  });
+  document.getElementById('repos-section').classList.toggle('hidden', type !== 'repo');
+  document.getElementById('databases-section').classList.toggle('hidden', type !== 'db');
+  document.getElementById('filesystems-section').classList.toggle('hidden', type !== 'filesystem');
+  // Re-render whatever intent is currently active against the newly-selected resource type
+  setNavIntent(currentNavIntent);
+}
+
+// ── Assessment (and, from Step 4, Analysis) — shared analysis_catalog card-list ──
+// resourceTypeFacet uses 'repo'|'db'|'filesystem' (matching the existing sidebar
+// section ids); the backend's analysis_catalog keys on 'repo'|'database'|
+// 'filesystem' (matching Egeria's own vocabulary) — these are deliberately
+// different naming conventions for different audiences, not a bug; map between
+// them here rather than renaming either one.
+function _facetToResourceType(facet) {
+  return facet === 'db' ? 'database' : facet;
+}
+function _resourceTypeFacetLabel() {
+  return { repo: 'Repos', db: 'Databases', filesystem: 'Filesystems' }[resourceTypeFacet] || resourceTypeFacet;
+}
+
+async function loadAssessmentPanel() {
+  await _loadAnalysisCatalogPanel('assessment', 'assessment-view', 'Assessment');
+}
+
+async function loadAnalysisPanel() {
+  await _loadAnalysisCatalogPanel('analysis', 'analysis-view', 'Analysis');
+}
+
+// Shared by Assessment and Analysis — same fetch/filter/render pipeline,
+// differing only by which intent= they ask the catalog for and which pane
+// they render into. See renderAnalysisCatalogCards() below for the card
+// markup itself, shared the same way.
+// Which resource is selected for the currently-active facet — used both by
+// the existing Run-button guard and by the new per-card Schedule action.
+function _currentSelectedSlug() {
+  if (resourceTypeFacet === 'repo') return selectedProject;
+  if (resourceTypeFacet === 'db') return selectedDatabase;
+  if (resourceTypeFacet === 'filesystem') return selectedFilesystem;
+  return null;
+}
+
+async function _loadAnalysisCatalogPanel(intent, viewId, title) {
+  const view = document.getElementById(viewId);
+  view.innerHTML = `<div class="text-slate-500 text-xs py-8 text-center">Loading ${_esc(title)} catalog…</div>`;
+  try {
+    const resourceType = _facetToResourceType(resourceTypeFacet);
+    const res = await fetch(`/api/analyses/${resourceType}?intent=${intent}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let analyses = await res.json();
+    // Perspective filtering happens client-side: the backend's `perspective`
+    // param only accepts one value, but the UI's perspective selector is
+    // concurrent/multi-select (OR semantics — an analysis matches if it's
+    // tagged "all" or any currently-active perspective).
+    if (activePerspectives.size) {
+      analyses = analyses.filter(a =>
+        (a.perspectives || []).includes('all') ||
+        (a.perspectives || []).some(p => activePerspectives.has(p)));
+    }
+    const egeriaStatus = await _fetchEgeriaMergeStatus(resourceType);
+    // Per-card Schedule action needs to know each analysis's current
+    // schedule, if any — reuses the existing GET /api/schedules endpoint
+    // (same one the old Admin Schedules editor used) rather than a new one.
+    const slug = _currentSelectedSlug();
+    let schedules = {};
+    if (slug) {
+      try {
+        const schedRes = await fetch(`/api/schedules/${resourceType}/${encodeURIComponent(slug)}`);
+        if (schedRes.ok) {
+          for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
+        }
+      } catch { /* non-fatal — cards just show the unscheduled state */ }
+    }
+    renderAnalysisCatalogCards(analyses, view, {
+      title,
+      emptyText: `No ${title}-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
+      egeriaStatus,
+      entityType: resourceType,
+      slug,
+      schedules,
+    });
+  } catch(e) {
+    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Reflects whether the backend's live-Egeria catalog merge actually ran for
+// this resource type (see analysis_catalog_reader.get_egeria_merge_status):
+// "not_applicable" (no Technology Type mapped yet — not an error, say
+// nothing), "unavailable" (mapped but the live call failed — show the
+// indicator so the panel doesn't silently look complete), "ok" (succeeded).
+async function _fetchEgeriaMergeStatus(resourceType) {
+  try {
+    const res = await fetch(`/api/analyses/${resourceType}/egeria-status`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.status;
+  } catch {
+    return null;
+  }
+}
+
+// Shared by Assessment and (Step 4) Analysis — same card shape, different
+// intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
+// pattern already established in renderSurveyDefinitionsPanel, rather than
+// inventing a second card style.
+function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules }) {
+  schedules = schedules || {};
+  // Only "unavailable" means a live-Egeria merge was actually attempted and
+  // failed — "not_applicable" (no Technology Type mapped for this resource
+  // type yet) and "ok" say nothing, so the panel doesn't cry wolf.
+  const unavailableNote = egeriaStatus === 'unavailable'
+    ? `<span class="text-amber-400 text-xs" title="Could not reach Egeria to merge its native analyses into this list — showing local catalog only.">⚠ live Egeria data unavailable</span>`
+    : '';
+  const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
+    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">${_esc(title)} — ${_esc(_resourceTypeFacetLabel())}</span>
+    ${unavailableNote}
+  </div>`;
+
+  if (!analyses.length) {
+    view.innerHTML = header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
+    return;
+  }
+
+  const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
+  const cards = analyses.map(a => {
+    const perspTags = (a.perspectives || []).filter(p => p !== 'all')
+      .map(p => `<span class="analysis-tag">${_esc(p.replace(/_/g, ' '))}</span>`).join(' ');
+    const sourceTag = a.source === 'egeria'
+      ? '<span class="analysis-tag tag-egeria">☁ Egeria</span>'
+      : '<span class="analysis-tag">🏠 Local</span>';
+    const speedTag = `<span class="analysis-tag ${speedTagClass[a.run_time] || ''}">${_esc(a.run_time)}</span>`;
+    // Scheduling is a cross-cutting, per-analysis action — available from
+    // whichever card surfaced it (Assessment, Analysis, or Discovery),
+    // rather than a separate admin page. Reuses the same schedules backend
+    // the old Admin Schedules editor used (GET/POST /api/schedules/...) —
+    // no new backend for this.
+    const safeId = String(a.id).replace(/[^a-zA-Z0-9]/g, '_');
+    const sched = schedules[a.id];
+    const schedLabel = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
+    const scheduleButton = slug
+      ? `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(a.id)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
+           class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${schedLabel}</button>`
+      : `<button onclick="showToast('info', 'Select a resource first.', 4000)"
+           class="text-xs px-2.5 py-1 rounded bg-slate-800 text-slate-600 transition-colors whitespace-nowrap" title="Select a resource to schedule this analysis">⏱ Schedule</button>`;
+    return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-semibold text-slate-200">${_esc(a.name)}${a.recommended ? ' <span class="text-cyan-400" title="Recommended">★</span>' : ''}</div>
+        <div class="text-xs text-slate-400 mt-0.5">${_esc(a.description)}</div>
+      </div>
+      <div class="flex flex-wrap gap-1">${speedTag}${sourceTag}${perspTags}</div>
+      <div class="mt-auto pt-1 flex flex-wrap gap-1.5 items-center">
+        <button onclick='_runAnalysisCatalogCard(${JSON.stringify(a.id)})'
+          class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
+          Run →
+        </button>
+        ${scheduleButton}
+      </div>
+      <div id="sched-form-${safeId}" class="hidden mt-1"></div>
+    </div>`;
+  }).join('');
+
+  view.innerHTML = header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+}
+
+function _showScheduleForm(analysisId, entityType, slug, currentSchedule) {
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const formEl = document.getElementById(`sched-form-${safeId}`);
+  if (!formEl) return;
+  const opts = ['manual', 'daily', 'weekly', 'monthly']
+    .map(o => `<option value="${o}" ${o === currentSchedule ? 'selected' : ''}>${o}</option>`).join('');
+  formEl.innerHTML = `<div class="flex items-center gap-1.5">
+    <select id="sched-select-${safeId}" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1.5 py-1">${opts}</select>
+    <button onclick='_submitSchedule(${JSON.stringify(analysisId)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)})'
+      class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors">Save</button>
+    <button onclick="document.getElementById('sched-form-${safeId}').classList.add('hidden')"
+      class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">Cancel</button>
+  </div>`;
+  formEl.classList.remove('hidden');
+}
+
+async function _submitSchedule(analysisId, entityType, slug) {
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const schedule = document.getElementById(`sched-select-${safeId}`).value;
+  await saveSchedule(entityType, slug, analysisId, schedule, schedule !== 'manual');
+  showToast('success', `Schedule set to ${_esc(schedule)}.`, 3000);
+  const badge = document.getElementById(`sched-badge-${safeId}`);
+  if (badge) badge.textContent = schedule === 'manual' ? '⏱ Schedule' : `⏱ ${schedule}`;
+  document.getElementById(`sched-form-${safeId}`)?.classList.add('hidden');
+}
+
+// "Run" doesn't (yet) trigger just this one named analysis — RE's survey
+// pipeline runs all local sub-surveyors for a resource type together, not
+// individual catalog entries in isolation, so every card's Run button
+// triggers the same per-resource-type survey action. This is an honest
+// reflection of how surveys actually work today, not a shortcut; unifying
+// survey launch onto something more granular is separately-scoped, larger
+// work (RE's own backlog item #5), not part of this slice.
+function _runAnalysisCatalogCard(_analysisId) {
+  if (resourceTypeFacet === 'repo') {
+    if (!selectedProject) { showToast('info', 'Select a repo first.', 4000); return; }
+    fetch(`/api/egeria/${selectedProject}/survey`, { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          showToast('success', `Survey complete for <strong>${_esc(selectedProject)}</strong>. Check Scouting for the report.`, 6000);
+        } else {
+          showToast('error', `Survey failed: ${_esc(data.error || (data.errors || []).join('; ') || 'unknown error')}`, 8000);
+        }
+      })
+      .catch(e => showToast('error', `Survey request failed: ${_esc(e.message)}`, 8000));
+    showToast('running', `Surveying <strong>${_esc(selectedProject)}</strong>…`, 0);
+  } else if (resourceTypeFacet === 'db') {
+    if (!selectedDatabase) { showToast('info', 'Select a database first.', 4000); return; }
+    showSurveyDbModal(selectedDatabase);
+  } else if (resourceTypeFacet === 'filesystem') {
+    if (!selectedFilesystem) { showToast('info', 'Select a filesystem first.', 4000); return; }
+    showSurveyFsModal(selectedFilesystem);
+  }
+}
+
+// ── persistent chat panel + RFA drawer toggles ──────────────────────────────────
+function toggleChatPanel() {
+  const panel = document.getElementById('chat-panel');
+  const open = panel.style.width !== '0px' && panel.style.width !== '0rem';
+  panel.style.width = open ? '0' : '24rem';
+  document.getElementById('chat-toggle-btn').classList.toggle('active', !open);
+  localStorage.setItem('pe_chat_panel_open', open ? '0' : '1');
+}
+
+function openChatPanel() {
+  const panel = document.getElementById('chat-panel');
+  const alreadyOpen = panel.style.width !== '0px' && panel.style.width !== '0rem';
+  if (!alreadyOpen) toggleChatPanel();
+}
+
+function toggleRfaDrawer() {
+  const drawer = document.getElementById('rfa-drawer');
+  const willOpen = drawer.classList.contains('hidden');
+  drawer.classList.toggle('hidden', !willOpen);
+  document.getElementById('rfa-resize-handle').classList.toggle('hidden', !willOpen);
+  document.getElementById('rfa-drawer-toggle').classList.toggle('active', willOpen);
+  if (willOpen) loadRfaPanel('rfa-drawer-list');
 }
 
 // ── projects ───────────────────────────────────────────────────────────────────
@@ -1126,7 +1580,6 @@ function selectProject(slug) {
   document.querySelectorAll('.db-btn').forEach(b => b.classList.remove('selected'));
   document.getElementById('scope-badge').classList.add('hidden');
   document.getElementById('db-scope-badge').classList.add('hidden');
-  document.getElementById('nav-db-survey').classList.add('hidden');
 
   if (slug) {
     document.querySelector(`.project-btn[data-slug="${slug}"]`)?.classList.add('selected');
@@ -1139,11 +1592,8 @@ function selectProject(slug) {
     document.getElementById('egeria-panel').classList.add('hidden');
     document.getElementById('chart-container').classList.remove('hidden');
     showChart(currentChart);
-    // Main nav
-    document.getElementById('main-nav').classList.remove('hidden');
-    document.getElementById('nav-report').classList.remove('hidden');
     _reportLoaded = false;
-    showMainView('chat');
+    setNavIntent(currentNavIntent);
     if (pendingClarification) {
       const q = pendingClarification;
       pendingClarification = null;
@@ -1152,8 +1602,8 @@ function selectProject(slug) {
     }
   } else {
     document.getElementById('charts-section').classList.add('hidden');
-    document.getElementById('main-nav').classList.add('hidden');
     document.querySelectorAll('.project-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
+    setNavIntent(currentNavIntent);
   }
 }
 
@@ -1387,10 +1837,6 @@ function selectServer(slug) {
   document.getElementById('db-scope-badge').classList.add('hidden');
   document.getElementById('charts-section').classList.add('hidden');
 
-  // Show main-nav with Activity always; hide db-survey, report
-  document.getElementById('main-nav').classList.remove('hidden');
-  document.getElementById('nav-report').classList.add('hidden');
-  document.getElementById('nav-db-survey').classList.add('hidden');
 
   // Show server detail in the db-survey view
   showMainView('db-survey');
@@ -1543,7 +1989,6 @@ function selectDatabase(slug) {
   document.querySelectorAll('.project-btn').forEach(b => b.classList.remove('selected', 'compare-selected'));
   document.getElementById('scope-badge').classList.add('hidden');
   document.getElementById('db-scope-badge').classList.add('hidden');
-  document.getElementById('nav-report').classList.remove('hidden');
 
   if (slug) {
     document.querySelector(`.db-btn[data-slug="${slug}"]`)?.classList.add('selected');
@@ -1556,17 +2001,12 @@ function selectDatabase(slug) {
     document.getElementById('egeria-panel').classList.add('hidden');
     document.getElementById('chart-container').classList.remove('hidden');
     showDbChart(currentDbChart);
-    // Main nav — show db-survey tab, hide repo-only report tab
-    document.getElementById('main-nav').classList.remove('hidden');
-    document.getElementById('nav-report').classList.add('hidden');
-    document.getElementById('nav-db-survey').classList.remove('hidden');
     _dbSurveyLoaded = false;
-    showMainView('db-survey');
+    setNavIntent(currentNavIntent);
   } else {
     document.getElementById('charts-section').classList.add('hidden');
-    document.getElementById('main-nav').classList.add('hidden');
-    document.getElementById('nav-db-survey').classList.add('hidden');
     document.querySelectorAll('.db-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
+    setNavIntent(currentNavIntent);
   }
 }
 
@@ -2094,7 +2534,7 @@ async function submitRegisterDb() {
     if (res.ok) {
       hideRegisterDbModal();
       await loadDatabases();
-      setEntityMode('db');
+      setResourceTypeFacet('db');
       selectDatabase(slug);
     } else {
       const data = await res.json().catch(() => ({}));
@@ -2164,7 +2604,7 @@ async function submitRegisterServer() {
     if (res.ok) {
       hideRegisterServerModal();
       await loadDatabases();
-      setEntityMode('db');
+      setResourceTypeFacet('db');
     } else {
       const data = await res.json().catch(() => ({}));
       errEl.textContent = data.detail || `Registration failed (HTTP ${res.status})`;
@@ -2306,7 +2746,7 @@ async function addSelectedDatabases() {
   }
   hideDiscoverModal();
   await loadDatabases();
-  setEntityMode('db');
+  setResourceTypeFacet('db');
   if (added) appendMessage('assistant', `Added **${added}** database(s) from server **${slug}**.`);
 }
 
@@ -2623,39 +3063,72 @@ function toggleOpRow(id, toggleEl) {
 
 // ── RFA panel ──────────────────────────────────────────────────────────────────
 
-async function loadRfaPanel() {
-  const view = document.getElementById('rfa-view');
+async function loadRfaPanel(containerId = 'rfa-view') {
+  const view = document.getElementById(containerId);
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading RequestForAction annotations…</div>';
   try {
     const res = await fetch('/api/activity/rfas');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderRfaPanel(await res.json());
+    const rfas = await res.json();
+    renderRfaPanel(rfas, containerId);
+    // Badge counts OPEN items only — deferred/reassigned/completed have
+    // been responded to, they shouldn't keep nagging the badge.
+    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open').length);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
 }
 
-function renderRfaPanel(rfas) {
-  const view = document.getElementById('rfa-view');
-  const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+function _updateRfaDrawerBadge(count) {
+  const badge = document.getElementById('rfa-drawer-badge');
+  if (!badge) return;
+  badge.textContent = count > 0 ? String(count) : '';
+  badge.classList.toggle('hidden', count === 0);
+}
+
+function renderRfaPanel(rfas, containerId = 'rfa-view') {
+  const view = document.getElementById(containerId);
+  const showResolved = localStorage.getItem('pe_rfa_show_resolved') === '1';
+  const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
     <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">RequestForAction — Open Questions</span>
-    <button onclick="loadRfaPanel()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">↺ Refresh</button>
+    <div class="flex items-center gap-2">
+      <label class="text-xs text-slate-500 flex items-center gap-1 cursor-pointer select-none">
+        <input type="checkbox" id="rfa-show-resolved-toggle" ${showResolved ? 'checked' : ''}
+          onchange="_toggleRfaShowResolved(this.checked, '${containerId}')">
+        Show resolved
+      </label>
+      <button onclick="loadRfaPanel('${containerId}')" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">↺ Refresh</button>
+    </div>
   </div>`;
 
-  if (!rfas.length) {
-    view.innerHTML = header + '<div class="text-slate-600 text-xs text-center py-12">No RequestForAction annotations found.<br>Run a survey on a resource to generate RFAs.</div>';
+  // Defer/Reassign/Complete are recorded via rfa.rfa_status (see PATCH
+  // /api/activity/rfas/{id}) — resolved items stay out of the default view
+  // (and out of the drawer badge count) so the list reflects what still
+  // needs a response, not the full history. "Show resolved" reveals them.
+  const visible = showResolved ? rfas : rfas.filter(r => r.rfa_status === 'open');
+
+  if (!visible.length) {
+    const msg = (rfas.length && !showResolved)
+      ? 'No open RequestForAction items.<br>Toggle "Show resolved" above to see deferred / reassigned / completed ones.'
+      : 'No RequestForAction annotations found.<br>Run a survey on a resource to generate RFAs.';
+    view.innerHTML = header + `<div class="text-slate-600 text-xs text-center py-12">${msg}</div>`;
     return;
   }
 
   // Group by entity
   const byEntity = {};
-  for (const rfa of rfas) {
+  for (const rfa of visible) {
     const key = rfa.entity_slug || rfa.entity_type || 'unknown';
     if (!byEntity[key]) byEntity[key] = { name: rfa.entity_name || key, type: rfa.entity_type, rfas: [] };
     byEntity[key].rfas.push(rfa);
   }
 
   const entityIcon = { repo:'📁', database:'🗄', server:'🖥', filesystem:'📂', file:'📄' };
+  const statusBadge = {
+    deferred:   '<span class="text-xs bg-sky-900/50 text-sky-300 px-1.5 py-0 rounded ml-1">⏸ deferred</span>',
+    reassigned: '<span class="text-xs bg-violet-900/50 text-violet-300 px-1.5 py-0 rounded ml-1">👤 reassigned</span>',
+    completed:  '<span class="text-xs bg-emerald-900/50 text-emerald-300 px-1.5 py-0 rounded ml-1">✓ completed</span>',
+  };
   let html = `${header}<div class="p-4 space-y-4">`;
 
   for (const [entitySlug, g] of Object.entries(byEntity)) {
@@ -2666,46 +3139,144 @@ function renderRfaPanel(rfas) {
         <span class="text-amber-500/70 normal-case font-normal ml-1">${totalCount} action${totalCount!==1?'s':''}</span>
       </div>
       <div class="space-y-2">`;
-    for (let i = 0; i < g.rfas.length; i++) {
-      const rfa = g.rfas[i];
+    for (const rfa of g.rfas) {
+      // rfa.id (f"{entry_id}::{annotation_index}", minted by the backend —
+      // see GET /api/activity/rfas) is the stable identity PATCH targets;
+      // safeId is only a DOM-id-safe derivative for element lookups.
+      const safeId = rfa.id.replace(/[^a-zA-Z0-9]/g, '_');
       const ts  = (rfa.ts || '').replace('T',' ').substring(0,10);
-      const rfaId = `rfa-ans-${i}-${(rfa.entry_id||'').replace(/[^a-z0-9]/gi,'_').substring(0,12)}`;
       const countBadge = rfa.count > 1
         ? `<span class="text-xs bg-amber-900/50 text-amber-300 px-1.5 py-0 rounded ml-1">${rfa.count}</span>` : '';
-      html += `<div class="rfa-row">
+      let detailLine = '';
+      if (rfa.rfa_status === 'deferred' && rfa.defer_until) detailLine = `Deferred until ${_esc(rfa.defer_until)}`;
+      else if (rfa.rfa_status === 'reassigned' && rfa.assignee) detailLine = `Reassigned to ${_esc(rfa.assignee)}`;
+      else if (rfa.rfa_status === 'completed') detailLine = rfa.resolution_note ? `Resolved: ${_esc(rfa.resolution_note)}` : 'Resolved';
+      const actionButtons = rfa.rfa_status === 'open'
+        ? `<button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'defer', '${containerId}')" class="text-xs text-sky-500 hover:text-sky-300 transition-colors">⏸ Defer</button>
+           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'reassign', '${containerId}')" class="text-xs text-violet-500 hover:text-violet-300 transition-colors">👤 Reassign</button>
+           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'complete', '${containerId}')" class="text-xs text-emerald-500 hover:text-emerald-300 transition-colors">✓ Complete</button>`
+        : `<button onclick="submitRfaAction('${_esc(rfa.id)}', 'open', {}, '${containerId}')" class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Reopen</button>`;
+
+      html += `<div class="rfa-row" data-rfa-id="${_esc(rfa.id)}">
         <div class="flex items-start justify-between gap-2">
           <div class="flex-1 min-w-0">
             <div class="text-xs font-medium text-amber-300">
-              ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}
+              ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}${statusBadge[rfa.rfa_status] || ''}
             </div>
             <div class="text-xs text-slate-300 mt-0.5">${_esc(rfa.summary)}</div>
+            ${detailLine ? `<div class="text-xs text-slate-500 mt-0.5 italic">${detailLine}</div>` : ''}
           </div>
           <div class="shrink-0 text-xs text-slate-600 whitespace-nowrap">${ts}</div>
         </div>
-        <div id="${rfaId}" class="rfa-answer-form hidden">
+
+        <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
+
+        <div class="flex gap-3 flex-wrap items-center mt-1.5">
+          ${actionButtons}
+          <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
+            class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            ✏ Record answer
+          </button>
+        </div>
+        <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
           <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
             rows="2" placeholder="Enter answer or context…"></textarea>
           <div class="flex gap-2 mt-1.5">
-            <button onclick="saveRfaAnswer('${rfaId}')"
+            <button onclick="saveRfaAnswer('rfa-ans-${safeId}')"
               class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
               Save →
             </button>
-            <button onclick="document.getElementById('${rfaId}').classList.add('hidden')"
+            <button onclick="document.getElementById('rfa-ans-${safeId}').classList.add('hidden')"
               class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
               Cancel
             </button>
           </div>
         </div>
-        <button onclick="document.getElementById('${rfaId}').classList.toggle('hidden')"
-          class="text-xs text-amber-500 hover:text-amber-300 mt-1.5 transition-colors">
-          ✏ Record answer
-        </button>
       </div>`;
     }
     html += `</div></div>`;
   }
   html += '</div>';
   view.innerHTML = html;
+}
+
+function _toggleRfaShowResolved(checked, containerId) {
+  localStorage.setItem('pe_rfa_show_resolved', checked ? '1' : '0');
+  loadRfaPanel(containerId);
+}
+
+// ── RFA response actions (defer / reassign / complete / reopen) — local-only
+// tracking via rfa_actions (see registry.py's docstring there); NOT yet a
+// real Egeria ToDo/governance action, deliberately out of scope this slice.
+function _showRfaActionForm(rfaId, kind, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const formEl = document.getElementById(`rfa-action-form-${safeId}`);
+  if (!formEl) return;
+  const cancelBtn = `<button onclick="document.getElementById('rfa-action-form-${safeId}').classList.add('hidden')"
+    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">Cancel</button>`;
+  let inner = '';
+  if (kind === 'defer') {
+    inner = `<input type="date" id="rfa-defer-date-${safeId}"
+        class="bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-sky-400">
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="_submitRfaDefer('${rfaId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-sky-700 hover:bg-sky-600 text-white transition-colors">Defer →</button>
+        ${cancelBtn}
+      </div>`;
+  } else if (kind === 'reassign') {
+    inner = `<input type="text" id="rfa-assignee-${safeId}" placeholder="Assignee (name or email)"
+        class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-violet-400">
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="_submitRfaReassign('${rfaId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white transition-colors">Reassign →</button>
+        ${cancelBtn}
+      </div>`;
+  } else if (kind === 'complete') {
+    inner = `<textarea id="rfa-resolution-${safeId}" placeholder="Resolution note (optional)" rows="2"
+        class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-emerald-400 resize-none"></textarea>
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="_submitRfaComplete('${rfaId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors">Complete →</button>
+        ${cancelBtn}
+      </div>`;
+  }
+  formEl.innerHTML = inner;
+  formEl.classList.remove('hidden');
+}
+
+function _submitRfaDefer(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const val = document.getElementById(`rfa-defer-date-${safeId}`)?.value;
+  if (!val) { showToast('info', 'Pick a defer-until date first.', 3000); return; }
+  submitRfaAction(rfaId, 'deferred', { defer_until: val }, containerId);
+}
+
+function _submitRfaReassign(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const val = document.getElementById(`rfa-assignee-${safeId}`)?.value.trim();
+  if (!val) { showToast('info', 'Enter an assignee first.', 3000); return; }
+  submitRfaAction(rfaId, 'reassigned', { assignee: val }, containerId);
+}
+
+function _submitRfaComplete(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const val = document.getElementById(`rfa-resolution-${safeId}`)?.value.trim() || '';
+  submitRfaAction(rfaId, 'completed', { resolution_note: val }, containerId);
+}
+
+async function submitRfaAction(rfaId, status, extra, containerId) {
+  try {
+    const res = await fetch(`/api/activity/rfas/${encodeURIComponent(rfaId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, ...extra }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', `RFA marked ${_esc(status)}.`, 3000);
+    loadRfaPanel(containerId);
+  } catch(e) {
+    showToast('error', `Failed to update RFA: ${_esc(e.message)}`, 6000);
+  }
 }
 
 function saveRfaAnswer(rfaId) {
@@ -2844,7 +3415,17 @@ async function loadSurveyDefinitionsPanel() {
   try {
     const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderSurveyDefinitionsPanel(await res.json(), entityType, slug);
+    // Per-candidate Schedule action (see renderSurveyDefinitionsPanel) needs
+    // to know each candidate's current schedule, if any — same schedules
+    // backend the analysis-catalog cards use, keyed here by qualified_name.
+    let schedules = {};
+    try {
+      const schedRes = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}`);
+      if (schedRes.ok) {
+        for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
+      }
+    } catch { /* non-fatal — cards just show the unscheduled state */ }
+    renderSurveyDefinitionsPanel(await res.json(), entityType, slug, schedules);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -2890,7 +3471,8 @@ function _surveyDefEgeriaProducedTypesHtml(step) {
   </div>`;
 }
 
-function renderSurveyDefinitionsPanel(data, entityType, slug) {
+function renderSurveyDefinitionsPanel(data, entityType, slug, schedules) {
+  schedules = schedules || {};
   const view = document.getElementById('survey-definitions-view');
   const candidates = data.candidates || [];
   // Candidate objects (author-written descriptions, Egeria-sourced annotation
@@ -2934,11 +3516,24 @@ function renderSurveyDefinitionsPanel(data, entityType, slug) {
       </div>
       <div class="text-xs text-slate-500 mt-1.5">${(c.steps || []).length} step(s), in order:</div>
       <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
-      <div class="mt-auto pt-2">
+      <div class="mt-auto pt-2 flex flex-wrap gap-1.5 items-center">
         <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${i})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
           Run →
         </button>
+        ${(() => {
+          // Scheduling this directly against the real Survey Definition
+          // (keyed by qualified_name, not a static catalog id) is exactly
+          // the redesign this section's own comment above has been waiting
+          // on since 2026-07-09 — see the "Schedules editor: hidden for
+          // now" note a few lines up.
+          const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+          const sched = schedules[c.qualified_name];
+          const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
+          return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
+              class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>
+            <div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+        })()}
       </div>
     </div>`;
   }).join('');
@@ -3210,8 +3805,16 @@ const _CTX_FIELDS = [
 
 async function loadContextPanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
-  if (!slug) return;
   const view = document.getElementById('context-view');
+  if (!slug) {
+    // Pre-existing gap, fixed here since Step 6 wires this panel directly to
+    // the Enrichment intent tab: previously this just returned silently,
+    // leaving whatever was in #context-view before (blank on first load,
+    // stale on a facet switch with nothing selected) instead of a real
+    // empty state like Discovery/Survey Definitions already have.
+    view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to record its context.</div>';
+    return;
+  }
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading context…</div>';
   try {
     const res = await fetch(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
@@ -3323,10 +3926,207 @@ async function saveContextForm(slug, entityType) {
   }
 }
 
+// ── Curate panel — tags, resource-level feedback, curator notes ────────────────
+// All three sections live on one scrollable page (not sub-tabbed like Admin) —
+// they're small enough, and read naturally together as "curating this resource."
+// Digital-product evaluation, sample datasets, and quality remediation are
+// deliberately not here yet — see docs/curate-followups.md.
+
+let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each load
+
+async function loadCuratePanel() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  const view = document.getElementById('curate-view');
+  if (!entityType || !slug) return;  // showCuratePane() already gates this; defensive only
+  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const [tags, feedback, notes, allTags] = await Promise.all([
+      fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
+      fetch(`/api/curate/feedback/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
+      fetch(`/api/curate/notes/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
+      fetch('/api/curate/tags').then(r => r.json()),
+    ]);
+    _curateAllTagsCache = allTags;
+    renderCuratePanel(entityType, slug, tags, feedback, notes);
+  } catch(e) {
+    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderCuratePanel(entityType, slug, tags, feedback, notes) {
+  const view = document.getElementById('curate-view');
+  const icon = { repo: '📁', database: '🗄', filesystem: '💾' }[entityType] || '•';
+
+  const tagChips = tags.map(t => `<span class="analysis-tag" style="display:inline-flex;align-items:center;gap:.3rem;background:#1e293b;color:#a5b4fc;padding:.2rem .5rem;">
+      ${_esc(t)}
+      <button onclick="removeCurateTag('${entityType}','${_esc(slug)}','${_esc(t)}')" class="text-slate-500 hover:text-red-400" title="Remove tag">×</button>
+    </span>`).join(' ') || '<span class="text-slate-600 text-xs">No tags yet.</span>';
+
+  const tagDatalist = _curateAllTagsCache.map(t => `<option value="${_esc(t.tag)}">`).join('');
+
+  const feedbackHtml = feedback.length ? feedback.map(f => `
+    <div class="rpt-section" style="margin-bottom:.5rem;">
+      <div class="flex items-center gap-2 text-xs">
+        ${f.rating ? `<span class="text-amber-400">${'★'.repeat(f.rating)}${'☆'.repeat(5-f.rating)}</span>` : ''}
+        ${f.category ? `<span class="analysis-tag">${_esc(f.category)}</span>` : ''}
+        <span class="text-slate-600">${(f.created_at||'').replace('T',' ').substring(0,16)}</span>
+      </div>
+      <div class="text-xs text-slate-300 mt-1">${_esc(f.message)}</div>
+    </div>`).join('') : '<div class="text-slate-600 text-xs text-center py-4">No feedback recorded yet.</div>';
+
+  const notesHtml = notes.length ? notes.map(n => `
+    <div class="rpt-section" style="margin-bottom:.5rem;">
+      <div class="flex items-start justify-between gap-2">
+        <div class="text-xs text-slate-300 flex-1">${_esc(n.note)}</div>
+        <button onclick="deleteCurateNote('${n.id}', '${entityType}','${_esc(slug)}')" class="text-xs text-slate-600 hover:text-red-400 shrink-0" title="Delete note">×</button>
+      </div>
+      <div class="text-xs text-slate-600 mt-1">${(n.created_at||'').replace('T',' ').substring(0,16)}</div>
+    </div>`).join('') : '<div class="text-slate-600 text-xs text-center py-4">No curator notes yet.</div>';
+
+  view.innerHTML = `
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
+      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Curate — ${icon} ${_esc(slug)}</span>
+    </div>
+    <div class="p-4 space-y-6 max-w-2xl">
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏷 Tags — make this easier to find</div>
+        <div class="flex flex-wrap gap-1.5 mb-2">${tagChips}</div>
+        <div class="flex gap-2">
+          <input id="curate-new-tag" list="curate-tag-datalist" type="text" placeholder="Add a tag…"
+            class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 flex-1"
+            onkeydown="if(event.key==='Enter'){event.preventDefault(); addCurateTag('${entityType}','${_esc(slug)}');}">
+          <datalist id="curate-tag-datalist">${tagDatalist}</datalist>
+          <button onclick="addCurateTag('${entityType}','${_esc(slug)}')" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Add</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">💬 Feedback</div>
+        ${feedbackHtml}
+        <div class="mt-2 space-y-1.5">
+          <div class="flex items-center gap-2">
+            <select id="curate-feedback-rating" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1.5 py-1">
+              <option value="">No rating</option>
+              <option value="5">★★★★★</option>
+              <option value="4">★★★★☆</option>
+              <option value="3">★★★☆☆</option>
+              <option value="2">★★☆☆☆</option>
+              <option value="1">★☆☆☆☆</option>
+            </select>
+            <select id="curate-feedback-category" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1.5 py-1">
+              <option value="">Category (optional)</option>
+              <option value="quality">Quality</option>
+              <option value="documentation">Documentation</option>
+              <option value="usefulness">Usefulness</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <textarea id="curate-feedback-message" rows="2" placeholder="Leave feedback about this resource…"
+            class="w-full bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 resize-none"></textarea>
+          <button onclick="addCurateFeedback('${entityType}','${_esc(slug)}')" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Submit feedback</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">📝 Curator Notes</div>
+        <div class="text-xs text-slate-700 mb-2">Ongoing commentary about discoverability, quality, or readiness — distinct from Enrichment's context notes.</div>
+        ${notesHtml}
+        <div class="mt-2 flex gap-2">
+          <textarea id="curate-new-note" rows="2" placeholder="Add a curator note…"
+            class="w-full bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 resize-none"></textarea>
+        </div>
+        <button onclick="addCurateNote('${entityType}','${_esc(slug)}')" class="mt-1.5 px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Add note</button>
+      </div>
+
+      <div class="text-xs text-slate-700 border-t border-slate-800 pt-3">
+        Not here yet: digital-product evaluation, sample dataset creation, and a dedicated quality-remediation workflow — each needs its own design pass. See <code>docs/curate-followups.md</code>.
+      </div>
+    </div>`;
+}
+
+async function addCurateTag(entityType, slug) {
+  const input = document.getElementById('curate-new-tag');
+  const tag = input.value.trim();
+  if (!tag) return;
+  try {
+    const res = await fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    input.value = '';
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to add tag: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function removeCurateTag(entityType, slug, tag) {
+  try {
+    await fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to remove tag: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function addCurateFeedback(entityType, slug) {
+  const ratingVal = document.getElementById('curate-feedback-rating').value;
+  const category = document.getElementById('curate-feedback-category').value;
+  const message = document.getElementById('curate-feedback-message').value.trim();
+  if (!message) { showToast('info', 'Enter a feedback message first.', 3000); return; }
+  try {
+    const res = await fetch(`/api/curate/feedback/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating: ratingVal ? parseInt(ratingVal) : null, category, message }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Feedback recorded.', 3000);
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to save feedback: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function addCurateNote(entityType, slug) {
+  const ta = document.getElementById('curate-new-note');
+  const note = ta.value.trim();
+  if (!note) return;
+  try {
+    const res = await fetch(`/api/curate/notes/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to add note: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function deleteCurateNote(noteId, entityType, slug) {
+  try {
+    await fetch(`/api/curate/notes/${noteId}`, { method: 'DELETE' });
+    loadCuratePanel();
+  } catch(e) {
+    showToast('error', `Failed to delete note: ${_esc(e.message)}`, 5000);
+  }
+}
+
 // ── main view tabs ─────────────────────────────────────────────────────────────
 
 function showMainView(tab) {
-  const chatView      = document.getElementById('chat-view');
+  // NOTE: chat is no longer one of these panes — it's a persistent side panel
+  // (#chat-panel) toggled independently via toggleChatPanel(), decoupled from
+  // this router entirely. Likewise RFA's primary surface is now the drawer
+  // (#rfa-drawer, toggleRfaDrawer()) — 'rfa' as a tab argument here still
+  // works (renders into the legacy #rfa-view) but nothing in the new nav
+  // calls it; kept only so nothing else silently breaks mid-rewrite.
+  const placeholderView = document.getElementById('intent-placeholder-view');
+  const assessmentView = document.getElementById('assessment-view');
+  const analysisView   = document.getElementById('analysis-view');
+  const understandingView = document.getElementById('understanding-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -3335,31 +4135,35 @@ function showMainView(tab) {
   const contextView   = document.getElementById('context-view');
   const surveyDefsView = document.getElementById('survey-definitions-view');
   const annotationTypesView = document.getElementById('annotation-types-view');
-  const navChat       = document.getElementById('nav-chat');
-  const navReport     = document.getElementById('nav-report');
-  const navDbSurvey   = document.getElementById('nav-db-survey');
-  const navFsSurvey   = document.getElementById('nav-filesystem-survey');
+  const adminGroupsView = document.getElementById('admin-groups-view');
+  const adminSchedulesView = document.getElementById('admin-schedules-view');
+  const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
-  const navRfa        = document.getElementById('nav-rfa');
-  const navContext    = document.getElementById('nav-context');
-  const navSurveyDefs = document.getElementById('nav-survey-definitions');
 
-  [chatView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView].forEach(v => v?.classList.add('hidden'));
-  [navChat, navReport, navDbSurvey, navFsSurvey, navRfa, navContext, navSurveyDefs].forEach(b => b?.classList.remove('active'));
+  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, curateView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
+  document.getElementById('nav-admin-hdr')?.classList.remove('active');
 
-  if (tab === 'report') {
+  if (tab === 'intent-placeholder') {
+    placeholderView.classList.remove('hidden');
+  } else if (tab === 'assessment') {
+    assessmentView.classList.remove('hidden');
+    loadAssessmentPanel();
+  } else if (tab === 'analysis') {
+    analysisView.classList.remove('hidden');
+    loadAnalysisPanel();
+  } else if (tab === 'understanding') {
+    understandingView.classList.remove('hidden');
+    loadUnderstandingCharts();
+  } else if (tab === 'report') {
     reportView.classList.remove('hidden');
-    navReport.classList.add('active');
     if (!_reportLoaded) loadSurveyReport();
   } else if (tab === 'db-survey') {
     dbSurveyView.classList.remove('hidden');
-    navDbSurvey.classList.add('active');
     if (!_dbSurveyLoaded) loadDbSurveyReport();
   } else if (tab === 'filesystem-survey') {
     fsSurveyView.classList.remove('hidden');
-    navFsSurvey.classList.add('active');
     if (!_fsSurveyLoaded) loadFilesystemSurveyReport();
   } else if (tab === 'activity') {
     activityView.classList.remove('hidden');
@@ -3372,22 +4176,30 @@ function showMainView(tab) {
     loadActivityLog();
   } else if (tab === 'rfa') {
     rfaView.classList.remove('hidden');
-    navRfa?.classList.add('active');
     loadRfaPanel();
   } else if (tab === 'context') {
     contextView.classList.remove('hidden');
-    navContext?.classList.add('active');
     loadContextPanel();
   } else if (tab === 'survey-definitions') {
     surveyDefsView.classList.remove('hidden');
-    navSurveyDefs?.classList.add('active');
     loadSurveyDefinitionsPanel();
   } else if (tab === 'annotations') {
     annotationTypesView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAnnotationTypesView(_selectedAnnotationType);
+  } else if (tab === 'admin-groups') {
+    adminGroupsView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminGroupsPanel();
+  } else if (tab === 'admin-schedules') {
+    adminSchedulesView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminSchedulesPanel();
+  } else if (tab === 'curate') {
+    curateView.classList.remove('hidden');
+    loadCuratePanel();
   } else {
-    chatView.classList.remove('hidden');
-    navChat.classList.add('active');
+    placeholderView.classList.remove('hidden');
   }
 }
 
@@ -3634,7 +4446,7 @@ function renderSurveyReport(data) {
 }
 
 function askAboutSurvey() {
-  showMainView('chat');
+  openChatPanel();
   const input = document.getElementById('query-input');
   input.value = `Summarize the survey results for ${selectedProject}`;
   input.focus();
@@ -4638,9 +5450,6 @@ function selectFilesystem(slug) {
   
   document.getElementById('scope-badge').classList.add('hidden');
   document.getElementById('db-scope-badge').classList.add('hidden');
-  document.getElementById('nav-report').classList.add('hidden');
-  document.getElementById('nav-db-survey').classList.add('hidden');
-  document.getElementById('nav-filesystem-survey').classList.remove('hidden');
 
   if (slug) {
     const fs = _fsMap[slug] || {};
@@ -4648,14 +5457,12 @@ function selectFilesystem(slug) {
     document.getElementById('db-scope-badge').textContent = '💾 ' + (fs.display_name || slug);
     document.getElementById('db-scope-badge').classList.remove('hidden');
     
-    document.getElementById('main-nav').classList.remove('hidden');
     _fsSurveyLoaded = false;
-    showMainView('filesystem-survey');
+    setNavIntent(currentNavIntent);
   } else {
     document.getElementById('charts-section').classList.add('hidden');
-    document.getElementById('main-nav').classList.add('hidden');
-    document.getElementById('nav-filesystem-survey').classList.add('hidden');
     document.querySelectorAll('.fs-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
+    setNavIntent(currentNavIntent);
   }
 }
 
@@ -5155,38 +5962,45 @@ async function loadAnnotationTypes() {
   try {
     const res = await fetch('/api/analyses/annotation-types');
     _annotationsList = await res.json();
-    renderAnnotationList();
   } catch (e) {
     console.error("Failed to load annotation types", e);
   }
 }
 
-function renderAnnotationList() {
-  const list = document.getElementById('annotation-list');
-  list.innerHTML = '';
-  _annotationsList.forEach(ann => {
-    const btn = document.createElement('button');
-    btn.className = 'ann-btn w-full text-left px-3 py-1.5 rounded text-sm hover:bg-slate-700 transition-colors flex items-center justify-between text-slate-300';
-    if (_selectedAnnotationType === ann.type) {
-      btn.classList.add('bg-slate-705', 'bg-cyan-950', 'text-cyan-400');
-    }
-    btn.onclick = () => selectAnnotationType(ann.type);
-    btn.innerHTML = `
-      <span class="truncate font-medium">${ann.display_name}</span>
-      <span class="text-xs text-slate-500 font-mono">${ann.type.substring(0, 6)}…</span>
-    `;
-    list.appendChild(btn);
-  });
-}
-
 function selectAnnotationType(typeName) {
   _selectedAnnotationType = typeName;
-  renderAnnotationList();
   loadAnnotationTypesView(typeName);
+}
+
+// ── Admin — a small landing menu over 3 destinations (Annotation Types,
+// Groups, Schedules), each its own top-level pane in showMainView's
+// hide-list rather than a nested sub-router — keeps the same single-active-
+// pane architecture as every other intent, just with a shared subnav strip
+// prepended to each destination's own render so the 3 read as one Admin
+// "section". Clicking a subnav button calls showMainView() directly (NOT
+// setNavIntent()) so currentNavIntent is untouched and #nav-admin-hdr stays
+// highlighted while browsing between them — same pattern as Activity's
+// header button, and deliberately NOT one of the 7 intents: this is
+// system/catalog configuration, not something a user does to curate a
+// specific resource (that's the real Curate intent — see showCuratePane()
+// below). Reachable from the header's ⚙ Admin button, not #intent-nav. ────
+function _adminSubnavHtml(active) {
+  const tabs = [
+    { tab: 'annotations',       label: '📝 Annotation Types' },
+    { tab: 'admin-groups',     label: '🗂 Groups' },
+    { tab: 'admin-schedules',  label: '⏱ Schedules' },
+  ];
+  return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
+    ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
 }
 
 function loadAnnotationTypesView(typeName = null) {
   const view = document.getElementById('annotation-types-view');
+  const subnav = _adminSubnavHtml('annotations');
   if (!typeName) {
     let rowsHtml = '';
     _annotationsList.forEach(ann => {
@@ -5200,7 +6014,7 @@ function loadAnnotationTypesView(typeName = null) {
       `;
     });
 
-    view.innerHTML = `
+    view.innerHTML = subnav + `
       <div class="p-6 space-y-6">
         <div class="flex items-center justify-between">
           <div>
@@ -5239,7 +6053,7 @@ function loadAnnotationTypesView(typeName = null) {
     <span class="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-750 rounded font-mono text-xs">${p}</span>
   `).join('') || '<span class="text-slate-500 text-xs">No properties defined.</span>';
 
-  view.innerHTML = `
+  view.innerHTML = subnav + `
     <div class="p-6 space-y-6">
       <div class="flex items-start justify-between border-b border-slate-800 pb-4">
         <div>
@@ -5294,6 +6108,240 @@ function loadAnnotationTypesView(typeName = null) {
       </div>
     </div>
   `;
+}
+
+// ── Admin — Groups (thin: list/create/delete only — per-resource group
+// assignment already exists via POST /{slug}/group but has no UI here yet;
+// deliberately out of scope for this "thin assembly" pass) ─────────────────
+async function loadAdminGroupsPanel() {
+  const view = document.getElementById('admin-groups-view');
+  view.innerHTML = _adminSubnavHtml('admin-groups') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading groups…</div>';
+  try {
+    const res = await fetch('/api/projects/groups');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _groups = await res.json();
+    renderAdminGroupsPanel();
+  } catch(e) {
+    view.innerHTML = _adminSubnavHtml('admin-groups') +
+      `<div class="text-red-400 text-xs p-4">Failed to load groups: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAdminGroupsPanel() {
+  const view = document.getElementById('admin-groups-view');
+  const rows = _groups.map(g => {
+    const counts = `${g.projects.length} repo${g.projects.length!==1?'s':''} · ${g.databases.length} db${g.databases.length!==1?'s':''} · ${g.filesystems.length} fs`;
+    return `<tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+      <td class="px-4 py-3 font-semibold text-slate-200">${_esc(g.display_name)}</td>
+      <td class="px-4 py-3 font-mono text-purple-400 text-xs">${_esc(g.slug)}</td>
+      <td class="px-4 py-3 text-slate-350 text-xs max-w-xs truncate">${_esc(g.description) || '—'}</td>
+      <td class="px-4 py-3 text-slate-450 text-xs">${counts}</td>
+      <td class="px-4 py-3 text-right">
+        <button onclick="deleteAdminGroup('${_esc(g.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-groups') + `
+    <div class="p-6 space-y-6">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">🗂 Resource Groups</h1>
+        <p class="text-xs text-slate-400 mt-1">Group repos, databases, and filesystems that belong together (e.g. one product's resources). Assign a resource to a group from its own record — group management here is create/delete only.</p>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">+ New Group</div>
+        <div class="flex gap-2 flex-wrap items-end">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Slug</label>
+            <input id="new-group-slug" type="text" placeholder="my-product" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-36">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Display name</label>
+            <input id="new-group-name" type="text" placeholder="My Product" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-48">
+          </div>
+          <div class="flex-1 min-w-40">
+            <label class="block text-[10px] text-slate-500 mb-0.5">Description (optional)</label>
+            <input id="new-group-desc" type="text" placeholder="" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full">
+          </div>
+          <button onclick="createAdminGroup()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
+        </div>
+        <div id="new-group-feedback" class="text-xs text-slate-500"></div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
+              <th class="px-4 py-3">Display Name</th>
+              <th class="px-4 py-3">Slug</th>
+              <th class="px-4 py-3">Description</th>
+              <th class="px-4 py-3">Members</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500 text-xs">No groups yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function createAdminGroup() {
+  const slug = document.getElementById('new-group-slug').value.trim();
+  const displayName = document.getElementById('new-group-name').value.trim();
+  const description = document.getElementById('new-group-desc').value.trim();
+  const fb = document.getElementById('new-group-feedback');
+  if (!slug || !displayName) { fb.textContent = 'Slug and display name are both required.'; return; }
+  fb.textContent = 'Creating…';
+  try {
+    const res = await fetch('/api/projects/groups', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug, display_name: displayName, description }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    fb.textContent = '';
+    loadAdminGroupsPanel();
+  } catch(e) {
+    fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function deleteAdminGroup(slug) {
+  try {
+    const res = await fetch(`/api/projects/groups/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    showToast('success', `Group deleted — ${data.resources_unassigned} resource(s) unassigned.`, 4000);
+    loadAdminGroupsPanel();
+  } catch(e) {
+    showToast('error', `Failed to delete group: ${_esc(e.message)}`, 6000);
+  }
+}
+
+// ── Admin — Schedules: a global monitoring overview, not an editor. Setting
+// or changing a cadence happens per-analysis via the ⏱ Schedule action on
+// Assessment/Analysis/Discovery cards — this page's job is watching
+// everything that's scheduled at once: has it run, did it succeed, what
+// needs follow-up. Reuses the exact same backend as the per-card action
+// (resource_schedules / schedules.py) via the new GET /api/schedules/ — same
+// data, just queried/rendered globally instead of per-resource. Superseded
+// the old per-resource editor (loadSchedulesSection/loadSchedulesEditor
+// above, left in place but now genuinely unused) after direct user
+// feedback: scheduling itself belongs wherever you found the analysis, but
+// an admin overview for monitoring is still real, separate value.
+// Honesty note carried forward from the original per-resource version: not
+// every listed analysis is fully implemented (e.g. some database entries
+// predate Survey Definitions' real live steps) — cross-check against
+// Discovery before trusting a scheduled run does what its name suggests. ──
+async function loadAdminSchedulesPanel() {
+  const view = document.getElementById('admin-schedules-view');
+  view.innerHTML = _adminSubnavHtml('admin-schedules') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading schedules…</div>';
+  try {
+    const [schedules, repoCatalog, dbCatalog, fsCatalog] = await Promise.all([
+      fetch('/api/schedules/').then(r => r.json()),
+      fetch('/api/analyses/repo').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/analyses/database').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/analyses/filesystem').then(r => r.ok ? r.json() : []).catch(() => []),
+    ]);
+    const nameById = {};
+    for (const a of [...repoCatalog, ...dbCatalog, ...fsCatalog]) nameById[a.id] = a.name;
+    renderAdminSchedulesPanel(schedules, nameById);
+  } catch(e) {
+    view.innerHTML = _adminSubnavHtml('admin-schedules') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAdminSchedulesPanel(schedules, nameById) {
+  const view = document.getElementById('admin-schedules-view');
+  const icon = { repo: '📁', database: '🗄', filesystem: '💾' };
+
+  const rows = schedules.map(s => {
+    const analysisName = nameById[s.analysis_id] || s.analysis_id;
+    const statusBadge = !s.last_run_status
+      ? '<span class="text-slate-600 text-xs">— not run yet</span>'
+      : s.last_run_status === 'error'
+        ? `<button onclick="_showScheduleErrorDetail('${_esc(s.last_run_activity_id)}')" class="text-xs text-red-400 hover:text-red-300 underline decoration-dotted transition-colors">⚠ error</button>`
+        : '<span class="text-emerald-400 text-xs">✓ ok</span>';
+    const cadenceLabel = s.enabled ? s.schedule : `${s.schedule} (disabled)`;
+    return `<tr class="hover:bg-slate-800/40 border-b border-slate-800">
+      <td class="px-3 py-2 text-xs text-slate-300 whitespace-nowrap">${icon[s.entity_type] || '•'} ${_esc(s.entity_slug)}</td>
+      <td class="px-3 py-2 text-xs text-slate-300">${_esc(analysisName)}</td>
+      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${_esc(cadenceLabel)}</td>
+      <td class="px-3 py-2">${statusBadge}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.last_run || '—').replace('T', ' ').substring(0, 16)}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.next_run || '—').replace('T', ' ').substring(0, 16)}</td>
+      <td class="px-3 py-2 text-right">
+        <button onclick="_deleteAdminSchedule('${s.entity_type}','${_esc(s.entity_slug)}','${_esc(s.analysis_id)}')"
+          class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors" title="Remove this schedule">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-schedules') + `
+    <div class="p-6 space-y-4">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⏱ Schedules — overview</h1>
+        <p class="text-xs text-slate-400 mt-1">Every scheduled analysis across every resource. To add or change a
+          schedule, use the ⏱ Schedule action on the analysis card itself (Assessment / Analysis / Discovery) —
+          this page is for monitoring, not editing individual cadences.</p>
+        <div class="text-xs text-amber-500/80 mt-1">⚠ Some listed analyses may not be fully implemented yet — cross-check
+          against 🔎 Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.</div>
+      </div>
+      <div id="sched-error-detail" class="hidden text-xs bg-red-950/40 border border-red-900 rounded p-3 text-red-300"></div>
+      <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
+              <th class="px-3 py-2">Resource</th>
+              <th class="px-3 py-2">Analysis</th>
+              <th class="px-3 py-2">Cadence</th>
+              <th class="px-3 py-2">Last run</th>
+              <th class="px-3 py-2">When</th>
+              <th class="px-3 py-2">Next run</th>
+              <th class="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-xs">No schedules configured yet — set one from an analysis card\'s ⏱ Schedule action.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function _showScheduleErrorDetail(activityId) {
+  const el = document.getElementById('sched-error-detail');
+  if (!el) return;
+  if (!activityId) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.textContent = 'Loading…';
+  try {
+    const res = await fetch(`/api/activity/${activityId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const entry = await res.json();
+    el.innerHTML = `<div class="font-semibold mb-1">${_esc(entry.summary)}</div><div>${_esc(entry.detail || 'No further detail recorded.')}</div>`;
+  } catch(e) {
+    el.textContent = `Failed to load error detail: ${e.message}`;
+  }
+}
+
+async function _deleteAdminSchedule(entityType, slug, analysisId) {
+  try {
+    const res = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Schedule removed.', 3000);
+    loadAdminSchedulesPanel();
+  } catch(e) {
+    showToast('error', `Failed to remove schedule: ${_esc(e.message)}`, 5000);
+  }
 }
 
 function showRegisterAnnotationModal() {
@@ -5542,29 +6590,55 @@ async function renderAllDbViewsMermaid() {
   }
 }
 
-// ── resize ────────────────────────────────────────────────────────────────────
-(function _initResize() {
-  const handle  = document.getElementById('resize-handle');
-  const sidebar = document.getElementById('sidebar');
-  if (!handle || !sidebar) return;
+// ── resize (sidebar, chat panel, RFA drawer — all resizable, left as the
+//    default rather than the exception per design decision) ───────────────────
+function _makeResizable(handle, panel, storageKey, { min = 240, max = 640, anchor = 'left' } = {}) {
+  if (!handle || !panel) return;
+  const stored = localStorage.getItem(storageKey);
+  if (stored) panel.style.width = stored + 'px';
   let dragging = false;
   handle.addEventListener('mousedown', e => { dragging = true; handle.classList.add('dragging'); e.preventDefault(); });
   document.addEventListener('mousemove', e => {
     if (!dragging) return;
-    const w = Math.max(192, Math.min(e.clientX, window.innerWidth * 0.6));
-    sidebar.style.width = w + 'px';
+    let w;
+    if (anchor === 'right') {
+      // Panel's right edge is fixed (it's flush against the window or a
+      // sibling panel to its right); width = distance from the cursor to
+      // that fixed right edge, recomputed live so it's correct even when
+      // another panel (e.g. the RFA drawer) is open beside it.
+      const rect = panel.getBoundingClientRect();
+      w = rect.right - e.clientX;
+    } else {
+      w = e.clientX;
+    }
+    w = Math.max(min, Math.min(w, max));
+    panel.style.width = w + 'px';
   });
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
     handle.classList.remove('dragging');
-    localStorage.setItem('pe_sidebar_w', parseInt(sidebar.style.width));
+    localStorage.setItem(storageKey, parseInt(panel.style.width));
   });
-})();
+}
+
+_makeResizable(document.getElementById('resize-handle'), document.getElementById('sidebar'),
+  'pe_sidebar_w', { min: 192, max: window.innerWidth * 0.6, anchor: 'left' });
+_makeResizable(document.getElementById('chat-resize-handle'), document.getElementById('chat-panel'),
+  'pe_chat_panel_w', { min: 260, max: 720, anchor: 'right' });
+_makeResizable(document.getElementById('rfa-resize-handle'), document.getElementById('rfa-drawer'),
+  'pe_rfa_drawer_w', { min: 280, max: 760, anchor: 'right' });
+
+// NOTE: the draggable-feedback-button init lives in the second <script> block
+// below, near the rest of the feedback-widget JS -- #feedback-btn's markup
+// isn't in the DOM yet at this point in the document, so initializing it here
+// would silently no-op (getElementById returns null before its own HTML has
+// been parsed).
+let _feedbackBtnDragged = false;  // declared here so the button's inline onclick (which appears before the second script block runs) can always read it safely
 </script>
 
 <!-- Product/UI feedback widget -->
-<button id="feedback-btn" onclick="openFeedbackModal()"
+<button id="feedback-btn" onclick="if (!_feedbackBtnDragged) openFeedbackModal(); _feedbackBtnDragged = false;"
         style="position:fixed; bottom:20px; right:20px; z-index:900; padding:.6rem 1rem;
                background:var(--accent, #38bdf8); color:#0f172a; border:none; border-radius:9999px;
                font-size:.85rem; font-weight:600; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.4);">
@@ -5612,6 +6686,75 @@ async function renderAllDbViewsMermaid() {
   window._feedbackSessionId = sessionStorage.getItem(_KEY);
 })();
 
+// Draggable feedback button — user-repositionable so it never permanently
+// blocks the chat toggle or anything else fixed in a screen corner.
+// _feedbackBtnDragged itself is declared in the first <script> block (so the
+// button's inline onclick, defined before this block runs, can always read
+// it) — this IIFE only wires up the actual drag behavior, and has to live
+// here specifically because #feedback-btn's markup isn't in the DOM yet at
+// the point the first script block executes.
+(function _initDraggableFeedbackBtn() {
+  const btn = document.getElementById('feedback-btn');
+  if (!btn) return;
+  // Clamp to the CURRENT viewport, not just the one the position was saved
+  // from — a stored position from a taller/wider window (or a stray
+  // out-of-bounds value from earlier testing) can otherwise place the
+  // button below the fold or off-screen with no visible way to reach it
+  // again. Bug found live: a leftover pe_feedback_btn_pos put the button
+  // at top:1333px on an ~800px-tall viewport.
+  const _clampBtnPos = (left, top) => ({
+    left: Math.max(4, Math.min(left, window.innerWidth - (btn.offsetWidth || 113) - 4)),
+    top: Math.max(4, Math.min(top, window.innerHeight - (btn.offsetHeight || 40) - 4)),
+  });
+  const stored = JSON.parse(localStorage.getItem('pe_feedback_btn_pos') || 'null');
+  if (stored) {
+    const { left, top } = _clampBtnPos(stored.left, stored.top);
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
+    btn.style.right = 'auto';
+    btn.style.bottom = 'auto';
+    if (left !== stored.left || top !== stored.top) {
+      localStorage.setItem('pe_feedback_btn_pos', JSON.stringify({ left, top }));
+    }
+  }
+  // Re-clamp on viewport resize too, so shrinking the window never strands it.
+  window.addEventListener('resize', () => {
+    if (btn.style.right !== 'auto') return; // still in its default corner — nothing to clamp
+    const { left, top } = _clampBtnPos(parseFloat(btn.style.left), parseFloat(btn.style.top));
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
+  });
+  let dragging = false, startX, startY, origLeft, origTop;
+  btn.addEventListener('mousedown', e => {
+    dragging = true; _feedbackBtnDragged = false;
+    const rect = btn.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    origLeft = rect.left; origTop = rect.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _feedbackBtnDragged = true;
+    if (!_feedbackBtnDragged) return;
+    const left = Math.max(4, Math.min(origLeft + dx, window.innerWidth - btn.offsetWidth - 4));
+    const top  = Math.max(4, Math.min(origTop + dy, window.innerHeight - btn.offsetHeight - 4));
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
+    btn.style.right = 'auto';
+    btn.style.bottom = 'auto';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (_feedbackBtnDragged) {
+      localStorage.setItem('pe_feedback_btn_pos', JSON.stringify({
+        left: parseFloat(btn.style.left), top: parseFloat(btn.style.top),
+      }));
+    }
+  });
+})();
+
 let _feedbackRating = 0;
 
 function openFeedbackModal() {
@@ -5641,8 +6784,8 @@ function _renderFeedbackStars() {
 }
 
 function _currentPageId() {
-  const active = document.querySelector('.main-nav-btn.active') || document.querySelector('.entity-tab.active');
-  return active ? active.id : '';
+  const active = document.querySelector('#intent-nav .nav-intent-btn.active');
+  return active ? active.dataset.navIntent : currentNavIntent;
 }
 
 async function submitFeedback() {

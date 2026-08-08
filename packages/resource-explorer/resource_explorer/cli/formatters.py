@@ -19,7 +19,7 @@ def print_project_table(projects: list[Project], console: Console, details: bool
 
 
 def _print_project_summary(projects: list[Project], console: Console) -> None:
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     store = MultiCollectionStore()
 
     table = Table(title="Registered Projects")
@@ -49,7 +49,7 @@ def _print_project_summary(projects: list[Project], console: Console) -> None:
 
 
 def _print_project_details(projects: list[Project], console: Console) -> None:
-    from resource_explorer.multi_collection_store import MultiCollectionStore
+    from resource_explorer.vector_store_pg import MultiCollectionStore
     store = MultiCollectionStore()
 
     for p in projects:
