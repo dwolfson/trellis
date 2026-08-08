@@ -1,0 +1,73 @@
+{
+  "code_elements_count": 0,
+  "doc_sections_count": 23070,
+  "examples_count": 0,
+  "metadata_count": 4559,
+  "statistics": {
+    "code": {
+      "total": 0,
+      "by_type": {},
+      "public_elements": 0,
+      "with_docstrings": 0,
+      "avg_complexity": 0
+    },
+    "documentation": {
+      "total": 23070,
+      "by_level": {
+        "1": 3791,
+        "2": 15316,
+        "4": 678,
+        "3": 3050,
+        "5": 161,
+        "6": 74
+      },
+      "with_code": 1658,
+      "total_words": 1118938
+    },
+    "examples": {
+      "total": 0,
+      "by_type": {},
+      "with_apis": 0
+    },
+    "metadata": {
+      "total_files": 4559,
+      "by_type": {
+        "python": 397,
+        "markdown": 4162
+      },
+      "by_category": {
+        "other": 72,
+        "tests": 172,
+        "config": 1,
+        "examples": 23,
+        "commands": 95,
+        "core": 14,
+        "omvs": 86,
+        "docs": 4096
+      },
+      "total_size_bytes": 23710417,
+      "total_lines": 560518,
+      "errors": 0,
+      "error_details": []
+    },
+    "parsers": {
+      "code_parser": {
+        "files_parsed": 0,
+        "errors": 0,
+        "error_details": []
+      },
+      "doc_parser": {
+        "files_parsed": 4166,
+        "errors": 0,
+        "error_details": []
+      },
+      "example_extractor": {
+        "total_examples": 0,
+        "by_type": {},
+        "errors": 0,
+        "error_details": []
+      }
+    }
+  },
+  "timestamp": "2026-03-03T17:01:07.860425"
+}

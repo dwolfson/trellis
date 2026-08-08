@@ -1,0 +1,273 @@
+# Externalized analysis catalog — the menu of analyses available per
+# resource type, shown in the Assessment/Analysis/Curate intent panes and
+# used by the scheduler (resource_explorer/scheduler.py) to run analyses
+# on a cadence.
+#
+# This is the local counterpart to Egeria's find_technology_types /
+# get_tech_type_detail. The two ARE merged at read time —
+# resource_explorer/surveyors/analysis_catalog_reader.py optionally calls
+# EgeriaTechTypeCatalog.get_produced_annotation_types() and appends
+# Egeria-native entries alongside these local ones (fail-soft: if Egeria
+# is unreachable, only the local entries below are returned).
+#
+# IMPORTANT — intent values: this catalog uses the FULL 7-intent scheme
+# (scouting / assessment / discovery / analysis / enrichment /
+# understanding / curate), which supersedes the 4-intent list still
+# documented in this package's CLAUDE.md as of this writing (Scouting /
+# Assessment / Discovery / Enrichment only) — update that doc's "Four User
+# Intents" section to match once the intent-shell UI work is complete.
+# 'discovery' and 'enrichment' currently have zero entries here by design:
+# Discovery is served entirely by survey_definitions.py (the Survey
+# Definition / GovernanceActionProcess catalog), and Enrichment by
+# context.py + activity.py (human-provided context, RFA response) — not
+# by this analysis menu. That's not an oversight.
+#
+# Each entry fields:
+#   id               - stable identifier; referenced by resource_schedules
+#                       rows (scheduler.py) and must never change once an
+#                       analysis has been scheduled anywhere.
+#   name, description - shown in the UI card.
+#   resource_types    - which of repo/database/filesystem this applies to.
+#   intent            - one of the 7 canonical intents (see above).
+#   perspectives      - persona tags; "all" plus zero or more of
+#                       dba/data_scientist/steward/security. Concurrent
+#                       multi-select in the UI, OR-matched.
+#   annotation_types  - Egeria annotation type names this analysis produces
+#                       when run (used for cross-referencing, not enforced).
+#   source            - "local" (RE's own surveyors) or "egeria" (native
+#                       Egeria survey/catalog action).
+#   run_time          - fast | minutes | async — UI speed badge.
+#   action            - "survey" (read-only analysis) or "publish" (writes
+#                       to the Egeria catalog of record).
+#   recommended       - shown with a ★ star as a suggested starting point.
+#   egeria_registration - schema-only hook for eventual GovernanceActionType
+#                       registration of this analysis as a native Egeria
+#                       action. NOT a registration mechanism — just a place
+#                       to record whether one exists/is planned, and if so
+#                       which (entity_type, technology_type) pair it maps
+#                       to in technology_type_processes.yaml.
+#     candidate         - bool, is this a realistic candidate for Egeria
+#                         native registration.
+#     native_process_ref - [entity_type, technology_type_name] pointing into
+#                         technology_type_processes.yaml, or null if no
+#                         confirmed native process exists yet. Never guess
+#                         this string — only set it once confirmed live via
+#                         find_governance_definitions, same rule as that
+#                         file's own header comment.
+
+repo_analyses:
+  - id: language_file_classification
+    name: "Language & File Classification"
+    description: "Identify programming languages, file types, and project structure. Produces file-type counts and language breakdown."
+    resource_types: ["repo"]
+    intent: scouting
+    perspectives: ["all"]
+    annotation_types: ["ResourceMeasureAnnotation", "ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: repository_health
+    name: "Repository Health"
+    description: "Stars, forks, contributors, open issues, and activity metrics from GitHub. Produces a quality score annotation."
+    resource_types: ["repo"]
+    intent: scouting
+    perspectives: ["all"]
+    annotation_types: ["QualityScoreAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: dependency_analysis
+    name: "Dependency Analysis"
+    description: "Scan package manifests (pyproject.toml, package.json, pom.xml, etc.) for dependencies by ecosystem."
+    resource_types: ["repo"]
+    intent: analysis  # was 'assessment' — structural/quantitative, not a scored evaluation
+    perspectives: ["all", "security"]
+    annotation_types: ["DataClassAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: security_scan
+    name: "Security Scan"
+    description: "Detect hardcoded secrets, insecure patterns, and missing security artifacts (SECURITY.md, signed commits)."
+    resource_types: ["repo"]
+    intent: assessment  # true scoring against criteria — unchanged
+    perspectives: ["security", "steward"]
+    annotation_types: ["RequestForActionAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: documentation_coverage
+    name: "Documentation Coverage"
+    description: "Assess README completeness, CHANGELOG, API docs, and inline comment coverage."
+    resource_types: ["repo"]
+    intent: assessment  # scores completeness against a checklist — unchanged
+    perspectives: ["steward", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: data_file_profiling
+    name: "Data File Profiling"
+    description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."
+    resource_types: ["repo"]
+    intent: analysis  # was 'assessment' — structural profiling, baseline for change-detection
+    perspectives: ["data_scientist", "steward"]
+    annotation_types: ["SchemaAnalysisAnnotation", "DataClassAnnotation"]
+    source: local
+    run_time: minutes
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: api_structure
+    name: "API & Symbol Extraction"
+    description: "Extract public functions, classes, and API endpoints from Python, JavaScript, and OpenAPI source."
+    resource_types: ["repo"]
+    intent: analysis  # was 'assessment' — structural extraction, not evaluative
+    perspectives: ["data_scientist", "all"]
+    annotation_types: ["SchemaAnalysisAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: egeria_publish
+    name: "Publish to Egeria Catalog"
+    description: "Register the repository in Egeria and publish all survey annotations as a SurveyReport asset. Requires Egeria connection."
+    resource_types: ["repo"]
+    intent: curate  # was 'assessment' — action:"publish" is an explicit catalog-of-record write
+    perspectives: ["steward", "all"]
+    annotation_types: ["SurveyReport"]
+    source: egeria
+    run_time: minutes
+    action: publish
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null  # no confirmed native Egeria process for generic repo publish
+
+database_analyses:
+  - id: schema_inventory
+    name: "Schema Inventory"
+    description: "List all schemas, tables, columns with types, constraints, primary keys, foreign keys, and comments."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["all", "dba"]
+    annotation_types: ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: row_count_snapshot
+    name: "Row Count Snapshot"
+    description: "Count rows in all tables using pg_stat_user_tables. Records a time-series data point for trend analysis."
+    resource_types: ["database"]
+    intent: scouting
+    perspectives: ["all", "dba"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: index_health
+    name: "Index Health"
+    description: "Identify unused indexes, missing indexes on foreign keys, and bloated indexes."
+    resource_types: ["database"]
+    intent: assessment  # scores index hygiene against best practice — unchanged
+    perspectives: ["dba"]
+    annotation_types: ["RequestForActionAnnotation", "DataClassAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: privilege_audit
+    name: "Privilege Audit"
+    description: "Review database roles, grants, and superuser accounts for security hygiene."
+    resource_types: ["database"]
+    intent: assessment  # scores grant/role hygiene — unchanged
+    perspectives: ["security", "dba"]
+    annotation_types: ["DataClassAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: egeria_db_survey
+    name: "Egeria Native DB Survey"
+    description: "Trigger Egeria's native PostgreSQL survey for deep annotation of schema, data quality, and lineage. Runs asynchronously."
+    resource_types: ["database"]
+    intent: curate  # was 'assessment' — action:"publish" is an explicit catalog-of-record write
+    perspectives: ["all", "dba"]
+    annotation_types: ["SchemaAnalysisAnnotation", "ClassificationAnnotation", "RequestForActionAnnotation"]
+    source: egeria
+    run_time: async
+    action: publish
+    recommended: true
+    egeria_registration:
+      candidate: true
+      native_process_ref: ["database", "PostgreSQL Relational Database"]
+
+filesystem_analyses:
+  - id: filesystem_inventory
+    name: "File System Inventory"
+    description: "Walks the filesystem, collects file sizes, formats, timestamps, and classifications. Profiles tabular data file schemas."
+    resource_types: ["filesystem"]
+    intent: scouting
+    perspectives: ["all", "steward"]
+    annotation_types:
+      - ResourceMeasureAnnotation
+      - ClassificationAnnotation
+      - RequestForActionAnnotation
+      - SchemaAnalysisAnnotation
+    source: local
+    run_time: minutes
+    action: survey
+    recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null

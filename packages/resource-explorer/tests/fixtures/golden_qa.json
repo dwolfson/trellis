@@ -1,0 +1,152 @@
+[
+  {
+    "query": "How many stars does this project have?",
+    "intent": "statistical",
+    "expected_keywords": ["star", "github"],
+    "notes": "Requires a project with stats indexed"
+  },
+  {
+    "query": "Who are the top contributors?",
+    "intent": "statistical",
+    "expected_keywords": ["contributor", "commit"],
+    "notes": "Requires project_commits data"
+  },
+  {
+    "query": "Show me the commit activity over the last 30 days",
+    "intent": "statistical",
+    "expected_keywords": ["commit", "30"],
+    "notes": "Requires project_commits data"
+  },
+  {
+    "query": "How many forks does this project have?",
+    "intent": "statistical",
+    "expected_keywords": ["fork"],
+    "notes": "Requires stats snapshot"
+  },
+  {
+    "query": "What is the primary programming language?",
+    "intent": "statistical",
+    "expected_keywords": ["language", "python"],
+    "notes": "Requires language_breakdown in project_stats"
+  },
+  {
+    "query": "How is the community health of this project?",
+    "intent": "health",
+    "expected_keywords": ["health", "activity", "contributor", "bus factor"],
+    "notes": "Requires stats + commits data"
+  },
+  {
+    "query": "Is this project actively maintained?",
+    "intent": "health",
+    "expected_keywords": ["active", "maintained", "commit"],
+    "notes": "Requires project_commits to determine last activity"
+  },
+  {
+    "query": "What is the bus factor for this project?",
+    "intent": "health",
+    "expected_keywords": ["bus factor", "contributor"],
+    "notes": "Requires contributor stats"
+  },
+  {
+    "query": "What are the main classes and functions in this project?",
+    "intent": "code_inventory",
+    "expected_keywords": ["class", "function"],
+    "notes": "Requires code_symbols indexed via --symbols flag"
+  },
+  {
+    "query": "List all the Python classes in this project",
+    "intent": "code_inventory",
+    "expected_keywords": ["class"],
+    "notes": "Requires python_code collection"
+  },
+  {
+    "query": "Show me the method signatures for the main API",
+    "intent": "code_inventory",
+    "expected_keywords": ["method", "signature", "function"],
+    "notes": "Requires code_symbols"
+  },
+  {
+    "query": "How do I install and set up this project?",
+    "intent": "conceptual",
+    "expected_keywords": ["install", "setup", "pip", "docker"],
+    "notes": "Requires markdown_docs collection with README"
+  },
+  {
+    "query": "What is the architecture of this project?",
+    "intent": "conceptual",
+    "expected_keywords": ["architecture", "component", "module", "layer"],
+    "notes": "Requires markdown_docs or web_docs"
+  },
+  {
+    "query": "How does authentication work in this project?",
+    "intent": "conceptual",
+    "expected_keywords": ["auth", "token", "credential", "login"],
+    "notes": "Requires documentation about auth; skip if not applicable"
+  },
+  {
+    "query": "What configuration options are available?",
+    "intent": "conceptual",
+    "expected_keywords": ["config", "option", "setting", "environment"],
+    "notes": "Requires markdown_docs or api_reference"
+  },
+  {
+    "query": "Show me an example of how to use this library",
+    "intent": "code_search",
+    "expected_keywords": ["example", "usage", "import"],
+    "notes": "Requires code or examples collection"
+  },
+  {
+    "query": "How is the main entry point implemented?",
+    "intent": "code_search",
+    "expected_keywords": ["main", "entry", "function", "class"],
+    "notes": "Requires code collection"
+  },
+  {
+    "query": "What dependencies does this project use?",
+    "intent": "dependency",
+    "expected_keywords": ["depend", "package", "require", "library"],
+    "notes": "Requires dependency_parser to have run during ingestion"
+  },
+  {
+    "query": "What Python packages does this project require?",
+    "intent": "dependency",
+    "expected_keywords": ["python", "package", "require"],
+    "notes": "Requires pyproject.toml or requirements.txt parsed"
+  },
+  {
+    "query": "What are the runtime dependencies?",
+    "intent": "dependency",
+    "expected_keywords": ["runtime", "depend", "package"],
+    "notes": "Requires dependency data indexed"
+  },
+  {
+    "query": "What is the latest release version?",
+    "intent": "statistical",
+    "expected_keywords": ["release", "version"],
+    "notes": "Requires releases_count and latest_release in stats"
+  },
+  {
+    "query": "How many open issues are there?",
+    "intent": "statistical",
+    "expected_keywords": ["issue", "open"],
+    "notes": "Requires open_issues in project_stats"
+  },
+  {
+    "query": "What does the main module do?",
+    "intent": "conceptual",
+    "expected_keywords": ["module", "purpose", "function"],
+    "notes": "Requires indexed documentation"
+  },
+  {
+    "query": "Show me the source code for the main class",
+    "intent": "code_search",
+    "expected_keywords": ["class", "def", "method"],
+    "notes": "Requires python_code collection"
+  },
+  {
+    "query": "How many lines of code does this project have?",
+    "intent": "statistical",
+    "expected_keywords": ["line", "code", "loc"],
+    "notes": "Uses ingestion_lines_of_code if available, else estimated"
+  }
+]

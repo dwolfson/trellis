@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Feedback Admin — Resource Explorer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --border: #334155;
+    --text: #e2e8f0; --dim: #94a3b8; --accent: #38bdf8;
+  }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:1rem 1.5rem; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:1rem; }
+  h1 { font-size:1.1rem; margin:0; }
+  main { padding:1.5rem; max-width:1100px; margin:0 auto; }
+  .gate { display:flex; gap:.5rem; align-items:center; margin-bottom:1.5rem; }
+  input[type=password], input[type=text], select {
+    background:var(--panel); border:1px solid var(--border); color:var(--text);
+    border-radius:.375rem; padding:.4rem .6rem; font-size:.9rem;
+  }
+  button {
+    background:var(--accent); color:#0f172a; border:none; border-radius:.375rem;
+    padding:.4rem .8rem; font-size:.85rem; font-weight:600; cursor:pointer;
+  }
+  button.secondary { background:var(--panel); color:var(--text); border:1px solid var(--border); }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  th, td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; }
+  .stats { display:flex; gap:1.5rem; margin-bottom:1rem; color:var(--dim); font-size:.85rem; }
+  .stats b { color:var(--text); }
+  .msg { max-width:320px; white-space:pre-wrap; }
+  .status-new { color:#fbbf24; }
+  .status-triaged { color:#38bdf8; }
+  .status-actioned { color:#34d399; }
+  #error { color:#f87171; margin:.5rem 0; display:none; }
+  .filters { margin-bottom:1rem; display:flex; gap:.5rem; align-items:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📋 Feedback Admin</h1>
+</header>
+<main>
+  <div class="gate">
+    <input type="password" id="admin-token" placeholder="Admin token" style="width:16rem">
+    <button onclick="connect()">Connect</button>
+    <span id="gate-status" style="color:var(--dim); font-size:.85rem"></span>
+  </div>
+  <div id="error"></div>
+  <div id="content" style="display:none">
+    <div class="stats" id="stats"></div>
+    <div class="filters">
+      <select id="filter-status" onchange="load()">
+        <option value="">All statuses</option>
+        <option value="new">New</option>
+        <option value="triaged">Triaged</option>
+        <option value="actioned">Actioned</option>
+      </select>
+      <button class="secondary" onclick="load()">Refresh</button>
+    </div>
+    <table>
+      <thead>
+        <tr><th>When</th><th>Rating</th><th>Category</th><th>Message</th><th>Page</th><th>Email</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+const _TOKEN_KEY = "re_admin_token";
+
+function _headers() {
+  return { "Content-Type": "application/json", "X-Admin-Token": sessionStorage.getItem(_TOKEN_KEY) || "" };
+}
+
+function _showError(msg) {
+  const el = document.getElementById("error");
+  el.textContent = msg;
+  el.style.display = msg ? "block" : "none";
+}
+
+async function connect() {
+  const token = document.getElementById("admin-token").value.trim();
+  if (!token) return;
+  sessionStorage.setItem(_TOKEN_KEY, token);
+  await load();
+}
+
+async function load() {
+  _showError("");
+  const statusFilter = document.getElementById("filter-status").value;
+  try {
+    const statsResp = await fetch("/api/feedback/stats", { headers: _headers() });
+    if (statsResp.status === 403) {
+      document.getElementById("gate-status").textContent = "Invalid token";
+      document.getElementById("content").style.display = "none";
+      return;
+    }
+    if (!statsResp.ok) throw new Error(`stats: HTTP ${statsResp.status}`);
+    const stats = await statsResp.json();
+    document.getElementById("stats").innerHTML =
+      `<span><b>${stats.total}</b> total</span>` +
+      `<span><b>${stats.new}</b> new</span>` +
+      `<span><b>${stats.wants_response}</b> want a response</span>` +
+      `<span>avg rating <b>${stats.avg_rating ?? "—"}</b></span>`;
+
+    const qs = statusFilter ? `?triage_status=${encodeURIComponent(statusFilter)}` : "";
+    const listResp = await fetch(`/api/feedback${qs}`, { headers: _headers() });
+    if (!listResp.ok) throw new Error(`list: HTTP ${listResp.status}`);
+    const rows = await listResp.json();
+
+    document.getElementById("gate-status").textContent = "Connected";
+    document.getElementById("content").style.display = "block";
+    renderRows(rows);
+  } catch (e) {
+    _showError(`Failed to load: ${e.message}`);
+  }
+}
+
+function renderRows(rows) {
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const when = r.created_at ? r.created_at.replace("T", " ").slice(0, 19) : "";
+    const stars = r.rating ? "★".repeat(r.rating) + "☆".repeat(5 - r.rating) : "—";
+    tr.innerHTML = `
+      <td>${when}</td>
+      <td>${stars}</td>
+      <td>${_esc(r.category || "—")}</td>
+      <td class="msg">${_esc(r.message || "")}</td>
+      <td>${_esc(r.page || "—")}</td>
+      <td>${_esc(r.email || "—")}</td>
+      <td class="status-${r.triage_status}">${r.triage_status}</td>
+      <td></td>
+    `;
+    const actionCell = tr.lastElementChild;
+    for (const next of ["new", "triaged", "actioned"]) {
+      if (next === r.triage_status) continue;
+      const btn = document.createElement("button");
+      btn.className = "secondary";
+      btn.textContent = next;
+      btn.style.marginRight = ".25rem";
+      btn.onclick = () => triage(r.id, next);
+      actionCell.appendChild(btn);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+async function triage(id, status) {
+  try {
+    const resp = await fetch(`/api/feedback/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: _headers(),
+      body: JSON.stringify({ triage_status: status }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    await load();
+  } catch (e) {
+    _showError(`Failed to update: ${e.message}`);
+  }
+}
+
+function _esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Auto-connect if a token is already stored for this tab.
+(function () {
+  const stored = sessionStorage.getItem(_TOKEN_KEY);
+  if (stored) {
+    document.getElementById("admin-token").value = stored;
+    connect();
+  }
+})();
+</script>
+</body>
+</html>

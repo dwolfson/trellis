@@ -1,0 +1,1930 @@
+{
+  "Referenceable": {
+    "family": "General",
+    "target_type": "",
+    "description": "Basic attributes for a Referenceable",
+    "question_spec": [
+      {
+        "perspectives": [
+          "ANY"
+        ],
+        "questions": [
+          "Who created this?",
+          "Who last updated this?",
+          "Who owns this?",
+          "Who has been working on this?",
+          "What is this?",
+          "What is the source of this?",
+          "What type is this?",
+          "What zone is this?",
+          "When was this created?",
+          "When was this last updated?",
+          "When did this become effective?",
+          "When will this no longer be effective?",
+          "Is this effective?",
+          "What was the value last week?",
+          "What was the value last month?",
+          "What was the value last quarter?",
+          "What was the value last year?"
+        ]
+      }
+    ]
+  },
+  "Default": {
+    "family": "General",
+    "target_type": "Any Metadata Element",
+    "description": "Was a valid combination of report_spec and output_format provided?",
+    "question_spec": [
+      {
+        "perspectives": [
+          "ANY"
+        ],
+        "questions": [
+          "Who created this?",
+          "Who last updated this?",
+          "Who owns this?",
+          "Who has been working on this?",
+          "What is this?",
+          "What is the source of this?",
+          "What type is this?",
+          "What zone is this?",
+          "When was this created?",
+          "When was this last updated?",
+          "When did this become effective?",
+          "When will this no longer be effective?",
+          "Is this effective?",
+          "What was the value last week?",
+          "What was the value last month?",
+          "What was the value last quarter?",
+          "What was the value last year?"
+        ]
+      }
+    ]
+  },
+  "Element-By-Owner": {
+    "family": "General",
+    "target_type": "",
+    "description": "Return elements for the specified owner",
+    "question_spec": [
+      {
+        "perspectives": [
+          "ANY"
+        ],
+        "questions": [
+          "Who created this?",
+          "Who last updated this?",
+          "Who owns this?",
+          "Who has been working on this?",
+          "What is this?",
+          "What is the source of this?",
+          "What type is this?",
+          "What zone is this?",
+          "When was this created?",
+          "When was this last updated?",
+          "When did this become effective?",
+          "When will this no longer be effective?",
+          "Is this effective?",
+          "What was the value last week?",
+          "What was the value last month?",
+          "What was the value last quarter?",
+          "What was the value last year?"
+        ]
+      }
+    ]
+  },
+  "Actor-Profiles": {
+    "family": "ActorManager",
+    "target_type": "Actor Profile",
+    "description": "Actor Profile Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Who is responsible for [data or domain]?",
+          "Find the contact for [team or department].",
+          "Who owns [dataset]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Who are the data owners in [domain]?",
+          "Find actor profiles for [department]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "Who has governance responsibilities for [domain]?",
+          "Show me all registered actor profiles."
+        ]
+      },
+      {
+        "perspectives": [
+          "Project Manager"
+        ],
+        "questions": [
+          "Who are the key stakeholders for [project]?"
+        ]
+      }
+    ]
+  },
+  "Actor-Profiles-Assigned-MD": {
+    "family": "ActorManager",
+    "target_type": "Actor Profile",
+    "description": "Actor Profile Assigned Actor Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer",
+          "Data Steward"
+        ],
+        "questions": [
+          "Who has been assigned to [role or responsibility]?",
+          "Which profiles have actors assigned to them?"
+        ]
+      }
+    ]
+  },
+  "Actor-Roles": {
+    "family": "ActorManager",
+    "target_type": "Actor Profile",
+    "description": "Actor Profile Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What data governance roles are defined?",
+          "What roles exist for [domain]?",
+          "Show me all actor roles."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What are the responsibilities of the [role] role?",
+          "What is the scope of the [role]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "What roles are involved in [process]?"
+        ]
+      }
+    ]
+  },
+  "Team-Members": {
+    "family": "ActorManager",
+    "target_type": "Team",
+    "description": "Team Members and Leaders Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Who is on the [team] team?",
+          "What teams exist in our organization?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Project Manager"
+        ],
+        "questions": [
+          "What team is responsible for [project]?",
+          "Who are the members of [team]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer",
+          "Data Steward"
+        ],
+        "questions": [
+          "What governance teams exist?",
+          "Which team manages [data domain]?"
+        ]
+      }
+    ]
+  },
+  "User-Identities": {
+    "family": "ActorManager",
+    "target_type": "User-Identity",
+    "description": "User Identity Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Security Officer"
+        ],
+        "questions": [
+          "What user identities are registered?",
+          "Find the user identity for [person].",
+          "What is the user ID for [name]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "Who has registered user identities?"
+        ]
+      }
+    ]
+  },
+  "My-User": {
+    "family": "MyProfile",
+    "target_type": "My-User",
+    "description": "User Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Individual"
+        ],
+        "questions": [
+          "Show me my profile.",
+          "What is my job title?",
+          "What roles am I assigned to?",
+          "What teams am I a member of?",
+          "What communities am I part of?",
+          "What projects am I on?"
+        ]
+      }
+    ]
+  },
+  "My-User-MD": {
+    "family": "MyProfile",
+    "target_type": "My-User",
+    "description": "User Information with links to details",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Individual"
+        ],
+        "questions": [
+          "Show me my full profile with all details.",
+          "Show me my roles, teams, projects and communities.",
+          "What is my contribution record?",
+          "Show me my activity and journals."
+        ]
+      }
+    ]
+  },
+  "My-User-Activities": {
+    "family": "MyProfile",
+    "target_type": "My-User",
+    "description": "User Activity Entries",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Individual"
+        ],
+        "questions": [
+          "Show me my recent activity.",
+          "What have I been working on?"
+        ]
+      }
+    ]
+  },
+  "My-User-Blogs": {
+    "family": "MyProfile",
+    "target_type": "My-User",
+    "description": "User Blog Entries",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Individual"
+        ],
+        "questions": [
+          "Show me my blog posts.",
+          "What have I written about?"
+        ]
+      }
+    ]
+  },
+  "My-User-Journals": {
+    "family": "MyProfile",
+    "target_type": "My-User",
+    "description": "User Journal Entries",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Individual"
+        ],
+        "questions": [
+          "Show me my journal entries.",
+          "What are my recent journal notes?"
+        ]
+      }
+    ]
+  },
+  "My-User-ToDos": {
+    "family": "MyProfile",
+    "target_type": "Todo",
+    "description": "My Todos",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Individual"
+        ],
+        "questions": [
+          "What are my open to-dos?",
+          "Show me my to-do list.",
+          "What tasks do I need to complete?",
+          "What are my high-priority tasks?"
+        ]
+      }
+    ]
+  },
+  "Org-Chart": {
+    "family": "Actor Manager",
+    "target_type": "Organization",
+    "description": "Organization Chart",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Show me the organization chart.",
+          "What does the [org / team] org chart look like?",
+          "Who reports to [person or team]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "Show me the organizational structure for [division].",
+          "Who are the senior leaders?"
+        ]
+      }
+    ]
+  },
+  "TypeDef": {
+    "family": "TypeDef",
+    "target_type": "TypeDef",
+    "description": "Attributes that describe TypeDefs",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Data Engineer",
+          "Solution Architect"
+        ],
+        "questions": [
+          "What metadata types are defined?",
+          "What is [type name]?",
+          "Show me types in category [category].",
+          "What is the initial status for [type]?"
+        ]
+      }
+    ]
+  },
+  "Valid-Values": {
+    "family": "Valid-Values",
+    "target_type": "Valid-Values",
+    "description": "Attributes that describe valid values used by Egeria for metadata governance.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What valid values are defined for [property name]?",
+          "What is the preferred value for [concept]?",
+          "What category does [valid value] belong to?",
+          "Show me all valid values for [type]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What values are allowed for [field]?",
+          "Is [value] a valid entry for [property]?",
+          "What data type is used for [property]?"
+        ]
+      }
+    ]
+  },
+  "Engine-Actions": {
+    "family": "AutomatedCuration",
+    "target_type": "Referenceable",
+    "description": "A Display of Engine Actions",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer"
+        ],
+        "questions": [
+          "What engine actions are running?",
+          "Show me recent engine actions.",
+          "What actions are targeting [element]?",
+          "What are the action request sources for [action]?"
+        ]
+      }
+    ]
+  },
+  "Asset-Graph": {
+    "family": "AssetCatalog",
+    "target_type": "Asset",
+    "description": "Attributes that apply to all Assets",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Show me the full picture of [asset].",
+          "What systems does [asset] connect to?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Show me all details and relationships for [asset].",
+          "What anchors or classifies [asset]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect",
+          "Data Engineer"
+        ],
+        "questions": [
+          "Show me the data flow and lineage for [asset].",
+          "What is the field-level lineage for [asset]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Scientist"
+        ],
+        "questions": [
+          "Where does [dataset] come from? Show me the lineage."
+        ]
+      }
+    ]
+  },
+  "Tech-Type-Elements": {
+    "family": "Automated Curation",
+    "target_type": "TechTypeElements",
+    "description": "Elements of a Technology",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Integration Specialist"
+        ],
+        "questions": [
+          "What elements are catalogued for [tech type]?",
+          "Show me deployed instances of [technology].",
+          "What is the architecture diagram for [tech type]?"
+        ]
+      }
+    ]
+  },
+  "Search-Keywords": {
+    "family": "Feedback Manager",
+    "target_type": "",
+    "description": "A report of elements with search keywords matching the specified string",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward"
+        ],
+        "questions": [
+          "What elements are tagged with [keyword]?",
+          "What is tagged as [topic]?",
+          "Find everything related to [term]."
+        ]
+      }
+    ]
+  },
+  "Tech-Type-Details": {
+    "family": "Automated Curation",
+    "target_type": "TechTypeDetail",
+    "description": "Details of a Technology Type Valid Value.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Integration Specialist"
+        ],
+        "questions": [
+          "What are the details for [tech type]?",
+          "What catalog template placeholders does [tech type] require?",
+          "Show me full details for [technology]."
+        ]
+      }
+    ]
+  },
+  "Tech-Type-Details-MD": {
+    "family": "Automated Curation",
+    "target_type": "TechTypeDetail",
+    "description": "Details of a Technology Type Valid Value as a Master-Detail pattern",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Integration Specialist"
+        ],
+        "questions": [
+          "Show me the full master-detail for [tech type] including templates, processes, and references.",
+          "What governance processes and catalog templates exist for [technology]?"
+        ]
+      }
+    ]
+  },
+  "Catalog-Target": {
+    "family": "Automated Curation",
+    "target_type": "CatalogTarget",
+    "description": "Detailed Catalog Target Information",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Integration Specialist"
+        ],
+        "questions": [
+          "What catalog targets are configured?",
+          "What is [connector] cataloguing?",
+          "What is the target name for [integration connector]?"
+        ]
+      }
+    ]
+  },
+  "Tech-Type-Processes": {
+    "family": "Automated Curation",
+    "target_type": "TechTypeDetail",
+    "description": "Governance Processes for a Tech Type",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance processes are defined for [tech type]?",
+          "Show me the process diagram for [tech type].",
+          "What automation is in place for [technology]?"
+        ]
+      }
+    ]
+  },
+  "Tech-Types": {
+    "family": "Automated Curation",
+    "target_type": "TechTypeDetail",
+    "description": "Details of a Technology Type Valid Value.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Integration Specialist"
+        ],
+        "questions": [
+          "What technology types are registered?",
+          "Is [technology] a registered tech type?",
+          "Show me tech types matching [name]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What technology types can be catalogued?",
+          "What is [tech type] used for?"
+        ]
+      }
+    ]
+  },
+  "Platforms": {
+    "family": "RuntimeManager",
+    "target_type": "Platform",
+    "description": "Details of an OMAG Server Platform",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer"
+        ],
+        "questions": [
+          "What OMAG platforms are registered?",
+          "What version is [platform] running?",
+          "When did [platform] last start?",
+          "What servers are on [platform]?"
+        ]
+      }
+    ]
+  },
+  "OMAGServers": {
+    "family": "RuntimeManager",
+    "target_type": "OMAGServer",
+    "description": "Details of an OMAG Server",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer"
+        ],
+        "questions": [
+          "What OMAG servers are running?",
+          "What is the status of [server]?",
+          "What type of server is [server]?",
+          "Show me the configuration for [server]."
+        ]
+      }
+    ]
+  },
+  "IntegrationConnectors": {
+    "family": "RuntimeManager",
+    "target_type": "IntegrationConnector",
+    "description": "Details of an Integration Connector",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer",
+          "Integration Specialist"
+        ],
+        "questions": [
+          "What integration connectors are running?",
+          "What is the status of [connector]?",
+          "What does [connector] integrate with?",
+          "When did [connector] last change status?",
+          "What metadata source does [connector] use?"
+        ]
+      }
+    ]
+  },
+  "ExternalReference": {
+    "family": "External References",
+    "target_type": "External Reference",
+    "description": "Attributes that apply to all External References.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Researcher",
+          "Business Analyst"
+        ],
+        "questions": [
+          "What external references are catalogued?",
+          "Are there references to [topic or standard]?",
+          "What is the URL for [reference]?",
+          "Who published [reference]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What external sources are linked to [element]?",
+          "Show me references categorised as [category]."
+        ]
+      }
+    ]
+  },
+  "RelatedMedia": {
+    "family": "External References",
+    "target_type": "Related Media",
+    "description": "Attributes that apply to related media.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Researcher",
+          "Business Analyst"
+        ],
+        "questions": [
+          "What related media is catalogued?",
+          "Are there images or videos for [topic]?",
+          "Show me media of type [media type]."
+        ]
+      }
+    ]
+  },
+  "CitedDocument": {
+    "family": "External References",
+    "target_type": "Cited Document",
+    "description": "Attributes that apply to all Cited Documents.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Researcher"
+        ],
+        "questions": [
+          "What documents are cited in the metadata?",
+          "Who published [document]?",
+          "What is the publication date of [document]?",
+          "Show me cited documents about [topic]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What regulatory documents or standards are referenced?"
+        ]
+      }
+    ]
+  },
+  "Projects": {
+    "family": "Project Manager",
+    "target_type": "Project",
+    "description": "Attributes that apply to all Projects.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What data projects are underway?",
+          "Are there any projects affecting [data domain]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Project Manager"
+        ],
+        "questions": [
+          "What projects are currently active?",
+          "Show me projects by priority.",
+          "Who is assigned to [project]?",
+          "What is the status of [project]?",
+          "What projects started in [period]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Are there active projects that will change [data]?",
+          "What governance projects are running?"
+        ]
+      }
+    ]
+  },
+  "Glossaries": {
+    "family": "Glossary Manager",
+    "target_type": "Glossary",
+    "description": "Attributes that apply to all Glossaries.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Researcher"
+        ],
+        "questions": [
+          "What glossaries do we have?",
+          "Is there a glossary for [finance / customer / HR / regulatory]?",
+          "Which glossary covers [subject area or topic]?",
+          "Where can I find definitions for [domain]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What is the [glossary name] glossary used for?",
+          "Which glossaries are in [language]?",
+          "How many glossaries exist?",
+          "What folders are defined in [glossary]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "Which glossaries are approved for regulatory or compliance use?",
+          "Show me the compliance glossary."
+        ]
+      }
+    ]
+  },
+  "Glossary-Terms": {
+    "family": "Glossary Manager",
+    "target_type": "Term",
+    "description": "Attributes that apply to all Basic Glossary Terms.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Researcher"
+        ],
+        "questions": [
+          "What does [term] mean?",
+          "Find terms related to [concept or topic].",
+          "What terms are in the [subject area]?",
+          "Give me an example of how [term] is used.",
+          "Is there a definition for [abbreviation or acronym]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Which terms have usage notes?",
+          "Show me terms that are no longer effective.",
+          "Who last updated [term]?",
+          "What terms were updated recently?",
+          "Which terms belong to [glossary]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Scientist",
+          "Data Engineer"
+        ],
+        "questions": [
+          "What are the technical definitions for [feature or concept]?",
+          "Find terms related to [dataset or model]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What regulatory or compliance terms are defined?",
+          "Show me terms with usage restrictions.",
+          "Which terms are still in draft status?"
+        ]
+      }
+    ]
+  },
+  "Help-Terms": {
+    "family": "General",
+    "target_type": "Term",
+    "description": "Designed for help output of Dr.Egeria commands.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward",
+          "Data Engineer"
+        ],
+        "questions": [
+          "How do I use [Dr.Egeria command]?",
+          "What does [command] do?",
+          "Show me help for [topic].",
+          "What commands are available for [task]?"
+        ]
+      }
+    ]
+  },
+  "Collections": {
+    "family": "Collection Manager",
+    "target_type": "Collection",
+    "description": "Attributes generic to all Collections.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What data collections are available?",
+          "Show me collections about [topic or domain].",
+          "What is in the [collection name] collection?",
+          "What collections were created recently?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Who created the [collection] collection?",
+          "Which collections have no classification?",
+          "What collections is [element] a member of?",
+          "When was [collection] last updated?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "Show me a visual map of our data collections.",
+          "How are our collections structured and related?"
+        ]
+      }
+    ]
+  },
+  "Collection-MindMap": {
+    "family": "Collection Manager",
+    "target_type": "Collection",
+    "description": "Displays the collection Mermaid mind map.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Show me a mind map of [collection].",
+          "Give me a visual overview of what is in [collection]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Show me the structure of [collection] as a diagram.",
+          "What does the collection hierarchy look like?"
+        ]
+      }
+    ]
+  },
+  "BasicCollections": {
+    "family": "Collection Manager",
+    "target_type": "Collection",
+    "description": "Attributes generic to all Collections.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward",
+          "Solution Architect"
+        ],
+        "questions": [
+          "List all data collections.",
+          "What type of collection is [name]?",
+          "What does [collection] contain?",
+          "What collections belong to [parent collection]?"
+        ]
+      }
+    ]
+  },
+  "Folders": {
+    "family": "External References",
+    "target_type": "Folder",
+    "description": "Attributes generic to all Folders.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward"
+        ],
+        "questions": [
+          "What folders exist in [collection or catalog]?",
+          "What is in the [folder name] folder?",
+          "Show me folders for [topic or domain]."
+        ]
+      }
+    ]
+  },
+  "BusinessCapabilities": {
+    "family": "Digital Business",
+    "target_type": "BusinessCapability",
+    "description": "Attributes generic to all Business Capabilities.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What business capabilities are defined?",
+          "What systems support [capability]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "What business capabilities exist?",
+          "Which capabilities map to [process or system]?",
+          "What is the implementation approach for [capability]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What capabilities are in scope for [regulation]?"
+        ]
+      }
+    ]
+  },
+  "Collection Members": {
+    "family": "External References",
+    "target_type": "Collection",
+    "description": "Attributes about all CollectionMembers.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Steward"
+        ],
+        "questions": [
+          "What is in [collection]?",
+          "List the members of [collection].",
+          "What elements belong to [collection]?"
+        ]
+      }
+    ]
+  },
+  "Solution-Blueprint": {
+    "family": "Solution Architect",
+    "target_type": "SolutionBlueprint",
+    "description": "Details of a Solution Blueprint.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "What solution blueprints exist?",
+          "Show me the blueprint for [solution].",
+          "What components make up [solution blueprint]?",
+          "Show me the architecture diagram for [solution]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Digital Product Manager"
+        ],
+        "questions": [
+          "Which solution blueprint supports [data product]?",
+          "Show me the solution design for [product]."
+        ]
+      }
+    ]
+  },
+  "Registered-Services": {
+    "family": "Platform",
+    "target_type": "Registered-Services",
+    "description": "Registered services on the OMAG Server Platform.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer"
+        ],
+        "questions": [
+          "What services are registered on the platform?",
+          "What is the URL marker for [service]?",
+          "What type is [service]?",
+          "What services are available for [capability]?"
+        ]
+      }
+    ]
+  },
+  "Severity-Definitions": {
+    "family": "Platform",
+    "target_type": "Severity-Definitions",
+    "description": "Severity definitions available in the OMAG Server.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "DevOps Engineer"
+        ],
+        "questions": [
+          "What audit log severity levels are defined?",
+          "What does [severity code] mean?",
+          "What action should I take for [severity]?"
+        ]
+      }
+    ]
+  },
+  "Asset-Types": {
+    "family": "AssetCatalog",
+    "target_type": "Asset-Types",
+    "description": "Types of assets available in the catalog.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What types of data assets are catalogued?",
+          "What is a [type name]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer",
+          "Solution Architect"
+        ],
+        "questions": [
+          "What asset types does Egeria support?",
+          "Show me the hierarchy of asset types.",
+          "Which asset type should I use for [use case]?"
+        ]
+      }
+    ]
+  },
+  "Digital-Product-Catalog": {
+    "family": "Product Manager",
+    "target_type": "DigitalProductCatalog",
+    "description": "Attributes generic to all Digital Product Catalogs..",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What data product catalogs exist?",
+          "Which catalog covers [domain or topic]?",
+          "What products are in the [catalog name] catalog?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Digital Product Manager"
+        ],
+        "questions": [
+          "How many products are in each catalog?",
+          "When was [catalog] last updated?",
+          "Who created the [catalog] catalog?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "How are our product catalogs organized?",
+          "Which catalogs contain [collection type]?"
+        ]
+      }
+    ]
+  },
+  "Digital-Product-Catalog-MyE": {
+    "family": "Product Manager",
+    "target_type": "DigitalProductCatalog",
+    "description": "Attributes generic to all Digital Product Catalogs..",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Digital Product Manager"
+        ],
+        "questions": [
+          "What digital product catalogs exist?",
+          "What products are in [catalog]?",
+          "Which catalog contains [product]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Where can I browse data products?",
+          "What catalogs are available?"
+        ]
+      }
+    ]
+  },
+  "Digital-Products": {
+    "family": "Product Manager",
+    "target_type": "DigitalProduct",
+    "description": "Attributes useful to Digital Products.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What data products are available?",
+          "Show me active data products for [topic or domain].",
+          "What data does [product] include?",
+          "Who manages the [product] data product?",
+          "What license does [product] use?",
+          "Is [product] still supported?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Scientist"
+        ],
+        "questions": [
+          "What datasets are available for analysis?",
+          "Show me mature data products for [domain].",
+          "What data products can I use for [use case]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Digital Product Manager"
+        ],
+        "questions": [
+          "Which products are nearing end of service life?",
+          "What products are due for a new version?",
+          "What is the withdrawal date for [product]?",
+          "Which products are still in development or draft?",
+          "What other products does [product] depend on?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Owner"
+        ],
+        "questions": [
+          "What data products include my data assets?",
+          "Which products are built on [dataset]?"
+        ]
+      }
+    ]
+  },
+  "Digital-Products-MyE": {
+    "family": "Product Manager",
+    "target_type": "DigitalProduct",
+    "description": "Attributes useful to Digital Products.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Digital Product Manager"
+        ],
+        "questions": [
+          "What digital products are available?",
+          "What is the status of [product]?",
+          "Who manages [product]?",
+          "What data does [product] contain?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Show me active data products.",
+          "What data products cover [topic]?"
+        ]
+      }
+    ]
+  },
+  "Digital-Products-Slim": {
+    "family": "Product Manager",
+    "target_type": "DigitalProduct",
+    "description": "Attributes useful to Digital Products.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Digital Product Manager"
+        ],
+        "questions": [
+          "Give me a quick list of data products.",
+          "What products are deployed?",
+          "Who is the contact for [product]?"
+        ]
+      }
+    ]
+  },
+  "Agreements": {
+    "family": "Product Manager",
+    "target_type": "Agreement",
+    "description": "Attributes generic to all Agreements.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What data sharing agreements are in place?",
+          "What agreements cover [dataset or domain]?",
+          "Is there an agreement that allows use of [data]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Owner"
+        ],
+        "questions": [
+          "What agreements cover my data assets?",
+          "What are the terms of the agreement with [party]?",
+          "What is the support level for [agreement]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer",
+          "Data Steward"
+        ],
+        "questions": [
+          "Which agreements are currently effective?",
+          "What service levels are defined in [agreement]?",
+          "Show me all data sharing agreements and their status.",
+          "What data sharing agreements involve external parties?"
+        ]
+      }
+    ]
+  },
+  "Data-Dictionaries": {
+    "family": "Data Designer",
+    "target_type": "Data Dictionary",
+    "description": "Attributes about Data Dictionary.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "Is there a dictionary that defines [term or field]?",
+          "Where can I find field definitions for [system or domain]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What data dictionaries exist?",
+          "Which dictionary covers [domain]?",
+          "Is there a data dictionary for [system]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "Show me the data dictionary for [dataset].",
+          "What dictionaries contain [field name]?"
+        ]
+      }
+    ]
+  },
+  "Data-Specifications": {
+    "family": "Data Designer",
+    "target_type": "Data Specification",
+    "description": "Attributes about Data Specification.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "What data specifications have been defined?",
+          "Show me the specification for [system or product].",
+          "Show me a visual of [data specification]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What data specifications cover [integration or system]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Which data specifications are approved for [domain]?"
+        ]
+      }
+    ]
+  },
+  "Data-Structures": {
+    "family": "Data Designer",
+    "target_type": "Data Structure",
+    "description": "Attributes about Data Structures.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What information is captured in [structure]?",
+          "What fields make up [structure]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What data structures are defined for [system]?",
+          "Show me the fields in [structure].",
+          "Which data structures are used in [specification]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Scientist"
+        ],
+        "questions": [
+          "What is the structure of [dataset]?",
+          "What fields does [structure] contain?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Which data structures are in the [dictionary]?",
+          "Which structures belong to [data specification]?"
+        ]
+      }
+    ]
+  },
+  "Data-Fields": {
+    "family": "Data Designer",
+    "target_type": "Data Field",
+    "description": "Attributes about Data Fields.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What information is captured in [structure]?",
+          "What does the [field] field contain?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What fields are in [structure]?",
+          "Find all fields named [name] across structures.",
+          "What data type is [field]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Scientist"
+        ],
+        "questions": [
+          "What fields are available in [dataset]?",
+          "Which structure contains [field]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Which fields are in [data dictionary]?",
+          "Show me fields missing descriptions in [dictionary]."
+        ]
+      }
+    ]
+  },
+  "Data-Classes": {
+    "family": "Data Designer",
+    "target_type": "Data Class",
+    "description": "Attributes about Data Classes",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What data classes are defined?",
+          "What is the [class name] data class?",
+          "Which classes specialize [parent class]?",
+          "Which data classes are in [dictionary]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What data type does [class] represent?",
+          "Show me the specification for [class]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "Show me the hierarchy of data classes.",
+          "What specification does [class] use?"
+        ]
+      }
+    ]
+  },
+  "Data-Value-Spec": {
+    "family": "Data Designer",
+    "target_type": "Data Value Specification",
+    "description": "Attributes about Data Value Specifications",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What data value specifications are defined?",
+          "What is the [spec name] data value specification?",
+          "Which data value specs are in [dictionary]?",
+          "What namespace does [spec] belong to?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "What data type does [spec] define?",
+          "What is the specification detail for [spec]?",
+          "What units does [spec] use?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "Show me the hierarchy of data value specifications.",
+          "Which spec specializes [parent spec]?"
+        ]
+      }
+    ]
+  },
+  "External-References": {
+    "family": "External References",
+    "target_type": "External-Reference",
+    "description": "External References",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Researcher",
+          "Business Analyst"
+        ],
+        "questions": [
+          "What external references are catalogued?",
+          "Find references about [topic or standard]?",
+          "Who published [reference]?",
+          "What is the URL for [reference]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What external sources are linked to [element]?",
+          "Show me references categorised as [category]."
+        ]
+      }
+    ]
+  },
+  "Governance Basics": {
+    "family": "Governance Officer",
+    "target_type": "Governance Definition",
+    "description": "Core Attributes useful to Governance-Definitions.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "List all governance definitions.",
+          "What governance definitions exist in [domain]?",
+          "What type is [definition]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What governance definition covers [subject]?",
+          "Give me a summary of [definition]."
+        ]
+      }
+    ]
+  },
+  "Governance Definitions": {
+    "family": "Governance Officer",
+    "target_type": "Governance Definition",
+    "description": "Attributes useful to Governance-Definitions.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance definitions are in place?",
+          "Show me all definitions in the [data / privacy / security] domain.",
+          "What is the scope of [definition]?",
+          "What are the implications of [definition]?",
+          "Which definitions are approved and active?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What governance definition applies to [subject]?",
+          "What is the usage guidance for [definition]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "Which governance definitions affect [system or data product]?",
+          "What is the importance rating of [definition]?"
+        ]
+      }
+    ]
+  },
+  "Governance Def": {
+    "family": "Governance Officer",
+    "target_type": "Governance Definition",
+    "description": "Attributes useful to Governance-Definitions.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance principles are defined?",
+          "What strategies have been documented?",
+          "What governance responses are in place?",
+          "List the principles in [domain]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What principle applies to [subject]?",
+          "What is the summary for [principle or strategy]?"
+        ]
+      }
+    ]
+  },
+  "Governance-Controls": {
+    "family": "Governance Officer",
+    "target_type": "Governance Control",
+    "description": "Governance Control (Create).",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance controls have been defined?",
+          "What measurements and targets are defined for governance controls?",
+          "What are the implications of the governance controls?",
+          "What risks are associated with the governance controls?",
+          "Show me controls in [domain]."
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What controls apply to [data or process]?",
+          "What is the scope of [control]?"
+        ]
+      }
+    ]
+  },
+  "Governance-Zones": {
+    "family": "Governance Officer",
+    "target_type": "Governance Zone",
+    "description": "Descriptions of Governance Zones",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst"
+        ],
+        "questions": [
+          "What data zones exist?",
+          "Which zone is [data] in?",
+          "What does it mean to be in the [zone] zone?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Owner"
+        ],
+        "questions": [
+          "Which governance zone is my data in?",
+          "What restrictions apply to data in [zone]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What data is in the [zone] zone?",
+          "How many items are in each governance zone?",
+          "What is the scope of the [zone] zone?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance zones have been defined?",
+          "Which zones have the most data?",
+          "What are the compliance requirements for [zone]?"
+        ]
+      }
+    ]
+  },
+  "Governance-Process": {
+    "family": "Governance Officer",
+    "target_type": "Governance Process",
+    "description": "Governance Process Attributes.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance processes are defined?",
+          "Show me processes in [category or domain].",
+          "What is the [process name] process?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What governance processes apply to [data]?"
+        ]
+      }
+    ]
+  },
+  "Governance-Zone-Overview-Charts": {
+    "family": "Governance Officer",
+    "target_type": "Governance Zone",
+    "description": "Governance Zone Overview",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "Show me the governance zone membership overview.",
+          "What is the distribution of data across governance zones?",
+          "Which zones have the most anchored items?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "Give me a visual summary of zone memberships.",
+          "Show me zone profile charts."
+        ]
+      }
+    ]
+  },
+  "Secrets-Collection-User-Profile-Charts": {
+    "family": "Governance Officer",
+    "target_type": "SecretsCollection",
+    "description": "Secrets Collection User Profile",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Security Officer",
+          "Governance Officer"
+        ],
+        "questions": [
+          "Show me the user account profile for [secrets collection].",
+          "What account types are used in [collection]?",
+          "What is the account status distribution?"
+        ]
+      }
+    ]
+  },
+  "Valid-Value-Def": {
+    "family": "General",
+    "target_type": "Valid Value Definition",
+    "description": "Attributes useful to Business Reference Data (Valid Value Definitions).",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What valid value definitions are defined?",
+          "What is the preferred value for [concept]?",
+          "What data type does [valid value] use?",
+          "What is the scope of [valid value definition]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Engineer"
+        ],
+        "questions": [
+          "How should I encode [concept] in my data?",
+          "What valid values exist for [property name]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What are the approved reference values for [domain]?",
+          "Show me valid value definitions in [scope]."
+        ]
+      }
+    ]
+  },
+  "License-Type": {
+    "family": "Governance Officer",
+    "target_type": "License Type",
+    "description": "Attributes of a License type.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Business Analyst",
+          "Data Scientist"
+        ],
+        "questions": [
+          "What license does [data product or dataset] use?",
+          "What are the restrictions on using [data]?",
+          "What licenses allow commercial use?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Governance Officer",
+          "Data Steward"
+        ],
+        "questions": [
+          "What license types are defined?",
+          "What are the obligations under [license]?",
+          "What data is covered by [license type]?",
+          "Show me licenses in [domain]."
+        ]
+      }
+    ]
+  },
+  "Governance Policies": {
+    "family": "Governance Officer",
+    "target_type": "GovernancePolicy",
+    "description": "Attributes useful to Governance-Definitions.",
+    "question_spec": [
+      {
+        "perspectives": [
+          "Governance Officer"
+        ],
+        "questions": [
+          "What governance policies are in place?",
+          "Show me policies in the [data / privacy / security] domain.",
+          "What is the scope of [policy]?",
+          "What are the implications of [policy]?",
+          "Which policies are active and approved?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Data Steward"
+        ],
+        "questions": [
+          "What policy applies to [data or subject]?",
+          "What is the usage guidance for [policy]?",
+          "What is the importance of [policy]?"
+        ]
+      },
+      {
+        "perspectives": [
+          "Solution Architect"
+        ],
+        "questions": [
+          "Which policies affect [system or data product]?",
+          "What outcomes are expected from [policy]?"
+        ]
+      }
+    ]
+  }
+}

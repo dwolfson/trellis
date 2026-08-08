@@ -1,0 +1,103 @@
+[project]
+name = "egeria-advisor"
+version = "0.1.2"
+description = "AI-powered advisor for egeria-python using local LLMs"
+requires-python = ">=3.12"
+authors = [
+    {name = "Dan Wolfson", email = "dan.wolfson@pdr-associates.com"}
+]
+readme = "README.md"
+license = {text = "Apache-2.0"}
+
+dependencies = [
+    "pyegeria>=6.0.17.5",  # matches the Portal's (PyegeriaWebHandler) floor -- avoid client-version drift within the same demo stack
+    "psycopg2-binary>=2.9.9",
+    "pgvector>=0.3.0",
+    "docling>=1.0.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "prompt-toolkit>=3.0.0",
+    "pygments>=2.17.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "mlflow>=2.10.0",
+    "ollama>=0.1.0",
+    "sentence-transformers>=2.2.0",
+    "langchain>=0.1.0",
+    "langchain-community>=0.1.0",
+    "pyyaml>=6.0.0",
+    "loguru>=0.7.0",
+    "radon>=6.0.1",
+    "pygount>=1.6.1",
+    "psutil>=5.9.0",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.16.0",
+    "onnxscript>=0.1.0",
+    "transformers>=4.30.0",
+    "scikit-learn>=1.3.0",
+    "mcp>=1.0.0",
+    "beeai-framework>=0.1.72",
+    "tree-sitter>=0.23.0",
+    "tree-sitter-java>=0.23.0",
+    "nest-asyncio>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+]
+
+dashboard = [
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+    "pandas>=2.1.0",
+]
+
+gpu = [
+    "onnxruntime-gpu>=1.16.0",  # NVIDIA GPU support
+]
+
+onnx-tools = [
+    "onnx>=1.15.0",
+    "onnxruntime-tools>=1.7.0",  # Model optimization tools
+]
+
+[project.scripts]
+egeria-advisor = "advisor.cli.main:cli"
+egeria-advisor-web = "advisor.cli.main:web_command"
+egeria-advisor-plans = "advisor.cli.plans:plans"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["advisor"]
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "I", "N", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=advisor --cov-report=html --cov-report=term"

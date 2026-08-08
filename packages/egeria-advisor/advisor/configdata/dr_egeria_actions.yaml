@@ -1,0 +1,1718 @@
+# Dr.Egeria Action Catalog
+#
+# Defines the Dr.Egeria commands available for plan generation.
+# Used by the post-processing validator and (future) IntentModel deriver
+# to apply deterministic rules, detect ordering violations, and map
+# natural-language entity descriptions to the correct commands.
+#
+# Fields per action:
+#   name            — exact Dr.Egeria command name
+#   family          — command family (matches template folder name)
+#   intent_entity   — entity type this command creates/links (used by IntentModel)
+#   aliases         — natural-language phrases that imply this command
+#   creates         — logical object type created (for container ordering)
+#   requires        — list of action names that must precede this one
+#   required_before — list of action names that must follow this one
+#   container_for   — this command creates a container required by these actions
+#   patterns        — conditional param pre-fills (evaluated during derivation)
+#   supersedes      — actions this command replaces (never emit the superseded action)
+#   not_when        — guidance on when NOT to use this command
+
+actions:
+
+  # ── Projects ────────────────────────────────────────────────────────────────
+
+  - name: Create Campaign
+    family: Projects
+    intent_entity: campaign
+    aliases:
+      - campaign
+      - initiative
+      - programme
+      - program
+      - major project
+      - strategic initiative
+    creates: campaign
+    container_for: [Create Project]
+    narrative_template: >
+      Creates the top-level campaign container.
+      All sub-projects and team assignments will be linked to this campaign.
+
+  - name: Create Project
+    family: Projects
+    intent_entity: project
+    aliases:
+      - project
+      - sub-project
+      - subproject
+      - workstream
+      - phase
+      - workpackage
+      - work package
+      - task force
+    creates: project
+    patterns:
+      - when_parent_type: [campaign, project]
+        set_params:
+          Parent Relationship Type Name: ProjectHierarchy
+          # Parent ID is set to the parent entity's display_name at derivation time
+    supersedes:
+      - action: Link Project Hierarchy
+        reason: >
+          Create Project with Parent ID and Parent Relationship Type Name=ProjectHierarchy
+          creates and links the sub-project in a single command. A separate
+          Link Project Hierarchy command is never needed.
+    narrative_template: >
+      Creates the project. If this is a sub-project, sets Parent ID to link
+      it under the parent campaign or project at creation time.
+
+  - name: Create Personal Project
+    family: Projects
+    intent_entity: personal_project
+    aliases:
+      - personal project
+      - my project
+      - individual project
+    creates: personal_project
+
+  - name: Create Study Project
+    family: Projects
+    intent_entity: study_project
+    aliases:
+      - study
+      - investigation
+      - research project
+      - discovery project
+    creates: study_project
+
+  - name: Create Task
+    family: Projects
+    intent_entity: task
+    aliases:
+      - task
+      - action item
+      - work item
+      - to-do
+    creates: task
+    not_when: >
+      Do NOT use Create Task for sub-projects. Sub-projects are Projects
+      linked via Parent ID. Tasks are leaf-level work items with no children.
+
+  - name: Link Project Dependency
+    family: Projects
+    intent_entity: project_dependency
+    aliases:
+      - depends on
+      - dependency
+      - prerequisite
+    requires: [Create Project, Create Campaign]
+
+  # ── Glossary ─────────────────────────────────────────────────────────────────
+
+  - name: Create Glossary
+    family: Glossary
+    intent_entity: glossary
+    aliases:
+      - glossary
+      - term dictionary
+      - vocabulary
+      - business glossary
+      - data dictionary
+    creates: glossary
+    container_for: [Create Glossary Term, Create Glossary Category]
+    narrative_template: >
+      Creates the glossary container that will hold all terms and categories.
+      Must be created before any glossary terms or categories can be added.
+
+  - name: Create Glossary Term
+    family: Glossary
+    intent_entity: glossary_term
+    aliases:
+      - term
+      - glossary term
+      - definition
+      - business term
+      - data term
+    creates: glossary_term
+    requires: [Create Glossary]
+    narrative_template: >
+      Creates a glossary term inside the glossary container.
+
+  - name: Create Glossary Category
+    family: Glossary
+    intent_entity: glossary_category
+    aliases:
+      - category
+      - glossary category
+      - term category
+      - sub-domain
+    creates: glossary_category
+    requires: [Create Glossary]
+
+  - name: Link Term to Category
+    family: Glossary
+    intent_entity: term_category_link
+    aliases:
+      - link term
+      - categorise term
+      - assign category
+    requires: [Create Glossary Term, Create Glossary Category]
+
+  - name: Link Term to Glossary
+    family: Glossary
+    intent_entity: term_glossary_link
+    aliases:
+      - link term to glossary
+      - assign term to glossary
+    requires: [Create Glossary Term, Create Glossary]
+
+  - name: Link Term-Term Relationship
+    family: Glossary
+    intent_entity: term_term_link
+    aliases:
+      - related term
+      - synonym
+      - antonym
+      - is a
+      - term relationship
+    requires: [Create Glossary Term]
+
+  - name: Classify Glossary as Canonical
+    family: Glossary
+    intent_entity: glossary_classification
+    requires: [Create Glossary]
+
+  - name: Classify Term as Question
+    family: Glossary
+    intent_entity: term_classification
+    requires: [Create Glossary Term]
+
+  - name: Link Term as Context
+    family: Glossary
+    intent_entity: term_context_link
+    aliases:
+      - link term as context
+      - term context
+      - contextual term
+    requires: [Create Glossary Term]
+
+  - name: Set Glossary as Taxonomy
+    family: Glossary
+    intent_entity: glossary_taxonomy
+    aliases:
+      - set glossary as taxonomy
+      - taxonomy
+      - glossary taxonomy
+      - taxonomic glossary
+    requires: [Create Glossary]
+
+  # ── Feedback ──────────────────────────────────────────────────────────────────
+
+  - name: Create Comment
+    family: Feedback
+    intent_entity: comment
+    aliases:
+      - comment
+      - annotation
+      - note
+      - add comment
+    creates: comment
+
+  - name: Create Informal Tag
+    family: Feedback
+    intent_entity: informal_tag
+    aliases:
+      - informal tag
+      - tag
+      - keyword tag
+      - label
+    creates: informal_tag
+
+  - name: Create Like
+    family: Feedback
+    intent_entity: like
+    aliases:
+      - like
+      - add like
+      - upvote
+    creates: like
+
+  - name: Create Rating
+    family: Feedback
+    intent_entity: rating
+    aliases:
+      - rating
+      - star rating
+      - add rating
+    creates: rating
+
+  - name: Attach Comment
+    family: Feedback
+    intent_entity: comment_attachment
+    aliases:
+      - attach comment
+      - add comment to
+      - comment on
+    requires: [Create Comment]
+
+  - name: Attach Like
+    family: Feedback
+    intent_entity: like_attachment
+    aliases:
+      - attach like
+      - like element
+    requires: [Create Like]
+
+  - name: Attach Rating
+    family: Feedback
+    intent_entity: rating_attachment
+    aliases:
+      - attach rating
+      - rate element
+      - add rating to
+    requires: [Create Rating]
+
+  - name: Attach Tag
+    family: Feedback
+    intent_entity: tag_attachment
+    aliases:
+      - attach tag
+      - tag element
+      - add tag to
+    requires: [Create Informal Tag]
+
+  - name: Link Accept Answer
+    family: Feedback
+    intent_entity: accepted_answer_link
+    aliases:
+      - accept answer
+      - link accepted answer
+      - mark answer accepted
+    requires: [Create Comment]
+
+  # ── Actor Manager ─────────────────────────────────────────────────────────────
+
+  - name: Create Person Role
+    family: Actor Manager
+    intent_entity: person_role
+    aliases:
+      - role
+      - responsibility
+      - position
+      - job title
+      - data steward role
+      - project leader role
+      - owner role
+    creates: person_role
+    required_before: [Link Person Role Appointment]
+    narrative_template: >
+      Defines the named role. A role definition must exist before a person
+      can be appointed to it.
+
+  - name: Link Person Role Appointment
+    family: Actor Manager
+    intent_entity: role_appointment
+    aliases:
+      - appoint
+      - assign
+      - led by
+      - leader
+      - owned by
+      - steward
+      - responsible
+    requires: [Create Person Role]
+    narrative_template: >
+      Appoints a named person to the role defined in the preceding step.
+
+  - name: Create Team
+    family: Actor Manager
+    intent_entity: team
+    aliases:
+      - team
+      - working group
+      - committee
+    creates: team
+
+  - name: Create Organization
+    family: Actor Manager
+    intent_entity: organization
+    aliases:
+      - organisation
+      - organization
+      - department
+      - division
+      - business unit
+    creates: organization
+
+  - name: Link Team Membership
+    family: Actor Manager
+    intent_entity: team_membership
+    requires: [Create Team]
+
+  - name: Link Team Leader
+    family: Actor Manager
+    intent_entity: team_leadership
+    requires: [Create Team, Create Person Role]
+
+  - name: Link Team Structure
+    family: Actor Manager
+    intent_entity: team_structure
+    requires: [Create Team]
+
+  # ── Governance Officer ────────────────────────────────────────────────────────
+
+  - name: Create Governance Zone
+    family: Governance Officer
+    intent_entity: governance_zone
+    aliases:
+      - governance zone
+      - zone
+      - data zone
+      - subject area zone
+    creates: governance_zone
+    not_when: >
+      Do NOT create a Governance Zone unless the user explicitly mentioned one.
+      Do NOT use a Governance Zone as a parent in Link Project Hierarchy —
+      zones are not projects.
+
+  - name: Create Governance Definition
+    family: Governance Officer
+    intent_entity: governance_definition
+    aliases:
+      - governance definition
+      - policy definition
+      - governance rule
+    creates: governance_definition
+
+  - name: Create Governance Policy
+    family: Governance Officer
+    intent_entity: governance_policy
+    aliases:
+      - policy
+      - governance policy
+      - data policy
+    creates: governance_policy
+
+  - name: Create Governance Role
+    family: Governance Officer
+    intent_entity: governance_role
+    aliases:
+      - governance role
+      - data governance role
+      - CDO
+      - data owner role
+    creates: governance_role
+
+  - name: Create Governance Driver
+    family: Governance Officer
+    intent_entity: governance_driver
+    aliases:
+      - driver
+      - governance driver
+      - regulation
+      - compliance requirement
+    creates: governance_driver
+
+  - name: Create Business Imperative
+    family: Governance Officer
+    intent_entity: business_imperative
+    aliases:
+      - business imperative
+      - strategic goal
+      - business goal
+      - objective
+    creates: business_imperative
+
+  - name: Link Governance Policies
+    family: Governance Officer
+    requires: [Create Governance Policy]
+
+  - name: Link Governance Drivers
+    family: Governance Officer
+    requires: [Create Governance Driver]
+
+  - name: Link Governed By
+    family: Governance Officer
+    requires: [Create Governance Definition]
+
+  - name: Create Certification Type
+    family: Governance Officer
+    intent_entity: certification_type
+    aliases:
+      - certification type
+      - certification
+      - certification definition
+      - accreditation type
+    creates: certification_type
+    narrative_template: >
+      Creates a type of certification that can be awarded to assets, glossary
+      terms, or other elements to indicate compliance with a standard.
+
+  - name: Create Data Lens
+    family: Governance Officer
+    intent_entity: data_lens
+    aliases:
+      - data lens
+      - data view
+      - governance lens
+    creates: data_lens
+
+  - name: Create Data Processing Purpose
+    family: Governance Officer
+    intent_entity: data_processing_purpose
+    aliases:
+      - data processing purpose
+      - processing purpose
+      - purpose of processing
+      - GDPR purpose
+      - lawful basis
+    creates: data_processing_purpose
+
+  - name: Create Governance Action
+    family: Governance Officer
+    intent_entity: governance_action
+    aliases:
+      - governance action
+      - automated governance action
+      - trigger action
+    creates: governance_action
+
+  - name: Create Governance Approach
+    family: Governance Officer
+    intent_entity: governance_approach
+    aliases:
+      - governance approach
+      - governance method
+    creates: governance_approach
+
+  - name: Create Governance Control
+    family: Governance Officer
+    intent_entity: governance_control
+    aliases:
+      - governance control
+      - control
+      - data control
+      - implementation control
+    creates: governance_control
+    narrative_template: >
+      Creates a governance control — a description of how a governance policy
+      should be implemented. Controls can be technical, procedural, or manual.
+
+  - name: Create Governance Metric
+    family: Governance Officer
+    intent_entity: governance_metric
+    aliases:
+      - governance metric
+      - KPI
+      - key performance indicator
+      - compliance metric
+      - measurement
+    creates: governance_metric
+    narrative_template: >
+      Creates a governance metric — a measurable indicator used to track
+      compliance with governance requirements.
+
+  - name: Create Governance Obligation
+    family: Governance Officer
+    intent_entity: governance_obligation
+    aliases:
+      - governance obligation
+      - obligation
+      - regulatory obligation
+      - compliance obligation
+    creates: governance_obligation
+
+  - name: Create Governance Principle
+    family: Governance Officer
+    intent_entity: governance_principle
+    aliases:
+      - governance principle
+      - principle
+      - data principle
+      - guiding principle
+    creates: governance_principle
+
+  - name: Create Governance Procedure
+    family: Governance Officer
+    intent_entity: governance_procedure
+    aliases:
+      - governance procedure
+      - procedure
+      - process procedure
+      - step-by-step procedure
+    creates: governance_procedure
+
+  - name: Create Governance Responsibility
+    family: Governance Officer
+    intent_entity: governance_responsibility
+    aliases:
+      - governance responsibility
+      - responsibility
+      - accountability
+      - data responsibility
+    creates: governance_responsibility
+
+  - name: Create Governance Rule
+    family: Governance Officer
+    intent_entity: governance_rule
+    aliases:
+      - governance rule
+      - rule
+      - data rule
+      - business rule
+    creates: governance_rule
+
+  - name: Create Governance Strategy
+    family: Governance Officer
+    intent_entity: governance_strategy
+    aliases:
+      - governance strategy
+      - strategy
+      - data strategy
+    creates: governance_strategy
+
+  - name: Create License Type
+    family: Governance Officer
+    intent_entity: license_type
+    aliases:
+      - license type
+      - licence type
+      - data license
+      - usage license
+    creates: license_type
+
+  - name: Create Methodology
+    family: Governance Officer
+    intent_entity: methodology
+    aliases:
+      - methodology
+      - governance methodology
+    creates: methodology
+
+  - name: Create Naming Standard Rule
+    family: Governance Officer
+    intent_entity: naming_standard_rule
+    aliases:
+      - naming standard
+      - naming rule
+      - naming convention
+      - name standard
+    creates: naming_standard_rule
+
+  - name: Create Notification Type
+    family: Governance Officer
+    intent_entity: notification_type
+    aliases:
+      - notification type
+      - alert type
+      - notification definition
+    creates: notification_type
+
+  - name: Create Regulation
+    family: Governance Officer
+    intent_entity: regulation
+    aliases:
+      - regulation
+      - regulatory requirement
+      - law
+      - legislation
+      - compliance regulation
+    creates: regulation
+    narrative_template: >
+      Creates a regulation — a legal or industry requirement the organisation
+      must comply with. Regulations are often subdivided into articles.
+
+  - name: Create Regulation Article
+    family: Governance Officer
+    intent_entity: regulation_article
+    aliases:
+      - regulation article
+      - regulatory article
+      - article
+      - clause
+      - regulatory clause
+    creates: regulation_article
+    requires: [Create Regulation]
+
+  - name: Create Security Access Control
+    family: Governance Officer
+    intent_entity: security_access_control
+    aliases:
+      - security access control
+      - access control
+      - security control
+      - access restriction
+    creates: security_access_control
+
+  - name: Create Service Level Objective
+    family: Governance Officer
+    intent_entity: service_level_objective
+    aliases:
+      - service level objective
+      - SLO
+      - SLA objective
+      - service level
+    creates: service_level_objective
+
+  - name: Create Terms and Conditions
+    family: Governance Officer
+    intent_entity: terms_and_conditions
+    aliases:
+      - terms and conditions
+      - terms of use
+      - T&C
+      - usage terms
+    creates: terms_and_conditions
+
+  - name: Create Threat
+    family: Governance Officer
+    intent_entity: threat
+    aliases:
+      - threat
+      - data threat
+      - security threat
+      - risk threat
+    creates: threat
+
+  - name: Link Agreement Terms and Conditions
+    family: Governance Officer
+    intent_entity: agreement_terms_link
+    aliases:
+      - link agreement terms and conditions
+      - attach terms to agreement
+    requires: [Create Terms and Conditions, Create Agreement]
+
+  - name: Link Associated List
+    family: Governance Officer
+    intent_entity: associated_list_link
+    aliases:
+      - link associated list
+      - attach associated list
+    requires: [Create Governance Definition]
+
+  - name: Link Certification
+    family: Governance Officer
+    intent_entity: certification_link
+    aliases:
+      - link certification
+      - certify element
+      - award certification
+      - attach certification
+    requires: [Create Certification Type]
+
+  - name: Link Governance Controls
+    family: Governance Officer
+    intent_entity: governance_controls_link
+    aliases:
+      - link governance controls
+      - connect governance control
+    requires: [Create Governance Control, Create Governance Policy]
+
+  - name: Link Governance Mechanism
+    family: Governance Officer
+    intent_entity: governance_mechanism_link
+    aliases:
+      - link governance mechanism
+      - attach mechanism
+    requires: [Create Governance Definition]
+
+  - name: Link Governance Response
+    family: Governance Officer
+    intent_entity: governance_response_link
+    aliases:
+      - link governance response
+      - attach governance response
+    requires: [Create Governance Definition]
+
+  - name: Link License
+    family: Governance Officer
+    intent_entity: license_link
+    aliases:
+      - link license
+      - attach license
+      - assign license
+    requires: [Create License Type]
+
+  - name: Link Monitored Resource
+    family: Governance Officer
+    intent_entity: monitored_resource_link
+    aliases:
+      - link monitored resource
+      - monitor resource
+      - attach monitored resource
+    requires: [Create Governance Metric]
+
+  - name: Link Notification Subscriber
+    family: Governance Officer
+    intent_entity: notification_subscriber_link
+    aliases:
+      - link notification subscriber
+      - subscribe to notification
+      - add notification subscriber
+    requires: [Create Notification Type]
+
+  - name: Link Regulation Certification Type
+    family: Governance Officer
+    intent_entity: regulation_certification_link
+    aliases:
+      - link regulation certification type
+      - link regulation to certification
+    requires: [Create Regulation, Create Certification Type]
+
+  - name: Link Zone Hierarchy
+    family: Governance Officer
+    intent_entity: zone_hierarchy_link
+    aliases:
+      - link zone hierarchy
+      - zone hierarchy
+      - nested zones
+      - parent zone
+    requires: [Create Governance Zone]
+
+  # ── Collections ───────────────────────────────────────────────────────────────
+
+  - name: Create Collection
+    family: Collections
+    intent_entity: collection
+    aliases:
+      - collection
+      - asset collection
+      - data collection
+      - group
+    creates: collection
+    container_for: [Add Member to Collection]
+
+  - name: Create Collection Folder
+    family: Collections
+    intent_entity: collection_folder
+    aliases:
+      - collection folder
+      - folder
+    creates: collection_folder
+
+  - name: Create Folio
+    family: Collections
+    intent_entity: folio
+    aliases:
+      - folio
+      - work folio
+      - personal folio
+      - folio collection
+    creates: folio
+
+  - name: Create Home Collection
+    family: Collections
+    intent_entity: home_collection
+    aliases:
+      - home collection
+      - my collection
+      - personal collection
+    creates: home_collection
+
+  - name: Create Namespace
+    family: Collections
+    intent_entity: namespace
+    aliases:
+      - namespace
+      - name space
+      - naming namespace
+    creates: namespace
+
+  - name: Create Recent Access
+    family: Collections
+    intent_entity: recent_access
+    aliases:
+      - recent access
+      - recently accessed
+      - access history
+    creates: recent_access
+
+  - name: Create Results Set
+    family: Collections
+    intent_entity: results_set
+    aliases:
+      - results set
+      - result set
+      - search results collection
+    creates: results_set
+
+  - name: Create Root Collection
+    family: Collections
+    intent_entity: root_collection
+    aliases:
+      - root collection
+      - top-level collection
+      - master collection
+    creates: root_collection
+    container_for: [Create Collection, Create Collection Folder]
+
+  - name: Create Security Group
+    family: Collections
+    intent_entity: security_group
+    aliases:
+      - security group
+      - access group
+      - permission group
+    creates: security_group
+
+  - name: Create Security List
+    family: Collections
+    intent_entity: security_list
+    aliases:
+      - security list
+      - access control list
+      - ACL
+    creates: security_list
+
+  - name: Create Security Role
+    family: Collections
+    intent_entity: security_role
+    aliases:
+      - security role
+      - access role
+    creates: security_role
+
+  - name: Create Subject Area
+    family: Collections
+    intent_entity: subject_area
+    aliases:
+      - subject area
+      - topic area
+      - domain area
+      - subject domain
+    creates: subject_area
+    narrative_template: >
+      Creates a subject area — a collection of material on the same topic.
+      Use when grouping assets, terms, or data by a common subject domain.
+
+  - name: Create Work Item List
+    family: Collections
+    intent_entity: work_item_list
+    aliases:
+      - work item list
+      - work list
+      - backlog
+      - to-do list
+    creates: work_item_list
+
+  - name: Add Member to Collection
+    family: Collections
+    intent_entity: collection_member
+    requires: [Create Collection]
+
+  - name: Attach Collection to Resource
+    family: Collections
+    intent_entity: collection_resource_link
+    aliases:
+      - attach collection to resource
+      - link collection to resource
+      - connect collection
+    requires: [Create Collection]
+
+  # ── Data Designer ─────────────────────────────────────────────────────────────
+
+  - name: Create Data Dictionary
+    family: Data Designer
+    intent_entity: data_dictionary
+    aliases:
+      - data dictionary
+      - schema dictionary
+    creates: data_dictionary
+    container_for: [Create Data Structure, Create Data Field, Create Data Class]
+
+  - name: Create Data Structure
+    family: Data Designer
+    intent_entity: data_structure
+    aliases:
+      - data structure
+      - schema
+      - table
+      - struct
+    creates: data_structure
+    requires: [Create Data Dictionary]
+
+  - name: Create Data Field
+    family: Data Designer
+    intent_entity: data_field
+    aliases:
+      - field
+      - column
+      - attribute
+      - data element
+    requires: [Create Data Structure]
+
+  - name: Create Data Class
+    family: Data Designer
+    intent_entity: data_class
+    aliases:
+      - data class
+      - data type
+      - classification type
+    creates: data_class
+
+  - name: Create Data Spec
+    family: Data Designer
+    intent_entity: data_spec
+    aliases:
+      - data spec
+      - data specification
+      - data requirements
+      - data requirements spec
+    creates: data_spec
+    container_for: [Create Data Structure]
+    narrative_template: >
+      Creates a data specification — a collection describing the data requirements
+      for a project or initiative. Members are typically data structures.
+
+  - name: Create Data Grain
+    family: Data Designer
+    intent_entity: data_grain
+    aliases:
+      - data grain
+      - data granularity
+      - grain
+    creates: data_grain
+
+  - name: Create Data Value Specification
+    family: Data Designer
+    intent_entity: data_value_specification
+    aliases:
+      - data value specification
+      - value specification
+      - data value spec
+      - allowed values
+    creates: data_value_specification
+
+  - name: Create Report Type
+    family: Data Designer
+    intent_entity: report_type
+    aliases:
+      - report type
+      - report definition
+      - report template type
+    creates: report_type
+
+  - name: Assign Data Value Specification
+    family: Data Designer
+    intent_entity: data_value_specification_assignment
+    aliases:
+      - assign data value specification
+      - assign value spec
+      - attach value specification
+    requires: [Create Data Value Specification, Create Data Field]
+
+  - name: Attach Data Description to Element
+    family: Data Designer
+    intent_entity: data_description_link
+    aliases:
+      - attach data description
+      - link data description
+      - add data description to element
+    requires: [Create Data Structure, Create Data Field]
+
+  - name: Link Certification Type to Data Structure
+    family: Data Designer
+    intent_entity: certification_data_structure_link
+    aliases:
+      - link certification to data structure
+      - certify data structure
+    requires: [Create Data Structure]
+
+  - name: Link Data Class Composition
+    family: Data Designer
+    intent_entity: data_class_composition
+    aliases:
+      - link data class composition
+      - compose data class
+      - nested data class
+    requires: [Create Data Class]
+
+  - name: Link Data Field
+    family: Data Designer
+    intent_entity: data_field_link
+    aliases:
+      - link data field
+      - connect data fields
+    requires: [Create Data Field]
+
+  - name: Link Data Field to Data Structure
+    family: Data Designer
+    intent_entity: data_field_structure_link
+    aliases:
+      - link data field to data structure
+      - add field to structure
+      - attach field
+    requires: [Create Data Field, Create Data Structure]
+
+  - name: Link Data Value Composition
+    family: Data Designer
+    intent_entity: data_value_composition
+    aliases:
+      - link data value composition
+      - compose data values
+    requires: [Create Data Value Specification]
+
+  # ── Digital Product Manager ───────────────────────────────────────────────────
+
+  - name: Create Digital Product
+    family: Digital Product Manager
+    intent_entity: digital_product
+    aliases:
+      - digital product
+      - data product
+      - API product
+    creates: digital_product
+
+  - name: Create Agreement
+    family: Digital Product Manager
+    intent_entity: agreement
+    aliases:
+      - agreement
+      - contract
+      - SLA
+    creates: agreement
+
+  - name: Create Data Sharing Agreement
+    family: Digital Product Manager
+    intent_entity: data_sharing_agreement
+    aliases:
+      - data sharing agreement
+      - data share
+      - sharing agreement
+    creates: data_sharing_agreement
+
+  - name: Create CSV File
+    family: Digital Product Manager
+    intent_entity: csv_file
+    aliases:
+      - CSV file
+      - comma separated file
+      - CSV dataset
+    creates: csv_file
+
+  - name: Create Digital Product Catalog
+    family: Digital Product Manager
+    intent_entity: digital_product_catalog
+    aliases:
+      - digital product catalog
+      - product catalog
+      - data product catalog
+    creates: digital_product_catalog
+    container_for: [Create Digital Product]
+
+  - name: Create Digital Subscription
+    family: Digital Product Manager
+    intent_entity: digital_subscription
+    aliases:
+      - digital subscription
+      - subscription
+      - product subscription
+    creates: digital_subscription
+
+  - name: Link Agreement Actor
+    family: Digital Product Manager
+    intent_entity: agreement_actor_link
+    aliases:
+      - link agreement actor
+      - add actor to agreement
+      - assign actor to agreement
+    requires: [Create Agreement, Create Data Sharing Agreement]
+
+  - name: Link Agreement Item
+    family: Digital Product Manager
+    intent_entity: agreement_item_link
+    aliases:
+      - link agreement item
+      - add item to agreement
+    requires: [Create Agreement, Create Data Sharing Agreement]
+
+  - name: Link Contract
+    family: Digital Product Manager
+    intent_entity: contract_link
+    aliases:
+      - link contract
+      - attach contract
+      - add contract
+    requires: [Create Agreement, Create Digital Product]
+
+  - name: Link Digital Subscriber
+    family: Digital Product Manager
+    intent_entity: digital_subscriber_link
+    aliases:
+      - link digital subscriber
+      - add subscriber
+      - subscribe to product
+    requires: [Create Digital Subscription, Create Digital Product]
+
+  - name: Link Product Dependency
+    family: Digital Product Manager
+    intent_entity: product_dependency_link
+    aliases:
+      - link product dependency
+      - product depends on
+      - product dependency
+    requires: [Create Digital Product]
+
+  # ── Solution Architect ────────────────────────────────────────────────────────
+
+  - name: Create Solution Blueprint
+    family: Solution Architect
+    intent_entity: solution_blueprint
+    aliases:
+      - solution blueprint
+      - blueprint
+      - architecture blueprint
+      - system blueprint
+      - system architecture
+      - solution architecture
+    creates: solution_blueprint
+    container_for: [Create Solution Component, Link Solution Component to Blueprint]
+    narrative_template: >
+      Creates the solution blueprint — a high-level architectural description
+      of the digital service in terms of its solution components.
+
+  - name: Create Solution Component
+    family: Solution Architect
+    intent_entity: solution_component
+    aliases:
+      - solution component
+      - component
+      - software component
+      - system component
+      - building block
+      - module
+    creates: solution_component
+    requires: [Create Solution Blueprint]
+    narrative_template: >
+      Creates a reusable solution component — a building block of the blueprint.
+
+  - name: Create Solution Role
+    family: Solution Architect
+    intent_entity: solution_role
+    aliases:
+      - solution role
+      - architecture role
+      - system role
+    creates: solution_role
+    requires: [Create Solution Blueprint]
+
+  - name: Create Information Supply Chain
+    family: Solution Architect
+    intent_entity: information_supply_chain
+    aliases:
+      - information supply chain
+      - supply chain
+      - data pipeline
+      - data flow
+      - information flow
+    creates: information_supply_chain
+
+  - name: Link Solution Component to Blueprint
+    family: Solution Architect
+    intent_entity: solution_component_link
+    aliases:
+      - link component to blueprint
+      - attach component
+      - add component to blueprint
+    requires: [Create Solution Blueprint, Create Solution Component]
+
+  - name: Link Blueprint Child
+    family: Solution Architect
+    aliases:
+      - link blueprint child
+      - blueprint hierarchy
+      - nested blueprint
+    requires: [Create Solution Blueprint]
+
+  - name: Link SubComponent
+    family: Solution Architect
+    aliases:
+      - link subcomponent
+      - component hierarchy
+      - nested component
+    requires: [Create Solution Component]
+
+  - name: Link Actor to Blueprint
+    family: Solution Architect
+    aliases:
+      - link actor to blueprint
+      - assign actor to blueprint
+    requires: [Create Solution Blueprint]
+
+  - name: Link Solution Design
+    family: Solution Architect
+    aliases:
+      - link solution design
+      - attach design
+    requires: [Create Solution Blueprint]
+
+  - name: Link Information Supply Chain Child
+    family: Solution Architect
+    aliases:
+      - link supply chain child
+      - supply chain segment
+    requires: [Create Information Supply Chain]
+
+  - name: Link Information Supply Chain Peers
+    family: Solution Architect
+    aliases:
+      - link supply chain peers
+      - connect supply chains
+    requires: [Create Information Supply Chain]
+
+  - name: Link Component to Actor
+    family: Solution Architect
+    aliases:
+      - link component to actor
+      - assign actor to component
+    requires: [Create Solution Component]
+
+  - name: Link Solution Components
+    family: Solution Architect
+    aliases:
+      - link solution components
+      - connect components
+    requires: [Create Solution Component]
+
+  - name: Create Design Pattern
+    family: Solution Architect
+    intent_entity: design_pattern
+    aliases:
+      - design pattern
+      - pattern
+      - architecture pattern
+      - solution pattern
+    creates: design_pattern
+    container_for: [Link Nested Design Patterns, Link Specialized Design Patterns, Link Related Design Patterns]
+    narrative_template: >
+      Creates the design pattern — a reusable solution to a recurring
+      architectural problem, described in terms of its context, forces,
+      and consequences.
+
+  - name: Link Nested Design Patterns
+    family: Solution Architect
+    intent_entity: nested_design_pattern
+    aliases:
+      - nest pattern
+      - nested pattern
+      - nest design pattern
+      - link nested design patterns
+      - pattern hierarchy
+    requires: [Create Design Pattern]
+
+  - name: Link Specialized Design Patterns
+    family: Solution Architect
+    intent_entity: specialized_design_pattern
+    aliases:
+      - specialize pattern
+      - specialized pattern
+      - specialize design pattern
+      - link specialized design patterns
+    requires: [Create Design Pattern]
+
+  - name: Link Related Design Patterns
+    family: Solution Architect
+    intent_entity: related_design_pattern
+    aliases:
+      - relate pattern
+      - related pattern
+      - relate design pattern
+      - link related design patterns
+      - connect patterns
+    requires: [Create Design Pattern]
+
+  # ── External Reference ────────────────────────────────────────────────────────
+
+  - name: Create External Reference
+    family: External Reference
+    intent_entity: external_reference
+    aliases:
+      - external reference
+      - link
+      - URL
+      - external document
+    creates: external_reference
+
+  - name: Link External Reference
+    family: External Reference
+    requires: [Create External Reference]
+
+  - name: Create Cited Document
+    family: External Reference
+    intent_entity: cited_document
+    aliases:
+      - cited document
+      - cited paper
+      - reference document
+      - cited publication
+    creates: cited_document
+
+  - name: Create External Data Source
+    family: External Reference
+    intent_entity: external_data_source
+    aliases:
+      - external data source
+      - external source
+      - data source reference
+    creates: external_data_source
+
+  - name: Create External Model Source
+    family: External Reference
+    intent_entity: external_model_source
+    aliases:
+      - external model source
+      - model source
+      - external model reference
+    creates: external_model_source
+
+  - name: Create External Source Code
+    family: External Reference
+    intent_entity: external_source_code
+    aliases:
+      - external source code
+      - source code reference
+      - code repository reference
+    creates: external_source_code
+
+  - name: Create Related Media
+    family: External Reference
+    intent_entity: related_media
+    aliases:
+      - related media
+      - media reference
+      - image reference
+      - video reference
+    creates: related_media
+
+  - name: Link Cited Document
+    family: External Reference
+    intent_entity: cited_document_link
+    aliases:
+      - link cited document
+      - attach cited document
+      - cite document
+    requires: [Create Cited Document]
+
+  - name: Link Media Reference
+    family: External Reference
+    intent_entity: media_reference_link
+    aliases:
+      - link media reference
+      - attach media
+      - link media
+    requires: [Create Related Media]
+
+  - name: Link Term as Context
+    family: External Reference
+    intent_entity: term_context_link
+    aliases:
+      - link term as context
+      - add term context
+      - glossary term context
+
+  - name: Set Glossary as Taxonomy
+    family: External Reference
+    intent_entity: glossary_taxonomy
+    aliases:
+      - set glossary as taxonomy
+      - classify as taxonomy
+
+  # ── Report family ──────────────────────────────────────────────────────────
+  # View Report is a read-only command that runs a named pyegeria report spec.
+  # Not a create command — used as a final verification/visualization step.
+
+  - name: View Report
+    family: Report
+    intent_entity: view_report
+    aliases:
+      - view report
+      - run report
+      - show report
+      - display report
+      - view mermaid
+      - mermaid diagram
+      - mermaid graph
+      - mermaid chart
+      - architecture diagram
+      - blueprint report
+      - solution blueprint report
+      - blueprint mermaid
+      - view solution blueprint
+    creates: null
+    requires: []
+    narrative_template: >
+      Runs the {Report Spec} report spec to view results — for example as a
+      Mermaid architecture diagram or formatted table.
+
+
+# ── Ordering rules ────────────────────────────────────────────────────────────
+#
+# Used by the post-processing validator to sort commands into valid order.
+# Lower priority = must run first. Entries are checked by substring match
+# against the action name (case-insensitive).
+
+ordering_priority:
+  - pattern: "create glossary$"
+    priority: 10
+  - pattern: "create glossary category"
+    priority: 20
+  - pattern: "create glossary term"
+    priority: 25
+  - pattern: "link term to"
+    priority: 35
+  - pattern: "link term-term"
+    priority: 35
+  - pattern: "classify glossary"
+    priority: 30
+  - pattern: "classify term"
+    priority: 36
+  - pattern: "create campaign"
+    priority: 10
+  - pattern: "create project"
+    priority: 20
+  - pattern: "create personal project"
+    priority: 20
+  - pattern: "create study project"
+    priority: 20
+  - pattern: "create task"
+    priority: 30
+  - pattern: "link project dependency"
+    priority: 40
+  - pattern: "create collection$"
+    priority: 10
+  - pattern: "create root collection"
+    priority: 8
+  - pattern: "create collection folder"
+    priority: 15
+  - pattern: "create folio"
+    priority: 15
+  - pattern: "create home collection"
+    priority: 15
+  - pattern: "create namespace"
+    priority: 15
+  - pattern: "create recent access"
+    priority: 20
+  - pattern: "create results set"
+    priority: 20
+  - pattern: "create security group"
+    priority: 15
+  - pattern: "create security list"
+    priority: 15
+  - pattern: "create security role"
+    priority: 15
+  - pattern: "create subject area"
+    priority: 10
+  - pattern: "create work item list"
+    priority: 20
+  - pattern: "add member to collection"
+    priority: 30
+  - pattern: "attach collection to resource"
+    priority: 35
+  - pattern: "create data dictionary"
+    priority: 10
+  - pattern: "create data spec"
+    priority: 12
+  - pattern: "create data structure"
+    priority: 20
+  - pattern: "create data field"
+    priority: 30
+  - pattern: "create data class"
+    priority: 15
+  - pattern: "create data grain"
+    priority: 15
+  - pattern: "create data value specification"
+    priority: 15
+  - pattern: "create report type"
+    priority: 20
+  - pattern: "assign data value specification"
+    priority: 40
+  - pattern: "attach data description"
+    priority: 40
+  - pattern: "link certification type to data structure"
+    priority: 40
+  - pattern: "link data class composition"
+    priority: 35
+  - pattern: "link data field to data structure"
+    priority: 35
+  - pattern: "link data field$"
+    priority: 35
+  - pattern: "link data value composition"
+    priority: 40
+  - pattern: "create governance zone"
+    priority: 10
+  - pattern: "create governance definition"
+    priority: 10
+  - pattern: "create governance policy"
+    priority: 15
+  - pattern: "create governance driver"
+    priority: 15
+  - pattern: "create business imperative"
+    priority: 15
+  - pattern: "create governance role"
+    priority: 15
+  - pattern: "create certification type"
+    priority: 10
+  - pattern: "create data lens"
+    priority: 15
+  - pattern: "create data processing purpose"
+    priority: 15
+  - pattern: "create governance action"
+    priority: 20
+  - pattern: "create governance approach"
+    priority: 15
+  - pattern: "create governance control"
+    priority: 20
+  - pattern: "create governance metric"
+    priority: 20
+  - pattern: "create governance obligation"
+    priority: 20
+  - pattern: "create governance principle"
+    priority: 15
+  - pattern: "create governance procedure"
+    priority: 20
+  - pattern: "create governance responsibility"
+    priority: 20
+  - pattern: "create governance rule"
+    priority: 20
+  - pattern: "create governance strategy"
+    priority: 15
+  - pattern: "create license type"
+    priority: 10
+  - pattern: "create methodology"
+    priority: 15
+  - pattern: "create naming standard rule"
+    priority: 20
+  - pattern: "create notification type"
+    priority: 15
+  - pattern: "create regulation$"
+    priority: 10
+  - pattern: "create regulation article"
+    priority: 20
+  - pattern: "create security access control"
+    priority: 20
+  - pattern: "create service level objective"
+    priority: 20
+  - pattern: "create terms and conditions"
+    priority: 15
+  - pattern: "create threat"
+    priority: 15
+  - pattern: "link governance"
+    priority: 40
+  - pattern: "link governed by"
+    priority: 40
+  - pattern: "link agreement terms and conditions"
+    priority: 40
+  - pattern: "link associated list"
+    priority: 40
+  - pattern: "link certification$"
+    priority: 40
+  - pattern: "link license"
+    priority: 40
+  - pattern: "link monitored resource"
+    priority: 40
+  - pattern: "link notification subscriber"
+    priority: 40
+  - pattern: "link regulation certification type"
+    priority: 40
+  - pattern: "link zone hierarchy"
+    priority: 35
+  - pattern: "create organization"
+    priority: 10
+  - pattern: "create team$"
+    priority: 15
+  - pattern: "create person role"
+    priority: 20
+  - pattern: "link team"
+    priority: 30
+  - pattern: "link person role appointment"
+    priority: 50
+  - pattern: "create digital product catalog"
+    priority: 8
+  - pattern: "create digital product$"
+    priority: 10
+  - pattern: "create agreement$"
+    priority: 20
+  - pattern: "create data sharing agreement"
+    priority: 25
+  - pattern: "create csv file"
+    priority: 20
+  - pattern: "create digital subscription"
+    priority: 25
+  - pattern: "link agreement actor"
+    priority: 35
+  - pattern: "link agreement item"
+    priority: 35
+  - pattern: "link contract"
+    priority: 35
+  - pattern: "link digital subscriber"
+    priority: 40
+  - pattern: "link product dependency"
+    priority: 40
+  - pattern: "create solution blueprint"
+    priority: 10
+  - pattern: "create information supply chain"
+    priority: 10
+  - pattern: "create solution component"
+    priority: 20
+  - pattern: "create solution role"
+    priority: 20
+  - pattern: "link solution component to blueprint"
+    priority: 30
+  - pattern: "link blueprint child"
+    priority: 35
+  - pattern: "link subcomponent"
+    priority: 35
+  - pattern: "link actor to blueprint"
+    priority: 40
+  - pattern: "link solution design"
+    priority: 40
+  - pattern: "link information supply chain"
+    priority: 40
+  - pattern: "link component to actor"
+    priority: 40
+  - pattern: "link solution components"
+    priority: 40
+  - pattern: "create external reference"
+    priority: 10
+  - pattern: "create cited document"
+    priority: 10
+  - pattern: "create external data source"
+    priority: 10
+  - pattern: "create external model source"
+    priority: 10
+  - pattern: "create external source code"
+    priority: 10
+  - pattern: "create related media"
+    priority: 10
+  - pattern: "link external reference"
+    priority: 30
+  - pattern: "link cited document"
+    priority: 30
+  - pattern: "link media reference"
+    priority: 30
+  - pattern: "link term as context"
+    priority: 36
+  - pattern: "set glossary as taxonomy"
+    priority: 40
+  - pattern: "create comment"
+    priority: 10
+  - pattern: "create informal tag"
+    priority: 10
+  - pattern: "create like"
+    priority: 10
+  - pattern: "create rating"
+    priority: 10
+  - pattern: "attach comment"
+    priority: 30
+  - pattern: "attach like"
+    priority: 30
+  - pattern: "attach rating"
+    priority: 30
+  - pattern: "attach tag"
+    priority: 30
+  - pattern: "link accept answer"
+    priority: 40
+  - pattern: "link project hierarchy"
+    priority: 999   # sentinel — should never appear after validation
+  - pattern: "view report"
+    priority: 900   # always last — read-only verification/visualization step

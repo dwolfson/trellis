@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Trellis workspace additions ---
+*.key
+.idea/
+*.iml
+.uv/
+*.db
+*.db-shm
+*.db-wal
+mlruns/
+mlartifacts/
+.phoenix/
+data/
+logs/
+*.outbox/

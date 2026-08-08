@@ -1,0 +1,19 @@
+[Unit]
+Description=Ollama Service
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+Environment="PATH=/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="LD_LIBRARY_PATH=/opt/rocm/lib:/usr/local/lib/ollama/rocm"
+Environment="HSA_OVERRIDE_GFX_VERSION=11.0.0"
+Environment="ROCR_VISIBLE_DEVICES=0"
+Environment="HIP_VISIBLE_DEVICES=0"
+Environment="OLLAMA_DEBUG=1"
+
+[Install]
+WantedBy=default.target

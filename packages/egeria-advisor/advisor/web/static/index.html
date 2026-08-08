@@ -1,0 +1,3461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Egeria Advisor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/auth.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: false, theme: 'dark' });</script>
+  <script src="https://cdn.jsdelivr.net/npm/vega@5/build/vega.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5/build/vega-lite.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6/build/vega-embed.min.js"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    #messages { scroll-behavior: smooth; }
+
+    /* Intent border colours */
+    .msg-you       { border-left: 3px solid #06b6d4; }
+    .msg-assistant { border-left: 3px solid #10b981; }
+    .msg-clarify   { border-left: 3px solid #f59e0b; }
+    .msg-plan      { border-left: 3px solid #8b5cf6; }
+    .msg-executed  { border-left: 3px solid #22c55e; }
+
+    /* TODO fill-in marker */
+    .todo-fill { display:inline-block; background:#431407; color:#fb923c; border:1px solid #92400e; border-radius:3px; padding:0 5px; font-size:.75em; font-weight:700; font-family:monospace; }
+
+    /* Markdown prose */
+    .prose pre  { background:#1e293b; padding:.75rem; border-radius:.375rem; overflow-x:auto; }
+    .prose code { background:#1e293b; padding:.1em .3em; border-radius:.2em; font-size:.85em; }
+    .prose p    { margin-bottom:.5rem; }
+    .prose ul, .prose ol { margin-left:1.25rem; margin-bottom:.5rem; }
+    .prose li   { margin-bottom:.15rem; }
+    .prose h1,.prose h2,.prose h3 { font-weight:600; margin:.75rem 0 .4rem; }
+    .prose table { border-collapse:collapse; width:100%; margin-bottom:.5rem; }
+    .prose th, .prose td { border:1px solid #334155; padding:.3rem .6rem; text-align:left; }
+    .prose th { background:#1e293b; }
+
+    /* Sidebar pane scrolling */
+    .sidebar-pane { overflow-y:auto; min-height:0; }
+
+    /* Sidebar resize handles */
+    .resize-handle {
+      height: 5px;
+      cursor: ns-resize;
+      background: transparent;
+      border-top: 1px solid #334155;
+      flex-shrink: 0;
+      transition: background .15s, border-color .15s;
+      position: relative;
+    }
+    .resize-handle::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px;
+      height: 2px;
+      border-radius: 1px;
+      background: #475569;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .resize-handle:hover, .resize-handle.dragging {
+      background: #7c3aed22;
+      border-top-color: #7c3aed88;
+    }
+    .resize-handle:hover::after, .resize-handle.dragging::after { opacity: 1; }
+
+    /* Vertical (ew) resize handle — between chat and canvas */
+    .resize-handle-v {
+      width: 5px;
+      cursor: ew-resize;
+      background: transparent;
+      border-left: 1px solid #334155;
+      flex-shrink: 0;
+      transition: background .15s, border-color .15s;
+      position: relative;
+    }
+    .resize-handle-v::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 2px;
+      height: 24px;
+      border-radius: 1px;
+      background: #475569;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .resize-handle-v:hover, .resize-handle-v.dragging {
+      background: #7c3aed22;
+      border-left-color: #7c3aed88;
+    }
+    .resize-handle-v:hover::after, .resize-handle-v.dragging::after { opacity: 1; }
+
+    /* Plan & Report Canvas panels height constraints */
+    #plan-canvas-panel, #report-canvas-panel {
+      min-width: 260px;
+      height: calc(100vh - 49px) !important;
+      max-height: calc(100vh - 49px) !important;
+      min-height: 0 !important;
+    }
+    .pcanvas-card {
+      transition: opacity .15s, box-shadow .15s;
+      flex-shrink: 0 !important;
+    }
+    .pcanvas-card.dragging-over { box-shadow: 0 -2px 0 #7c3aed; }
+    .pcanvas-card.drag-ghost { opacity: .4; }
+    .ped-cmd-card { transition: box-shadow .15s; }
+    .ped-cmd-card.ped-dragging-over { box-shadow: 0 -2px 0 #7c3aed; }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width:8px; height:8px; }
+    ::-webkit-scrollbar-track { background:#0f172a; }
+    ::-webkit-scrollbar-thumb { background:#475569; border-radius:4px; }
+    ::-webkit-scrollbar-thumb:hover { background:#64748b; }
+
+    /* Report group toggle */
+    details > summary { cursor:pointer; list-style:none; }
+    details > summary::-webkit-details-marker { display:none; }
+    details > summary::before { content:'▶'; font-size:.6rem; margin-right:.35rem; color:#64748b; transition:transform .15s; display:inline-block; }
+    details[open] > summary::before { transform:rotate(90deg); }
+
+    /* Sidebar artifact-type tabs */
+    .sidebar-tab {
+      flex: 1;
+      padding: .375rem .5rem;
+      font-size: .7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .sidebar-tab:hover { color: #cbd5e1; background: #1e293b44; }
+    .sidebar-tab.active { color: #e2e8f0; border-bottom-color: #06b6d4; background: #1e293b66; }
+  </style>
+</head>
+<body class="dark bg-slate-900 text-slate-100 h-screen flex flex-col overflow-hidden">
+
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
+  <div class="flex items-center gap-3">
+    <img src="/static/egeria-logo.png" alt="Egeria" class="h-8 w-auto">
+    <span class="text-cyan-400 font-bold text-lg">Egeria Advisor</span>
+    <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500" title="MCP status"></span>
+  </div>
+  <div class="flex items-center gap-3 text-xs text-slate-500">
+    <span>Enter=send &nbsp; Shift+Enter=newline</span>
+    <span>·</span>
+    <span id="current-user" class="hidden text-cyan-400 font-medium"></span>
+    <button id="logout-btn"
+      class="hidden px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
+      Sign out
+    </button>
+    <button id="login-header-btn"
+      onclick="Auth.showLogin()"
+      class="hidden px-2 py-0.5 rounded bg-cyan-800 hover:bg-cyan-700 text-cyan-100 transition-colors">
+      Sign in
+    </button>
+  </div>
+</header>
+
+<!-- ── Main layout ─────────────────────────────────────────────────────────── -->
+<div class="flex flex-1 overflow-hidden">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside id="left-sidebar" class="flex flex-col bg-slate-800 border-r border-slate-700 overflow-hidden" style="flex:0 0 288px;min-width:160px">
+
+    <!-- Tab strip -->
+    <div class="flex shrink-0 border-b border-slate-700">
+      <button class="sidebar-tab active" data-tab="reports" onclick="setSidebarTab('reports')">Reports</button>
+      <button class="sidebar-tab" data-tab="plans" onclick="setSidebarTab('plans')">Plans</button>
+      <button class="sidebar-tab" data-tab="recent" onclick="setSidebarTab('recent')">Recent</button>
+    </div>
+
+    <!-- Reports panel -->
+    <div id="sidebar-reports" class="flex flex-col flex-1 sidebar-pane min-h-0">
+      <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Reports</span>
+        <div class="flex items-center gap-2">
+          <label class="flex items-center gap-1 cursor-pointer select-none text-xs text-slate-500">
+            <input type="checkbox" id="dre-toggle" onchange="loadReports()" class="accent-cyan-500">
+            <span>DrE</span>
+          </label>
+          <span id="report-count" class="text-xs text-slate-600"></span>
+        </div>
+      </div>
+      <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm border-b border-slate-700/60 pb-3" style="max-height:40%; overflow-y:auto;"></div>
+
+      <!-- Custom Report Specs Section -->
+      <div class="px-3 pt-3 pb-1 shrink-0 flex items-center justify-between border-t border-slate-700/60">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Custom Specs</span>
+        <div class="flex items-center gap-2">
+          <button onclick="openReportBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Report Spec (Builder)">+ Builder</button>
+          <button onclick="openReportSpecImportModal()" class="text-xs text-slate-400 hover:text-slate-200 transition-colors font-medium" title="Import a Report Spec markdown file (paste or upload)">⇧ Import</button>
+          <button onclick="loadReportDocs();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh report specs">↺</button>
+        </div>
+      </div>
+      <div id="report-doc-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto flex-1"></div>
+    </div>
+
+    <!-- Plans panel -->
+    <div id="sidebar-plans" class="flex flex-col flex-1 sidebar-pane min-h-0 hidden">
+      <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans</span>
+        <div class="flex items-center gap-2">
+          <button onclick="openBuilderModal()" class="text-xs text-violet-400 hover:text-violet-200 transition-colors font-medium" title="New Plan (Builder) — browse and select Dr.Egeria commands directly">+ Builder</button>
+          <button onclick="openImportModal()" class="text-xs text-slate-400 hover:text-slate-200 transition-colors font-medium" title="Import a Dr.Egeria markdown file (paste or upload)">⇧ Import</button>
+          <button onclick="loadPlans();loadDrafts();loadTemplates();" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plans, drafts, and templates">↺</button>
+        </div>
+      </div>
+      <!-- Active drafts sub-section -->
+      <div id="draft-list-section" class="px-2 pb-1 flex flex-col gap-0.5 text-xs shrink-0"></div>
+      <div id="plan-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto border-b border-slate-700/60" style="max-height:45%;"></div>
+
+      <!-- Plan Templates sub-section -->
+      <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plan Templates</span>
+        <button onclick="loadTemplates()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors" title="Refresh plan templates">↺</button>
+      </div>
+      <div id="template-list" class="px-2 pb-2 flex flex-col gap-0.5 text-xs overflow-y-auto flex-1"></div>
+    </div>
+
+    <!-- Recent Queries panel -->
+    <div id="sidebar-recent" class="flex flex-col flex-1 sidebar-pane min-h-0 hidden">
+      <div class="px-3 pt-2 pb-1 shrink-0 flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Recent Queries</span>
+        <button onclick="clearHistory()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">clear</button>
+      </div>
+      <div id="recent-queries" class="px-2 pb-2 flex flex-col gap-0.5 text-xs"></div>
+    </div>
+  </aside>
+
+  <!-- ── Left sidebar resize handle ────────────────────────────────────── -->
+  <div id="resize-sidebar-chat" class="resize-handle-v"></div>
+
+  <!-- ── Chat panel ──────────────────────────────────────────────────────── -->
+  <main class="flex flex-col flex-1 overflow-hidden">
+
+    <!-- Messages -->
+    <div id="messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3"></div>
+
+    <!-- Thinking indicator -->
+    <div id="thinking" class="hidden px-4 py-1 shrink-0">
+      <div class="flex items-center gap-2 text-slate-400 text-sm">
+        <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
+        <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
+        <div class="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
+        <span class="text-xs">Thinking…</span>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
+      <!-- Perspective selector (populated dynamically from /api/perspectives) -->
+      <div class="flex gap-1 mb-1 flex-wrap" id="perspective-bar">
+        <span class="text-xs text-slate-500 self-center mr-1">As:</span>
+        <button class="persp-btn active" data-perspective="" onclick="setPerspective(this)" title="No role filter — general answer">Anyone</button>
+      </div>
+      <!-- Intent override -->
+      <div class="flex gap-1 mb-1.5 flex-wrap items-center">
+        <span class="text-xs text-slate-500 self-center mr-1">Intent:</span>
+        <button class="intent-btn active" data-intent="" onclick="setIntent(this)" title="Let the system decide">Auto</button>
+        <button class="intent-btn" data-intent="explanation" onclick="setIntent(this)" title="Explain a concept">Explain</button>
+        <button class="intent-btn" data-intent="code_help" onclick="setIntent(this)" title="Show pyegeria API usage / How do I…">Show&nbsp;me</button>
+        <button class="intent-btn" data-intent="code_intel" onclick="setIntent(this)" title="Inspect codebase implementation, classes, methods, or inheritance">Inspect</button>
+        <button class="intent-btn" data-intent="report" onclick="setIntent(this)" title="Execute an existing report from the catalog">Run&nbsp;Report</button>
+        <button class="intent-btn" data-intent="command" onclick="setIntent(this)" title="Execute a Dr.Egeria command or run an ad-hoc query">Act</button>
+        <button class="intent-btn" data-intent="create" onclick="setIntent(this)" title="Create a new governance plan or report spec">Create</button>
+        <button class="intent-btn" data-intent="debugging" onclick="setIntent(this)" title="Diagnose a problem">Troubleshoot</button>
+        <!-- Active task indicator + New Task button (hidden when no task is active) -->
+        <span class="hidden ml-2 flex items-center gap-1.5 text-xs" id="new-task-btn">
+          <span class="text-slate-500">▸</span>
+          <span id="new-task-label" class="text-amber-400 font-medium"></span>
+          <button onclick="clearContext()"
+            class="px-1.5 py-0.5 rounded border border-rose-800/60 bg-rose-950/30 text-rose-400
+                   hover:bg-rose-900/50 hover:text-rose-200 transition-colors text-xs"
+            title="End this task and start fresh">✕ New Task</button>
+        </span>
+      </div>
+
+      <div class="flex gap-2">
+        <textarea id="query-input" rows="2"
+          class="flex-1 resize-none bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 placeholder-slate-400 border border-slate-600 focus:outline-none focus:border-cyan-500
+                 transition-colors"
+          placeholder="Ask a question about Egeria…"></textarea>
+        <button id="send-btn" onclick="sendQuery()"
+          class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm
+                 font-medium transition-colors self-end">
+          Send
+        </button>
+      </div>
+      <div class="mt-1 flex items-center justify-between">
+        <span id="intent-badge" class="text-xs text-slate-500"></span>
+        <span id="clarify-hint" class="hidden text-xs text-amber-400 animate-pulse">
+          Choose an option above or type a number
+        </span>
+      </div>
+    </div>
+  </main>
+
+  <!-- ── Canvas resize handle (hidden until draft active) ───────────────── -->
+  <div id="resize-chat-canvas" class="resize-handle-v hidden"></div>
+
+  <!-- ── Plan Canvas panel (hidden until draft active) ─────────────────── -->
+  <section id="plan-canvas-panel"
+    class="hidden h-full flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
+
+    <!-- Canvas toolbar -->
+    <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0">
+      <span class="text-violet-400 font-bold text-xs shrink-0">Plan Canvas</span>
+      <span id="pcanvas-title" class="text-slate-200 text-xs font-semibold flex-1 truncate"></span>
+      <button id="pcanvas-mode-btn"
+        class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold transition-colors"
+        title="Toggle between Basic (key fields) and Advanced (all template fields)"
+        onclick="PlanCanvas.toggleMode()">Basic</button>
+      <button id="pcanvas-generate-btn"
+        class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
+        title="Generate full Plan Document">Generate Plan</button>
+      <button id="pcanvas-save-btn"
+        class="hidden px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors disabled:opacity-40"
+        title="Save changes to the plan document" disabled
+        onclick="PlanCanvas.save()">Save</button>
+      <button id="pcanvas-recover-btn"
+        class="hidden px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold transition-colors"
+        title="This plan has already been executed — recover it to inbox to edit, validate, and re-execute"
+        onclick="PlanCanvas.recover()">↩ Recover to edit</button>
+      <button id="pcanvas-validate-btn"
+        class="hidden px-2 py-1 rounded bg-sky-800 hover:bg-sky-700 text-white text-xs font-semibold transition-colors"
+        title="Validate the plan without executing it">✓ Validate</button>
+      <button id="pcanvas-execute-btn"
+        class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
+        title="Execute the approved plan">▶ Execute</button>
+      <button onclick="PlanCanvas.close()"
+        class="text-slate-500 hover:text-slate-200 text-sm transition-colors ml-1" title="Close canvas">✕</button>
+    </div>
+
+    <!-- Command cards -->
+    <div id="pcanvas-cards" class="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
+
+    <!-- Add step footer -->
+    <div class="px-3 py-2 border-t border-slate-700 shrink-0 flex gap-2">
+      <button onclick="PlanCanvas.addStep()"
+        class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+               hover:border-violet-500/50 rounded py-1.5 transition-colors">
+        + Add step
+      </button>
+      <button onclick="PlanCanvas.addNote()"
+        class="flex-1 text-xs text-slate-500 hover:text-amber-300 border border-dashed border-slate-700
+               hover:border-amber-500/50 rounded py-1.5 transition-colors"
+        title="Insert a free-form text note between steps">
+        📝 Add note
+      </button>
+    </div>
+  </section>
+
+  <!-- ── Report Canvas resize handle (hidden until draft active) ───────────────── -->
+  <div id="resize-chat-report-canvas" class="resize-handle-v hidden"></div>
+
+  <!-- ── Report Spec Canvas panel (hidden until draft active) ─────────────────── -->
+  <section id="report-canvas-panel"
+    class="hidden h-full flex-col bg-slate-800 border-l border-slate-700 overflow-hidden">
+
+    <!-- Canvas toolbar -->
+    <div class="flex items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-700 shrink-0 flex-wrap">
+      <span class="text-violet-400 font-bold text-xs shrink-0">Report Canvas</span>
+      <span id="rcanvas-title" class="text-slate-200 text-xs font-semibold flex-1 truncate"></span>
+      <button id="rcanvas-mode-btn"
+        class="hidden px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold transition-colors"
+        onclick="ReportSpecCanvas.toggleMode()">Basic</button>
+      <button id="rcanvas-generate-btn"
+        class="px-2 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors"
+        title="Generate Report Spec Document"
+        onclick="triggerReportGeneration()">Generate Spec</button>
+      <select id="rcanvas-format-select"
+        class="hidden bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200
+               focus:outline-none focus:border-emerald-500 transition-colors"
+        title="Output format">
+        <option value="TABLE">TABLE</option>
+        <option value="REPORT">REPORT</option>
+        <option value="LIST">LIST</option>
+        <option value="FORM">FORM</option>
+        <option value="MERMAID">MERMAID</option>
+        <option value="JSON">JSON</option>
+      </select>
+      <select id="rcanvas-limit-select"
+        class="hidden bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200
+               focus:outline-none focus:border-emerald-500 transition-colors"
+        title="Preview limit (page size)">
+        <option value="5">Preview: 5 rows</option>
+        <option value="10">Preview: 10 rows</option>
+        <option value="25">Preview: 25 rows</option>
+        <option value="100">Full: 100 rows</option>
+      </select>
+      <button id="rcanvas-execute-btn"
+        class="hidden px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
+        title="Preview this report spec and view results"
+        onclick="triggerReportExecution()">▶ Preview Report</button>
+      <button id="rcanvas-browse-btn"
+        class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors mr-1"
+        title="Browse and select Egeria attributes visually"
+        onclick="ReportSpecCanvas.openSchemaExplorer()">Add Attribute</button>
+      <button onclick="ReportSpecCanvas.close()"
+        class="text-slate-500 hover:text-slate-200 text-sm transition-colors ml-1" title="Close canvas">✕</button>
+    </div>
+
+    <!-- Column cards -->
+    <!-- Parameter sections (Content Filters / Shape Defaults / Performance Hints) -->
+    <div id="rcanvas-params" class="shrink-0 overflow-y-auto max-h-56 border-b border-slate-700"></div>
+
+    <!-- Column cards -->
+    <div id="rcanvas-cards" class="flex-1 min-h-0 overflow-y-auto px-3 py-2 flex flex-col gap-2"></div>
+
+    <!-- Add column footer -->
+    <div class="px-3 py-2 border-t border-slate-700 shrink-0 flex gap-2">
+      <button onclick="ReportSpecCanvas.addColumn()"
+        class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+               hover:border-violet-500/50 rounded py-1.5 transition-colors"
+        title="Manually type a custom column name and key path">
+        + Add Custom Column
+      </button>
+    </div>
+  </section>
+
+</div>
+
+<!-- ── Add Column modal ─────────────────────────────────────────────────────── -->
+<div id="add-column-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeAddColumnModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Add Column</h3>
+    <label class="text-xs text-slate-400 block mb-1">Display name</label>
+    <input id="add-column-name" type="text" placeholder="e.g. Description"
+      class="w-full bg-slate-700 text-slate-100 rounded px-3 py-1.5 text-sm border border-slate-600
+             focus:outline-none focus:border-violet-500 mb-2">
+    <label class="text-xs text-slate-400 block mb-1">Attribute key <span class="text-slate-600">(auto-filled from name)</span></label>
+    <input id="add-column-key" type="text" placeholder="e.g. description"
+      class="w-full bg-slate-700 text-slate-100 rounded px-3 py-1.5 text-sm border border-slate-600
+             focus:outline-none focus:border-violet-500 mb-4">
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeAddColumnModal()" class="px-3 py-1.5 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300">Cancel</button>
+      <button onclick="confirmAddColumn()" class="px-3 py-1.5 rounded text-xs bg-violet-700 hover:bg-violet-600 text-white font-semibold">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Title prompt modal — shared by Builder (new plan) and Fork (copy plan) ── -->
+<div id="builder-title-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onclick="if(event.target===this)closeBuilderModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-96 shadow-2xl">
+    <h3 id="builder-title-modal-heading" class="text-sm font-semibold text-slate-200 mb-3">New Plan (Builder)</h3>
+    <p id="builder-title-modal-desc" class="text-xs text-slate-400 mb-3">Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.</p>
+    <input id="builder-title-input" type="text" placeholder="e.g. Sales Forecasting Architecture"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')submitTitleModal()" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button id="builder-title-modal-submit" onclick="submitTitleModal()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Report Title prompt modal ── -->
+<div id="report-builder-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeReportBuilderModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-96 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">New Report Spec (Builder)</h3>
+    <p class="text-xs text-slate-400 mb-3">Give your report spec a title/heading, then customize columns directly in the canvas.</p>
+    <input id="report-builder-title-input" type="text" placeholder="e.g. My Custom Report"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')submitReportBuilderModal()" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeReportBuilderModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="submitReportBuilderModal()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Create Report</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Import Plan modal ───────────────────────────────────────────────────── -->
+<div id="import-plan-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeImportModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[32rem] shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Import Plan</h3>
+    <p class="text-xs text-slate-400 mb-3">
+      Paste or upload a Dr.Egeria markdown file — either a full plan or just the
+      command blocks. It will be managed here like any other plan (validate, execute, edit).
+    </p>
+    <input id="import-file-input" type="file" accept=".md,text/markdown,text/plain"
+      class="w-full text-xs text-slate-300 mb-2"
+      onchange="_handleImportFileChosen(event)" />
+    <textarea id="import-content-input" rows="10" placeholder="## Create Solution Blueprint&#10;&#10;### Display Name&#10;..."
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-xs text-slate-200 font-mono
+             focus:outline-none focus:border-violet-500 mb-3"></textarea>
+    <input id="import-title-input" type="text" placeholder="Title (optional — derived from content if left blank)"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeImportModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="submitImportPlan()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Save as Template modal ──────────────────────────────────────────────── -->
+<div id="save-as-template-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onclick="if(event.target===this)closeSaveAsTemplateModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[28rem] shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Save as Template</h3>
+    <p class="text-xs text-slate-400 mb-3">
+      Saves this plan's narrative and Command Sequence as a reusable, named template —
+      a starting point for new plans. Field values become <code>{{placeholders}}</code>;
+      execution history is not carried forward. Templates are not themselves executable.
+    </p>
+    <input id="save-as-template-name-input" type="text" placeholder="Template name"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4"
+      onkeydown="if(event.key==='Enter')confirmSaveAsTemplate(); if(event.key==='Escape')closeSaveAsTemplateModal();" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeSaveAsTemplateModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="confirmSaveAsTemplate()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Save Template</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Import Report Spec modal ────────────────────────────────────────────── -->
+<div id="import-report-spec-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeReportSpecImportModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[32rem] shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-3">Import Report Spec</h3>
+    <p class="text-xs text-slate-400 mb-3">
+      Paste or upload a Report Spec markdown file (must contain a "Create Report Spec"
+      command block). It will be managed here like any other report spec (edit, execute, export).
+    </p>
+    <input id="import-report-spec-file-input" type="file" accept=".md,text/markdown,text/plain"
+      class="w-full text-xs text-slate-300 mb-2"
+      onchange="_handleReportSpecImportFileChosen(event)" />
+    <textarea id="import-report-spec-content-input" rows="10" placeholder="## Create Report Spec&#10;&#10;### Heading&#10;..."
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-xs text-slate-200 font-mono
+             focus:outline-none focus:border-violet-500 mb-3"></textarea>
+    <input id="import-report-spec-title-input" type="text" placeholder="Title (optional — derived from content if left blank)"
+      class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-slate-200
+             focus:outline-none focus:border-violet-500 mb-4" />
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeReportSpecImportModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="submitImportReportSpec()" class="px-4 py-1.5 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Command picker modal ────────────────────────────────────────────────── -->
+<div id="cmd-picker-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeCmdPicker()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl flex flex-col" style="width:680px;max-height:80vh">
+    <!-- Header -->
+    <div class="px-4 pt-4 pb-3 border-b border-slate-700 shrink-0">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-slate-200">Add Command</h3>
+        <button onclick="closeCmdPicker()" class="text-slate-500 hover:text-slate-200 text-sm transition-colors">✕</button>
+      </div>
+      <input id="cmd-picker-search" type="text" placeholder="Search commands…"
+        class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-xs text-slate-200
+               focus:outline-none focus:border-violet-500 transition-colors"
+        oninput="filterCmdPicker(this.value)" />
+    </div>
+    <!-- Family tabs -->
+    <div id="cmd-picker-tabs" class="flex gap-1 px-4 pt-2 pb-1 flex-wrap shrink-0 border-b border-slate-700/50"></div>
+    <!-- Command list -->
+    <div id="cmd-picker-list" class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-1"></div>
+  </div>
+</div>
+
+<!-- ── Search-string modal ─────────────────────────────────────────────────── -->
+<div id="search-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeSearchModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl">
+    <h3 class="text-sm font-semibold text-slate-200 mb-1">Run Report</h3>
+    <p id="modal-report-name" class="text-xs text-cyan-400 mb-3 truncate"></p>
+    <label class="text-xs text-slate-400 block mb-1">
+      Search string
+      <span class="text-slate-600 ml-1">(leave blank for all records)</span>
+    </label>
+    <input id="search-string-input" type="text" placeholder="e.g. finance  or  *"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
+    <label class="text-xs text-slate-400 block mb-1">
+      Output format
+      <span class="text-slate-600 ml-1">(how to render the results)</span>
+    </label>
+    <!-- Options are populated per-report from the spec's supported formats -->
+    <select id="output-format-select"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-3">
+    </select>
+    <label class="text-xs text-slate-400 block mb-1">
+      Max results
+      <span class="text-slate-600 ml-1">(limits graph nodes queried; default 100)</span>
+    </label>
+    <input id="page-size-input" type="number" min="10" max="500" placeholder="100"
+      class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm
+             border border-slate-600 focus:outline-none focus:border-cyan-500 mb-4">
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeSearchModal()"
+        class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+      <button onclick="confirmRunReport()"
+        class="px-4 py-1.5 text-xs bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors">Run</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .fmt-btn, .intent-btn, .persp-btn {
+    padding: .15rem .5rem;
+    border-radius: .25rem;
+    font-size: .7rem;
+    background: #334155;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .fmt-btn:hover, .intent-btn:hover, .persp-btn:hover { background: #475569; color: #e2e8f0; }
+  .fmt-btn.active { background: #0e7490; color: #fff; }
+  .intent-btn.active { background: #7c3aed; color: #fff; }
+  .persp-btn.active { background: #065f46; color: #6ee7b7; }
+</style>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let pendingClarification = null;  // { candidates: [string] } when disambiguation shown
+let selectedIntent = '';          // '', 'explanation', 'code_help', 'report', 'command', 'debugging'
+let selectedPerspective = '';     // '', 'developer', 'data_engineer', 'data_steward', 'governance_officer'
+let pendingReportName = null;     // report name awaiting search-string confirmation
+let reportFormats = {};           // {spec_name: [supported format tokens]} from /api/reports
+let reportFormatLabels = {};      // {format token: human label} from /api/reports
+let recentQueries = JSON.parse(sessionStorage.getItem('ea_recent') || '[]');
+let _activeDraftId = sessionStorage.getItem('ea_active_draft') || null;
+
+// ── Conversation context — authoritative task/phase state ─────────────────────
+// Replaces the fragmented _activeDraftId + selectedIntent routing signals.
+// task values: "report_spec_elicitor" | "plan_elicitor" | "act_confirm" |
+//              "report_disambiguation" | null
+let _ctx = JSON.parse(sessionStorage.getItem('ea_ctx') || 'null') || {};
+
+function setContext(ctx) {
+  _ctx = (ctx && typeof ctx === 'object' && Object.keys(ctx).length) ? ctx : {};
+  if (Object.keys(_ctx).length)
+    sessionStorage.setItem('ea_ctx', JSON.stringify(_ctx));
+  else
+    sessionStorage.removeItem('ea_ctx');
+
+  // Sync _activeDraftId from context so canvas logic continues to work
+  const did = _ctx.draft_id || null;
+  if (did !== _activeDraftId) {
+    _activeDraftId = did;
+    if (did) sessionStorage.setItem('ea_active_draft', did);
+    else sessionStorage.removeItem('ea_active_draft');
+  }
+
+  // Entering a task context deactivates the intent button so it doesn't
+  // interfere with routing on subsequent messages.
+  if (_ctx.task) {
+    selectedIntent = '';
+    document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.intent-btn[data-intent=""]')?.classList.add('active');
+  }
+
+  // Show/hide the "New Task" indicator
+  const ntBtn = document.getElementById('new-task-btn');
+  const ntLabel = document.getElementById('new-task-label');
+  if (ntBtn) ntBtn.classList.toggle('hidden', !_ctx.task);
+  if (ntLabel) {
+    const labels = {
+      'report_spec_elicitor': 'report spec Q&A',
+      'plan_elicitor':        'plan Q&A',
+      'act_confirm':          'confirm report',
+      'report_disambiguation':'choose report',
+    };
+    ntLabel.textContent = labels[_ctx.task] || _ctx.task || '';
+  }
+}
+
+function clearContext() {
+  setContext(null);
+  _activeDraftId = null;
+  sessionStorage.removeItem('ea_active_draft');
+  ReportSpecCanvas?.close();
+  PlanCanvas?.close();
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initLeftSidebarResize();
+  setSidebarTab(localStorage.getItem('ea_sidebar_tab') || 'reports');
+  initCanvasResize();
+  initReportCanvasResize();
+  initCanvasButtons();
+  // Restore context UI state from sessionStorage (e.g. after page refresh mid-task)
+  if (_ctx && _ctx.task) setContext(_ctx);
+
+  const inp = document.getElementById('query-input');
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
+  });
+
+  // Auth.init fires onReady once the user is authenticated
+  Auth.init(() => {
+    loadStatus();
+    loadReports();
+    loadReportDocs();
+    loadPlans();
+    loadDrafts();
+    loadTemplates();
+    loadPerspectives();
+    renderRecent();
+    if (_activeDraftId) {
+      if (_activeDraftId.startsWith('draft_report_')) {
+        ReportSpecCanvas.open(_activeDraftId);
+      } else {
+        PlanCanvas.open(_activeDraftId);
+      }
+    }
+    appendMessage('assistant',
+      'Welcome to **Egeria Advisor**.\n\n' +
+      'Ask me about Egeria concepts, how to use pyegeria or Dr.Egeria, run a report to see live metadata, or ask me to create/update something.'
+    );
+  });
+});
+
+// ── Status dot ─────────────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status', { headers: Auth.getHeaders() });
+    const data = await r.json();
+    const dot = document.getElementById('status-dot');
+    const enabled = (data.mcp_servers || []).filter(s => s.enabled).length;
+    dot.className = `w-2 h-2 rounded-full ${enabled > 0 ? 'bg-green-400' : 'bg-red-400'}`;
+    dot.title = enabled > 0
+      ? `${enabled} MCP server(s) configured`
+      : 'No MCP servers enabled';
+  } catch {}
+}
+
+// ── Report catalog ─────────────────────────────────────────────────────────────
+async function loadReports() {
+  const dre = document.getElementById('dre-toggle').checked;
+  const r = await fetch(`/api/reports?include_dre=${dre}`, { headers: Auth.getHeaders() });
+  const data = await r.json();
+  reportFormats = data.formats || {};
+  reportFormatLabels = data.format_labels || {};
+  document.getElementById('report-count').textContent = `${data.total}`;
+  const el = document.getElementById('report-catalog');
+  el.innerHTML = '';
+  for (const [topic, names] of Object.entries(data.catalog)) {
+    const det = document.createElement('details');
+    det.className = 'mt-0.5';
+    const sum = document.createElement('summary');
+    sum.className = 'px-2 py-1 rounded text-xs font-semibold text-slate-400 uppercase tracking-wider hover:bg-slate-700/50 select-none';
+    sum.textContent = topic;
+    det.appendChild(sum);
+    const ul = document.createElement('div');
+    ul.className = 'ml-1 mt-0.5 flex flex-col gap-0.5';
+    names.forEach(name => {
+      const btn = document.createElement('button');
+      const isDre = name.toLowerCase().includes('-dre-');
+      btn.className = 'text-left px-2 py-0.5 rounded text-xs hover:bg-slate-700 transition-colors ' +
+        (isDre ? 'text-slate-500 italic' : 'text-slate-300');
+      btn.textContent = name;
+      btn.title = isDre ? 'Dr.Egeria operator report' : '';
+      btn.onclick = () => runReport(name);
+      ul.appendChild(btn);
+    });
+    det.appendChild(ul);
+    el.appendChild(det);
+  }
+}
+
+// Preferred default order — first supported format becomes the dropdown default.
+// TABLE is preferred over LIST: it renders cleanly in the browser and avoids the
+// pyegeria MCP LIST master-detail issue (see PROJECT notes). LIST stays selectable.
+const _FORMAT_DEFAULT_PREF = ['TABLE', 'REPORT', 'DICT', 'LIST'];
+
+function populateFormatOptions(name) {
+  const sel = document.getElementById('output-format-select');
+  sel.innerHTML = '';
+  const supported = (reportFormats && reportFormats[name]) || ['DICT'];
+  supported.forEach(fmt => {
+    const opt = document.createElement('option');
+    opt.value = fmt;
+    opt.textContent = reportFormatLabels[fmt] || fmt;
+    sel.appendChild(opt);
+  });
+  // Choose a sensible default: first preferred format the spec actually supports.
+  const def = _FORMAT_DEFAULT_PREF.find(f => supported.includes(f)) || supported[0];
+  sel.value = def;
+}
+
+function runReport(name) {
+  pendingReportName = name;
+  document.getElementById('modal-report-name').textContent = name;
+  document.getElementById('search-string-input').value = '';
+  document.getElementById('page-size-input').value = '';
+  populateFormatOptions(name);
+  document.getElementById('search-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('search-string-input').focus(), 50);
+}
+
+function closeSearchModal() {
+  document.getElementById('search-modal').classList.add('hidden');
+  pendingReportName = null;
+}
+
+function confirmRunReport() {
+  const name = pendingReportName;
+  const filter = document.getElementById('search-string-input').value.trim();
+  const pageSizeRaw = document.getElementById('page-size-input').value.trim();
+  const pageSize = pageSizeRaw ? parseInt(pageSizeRaw, 10) : null;
+  const outputFmt = document.getElementById('output-format-select').value || 'DICT';
+  closeSearchModal();
+  if (!name) return;
+  // Running a pre-built report is an unambiguous mode switch away from any
+  // in-progress elicitor task (report spec / plan Q&A). See BACKLOG.md SS-1.
+  if (_ctx && _ctx.task) clearContext();
+  const fmtLabel = outputFmt !== 'LIST' ? ` (${outputFmt})` : '';
+  const label = filter
+    ? `Run report: **${name}** — filter: *${filter}*${fmtLabel}`
+    : `Run report: **${name}**${fmtLabel}`;
+  appendMessage('you', label);
+  const extra = { search_string: filter || null, intent_override: 'report', output_format: outputFmt };
+  if (pageSize && pageSize > 0) extra.page_size = pageSize;
+  submitQuery(`run report ${name}`, extra);
+}
+
+// Handle Enter key in search modal
+document.addEventListener('keydown', e => {
+  if (!document.getElementById('search-modal').classList.contains('hidden') && e.key === 'Enter')
+    confirmRunReport();
+  if (e.key === 'Escape') closeSearchModal();
+});
+
+// ── Recent queries ─────────────────────────────────────────────────────────────
+function renderRecent() {
+  const el = document.getElementById('recent-queries');
+  el.innerHTML = '';
+  const shown = recentQueries.slice(-15).reverse();
+  if (!shown.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic">No queries yet</div>';
+    return;
+  }
+  shown.forEach(q => {
+    const btn = document.createElement('button');
+    btn.className = 'text-left px-2 py-0.5 rounded text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors truncate';
+    btn.title = q;
+    btn.textContent = q.length > 48 ? q.slice(0, 47) + '…' : q;
+    btn.onclick = () => { document.getElementById('query-input').value = q; document.getElementById('query-input').focus(); };
+    el.appendChild(btn);
+  });
+}
+
+function clearHistory() {
+  recentQueries = [];
+  sessionStorage.removeItem('ea_recent');
+  renderRecent();
+}
+
+function pushRecent(q) {
+  recentQueries = recentQueries.filter(x => x !== q);
+  recentQueries.push(q);
+  if (recentQueries.length > 30) recentQueries.shift();
+  sessionStorage.setItem('ea_recent', JSON.stringify(recentQueries));
+  renderRecent();
+}
+
+// ── Perspective bar ────────────────────────────────────────────────────────────
+async function loadPerspectives() {
+  let data;
+  try {
+    const r = await fetch('/api/perspectives', { headers: Auth.getHeaders() });
+    data = await r.json();
+  } catch { return; }
+
+  const perspectives = data.perspectives || [];
+  if (!perspectives.length) return;
+
+  const bar = document.getElementById('perspective-bar');
+  // Remove all buttons except the first "Anyone" button
+  [...bar.querySelectorAll('button:not(:first-of-type)')].forEach(b => b.remove());
+
+  perspectives.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'persp-btn';
+    btn.dataset.perspective = p.advisor_key;
+    btn.title = p.tooltip || p.description || p.display_name;
+    btn.onclick = () => setPerspective(btn);
+    // Shorten long display names to keep the bar compact
+    const label = p.display_name.replace('Data ', 'Data ').replace('Governance Officer', 'Governance');
+    btn.textContent = label;
+    bar.appendChild(btn);
+  });
+}
+
+// ── Plans sidebar ──────────────────────────────────────────────────────────────
+let _trashExpanded = false;
+
+async function loadPlans() {
+  let data;
+  try {
+    const r = await fetch('/api/plans', { headers: Auth.getHeaders() });
+    data = await r.json();
+  } catch { return; }
+  const el = document.getElementById('plan-list');
+  el.innerHTML = '';
+  const inbox = data.inbox || [];
+  const outbox = data.outbox || [];
+  const trash = data.trash || [];
+  if (!inbox.length && !outbox.length && !trash.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic">No plans yet</div>';
+    return;
+  }
+
+  const makeRow = (plan, folder) => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+    const btn = document.createElement('button');
+    const colorCls = folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40'
+                    : folder === 'outbox' ? 'text-emerald-400 hover:bg-emerald-900/30'
+                    : 'text-slate-500 hover:bg-slate-800/50 line-through';
+    btn.className = `flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ${colorCls}`;
+    btn.title = plan.doc_id;
+    btn.textContent = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+    btn.onclick = () => openPlanEditor(plan.doc_id, plan.draft_id || null);
+    row.appendChild(btn);
+
+    if (folder === 'inbox') {
+      const execBtn = document.createElement('button');
+      execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
+      execBtn.title = 'Execute this plan';
+      execBtn.textContent = '▶';
+      execBtn.onclick = async e => {
+        e.stopPropagation();
+        // Direct REST call (not a faked chat message) — see BACKLOG.md.
+        execBtn.disabled = true; execBtn.textContent = '…';
+        appendMessage('you', `Execute plan ${plan.doc_id}`);
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+            body: JSON.stringify({ draft_id: plan.draft_id || null }),
+          });
+          const result = await r.json();
+          const wrap = appendMessage('assistant', result.response || '', {});
+          _applyQueryResult(`execute the plan ${plan.doc_id}`, result, wrap);
+        } catch (err) {
+          appendMessage('assistant', `**Error:** ${err.message}`);
+        } finally {
+          execBtn.disabled = false; execBtn.textContent = '▶';
+        }
+      };
+      row.appendChild(execBtn);
+    } else if (folder === 'outbox') {
+      const retryBtn = document.createElement('button');
+      retryBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+      retryBtn.title = 'Edit this plan before re-running';
+      retryBtn.textContent = '✏';
+      retryBtn.onclick = async e => {
+        e.stopPropagation();
+        retryBtn.disabled = true; retryBtn.textContent = '…';
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          const res = await r.json();
+          await loadPlans();
+          openPlanEditor(res.doc_id, null);
+        } catch (err) {
+          alert(`Could not move plan to inbox: ${err.message}`);
+          retryBtn.disabled = false; retryBtn.textContent = '✏';
+        }
+      };
+      row.appendChild(retryBtn);
+
+      const rerunBtn = document.createElement('button');
+      rerunBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-emerald-800 hover:bg-emerald-700 text-white text-xs transition-colors';
+      rerunBtn.title = 'Re-execute this plan now, as-is';
+      rerunBtn.textContent = '▶';
+      rerunBtn.onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`Re-run "${plan.title || plan.doc_id}" now? This submits its commands to Egeria again.`)) return;
+        rerunBtn.disabled = true; rerunBtn.textContent = '…';
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/rerun`, { method: 'POST', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          await loadPlans();
+          openPlanEditor(plan.doc_id, null);
+        } catch (err) {
+          alert(`Could not re-run plan: ${err.message}`);
+        } finally {
+          rerunBtn.disabled = false; rerunBtn.textContent = '▶';
+        }
+      };
+      row.appendChild(rerunBtn);
+    } else if (folder === 'trash') {
+      const restoreBtn = document.createElement('button');
+      restoreBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+      restoreBtn.title = 'Restore this plan to Inbox';
+      restoreBtn.textContent = '↺';
+      restoreBtn.onclick = async e => {
+        e.stopPropagation();
+        restoreBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/restore-trash`, { method: 'POST', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          await loadPlans();
+        } catch (err) {
+          alert(`Could not restore plan: ${err.message}`);
+          restoreBtn.disabled = false;
+        }
+      };
+      row.appendChild(restoreBtn);
+
+      const purgeBtn = document.createElement('button');
+      purgeBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+      purgeBtn.title = 'Permanently delete (version history is kept)';
+      purgeBtn.textContent = '🗑';
+      purgeBtn.onclick = async e => {
+        e.stopPropagation();
+        const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+        if (!confirm(`Permanently delete "${label}"?\n\nThis cannot be undone from the sidebar (version history is still kept on disk).`)) return;
+        purgeBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/purge`, { method: 'DELETE', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          loadPlans();
+        } catch (err) {
+          alert(`Could not purge plan: ${err.message}`);
+          purgeBtn.disabled = false;
+        }
+      };
+      row.appendChild(purgeBtn);
+      return row; // trash rows have no separate delete button — purge is the delete
+    }
+
+    // Export button — inbox and outbox only
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-800/50 text-xs transition-colors';
+    exportBtn.title = 'Download this plan as a markdown file';
+    exportBtn.textContent = '⤓';
+    exportBtn.onclick = e => {
+      e.stopPropagation();
+      window.open(`/api/plans/${encodeURIComponent(plan.doc_id)}/export`, '_blank');
+    };
+    row.appendChild(exportBtn);
+
+    // Delete button — inbox and outbox only (moves to trash)
+    const delBtn = document.createElement('button');
+    delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+    delBtn.title = 'Move this plan to Trash (a version backup is saved first)';
+    delBtn.textContent = '×';
+    delBtn.onclick = async e => {
+      e.stopPropagation();
+      const label = plan.title && plan.title !== '(untitled)' ? plan.title : plan.doc_id;
+      if (!confirm(`Move "${label}" to Trash?\n\nA backup version will be saved first, and it can be restored from the Trash section.`)) return;
+      delBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}`, {
+          method: 'DELETE', headers: Auth.getHeaders(),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || `Server error ${r.status}`);
+        }
+        loadPlans();
+      } catch (err) {
+        alert(`Could not delete plan: ${err.message}`);
+        delBtn.disabled = false;
+      }
+    };
+    row.appendChild(delBtn);
+    return row;
+  };
+
+  const renderGroup = (items, folder, label) => {
+    if (!items.length) return;
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 text-slate-600 uppercase text-xs font-semibold tracking-wider';
+    hdr.textContent = label;
+    el.appendChild(hdr);
+    items.forEach(plan => el.appendChild(makeRow(plan, folder)));
+  };
+
+  renderGroup(inbox, 'inbox', 'Inbox');
+  renderGroup(outbox, 'outbox', 'Outbox');
+
+  if (trash.length) {
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 flex items-center gap-1 cursor-pointer text-slate-600 uppercase text-xs font-semibold tracking-wider hover:text-slate-400';
+    hdr.textContent = `${_trashExpanded ? '▾' : '▸'} Trash (${trash.length})`;
+    hdr.onclick = () => { _trashExpanded = !_trashExpanded; loadPlans(); };
+    el.appendChild(hdr);
+    if (_trashExpanded) {
+      trash.forEach(plan => el.appendChild(makeRow(plan, 'trash')));
+    }
+  }
+}
+
+async function restorePlan(doc_id, folder, title) {
+  // Check if there's an active draft for this plan and pass it along
+  const plans = await fetch('/api/plans', { headers: Auth.getHeaders() }).then(r => r.json()).catch(() => ({}));
+  const entry = (plans.inbox || []).find(p => p.doc_id === doc_id);
+  openPlanEditor(doc_id, entry?.draft_id || null);
+}
+
+function discussPlanChanges() {
+  // Return to chat with the active draft re-engaged
+  if (typeof closePlanEditor === 'function') closePlanEditor();
+  // Ensure the active draft ID is set so chat routes to it
+  if (_ped && _ped.draft_id) {
+    _activeDraftId = _ped.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+  }
+  // Scroll chat into view and focus the input
+  document.getElementById('chat-input')?.focus();
+  const hint = document.getElementById('chat-hint') || document.getElementById('input-hint');
+  if (hint) hint.textContent = 'Describe what you\'d like to add or change in the plan…';
+  // Show a prompt in the chat
+  appendMessage('assistant',
+    '💬 Back in planning mode. What would you like to add or change?\n\n' +
+    '- *"Add a sub-project for data quality review"*\n' +
+    '- *"Change the campaign name to Q4 Sales Forecast"*\n' +
+    '- Or say **"looks good"** to proceed to generating the plan.'
+  );
+}
+
+// ── Plan Templates sidebar ──────────────────────────────────────────────────────
+async function loadTemplates() {
+  let data;
+  try {
+    const r = await fetch('/api/plan-templates', { headers: Auth.getHeaders() });
+    data = await r.json();
+  } catch { return; }
+  const el = document.getElementById('template-list');
+  el.innerHTML = '';
+  const templates = data.templates || [];
+  if (!templates.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic">No saved templates yet — use "Save as Template" from a plan to create one.</div>';
+    return;
+  }
+
+  templates.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+
+    const btn = document.createElement('button');
+    btn.className = 'flex-1 text-left px-2 py-0.5 rounded transition-colors truncate text-cyan-300 hover:bg-cyan-900/30';
+    const hints = [];
+    if (t.families) hints.push(`Families: ${t.families}`);
+    if (t.placeholders && t.placeholders.length) hints.push(`Placeholders: ${t.placeholders.join(', ')}`);
+    btn.title = hints.join('\n') || t.name;
+    btn.textContent = t.name;
+    btn.onclick = () => {
+      appendMessage('you', `Start from template ${t.name}`);
+      submitQuery(`start from template ${t.name}`, { intent_override: 'plan' });
+    };
+    row.appendChild(btn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+    delBtn.title = 'Delete this template';
+    delBtn.textContent = '×';
+    delBtn.onclick = async e => {
+      e.stopPropagation();
+      if (!confirm(`Delete template "${t.name}"? This cannot be undone.`)) return;
+      delBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/plan-templates/${encodeURIComponent(t.filename)}`, { method: 'DELETE', headers: Auth.getHeaders() });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.detail || `Server error ${r.status}`);
+        }
+        loadTemplates();
+      } catch (err) {
+        alert(`Could not delete template: ${err.message}`);
+        delBtn.disabled = false;
+      }
+    };
+    row.appendChild(delBtn);
+
+    el.appendChild(row);
+  });
+}
+
+// ── Drafts sidebar ─────────────────────────────────────────────────────────────
+async function loadDrafts() {
+  let data;
+  try {
+    const r = await fetch('/api/drafts', { headers: Auth.getHeaders() });
+    data = await r.json();
+  } catch { return; }
+  const el = document.getElementById('draft-list-section');
+  el.innerHTML = '';
+  const drafts = data.drafts || [];
+  if (!drafts.length) return;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'px-2 pt-1 text-amber-500/80 uppercase text-xs font-semibold tracking-wider';
+  hdr.textContent = 'Active Drafts';
+  el.appendChild(hdr);
+
+  drafts.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+
+    const isActive = d.draft_id === _activeDraftId;
+    const btn = document.createElement('button');
+    btn.className = 'flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ' +
+      (isActive
+        ? 'text-amber-300 bg-amber-900/30'
+        : 'text-amber-400/70 hover:bg-amber-900/20 hover:text-amber-300');
+    btn.title = `${d.title}\nPhase: ${d.phase_label || d.phase}`;
+    const label = (d.title && d.title !== '(untitled)') ? d.title : d.draft_id;
+    // No manual character slicing here — the CSS `truncate` class above already
+    // ellipsizes to whatever width is available, so widening the sidebar (or the
+    // phase badge shrinking) reveals more of the title instead of it being
+    // permanently capped at a fixed character count regardless of column width.
+    btn.textContent = (isActive ? '▸ ' : '') + label;
+
+    btn.onclick = () => {
+      // Always (re)open directly via the canvas API rather than routing through
+      // a fake "resume draft" chat message — that round-trip depended on
+      // draft_id being threaded correctly through submitQuery/_process_query,
+      // which it wasn't always, and a stale isActive flag (e.g. after
+      // sessionStorage restored _activeDraftId from a prior session where the
+      // canvas never actually rendered) made re-clicking a silent no-op with
+      // no way to recover except reloading the whole page.
+      PlanCanvas.open(d.draft_id);
+    };
+    row.appendChild(btn);
+
+    // Phase badge — max-w is a %, not a fixed px, so it grows with the sidebar
+    // when resized; text-slate-400 (not -600) keeps it readable against the
+    // dark sidebar background while still reading as secondary to the title.
+    const phase = document.createElement('span');
+    phase.className = 'shrink-0 text-slate-400 text-xs truncate max-w-[45%]';
+    phase.textContent = (d.phase_label || d.phase || '').replace('elicit_', 'Q&A:').replace('_', '');
+    row.appendChild(phase);
+
+    // Discard button
+    const del = document.createElement('button');
+    del.className = 'shrink-0 text-slate-700 hover:text-red-400 transition-colors text-xs px-1';
+    del.title = 'Discard this draft';
+    del.textContent = '✕';
+    del.onclick = async e => {
+      e.stopPropagation();
+      if (!confirm(`Discard draft "${label}"?`)) return;
+      if (d.draft_id === _activeDraftId) {
+        _activeDraftId = null;
+        sessionStorage.removeItem('ea_active_draft');
+      }
+      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
+      loadDrafts();
+    };
+    row.appendChild(del);
+    el.appendChild(row);
+  });
+
+  // Separator before inbox/outbox
+  const sep = document.createElement('div');
+  sep.className = 'my-1 border-t border-slate-700/50';
+  el.appendChild(sep);
+}
+
+// ── Perspective picker ─────────────────────────────────────────────────────────
+function setPerspective(btn) {
+  document.querySelectorAll('.persp-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedPerspective = btn.dataset.perspective;
+}
+
+// ── Intent picker ──────────────────────────────────────────────────────────────
+function setIntent(btn) {
+  document.querySelectorAll('.intent-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedIntent = btn.dataset.intent;
+  // Explicitly picking an intent is an unambiguous mode switch — don't let a
+  // stale elicitor task context (report spec / plan Q&A) keep intercepting
+  // subsequent messages. See BACKLOG.md SS-1.
+  if (selectedIntent && _ctx && _ctx.task) clearContext();
+}
+
+// ── Sidebar tab switcher ───────────────────────────────────────────────────────
+function setSidebarTab(name) {
+  document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  ['reports', 'plans', 'recent'].forEach(t => {
+    document.getElementById('sidebar-' + t).classList.toggle('hidden', t !== name);
+  });
+  localStorage.setItem('ea_sidebar_tab', name);
+}
+
+// ── Send / query ───────────────────────────────────────────────────────────────
+function sendQuery() {
+  const inp = document.getElementById('query-input');
+  const raw = inp.value.trim();
+  if (!raw) return;
+  inp.value = '';
+
+  // If awaiting clarification and user typed a digit, resolve it
+  if (pendingClarification && /^\d+$/.test(raw)) {
+    const idx = parseInt(raw, 10) - 1;
+    const candidates = pendingClarification.candidates || [];
+    clearClarification();
+    if (idx >= 0 && idx < candidates.length) {
+      appendMessage('you', raw);
+      submitQuery(`run report ${candidates[idx]}`);
+    } else {
+      appendMessage('assistant', `Please enter a number between 1 and ${candidates.length}.`, { isClarify: true });
+    }
+    return;
+  }
+
+  clearClarification();
+  appendMessage('you', raw);
+  submitQuery(raw);
+}
+
+async function submitQuery(query, extra = {}) {
+  setThinking(true);
+  document.getElementById('intent-badge').textContent = '';
+  pushRecent(query);
+
+  // When an active task context exists, send it as the authoritative routing
+  // signal. The backend uses context.task to route before any pattern matching.
+  // If there's no task context, fall back to legacy draft_id routing (but only
+  // when no explicit intent button is selected).
+  const hasCtx = _ctx && _ctx.task;
+  const draftId = hasCtx ? (_ctx.draft_id || null)
+                : (selectedIntent ? null : (_activeDraftId || null));
+  const ctxPayload = hasCtx ? _ctx : null;
+
+  const body = {
+    query,
+    intent_override: selectedIntent || null,
+    perspective: selectedPerspective || null,
+    draft_id: draftId,
+    context: ctxPayload,
+    ...extra,
+  };
+
+  // ── Streaming path ────────────────────────────────────────────────────────
+  try {
+    const r = await fetch('/api/query/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { Auth.handle401(); setThinking(false); return; }
+    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    // Streaming message container — created on first token
+    let streamWrap = null;
+    let streamBody = null;
+    let tokenBuf   = '';
+    let gotResult  = false;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // SSE messages are separated by double-newline
+      const parts = buf.split('\n\n');
+      buf = parts.pop(); // last part may be incomplete
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') break;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.type === 'start') {
+          // Keep thinking indicator active while server is classifying, retrieving, and thinking
+        } else if (evt.type === 'token') {
+          if (!streamWrap) {
+            setThinking(false); // stop spinner once first token starts streaming
+            // Create the message bubble on first token
+            streamWrap = document.createElement('div');
+            streamWrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+            const hdr = document.createElement('div');
+            hdr.className = 'text-xs font-semibold mb-1 text-emerald-400';
+            hdr.textContent = 'Assistant';
+            streamWrap.appendChild(hdr);
+            streamBody = document.createElement('div');
+            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none whitespace-pre-wrap';
+            streamWrap.appendChild(streamBody);
+            document.getElementById('messages').appendChild(streamWrap);
+          }
+          tokenBuf += evt.text;
+          // Show raw tokens; markdown rendered after stream completes
+          streamBody.textContent = tokenBuf;
+          const msgs = document.getElementById('messages');
+          msgs.scrollTop = msgs.scrollHeight;
+        } else if (evt.type === 'done' || evt.type === 'complete') {
+          gotResult = true;
+          setThinking(false); // stop spinner if we didn't receive any tokens
+          const result = evt.result;
+          // Re-render the streamed content as markdown
+          if (streamBody && result.response) {
+            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+            streamBody.innerHTML = marked.parse(preprocessMarkdown(result.response));
+            streamBody.querySelectorAll('code.language-mermaid').forEach(el => {
+              const c = document.createElement('div');
+              c.className = 'mermaid my-2';
+              c.textContent = el.textContent;
+              el.closest('pre').replaceWith(c);
+            });
+            mermaid.run({ nodes: streamBody.querySelectorAll('.mermaid') });
+          }
+          const wrap = streamWrap || appendMessage('assistant', result.response || '', {});
+          _applyQueryResult(query, result, wrap);
+        } else if (evt.type === 'error') {
+          setThinking(false);
+          appendMessage('assistant', `**Error:** ${evt.message || 'Unknown error'}`);
+          gotResult = true;
+        }
+      }
+    }
+
+    if (!gotResult) {
+      // Stream closed without a done event — fall through to non-streaming below
+      throw new Error('stream ended without result');
+    }
+    setThinking(false);
+    return;
+
+  } catch (streamErr) {
+    // Stream failed or not supported — fall back to non-streaming /api/query
+    logger.debug?.('Streaming failed, falling back:', streamErr);
+  }
+
+  // ── Non-streaming fallback ────────────────────────────────────────────────
+  let result;
+  try {
+    const r = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { Auth.handle401(); setThinking(false); return; }
+    result = await r.json();
+  } catch (e) {
+    appendMessage('assistant', `**Error:** ${e.message}`);
+    setThinking(false);
+    return;
+  } finally {
+    setThinking(false);
+  }
+
+  const qtype = result.query_type || 'general';
+  const isClarify = qtype === 'clarification';
+  const candidates = result.candidates || [];
+
+  if (isClarify && result.clarification_type === 'intent_choice') {
+    if ('next_context' in result) setContext(result.next_context);
+    renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
+    return;
+  }
+  if (isClarify && candidates.length) {
+    if ('next_context' in result) setContext(result.next_context);
+    renderClarification(result.response, candidates);
+    pendingClarification = { candidates };
+    document.getElementById('clarify-hint').classList.remove('hidden');
+    return;
+  }
+
+  const wrap = appendMessage('assistant', result.response, {
+    isClarify: false,
+    isPlan: qtype === 'plan' || qtype === 'plan_clarification',
+    isExecuted: qtype === 'plan_executed',
+  });
+  _applyQueryResult(query, result, wrap);
+}
+
+// ── Shared result post-processing (called by both streaming and non-streaming) ──
+function _applyQueryResult(query, result, wrap) {
+  const qtype = result.query_type || 'general';
+  const routingAgentFromResult = result.routing_agent || qtype;
+  const intent = result.intent || {};
+  const isClarify = qtype === 'clarification';
+  const isPlanQA = qtype === 'plan_clarification';
+  const candidates = result.candidates || [];
+
+  const isReportQA = qtype === 'report_spec_clarification';
+  const isCreateDisambig = qtype === 'create_disambiguation';
+  const isPlanStartChoice = qtype === 'plan_start_choice';
+
+  // ── Update conversation context from next_context ──────────────────────
+  // next_context is the authoritative signal from the backend. If present,
+  // always use it (even if null, which clears the context).
+  if ('next_context' in result) {
+    setContext(result.next_context);
+  } else {
+    // Legacy: derive context from draft_id in response for old paths that
+    // don't yet emit next_context.
+    if (isPlanQA) {
+      if (result.draft_id) {
+        _activeDraftId = result.draft_id;
+        if (!_ctx.task) setContext({ task: 'plan_elicitor', draft_id: result.draft_id, phase: result.phase || '' });
+      } else {
+        setContext(null);
+        loadDrafts();
+      }
+    } else if (isReportQA) {
+      if (result.draft_id) {
+        _activeDraftId = result.draft_id;
+        if (!_ctx.task) setContext({ task: 'report_spec_elicitor', draft_id: result.draft_id, phase: result.phase || '' });
+      } else {
+        setContext(null);
+        loadReportDocs();
+      }
+    } else if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'report_executed') {
+      setContext(null);
+    }
+  }
+
+  // Sync canvas to _activeDraftId (setContext keeps it in sync; this handles
+  // the canvas open/close that must happen after context is updated).
+  if (_activeDraftId) {
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    if (_activeDraftId.startsWith('draft_report_')) {
+      ReportSpecCanvas.open(_activeDraftId);
+      setSidebarTab('reports');
+    } else {
+      PlanCanvas.open(_activeDraftId);
+      setSidebarTab('plans');
+    }
+  } else {
+    sessionStorage.removeItem('ea_active_draft');
+    // Don't close canvas on plan_executed/report_executed — user may want to see what was executed
+    if (qtype !== 'plan_executed') PlanCanvas.close();
+    if (qtype !== 'report_executed') ReportSpecCanvas.close();
+  }
+
+  // Badge
+  if (intent.label) {
+    const badge = document.getElementById('intent-badge');
+    badge.textContent = intent.label;
+    badge.style.color = intent.color || '#64748b';
+  }
+
+  // If Python-vs-DrE intent choice, render dedicated buttons
+  if (isClarify && result.clarification_type === 'intent_choice') {
+    renderIntentClarification(result.response, candidates, result.candidate_intents || [], query);
+    return;
+  }
+  // If report disambiguation, render as numbered buttons
+  if (isClarify && candidates.length) {
+    renderClarification(result.response, candidates);
+    pendingClarification = { candidates };
+    document.getElementById('clarify-hint').classList.remove('hidden');
+    return;
+  }
+
+  // Refresh sidebar after lifecycle events
+  if (qtype === 'plan' || qtype === 'plan_executed' || qtype === 'plan_validated') loadPlans();
+  if (isPlanQA) { loadDrafts(); if (_activeDraftId) PlanCanvas.refresh(_activeDraftId); }
+
+  // Bare "create a plan ... using the canvas" request — open the canvas
+  // immediately for the draft the backend already created, no modal needed.
+  if (qtype === 'plan_canvas_direct' && result.draft_id) {
+    _activeDraftId = result.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
+    loadDrafts();
+  }
+
+  if (qtype === 'report_executed' || qtype === 'report_recovered' || qtype === 'report_spec_clarification') loadReportDocs();
+  if (isReportQA) { if (_activeDraftId) ReportSpecCanvas.refresh(_activeDraftId); }
+
+  // Dr.Egeria template → offer to start a plan
+  if (result.clarification_type === 'plan_offer') {
+    renderPlanOffer(result.original_query || query, wrap);
+  }
+
+  // Plan Document banner — shown when the agent saved a new plan to inbox/
+  if (qtype === 'plan' && result.doc_id) {
+    const planBanner = document.createElement('div');
+    planBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+    const planInfo = document.createElement('span');
+    planInfo.className = 'text-slate-300 flex-1';
+    planInfo.innerHTML =
+      `<span class="text-violet-400 font-semibold">Plan saved</span> — ` +
+      `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
+      `Open the editor to review, fill in details, validate, and execute.`;
+    planBanner.appendChild(planInfo);
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    editBtn.textContent = 'Open Editor';
+    editBtn.onclick = () => openPlanEditor(result.doc_id);
+    planBanner.appendChild(editBtn);
+
+    wrap.appendChild(planBanner);
+  }
+
+  // Report Spec Document banner — shown when the agent saved a new report spec to inbox/
+  if (qtype === 'report_spec_clarification' && result.doc_id && result.phase === 'refine') {
+    const reportBanner = document.createElement('div');
+    reportBanner.className = 'mt-2 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+    const reportInfo = document.createElement('span');
+    reportInfo.className = 'text-slate-300 flex-1';
+    reportInfo.innerHTML =
+      `<span class="text-violet-400 font-semibold">Report Spec saved</span> — ` +
+      `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
+      `You can edit the columns in the Canvas sidebar or execute it.`;
+    reportBanner.appendChild(reportInfo);
+
+    const canvasBtn = document.createElement('button');
+    canvasBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+    canvasBtn.textContent = 'Open Canvas';
+    canvasBtn.onclick = () => openReportSpecCanvas(result.draft_id);
+    reportBanner.appendChild(canvasBtn);
+
+    wrap.appendChild(reportBanner);
+  }
+
+  // Plan/Report Q&A navigation buttons
+  if ((isPlanQA || isReportQA || isCreateDisambig || isPlanStartChoice) && result.navigation && result.navigation.length) {
+    const nav = document.createElement('div');
+    nav.className = 'mt-2 flex gap-2 flex-wrap';
+    const navDefs = {
+      back:               { label: '← Back',              cls: 'bg-slate-700 hover:bg-slate-600 text-slate-200' },
+      save_exit:          { label: '💾 Save & Exit',       cls: 'bg-indigo-800 hover:bg-indigo-700 text-white' },
+      cancel:             { label: '✕ Cancel',             cls: 'bg-red-900/60 hover:bg-red-800 text-red-300' },
+      generate_now:       { label: '⚡ Generate Now',         cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      completely_wrong:   { label: '✗ Completely Wrong',     cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
+      continue_columns:   { label: '→ Continue to columns',  cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      try_again:          { label: '↺ Try again',            cls: 'bg-amber-900/70 hover:bg-amber-800 text-amber-200' },
+      run_spec:           { label: '▶ Run Report',           cls: 'bg-emerald-700 hover:bg-emerald-600 text-white' },
+      create_plan:        { label: '📋 Governance Plan',     cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      create_report_spec: { label: '📊 Report Spec',         cls: 'bg-orange-800 hover:bg-orange-700 text-white' },
+      plan_discuss:       { label: '💬 Discuss it with me',  cls: 'bg-violet-800 hover:bg-violet-700 text-white' },
+      plan_canvas:        { label: '🎨 Open the Canvas',     cls: 'bg-teal-800 hover:bg-teal-700 text-white' },
+    };
+    result.navigation.forEach(key => {
+      const def = navDefs[key];
+      if (!def) return;
+      const btn = document.createElement('button');
+      btn.className = `px-3 py-1.5 rounded text-xs font-semibold transition-colors ${def.cls}`;
+      btn.textContent = def.label;
+      btn.onclick = () => {
+        if (key === 'run_spec') {
+          triggerReportExecution(result.doc_id || result.draft_id);
+          return;
+        }
+        if (key === 'plan_canvas') {
+          appendMessage('you', def.label);
+          if (result.extracted_title) {
+            // We already know the intended title (e.g. "...called Link-Test")
+            // — skip the modal and create it directly.
+            createBuilderPlan(result.extracted_title);
+          } else {
+            openBuilderModal();
+          }
+          return;
+        }
+        if (key === 'plan_discuss') {
+          appendMessage('you', def.label);
+          appendMessage('assistant',
+            "Great — describe what you'd like this plan to do (objects to create, " +
+            "who's involved, etc.) and I'll draft the steps."
+          );
+          // Force the next typed message straight to PlanElicitor rather than
+          // resubmitting the bare original query (which has nothing to
+          // decompose) or leaving routing to guess the intent.
+          selectedIntent = 'plan';
+          const hint = document.getElementById('chat-hint') || document.getElementById('input-hint');
+          if (hint) hint.textContent = "Describe the governance task you'd like this plan to accomplish…";
+          document.getElementById('chat-input')?.focus();
+          return;
+        }
+        const commands = {
+          back: 'back', save_exit: 'save and exit', cancel: 'cancel',
+          generate_now: 'generate now', completely_wrong: 'completely wrong',
+          continue_columns: 'continue to column definitions', try_again: 'try again',
+          create_plan: 'create a governance plan', create_report_spec: 'create a report spec',
+        };
+        const intents = {
+          create_plan: 'create', create_report_spec: 'create',
+        };
+        const cmd = commands[key] || key;
+        appendMessage('you', def.label);
+        const override = intents[key] || (isReportQA ? 'report' : isCreateDisambig ? 'create' : 'plan');
+        submitQuery(cmd, { intent_override: override });
+      };
+      nav.appendChild(btn);
+    });
+    wrap.appendChild(nav);
+  }
+
+  // Act confirm step — shows matched report + filter input before running
+  if (qtype === 'act_confirm' && result.matched_spec_id) {
+    const specId    = result.matched_spec_id;
+    const initFilt  = result.extracted_filter || '';
+    const initEType = result.extracted_element_type || '';
+    let   selFmt    = result.extracted_format || 'TABLE';
+
+    const confirmRow = document.createElement('div');
+    confirmRow.className = 'mt-2 flex flex-col gap-2';
+
+    // Element type + search filter fields
+    const fieldGrid = document.createElement('div');
+    fieldGrid.className = 'grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 items-center text-xs';
+
+    const mkLabel = (t) => { const l = document.createElement('span'); l.className = 'text-slate-500 whitespace-nowrap'; l.textContent = t; return l; };
+    const mkInput = (val, placeholder) => {
+      const i = document.createElement('input');
+      i.type = 'text'; i.value = val; i.placeholder = placeholder;
+      i.className = 'bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 ' +
+                    'placeholder-slate-500 focus:outline-none focus:border-violet-500';
+      return i;
+    };
+
+    const etypeInput  = mkInput(initEType, 'e.g. dataHub  (blank = all subtypes)');
+    const filterInput = mkInput(initFilt,  'e.g. Inventory  (blank = all names)');
+
+    fieldGrid.appendChild(mkLabel('Element type'));  fieldGrid.appendChild(etypeInput);
+    fieldGrid.appendChild(mkLabel('Name filter'));   fieldGrid.appendChild(filterInput);
+    confirmRow.appendChild(fieldGrid);
+
+    // Format selector buttons
+    const fmtRow = document.createElement('div');
+    fmtRow.className = 'flex gap-1 items-center flex-wrap';
+    const fmtLabel = document.createElement('span');
+    fmtLabel.className = 'text-xs text-slate-500 mr-1';
+    fmtLabel.textContent = 'Format:';
+    fmtRow.appendChild(fmtLabel);
+    const _FORMATS = ['TABLE', 'LIST', 'MERMAID', 'REPORT', 'JSON'];
+    const fmtBtns = {};
+    _FORMATS.forEach(fmt => {
+      const fb = document.createElement('button');
+      const isActive = fmt === selFmt;
+      fb.className = 'px-2 py-0.5 rounded text-xs transition-colors border ' +
+        (isActive
+          ? 'bg-cyan-700 border-cyan-600 text-white font-semibold'
+          : 'bg-slate-800 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500');
+      fb.textContent = fmt;
+      fb.onclick = () => {
+        selFmt = fmt;
+        Object.entries(fmtBtns).forEach(([f, b]) => {
+          const active = f === fmt;
+          b.className = 'px-2 py-0.5 rounded text-xs transition-colors border ' +
+            (active
+              ? 'bg-cyan-700 border-cyan-600 text-white font-semibold'
+              : 'bg-slate-800 border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500');
+        });
+      };
+      fmtBtns[fmt] = fb;
+      fmtRow.appendChild(fb);
+    });
+    confirmRow.appendChild(fmtRow);
+
+    // Button row
+    const btnRow = document.createElement('div');
+    btnRow.className = 'flex gap-2 flex-wrap';
+
+    const runBtn = document.createElement('button');
+    runBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white transition-colors';
+    runBtn.textContent = '▶ Run Report';
+    runBtn.onclick = () => {
+      const filt  = filterInput.value.trim();
+      const etype = etypeInput.value.trim();
+      let cmd = `run report ${specId} filter:'${filt}' fmt:'${selFmt}'`;
+      if (etype) cmd += ` element_type:'${etype}'`;
+      const label = [specId, etype && `type:${etype}`, filt && `filter:${filt}`, `fmt:${selFmt}`].filter(Boolean).join(' · ');
+      appendMessage('you', `▶ Run ${label}`);
+      submitQuery(cmd, { intent_override: 'command' });
+    };
+    filterInput.onkeydown = etypeInput.onkeydown = (e) => { if (e.key === 'Enter') runBtn.click(); };
+    btnRow.appendChild(runBtn);
+
+    const modBtn = document.createElement('button');
+    modBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-violet-800 hover:bg-violet-700 text-white transition-colors';
+    modBtn.textContent = '✎ Modify spec';
+    modBtn.title = 'Open the Report Spec canvas to edit columns and parameters';
+    modBtn.onclick = async () => {
+      modBtn.disabled = true; modBtn.textContent = 'Opening…';
+      try {
+        const resp = await fetch('/api/reports/specs/edit-by-name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+          body: JSON.stringify({ report_name: specId }),
+        });
+        const data = await resp.json();
+        if (data.found && data.draft_id) {
+          _activeDraftId = data.draft_id;
+          await ReportSpecCanvas.open(data.draft_id);
+        } else {
+          modBtn.textContent = '✎ Modify spec';
+          modBtn.disabled = false;
+          submitQuery(query, { intent_override: 'create' });
+        }
+      } catch { modBtn.textContent = '✎ Modify spec'; modBtn.disabled = false; }
+    };
+    btnRow.appendChild(modBtn);
+
+    const newBtn = document.createElement('button');
+    newBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-orange-800 hover:bg-orange-700 text-white transition-colors';
+    newBtn.textContent = '＋ New report spec';
+    newBtn.title = 'Build a new custom report spec from scratch';
+    newBtn.onclick = () => submitQuery(query, { intent_override: 'create' });
+    btnRow.appendChild(newBtn);
+
+    confirmRow.appendChild(btnRow);
+    wrap.appendChild(confirmRow);
+  }
+
+  // Executed plan banner
+  if (qtype === 'plan_executed' && result.doc_id) {
+    const execBanner = document.createElement('div');
+    execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
+    execBanner.innerHTML =
+      `<span class="text-emerald-400 font-semibold">Executed</span> — ` +
+      `<code class="text-emerald-300">${result.doc_id}.md</code> has been moved to your outbox with the outcome appended.`;
+    wrap.appendChild(execBanner);
+  }
+
+  // Act post-run follow-up actions
+  if (qtype === 'act_report_result') {
+    const specId = result.matched_spec_id;
+
+    // Helper: open spec canvas by name
+    async function _openSpecCanvas(reportName, fallbackQuery) {
+      const resp = await fetch('/api/reports/specs/edit-by-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+        body: JSON.stringify({ report_name: reportName }),
+      });
+      const data = await resp.json();
+      if (data.found && data.draft_id) {
+        _activeDraftId = data.draft_id;
+        await ReportSpecCanvas.open(data.draft_id);
+        return true;
+      }
+      return false;
+    }
+
+    const label = document.createElement('div');
+    label.className = 'mt-3 mb-1 text-xs text-slate-500 font-semibold uppercase tracking-wide';
+    label.textContent = 'What would you like to do next?';
+    wrap.appendChild(label);
+
+    const actNav = document.createElement('div');
+    actNav.className = 'flex gap-2 flex-wrap';
+
+    // ── Save result to outbox ────────────────────────────────────────────────
+    if (result.base_doc_id) {
+      const archBtn = document.createElement('button');
+      archBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-emerald-800 hover:bg-emerald-700 text-white transition-colors';
+      archBtn.textContent = '⬇ Save result';
+      archBtn.title = 'Save this result snapshot to your outbox';
+      archBtn.onclick = async () => {
+        archBtn.disabled = true; archBtn.textContent = 'Saving…';
+        try {
+          const r = await fetch(`/api/reports/specs/${encodeURIComponent(result.base_doc_id)}/archive`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+            body: JSON.stringify({ content: result.execution_output || '' }),
+          });
+          const data = await r.json();
+          archBtn.textContent = data.ok ? '✓ Saved' : '✗ Failed';
+          if (data.ok) loadReportDocs();
+        } catch { archBtn.textContent = '✗ Error'; }
+      };
+      actNav.appendChild(archBtn);
+    }
+
+    // ── Modify ───────────────────────────────────────────────────────────────
+    if (result.base_doc_id) {
+      const modBtn = document.createElement('button');
+      modBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-violet-800 hover:bg-violet-700 text-white transition-colors';
+      modBtn.textContent = '✎ Modify this spec';
+      modBtn.title = 'Open the Report Spec canvas to change columns, filters, or parameters';
+      modBtn.onclick = async () => {
+        modBtn.disabled = true; modBtn.textContent = 'Opening…';
+        try {
+          const r = await fetch(`/api/reports/specs/${encodeURIComponent(result.base_doc_id)}/edit`, {
+            method: 'POST', headers: Auth.getHeaders(),
+          });
+          const data = await r.json();
+          if (data.found && data.draft_id) {
+            _activeDraftId = data.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            await ReportSpecCanvas.open(data.draft_id);
+            setSidebarTab('reports');
+          } else {
+            appendMessage('system', data.error || 'Spec not found in catalog.');
+          }
+        } catch (e) { appendMessage('system', 'Could not open canvas: ' + e.message); }
+        modBtn.textContent = '✎ Modify this spec'; modBtn.disabled = false;
+      };
+      actNav.appendChild(modBtn);
+    }
+
+    const forkBtn = document.createElement('button');
+    forkBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-orange-800 hover:bg-orange-700 text-white transition-colors';
+    forkBtn.textContent = '＋ Save as new spec';
+    forkBtn.title = 'Create a new custom report spec based on this query';
+    forkBtn.onclick = () => submitQuery(query, { intent_override: 'create' });
+    actNav.appendChild(forkBtn);
+
+    // ── Format selector + Run again ──────────────────────────────────────────
+    const fmtSel = document.createElement('select');
+    fmtSel.className = 'bg-slate-700 border border-slate-600 rounded px-1.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors';
+    fmtSel.title = 'Output format for next run';
+    ['TABLE','LIST','MERMAID','REPORT','JSON'].forEach(f => {
+      const o = document.createElement('option');
+      o.value = f; o.textContent = f;
+      if (f === (result.extracted_format || 'TABLE')) o.selected = true;
+      fmtSel.appendChild(o);
+    });
+    actNav.appendChild(fmtSel);
+
+    const rerunBtn = document.createElement('button');
+    rerunBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors';
+    rerunBtn.textContent = '↺ Run again';
+    rerunBtn.title = 'Run again with chosen format';
+    if (result.base_doc_id) {
+      rerunBtn.onclick = () => submitQuery(`execute report spec ${result.base_doc_id}`, { output_format: fmtSel.value });
+    } else {
+      rerunBtn.onclick = () => submitQuery(query, { intent_override: 'command' });
+    }
+    actNav.appendChild(rerunBtn);
+
+    // ── Done — close post-run nav ────────────────────────────────────────────
+    const doneBtn = document.createElement('button');
+    doneBtn.className = 'px-3 py-1.5 rounded text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-400 transition-colors';
+    doneBtn.textContent = '✓ Done';
+    doneBtn.onclick = () => { label.remove(); actNav.remove(); };
+    actNav.appendChild(doneBtn);
+
+    wrap.appendChild(actNav);
+  }
+
+  // Executed report banner
+  if (qtype === 'report_executed' && result.doc_id) {
+    const execBanner = document.createElement('div');
+    execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
+    execBanner.innerHTML =
+      `<span class="text-emerald-400 font-semibold">Executed</span> — ` +
+      `<code class="text-emerald-300">${result.doc_id}.md</code> has been moved to your outbox with the outcome appended.`;
+    wrap.appendChild(execBanner);
+  }
+
+  // Sources footer — show collection + file path only (not full chunk content)
+  const sources = result.sources || [];
+  const srcLabels = sources
+    .map(s => {
+      if (typeof s === 'string') return s;
+      const col = s._collection || s.collection || '';
+      const fp  = (s.file_path || '').split('/').pop();
+      return col && fp ? `${col} › ${fp}` : (col || fp || null);
+    })
+    .filter(Boolean);
+  const uniqueSrcs = [...new Set(srcLabels)].slice(0, 6);
+  if (uniqueSrcs.length) {
+    const src = document.createElement('div');
+    src.className = 'mt-1 text-xs text-slate-600';
+    src.textContent = 'Sources: ' + uniqueSrcs.join(' · ');
+    wrap.appendChild(src);
+  }
+
+  // Feedback buttons — use data attributes to avoid JSON/HTML escaping issues
+  const fb = document.createElement('div');
+  fb.className = 'mt-1.5 flex gap-2 items-center';
+  const btnUp = document.createElement('button');
+  btnUp.className = 'text-xs text-slate-500 hover:text-green-400 transition-colors';
+  btnUp.textContent = '👍';
+  const responseText = wrap.querySelector('.msg-body')?.textContent || '';
+  btnUp.dataset.q = query;
+  btnUp.dataset.qt = qtype;
+  btnUp.dataset.vote = '1';
+  btnUp.dataset.perspective = selectedPerspective || '';
+  btnUp.dataset.routingAgent = routingAgentFromResult;
+  btnUp.dataset.intentOverride = selectedIntent || 'auto';
+  btnUp.dataset.responseText = responseText.slice(0, 2000);
+  btnUp.addEventListener('click', feedbackClick);
+  
+  const btnNeutral = document.createElement('button');
+  btnNeutral.className = 'text-xs text-slate-500 hover:text-amber-400 transition-colors';
+  btnNeutral.textContent = '😐';
+  btnNeutral.title = 'Partially correct / helpful';
+  btnNeutral.dataset.q = query;
+  btnNeutral.dataset.qt = qtype;
+  btnNeutral.dataset.vote = '0';
+  btnNeutral.dataset.perspective = selectedPerspective || '';
+  btnNeutral.dataset.routingAgent = routingAgentFromResult;
+  btnNeutral.dataset.intentOverride = selectedIntent || 'auto';
+  btnNeutral.dataset.responseText = responseText.slice(0, 2000);
+  btnNeutral.addEventListener('click', feedbackClick);
+  
+  const btnDown = document.createElement('button');
+  btnDown.className = 'text-xs text-slate-500 hover:text-red-400 transition-colors';
+  btnDown.textContent = '👎';
+  btnDown.dataset.q = query;
+  btnDown.dataset.qt = qtype;
+  btnDown.dataset.vote = '-1';
+  btnDown.dataset.perspective = selectedPerspective || '';
+  btnDown.dataset.routingAgent = routingAgentFromResult;
+  btnDown.dataset.intentOverride = selectedIntent || 'auto';
+  btnDown.dataset.responseText = responseText.slice(0, 2000);
+  btnDown.addEventListener('click', feedbackClick);
+  
+  fb.appendChild(btnUp);
+  fb.appendChild(btnNeutral);
+  fb.appendChild(btnDown);
+  wrap.appendChild(fb);
+}
+
+// ── Clarification rendering ────────────────────────────────────────────────────
+function renderClarification(mdText, candidates) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-clarify pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 text-amber-400';
+  header.textContent = 'Assistant · multiple matches found';
+  wrap.appendChild(header);
+
+  // Render the text portion (without the numbered list — we replace it with buttons)
+  const intro = mdText.split('\n').slice(0, 2).join('\n');
+  const body = document.createElement('div');
+  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
+  body.innerHTML = marked.parse(intro);
+  wrap.appendChild(body);
+
+  // Candidate buttons
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex flex-wrap gap-2';
+  candidates.forEach((name, i) => {
+    const btn = document.createElement('button');
+    const isDre = name.toLowerCase().includes('-dre-');
+    btn.className = 'px-3 py-1 rounded text-sm font-medium transition-colors border ' +
+      (isDre
+        ? 'border-slate-600 bg-slate-700/40 text-slate-400 hover:bg-slate-700 italic'
+        : 'border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-800/60');
+    btn.textContent = `${i + 1}. ${name}`;
+    if (isDre) btn.title = 'Dr.Egeria operator report';
+    btn.onclick = () => {
+      clearClarification();
+      appendMessage('you', `${i + 1}`);
+      submitQuery(`run report ${name}`, { intent_override: 'report' });
+    };
+    btnRow.appendChild(btn);
+  });
+
+  // Cancel button
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'px-3 py-1 rounded text-sm font-medium transition-colors border border-slate-700 bg-slate-800/40 text-slate-500 hover:text-slate-300 hover:bg-slate-700/60';
+  cancelBtn.textContent = 'None / cancel';
+  cancelBtn.onclick = () => { clearClarification(); wrap.remove(); };
+  btnRow.appendChild(cancelBtn);
+
+  wrap.appendChild(btnRow);
+
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+// ── Intent-choice clarification (Python vs Dr.Egeria) ─────────────────────────
+function renderIntentClarification(mdText, labels, intents, originalQuery) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-clarify pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 text-amber-400';
+  header.textContent = 'Assistant · how would you like to proceed?';
+  wrap.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
+  body.innerHTML = marked.parse(mdText);
+  wrap.appendChild(body);
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex flex-wrap gap-2';
+
+  const STYLES = [
+    'border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-800/60',   // Python
+    'border-emerald-700 bg-emerald-900/40 text-emerald-300 hover:bg-emerald-800/60', // CLI
+    'border-violet-700 bg-violet-900/40 text-violet-300 hover:bg-violet-800/60', // Dr.Egeria
+  ];
+
+  labels.forEach((label, i) => {
+    const intent = intents[i] || 'code_help';
+    const btn = document.createElement('button');
+    btn.className = 'px-4 py-1.5 rounded text-sm font-medium transition-colors border ' +
+      (STYLES[i] || STYLES[0]);
+    btn.textContent = label;
+    btn.onclick = () => {
+      wrap.querySelectorAll('button').forEach(b => b.disabled = true);
+      appendMessage('you', label);
+      submitQuery(originalQuery, { intent_override: intent });
+    };
+    btnRow.appendChild(btn);
+  });
+
+  wrap.appendChild(btnRow);
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function renderPlanOffer(originalQuery, wrap) {
+  const offer = document.createElement('div');
+  offer.className = 'mt-3 px-3 py-2 rounded bg-violet-950/60 border border-violet-700/50 text-xs flex items-center gap-3';
+
+  const msg = document.createElement('span');
+  msg.className = 'text-slate-300 flex-1';
+  msg.innerHTML = '<span class="text-violet-300 font-semibold">Would you like to create a Dr.Egeria plan</span> using this template?';
+  offer.appendChild(msg);
+
+  const yesBtn = document.createElement('button');
+  yesBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+  yesBtn.textContent = 'Yes, start a plan';
+  yesBtn.onclick = () => {
+    offer.remove();
+    appendMessage('you', 'Yes, start a plan');
+    submitQuery(originalQuery, { intent_override: 'plan' });
+  };
+  offer.appendChild(yesBtn);
+
+  const noBtn = document.createElement('button');
+  noBtn.className = 'px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold shrink-0 transition-colors';
+  noBtn.textContent = 'No thanks';
+  noBtn.onclick = () => offer.remove();
+  offer.appendChild(noBtn);
+
+  wrap.appendChild(offer);
+}
+
+function clearClarification() {
+  pendingClarification = null;
+  document.getElementById('clarify-hint').classList.add('hidden');
+}
+
+// ── Message helpers ────────────────────────────────────────────────────────────
+function appendMessage(role, text, opts = {}) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  const isClarify = opts.isClarify;
+  const isPlan = opts.isPlan;
+  const isExecuted = opts.isExecuted;
+  const msgClass = role === 'you' ? 'you' : (isClarify ? 'clarify' : isExecuted ? 'executed' : isPlan ? 'plan' : 'assistant');
+  wrap.className = `msg-${msgClass} pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60`;
+
+  const header = document.createElement('div');
+  header.className = 'text-xs font-semibold mb-1 ' + (
+    role === 'you' ? 'text-cyan-400' : isClarify ? 'text-amber-400' : 'text-emerald-400'
+  );
+  if (opts.color && role !== 'you' && !isClarify) header.style.color = opts.color;
+  header.textContent = role === 'you' ? 'You' : 'Assistant';
+  wrap.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'msg-body prose prose-invert text-sm text-slate-200 max-w-none';
+  body.innerHTML = marked.parse(preprocessMarkdown(text));
+  wrap.appendChild(body);
+  // Render Mermaid diagrams inside this message
+  body.querySelectorAll('code.language-mermaid').forEach((el, i) => {
+    const container = document.createElement('div');
+    container.className = 'mermaid my-2';
+    container.textContent = el.textContent;
+    el.closest('pre').replaceWith(container);
+  });
+  mermaid.run({ nodes: body.querySelectorAll('.mermaid') });
+  // Render Vega-lite specs (```vega-lite ... ```)
+  body.querySelectorAll('code.language-vega-lite').forEach(el => {
+    try {
+      const spec = JSON.parse(el.textContent);
+      const div = document.createElement('div');
+      div.style.cssText = 'background:#0f172a;padding:8px;border-radius:6px;';
+      el.closest('pre').replaceWith(div);
+      vegaEmbed(div, spec, { theme: 'dark', actions: false }).catch(() => {});
+    } catch {}
+  });
+
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+  return wrap;
+}
+
+// ── Feedback ───────────────────────────────────────────────────────────────────
+async function feedbackClick(e) {
+  const btn = e.currentTarget;
+  const vote = parseInt(btn.dataset.vote, 10);
+  const query = btn.dataset.q;
+  const queryType = btn.dataset.qt;
+  const perspective = btn.dataset.perspective || null;
+  const routingAgent = btn.dataset.routingAgent || null;
+  const intentOverride = btn.dataset.intentOverride || null;
+  const responseText = btn.dataset.responseText || null;
+  await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent, intent_override: intentOverride, response_text: responseText }),
+  }).catch(() => {});
+  const fb = btn.parentElement;
+  fb.innerHTML = vote > 0
+    ? '<span class="text-xs text-green-400">👍 Thanks!</span>'
+    : (vote === 0
+        ? '<span class="text-xs text-amber-400">😐 Noted (Partially helpful).</span>'
+        : '<span class="text-xs text-red-400">👎 Noted.</span>');
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────────
+function preprocessMarkdown(text) {
+  return text.replace(/<!--\s*TODO:\s*fill\s*in\s*-->/gi,
+    '<span class="todo-fill">⚠ fill in</span>');
+}
+
+function setThinking(on) {
+  document.getElementById('thinking').classList.toggle('hidden', !on);
+  document.getElementById('send-btn').disabled = on;
+  document.getElementById('send-btn').classList.toggle('opacity-50', on);
+}
+
+// ── Left sidebar resize (horizontal, ew-resize) ────────────────────────────────
+function initLeftSidebarResize() {
+  const handle  = document.getElementById('resize-sidebar-chat');
+  const sidebar = document.getElementById('left-sidebar');
+  const wrapper = handle.closest('.flex');
+
+  const MIN_W  = 160;
+  const MAX_W  = 480;
+  const STOR_K = 'ea_sidebar_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  const saved = parseInt(localStorage.getItem(STOR_K));
+  if (!isNaN(saved)) sidebar.style.flexBasis = clamp(saved, MIN_W, MAX_W) + 'px';
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = sidebar.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const newW = clamp(startW + (ev.clientX - startX), MIN_W, MAX_W);
+      sidebar.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(sidebar.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
+
+// ── Canvas resize (horizontal, ew-resize) ──────────────────────────────────────
+function initCanvasButtons() {
+  document.getElementById('pcanvas-generate-btn').addEventListener('click', () => {
+    if (!_activeDraftId) return;
+    appendMessage('you', 'generate now');
+    submitQuery('generate now', { intent_override: 'plan' });
+  });
+  document.getElementById('pcanvas-validate-btn').addEventListener('click', async () => {
+    const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
+    if (!docId) return;
+    const btn = document.getElementById('pcanvas-validate-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Validating…';
+    try {
+      const r = await fetch(`/api/plans/${docId}/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      });
+      const data = await r.json();
+      const valErrs  = data.validation_errors || [];
+      const execErrs = data.execution_errors  || [];
+      const allErrors = [...valErrs, ...execErrs];
+      const ok = data.success !== false && allErrors.length === 0;
+      let msg = ok
+        ? `✓ **Validation passed** — plan \`${docId}\` is ready to execute.`
+        : `⚠ **Validation found ${allErrors.length} issue${allErrors.length !== 1 ? 's' : ''}** in \`${docId}\`.`;
+      if (allErrors.length) {
+        msg += '\n\n' + allErrors.map(e => {
+          const step = e.step || e.index || '';
+          const cmd  = e.command || e.name || '';
+          const txt  = e.message || e.error || String(e);
+          return `- **${cmd}**${step ? ` (step ${step})` : ''}: ${txt}`;
+        }).join('\n');
+      }
+      appendMessage('advisor', msg, { query_type: 'explanation' });
+    } catch (e) {
+      appendMessage('advisor', `Validation request failed: ${e.message}`, { query_type: 'explanation' });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '✓ Validate';
+    }
+  });
+  document.getElementById('pcanvas-execute-btn').addEventListener('click', async () => {
+    const docId = document.getElementById('pcanvas-title')?.dataset?.docId;
+    if (!docId) {
+      console.warn('Execute clicked but pcanvas-title has no doc_id — canvas may not have finished loading, or refresh() failed silently (check console above for "ArtifactCanvas: refresh failed").');
+      alert('No plan document is loaded in the canvas yet — try closing and reopening it.');
+      return;
+    }
+    // Direct REST call (not a faked chat message) — "execute the plan X" sent
+    // as chat text can be intercepted by context-based routing (e.g. this
+    // very Canvas session) and mistaken for a plan-modification instruction
+    // instead of an execute command. See BACKLOG.md.
+    const btn = document.getElementById('pcanvas-execute-btn');
+    btn.disabled = true; btn.textContent = '⏳ Executing…';
+    appendMessage('you', `Execute plan ${docId}`);
+    try {
+      const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+        body: JSON.stringify({ draft_id: _ctx?.draft_id || null }),
+      });
+      const result = await r.json();
+      const wrap = appendMessage('assistant', result.response || '', {});
+      _applyQueryResult(`execute the plan ${docId}`, result, wrap);
+      // Execution moves the plan to outbox under a new "_executed_<ts>" doc_id —
+      // without re-pointing the open canvas at it, pcanvas-title keeps the old
+      // (now-gone) inbox docId, so any further edit + Save 404s ("not found in
+      // inbox") even though the canvas still looks perfectly editable.
+      if (result.doc_id && result.doc_id !== docId) {
+        await PlanCanvas.openDocument(result.doc_id, _ctx?.draft_id || null);
+        loadPlans();
+      }
+    } catch (e) {
+      appendMessage('assistant', `**Error:** ${e.message}`);
+    } finally {
+      btn.disabled = false; btn.textContent = '▶ Execute';
+    }
+  });
+}
+
+function initCanvasResize() {
+  const handle = document.getElementById('resize-chat-canvas');
+  const canvas = document.getElementById('plan-canvas-panel');
+  const wrapper = handle.closest('.flex');   // the flex row containing chat + canvas
+
+  const STOR_K = 'ea_canvas_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function savedWidth() {
+    const v = parseInt(localStorage.getItem(STOR_K));
+    return isNaN(v) ? Math.round(wrapper.clientWidth * 0.44) : v;
+  }
+
+    // Called by PlanCanvas.open() and ReportSpecCanvas.open() — applies saved/default width
+  window._applyCanvasWidth = function(w) {
+    const planCanvas = document.getElementById('plan-canvas-panel');
+    const reportCanvas = document.getElementById('report-canvas-panel');
+    let target = planCanvas;
+    let key = 'ea_canvas_w';
+    if (reportCanvas && !reportCanvas.classList.contains('hidden')) {
+      target = reportCanvas;
+      key = 'ea_report_canvas_w';
+    }
+    if (!target) return;
+    const wrp = target.closest('.flex');
+    if (!wrp) return;
+    const clmp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const baseW = wrp.clientWidth || window.innerWidth || 1200;
+    const saved = () => {
+      const v = parseInt(localStorage.getItem(key));
+      const defaultW = Math.max(450, Math.round(baseW * 0.44));
+      return isNaN(v) ? defaultW : v;
+    };
+    const minW = Math.max(380, Math.round(baseW * 0.25));
+    const maxW = Math.max(minW, baseW - 320);
+    w = clmp(w || saved(), minW, maxW);
+    target.style.flexBasis = w + 'px';
+    target.style.flexShrink = '0';
+    target.style.flexGrow   = '0';
+  };
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = canvas.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const minW = Math.max(380, Math.round(wrapper.clientWidth * 0.25));
+      const newW = clamp(startW - (ev.clientX - startX), minW, wrapper.clientWidth - 320);
+      canvas.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(canvas.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
+
+// ── Title prompt modal — shared by Builder (new plan), Fork (copy plan), and Save As ──
+let _titleModalMode = 'builder';   // 'builder' | 'fork' | 'save-as'
+let _titleModalCtx  = null;        // fork/save-as context: { doc_id, version_file }
+
+function openBuilderModal() {
+  _titleModalMode = 'builder';
+  _titleModalCtx  = null;
+  document.getElementById('builder-title-modal-heading').textContent = 'New Plan (Builder)';
+  document.getElementById('builder-title-modal-desc').textContent =
+    'Give your plan a title, then browse and add Dr.Egeria commands directly from the canvas.';
+  document.getElementById('builder-title-modal-submit').textContent = 'Create Plan';
+  document.getElementById('builder-title-input').value = '';
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('builder-title-input').focus(), 50);
+}
+
+function openForkModal(doc_id, version_file, defaultTitle) {
+  _titleModalMode = 'fork';
+  _titleModalCtx  = { doc_id, version_file };
+  document.getElementById('builder-title-modal-heading').textContent = 'Fork as New Plan';
+  document.getElementById('builder-title-modal-desc').textContent =
+    'Creates an independent plan seeded from this one. Objects it already created ' +
+    '(by Qualified Name / GUID) are carried forward for reference — editing the fork never changes the original.';
+  document.getElementById('builder-title-modal-submit').textContent = 'Fork';
+  const input = document.getElementById('builder-title-input');
+  input.value = defaultTitle ? `${defaultTitle} (copy)` : '';
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
+function openSaveAsModal(doc_id, version_file, defaultTitle) {
+  _titleModalMode = 'save-as';
+  _titleModalCtx  = { doc_id, version_file };
+  document.getElementById('builder-title-modal-heading').textContent = 'Save As New Plan';
+  document.getElementById('builder-title-modal-desc').textContent =
+    'Saves the specification (narrative + Command Sequence) as a new, independent plan. ' +
+    'No execution history, outcome, or reference data is carried forward — just a clean copy.';
+  document.getElementById('builder-title-modal-submit').textContent = 'Save As';
+  const input = document.getElementById('builder-title-input');
+  input.value = defaultTitle ? `${defaultTitle} (copy)` : '';
+  document.getElementById('builder-title-modal').classList.remove('hidden');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
+function closeBuilderModal() {
+  document.getElementById('builder-title-modal').classList.add('hidden');
+  document.getElementById('builder-title-input').value = '';
+}
+
+// ── Add Column modal ─────────────────────────────────────────────────────────
+let _addColumnCallback = null;
+
+function openAddColumnModal(callback) {
+  _addColumnCallback = callback;
+  const nameEl = document.getElementById('add-column-name');
+  const keyEl  = document.getElementById('add-column-key');
+  nameEl.value = '';
+  keyEl.value  = '';
+  document.getElementById('add-column-modal').classList.remove('hidden');
+  setTimeout(() => nameEl.focus(), 50);
+
+  // Auto-fill key from name
+  nameEl.oninput = () => {
+    keyEl.value = nameEl.value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  };
+
+  nameEl.onkeydown = keyEl.onkeydown = (e) => {
+    if (e.key === 'Enter') confirmAddColumn();
+    if (e.key === 'Escape') closeAddColumnModal();
+  };
+}
+
+function closeAddColumnModal() {
+  document.getElementById('add-column-modal').classList.add('hidden');
+  _addColumnCallback = null;
+}
+
+function confirmAddColumn() {
+  const name = document.getElementById('add-column-name').value.trim();
+  const key  = document.getElementById('add-column-key').value.trim();
+  if (!name) return;
+  const cb = _addColumnCallback;   // save before close() nulls it
+  closeAddColumnModal();
+  if (cb) cb(name, key);
+}
+
+async function submitTitleModal() {
+  const title = document.getElementById('builder-title-input').value.trim();
+  if (!title) return;
+  if (_titleModalMode === 'fork') {
+    await _doFork(title);
+  } else if (_titleModalMode === 'save-as') {
+    await _doSaveAs(title);
+  } else {
+    await createBuilderPlan(title);
+  }
+}
+
+async function createBuilderPlan(title) {
+  closeBuilderModal();
+  try {
+    const r = await fetch('/api/drafts/builder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, perspective: selectedPerspective || null }),
+    });
+    const spec = await r.json();
+    _activeDraftId = spec.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    PlanCanvas.open(_activeDraftId);
+    setSidebarTab('plans');
+    loadDrafts();
+    appendMessage('assistant',
+      `**${title}** — plan canvas is open. Use **+ Add step** to browse and add ` +
+      `Dr.Egeria commands, or ask me questions in chat.`
+    );
+  } catch (e) {
+    appendMessage('assistant', 'Could not create builder plan: ' + e.message);
+  }
+}
+
+async function _doFork(title) {
+  const ctx = _titleModalCtx;
+  closeBuilderModal();
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(ctx.doc_id)}/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, version_file: ctx.version_file || null }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    const result = await r.json();
+    await loadPlans();
+    openPlanEditor(result.doc_id, null);
+    _showToast(`Forked as "${title}" — opened in the editor.`);
+  } catch (e) {
+    alert(`Could not fork plan: ${e.message}`);
+  }
+}
+
+async function _doSaveAs(title) {
+  const ctx = _titleModalCtx;
+  closeBuilderModal();
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(ctx.doc_id)}/save-as`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title, version_file: ctx.version_file || null }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    const result = await r.json();
+    await loadPlans();
+    openPlanEditor(result.doc_id, null);
+    _showToast(`Saved as "${title}" — opened in the editor.`);
+  } catch (e) {
+    alert(`Could not save plan: ${e.message}`);
+  }
+}
+
+// ── Import Plan modal ─────────────────────────────────────────────────────────
+function openImportModal() {
+  document.getElementById('import-content-input').value = '';
+  document.getElementById('import-title-input').value = '';
+  document.getElementById('import-file-input').value = '';
+  document.getElementById('import-plan-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('import-content-input').focus(), 50);
+}
+function closeImportModal() {
+  document.getElementById('import-plan-modal').classList.add('hidden');
+}
+function _handleImportFileChosen(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('import-content-input').value = reader.result; };
+  reader.readAsText(file);
+}
+async function submitImportPlan() {
+  const content = document.getElementById('import-content-input').value.trim();
+  if (!content) return;
+  const title = document.getElementById('import-title-input').value.trim() || null;
+  closeImportModal();
+  try {
+    const r = await fetch('/api/plans/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ content, title }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    const result = await r.json();
+    await loadPlans();
+    openPlanEditor(result.doc_id, null);
+    _showToast('Plan imported — review and Validate before executing.');
+  } catch (e) {
+    alert(`Could not import plan: ${e.message}`);
+  }
+}
+
+// ── Save as Template modal ─────────────────────────────────────────────────────
+let _saveAsTemplateDocId = null;
+
+function openSaveAsTemplateModal(doc_id) {
+  _saveAsTemplateDocId = doc_id;
+  document.getElementById('save-as-template-name-input').value = '';
+  document.getElementById('save-as-template-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('save-as-template-name-input').focus(), 50);
+}
+function closeSaveAsTemplateModal() {
+  document.getElementById('save-as-template-modal').classList.add('hidden');
+  _saveAsTemplateDocId = null;
+}
+// Mirrors PlanTemplateManager._safe_name() in advisor/plan_templates.py so we can
+// detect a filename collision before saving overwrites an existing template.
+function _safeTemplateFilename(name) {
+  let s = name.toLowerCase().trim();
+  s = s.replace(/[^\w\s-]/g, '');
+  s = s.replace(/[\s_-]+/g, '_');
+  s = s.slice(0, 60).replace(/^_+|_+$/g, '');
+  return s || 'template';
+}
+async function confirmSaveAsTemplate() {
+  const name = document.getElementById('save-as-template-name-input').value.trim();
+  if (!name) return;
+  const doc_id = _saveAsTemplateDocId;
+
+  try {
+    const r0 = await fetch('/api/plan-templates', { headers: Auth.getHeaders() });
+    const existing = (await r0.json()).templates || [];
+    const targetFile = _safeTemplateFilename(name);
+    const collision = existing.find(t => t.filename === targetFile);
+    if (collision) {
+      const proceed = confirm(`A template named "${collision.name}" already exists.\n\nSave will overwrite it — this cannot be undone. Continue?`);
+      if (!proceed) return;
+    }
+  } catch { /* if the lookup fails, fall through and let the save attempt proceed */ }
+
+  closeSaveAsTemplateModal();
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(doc_id)}/save-as-template`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    _showToast(`Saved as template "${name}" — see Plan Templates in the Plans tab, or say "start from template ${name}".`);
+    loadTemplates();
+  } catch (e) {
+    alert(`Could not save template: ${e.message}`);
+  }
+}
+
+// ── Import Report Spec modal ──────────────────────────────────────────────────
+function openReportSpecImportModal() {
+  document.getElementById('import-report-spec-content-input').value = '';
+  document.getElementById('import-report-spec-title-input').value = '';
+  document.getElementById('import-report-spec-file-input').value = '';
+  document.getElementById('import-report-spec-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('import-report-spec-content-input').focus(), 50);
+}
+function closeReportSpecImportModal() {
+  document.getElementById('import-report-spec-modal').classList.add('hidden');
+}
+function _handleReportSpecImportFileChosen(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('import-report-spec-content-input').value = reader.result; };
+  reader.readAsText(file);
+}
+async function submitImportReportSpec() {
+  const content = document.getElementById('import-report-spec-content-input').value.trim();
+  if (!content) return;
+  const title = document.getElementById('import-report-spec-title-input').value.trim() || null;
+  closeReportSpecImportModal();
+  try {
+    const r = await fetch('/api/reports/specs/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ content, title }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+    await loadReportDocs();
+    _showToast('Report spec imported — open it from Custom Specs to review before running.');
+  } catch (e) {
+    alert(`Could not import report spec: ${e.message}`);
+  }
+}
+
+// ── Command picker ──────────────────────────────────────────────────────────────
+let _cmdPickerData = null;   // { family: [{name, family, aliases, in_catalog}] }
+let _cmdPickerFamily = null; // currently selected family filter
+let _cmdPickerCallback = null; // called with command name when user picks one
+
+async function openCmdPicker(onSelect) {
+  _cmdPickerCallback = onSelect;
+  document.getElementById('cmd-picker-modal').classList.remove('hidden');
+  document.getElementById('cmd-picker-search').value = '';
+  if (!_cmdPickerData) {
+    document.getElementById('cmd-picker-list').innerHTML =
+      '<p class="text-xs text-slate-500 p-2">Loading commands…</p>';
+    try {
+      const r = await fetch('/api/actions', { headers: Auth.getHeaders() });
+      const data = await r.json();
+      _cmdPickerData = data.families || {};
+    } catch {
+      document.getElementById('cmd-picker-list').innerHTML =
+        '<p class="text-xs text-red-400 p-2">Could not load command catalog.</p>';
+      return;
+    }
+  }
+  _cmdPickerFamily = null;
+  _renderCmdPickerTabs();
+  _renderCmdPickerList('');
+  setTimeout(() => document.getElementById('cmd-picker-search').focus(), 50);
+}
+
+function closeCmdPicker() {
+  document.getElementById('cmd-picker-modal').classList.add('hidden');
+  _cmdPickerCallback = null;
+}
+
+function _renderCmdPickerTabs() {
+  const el = document.getElementById('cmd-picker-tabs');
+  el.innerHTML = '';
+  const families = Object.keys(_cmdPickerData || {});
+  // "All" tab
+  const allBtn = document.createElement('button');
+  allBtn.textContent = 'All';
+  allBtn.className = `px-2 py-0.5 rounded text-xs transition-colors ${
+    !_cmdPickerFamily ? 'bg-violet-700 text-white' : 'text-slate-400 hover:text-slate-200'
+  }`;
+  allBtn.onclick = () => { _cmdPickerFamily = null; _renderCmdPickerTabs(); _renderCmdPickerList(document.getElementById('cmd-picker-search').value); };
+  el.appendChild(allBtn);
+  families.forEach(fam => {
+    const btn = document.createElement('button');
+    btn.textContent = fam;
+    btn.className = `px-2 py-0.5 rounded text-xs transition-colors ${
+      _cmdPickerFamily === fam ? 'bg-violet-700 text-white' : 'text-slate-400 hover:text-slate-200'
+    }`;
+    btn.onclick = () => { _cmdPickerFamily = fam; _renderCmdPickerTabs(); _renderCmdPickerList(document.getElementById('cmd-picker-search').value); };
+    el.appendChild(btn);
+  });
+}
+
+function filterCmdPicker(q) { _renderCmdPickerList(q); }
+
+function _renderCmdPickerList(searchQ) {
+  const el = document.getElementById('cmd-picker-list');
+  el.innerHTML = '';
+  const q = searchQ.toLowerCase().trim();
+  const families = _cmdPickerData || {};
+  let total = 0;
+
+  const famKeys = _cmdPickerFamily ? [_cmdPickerFamily] : Object.keys(families);
+  famKeys.forEach(fam => {
+    const cmds = (families[fam] || []).filter(c => {
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q) ||
+             (c.aliases || []).some(a => a.includes(q));
+    });
+    if (!cmds.length) return;
+    total += cmds.length;
+    if (!_cmdPickerFamily) {
+      const hdr = document.createElement('p');
+      hdr.className = 'text-xs font-semibold text-slate-500 uppercase tracking-wider px-1 pt-2 pb-0.5';
+      hdr.textContent = fam;
+      el.appendChild(hdr);
+    }
+    cmds.forEach(cmd => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between gap-2 px-2 py-1.5 rounded hover:bg-slate-700/60 cursor-pointer group';
+      row.innerHTML = `
+        <div class="flex flex-col min-w-0">
+          <span class="text-xs text-slate-200 font-medium truncate">${_esc(cmd.name)}</span>
+          ${cmd.aliases?.length ? `<span class="text-[10px] text-slate-500 truncate">${_esc(cmd.aliases.slice(0,3).join(', '))}</span>` : ''}
+        </div>
+        <button class="shrink-0 px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-all">Add</button>
+      `;
+      row.onclick = () => {
+        if (_cmdPickerCallback) _cmdPickerCallback(cmd.name);
+        closeCmdPicker();
+      };
+      el.appendChild(row);
+    });
+  });
+  if (!total) {
+    el.innerHTML = '<p class="text-xs text-slate-500 p-3 text-center">No commands match.</p>';
+  }
+}
+
+function _esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Custom Specs Helper Functions ────────────────────────────────────────────────
+async function loadReportDocs() {
+  let docData, draftData;
+  try {
+    const docRes = await fetch('/api/reports/docs', { headers: Auth.getHeaders() });
+    docData = await docRes.json();
+    const draftRes = await fetch('/api/reports/drafts', { headers: Auth.getHeaders() });
+    draftData = await draftRes.json();
+  } catch (e) {
+    console.error("Failed to load report docs/drafts", e);
+    return;
+  }
+
+  const el = document.getElementById('report-doc-list');
+  if (!el) return;
+  el.innerHTML = '';
+
+  const drafts = draftData || [];
+  const inbox = docData.inbox || [];
+  const outbox = docData.outbox || [];
+  const trash = docData.trash || [];
+
+  if (!drafts.length && !inbox.length && !outbox.length && !trash.length) {
+    el.innerHTML = '<div class="px-2 text-slate-600 italic text-[11px]">No report specs yet</div>';
+    return;
+  }
+
+  const makeRow = (item, type) => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1';
+
+    const btn = document.createElement('button');
+    let colorCls = '';
+
+    if (type === 'draft') {
+      const isActive = item.draft_id === _activeDraftId;
+      colorCls = isActive ? 'text-amber-300 bg-amber-900/30' : 'text-amber-400/70 hover:bg-amber-900/20 hover:text-amber-300';
+      btn.className = `flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ${colorCls}`;
+      const label = item.answers?.Heading || item.title || item.draft_id;
+      btn.textContent = (isActive ? '▸ ' : '') + (label.length > 30 ? label.slice(0, 29) + '…' : label);
+      btn.title = `${label}\nPhase: ${item.phase_label || item.phase}`;
+      btn.onclick = () => {
+        if (isActive) return;
+        appendMessage('you', `Resume draft ${item.draft_id}`);
+        submitQuery(`resume draft ${item.draft_id}`, { intent_override: 'report' });
+      };
+
+      row.appendChild(btn);
+
+      const phase = document.createElement('span');
+      phase.className = 'shrink-0 text-slate-600 text-[10px] truncate max-w-[60px]';
+      phase.textContent = (item.phase_label || item.phase || '').replace('elicit_', 'Q&A:').replace('_', ' ');
+      row.appendChild(phase);
+
+      const del = document.createElement('button');
+      del.className = 'shrink-0 text-slate-700 hover:text-red-400 transition-colors text-xs px-1';
+      del.title = 'Discard this draft';
+      del.textContent = '✕';
+      del.onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`Discard draft "${label}"?`)) return;
+        if (item.draft_id === _activeDraftId) {
+          _activeDraftId = null;
+          sessionStorage.removeItem('ea_active_draft');
+          ReportSpecCanvas.close();
+        }
+        await fetch(`/api/reports/drafts/${item.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
+        loadReportDocs();
+      };
+      row.appendChild(del);
+
+    } else {
+      const folder = item.folder || type;
+      colorCls = folder === 'inbox' ? 'text-violet-300 hover:bg-violet-900/40'
+               : folder === 'outbox' ? (item.status === 'Failed' ? 'text-rose-400 hover:bg-rose-950/30' : 'text-emerald-400 hover:bg-emerald-900/30')
+               : 'text-slate-500 hover:bg-slate-800/50 line-through';
+      btn.className = `flex-1 text-left px-2 py-0.5 rounded transition-colors truncate ${colorCls}`;
+      const label = item.title && item.title !== '(untitled)' ? item.title : item.doc_id;
+      btn.textContent = label;
+      btn.title = item.doc_id;
+      btn.onclick = () => viewReportDocInChat(item.doc_id);
+
+      row.appendChild(btn);
+
+      if (folder === 'inbox') {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-500 hover:text-violet-300 hover:bg-violet-950/40 text-xs transition-colors';
+        editBtn.title = 'Edit report columns in canvas';
+        editBtn.textContent = '✏';
+        editBtn.onclick = async e => {
+          e.stopPropagation();
+          if (item.draft_id) {
+            _activeDraftId = item.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            ReportSpecCanvas.open(_activeDraftId);
+          } else {
+            editBtn.disabled = true; editBtn.textContent = '…';
+            try {
+              const r = await fetch(`/api/reports/specs/${encodeURIComponent(item.doc_id)}/edit`, {
+                method: 'POST', headers: Auth.getHeaders(),
+              });
+              const data = await r.json();
+              if (data.found && data.draft_id) {
+                _activeDraftId = data.draft_id;
+                sessionStorage.setItem('ea_active_draft', _activeDraftId);
+                await ReportSpecCanvas.open(data.draft_id);
+                setSidebarTab('reports');
+                loadReportDocs();
+              } else {
+                appendMessage('system', `Could not open editor for **${item.doc_id}**: ${data.error || 'unknown error'}`);
+              }
+            } catch(err) {
+              appendMessage('system', `Edit failed: ${err.message}`);
+            } finally {
+              editBtn.disabled = false; editBtn.textContent = '✏';
+            }
+          }
+        };
+        row.appendChild(editBtn);
+
+        const execFmtSel = document.createElement('select');
+        execFmtSel.className = 'shrink-0 bg-slate-700 border border-slate-600 rounded px-1 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors';
+        execFmtSel.title = 'Output format';
+        ['TABLE','LIST','MERMAID','REPORT','JSON'].forEach(f => {
+          const o = document.createElement('option'); o.value = f; o.textContent = f;
+          execFmtSel.appendChild(o);
+        });
+        execFmtSel.onclick = e => e.stopPropagation();
+        row.appendChild(execFmtSel);
+
+        const execBtn = document.createElement('button');
+        execBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white text-xs transition-colors';
+        execBtn.title = 'Execute this report spec';
+        execBtn.textContent = '▶';
+        execBtn.onclick = e => {
+          e.stopPropagation();
+          const fmt = execFmtSel.value || 'TABLE';
+          appendMessage('you', `execute report spec ${item.doc_id} (${fmt})`);
+          submitQuery(`execute report spec ${item.doc_id}`, { output_format: fmt });
+        };
+        row.appendChild(execBtn);
+      } else if (folder === 'outbox') {
+        const recoverBtn = document.createElement('button');
+        recoverBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-500 hover:text-amber-300 hover:bg-slate-800/50 text-xs transition-colors';
+        recoverBtn.title = 'Edit this report spec before re-running (strips outcome)';
+        recoverBtn.textContent = '✏';
+        recoverBtn.onclick = async e => {
+          e.stopPropagation();
+          recoverBtn.disabled = true; recoverBtn.textContent = '…';
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/recover`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            const res = await r.json();
+            await loadReportDocs();
+            viewReportDocInChat(res.doc_id);
+          } catch (err) {
+            alert(`Could not recover report: ${err.message}`);
+            recoverBtn.disabled = false; recoverBtn.textContent = '✏';
+          }
+        };
+        row.appendChild(recoverBtn);
+
+        const rerunBtn = document.createElement('button');
+        rerunBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-emerald-800 hover:bg-emerald-700 text-white text-xs transition-colors';
+        rerunBtn.title = 'Re-run this report now';
+        rerunBtn.textContent = '▶';
+        rerunBtn.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm(`Re-run "${label}" now? This runs the report query again.`)) return;
+          rerunBtn.disabled = true; rerunBtn.textContent = '…';
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/retry`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            const res = await r.json();
+            await loadReportDocs();
+            viewReportDocInChat(res.doc_id);
+          } catch (err) {
+            alert(`Could not re-run report: ${err.message}`);
+          } finally {
+            rerunBtn.disabled = false; rerunBtn.textContent = '▶';
+          }
+        };
+        row.appendChild(rerunBtn);
+      } else if (folder === 'trash') {
+        const restoreBtn = document.createElement('button');
+        restoreBtn.className = 'shrink-0 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs transition-colors';
+        restoreBtn.title = 'Restore this report spec to Inbox';
+        restoreBtn.textContent = '↺';
+        restoreBtn.onclick = async e => {
+          e.stopPropagation();
+          restoreBtn.disabled = true;
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/restore-trash`, { method: 'POST', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            await loadReportDocs();
+          } catch (err) {
+            alert(`Could not restore report: ${err.message}`);
+            restoreBtn.disabled = false;
+          }
+        };
+        row.appendChild(restoreBtn);
+
+        const purgeBtn = document.createElement('button');
+        purgeBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+        purgeBtn.title = 'Permanently delete';
+        purgeBtn.textContent = '🗑';
+        purgeBtn.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm(`Permanently delete "${label}"?\n\nThis cannot be undone.`)) return;
+          purgeBtn.disabled = true;
+          try {
+            const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/purge`, { method: 'DELETE', headers: Auth.getHeaders() });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `Server error ${r.status}`);
+            }
+            loadReportDocs();
+          } catch (err) {
+            alert(`Could not purge report: ${err.message}`);
+            purgeBtn.disabled = false;
+          }
+        };
+        row.appendChild(purgeBtn);
+        return row;
+      }
+
+      // Export button — inbox and outbox only
+      const exportBtn = document.createElement('button');
+      exportBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-800/50 text-xs transition-colors';
+      exportBtn.title = 'Download this report spec as a markdown file';
+      exportBtn.textContent = '⤓';
+      exportBtn.onclick = e => {
+        e.stopPropagation();
+        window.open(`/api/reports/docs/${encodeURIComponent(item.doc_id)}/export`, '_blank');
+      };
+      row.appendChild(exportBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'shrink-0 px-1 py-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-950/40 text-xs transition-colors';
+      delBtn.title = 'Move this report spec to Trash';
+      delBtn.textContent = '×';
+      delBtn.onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`Move "${label}" to Trash?`)) return;
+        delBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/reports/docs/${encodeURIComponent(item.doc_id)}`, { method: 'DELETE', headers: Auth.getHeaders() });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+          }
+          loadReportDocs();
+        } catch (err) {
+          alert(`Could not delete report spec: ${err.message}`);
+          delBtn.disabled = false;
+        }
+      };
+      row.appendChild(delBtn);
+    }
+    return row;
+  };
+
+  const renderGroup = (items, type, label) => {
+    if (!items.length) return;
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 text-slate-600 uppercase text-xs font-semibold tracking-wider';
+    hdr.textContent = label;
+    el.appendChild(hdr);
+    items.forEach(item => el.appendChild(makeRow(item, type)));
+  };
+
+  renderGroup(drafts, 'draft', 'Active Drafts');
+  renderGroup(inbox, 'inbox', 'Inbox');
+  renderGroup(outbox, 'outbox', 'Outbox');
+
+  if (trash.length) {
+    const hdr = document.createElement('div');
+    hdr.className = 'px-2 pt-1 flex items-center gap-1 cursor-pointer text-slate-600 uppercase text-xs font-semibold tracking-wider hover:text-slate-400';
+    hdr.textContent = `${_trashExpandedReports ? '▾' : '▸'} Trash (${trash.length})`;
+    hdr.onclick = () => { _trashExpandedReports = !_trashExpandedReports; loadReportDocs(); };
+    el.appendChild(hdr);
+    if (_trashExpandedReports) {
+      trash.forEach(item => el.appendChild(makeRow(item, 'trash')));
+    }
+  }
+}
+let _trashExpandedReports = false;
+
+function triggerReportGeneration() {
+  if (!_activeDraftId) return;
+  appendMessage('you', 'generate now');
+  submitQuery('generate now', { intent_override: 'report' });
+}
+
+function triggerReportExecution(explicitDocId) {
+  const docId = explicitDocId || document.getElementById('rcanvas-title')?.dataset?.docId || _activeDraftId;
+  if (!docId) return;
+  const fmt = document.getElementById('rcanvas-format-select')?.value || 'REPORT';
+  const limitEl = document.getElementById('rcanvas-limit-select');
+  const limit = limitEl ? parseInt(limitEl.value) : 100;
+  appendMessage('you', `▶ Run Report (${fmt}, limit ${limit})`);
+  submitQuery(`execute report spec ${docId}`, { output_format: fmt, page_size: limit });
+}
+
+function openReportBuilderModal() {
+  document.getElementById('report-builder-title-input').value = '';
+  document.getElementById('report-builder-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('report-builder-title-input').focus(), 50);
+}
+
+function closeReportBuilderModal() {
+  document.getElementById('report-builder-modal').classList.add('hidden');
+  document.getElementById('report-builder-title-input').value = '';
+}
+
+async function submitReportBuilderModal() {
+  const title = document.getElementById('report-builder-title-input').value.trim();
+  if (!title) return;
+  await createReportBuilderDraft(title);
+}
+
+async function createReportBuilderDraft(title) {
+  closeReportBuilderModal();
+  try {
+    const r = await fetch('/api/reports/drafts/builder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify({ title }),
+    });
+    if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error(err.detail || r.statusText); }
+    const spec = await r.json();
+    _activeDraftId = spec.draft_id;
+    sessionStorage.setItem('ea_active_draft', _activeDraftId);
+    ReportSpecCanvas.open(_activeDraftId);
+    setSidebarTab('reports');
+    loadReportDocs();
+    appendMessage('assistant',
+      `**${title}** — report canvas is open. Use the canvas to customize columns and metadata, or ask me questions in chat.`
+    );
+  } catch (e) {
+    appendMessage('assistant', 'Could not create report draft: ' + e.message);
+  }
+}
+
+function openReportSpecCanvas(draftId) {
+  ReportSpecCanvas.open(draftId);
+}
+
+async function viewReportDocInChat(doc_id) {
+  try {
+    const r = await fetch(`/api/reports/docs/${encodeURIComponent(doc_id)}`, { headers: Auth.getHeaders() });
+    if (!r.ok) { alert(`Could not load report spec ${doc_id}`); return; }
+    const data = await r.json();
+    const title = data.folder === 'outbox' ? `Run outcome for **${doc_id}**` : `Report spec document **${doc_id}**`;
+    const wrap = appendMessage('assistant', `### ${title}\n\n\`\`\`markdown\n${data.content}\n\`\`\``);
+
+    if (data.folder === 'inbox') {
+      const banner = document.createElement('div');
+      banner.className = 'mt-2 px-3 py-2 rounded bg-slate-700/50 border border-slate-600/50 text-xs flex items-center gap-3';
+
+      const info = document.createElement('span');
+      info.className = 'text-slate-300 flex-1';
+      info.innerHTML = `Would you like to run this report or edit its columns?`;
+      banner.appendChild(info);
+
+      const runBtn = document.createElement('button');
+      runBtn.className = 'px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shrink-0 transition-colors';
+      runBtn.textContent = '▶ Run Report';
+      runBtn.onclick = () => {
+        triggerReportExecution(doc_id);
+      };
+      banner.appendChild(runBtn);
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold shrink-0 transition-colors';
+      editBtn.textContent = '✏ Edit Canvas';
+      editBtn.onclick = async () => {
+        try {
+          const res = await fetch(`/api/reports/specs/${encodeURIComponent(doc_id)}/edit`, {
+            method: 'POST', headers: Auth.getHeaders(),
+          });
+          const editData = await res.json();
+          if (editData.found && editData.draft_id) {
+            _activeDraftId = editData.draft_id;
+            sessionStorage.setItem('ea_active_draft', _activeDraftId);
+            await ReportSpecCanvas.open(editData.draft_id);
+            setSidebarTab('reports');
+            loadReportDocs();
+          }
+        } catch (e) {
+          alert(`Error: ${e.message}`);
+        }
+      };
+      banner.appendChild(editBtn);
+
+      wrap.appendChild(banner);
+    }
+  } catch (e) {
+    alert(`Error loading report doc: ${e.message}`);
+  }
+}
+
+function initReportCanvasResize() {
+  const handle = document.getElementById('resize-chat-report-canvas');
+  const canvas = document.getElementById('report-canvas-panel');
+  if (!handle || !canvas) return;
+  const wrapper = handle.closest('.flex');
+
+  const STOR_K = 'ea_report_canvas_w';
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = canvas.getBoundingClientRect().width;
+
+    function onMove(ev) {
+      const minW = Math.max(380, Math.round(wrapper.clientWidth * 0.25));
+      const newW = clamp(startW - (ev.clientX - startX), minW, wrapper.clientWidth - 320);
+      canvas.style.flexBasis = newW + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      localStorage.setItem(STOR_K, Math.round(canvas.getBoundingClientRect().width));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
+</script>
+
+<!-- ── Plan Editor Overlay ─────────────────────────────────────────────────── -->
+<div id="plan-editor-overlay" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col">
+
+  <!-- Toolbar -->
+  <div class="flex items-center gap-2 px-4 py-2.5 bg-slate-800 border-b border-slate-700 shrink-0">
+    <span class="text-violet-400 font-bold text-sm shrink-0">Plan Editor</span>
+    <span class="text-slate-500 text-sm">—</span>
+    <span id="ped-title" class="text-slate-100 text-sm font-semibold flex-1 truncate"></span>
+    <button id="ped-discuss-btn"
+      class="hidden px-3 py-1 rounded bg-amber-800/60 hover:bg-amber-700/80 text-amber-300 text-xs font-semibold transition-colors"
+      title="Return to chat to add or refine steps conversationally"
+      onclick="discussPlanChanges()">
+      💬 Discuss changes
+    </button>
+    <button id="ped-mode-btn"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 text-xs font-semibold transition-colors"
+      title="Switch between Basic (fewer fields) and Advanced (all template fields)">
+      Basic
+    </button>
+    <div class="w-px h-4 bg-slate-700 mx-1"></div>
+    <button id="ped-save-btn"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors disabled:opacity-40">
+      Save
+    </button>
+    <button id="ped-validate-btn"
+      class="px-3 py-1 rounded bg-blue-800 hover:bg-blue-700 text-white text-xs font-semibold transition-colors disabled:opacity-40">
+      ✅ Validate
+    </button>
+    <button id="ped-execute-btn"
+      class="px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold transition-colors disabled:opacity-40">
+      ▶ Execute
+    </button>
+    <button onclick="window.open(`/api/plans/${encodeURIComponent(_ped.doc_id)}/export`, '_blank')"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors"
+      title="Download this plan as a markdown file">
+      ⤓ Export
+    </button>
+    <button onclick="openSaveAsTemplateModal(_ped.doc_id)"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors"
+      title="Save this plan as a reusable, non-executable template">
+      Save as Template
+    </button>
+    <button onclick="closePlanEditor()"
+      class="ml-2 px-2 py-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-100 text-sm transition-colors">
+      ✕
+    </button>
+  </div>
+
+  <!-- Status bar -->
+  <div id="ped-status-bar" class="px-4 py-1 text-xs text-slate-500 bg-slate-900 border-b border-slate-800 shrink-0"></div>
+
+  <!-- Recovery bar — only visible for outbox plans -->
+  <div id="ped-recovery-bar" class="hidden shrink-0 px-4 py-2 bg-slate-800/60 border-b border-slate-700/50 flex items-center gap-3 text-xs text-slate-300">
+    <span class="font-semibold">This plan has been executed.</span>
+    <span class="text-slate-400">Re-run it as-is, edit it first, or fork it to build on what it created:</span>
+    <button onclick="pedRerunNow()"
+      class="px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-semibold transition-colors">
+      ▶ Re-run Now
+    </button>
+    <button onclick="pedRecoverForEditing()"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold transition-colors">
+      ✏ Edit &amp; Re-run
+    </button>
+    <button onclick="pedShowVersionHistory()"
+      class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold transition-colors">
+      Version History
+    </button>
+  </div>
+
+  <!-- Version history panel — hidden by default -->
+  <div id="ped-version-panel" class="hidden shrink-0 px-4 py-3 bg-slate-900 border-b border-slate-700 max-h-48 overflow-y-auto text-xs">
+    <div class="font-semibold text-slate-300 mb-2">Version History
+      <button onclick="document.getElementById('ped-version-panel').classList.add('hidden')"
+        class="float-right text-slate-500 hover:text-slate-200">✕</button>
+    </div>
+    <div id="ped-version-list" class="flex flex-col gap-1 text-slate-400">Loading…</div>
+  </div>
+
+  <!-- Main scrollable content -->
+  <div class="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+
+    <!-- Narrative section -->
+    <div>
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Plan Narrative</div>
+      <textarea id="ped-narrative"
+        class="w-full bg-slate-800 text-slate-200 text-sm rounded-lg p-3 border border-slate-700 resize-none font-mono leading-relaxed focus:outline-none focus:border-violet-500"
+        rows="8"
+        placeholder="Goal, requirements, and approach..."></textarea>
+      <div class="text-xs text-slate-600 mt-1">Free-form markdown — edit the goal, requirements, and approach sections here.</div>
+    </div>
+
+    <!-- Command cards -->
+    <div>
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Command Sequence</div>
+      <div id="ped-commands" class="flex flex-col gap-3"></div>
+      <div class="flex gap-2 mt-3">
+        <button onclick="_pedAddStep()"
+          class="flex-1 text-xs text-slate-500 hover:text-violet-300 border border-dashed border-slate-700
+                 hover:border-violet-500/50 rounded py-1.5 transition-colors">
+          + Add step
+        </button>
+        <button onclick="_pedAddNote()"
+          class="flex-1 text-xs text-slate-500 hover:text-amber-300 border border-dashed border-slate-700
+                 hover:border-amber-500/50 rounded py-1.5 transition-colors"
+          title="Insert a free-form text note between steps">
+          📝 Add note
+        </button>
+      </div>
+    </div>
+
+    <!-- Outcome (read-only, executed plans) -->
+    <div id="ped-outcome" class="hidden">
+      <div class="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">Outcome</div>
+      <div class="ped-outcome-body prose prose-invert text-sm text-slate-300 max-w-none bg-slate-800 rounded-lg p-4 border border-emerald-900/40"></div>
+    </div>
+
+  </div>
+
+  <!-- Validation result panel (slides up from bottom) -->
+  <div id="ped-validate-result"
+    class="hidden shrink-0 px-5 py-4 bg-slate-800 border-t border-slate-700 max-h-64 overflow-y-auto text-sm">
+    <button onclick="document.getElementById('ped-validate-result').classList.add('hidden')"
+      class="float-right text-slate-500 hover:text-slate-200 text-xs mb-1">✕ close</button>
+  </div>
+
+</div>
+
+<!-- ── Login overlay ───────────────────────────────────────────────────────── -->
+<div id="login-overlay"
+  class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center z-[100]"
+  onclick="if(event.target===this)Auth.hideLogin()">
+  <div class="bg-slate-800 border border-slate-600 rounded-2xl p-8 w-96 shadow-2xl">
+    <div class="flex items-center gap-3 mb-6">
+      <img src="/static/egeria-logo.png" alt="Egeria" class="h-8 w-auto">
+      <div>
+        <div class="text-slate-100 font-bold text-lg">Sign in to Egeria Advisor</div>
+        <div class="text-slate-400 text-xs mt-0.5">Use your Egeria username and password</div>
+      </div>
+    </div>
+
+    <!-- Session expired / portal message -->
+    <div id="login-message"
+      class="hidden mb-4 px-3 py-2 rounded-lg bg-amber-900/40 border border-amber-700/50 text-amber-300 text-xs">
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Username</label>
+        <input id="login-username" type="text" autocomplete="username"
+          placeholder="e.g. erinoverview"
+          class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password"
+          placeholder="••••••••"
+          class="w-full bg-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm
+                 border border-slate-600 focus:outline-none focus:border-cyan-500 transition-colors">
+      </div>
+
+      <!-- Error message -->
+      <div id="login-error"
+        class="hidden px-3 py-2 rounded-lg bg-red-900/40 border border-red-700/50 text-red-300 text-xs">
+      </div>
+
+      <button id="login-submit-btn"
+        class="w-full py-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold
+               text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-1">
+        Sign in
+      </button>
+    </div>
+
+    <div class="mt-5 pt-4 border-t border-slate-700 text-xs text-slate-500 text-center">
+      Knowledge questions and code examples are available without signing in.<br>
+      Reports and command execution require an active Egeria session.
+      <br><br>
+      <button onclick="Auth.hideLogin()"
+        class="text-slate-400 hover:text-slate-200 underline transition-colors">
+        Continue without signing in
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/artifact_canvas.js?v=20260713a"></script>
+<script src="/static/plan_canvas.js?v=20260713b"></script>
+<script src="/static/plan_editor.js?v=20260713a"></script>
+<script src="/static/report_spec_canvas.js?v=20260629i"></script>
+</body>
+</html>

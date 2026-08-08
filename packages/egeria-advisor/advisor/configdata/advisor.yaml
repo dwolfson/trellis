@@ -1,0 +1,206 @@
+egeria_user_perspectives:
+  - Data Steward
+  - Data Scientist
+  - Governance Officer
+  - Solution Architect
+  - Digital Product Manager
+  - Data Engineer
+  - Project Manager
+  - Security Officer
+  - Business Analyst
+  - Data Owner
+  - Researcher
+  - Application Developer
+  - AI Engineer
+  - Integration Specialist
+  - DevOps Engineer
+  - Individual
+  - Team Member
+
+data_sources:
+  # Must match the checkout that scripts/clone_repos.py / ingest_collections.py use
+  # (data/repos/egeria-python), so this path and the vector store stay in sync.
+  egeria_python_path: /home/dwolfson/localGit/egeria-v6/egeria-advisor/data/repos/egeria-python
+  # Annotated report specs (question_spec populated by generate_question_specs.py)
+  # Loaded into pyegeria MCP server via PYEGERIA_USER_REPORT_SPECS_DIR env var
+  report_specs_dir: config/report_specs
+  include_patterns:
+    - "*.py"
+    - "*.md"
+  exclude_patterns:
+    - "**/__pycache__/**"
+    - "**/deprecated/**"
+    - "**/.git/**"
+    - "**/.venv/**"
+    - "**/venv/**"
+    - "**/node_modules/**"
+    - "**/.pytest_cache/**"
+    - "**/.mypy_cache/**"
+    - "**/.tox/**"
+    - "**/build/**"
+    - "**/dist/**"
+    - "**/*.egg-info/**"
+    - "**/.eggs/**"
+
+vector_store:
+  host: localhost
+  port: 5442
+  # Collections are defined in advisor/collection_config.py
+  # Active collections (9 total) — backend is pgvector (see pgvector section below):
+  #   1. pyegeria         - Python SDK code and tests
+  #   2. pyegeria_cli     - hey_egeria CLI commands
+  #   3. pyegeria_drE     - Dr. Egeria markdown translator
+  #   4. egeria_java      - Java codebase (OMAS, OMAG, OMRS)
+  #   5. egeria_concepts  - Core concept definitions
+  #   6. egeria_types     - Type system and schema definitions
+  #   7. egeria_general   - Tutorials, guides, and how-tos
+  #   8. egeria_workspaces - Jupyter notebooks, examples, configs
+  #   9. egeria_templates - Dr. Egeria markdown command templates
+
+# pgvector backend (PostgreSQL + pgvector extension)
+# Set vector_store_backend: pgvector to activate
+pgvector:
+  host: localhost
+  port: 5442
+  dbname: egeria_advisor
+  user: egeria_advisor
+  password: advisor
+  max_connections: 10
+  ef_search: 128  # HNSW query-time parameter — higher = better recall, slower
+
+# Active vector store backend — pgvector is the only supported backend
+vector_store_backend: pgvector
+
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  models:
+    query: llama3.1:8b
+    code: codellama:13b
+    conversation: llama3.1:8b
+    maintenance: codellama:13b
+    planning: qwen2.5-coder:32b     # narrative generation, refinement, change application
+  parameters:
+    temperature: 0.3             # Lowered from 0.7 for factual answers
+    max_tokens: 3000             # Increased from 2000
+    top_p: 0.9
+    top_k: 40
+    repeat_penalty: 1.2          # Increased from 1.1 to reduce repetition
+    timeout: 60
+  model_overrides:
+    code:
+      temperature: 0.5
+      max_tokens: 3000
+    maintenance:
+      temperature: 0.4
+      max_tokens: 3000
+
+embeddings:
+  backend: pytorch  # pytorch or onnx
+  model: sentence-transformers/all-MiniLM-L6-v2
+  device: auto  # Auto-detect best device: CUDA, ROCm (AMD), MPS (Apple), or CPU
+  batch_size: 64
+  normalize: true
+  max_length: 512
+  # ONNX-specific settings (used when backend=onnx)
+  onnx:
+    model_path: models/all-MiniLM-L6-v2.onnx
+    providers: null  # null for auto-detection, or list: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+rag:
+  chunk_size: 512
+  chunk_overlap: 50
+  retrieval:
+    top_k: 10              # Increased from 5 for more sources
+    min_score: 0.30        # Keep at 0.30 - file type boosting handles quality
+    rerank: false
+  context:
+    max_length: 6000       # Increased from 4000 for more context
+    format_style: detailed
+    include_metadata: true
+  generation:
+    temperature: 0.3       # Lowered from 0.7 for more focused answers
+    max_tokens: 3000       # Increased from 2000 for longer answers
+    stream: false
+
+agents:
+  query_agent:
+    enabled: true
+    model: llama3.1:8b
+    temperature: 0.3
+    max_iterations: 3
+  code_agent:
+    enabled: true
+    model: codellama:13b
+    temperature: 0.5
+    max_iterations: 5
+  conversation_agent:
+    enabled: true
+    model: llama3.1:8b
+    temperature: 0.7
+    max_iterations: 10
+    memory_window: 10
+  maintenance_agent:
+    enabled: true
+    model: codellama:13b
+    temperature: 0.4
+    max_iterations: 5
+
+reports:
+  # Default page_size for MCP run_report calls.  0 = pyegeria default (500).
+  # Reduce to limit how many graph nodes Egeria traverses per query.
+  page_size: 100
+  # When the user supplies a specific search string (not * or blank), pass
+  # starts_with=True so Egeria does a prefix search instead of a full regex scan.
+  starts_with_on_filter: true
+
+governance_plans:
+  # Where plan documents are stored.  Asked on first use if not set.
+  # Supports ~ expansion.  Separate inbox (awaiting review/execution) and
+  # outbox (executed, with outcome sections appended).
+  inbox:        ~/egeria-plans/inbox/
+  outbox:       ~/egeria-plans/outbox/
+  trash:        ~/egeria-plans/trash/
+  drafts:       ~/egeria-plans/drafts/
+  plan_templates: ~/egeria-plans/plan_templates/
+  sessions:     ~/egeria-plans/sessions/    # full conversation transcripts
+
+cli:
+  default_agent: auto
+  interactive_mode: true
+  output_format: rich
+  show_citations: true
+  show_confidence: true
+  max_response_length: 5000
+
+observability:
+  mlflow:
+    enabled: true
+    tracking_uri: http://localhost:5025
+    experiment_name: egeria-advisor
+    log_system_metrics: true
+    log_query_metrics: true
+    auto_log: true
+  phoenix:
+    enabled: false
+    collector_endpoint: http://localhost:6006
+    trace_all_queries: false
+
+auth:
+  enabled: true
+  jwt_secret: ""          # override with ADVISOR_JWT_SECRET env var; auto-derived from hostname if blank
+  jwt_ttl_hours: 8        # token lifetime — one workday; re-login when expired
+  portal:
+    enabled: false
+    origin: "http://localhost:8885"
+    shared_secret: ""     # override with ADVISOR_PORTAL_SECRET env var
+    token_ttl_seconds: 30 # portal tokens expire quickly; Advisor exchanges them for a full JWT
+  anonymous_rag_mode: true  # allow unauthenticated RAG queries (Q&A, code examples, explanations)
+                            # set false to require login for all access
+
+logging:
+  level: INFO
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+  file: logs/advisor.log
+  rotation: "10 MB"
+  retention: "1 week"
