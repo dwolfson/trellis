@@ -22,6 +22,37 @@ class GitHubClient:
         cfg = get_config().github
         self._gh = Github(cfg.token or None, per_page=100)
 
+    def list_org_repos(
+        self, org: str, include_forks: bool = False, include_archived: bool = False
+    ) -> list[dict]:
+        """List an organization's repos as lightweight dicts (not full Repository
+        objects — callers here only need discovery-list metadata, not the full
+        API surface get_repo() returns). Pagination is handled transparently by
+        PyGitHub's PaginatedList (per_page=100, set in __init__).
+
+        Raises GithubException on org-not-found / auth / rate-limit — same
+        division of responsibility as get_repo(), which also lets these
+        propagate for the caller to translate.
+        """
+        org_obj = self._gh.get_organization(org)
+        out = []
+        for repo in org_obj.get_repos():
+            if repo.fork and not include_forks:
+                continue
+            if repo.archived and not include_archived:
+                continue
+            out.append({
+                "full_name": repo.full_name,
+                "html_url": repo.html_url,
+                "description": repo.description or "",
+                "stars": repo.stargazers_count,
+                "language": repo.language or "",
+                "archived": repo.archived,
+                "fork": repo.fork,
+                "updated_at": repo.updated_at.isoformat() if repo.updated_at else "",
+            })
+        return out
+
     def get_repo(self, github_url: str) -> Repository:
         slug = self._url_to_slug(github_url)
         if "/" not in slug:
