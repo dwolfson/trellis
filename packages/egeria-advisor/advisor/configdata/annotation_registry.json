@@ -1,0 +1,58 @@
+{
+  "annotations": [
+    {
+      "name": "SchemaAnalysis",
+      "egeria_type": "SchemaAnalysisAnnotation",
+      "description": "Discovered structural schema definitions, dependencies, and metadata.",
+      "properties_schema": {
+        "schema_name": "string",
+        "schema_type": "string",
+        "dependencies": "array[string]"
+      }
+    },
+    {
+      "name": "RelationshipLineage",
+      "egeria_type": "RelationshipAnnotation",
+      "description": "Discovered lineage mapping links and semantic relationships between data assets.",
+      "properties_schema": {
+        "related_entity_name": "string",
+        "relationship_type_name": "string",
+        "explanation": "string"
+      }
+    },
+    {
+      "name": "QualityComplexity",
+      "egeria_type": "QualityScoreAnnotation",
+      "description": "Static query complexity and structure metrics computed from view SQL ASTs.",
+      "properties_schema": {
+        "quality_scores": {
+          "complexity_score": "float",
+          "portability_rating": "float",
+          "node_count": "float",
+          "join_count": "float",
+          "cte_count": "float",
+          "subquery_count": "float"
+        }
+      }
+    },
+    {
+      "name": "DataClassPII",
+      "egeria_type": "DataClassAnnotation",
+      "description": "Discovered logical data classes (such as PII or SensitiveData) flowing through column-level lineage.",
+      "properties_schema": {
+        "candidate_data_class_names": "array[string]",
+        "pii_propagations": "array[object]"
+      }
+    },
+    {
+      "name": "GovernanceActionWarning",
+      "egeria_type": "RequestForActionAnnotation",
+      "description": "Actionable alerts requesting steward attention (e.g. high query complexity, sync drift).",
+      "properties_schema": {
+        "action_requested": "string",
+        "action_target_name": "string",
+        "explanation": "string"
+      }
+    }
+  ]
+}

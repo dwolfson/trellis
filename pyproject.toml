@@ -1,0 +1,25 @@
+[project]
+name = "trellis-workspace"
+version = "0.0.0"
+description = "Trellis — workspace root for Resource Explorer and Egeria Advisor"
+requires-python = ">=3.12,<4.0"
+dependencies = []
+
+# No [build-system] section: this makes the workspace root a "virtual" uv
+# project (not itself built/installed as a package) — it exists only to
+# declare workspace membership and hold shared tooling config.
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+resource-explorer = { workspace = true }
+egeria-advisor = { workspace = true }
+
+[tool.uv]
+# Combining both members' constraints in one resolution otherwise pulls an
+# ancient numba (0.53.1 -> llvmlite 0.36.0) via beeai-framework[rag] ->
+# unstructured, which doesn't build on Python 3.13. RE's own standalone
+# lockfile already resolved numba to 0.65.1 with no such issue — this
+# override just restores that same resolution inside the shared workspace.
+override-dependencies = ["numba>=0.60.0"]

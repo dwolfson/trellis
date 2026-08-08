@@ -1,0 +1,210 @@
+"""
+Externalized analysis catalog — the menu of analyses available per resource
+type — loaded from config/analysis_catalog.yaml, so adding, retagging, or
+reclassifying an analysis is a config change, not a code change here.
+
+See that file's header comment for the schema and the 7-intent scheme.
+
+This module also owns the (optional, fail-soft) live merge with Egeria's own
+Technology Type catalog: get_analyses() can append Egeria-native entries
+(via EgeriaTechTypeCatalog.get_produced_annotation_types()) alongside the
+local YAML ones. If Egeria is unreachable, only the local entries are
+returned — never block or error the whole panel on a live-Egeria failure.
+"""
+from __future__ import annotations
+
+import functools
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+log = logging.getLogger(__name__)
+
+_DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "configdata" / "analysis_catalog.yaml"
+
+# resource_type key (as used by this catalog / the /api/analyses/{resource_type}
+# route) -> Egeria Technology Type display name, for the live-merge lookup.
+# Only resource types with a known, confirmed Egeria Technology Type are
+# listed here — anything absent simply gets no live-merge entries.
+_RESOURCE_TYPE_TO_TECH_TYPE: dict[str, str] = {
+    "database": "PostgreSQL Relational Database",
+}
+
+# Outcome of the most recent _egeria_merge_entries() call per resource_type —
+# "not_applicable" (no tech type mapping configured), "unavailable" (mapping
+# exists but the live call failed/errored), or "ok" (call succeeded, even if
+# it produced zero entries). Read via get_egeria_merge_status(); lets the UI
+# show "live Egeria data unavailable" only when a merge was actually
+# attempted and failed, not for resource types that were never wired up.
+_last_merge_status: dict[str, str] = {}
+
+
+@dataclass(frozen=True)
+class AnalysisCatalogEntry:
+    id: str
+    name: str
+    description: str
+    resource_types: list[str]
+    intent: str
+    perspectives: list[str]
+    annotation_types: list[str]
+    source: str
+    run_time: str
+    action: str
+    recommended: bool
+    egeria_registration: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "resource_types": self.resource_types,
+            "intent": self.intent,
+            "perspectives": self.perspectives,
+            "annotation_types": self.annotation_types,
+            "source": self.source,
+            "run_time": self.run_time,
+            "action": self.action,
+            "recommended": self.recommended,
+            "egeria_registration": self.egeria_registration,
+        }
+
+
+def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
+    return AnalysisCatalogEntry(
+        id=raw["id"],
+        name=raw["name"],
+        description=raw.get("description", ""),
+        resource_types=list(raw.get("resource_types") or []),
+        intent=raw.get("intent", ""),
+        perspectives=list(raw.get("perspectives") or []),
+        annotation_types=list(raw.get("annotation_types") or []),
+        source=raw.get("source", "local"),
+        run_time=raw.get("run_time", "fast"),
+        action=raw.get("action", "survey"),
+        recommended=bool(raw.get("recommended", False)),
+        egeria_registration=dict(raw.get("egeria_registration") or {}),
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[AnalysisCatalogEntry]]:
+    if not config_path.exists():
+        return {"repo": [], "database": [], "filesystem": []}
+    with open(config_path) as f:
+        raw = yaml.safe_load(f) or {}
+
+    return {
+        "repo": [_entry_from_yaml(e) for e in raw.get("repo_analyses") or []],
+        "database": [_entry_from_yaml(e) for e in raw.get("database_analyses") or []],
+        "filesystem": [_entry_from_yaml(e) for e in raw.get("filesystem_analyses") or []],
+    }
+
+
+def clear_cache() -> None:
+    """Testing hook — the loader result is cached via lru_cache."""
+    _load.cache_clear()
+    _last_merge_status.clear()
+
+
+def get_egeria_merge_status(resource_type: str) -> str:
+    """Outcome of the most recent live-Egeria merge attempt for this
+    resource_type: "not_applicable" | "unavailable" | "ok" | "unknown" (no
+    get_analyses() call has run yet this process). Call get_analyses() first
+    — this reads the status it left behind, it doesn't trigger a call."""
+    return _last_merge_status.get(resource_type, "unknown")
+
+
+def list_perspectives() -> list[str]:
+    """Return the distinct, real (non-"all") perspective values actually used
+    across the catalog, sorted. Backs the UI's perspective selector so it's
+    data-driven rather than a hardcoded list that silently drifts out of sync
+    with what the catalog actually contains — see GET /api/analyses/perspectives.
+
+    NOTE: this is a stopgap sourced from RE's own local catalog only. It does
+    NOT yet reflect Egeria's native Perspective type, nor Egeria Advisor's own
+    perspective set (developer/data_engineer/data_steward/governance_officer)
+    — those are a real, larger unification the Trellis design work has already
+    flagged as its own thread.
+    """
+    values: set[str] = set()
+    for entries in _load().values():
+        for entry in entries:
+            values.update(p for p in entry.perspectives if p != "all")
+    return sorted(values)
+
+
+def _egeria_merge_entries(resource_type: str) -> list[dict]:
+    """Live-merge entries sourced from Egeria's Technology Type catalog for
+    this resource_type. Fail-soft: any error (no connection, no config,
+    Egeria down) logs and returns [] rather than propagating — callers must
+    never let this block or blank out the local catalog. Also records the
+    outcome in _last_merge_status so callers can distinguish "merge ran and
+    found nothing" from "merge couldn't run" — see get_egeria_merge_status()."""
+    tech_type = _RESOURCE_TYPE_TO_TECH_TYPE.get(resource_type)
+    if not tech_type:
+        _last_merge_status[resource_type] = "not_applicable"
+        return []
+    try:
+        from resource_explorer.surveyors.egeria_tech_type_catalog import EgeriaTechTypeCatalog
+
+        catalog = EgeriaTechTypeCatalog()
+        produced = catalog.get_produced_annotation_types(tech_type)
+    except Exception as exc:  # noqa: BLE001 - deliberately broad, fail-soft by design
+        log.info("Egeria live-merge unavailable for %s (%s): %s", resource_type, tech_type, exc)
+        _last_merge_status[resource_type] = "unavailable"
+        return []
+
+    _last_merge_status[resource_type] = "ok"
+    if not produced:
+        return []
+
+    entries: list[dict] = []
+    for pat in produced:
+        annotation_type = pat.get("annotation_type", "")
+        entries.append({
+            "id": f"egeria::{resource_type}::{pat.get('name', annotation_type)}",
+            "name": pat.get("name") or annotation_type or "Egeria Native Analysis",
+            "description": pat.get("description") or pat.get("explanation") or "",
+            "resource_types": [resource_type],
+            "intent": "assessment",
+            "perspectives": ["all"],
+            "annotation_types": [annotation_type] if annotation_type else [],
+            "source": "egeria",
+            "run_time": "async",
+            "action": "survey",
+            "recommended": False,
+            "egeria_registration": {"candidate": True, "native_process_ref": [resource_type, tech_type]},
+            "live_from_egeria": True,
+        })
+    return entries
+
+
+def get_analyses(
+    resource_type: str,
+    intent: str | None = None,
+    perspective: str | None = None,
+    include_egeria_live: bool = True,
+) -> list[dict]:
+    """Return analyses for a resource type, optionally filtered by intent and
+    perspective. Same signature and same list[dict] return shape as the
+    original resource_explorer.analysis_catalog.get_analyses() — this is a
+    drop-in replacement.
+
+    When include_egeria_live is True (the default), attempts to merge in
+    Egeria-native entries for this resource_type (fail-soft — see
+    _egeria_merge_entries). Set False to get local-catalog-only results
+    (e.g. for the scheduler, which should never depend on a live Egeria
+    call to determine what's due to run)."""
+    local = [e.to_dict() for e in _load().get(resource_type, [])]
+    live = _egeria_merge_entries(resource_type) if include_egeria_live else []
+    analyses = local + live
+
+    if intent and intent != "all":
+        analyses = [a for a in analyses if a["intent"] == intent]
+    if perspective and perspective != "all":
+        analyses = [a for a in analyses if "all" in a["perspectives"] or perspective in a["perspectives"]]
+    return analyses

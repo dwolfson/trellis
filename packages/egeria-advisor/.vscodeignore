@@ -1,0 +1,47 @@
+# Ignore virtual environments
+.venv/**
+venv/**
+env/**
+
+# Ignore Python cache
+__pycache__/**
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Ignore build artifacts
+build/**
+dist/**
+*.egg-info/**
+.eggs/**
+
+# Ignore test cache
+.pytest_cache/**
+.mypy_cache/**
+.tox/**
+.coverage
+htmlcov/**
+
+# Ignore logs
+*.log
+logs/**
+mlflow.log
+
+# Ignore data directories
+data/**
+.cache/**
+
+# Ignore node modules if any
+node_modules/**
+
+# Ignore git
+.git/**
+
+# Ignore IDE
+.idea/**
+.vscode/**
+
+# Ignore OS files
+.DS_Store
+Thumbs.db

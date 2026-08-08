@@ -1,0 +1,517 @@
+{
+  "timestamp": "2026-03-02T20:27:15.031453",
+  "overall_metrics": {
+    "total_queries": 25,
+    "successful_queries": 25,
+    "hallucination_rate": 0.040000000000000036,
+    "citation_rate": 0.96,
+    "honesty_rate": 0.0,
+    "non_hallucinated_count": 24
+  },
+  "metrics_by_type": {
+    "concept": {
+      "total_queries": 5,
+      "successful_queries": 5,
+      "hallucination_rate": 0.19999999999999996,
+      "citation_rate": 0.8,
+      "honesty_rate": 0.0,
+      "non_hallucinated_count": 4
+    },
+    "type": {
+      "total_queries": 5,
+      "successful_queries": 5,
+      "hallucination_rate": 0.0,
+      "citation_rate": 1.0,
+      "honesty_rate": 0.0,
+      "non_hallucinated_count": 5
+    },
+    "code": {
+      "total_queries": 5,
+      "successful_queries": 5,
+      "hallucination_rate": 0.0,
+      "citation_rate": 1.0,
+      "honesty_rate": 0.0,
+      "non_hallucinated_count": 5
+    },
+    "example": {
+      "total_queries": 5,
+      "successful_queries": 5,
+      "hallucination_rate": 0.0,
+      "citation_rate": 1.0,
+      "honesty_rate": 0.0,
+      "non_hallucinated_count": 5
+    },
+    "tutorial": {
+      "total_queries": 5,
+      "successful_queries": 5,
+      "hallucination_rate": 0.0,
+      "citation_rate": 1.0,
+      "honesty_rate": 0.0,
+      "non_hallucinated_count": 5
+    }
+  },
+  "all_results": [
+    {
+      "query": "What is metadata governance?",
+      "query_type": "concept",
+      "response_length": 10063,
+      "success": true,
+      "timestamp": "2026-03-02T19:52:26.556839",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Explain the concept of data lineage",
+      "query_type": "concept",
+      "response_length": 11464,
+      "success": true,
+      "timestamp": "2026-03-02T19:54:02.075514",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "What is an asset in Egeria?",
+      "query_type": "concept",
+      "response_length": 10952,
+      "success": true,
+      "timestamp": "2026-03-02T19:55:22.867870",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "What does OMAS stand for?",
+      "query_type": "concept",
+      "response_length": 390,
+      "success": true,
+      "timestamp": "2026-03-02T19:55:22.911738",
+      "has_citations": false,
+      "admits_limitation": false
+    },
+    {
+      "query": "Explain the Open Metadata Repository Services",
+      "query_type": "concept",
+      "response_length": 11499,
+      "success": true,
+      "timestamp": "2026-03-02T19:57:07.344674",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "What is the Asset entity type?",
+      "query_type": "type",
+      "response_length": 11373,
+      "success": true,
+      "timestamp": "2026-03-02T19:57:37.030537",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Describe the GlossaryTerm type",
+      "query_type": "type",
+      "response_length": 11313,
+      "success": true,
+      "timestamp": "2026-03-02T19:59:51.034790",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "What attributes does the Connection type have?",
+      "query_type": "type",
+      "response_length": 13644,
+      "success": true,
+      "timestamp": "2026-03-02T20:02:01.362956",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "What is the Referenceable entity type?",
+      "query_type": "type",
+      "response_length": 12465,
+      "success": true,
+      "timestamp": "2026-03-02T20:02:50.125957",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Explain the Classification type system",
+      "query_type": "type",
+      "response_length": 11509,
+      "success": true,
+      "timestamp": "2026-03-02T20:04:17.091326",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "How do I create an asset using pyegeria?",
+      "query_type": "code",
+      "response_length": 14983,
+      "success": true,
+      "timestamp": "2026-03-02T20:06:12.752371",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Show me how to connect to an OMAG server",
+      "query_type": "code",
+      "response_length": 14776,
+      "success": true,
+      "timestamp": "2026-03-02T20:07:29.138368",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "How do I search for glossary terms?",
+      "query_type": "code",
+      "response_length": 9524,
+      "success": true,
+      "timestamp": "2026-03-02T20:09:07.518976",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "What's the code to create a connection?",
+      "query_type": "code",
+      "response_length": 14414,
+      "success": true,
+      "timestamp": "2026-03-02T20:10:34.820743",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "How do I use the AssetConsumer client?",
+      "query_type": "code",
+      "response_length": 7824,
+      "success": true,
+      "timestamp": "2026-03-02T20:11:49.949802",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Show me an example of creating a glossary",
+      "query_type": "example",
+      "response_length": 9282,
+      "success": true,
+      "timestamp": "2026-03-02T20:13:55.240021",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Give me an example of asset cataloging",
+      "query_type": "example",
+      "response_length": 12108,
+      "success": true,
+      "timestamp": "2026-03-02T20:16:11.690476",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Show an example of lineage tracking",
+      "query_type": "example",
+      "response_length": 10490,
+      "success": true,
+      "timestamp": "2026-03-02T20:17:28.907396",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Example of using the governance engine",
+      "query_type": "example",
+      "response_length": 10989,
+      "success": true,
+      "timestamp": "2026-03-02T20:18:44.703675",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Show me how to deploy Egeria with Docker",
+      "query_type": "example",
+      "response_length": 14558,
+      "success": true,
+      "timestamp": "2026-03-02T20:20:18.899416",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "How do I get started with Egeria?",
+      "query_type": "tutorial",
+      "response_length": 14467,
+      "success": true,
+      "timestamp": "2026-03-02T20:21:50.016051",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Walk me through setting up pyegeria",
+      "query_type": "tutorial",
+      "response_length": 14246,
+      "success": true,
+      "timestamp": "2026-03-02T20:23:09.102074",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "How do I configure an OMAG server?",
+      "query_type": "tutorial",
+      "response_length": 14753,
+      "success": true,
+      "timestamp": "2026-03-02T20:24:15.566778",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "Guide me through creating a metadata repository",
+      "query_type": "tutorial",
+      "response_length": 12635,
+      "success": true,
+      "timestamp": "2026-03-02T20:25:48.851531",
+      "has_citations": true,
+      "admits_limitation": false
+    },
+    {
+      "query": "How do I set up the Coco Pharmaceuticals demo?",
+      "query_type": "tutorial",
+      "response_length": 10557,
+      "success": true,
+      "timestamp": "2026-03-02T20:27:15.030642",
+      "has_citations": true,
+      "admits_limitation": false
+    }
+  ],
+  "results_by_type": {
+    "concept": [
+      {
+        "query": "What is metadata governance?",
+        "query_type": "concept",
+        "response_length": 10063,
+        "success": true,
+        "timestamp": "2026-03-02T19:52:26.556839",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Explain the concept of data lineage",
+        "query_type": "concept",
+        "response_length": 11464,
+        "success": true,
+        "timestamp": "2026-03-02T19:54:02.075514",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "What is an asset in Egeria?",
+        "query_type": "concept",
+        "response_length": 10952,
+        "success": true,
+        "timestamp": "2026-03-02T19:55:22.867870",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "What does OMAS stand for?",
+        "query_type": "concept",
+        "response_length": 390,
+        "success": true,
+        "timestamp": "2026-03-02T19:55:22.911738",
+        "has_citations": false,
+        "admits_limitation": false
+      },
+      {
+        "query": "Explain the Open Metadata Repository Services",
+        "query_type": "concept",
+        "response_length": 11499,
+        "success": true,
+        "timestamp": "2026-03-02T19:57:07.344674",
+        "has_citations": true,
+        "admits_limitation": false
+      }
+    ],
+    "type": [
+      {
+        "query": "What is the Asset entity type?",
+        "query_type": "type",
+        "response_length": 11373,
+        "success": true,
+        "timestamp": "2026-03-02T19:57:37.030537",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Describe the GlossaryTerm type",
+        "query_type": "type",
+        "response_length": 11313,
+        "success": true,
+        "timestamp": "2026-03-02T19:59:51.034790",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "What attributes does the Connection type have?",
+        "query_type": "type",
+        "response_length": 13644,
+        "success": true,
+        "timestamp": "2026-03-02T20:02:01.362956",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "What is the Referenceable entity type?",
+        "query_type": "type",
+        "response_length": 12465,
+        "success": true,
+        "timestamp": "2026-03-02T20:02:50.125957",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Explain the Classification type system",
+        "query_type": "type",
+        "response_length": 11509,
+        "success": true,
+        "timestamp": "2026-03-02T20:04:17.091326",
+        "has_citations": true,
+        "admits_limitation": false
+      }
+    ],
+    "code": [
+      {
+        "query": "How do I create an asset using pyegeria?",
+        "query_type": "code",
+        "response_length": 14983,
+        "success": true,
+        "timestamp": "2026-03-02T20:06:12.752371",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Show me how to connect to an OMAG server",
+        "query_type": "code",
+        "response_length": 14776,
+        "success": true,
+        "timestamp": "2026-03-02T20:07:29.138368",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "How do I search for glossary terms?",
+        "query_type": "code",
+        "response_length": 9524,
+        "success": true,
+        "timestamp": "2026-03-02T20:09:07.518976",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "What's the code to create a connection?",
+        "query_type": "code",
+        "response_length": 14414,
+        "success": true,
+        "timestamp": "2026-03-02T20:10:34.820743",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "How do I use the AssetConsumer client?",
+        "query_type": "code",
+        "response_length": 7824,
+        "success": true,
+        "timestamp": "2026-03-02T20:11:49.949802",
+        "has_citations": true,
+        "admits_limitation": false
+      }
+    ],
+    "example": [
+      {
+        "query": "Show me an example of creating a glossary",
+        "query_type": "example",
+        "response_length": 9282,
+        "success": true,
+        "timestamp": "2026-03-02T20:13:55.240021",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Give me an example of asset cataloging",
+        "query_type": "example",
+        "response_length": 12108,
+        "success": true,
+        "timestamp": "2026-03-02T20:16:11.690476",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Show an example of lineage tracking",
+        "query_type": "example",
+        "response_length": 10490,
+        "success": true,
+        "timestamp": "2026-03-02T20:17:28.907396",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Example of using the governance engine",
+        "query_type": "example",
+        "response_length": 10989,
+        "success": true,
+        "timestamp": "2026-03-02T20:18:44.703675",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Show me how to deploy Egeria with Docker",
+        "query_type": "example",
+        "response_length": 14558,
+        "success": true,
+        "timestamp": "2026-03-02T20:20:18.899416",
+        "has_citations": true,
+        "admits_limitation": false
+      }
+    ],
+    "tutorial": [
+      {
+        "query": "How do I get started with Egeria?",
+        "query_type": "tutorial",
+        "response_length": 14467,
+        "success": true,
+        "timestamp": "2026-03-02T20:21:50.016051",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Walk me through setting up pyegeria",
+        "query_type": "tutorial",
+        "response_length": 14246,
+        "success": true,
+        "timestamp": "2026-03-02T20:23:09.102074",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "How do I configure an OMAG server?",
+        "query_type": "tutorial",
+        "response_length": 14753,
+        "success": true,
+        "timestamp": "2026-03-02T20:24:15.566778",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "Guide me through creating a metadata repository",
+        "query_type": "tutorial",
+        "response_length": 12635,
+        "success": true,
+        "timestamp": "2026-03-02T20:25:48.851531",
+        "has_citations": true,
+        "admits_limitation": false
+      },
+      {
+        "query": "How do I set up the Coco Pharmaceuticals demo?",
+        "query_type": "tutorial",
+        "response_length": 10557,
+        "success": true,
+        "timestamp": "2026-03-02T20:27:15.030642",
+        "has_citations": true,
+        "admits_limitation": false
+      }
+    ]
+  }
+}

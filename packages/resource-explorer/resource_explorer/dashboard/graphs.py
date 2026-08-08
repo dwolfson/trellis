@@ -1,0 +1,428 @@
+"""Graph builders — Plotext for terminal output, Plotly for web/export."""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from resource_explorer.registry import ProjectRegistry
+
+
+# ── shared data helpers ───────────────────────────────────────────────────────
+
+def _load_history(project_slug: str, limit: int = 12) -> list[dict]:
+    """Return up to `limit` project_stats rows ordered oldest → newest."""
+    registry = ProjectRegistry()
+    try:
+        conn = sqlite3.connect(registry.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT * FROM project_stats
+               WHERE project_slug = ?
+               ORDER BY fetched_at ASC
+               LIMIT ?""",
+            (project_slug, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _latest_row(project_slug: str) -> dict:
+    registry = ProjectRegistry()
+    try:
+        conn = sqlite3.connect(registry.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+            (project_slug,),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
+
+
+# ── terminal charts (Plotext) ─────────────────────────────────────────────────
+
+def commits_over_time_terminal(project_slug: str) -> None:
+    """Print a commit-frequency bar chart to the terminal using Plotext."""
+    import plotext as plt
+
+    rows = _load_history(project_slug)
+    if not rows:
+        print(f"No stats data for '{project_slug}'. Run 'project-explorer refresh' first.")
+        return
+
+    dates = [r["fetched_at"][:10] for r in rows]
+    counts = [r.get("commits_30d") or 0 for r in rows]
+
+    plt.clf()
+    plt.title(f"Commits (30-day window) — {project_slug}")
+    plt.xlabel("Snapshot date")
+    plt.ylabel("Commits")
+    plt.bar(dates, counts)
+    plt.show()
+
+
+def stars_over_time_terminal(project_slug: str) -> None:
+    """Print a star-growth line chart to the terminal using Plotext."""
+    import plotext as plt
+
+    rows = _load_history(project_slug)
+    if not rows:
+        print(f"No stats data for '{project_slug}'. Run 'project-explorer refresh' first.")
+        return
+
+    dates = [r["fetched_at"][:10] for r in rows]
+    stars = [r.get("stars") or 0 for r in rows]
+
+    plt.clf()
+    plt.title(f"Star growth — {project_slug}")
+    plt.xlabel("Snapshot date")
+    plt.ylabel("Stars")
+    plt.plot(dates, stars, marker="hd")
+    plt.show()
+
+
+# ── web charts (Plotly) ───────────────────────────────────────────────────────
+
+def stars_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+    """Return a Plotly figure for star growth over time."""
+    import plotly.graph_objects as go
+
+    rows = _load_history(project_slug)
+    dates = [r["fetched_at"][:10] for r in rows]
+    stars = [r.get("stars") or 0 for r in rows]
+
+    fig = go.Figure(go.Scatter(x=dates, y=stars, mode="lines+markers", name="Stars"))
+    fig.update_layout(
+        title=f"Stars over time — {project_slug}",
+        xaxis_title="Date",
+        yaxis_title="Stars",
+        yaxis_rangemode="tozero",
+    )
+    return fig
+
+
+def commits_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+    """Return a Plotly figure for commit frequency over time (snapshot history)."""
+    import plotly.graph_objects as go
+
+    rows = _load_history(project_slug)
+    dates = [r["fetched_at"][:10] for r in rows]
+    counts = [r.get("commits_30d") or 0 for r in rows]
+
+    fig = go.Figure(go.Bar(x=dates, y=counts, name="Commits (30d)"))
+    fig.update_layout(
+        title=f"Commit activity — {project_slug}",
+        xaxis_title="Snapshot date",
+        yaxis_title="Commits (30-day window)",
+        yaxis_rangemode="tozero",
+    )
+    return fig
+
+
+def weekly_commits_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+    """Return a Plotly bar chart of weekly commit counts from project_commits table."""
+    import plotly.graph_objects as go
+    from collections import defaultdict
+    from datetime import datetime, timedelta, timezone
+
+    registry = ProjectRegistry()
+    try:
+        conn = sqlite3.connect(registry.db_path)
+        rows = conn.execute(
+            "SELECT committed_at FROM project_commits "
+            "WHERE project_slug = ? ORDER BY committed_at DESC",
+            (project_slug,),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        rows = []
+
+    now = datetime.utcnow()  # naive UTC — matches stored committed_at format
+    week_counts: defaultdict = defaultdict(int)
+    for (ts,) in rows:
+        try:
+            dt = datetime.fromisoformat(ts[:19])  # strip tz suffix
+            weeks_ago = (now - dt).days // 7
+            if 0 <= weeks_ago < 13:
+                week_counts[weeks_ago] += 1
+        except Exception:
+            pass
+
+    # Build x-axis oldest→newest so chart reads left-to-right
+    week_offsets = list(range(12, -1, -1))
+    dates = [(now - timedelta(weeks=w)).strftime("%Y-%m-%d") for w in week_offsets]
+    counts = [week_counts.get(w, 0) for w in week_offsets]
+
+    fig = go.Figure(go.Bar(x=dates, y=counts, name="Commits", marker_color="#06b6d4"))
+    fig.update_layout(
+        title=f"Weekly commit activity — {project_slug}",
+        xaxis_title="Week starting",
+        yaxis_title="Commits",
+        yaxis_rangemode="tozero",
+    )
+    return fig
+
+
+def language_breakdown_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+    """Return a Plotly pie chart of language breakdown."""
+    import plotly.graph_objects as go
+
+    row = _latest_row(project_slug)
+    labels: list[str] = []
+    values: list[int] = []
+
+    if row.get("language_breakdown"):
+        try:
+            raw = row["language_breakdown"]
+            # StatsFetcher stores as "Python: 426,777 bytes; Shell: 19,452 bytes; ..."
+            # Try that format first, then fall back to JSON / ast for legacy data.
+            if ": " in raw and " bytes" in raw:
+                breakdown: dict = {}
+                for part in raw.split(";"):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    lang, _, rest = part.partition(": ")
+                    num_str = rest.replace(" bytes", "").replace(",", "").strip()
+                    try:
+                        breakdown[lang.strip()] = int(num_str)
+                    except ValueError:
+                        pass
+            else:
+                try:
+                    breakdown = json.loads(raw)
+                except json.JSONDecodeError:
+                    import ast
+                    breakdown = ast.literal_eval(raw)
+            labels = list(breakdown.keys())
+            values = list(breakdown.values())
+        except Exception:
+            pass
+
+    fig = go.Figure(go.Pie(labels=labels, values=values))
+    fig.update_layout(title=f"Language breakdown — {project_slug}")
+    return fig
+
+
+def top_committers_plotly(project_slug: str, limit: int = 10) -> "plotly.graph_objects.Figure | None":
+    """Return a Plotly horizontal bar chart of top committers, or None if no data."""
+    import plotly.graph_objects as go
+    from collections import Counter
+
+    registry = ProjectRegistry()
+    try:
+        conn = sqlite3.connect(registry.db_path)
+        rows = conn.execute(
+            "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
+            (project_slug,),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        rows = []
+
+    if not rows:
+        return None
+
+    counter: Counter = Counter()
+    for name, email in rows:
+        label = name or email or "unknown"
+        counter[label] += 1
+
+    top = counter.most_common(limit)
+    # Reverse so highest bar is at the top of a horizontal chart
+    names = [t[0] for t in reversed(top)]
+    counts = [t[1] for t in reversed(top)]
+
+    fig = go.Figure(go.Bar(
+        x=counts, y=names, orientation="h",
+        marker_color="#10b981", text=counts, textposition="outside",
+    ))
+    fig.update_layout(
+        title=f"Top committers — {project_slug} (last 90 days)",
+        xaxis_title="Commits",
+        yaxis_title="",
+        height=max(220, len(top) * 32 + 80),
+        margin={"l": 160, "r": 40, "t": 40, "b": 40},
+    )
+    return fig
+
+
+def compare_stats_plotly(project_slugs: list[str]) -> "plotly.graph_objects.Figure":
+    """Return a grouped bar chart comparing key stats across multiple projects."""
+    import plotly.graph_objects as go
+
+    metrics = ["stars", "forks", "contributors_count", "commits_30d", "open_issues"]
+    labels = ["Stars", "Forks", "Contributors", "Commits (30d)", "Open Issues"]
+    colors = ["#06b6d4", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444"]
+
+    project_data: dict[str, dict] = {}
+    registry = ProjectRegistry()
+    try:
+        conn = sqlite3.connect(registry.db_path)
+        conn.row_factory = sqlite3.Row
+        for slug in project_slugs:
+            row = conn.execute(
+                "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+                (slug,),
+            ).fetchone()
+            project_data[slug] = dict(row) if row else {}
+        conn.close()
+    except Exception:
+        pass
+
+    fig = go.Figure()
+    for i, (metric, label, color) in enumerate(zip(metrics, labels, colors)):
+        values = [project_data.get(slug, {}).get(metric) or 0 for slug in project_slugs]
+        fig.add_trace(go.Bar(
+            name=label,
+            x=project_slugs,
+            y=values,
+            marker_color=color,
+        ))
+
+    fig.update_layout(
+        barmode="group",
+        title=f"Project comparison — {' vs '.join(project_slugs)}",
+        xaxis_title="Project",
+        yaxis_title="Count",
+    )
+    return fig
+
+
+def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+    """Return a Plotly horizontal bar chart of file counts by type.
+
+    Prefers surveyor data (Egeria-enriched type labels) stored in
+    project_file_type_counts.  Falls back to counting raw extensions
+    from project_code_symbols when no survey has been run.
+    """
+    import plotly.graph_objects as go
+    from collections import Counter
+
+    registry = ProjectRegistry()
+    subtitle = ""
+
+    # ── prefer persisted surveyor data ───────────────────────────────────────
+    surveyor_rows = registry.query_file_type_counts(project_slug)
+    hover_texts: list[str] = []
+    if surveyor_rows:
+        labels = [r["type_label"] for r in surveyor_rows]
+        counts = [r["file_count"] for r in surveyor_rows]
+        source = surveyor_rows[0].get("source", "extension")
+        ts = (surveyor_rows[0].get("surveyed_at") or "")[:16].replace("T", " ")
+        source_label = "Egeria-classified" if source == "egeria" else "by extension"
+        subtitle = f"Surveyed {ts} UTC · {source_label}"
+        # Build hover text: for "Other" include extension breakdown
+        for r in surveyor_rows:
+            if r["type_label"] == "Other" and r.get("details_json"):
+                try:
+                    breakdown = json.loads(r["details_json"])
+                    lines = [f"{ext}: {n}" for ext, n in list(breakdown.items())[:10]]
+                    hover_texts.append("Unrecognized types:<br>" + "<br>".join(lines))
+                except Exception:
+                    hover_texts.append(str(r["file_count"]))
+            else:
+                hover_texts.append(str(r["file_count"]))
+        # Cap at 25, already sorted desc by registry
+        labels, counts, hover_texts = labels[:25], counts[:25], hover_texts[:25]
+        labels, counts, hover_texts = (
+            list(reversed(labels)), list(reversed(counts)), list(reversed(hover_texts))
+        )
+    else:
+        # ── fallback: raw extension count from code symbols ───────────────────
+        subtitle = "by extension (run 'project-explorer survey' for richer labels)"
+        try:
+            conn = sqlite3.connect(registry.db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
+                (project_slug,),
+            ).fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+
+        counter: Counter = Counter()
+        for row in rows:
+            path = row["file_path"].replace("\\", "/")
+            name = path.rsplit("/", 1)[-1]
+            if name.startswith(".") and name.count(".") == 1:
+                ext = name
+            elif "." in name:
+                ext = "." + name.rsplit(".", 1)[-1].lower()
+            else:
+                ext = "(no extension)"
+            counter[ext] += 1
+
+        if not counter:
+            fig = go.Figure()
+            fig.update_layout(title=f"No file data — {project_slug}")
+            return fig
+
+        top = counter.most_common(25)
+        labels = [t[0] for t in reversed(top)]
+        counts = [t[1] for t in reversed(top)]
+        hover_texts = [str(c) for c in counts]
+
+    fig = go.Figure(go.Bar(
+        x=counts,
+        y=labels,
+        orientation="h",
+        marker_color="#8b5cf6",
+        text=counts,
+        textposition="outside",
+        hovertext=hover_texts,
+        hovertemplate="%{y}: %{hovertext}<extra></extra>",
+    ))
+    fig.update_layout(
+        title=f"Files by type — {project_slug}<br><sup>{subtitle}</sup>",
+        xaxis_title="File count",
+        margin={"l": 10, "r": 40, "t": 50, "b": 10},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "#94a3b8"},
+    )
+    return fig
+
+
+def health_radar_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+    """Return a Plotly radar chart of project health dimensions."""
+    import plotly.graph_objects as go
+
+    row = _latest_row(project_slug)
+    if not row:
+        fig = go.Figure()
+        fig.update_layout(title=f"No data — {project_slug}")
+        return fig
+
+    commits_30d = row.get("commits_30d") or 0
+    contributors = row.get("contributors_count") or 0
+    stars = row.get("stars") or 0
+    releases = row.get("releases_count") or 0
+    open_issues = row.get("open_issues") or 0
+
+    # Normalize to 0–10 scale (rough heuristics for OSS projects)
+    activity = min(commits_30d / 3, 10)
+    community = min(contributors / 2, 10)
+    popularity = min(stars / 1000, 10)
+    release_health = min(releases / 2, 10)
+    issue_health = max(10 - open_issues / 20, 0)
+
+    dimensions = ["Activity", "Community", "Popularity", "Releases", "Issue Health"]
+    scores = [activity, community, popularity, release_health, issue_health]
+
+    fig = go.Figure(go.Scatterpolar(
+        r=scores + [scores[0]],
+        theta=dimensions + [dimensions[0]],
+        fill="toself",
+        name=project_slug,
+    ))
+    fig.update_layout(
+        polar={"radialaxis": {"visible": True, "range": [0, 10]}},
+        title=f"Project health — {project_slug}",
+    )
+    return fig

@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Egeria Advisor — Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .badge-healthy  { background:#14532d; color:#86efac; }
+    .badge-stale    { background:#451a03; color:#fb923c; }
+    .badge-empty    { background:#450a0a; color:#fca5a5; }
+    .badge-error    { background:#1c1917; color:#f87171; }
+    .badge-disabled { background:#1e293b; color:#64748b; }
+    .badge-running  { background:#1e3a5f; color:#7dd3fc; }
+    .badge-done     { background:#14532d; color:#86efac; }
+    .badge-failed   { background:#450a0a; color:#fca5a5; }
+    .sys-ok   { background:#14532d; color:#86efac; }
+    .sys-err  { background:#450a0a; color:#fca5a5; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body class="dark bg-slate-900 text-slate-100 min-h-screen">
+
+<!-- Header -->
+<header class="flex items-center justify-between px-6 py-3 bg-slate-800 border-b border-slate-700 sticky top-0 z-10">
+  <div class="flex items-center gap-4">
+    <img src="/static/egeria-logo.png" alt="Egeria" class="h-7 w-auto">
+    <span class="text-cyan-400 font-bold text-lg">Egeria Advisor</span>
+    <span class="text-slate-500 text-sm">/ Admin</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <div id="sys-health" class="flex gap-2 text-xs"></div>
+    <span class="text-slate-600 text-xs">Auto-refresh <span id="countdown" class="text-slate-400">10s</span></span>
+    <button onclick="refresh()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded transition-colors">↺ Refresh</button>
+    <a href="/" class="px-3 py-1 text-xs bg-cyan-800 hover:bg-cyan-700 rounded text-white transition-colors">← Chat</a>
+  </div>
+</header>
+
+<div class="max-w-7xl mx-auto px-6 py-6 space-y-6">
+
+  <!-- ── Vector Collections ──────────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Vector Collections</h2>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+            <th class="text-left px-4 py-2">Collection</th>
+            <th class="text-left px-4 py-2 hidden md:table-cell">Repository</th>
+            <th class="text-right px-4 py-2">Vectors</th>
+            <th class="text-left px-4 py-2">Last Indexed</th>
+            <th class="text-center px-4 py-2">Status</th>
+            <th class="text-right px-4 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="collections-body">
+          <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Source Repositories ─────────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Source Repositories</h2>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+            <th class="text-left px-4 py-2">Repository</th>
+            <th class="text-left px-4 py-2 hidden lg:table-cell">Last Commit</th>
+            <th class="text-left px-4 py-2 hidden xl:table-cell">Message</th>
+            <th class="text-center px-4 py-2">Status</th>
+            <th class="text-right px-4 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="repos-body">
+          <tr><td colspan="5" class="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Plan Usage ────────────────────────────────────────────────────── -->
+  <section id="plan-usage-section">
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Plan Usage (LGCI)</h2>
+    <div id="plan-usage-body" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-center text-slate-500 text-xs lg:col-span-3">Loading…</div>
+    </div>
+  </section>
+
+  <!-- ── Feedback Analysis ────────────────────────────────────────────── -->
+  <section id="feedback-section">
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Feedback Analysis</h2>
+    <div id="feedback-body" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-center text-slate-500 text-xs lg:col-span-3">Loading…</div>
+    </div>
+  </section>
+
+  <!-- ── Feedback Review ──────────────────────────────────────────────── -->
+  <section id="feedback-review-section">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">Feedback Review</h2>
+      <div class="flex items-center gap-2">
+        <label class="text-xs text-slate-500">Filter:</label>
+        <select id="fb-filter-vote" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
+          <option value="all">All votes</option>
+          <option value="1">👍 Positive</option>
+          <option value="0">😐 Neutral / Partial</option>
+          <option value="-1">👎 Negative</option>
+        </select>
+        <select id="fb-filter-triage" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
+          <option value="all">All statuses</option>
+          <option value="new">New</option>
+          <option value="known_issue">Known issue</option>
+          <option value="actioned">Actioned</option>
+          <option value="deferred">Deferred</option>
+          <option value="not_an_issue">Not an issue</option>
+        </select>
+      </div>
+    </div>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <div id="fb-review-body">
+        <div class="p-4 text-center text-slate-500 text-xs">Loading…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Plan Sessions ─────────────────────────────────────────────────── -->
+  <section id="sessions-section">
+    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Plan Sessions</h2>
+    <div class="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+            <th class="text-left px-4 py-2">Session</th>
+            <th class="text-left px-4 py-2 hidden md:table-cell">Started</th>
+            <th class="text-left px-4 py-2 hidden lg:table-cell">User</th>
+            <th class="text-center px-4 py-2">Turns</th>
+            <th class="text-center px-4 py-2">Outcome</th>
+            <th class="text-right px-4 py-2">View</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Maintenance + Jobs (2-col) ─────────────────────────────────────── -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+    <!-- Maintenance -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Maintenance</h2>
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 space-y-3">
+        <p class="text-xs text-slate-500 mb-2">Quick operations that complete in seconds.</p>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="maintenance('refresh_perspectives')"
+            class="maint-btn">↺ Refresh Perspectives</button>
+          <button onclick="maintenance('refresh_specs')"
+            class="maint-btn">↺ Refresh Report Specs</button>
+          <button onclick="maintenance('clear_cache')"
+            class="maint-btn">🗑 Clear Query Cache</button>
+          <button onclick="maintenance('invalidate_index')"
+            class="maint-btn">⟳ Invalidate Spec Index</button>
+          <button onclick="maintenance('refresh_templates')"
+            class="maint-btn">↺ Refresh Dr.Egeria Templates</button>
+          <button onclick="maintenance('check_draft_doc_ids')"
+            title="Report drafts whose doc_id points at a plan file that no longer exists (see browser console for detail)"
+            class="maint-btn">🔍 Check Draft Doc IDs</button>
+          <button onclick="maintenance('repair_draft_doc_ids')"
+            title="Repair stale draft doc_ids by finding the newest matching outbox file"
+            class="maint-btn">🔧 Repair Draft Doc IDs</button>
+        </div>
+        <div id="maint-msg" class="text-xs text-emerald-400 hidden mt-2"></div>
+      </div>
+    </section>
+
+    <!-- Active Jobs -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
+        Jobs
+        <span id="jobs-running-badge" class="hidden ml-2 px-1.5 py-0.5 rounded text-xs badge-running">running</span>
+      </h2>
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-3 space-y-2" id="jobs-list">
+        <div class="text-xs text-slate-500 italic">No recent jobs.</div>
+      </div>
+    </section>
+  </div>
+
+</div>
+
+<!-- Job output modal -->
+<div id="job-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+     onclick="if(event.target===this)closeJobModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl w-3/4 max-h-[70vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700 shrink-0">
+      <span id="modal-job-title" class="text-sm font-semibold text-slate-200"></span>
+      <button onclick="closeJobModal()" class="text-slate-500 hover:text-slate-200">✕</button>
+    </div>
+    <pre id="modal-job-output" class="flex-1 overflow-y-auto text-xs text-slate-300 p-4 font-mono"></pre>
+    <div class="px-4 py-2 border-t border-slate-700 shrink-0 flex items-center justify-between">
+      <span id="modal-job-status" class="text-xs"></span>
+      <button onclick="closeJobModal()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Session transcript modal -->
+<div id="session-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+     onclick="if(event.target===this)closeSessionModal()">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl w-4/5 max-w-4xl max-h-[80vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700 shrink-0">
+      <div class="flex items-center gap-3">
+        <span id="session-modal-title" class="text-sm font-semibold text-slate-200">Session Transcript</span>
+        <span id="session-modal-outcome" class="text-xs px-2 py-0.5 rounded"></span>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-slate-500">Failures highlighted in amber/red</span>
+        <button onclick="closeSessionModal()" class="text-slate-500 hover:text-slate-200">✕</button>
+      </div>
+    </div>
+    <div id="session-modal-body" class="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-xs"></div>
+    <div class="px-4 py-2 border-t border-slate-700 shrink-0 flex items-center justify-between">
+      <span id="session-modal-meta" class="text-xs text-slate-500"></span>
+      <button onclick="closeSessionModal()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded">Close</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .maint-btn {
+    padding: .4rem .75rem; border-radius: .375rem; font-size: .75rem;
+    background: #334155; color: #94a3b8; cursor: pointer;
+    transition: background .15s, color .15s; text-align: left;
+  }
+  .maint-btn:hover { background: #475569; color: #e2e8f0; }
+  .action-btn {
+    padding: .2rem .5rem; border-radius: .25rem; font-size: .7rem;
+    cursor: pointer; transition: background .15s; white-space: nowrap;
+  }
+  .btn-blue  { background:#1e3a5f; color:#7dd3fc; }  .btn-blue:hover  { background:#1d4ed8; color:#fff; }
+  .btn-amber { background:#451a03; color:#fb923c; }  .btn-amber:hover { background:#d97706; color:#fff; }
+  .btn-red   { background:#450a0a; color:#fca5a5; }  .btn-red:hover   { background:#dc2626; color:#fff; }
+  .btn-slate { background:#1e293b; color:#64748b; }  .btn-slate:hover { background:#334155; color:#e2e8f0; }
+</style>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let _pollTimer = null;
+let _countdownVal = 10;
+let _countdownTimer = null;
+let _modalJobId = null;
+let _modalPollTimer = null;
+
+// ── Init ───────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  refresh();
+  startCountdown();
+});
+
+function startCountdown() {
+  _countdownVal = 10;
+  clearInterval(_countdownTimer);
+  _countdownTimer = setInterval(() => {
+    _countdownVal--;
+    document.getElementById('countdown').textContent = _countdownVal + 's';
+    if (_countdownVal <= 0) {
+      refresh();
+      startCountdown();
+    }
+  }, 1000);
+}
+
+async function refresh() {
+  startCountdown();
+  let data;
+  try {
+    const r = await fetch('/api/admin/status');
+    data = await r.json();
+  } catch (e) { return; }
+
+  renderSystemHealth(data.system || {});
+  renderCollections(data.collections || []);
+  renderRepos(data.repos || []);
+  await refreshJobs();
+  loadPlanStats();
+  loadFeedbackAnalysis();
+  loadFeedbackReview();
+  loadSessions();
+}
+
+// ── System health ──────────────────────────────────────────────────────────
+function renderSystemHealth(sys) {
+  const el = document.getElementById('sys-health');
+  el.innerHTML = '';
+  const items = [
+    { label: 'pgvector', ok: sys.pgvector },
+    { label: 'Ollama',   ok: sys.ollama },
+  ];
+  items.forEach(({ label, ok }) => {
+    const span = document.createElement('span');
+    span.className = `px-2 py-0.5 rounded text-xs font-medium ${ok ? 'sys-ok' : 'sys-err'}`;
+    span.textContent = label;
+    el.appendChild(span);
+  });
+}
+
+// ── Collections ────────────────────────────────────────────────────────────
+function fmtAge(ageDays) {
+  if (ageDays === null || ageDays === undefined) return '—';
+  if (ageDays < 0.042) return '<1h';
+  if (ageDays < 1) return `${Math.round(ageDays * 24)}h ago`;
+  return `${Math.round(ageDays)}d ago`;
+}
+
+function renderCollections(cols) {
+  const tbody = document.getElementById('collections-body');
+  if (!cols.length) { tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">No collections found</td></tr>'; return; }
+  tbody.innerHTML = '';
+  cols.forEach(c => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors';
+    const countStr = c.vector_count < 0 ? '—' : c.vector_count.toLocaleString();
+    const badge = `<span class="px-2 py-0.5 rounded text-xs font-medium badge-${c.badge}">${c.badge}</span>`;
+    const actions = c.enabled ? `
+      <button class="action-btn btn-blue mr-1" onclick="reindex('${c.name}', false)" title="Incremental update (changed files only)">▲ Update</button>
+      <button class="action-btn btn-amber" onclick="reindex('${c.name}', true)" title="Drop and rebuild the full collection">▲▲ Rebuild</button>
+    ` : `<span class="text-xs text-slate-600">disabled</span>`;
+    tr.innerHTML = `
+      <td class="px-4 py-2.5 font-mono text-xs text-cyan-300">${c.name}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-500 hidden md:table-cell">${c.repo || '—'}</td>
+      <td class="px-4 py-2.5 text-xs text-right font-mono">${countStr}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-400">${fmtAge(c.age_days)}</td>
+      <td class="px-4 py-2.5 text-center">${badge}</td>
+      <td class="px-4 py-2.5 text-right">${actions}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function reindex(name, force) {
+  const label = force ? 'Full rebuild' : 'Incremental update';
+  if (force && !confirm(`Force rebuild of "${name}"?\n\nThis drops and recreates the collection — may take several minutes.`)) return;
+  const r = await fetch(`/api/admin/collections/${encodeURIComponent(name)}/reindex?force=${force}`, { method: 'POST' });
+  const data = await r.json();
+  if (data.job_id) openJobModal(data.job_id, data.description);
+  await refreshJobs();
+}
+
+// ── Repos ──────────────────────────────────────────────────────────────────
+function renderRepos(repos) {
+  const tbody = document.getElementById('repos-body');
+  if (!repos.length) { tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500">No repositories found in data/repos/</td></tr>'; return; }
+  tbody.innerHTML = '';
+  repos.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors';
+    const badge = r.exists
+      ? `<span class="px-2 py-0.5 rounded text-xs badge-healthy">cloned</span>`
+      : `<span class="px-2 py-0.5 rounded text-xs badge-empty">missing</span>`;
+    const action = r.exists
+      ? `<button class="action-btn btn-blue" onclick="pullRepo('${r.name}')">↓ Pull</button>`
+      : `<span class="text-xs text-slate-600">—</span>`;
+    tr.innerHTML = `
+      <td class="px-4 py-2.5 font-mono text-xs text-cyan-300">${r.name}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-500 hidden lg:table-cell">${r.last_commit_date ? r.last_commit_date.slice(0,19) : '—'} <span class="font-mono text-slate-600">${r.last_commit || ''}</span></td>
+      <td class="px-4 py-2.5 text-xs text-slate-400 hidden xl:table-cell truncate max-w-xs">${r.last_commit_msg || '—'}</td>
+      <td class="px-4 py-2.5 text-center">${badge}</td>
+      <td class="px-4 py-2.5 text-right">${action}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function pullRepo(name) {
+  const r = await fetch(`/api/admin/repos/${encodeURIComponent(name)}/pull`, { method: 'POST' });
+  const data = await r.json();
+  if (data.job_id) openJobModal(data.job_id, data.description);
+  await refreshJobs();
+}
+
+// ── Maintenance ────────────────────────────────────────────────────────────
+async function maintenance(action) {
+  const r = await fetch(`/api/admin/maintenance/${action}`, { method: 'POST' });
+  const data = await r.json();
+  const msg = document.getElementById('maint-msg');
+  msg.textContent = data.message || data.status;
+  msg.className = `text-xs mt-2 ${data.status === 'ok' ? 'text-emerald-400' : 'text-red-400'}`;
+  msg.classList.remove('hidden');
+  // check/repair_draft_doc_ids return a per-draft report — log it for detail
+  // beyond the one-line summary shown in the UI.
+  if (data.report) console.table(data.report);
+  setTimeout(() => msg.classList.add('hidden'), 4000);
+}
+
+// ── Jobs ───────────────────────────────────────────────────────────────────
+async function refreshJobs() {
+  const r = await fetch('/api/admin/jobs');
+  const data = await r.json();
+  renderJobs(data.jobs || []);
+  // Update modal if open
+  if (_modalJobId) {
+    const job = (data.jobs || []).find(j => j.id === _modalJobId);
+    if (job) updateModal(job);
+  }
+}
+
+function renderJobs(jobs) {
+  const el = document.getElementById('jobs-list');
+  const running = jobs.filter(j => j.status === 'running');
+  const badge = document.getElementById('jobs-running-badge');
+  if (running.length) {
+    badge.textContent = `${running.length} running`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  if (!jobs.length) {
+    el.innerHTML = '<div class="text-xs text-slate-500 italic">No recent jobs.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  jobs.forEach(job => {
+    const div = document.createElement('div');
+    div.className = 'flex items-center justify-between gap-2 py-1.5 border-b border-slate-700/40 last:border-0';
+    const statusBadge = `<span class="px-1.5 py-0.5 rounded text-xs badge-${job.status}">${job.status}</span>`;
+    const age = job.completed_at
+      ? Math.round((Date.now() - new Date(job.completed_at)) / 60000) + 'm ago'
+      : Math.round((Date.now() - new Date(job.started_at)) / 1000) + 's';
+    div.innerHTML = `
+      <div class="flex items-center gap-2 min-w-0">
+        ${statusBadge}
+        <span class="text-xs text-slate-300 truncate">${job.description}</span>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-xs text-slate-600">${age}</span>
+        <button class="action-btn btn-slate text-xs" onclick="openJobModal('${job.id}', '${job.description.replace(/'/g,"\\'")}')">View</button>
+      </div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+// ── Plan Usage ─────────────────────────────────────────────────────────────
+async function loadPlanStats() {
+  let data;
+  try {
+    const r = await fetch('/api/admin/plan-stats');
+    data = await r.json();
+  } catch { return; }
+
+  const el = document.getElementById('plan-usage-body');
+  if (!data.available) {
+    el.innerHTML = '<div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-xs text-slate-500 lg:col-span-3">No plan events recorded yet. Create a plan from the chat to see usage data here.</div>';
+    return;
+  }
+
+  const execRate = data.total_created ? Math.round(data.execution_rate * 100) : 0;
+  const successN = data.by_outcome['Success'] || 0;
+  const partialN = data.by_outcome['Partial'] || 0;
+  const failedN  = data.by_outcome['Failed'] || 0;
+  const totalExec = data.total_executed || 1;
+
+  // ── Summary card ──────────────────────────────────────────────────────────
+  const summary = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 space-y-3">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Summary</div>
+      <div class="flex justify-between text-sm">
+        <span class="text-slate-400">Plans created</span>
+        <span class="font-mono text-cyan-300">${data.total_created}</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span class="text-slate-400">Plans executed</span>
+        <span class="font-mono text-cyan-300">${data.total_executed}</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span class="text-slate-400">Execution rate</span>
+        <span class="font-mono ${execRate >= 50 ? 'text-emerald-400' : 'text-amber-400'}">${execRate}%</span>
+      </div>
+      ${data.total_executed ? `
+      <div class="mt-2 pt-2 border-t border-slate-700 text-xs text-slate-500 uppercase tracking-wider mb-1">Outcomes</div>
+      <div class="space-y-1">
+        ${successN ? `<div class="flex justify-between text-xs"><span class="text-emerald-400">✓ Success</span><span class="font-mono">${successN} (${Math.round(successN/totalExec*100)}%)</span></div>` : ''}
+        ${partialN ? `<div class="flex justify-between text-xs"><span class="text-amber-400">~ Partial</span><span class="font-mono">${partialN} (${Math.round(partialN/totalExec*100)}%)</span></div>` : ''}
+        ${failedN  ? `<div class="flex justify-between text-xs"><span class="text-red-400">✗ Failed</span><span class="font-mono">${failedN} (${Math.round(failedN/totalExec*100)}%)</span></div>` : ''}
+        ${(data.by_outcome['Unknown']||0) ? `<div class="flex justify-between text-xs"><span class="text-slate-500">? Unknown</span><span class="font-mono">${data.by_outcome['Unknown']}</span></div>` : ''}
+      </div>` : ''}
+    </div>`;
+
+  // ── Families + Perspectives card ──────────────────────────────────────────
+  const famEntries = Object.entries(data.by_family || {});
+  const perspEntries = Object.entries(data.by_perspective || {});
+  const breakdowns = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 space-y-3">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Command Families Used</div>
+      ${famEntries.length ? famEntries.map(([fam, n]) => `
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-300 flex-1 truncate capitalize">${fam}</span>
+          <div class="w-24 bg-slate-700 rounded-full h-1.5">
+            <div class="bg-cyan-500 h-1.5 rounded-full" style="width:${Math.round(n/famEntries[0][1]*100)}%"></div>
+          </div>
+          <span class="text-xs font-mono text-slate-400 w-6 text-right">${n}</span>
+        </div>`).join('') : '<div class="text-xs text-slate-500">No data yet</div>'}
+      ${perspEntries.length ? `
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mt-3 mb-2">By Perspective</div>
+      ${perspEntries.map(([p, n]) => `
+        <div class="flex justify-between text-xs">
+          <span class="text-slate-300 capitalize">${p.replace('_', ' ')}</span>
+          <span class="font-mono text-slate-400">${n}</span>
+        </div>`).join('')}` : ''}
+    </div>`;
+
+  // ── Recent events card ────────────────────────────────────────────────────
+  const recent = data.recent || [];
+  const recentCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Recent Events</div>
+      ${recent.length ? `<div class="space-y-1.5">` + recent.map(e => {
+        const icon  = e.event_type === 'created' ? '📋' : e.event_type === 'executed' ? '▶' : '📦';
+        const color = e.event_type === 'executed'
+          ? (e.outcome_status === 'Success' ? 'text-emerald-400' : e.outcome_status === 'Failed' ? 'text-red-400' : 'text-amber-400')
+          : 'text-slate-400';
+        const ts = e.timestamp ? new Date(e.timestamp * 1000).toLocaleString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+        return `<div class="flex items-start gap-2">
+          <span class="text-xs mt-0.5">${icon}</span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-1.5">
+              <span class="text-xs ${color} font-medium">${e.event_type}</span>
+              ${e.outcome_status ? `<span class="text-xs text-slate-500">${e.outcome_status}</span>` : ''}
+              <span class="text-xs text-slate-600 ml-auto shrink-0">${ts}</span>
+            </div>
+            <div class="text-xs text-slate-400 truncate">${e.title || e.doc_id}</div>
+          </div>
+        </div>`;
+      }).join('') + `</div>` : '<div class="text-xs text-slate-500">No events yet</div>'}
+    </div>`;
+
+  el.innerHTML = summary + breakdowns + recentCard;
+}
+
+// ── Feedback Analysis ─────────────────────────────────────────────────────
+async function loadFeedbackAnalysis() {
+  const el = document.getElementById('feedback-body');
+  if (!el) return;
+  let data;
+  try {
+    const r = await fetch('/api/feedback/analysis');
+    if (!r.ok) throw new Error(r.statusText);
+    data = await r.json();
+  } catch (e) {
+    el.innerHTML = `<div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-xs text-slate-500 lg:col-span-3">Unable to load feedback data.</div>`;
+    return;
+  }
+
+  const stats = data.stats || {};
+  const gaps  = data.gaps  || {};
+  const total = stats.total || 0;
+  const pos   = stats.positive || 0;
+  const neg   = stats.negative || 0;
+  const neu   = stats.neutral || 0;
+  const sat   = total ? Math.round((pos + 0.5 * neu) / total * 100) : 0;
+  const satColor = sat >= 60 ? 'text-emerald-400' : sat >= 40 ? 'text-amber-400' : 'text-red-400';
+
+  // ── Summary card ────────────────────────────────────────────────────────
+  const summaryCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Overall Satisfaction</div>
+      <div class="flex items-end gap-3 mb-4">
+        <span class="text-4xl font-bold ${satColor}">${sat}%</span>
+        <span class="text-xs text-slate-500 pb-1">${pos} 👍 / ${neu} 😐 / ${neg} 👎 / ${total} total</span>
+      </div>
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="bg-slate-900 rounded p-2">
+          <div class="text-xs text-slate-500">Positive</div>
+          <div class="text-base font-semibold text-emerald-400">${pos}</div>
+        </div>
+        <div class="bg-slate-900 rounded p-2">
+          <div class="text-xs text-slate-500">Negative</div>
+          <div class="text-base font-semibold text-red-400">${neg}</div>
+        </div>
+        <div class="bg-slate-900 rounded p-2">
+          <div class="text-xs text-slate-500">Neutral</div>
+          <div class="text-base font-semibold text-slate-400">${stats.neutral || 0}</div>
+        </div>
+      </div>
+    </div>`;
+
+  // ── By routing agent card ───────────────────────────────────────────────
+  const byAgent = stats.by_routing_agent || {};
+  const agentRows = Object.entries(byAgent)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([agent, d]) => {
+      const agentSat = d.total ? Math.round(((d.positive || 0) + 0.5 * (d.neutral || 0)) / d.total * 100) : 0;
+      const color = agentSat >= 60 ? 'text-emerald-400' : agentSat >= 40 ? 'text-amber-400' : 'text-red-400';
+      return `<tr class="border-t border-slate-700/50">
+        <td class="py-1.5 pr-3 text-xs text-slate-300 font-mono">${agent}</td>
+        <td class="py-1.5 pr-2 text-xs text-slate-500 text-right">${d.total}</td>
+        <td class="py-1.5 text-xs ${color} text-right font-semibold">${agentSat}%</td>
+      </tr>`;
+    }).join('');
+
+  const agentCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">By Routing Agent</div>
+      ${agentRows ? `<table class="w-full">
+        <thead><tr>
+          <th class="text-left text-xs text-slate-500 pb-1">Agent</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Queries</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Sat.</th>
+        </tr></thead>
+        <tbody>${agentRows}</tbody>
+      </table>` : '<div class="text-xs text-slate-500">No data yet</div>'}
+    </div>`;
+
+  // ── By query type card ──────────────────────────────────────────────────
+  const byQtype = stats.by_query_type || {};
+  const qtypeRows = Object.entries(byQtype)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([qt, d]) => {
+      const qtSat = d.total ? Math.round(((d.positive || 0) + 0.5 * (d.neutral || 0)) / d.total * 100) : 0;
+      const color = qtSat >= 60 ? 'text-emerald-400' : qtSat >= 40 ? 'text-amber-400' : 'text-red-400';
+      return `<tr class="border-t border-slate-700/50">
+        <td class="py-1.5 pr-3 text-xs text-slate-300">${qt}</td>
+        <td class="py-1.5 pr-2 text-xs text-slate-500 text-right">${d.total}</td>
+        <td class="py-1.5 text-xs ${color} text-right font-semibold">${qtSat}%</td>
+      </tr>`;
+    }).join('');
+
+  const qtypeCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">By Query Type</div>
+      ${qtypeRows ? `<table class="w-full">
+        <thead><tr>
+          <th class="text-left text-xs text-slate-500 pb-1">Type</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Queries</th>
+          <th class="text-right text-xs text-slate-500 pb-1">Sat.</th>
+        </tr></thead>
+        <tbody>${qtypeRows}</tbody>
+      </table>` : '<div class="text-xs text-slate-500">No data yet</div>'}
+    </div>`;
+
+  // ── Gap analysis: recent negative feedback ──────────────────────────────
+  const negFeedback = (gaps.rag_fallback_negatives || []).concat(
+    // include negatives from all agents for full picture
+  );
+  // Rebuild negatives list from raw stats is not available; use rag_fallback_negatives
+  // plus any queries flagged in unhandled_intents / low_satisfaction_agents
+  const gapItems = [
+    ...(gaps.rag_fallback_negatives || []).map(g => ({ ...g, tag: 'rag fallback' })),
+  ];
+  const lowAgents = (gaps.low_satisfaction_agents || []).map(g =>
+    `<li class="text-xs text-red-300">${g.routing_agent} — ${Math.round(g.satisfaction_rate * 100)}% sat (${g.total} queries)</li>`
+  ).join('');
+  const lowPersp = (gaps.low_satisfaction_perspectives || []).map(g =>
+    `<li class="text-xs text-red-300">${g.perspective} — ${Math.round(g.satisfaction_rate * 100)}% sat (${g.total} queries)</li>`
+  ).join('');
+
+  const gapCard = `
+    <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 lg:col-span-3">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Gap Analysis</div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        <div>
+          <div class="text-xs text-slate-500 font-medium mb-1">Low-satisfaction agents (≥5 queries)</div>
+          ${lowAgents ? `<ul class="space-y-0.5">${lowAgents}</ul>` : '<div class="text-xs text-slate-600">None</div>'}
+        </div>
+
+        <div>
+          <div class="text-xs text-slate-500 font-medium mb-1">Low-satisfaction perspectives (≥5 queries)</div>
+          ${lowPersp ? `<ul class="space-y-0.5">${lowPersp}</ul>` : '<div class="text-xs text-slate-600">None (or insufficient data)</div>'}
+        </div>
+
+        <div>
+          <div class="text-xs text-slate-500 font-medium mb-1">RAG-fallback negative queries</div>
+          ${gapItems.length
+            ? `<div class="space-y-1 max-h-40 overflow-y-auto">` +
+              gapItems.map(g =>
+                `<div class="text-xs text-slate-400 truncate" title="${g.query}">${g.query}</div>`
+              ).join('') + `</div>`
+            : '<div class="text-xs text-slate-600">None</div>'}
+        </div>
+      </div>
+    </div>`;
+
+  el.innerHTML = summaryCard + agentCard + qtypeCard + gapCard;
+}
+
+// ── Feedback Review ────────────────────────────────────────────────────────
+const _TRIAGE_OPTIONS = [
+  { value: 'new',          label: 'New',          cls: 'text-sky-400' },
+  { value: 'known_issue',  label: 'Known issue',  cls: 'text-amber-400' },
+  { value: 'actioned',     label: 'Actioned',     cls: 'text-emerald-400' },
+  { value: 'deferred',     label: 'Deferred',     cls: 'text-slate-400' },
+  { value: 'not_an_issue', label: 'Not an issue', cls: 'text-slate-500' },
+];
+
+function _triageCls(status) {
+  return (_TRIAGE_OPTIONS.find(o => o.value === status) || _TRIAGE_OPTIONS[0]).cls;
+}
+
+async function loadFeedbackReview() {
+  const el = document.getElementById('fb-review-body');
+  if (!el) return;
+  // Don't rebuild while the user is editing a textarea — the refresh would wipe their text.
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;
+  let records = [];
+  try {
+    const r = await fetch('/api/feedback/extended');
+    if (!r.ok) throw new Error(r.statusText);
+    const data = await r.json();
+    records = data.records || [];
+  } catch (e) {
+    el.innerHTML = `<div class="p-4 text-xs text-slate-500">Unable to load feedback records.</div>`;
+    return;
+  }
+
+  // Apply filters
+  const voteFilter   = document.getElementById('fb-filter-vote')?.value || 'all';
+  const triageFilter = document.getElementById('fb-filter-triage')?.value || 'all';
+  let filtered = records.filter((rec, idx) => { rec._idx = idx; return true; });
+  if (voteFilter !== 'all') filtered = filtered.filter(r => String(r.vote) === voteFilter);
+  if (triageFilter !== 'all') filtered = filtered.filter(r => (r.triage_status || 'new') === triageFilter);
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="p-4 text-xs text-slate-500">No records match current filter (${records.length} total).</div>`;
+    return;
+  }
+
+  // Newest first
+  filtered = filtered.slice().reverse();
+
+  const rows = filtered.map(rec => {
+    const idx = rec._idx;
+    const voteIcon   = rec.vote === 1 ? '👍' : rec.vote === -1 ? '👎' : (rec.vote === 0 ? '😐' : '—');
+    const triageCls  = _triageCls(rec.triage_status || 'new');
+    const triageOpts = _TRIAGE_OPTIONS.map(o =>
+      `<option value="${o.value}"${(rec.triage_status || 'new') === o.value ? ' selected' : ''}>${o.label}</option>`
+    ).join('');
+    const ts = rec.timestamp ? rec.timestamp.slice(0, 19).replace('T', ' ') : '—';
+    const perspective = rec.perspective || '—';
+    const intent = rec.intent_override || 'auto';
+    const queryType  = rec.query_type || '—';
+    const agent      = rec.routing_agent || '—';
+    const query      = (rec.query || '').replace(/</g, '&lt;');
+    const respText   = (rec.response_text || '').replace(/</g, '&lt;');
+    const comments   = (rec.analysis_comments || '').replace(/</g, '&lt;');
+    const respId = `resp-${idx}`;
+    const commentId = `comment-${idx}`;
+
+    return `<tr class="border-t border-slate-700/50 align-top hover:bg-slate-750/30" data-idx="${idx}">
+      <td class="px-3 py-2 text-sm">${voteIcon}</td>
+      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${ts}</td>
+      <td class="px-3 py-2 text-xs">
+        <div class="font-medium text-slate-200 max-w-xs">${query}</div>
+        <div class="text-slate-500 mt-0.5">${perspective} / ${intent} → <span class="font-mono">${queryType}</span> <span class="text-slate-600">[${agent}]</span></div>
+        ${respText ? `<details class="mt-1"><summary class="cursor-pointer text-slate-500 hover:text-slate-300">Response ▸</summary><pre id="${respId}" class="mt-1 text-xs text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto bg-slate-900/60 rounded p-2">${respText}</pre></details>` : ''}
+      </td>
+      <td class="px-3 py-2">
+        <select onchange="fbUpdateTriage(${idx}, this.value)" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 ${triageCls} w-full">
+          ${triageOpts}
+        </select>
+      </td>
+      <td class="px-3 py-2 min-w-[200px]">
+        <textarea id="${commentId}" rows="2" placeholder="Analysis notes…"
+          class="w-full text-xs bg-slate-900/60 border border-slate-700 rounded px-2 py-1 text-slate-300 resize-y"
+          onblur="fbSaveComment(${idx}, this.value)"
+        >${comments}</textarea>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
+          <th class="text-left px-3 py-2 w-6"></th>
+          <th class="text-left px-3 py-2 whitespace-nowrap">Time</th>
+          <th class="text-left px-3 py-2">Query / Routing</th>
+          <th class="text-left px-3 py-2 w-36">Triage</th>
+          <th class="text-left px-3 py-2">Analysis notes</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="px-3 py-2 text-xs text-slate-600 border-t border-slate-700/50">${filtered.length} of ${records.length} records</div>
+  `;
+}
+
+async function fbUpdateTriage(idx, value) {
+  await fetch(`/api/feedback/extended/${idx}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ triage_status: value }),
+  }).catch(() => {});
+}
+
+async function fbSaveComment(idx, value) {
+  await fetch(`/api/feedback/extended/${idx}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ analysis_comments: value }),
+  }).catch(() => {});
+}
+
+// ── Job modal ──────────────────────────────────────────────────────────────
+function openJobModal(jobId, description) {
+  _modalJobId = jobId;
+  document.getElementById('modal-job-title').textContent = description;
+  document.getElementById('job-modal').classList.remove('hidden');
+  // Poll every 1s while open
+  clearInterval(_modalPollTimer);
+  _modalPollTimer = setInterval(() => refreshJobs(), 1000);
+}
+
+function updateModal(job) {
+  const out = document.getElementById('modal-job-output');
+  out.textContent = job.output.join('\n');
+  out.scrollTop = out.scrollHeight;
+  const status = document.getElementById('modal-job-status');
+  status.textContent = job.status === 'running'
+    ? `Running… (${job.output.length} lines)`
+    : `${job.status === 'done' ? '✓ Done' : '✗ Failed'} — ${job.completed_at?.slice(0,19) || ''}`;
+  status.className = `text-xs ${job.status === 'failed' ? 'text-red-400' : job.status === 'done' ? 'text-emerald-400' : 'text-sky-400'}`;
+  if (job.status !== 'running') clearInterval(_modalPollTimer);
+}
+
+function closeJobModal() {
+  document.getElementById('job-modal').classList.add('hidden');
+  clearInterval(_modalPollTimer);
+  _modalJobId = null;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeJobModal(); closeSessionModal(); }
+});
+
+// ── Plan Sessions ──────────────────────────────────────────────────────────
+
+// Phrases that indicate the system was confused or couldn't handle the input
+const _SESSION_FAILURE_PHRASES = [
+  "i wasn't sure", "i'm not sure how", "i don't know how",
+  "i couldn't", "i was unable", "unable to update", "not sure how to update",
+];
+// Phrases in user turns that indicate a correction
+const _USER_CORRECTION_PHRASES = [
+  "i asked to", "that's wrong", "that is wrong", "not a project", "not a campaign",
+  "not a glossary", "not a task", "not a team", "not an agreement",
+  "you got it wrong", "wrong type", "incorrect",
+];
+
+function _outcomeClass(outcome) {
+  if (!outcome)                          return 'badge-stale';   // in-progress
+  if (outcome === 'plan_generated')      return 'badge-done';
+  if (outcome === 'executed')            return 'badge-done';
+  if (outcome === 'cancelled')           return 'badge-failed';
+  if (outcome === 'abandoned')           return 'badge-failed';
+  return 'badge-stale';
+}
+
+function _outcomeLabel(outcome) {
+  if (!outcome)                          return 'active';
+  if (outcome === 'plan_generated')      return 'generated';
+  if (outcome === 'executed')            return 'executed';
+  if (outcome === 'cancelled')           return 'cancelled';
+  if (outcome === 'abandoned')           return 'abandoned';
+  return outcome;
+}
+
+function _hasFailure(session) {
+  return session.outcome === 'cancelled' || session.outcome === 'abandoned';
+}
+
+function _fmtTs(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch { return ts.slice(0, 16).replace('T', ' '); }
+}
+
+async function loadSessions() {
+  const tbody = document.getElementById('sessions-body');
+  try {
+    const r = await fetch('/api/sessions');
+    const data = await r.json();
+    const sessions = data.sessions || [];
+    if (!sessions.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500 text-xs">No sessions recorded yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sessions.map(s => {
+      const cls  = _outcomeClass(s.outcome);
+      const lbl  = _outcomeLabel(s.outcome);
+      const warn = _hasFailure(s) ? 'bg-amber-950/30' : '';
+      const sid  = s.session_id.replace(/"/g, '&quot;');
+      return `<tr class="border-b border-slate-700/50 hover:bg-slate-750 ${warn}">
+        <td class="px-4 py-2 text-slate-400 text-xs font-mono">${s.session_id.slice(0, 32)}&hellip;</td>
+        <td class="px-4 py-2 text-xs text-slate-500 hidden md:table-cell">${_fmtTs(s.started_at)}</td>
+        <td class="px-4 py-2 text-xs text-slate-500 hidden lg:table-cell">${s.user || '—'}</td>
+        <td class="px-4 py-2 text-center text-xs text-slate-400">${s.turns}</td>
+        <td class="px-4 py-2 text-center">
+          <span class="px-2 py-0.5 rounded text-xs font-medium ${cls}">${lbl}</span>
+        </td>
+        <td class="px-4 py-2 text-right">
+          <button onclick="openSessionModal('${sid}')" class="action-btn btn-blue">View</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-red-400 text-xs">Error loading sessions: ${e.message}</td></tr>`;
+  }
+}
+
+async function openSessionModal(sessionId) {
+  const modal  = document.getElementById('session-modal');
+  const body   = document.getElementById('session-modal-body');
+  const title  = document.getElementById('session-modal-title');
+  const outcEl = document.getElementById('session-modal-outcome');
+  const meta   = document.getElementById('session-modal-meta');
+
+  title.textContent = sessionId.slice(0, 40) + '…';
+  body.innerHTML = '<div class="text-slate-500 p-4">Loading transcript…</div>';
+  modal.classList.remove('hidden');
+
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    if (!r.ok) { body.innerHTML = `<div class="text-red-400 p-4">Session not found.</div>`; return; }
+    const data = await r.json();
+    const entries = data.entries || [];
+
+    // Find summary entry for outcome/user
+    const summary = entries.find(e => e.event === 'session_end');
+    if (summary) {
+      outcEl.textContent  = _outcomeLabel(summary.outcome);
+      outcEl.className    = `text-xs px-2 py-0.5 rounded font-medium ${_outcomeClass(summary.outcome)}`;
+      const user = summary.user || '';
+      const persp = summary.perspective || '';
+      meta.textContent = [user, persp].filter(Boolean).join(' · ') + ` · ${entries.length} entries`;
+    } else {
+      outcEl.textContent = 'in-progress';
+      outcEl.className   = 'text-xs px-2 py-0.5 rounded badge-stale';
+      meta.textContent   = `${entries.length} entries`;
+    }
+
+    body.innerHTML = entries.map(e => {
+      if (e.event === 'session_end') return '';   // skip — shown in header
+
+      const ts      = e.ts ? e.ts.slice(11, 19) : '';
+      const role    = e.role || e.event || 'event';
+      const content = (e.content || JSON.stringify(e)).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const phase   = e.phase ? `<span class="text-slate-600">[${e.phase}]</span> ` : '';
+
+      // Detect failure signals
+      const contentLow = (e.content || '').toLowerCase();
+      let rowCls = '';
+      let badge  = '';
+
+      if (e.role === 'system') {
+        if (_SESSION_FAILURE_PHRASES.some(p => contentLow.includes(p))) {
+          rowCls = 'bg-amber-950/40 border-l-2 border-amber-500';
+          badge  = '<span class="ml-1 px-1 rounded text-amber-400 bg-amber-900/50 text-[10px]">confused</span>';
+        }
+      } else if (e.role === 'user') {
+        if (_USER_CORRECTION_PHRASES.some(p => contentLow.includes(p))) {
+          rowCls = 'bg-red-950/40 border-l-2 border-red-500';
+          badge  = '<span class="ml-1 px-1 rounded text-red-400 bg-red-900/50 text-[10px]">correction</span>';
+        }
+      }
+
+      const roleColor = e.role === 'user'   ? 'text-cyan-400'
+                      : e.role === 'system' ? 'text-emerald-400'
+                      : 'text-slate-500';
+
+      // Truncate very long messages
+      const maxLen = 600;
+      const displayContent = content.length > maxLen
+        ? content.slice(0, maxLen) + `<span class="text-slate-600">…(${content.length} chars)</span>`
+        : content;
+
+      return `<div class="p-2 rounded ${rowCls}">
+        <div class="flex items-baseline gap-2 mb-0.5">
+          <span class="text-slate-600 shrink-0">${ts}</span>
+          <span class="${roleColor} font-semibold shrink-0">${role}</span>
+          ${badge}
+          ${phase}
+        </div>
+        <div class="text-slate-300 leading-relaxed break-words pl-2">${displayContent}</div>
+      </div>`;
+    }).join('');
+
+  } catch (err) {
+    body.innerHTML = `<div class="text-red-400 p-4">Error loading transcript: ${err.message}</div>`;
+  }
+}
+
+function closeSessionModal() {
+  document.getElementById('session-modal').classList.add('hidden');
+}
+</script>
+</body>
+</html>

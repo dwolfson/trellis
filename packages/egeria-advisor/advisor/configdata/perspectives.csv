@@ -1,0 +1,5 @@
+advisor_key,display_name,egeria_name,description,tooltip
+developer,Developer,Developer,Software developers working with pyegeria APIs and Dr.Egeria commands,Code examples · API signatures · Dr.Egeria samples
+data_engineer,Data Engineer,Data Engineer,Engineers building data pipelines and integrations,Pipelines · connectors · ingestion patterns
+data_steward,Data Steward,Data Steward,Responsible for data quality and governance metadata,Glossary · ownership · data quality
+governance_officer,Governance Officer,Governance Officer,Defines and enforces governance policies,Policies · compliance · governance zones

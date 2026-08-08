@@ -1,0 +1,68 @@
+# Externalized table of Egeria Technology Types and the native governance
+# action processes/types known to exist for each, keyed by (entity_type, name).
+#
+# This exists so that adding support for a new Technology Type, or a newly
+# authored native Egeria survey/catalog process, is a config change here —
+# not a code change in resource_explorer/surveyors/*.py. Seed this with
+# whatever you confirm live against your Egeria server (e.g. via
+# find_governance_definitions); RE never guesses these names on its own.
+#
+# `name` must be Egeria's real Technology Type display name (as returned by
+# AutomatedCuration.find_technology_types) — NOT the free-text string an
+# RE-authored Survey Definition happens to be tagged with via
+# additionalProperties.supported_technology_type. Those are two different,
+# deliberately separate conventions — see ResourceTypeAdapter's docstring in
+# survey_definition_executor.py.
+#
+# Each process has a `kind`, which controls how RE is allowed to use it:
+#   survey_existing    - a single GovernanceActionType that surveys an
+#                        already-cataloged asset (target = existing asset
+#                        GUID, action target name "serverToSurvey"). Safe to
+#                        trigger directly against an existing entity.
+#   catalog_and_survey - a multi-step GovernanceActionProcess that CREATES the
+#                        asset from template placeholder properties (host,
+#                        port, credentials, ...) and then surveys it. Not
+#                        (yet) wired for one-click execution from RE, since
+#                        that needs template placeholder parameters rather
+#                        than an existing GUID — shown as informational only.
+#   delete             - a destructive process (e.g. deletes a cataloged
+#                        asset). RE must NEVER expose this as a runnable
+#                        candidate, one-click or otherwise.
+technology_types:
+  - name: "PostgreSQL Relational Database"
+    entity_type: database
+    processes:
+      - qualified_name: "PostgreSQLSurvey::survey-postgres-database"
+        display_name: "Survey PostgreSQL Database"
+        kind: survey_existing
+        description: >-
+          Egeria's native survey of an already-cataloged PostgreSQL database —
+          schema, table, and column measurements captured directly by Egeria's
+          own survey action service.
+      - qualified_name: "PostgreSQLDatabase:CreateAndSurveyGovernanceActionProcess"
+        display_name: "Catalog and Survey"
+        kind: catalog_and_survey
+        description: >-
+          Creates the RelationalDatabase entity from a catalog template, runs
+          a survey against it, and prints the resulting report — all as one
+          native Egeria process. Confirmed live 2026-07-08 via
+          find_governance_definitions(search_string="PostgreSQLDatabase",
+          metadata_element_type="GovernanceActionProcess").
+      - qualified_name: "PostgreSQLDatabase:DeleteAssetWithTemplateGovernanceActionProcess"
+        display_name: "Delete Database Asset"
+        kind: delete
+        description: "Deletes the cataloged RelationalDatabase entity. Never expose as runnable."
+
+  - name: "PostgreSQL Server"
+    entity_type: database
+    processes:
+      - qualified_name: "PostgreSQLSurvey::survey-postgres-server"
+        display_name: "Survey PostgreSQL Server"
+        kind: survey_existing
+        description: >-
+          Egeria's native survey of an already-cataloged PostgreSQL server —
+          connection metadata and hosted database list.
+      # A delete process almost certainly exists for PostgreSQL Server too
+      # (mirroring the database one above), but its exact qualifiedName was
+      # never confirmed live — add it here once verified via
+      # find_governance_definitions, don't guess the string.

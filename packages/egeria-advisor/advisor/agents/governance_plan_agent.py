@@ -1,0 +1,2203 @@
+"""
+GovernancePlanAgent — orchestrates Governance Plan Document generation.
+
+Phase 1 workflow (document generation only — no execution):
+  1. Intent decomposition — LLM breaks the user description into governance objects
+  2. Template selection   — _find_dre_template_raw / parse_template per object
+  3. Dependency ordering  — predefined command-ordering rules
+  4. Parameter extraction — LLM fills known params, marks TODO for unknowns
+  5. Narrative generation — Goal / Requirements / Approach sections
+  6. Document composition — assembles full GPD markdown
+  7. Persistence          — DocumentManager.create() → inbox/
+"""
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Dependency ordering rules (lower number = must run first)
+# ---------------------------------------------------------------------------
+
+_COMMAND_ORDER_RULES: List[Tuple[str, int]] = [
+    # More-specific patterns MUST come before less-specific ones (substring matching).
+    ("create glossary term", 30),
+    ("create glossary category", 22),
+    ("create glossary", 10),
+    ("create collection", 10),
+    ("create project", 10),
+    ("create community", 10),
+    ("create governance zone", 10),
+    ("create personal profile", 15),
+    ("create actor profile", 15),
+    ("create person role", 20),
+    ("create it profile role", 20),
+    ("create team role", 20),
+    ("create team", 20),
+    ("create governance definition", 20),
+    ("create data asset", 30),
+    ("create schema", 30),
+    ("link term to category", 42),
+    ("link term", 40),
+    ("link glossary", 40),
+    ("link person role appointment", 50),
+    ("link person", 50),
+    ("link team", 50),
+    ("appointment", 50),
+    ("assign", 50),
+    ("classify", 55),
+    ("set classification", 55),
+]
+
+
+def _command_order_key(command_name: str) -> int:
+    """Return ordering weight for a command (lower = runs first)."""
+    cn = command_name.lower().strip()
+    for pattern, order in _COMMAND_ORDER_RULES:
+        if pattern in cn:
+            return order
+    return 25
+
+
+def _command_to_entity_type(command: str) -> str:
+    """
+    Derive a snake_case entity-type label from a catalog command name, e.g.
+    "Create External Reference" -> "external_reference". Used only for display/
+    title purposes when a command was resolved via the keyword index rather than
+    a hand-written pattern -- the actual action to execute is carried separately
+    (obj["action"]), not re-derived from this label.
+    """
+    words = command.split()
+    if words and words[0].lower() in ("create", "link", "add", "attach", "classify", "set"):
+        words = words[1:]
+    return "_".join(w.lower() for w in words) or "project"
+
+
+# ---------------------------------------------------------------------------
+# GovernancePlanAgent
+# ---------------------------------------------------------------------------
+
+class GovernancePlanAgent:
+    """
+    Generates a full Governance Plan Document from a natural language description.
+
+    Returns a standard RAGSystem result dict with query_type="plan" and a doc_id
+    pointing to the saved inbox document.
+    """
+
+    def handle(
+        self, query: str, perspective: str | None = None, mode: str = "basic",
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Start a new conversational planning session via PlanElicitor."""
+        logger.info(f"GovernancePlanAgent.handle: delegating to PlanElicitor, query={query[:80]!r}")
+        try:
+            from advisor.agents.plan_elicitor import get_plan_elicitor
+            result = get_plan_elicitor().start(query, perspective=perspective, mode=mode,
+                                                egeria_credentials=egeria_credentials)
+            result.setdefault("routing_agent", "governance_plan_agent")
+            return result
+        except Exception as exc:
+            logger.error(f"GovernancePlanAgent.handle: PlanElicitor failed: {exc}")
+            return _error_result(query, f"Planning session could not be started: {exc}")
+
+    def continue_draft(
+        self, draft_id: str, user_response: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Route a user response to the active planning Q&A session."""
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().process(draft_id, user_response, egeria_credentials=egeria_credentials)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def back(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().back(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def cancel(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().cancel(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def save_and_exit(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().save_and_exit(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def resume(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().resume(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def restart_qa(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().restart_qa(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def discard(self, draft_id: str) -> Dict[str, Any]:
+        from advisor.agents.plan_elicitor import get_plan_elicitor
+        result = get_plan_elicitor().discard(draft_id)
+        result.setdefault("routing_agent", "governance_plan_agent")
+        return result
+
+    def save_as_template(self, draft_id: str, template_name: str) -> Dict[str, Any]:
+        from advisor.governance_draft import get_draft_manager
+        from advisor.governance_docs import get_doc_manager, strip_outcome_sections
+        from advisor.plan_templates import get_template_manager
+        dm = get_draft_manager()
+        spec = dm.load(draft_id)
+        if spec is None:
+            return _error_result(draft_id, f"Draft `{draft_id}` not found.")
+        doc_id = dm.resolve_live_doc_id(draft_id, spec=spec)
+        if not doc_id:
+            return _error_result(draft_id, "Plan has not been generated yet — complete the Q&A first.")
+        content = get_doc_manager().load(doc_id)
+        if not content:
+            return _error_result(draft_id, f"Plan document `{doc_id}` not found.")
+        content = strip_outcome_sections(content)
+        stem = get_template_manager().save(template_name, content)
+        return {
+            "query": f"save as template {template_name}",
+            "response": f"Plan saved as template **{template_name}** (`{stem}.md`).",
+            "query_type": "plan",
+            "routing_agent": "governance_plan_agent",
+            "draft_id": None,
+            "sources": [], "num_sources": 0,
+            "retrieval_time": 0.0, "generation_time": 0.0,
+            "avg_relevance_score": 0.0, "context_length": 0,
+        }
+
+    def _handle_legacy_generate(self, query: str, perspective: str | None = None) -> Dict[str, Any]:
+        """Original single-shot document generation (kept for direct calls)."""
+        from advisor.llm_client import get_planning_llm
+        from advisor.governance_docs import get_doc_manager
+        from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
+
+        llm = get_planning_llm()
+        action_agent = DrEgeriaActionAgent()
+
+        logger.info(
+            f"GovernancePlanAgent._handle_legacy_generate: query={query[:80]!r}, perspective={perspective!r}"
+        )
+
+        # ------------------------------------------------------------------ #
+        # Step 1: Decompose intent                                             #
+        # ------------------------------------------------------------------ #
+        decomp = self._decompose_intent(query, perspective, llm)
+        title = decomp.get("title", "Data Management Plan")
+        purpose = decomp.get("purpose", query)
+        commands_spec = decomp.get("commands", [])
+
+        if not commands_spec:
+            return _error_result(
+                query,
+                "I couldn't identify the governance objects to create from your description. "
+                "Please describe the specific items you want to set up — for example: "
+                "'a glossary with terms and a data steward role'.",
+            )
+
+        # ------------------------------------------------------------------ #
+        # Step 2 + 3: Template selection + dependency ordering                #
+        # ------------------------------------------------------------------ #
+        raw_commands: List[Dict] = []
+        for spec in commands_spec:
+            action = spec.get("action", "")
+            display_name = spec.get("display_name", "")
+            description = spec.get("description", "")
+            template_parsed = self._load_template(action)
+            raw_commands.append(
+                {
+                    "action": action,
+                    "display_name": display_name,
+                    "description": description,
+                    "spec": spec,
+                    "template_parsed": template_parsed,
+                    "order": _command_order_key(action),
+                }
+            )
+
+        ordered = sorted(raw_commands, key=lambda x: x["order"])
+
+        # ------------------------------------------------------------------ #
+        # Step 4: Parameter extraction                                         #
+        # ------------------------------------------------------------------ #
+
+        # Build cross-reference table: first Display Name per action family.
+        # Used to seed reference attributes (e.g. Glossary Name for terms).
+        _first_created: Dict[str, str] = {}
+        for cmd in ordered:
+            action = cmd["action"]
+            dn = cmd.get("display_name") or cmd.get("description", "")
+            family_key = action.split()[-1].lower()  # "Glossary", "Term" → last word
+            if dn and family_key not in _first_created:
+                _first_created[family_key] = dn
+            # Also key by full action for exact matching
+            if dn and action not in _first_created:
+                _first_created[action] = dn
+
+        _CROSS_REF_MAP: Dict[str, List[str]] = {
+            # attr name → list of _first_created keys to try (in priority order)
+            "Glossary Name": ["Create Glossary", "glossary"],
+            "Project Name":  ["Create Campaign", "Create Project", "campaign", "project"],
+            "Parent Project": ["Create Campaign", "campaign"],
+        }
+
+        filled: List[Dict] = []
+        for cmd in ordered:
+            params: Dict[str, Any] = {}
+            template = cmd["template_parsed"]
+
+            if template:
+                try:
+                    combined = f"{query}\n{cmd.get('display_name', '')}\n{cmd['description']}"
+                    params = action_agent.extract_params(combined, template)
+                except Exception as exc:
+                    logger.warning(
+                        f"GovernancePlanAgent: param extraction failed for "
+                        f"{cmd['action']!r}: {exc}"
+                    )
+
+                # Seed the primary required Simple attribute (Display Name / Term Name /
+                # etc.) from the decompose output if extract_params didn't fill it.
+                seed_name = cmd.get("display_name") or cmd.get("description", "")
+                if seed_name:
+                    for attr in template["attributes"]:
+                        if attr["required"] and attr["type"] in ("Simple", "simple", ""):
+                            canon = attr["name"]
+                            if not params.get(canon) and not params.get(canon.lower()):
+                                params[canon] = seed_name
+                            break
+
+                # Seed optional Description from rationale if not already extracted.
+                rationale = cmd.get("spec", {}).get("rationale", "")
+                if rationale:
+                    desc_attr = next(
+                        (a for a in template["attributes"]
+                         if a["name"].lower() == "description" and not a["required"]),
+                        None,
+                    )
+                    if desc_attr:
+                        canon = desc_attr["name"]
+                        if not params.get(canon) and not params.get(canon.lower()):
+                            params[canon] = rationale
+
+                # Seed cross-reference attributes (e.g. Glossary Name on a term
+                # command) from the first matching object created earlier in the plan.
+                # These attrs are often optional but should be pre-filled when the
+                # parent object is being created in the same plan.
+                for attr in template["attributes"]:
+                    candidates = _CROSS_REF_MAP.get(attr["name"], [])
+                    if not candidates:
+                        continue
+                    canon = attr["name"]
+                    if params.get(canon) or params.get(canon.lower()):
+                        continue  # already filled
+                    for key in candidates:
+                        if key in _first_created:
+                            params[canon] = _first_created[key]
+                            break
+
+            filled.append({**cmd, "params": params})
+
+        # ------------------------------------------------------------------ #
+        # Step 5: Narrative generation                                         #
+        # ------------------------------------------------------------------ #
+        goal, requirements, approach = self._generate_narrative(
+            query, purpose, perspective, filled, llm
+        )
+
+        # ------------------------------------------------------------------ #
+        # Step 6: Document composition                                         #
+        # ------------------------------------------------------------------ #
+        doc_content = self._compose_document(
+            title=title,
+            purpose=purpose,
+            perspective=perspective or "Anyone",
+            goal=goal,
+            requirements=requirements,
+            approach=approach,
+            commands=filled,
+        )
+
+        # ------------------------------------------------------------------ #
+        # Step 7: Save to inbox/                                               #
+        # ------------------------------------------------------------------ #
+        doc_manager = get_doc_manager()
+        doc_id = doc_manager.create(title, doc_content)
+        logger.info(f"GovernancePlanAgent: saved plan doc_id={doc_id}")
+
+        try:
+            from advisor.metrics_collector import get_metrics_collector
+            families = ",".join(sorted({c["action"].split()[0] for c in filled}))
+            get_metrics_collector().record_plan_event(
+                doc_id, "created",
+                title=title,
+                command_families=families,
+                perspective=perspective,
+            )
+        except Exception:
+            pass
+
+        nc = len(filled)
+        summary = (
+            f"I've created a Data Management Plan for **{title}**.\n\n"
+            f"Saved to your inbox as `{doc_id}.md` "
+            f"({nc} command{'s' if nc != 1 else ''} in sequence).\n\n"
+            f"Review the plan below. You can ask me to make changes, add or remove commands, "
+            f"or adjust any parameter values. "
+            f"When you are satisfied, say **'execute the plan {doc_id}'** to submit it to Dr.Egeria.\n\n"
+            f"---\n\n{doc_content}"
+        )
+
+        return {
+            "query": query,
+            "response": summary,
+            "query_type": "plan",
+            "doc_id": doc_id,
+            "title": title,
+            "num_commands": nc,
+            "sources": [f"Dr.Egeria template: {c['action']}" for c in filled],
+            "num_sources": nc,
+            "retrieval_time": 0.0,
+            "generation_time": 0.0,
+            "avg_relevance_score": 0.0,
+            "context_length": len(doc_content),
+        }
+
+    # ---------------------------------------------------------------------- #
+    # Execution (Phase 2)                                                      #
+    # ---------------------------------------------------------------------- #
+
+    def execute(
+        self,
+        doc_id: str,
+        perspective: str | None = None,
+        dry_run: bool = False,
+        source_folder: str = "inbox",
+        draft_id: str | None = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute an approved plan document and append the outcome section.
+
+        Steps:
+          1. Load document from source_folder ("inbox" — normal first execution;
+             "outbox" — Re-run Now, re-executing an already-executed plan in place)
+          2. Extract the Command Sequence section
+          3. Submit to Dr.Egeria via DrEgeriaActionAgent.execute()
+          4. Run OutcomeReporter to produce outcome section
+          5. inbox source: move document to outbox with outcome appended
+             outbox source: append a new "## Outcome (Run N)" section in place
+
+        draft_id: when given and this is a first execution (inbox -> outbox),
+        the originating draft's doc_id is updated to the new outbox id, so a
+        later "resume draft" doesn't hand back a doc_id that no longer exists
+        anywhere. See BACKLOG.md.
+
+        Returns a standard result dict with query_type="plan_executed".
+        """
+        from advisor.governance_docs import get_doc_manager
+        from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
+        from advisor.agents.outcome_reporter import get_outcome_reporter
+
+        doc_manager = get_doc_manager()
+        plan_content = (
+            doc_manager.load_outbox(doc_id) if source_folder == "outbox"
+            else doc_manager.load(doc_id)
+        )
+
+        if not plan_content:
+            return _error_result(
+                doc_id,
+                f"Plan document `{doc_id}` not found in {source_folder}.",
+            )
+
+        # Extract the Command Sequence section for execution
+        command_section = self._extract_command_section(plan_content)
+        if not command_section.strip():
+            return _error_result(
+                doc_id,
+                f"Plan document `{doc_id}` has no Command Sequence section to execute.",
+            )
+
+        # Count H2 command headers so OutcomeReporter can detect partial execution
+        expected_command_count = len(re.findall(r'^##\s+\S', command_section, re.MULTILINE))
+
+        logger.info(
+            f"GovernancePlanAgent.execute: doc_id={doc_id!r}, "
+            f"dry_run={dry_run}, commands={expected_command_count}, "
+            f"command_chars={len(command_section)}"
+        )
+
+        # Execute via Dr.Egeria MCP
+        action_agent = DrEgeriaActionAgent()
+        logger.info(
+            f"GovernancePlanAgent.execute: sending {len(command_section)} chars to Dr.Egeria\n"
+            f"--- command section (first 400 chars) ---\n{command_section[:400]}\n---"
+        )
+        try:
+            execution_output = action_agent.execute(
+                command_section,
+                directive="process",
+                dry_run=dry_run,
+                egeria_credentials=egeria_credentials,
+            )
+        except ConnectionError as exc:
+            return _error_result(
+                doc_id,
+                f"Could not execute plan: Egeria MCP server is not reachable.\n\n"
+                f"Ensure Dr.Egeria is running, then try again.\n\nDetails: {exc}",
+            )
+        except Exception as exc:
+            execution_output = (
+                f"Execution error: {exc}\n\n"
+                f"This usually means the Egeria REST API returned an unexpected response. "
+                f"Check that Egeria is running at the configured URL and that credentials are valid."
+            )
+            logger.error(f"GovernancePlanAgent.execute: MCP call failed: {exc}", exc_info=True)
+
+        if dry_run:
+            return {
+                "query": doc_id,
+                "response": (
+                    f"**Dry run — plan not submitted to Dr.Egeria.**\n\n"
+                    f"Command sequence extracted from `{doc_id}`:\n\n"
+                    f"```markdown\n{command_section}\n```"
+                ),
+                "query_type": "plan_executed",
+                "doc_id": doc_id,
+                "dry_run": True,
+                "sources": [],
+                "num_sources": 0,
+                "retrieval_time": 0.0,
+                "generation_time": 0.0,
+                "avg_relevance_score": 0.0,
+                "context_length": len(command_section),
+            }
+
+        # Parse structured response from Dr.Egeria
+        ex_success, ex_output, ex_val_errs, ex_exe_errs, ex_counts = _parse_dr_egeria_response(execution_output)
+
+        # Split Dr.Egeria's echoed output into refreshed command definitions
+        # (resolved GUID/Qualified Name etc., for re-editing) and materialized
+        # display content (report tables, Mermaid diagrams), instead of leaving
+        # them mixed together in one raw blob. Only the inbox (first-execution)
+        # path refreshes the Command Sequence in place today — see BACKLOG.md.
+        materialized_display = ""
+        try:
+            original_steps = self._parse_command_steps(command_section)
+            echoed_blocks, _provenance = _split_augmented_output(ex_output or "")
+            if original_steps and echoed_blocks:
+                new_command_md, materialized_display = self._rebuild_command_sequence(
+                    original_steps, echoed_blocks, ex_counts.get('detail', []),
+                )
+                if source_folder != "outbox":
+                    refreshed_plan_content = self._replace_command_section(plan_content, new_command_md)
+                    if not doc_manager.update(doc_id, refreshed_plan_content):
+                        logger.warning(
+                            f"GovernancePlanAgent.execute: could not refresh Command "
+                            f"Sequence for {doc_id!r} before moving to outbox"
+                        )
+        except Exception as exc:
+            logger.warning(f"GovernancePlanAgent.execute: could not split augmented output: {exc}")
+
+        # Generate outcome section — pass structured data to reporter
+        reporter = get_outcome_reporter()
+        outcome_md = reporter.generate(
+            plan_content, ex_output or execution_output, perspective,
+            expected_command_count=ex_counts.get('total', expected_command_count),
+            commands_succeeded=ex_counts.get('succeeded'),
+            commands_failed=ex_counts.get('failed'),
+            validation_errors=ex_val_errs,
+            execution_errors=ex_exe_errs,
+            commands_detail=ex_counts.get('detail', []),
+            materialized_display=materialized_display,
+            executed_by=(egeria_credentials or {}).get("user_id"),
+        )
+
+        # Append raw Dr.Egeria output as a separate section so it's always available.
+        # This contains the augmented plan markdown, View Report output, and Mermaid diagrams.
+        raw_section = _build_raw_output_section(ex_output or execution_output)
+
+        outbox_doc_id = doc_id
+        if source_folder == "outbox":
+            moved = doc_manager.append_rerun_outcome(doc_id, outcome_md + "\n\n" + raw_section)
+            if moved:
+                logger.info(f"GovernancePlanAgent.execute: appended re-run outcome to {doc_id}")
+            else:
+                logger.warning(f"GovernancePlanAgent.execute: could not append re-run outcome to {doc_id}")
+        else:
+            moved_doc_id = doc_manager.move_to_outbox(doc_id, outcome_md + "\n\n" + raw_section)
+            if moved_doc_id:
+                outbox_doc_id = moved_doc_id
+                logger.info(f"GovernancePlanAgent.execute: moved {doc_id} to outbox as {outbox_doc_id}")
+                if draft_id:
+                    from advisor.governance_draft import get_draft_manager
+                    if not get_draft_manager().update_doc_id(draft_id, outbox_doc_id):
+                        logger.warning(
+                            f"GovernancePlanAgent.execute: could not update draft "
+                            f"{draft_id!r}.doc_id to {outbox_doc_id!r}"
+                        )
+            else:
+                logger.warning(
+                    f"GovernancePlanAgent.execute: could not move {doc_id} to outbox"
+                )
+
+        status_line = self._extract_status_from_outcome(outcome_md)
+
+        try:
+            from advisor.metrics_collector import get_metrics_collector
+            get_metrics_collector().record_plan_event(
+                outbox_doc_id, "executed",
+                outcome_status=status_line,
+                perspective=perspective,
+            )
+        except Exception:
+            pass
+
+        response = (
+            f"Plan **{outbox_doc_id}** has been executed.\n\n"
+            f"**Status:** {status_line}\n\n"
+            f"The completed document (plan + outcome) has been saved to your outbox.\n\n"
+            f"---\n\n{outcome_md}"
+        )
+
+        return {
+            "query": doc_id,
+            "response": response,
+            "query_type": "plan_executed",
+            "doc_id": outbox_doc_id,
+            "dry_run": False,
+            "execution_output": execution_output[:500],
+            "sources": [],
+            "num_sources": 0,
+            "retrieval_time": 0.0,
+            "generation_time": 0.0,
+            "avg_relevance_score": 0.0,
+            "context_length": len(outcome_md),
+        }
+
+    def validate(self, doc_id: str, egeria_credentials: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Validate a plan's command sequence against Egeria without executing it.
+
+        Uses Dr.Egeria's 'validate' directive which checks connectivity and
+        command syntax but does not create or modify any Egeria objects.
+        """
+        from advisor.governance_docs import get_doc_manager
+        from advisor.agents.dr_egeria_agent import DrEgeriaActionAgent
+
+        # Accept both inbox and outbox plans
+        doc_manager = get_doc_manager()
+        plan_content = doc_manager.load(doc_id)
+        if not plan_content:
+            plan_content = doc_manager.load_outbox(doc_id)
+        if not plan_content:
+            return _error_result(
+                doc_id,
+                f"Plan document `{doc_id}` not found in inbox or outbox.",
+            )
+
+        command_section = self._extract_command_section(plan_content)
+        if not command_section.strip():
+            return _error_result(
+                doc_id,
+                f"Plan document `{doc_id}` has no Command Sequence section to validate.",
+            )
+
+        action_agent = DrEgeriaActionAgent()
+        try:
+            raw_output = action_agent.execute(
+                command_section,
+                directive="validate",
+                dry_run=False,
+                egeria_credentials=egeria_credentials,
+            )
+        except ConnectionError as exc:
+            return _error_result(
+                doc_id,
+                f"Cannot validate: Egeria MCP server is not reachable.\n\nDetails: {exc}",
+            )
+        except Exception as exc:
+            return _error_result(
+                doc_id,
+                f"Validation failed: {exc}",
+            )
+
+        success, output_text, val_errs, exe_errs, counts = _parse_dr_egeria_response(raw_output)
+        logger.info(
+            f"validate({doc_id}): success={success} "
+            f"val_errs={len(val_errs)} exe_errs={len(exe_errs)} "
+            f"raw_type={type(raw_output).__name__} raw_prefix={str(raw_output)[:120]!r}"
+        )
+
+        result: Dict[str, Any] = {
+            "query": doc_id,
+            "query_type": "plan_validated",
+            "doc_id": doc_id,
+            "success": success,
+            "output": output_text,
+            "response": output_text,
+            "validation_errors": val_errs,
+            "execution_errors": exe_errs,
+            "sources": [],
+            "num_sources": 0,
+            "retrieval_time": 0.0,
+            "generation_time": 0.0,
+            "avg_relevance_score": 0.0,
+            "context_length": len(command_section),
+        }
+        result.update(counts)
+        return result
+
+    def retry(
+        self, doc_id: str, perspective: str | None = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Move a failed outbox plan back to inbox and re-execute it.
+
+        The existing outcome section is stripped so the document is clean
+        for a fresh execution attempt.
+        """
+        from advisor.governance_docs import get_doc_manager
+        doc_manager = get_doc_manager()
+
+        inbox_doc_id = doc_manager.move_to_inbox(doc_id)
+        if not inbox_doc_id:
+            return _error_result(
+                doc_id,
+                f"Could not move `{doc_id}` back to inbox. "
+                f"It may not be in the outbox, or the inbox already has a file with that name.",
+            )
+        return self.execute(inbox_doc_id, perspective=perspective, egeria_credentials=egeria_credentials)
+
+    @staticmethod
+    def _extract_command_section(plan_content: str) -> str:
+        """Return the raw text of the Command Sequence section.
+
+        Stops at '## Outcome' (added post-execution) or end of file.
+        Does NOT stop at command-name ## headers inside the section.
+        """
+        import re
+        m = re.search(
+            r'^##\s+Command Sequence\s*\n(.*?)(?=^##\s+Outcome\b|\Z)',
+            plan_content,
+            re.MULTILINE | re.DOTALL,
+        )
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _replace_command_section(plan_content: str, new_command_section_md: str) -> str:
+        """Replace the Command Sequence section's content with a refreshed version."""
+        new_content, n = re.subn(
+            r'^##\s+Command Sequence\s*\n(.*?)(?=^##\s+Outcome\b|\Z)',
+            lambda m: f"## Command Sequence\n\n{new_command_section_md}\n",
+            plan_content,
+            count=1,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        return new_content if n else plan_content
+
+    # Steps composed by _compose_command_block look like:
+    #   <!-- Step 1: Create Solution Blueprint
+    #        wrapped narrative text... -->
+    #   ## Create Solution Blueprint
+    _STEP_COMMENT_RE = re.compile(
+        r'<!--\s*Step\s+(\d+):\s*(.*?)-->\s*\n##\s+(.+?)\s*\n',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _parse_command_steps(cls, command_section: str) -> List[Dict[str, Any]]:
+        """Parse the original Command Sequence into ordered {step, action, narrative, fields} dicts.
+
+        `fields` (the pre-execution ### FieldName values) lets
+        _rebuild_command_sequence() fall back to what was there before when
+        Dr.Egeria's post-execution echo carries no field data for a step —
+        true for Link/relationship and View Report commands, whose echo is
+        just a result sentence or rendered report content, never a field echo.
+        """
+        steps: List[Dict[str, Any]] = []
+        matches = list(cls._STEP_COMMENT_RE.finditer(command_section))
+        for i, m in enumerate(matches):
+            step_num = int(m.group(1))
+            raw_comment = m.group(2)
+            action = m.group(3).strip()
+            # raw_comment is "<action>\n     <wrapped narrative>" — the compose
+            # side only ever inserts "\n     " as a chunk separator when wrapping,
+            # so removing it recovers the original narrative losslessly.
+            first_nl = raw_comment.find("\n")
+            narrative = (
+                raw_comment[first_nl + 1:].replace("\n     ", "").strip()
+                if first_nl != -1 else ""
+            )
+
+            body_start = m.end()
+            body_end = matches[i + 1].start() if i + 1 < len(matches) else len(command_section)
+            body = command_section[body_start:body_end]
+            # Only the part before the block's closing "---" separator is field data.
+            fields_body = re.split(r'\n-{3,}\s*(?:\n|$)', body, maxsplit=1)[0]
+            fields: Dict[str, str] = {}
+            for part in re.split(r'(?m)(?=^###\s)', fields_body):
+                fm = re.match(r'^###\s+([^\n]+)\n([\s\S]*)$', part.strip())
+                if not fm:
+                    continue
+                fname = fm.group(1).strip()
+                fval = fm.group(2).strip()
+                if fval and not re.match(r'^<!--\s*TODO', fval, re.IGNORECASE):
+                    fields[fname] = fval
+
+            steps.append({"step": step_num, "action": action, "narrative": narrative, "fields": fields})
+        return steps
+
+    _FAILURE_STATUSES = frozenset(("failure", "failed"))
+    _VERB_FLIP_VERBS = frozenset(("Create", "Update"))
+
+    def _rebuild_command_sequence(
+        self,
+        original_steps: List[Dict[str, Any]],
+        echoed_blocks: List[Dict[str, Any]],
+        commands_detail: List[Dict[str, Any]],
+    ) -> Tuple[str, str]:
+        """
+        Build a refreshed Command Sequence from Dr.Egeria's echoed output, plus
+        the combined materialized display content (report/diagram output) for
+        the Outcome section — so re-editing a plan starts from the resolved
+        attributes (Qualified Name, GUID, etc.) rather than the original,
+        under-specified commands.
+
+        A Create->Update verb change from the echo is trusted only when
+        commands_detail confirms that step succeeded; a step marked failed
+        keeps its original verb, since a command that didn't run shouldn't
+        be treated as if it created the object.
+        """
+        by_step = {d.get("step"): d for d in (commands_detail or []) if d.get("step") is not None}
+
+        command_parts: List[str] = []
+        display_parts: List[str] = []
+
+        for i, orig in enumerate(original_steps):
+            step_num = orig["step"]
+            echoed = echoed_blocks[i] if i < len(echoed_blocks) else None
+
+            if echoed is None:
+                # Dr.Egeria didn't echo this step back (e.g. execution stopped
+                # early) — keep the original block unchanged, including its
+                # pre-execution field values.
+                command_parts.append(self._compose_command_block(
+                    {
+                        "action": orig["action"],
+                        "narrative": orig["narrative"],
+                        "params": orig.get("fields", {}),
+                        "template_parsed": self._load_template(orig["action"]),
+                    },
+                    step_num,
+                ))
+                continue
+
+            final_action = orig["action"]
+            orig_verb = orig["action"].split(" ", 1)[0]
+            echoed_verb = echoed["action"].split(" ", 1)[0]
+            if orig_verb in self._VERB_FLIP_VERBS and echoed_verb in self._VERB_FLIP_VERBS:
+                detail = by_step.get(step_num)
+                status = str((detail or {}).get("status", "")).lower()
+                failed = status in self._FAILURE_STATUSES
+                if failed and echoed_verb != orig_verb:
+                    logger.warning(
+                        f"GovernancePlanAgent: Dr.Egeria echoed {echoed['action']!r} for "
+                        f"step {step_num} but commands_detail marks it failed "
+                        f"({status!r}) — keeping original verb {orig['action']!r}."
+                    )
+                else:
+                    final_action = echoed["action"]
+            # else: not a Create/Update-style command (e.g. View Report / Report /
+            # Link X) — keep the original action name rather than adopting any
+            # cosmetic rename Dr.Egeria's echo happens to use.
+
+            echoed_params = {k: v for k, v in echoed["fields"].items() if v and v != "None"}
+            # Dr.Egeria's raw echo only carries field values for Create/Update
+            # commands — a Link/relationship command's echo is a one-line result
+            # sentence ("Linked X to Y") and View Report's is the rendered report
+            # content, neither of which include a field echo. Start from the
+            # pre-execution values so those step types don't get silently blanked
+            # on every execution; genuinely-echoed values (Create/Update) still win.
+            params = {**orig.get("fields", {}), **echoed_params}
+            command_parts.append(self._compose_command_block(
+                {
+                    "action": final_action,
+                    "narrative": orig["narrative"],
+                    "params": params,
+                    "template_parsed": self._load_template(final_action),
+                },
+                step_num,
+            ))
+
+            if echoed["display"]:
+                display_parts.append(f"**Step {step_num} — {orig['action']}:**\n\n{echoed['display']}")
+
+        return "\n".join(command_parts), "\n\n".join(display_parts)
+
+    @staticmethod
+    def _extract_status_from_outcome(outcome_md: str) -> str:
+        import re
+        m = re.search(r'\*\*Status:\*\*\s*(\w+)', outcome_md)
+        return m.group(1) if m else "Unknown"
+
+    # ---------------------------------------------------------------------- #
+    # Intent decomposition                                                     #
+    # ---------------------------------------------------------------------- #
+
+    # ── Entity type → Dr.Egeria action mapping ──────────────────────────── #
+    # Maps Dr.Egeria action name → Egeria open-metadata type name, used to
+    # auto-generate qualified names matching pyegeria's __create_qualified_name__ convention:
+    # "{EgeriaType}::{display-name-with-dashes}"
+    _ACTION_TO_EGERIA_TYPE: Dict[str, str] = {
+        "Create Campaign":                "Project",
+        "Create Project":                 "Project",
+        "Create Personal Project":        "Project",
+        "Create Study Project":           "Project",
+        "Create Task":                    "Project",
+        "Create Glossary":                "Glossary",
+        "Create Glossary Term":           "GlossaryTerm",
+        "Create Glossary Category":       "GlossaryCategory",
+        "Create Team":                    "Team",
+        "Create Organization":            "Organization",
+        "Create Collection":              "Collection",
+        "Create Data Dictionary":         "Collection",
+        "Create Data Structure":          "DataStructure",
+        "Create Data Field":              "DataField",
+        "Create Data Class":              "DataClass",
+        "Create Data Spec":               "Collection",
+        "Create Governance Zone":         "GovernanceZone",
+        "Create Governance Policy":       "GovernancePolicy",
+        "Create Governance Definition":   "GovernanceDefinition",
+        "Create Governance Role":         "GovernanceRole",
+        "Create Governance Driver":       "GovernanceDriver",
+        "Create Business Imperative":     "GovernanceDriver",
+        "Create Certification Type":      "CertificationType",
+        "Create Regulation":              "Regulation",
+        "Create Regulation Article":      "RegulationArticle",
+        "Create License Type":            "LicenseType",
+        "Create Digital Product":         "DigitalProduct",
+        "Create Agreement":               "Agreement",
+        "Create Data Sharing Agreement":  "Agreement",
+        "Create Person Role":             "PersonRole",
+        "Create Community":               "Community",
+        "Create Actor Profile":           "ActorProfile",
+        "Create User Identity":           "UserIdentity",
+        "Create Solution Blueprint":      "SolutionBlueprint",
+        "Create Solution Component":      "SolutionComponent",
+        "Create Information Supply Chain":"InformationSupplyChain",
+        "Create Solution Role":           "SolutionRole",
+        "Create External Reference":      "ExternalReference",
+        "Create Subject Area":            "Collection",
+        "Create Informal Tag":            "InformalTag",
+        "Create Comment":                 "Comment",
+    }
+
+    _ENTITY_TO_ACTION: Dict[str, str] = {
+        "campaign":          "Create Campaign",
+        "project":           "Create Project",
+        "sub_project":       "Create Project",
+        "personal_project":  "Create Personal Project",
+        "study_project":     "Create Study Project",
+        "task":              "Create Task",
+        "glossary":          "Create Glossary",
+        "glossary_term":     "Create Glossary Term",
+        "glossary_category": "Create Glossary Category",
+        "team":              "Create Team",
+        "organization":      "Create Organization",
+        "collection":        "Create Collection",
+        "governance_zone":   "Create Governance Zone",
+        "governance_policy": "Create Governance Policy",
+        "governance_definition": "Create Governance Definition",
+        "data_dictionary":   "Create Data Dictionary",
+        "data_structure":    "Create Data Structure",
+        "data_field":        "Create Data Field",
+        "data_class":        "Create Data Class",
+        "digital_product":   "Create Digital Product",
+        "agreement":              "Create Agreement",
+        "data_sharing_request":   "Create Agreement",
+        "data_sharing_agreement": "Create Agreement",
+        "external_reference":     "Create External Reference",
+        "solution_blueprint":     "Create Solution Blueprint",
+        "blueprint":              "Create Solution Blueprint",
+        "solution_component":     "Create Solution Component",
+        "component":              "Create Solution Component",
+        "information_supply_chain": "Create Information Supply Chain",
+        "supply_chain":           "Create Information Supply Chain",
+        "solution_role":          "Create Solution Role",
+        "view_report":            "View Report",
+        "report":                 "View Report",
+    }
+
+    # Maps entity type → View Report "Report Spec" field value
+    _ENTITY_TO_REPORT_SPEC: Dict[str, str] = {
+        "solution_blueprint":  "Solution-Blueprint",
+        "solution_component":  "Solution-Blueprint",
+        "glossary":            "Glossaries",
+        "glossary_term":       "Glossary-Terms",
+        "collection":          "Collections",
+        "project":             "Projects",
+        "campaign":            "Projects",
+        "digital_product":     "Digital-Products",
+        "data_dictionary":     "Data-Dictionaries",
+        "governance_zone":     "Governance-Zones",
+    }
+
+    # Detects "view/run/show report for X", "report on X", "print list/mermaid/report [for X]",
+    # "mermaid diagram/graph of X", "view X as mermaid", "architecture diagram for X".
+    # _VR_STOP terminates the name capture at common clause boundaries.
+    _VR_STOP = r'(?=\s*(?:as\s+a\s+mermaid|as\s+mermaid|\.\s|\s*$))'
+    _VIEW_REPORT_PATTERN = re.compile(
+        r'\b(?:view|run|show|display|get)\s+(?:a\s+)?(?:the\s+)?report\s+(?:for|on|of)\s+"?(.+?)' + _VR_STOP
+        + r'|\breport\s+on\s+(?:the\s+)?"?(.+?)' + _VR_STOP
+        + r'|\bprint\s+(?:list|mermaid|report)\s+(?:for|of|on)\s+(?:the\s+)?"?(.+?)' + _VR_STOP
+        + r'|\bprint\s+(?:list|mermaid|report)\b'
+        + r'|\bmermaid\s+(?:diagram|graph|chart)\s+(?:of|for)\s+"?(.+?)' + _VR_STOP
+        + r'|\bview\s+"?(.+?)"?\s+as\s+(?:a\s+)?mermaid'
+        + r'|\b(?:architecture|system)\s+diagram\s+(?:of|for)\s+"?(.+?)' + _VR_STOP,
+        re.IGNORECASE,
+    )
+
+    def _decompose_intent(
+        self,
+        query: str,
+        perspective: str | None,
+        llm,
+        existing_commands: Optional[List[Dict]] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Two-stage decomposition:
+          Stage 1 (LLM)  — extract entities and roles from natural language
+          Stage 2 (rules) — map entities → Dr.Egeria commands deterministically
+
+        This split keeps the LLM prompt simple enough for local 8B models while
+        ensuring command names and structure are correct by construction.
+
+        existing_commands: commands already in the plan (for addition requests).
+        Returns a dict: {title, purpose, commands, validator_warnings}
+        """
+        perspective_hint = f"User role: {perspective}.\n" if perspective else ""
+
+        existing_hint = ""
+        if existing_commands:
+            lines = ["Already in the plan — do NOT include these again:"]
+            for c in existing_commands:
+                lines.append(f"  - {c.get('display_name', '?')} ({c['action']})")
+            lines.append("Add ONLY new objects the user is now requesting.")
+            existing_hint = "\n".join(lines) + "\n\n"
+
+        # ── Stage 1: entity extraction ──────────────────────────────────── #
+        # Try pattern-based extraction first (reliable for common phrasings),
+        # fall back to LLM for complex cases.
+        entities = self._extract_entities_patterns(query)
+        if not entities.get("objects"):
+            entities = self._extract_entities_llm(
+                query, perspective_hint, existing_hint, llm
+            )
+        if not entities.get("objects"):
+            entities = {"title": query[:50], "purpose": query, "objects": [], "roles": []}
+
+        # ── Stage 1b: Egeria context enrichment ────────────────────────── #
+        # Best-effort: look up actor profiles and check entity existence in Egeria.
+        # Enriches entities in place; silently skips if Egeria is unreachable.
+        context_warnings: list[str] = []
+        try:
+            from advisor.egeria_context import EgeriaContext
+            ctx = EgeriaContext(egeria_credentials=egeria_credentials)
+            ctx.enrich_entities(entities)
+            # Surface "already exists" warnings so the user can decide to update instead
+            for obj in entities.get("objects", []):
+                if obj.get("exists_in_egeria") and not obj.get("type", "").endswith("sub_project"):
+                    context_warnings.append(
+                        f"'{obj['name']}' already exists in Egeria "
+                        f"(GUID: {obj['egeria_guid'][:8]}…). "
+                        f"The plan will create a new one — rename it if you meant to update the existing one."
+                    )
+            # Surface unresolved actors
+            for role in entities.get("roles", []):
+                if role.get("actor_found") is False:
+                    context_warnings.append(
+                        f"'{role['person']}' was not found in Egeria's actor profiles. "
+                        f"A 'Create Actor Profile' step may be needed, or check the spelling."
+                    )
+        except Exception as _ctx_exc:
+            logger.debug(f"GovernancePlanAgent: context enrichment skipped: {_ctx_exc}")
+
+        # ── Stage 2: deterministic command mapping ──────────────────────── #
+        commands = self._entities_to_commands(entities, existing_commands or [])
+
+        # Apply post-processing validator
+        from advisor.plan_validator import validate_commands
+        commands, _, warnings = validate_commands(commands, {})
+        if warnings:
+            logger.info(f"GovernancePlanAgent: validator fixes: {warnings}")
+
+        # Collect low-confidence suggestions from all extracted objects
+        keyword_suggestions: list[dict] = []
+        for obj in entities.get("objects", []):
+            keyword_suggestions.extend(obj.pop("low_confidence_suggestions", []))
+
+        # Collect auto-appended steps (e.g. View Report added for SA plans)
+        auto_appended: list[str] = []
+        for cmd in commands:
+            if cmd.pop("_auto_appended", False):
+                spec = (cmd.get("pre_filled") or {}).get("Report Spec", "")
+                fmt  = (cmd.get("pre_filled") or {}).get("Output Format", "")
+                auto_appended.append(
+                    f"Added **View Report** ({spec}, {fmt}) — visualizes the result. "
+                    "Remove it in the canvas if not needed."
+                )
+
+        return {
+            "title":              entities.get("title", query[:50]).strip(),
+            "purpose":            entities.get("purpose", query),
+            "commands":           commands,
+            "validator_warnings": warnings + context_warnings,
+            "keyword_suggestions": keyword_suggestions,
+            "auto_appended":      auto_appended,
+        }
+
+    # Name stops at these words (sentence-level boundaries)
+    _NAME_STOP = r'(?=\s*(?:,|\.|\s+-\s+|\bwith\b|\bhave\b|\bto\s+be\b|\bled\s+by\b|\bto\s+create\b|\band\b|\bincluding\b|\bwhere\b|\busing\b|$))'
+
+    # Pattern vocab: (regex, entity_type) — name captured in group 1
+    _ENTITY_PATTERNS = [
+        # "called <name>" / "named <name>" — generic; entity type inferred from context word
+        (r'\b(?:project|campaign|glossary|collection|task|team|agreement|study)\s+(?:called|named)\s+"?(.+?)"?' + _NAME_STOP, None),
+        # "a data sharing request/agreement called/named/for <name>"
+        (r'\b(?:a\s+)?data\s+sharing\s+(?:request|agreement)\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "agreement"),
+        # "an agreement called/named/for <name>"
+        (r'\ban?\s+agreement\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "agreement"),
+        # "a task called/named/for <name>"
+        (r'\ba\s+task\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "task"),
+        # "a team called/named/for <name>"
+        (r'\ba\s+team\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "team"),
+        # "a campaign for <name>"
+        (r'\ba\s+campaign\s+for\s+"?(.+?)"?' + _NAME_STOP, "campaign"),
+        # "a project for / project called"
+        (r'\ba\s+project\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "project"),
+        # "a glossary for / called"
+        (r'\ba\s+glossary\s+(?:for|called)\s+"?(.+?)"?' + _NAME_STOP, "glossary"),
+        # Solution Architect: "a blueprint called/named/for <name>" (singular — use LLM for lists)
+        (r'\b(?:a\s+)?(?:solution\s+)?blueprint\s+(?:called|named|for)\s+"?(.+?)"?' + _NAME_STOP, "solution_blueprint"),
+        # "set up a <type>" — name after "for" or "called"
+        (r'\bset\s+up\s+a\s+(?:glossary|project|campaign|task|team)\s+(?:for\s+the\s+|for\s+|called\s+)?"?(.+?)"?' + _NAME_STOP, None),
+        # "create a data sharing request called <name>" (handles "I want to create a data sharing request...")
+        (r'\bcreate\s+(?:a\s+)?data\s+sharing\s+(?:request|agreement)\s+(?:called\s+|named\s+)?"?(.+?)"?' + _NAME_STOP, "agreement"),
+        # Generic catch-all — MUST stay last so the more specific patterns above win when
+        # they also match. Covers "create/add/set up a/an <any type phrase> called/named/
+        # for/to <name>", for any of the ~126 known Dr.Egeria commands, not just the
+        # hand-listed types above (e.g. "Create an External Reference to the X web site",
+        # "Add a Digital Product for Y"). Sentinel etype "__generic__" tells the caller to
+        # resolve group(1) (the type phrase) against the command keyword index — SCOPED to
+        # just that phrase, not the whole query, so a proper noun elsewhere in the name
+        # (e.g. "...to the Egeria Project web site") can't be mistaken for the type.
+        (r'\b(?:create|add|set\s+up)\s+(?:an?\s+)?([\w\s]{2,40}?)\s+(?:called|named|for|to)\s+"?(.+?)"?' + _NAME_STOP, "__generic__"),
+    ]
+    # Role: "led by <person> as <role>" / "with <person> as <role>" /
+    #        "have <person> be the <role>" / "<role> as <person>"
+    _ROLE_PATTERNS = [
+        r'\b(?:to\s+be\s+)?led\s+by\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+as\s+(?:the\s+)?([\w\s]{2,30})',
+        r'\b(?:to\s+be\s+)?led\s+by\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?' + _NAME_STOP,
+        r'\bwith\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+as\s+(?:the\s+)?([\w\s]{2,30})',
+        # "have Tom Tally be the leader" / "have Tom as the project manager"
+        r'\bhave\s+"?([A-Z][a-zA-Z\s\.]{1,30}?)"?\s+(?:be\s+(?:the\s+)?|as\s+(?:the\s+)?)([\w\s]{2,30})',
+        # "project leader as Tom Tally" / "leader: Tom Tally" (role first, then name)
+        r'\b(?:project\s+)?(?:leader|manager|steward|owner|sponsor|lead)\s+(?:as\s+|:\s*)?"?([A-Z][a-zA-Z\s\.]{1,30}?)"?' + _NAME_STOP,
+    ]
+    _SUBPROJECT_PATTERN = re.compile(
+        r'\bsub[-\s]?projects?\s+(?:for\s+)?["\']?(.+?)(?=["\']?\s*(?:$|\.|,\s*(?:led|with|and\s+[a-z])))',
+        re.IGNORECASE,
+    )
+
+    # Multi-item list: "[plural type keyword] for/called name1, name2, and nameN"
+    # e.g. "solution components for UK DB, EU DB and WorldWide DB"
+    _MULTI_ENTITY_PATTERN = re.compile(
+        r'\b((?:solution\s+)?components?|(?:solution\s+)?blueprints?|glossary\s+terms?'
+        r'|tasks?|data\s+structures?|data\s+fields?)\s+(?:for|called|named)\s+'
+        r'(.+?)(?=\.\s+[A-Z]|\s*\.\s*$|\s*$)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Geographic / regional prefixes to strip when auto-naming containers
+    _GEO_PREFIX = re.compile(
+        r'^(UK|EU|EU|US|USA|EMEA|APAC|Canada|WorldWide|Worldwide|Global|LATAM|MEA'
+        r'|North\s+America|South\s+America|Asia\s+Pacific|Europe|Asia)\s+',
+        re.IGNORECASE,
+    )
+
+    def _extract_entities_patterns(self, query: str) -> Dict:
+        """
+        Rule-based entity extraction for common phrasings.
+        Returns entities dict if confident; empty objects list if not matched.
+        """
+        q = query.strip()
+        objects = []
+        roles   = []
+
+        ql = q.lower()
+
+        # keyword → entity_type map for fast inline matching
+        _KW_MAP = {
+            "campaign": "campaign", "glossary": "glossary",
+            "collection": "collection", "task": "task", "team": "team",
+            "blueprint": "solution_blueprint", "component": "solution_component",
+            "supply chain": "information_supply_chain", "solution role": "solution_role",
+            "study": "study_project", "personal": "personal_project",
+        }
+
+        # ── Multi-item list detection ──────────────────────────────────────
+        # Handles "solution components for UK X, EU Y and WorldWide Z"
+        multi_m = self._MULTI_ENTITY_PATTERN.search(q)
+        if multi_m:
+            kw_raw = multi_m.group(1).lower()
+            # Normalise singular: "components" → "component", "blueprints" → "blueprint"
+            kw = re.sub(r's$', '', kw_raw.strip())
+            # Map to entity type
+            etype = _KW_MAP.get(kw) or _KW_MAP.get(kw.replace("solution ", ""))
+            if etype:
+                raw_names = multi_m.group(2)
+                names = [n.strip().strip('"\'') for n in
+                         re.split(r'\s*,\s*|\s+and\s+', raw_names) if n.strip()]
+                # Sanity check: a genuine list item is a short proper name. If
+                # the query names a container elsewhere ("Blueprint called X")
+                # AND separately lists items ("components for A, B, C"), the
+                # shared (?:for|called|named) group above can match the wrong
+                # keyword occurrence and the lazy capture can run away,
+                # swallowing the rest of the sentence into one "name" (confirmed
+                # live 2026-07-10). Rather than trust a garbled result, bail out
+                # entirely — _decompose_intent's LLM extraction fallback handles
+                # this combined case correctly.
+                _SUSPICIOUS_NAME_WORDS = (
+                    "is part of", "the final step", "solution component", "each component",
+                )
+                if names and any(
+                    len(n) > 60 or any(w in n.lower() for w in _SUSPICIOUS_NAME_WORDS)
+                    for n in names
+                ):
+                    return {"objects": [], "roles": []}
+                if names:
+                    # ── Auto-name a container when query mentions "blueprint" ─
+                    container_name = ""
+                    bp_named = re.search(
+                        r'\bblueprint\s+(?:called|named)\s+"?([^",.]+?)"?(?=[,.]|$)', ql
+                    )
+                    if bp_named:
+                        container_name = bp_named.group(1).strip().title()
+                    elif "blueprint" in ql and etype == "solution_component":
+                        # Derive name from common suffix of all item names
+                        words_lists = [n.split() for n in names]
+                        min_len = min(len(w) for w in words_lists)
+                        suffix_words: list[str] = []
+                        for i in range(1, min_len + 1):
+                            candidates = [w[-i].lower() for w in words_lists]
+                            if len(set(candidates)) == 1:
+                                suffix_words.insert(0, words_lists[0][-i])
+                            else:
+                                break
+                        if suffix_words:
+                            container_name = " ".join(suffix_words).title() + " Blueprint"
+                        else:
+                            # Fallback: strip geo prefix from first name
+                            stripped = self._GEO_PREFIX.sub("", names[0]).strip()
+                            container_name = (stripped or names[0]).title() + " Blueprint"
+
+                    if container_name:
+                        objects.append({
+                            "type": "solution_blueprint",
+                            "name": container_name,
+                            "low_confidence_suggestions": [],
+                        })
+                    for name in names:
+                        objects.append({
+                            "type": etype,
+                            "name": name,
+                            "blueprint_parent": container_name,
+                            "low_confidence_suggestions": [],
+                        })
+                    # Role extraction still applies
+                    roles = self._extract_roles(q)
+                    title_base = container_name or names[0]
+                    return {
+                        "title":   f"{title_base} Plan",
+                        "purpose": q[:120],
+                        "objects": objects,
+                        "roles":   roles,
+                    }
+
+        # ── View Report / Mermaid diagram detection ────────────────────────
+        # Handles "view report for Solution Blueprint", "mermaid graph of X", etc.
+        # Checked AFTER multi-item list detection above: a request like
+        # "...create solution components for A, B, C... The final step is to
+        # View Report..." must not have its Blueprint/Components silently
+        # discarded just because it also mentions a report at the end — this
+        # early-return path is only for queries that are ~exclusively about
+        # viewing a report, with nothing else to create. (Confirmed live
+        # 2026-07-10: this block firing first caused exactly that — a
+        # 5-object plan request came back with only the View Report step.)
+        # When multi-item/main-entity detection above DOES match a Solution
+        # Blueprint creation, the auto-append step in _entities_to_commands
+        # already adds a View Report/Mermaid step automatically, so nothing
+        # requested is lost by deferring to it instead.
+        vr_m = self._VIEW_REPORT_PATTERN.search(q)
+        if vr_m:
+            target_name = next((g.strip() for g in vr_m.groups() if g), "")
+            # Strip leading articles ("the", "a", "an")
+            target_name = re.sub(r'^(?:the|a|an)\s+', '', target_name, flags=re.IGNORECASE)
+            # Detect explicit output format from the phrase used
+            if re.search(r'\bmermaid\b', ql):
+                output_fmt = "MERMAID"
+            elif re.search(r'\bprint\s+report\b|\bfull\s+report\b', ql):
+                output_fmt = "MD"
+            elif re.search(r'\bprint\s+list\b', ql):
+                output_fmt = "LIST"
+            else:
+                output_fmt = "LIST"
+            # Infer report spec from entity type keywords in query
+            report_spec = "Solution-Blueprint"  # default
+            for kw, spec in [
+                ("glossary term", "Glossary-Terms"),
+                ("glossary",      "Glossaries"),
+                ("collection",    "Collections"),
+                ("project",       "Projects"),
+                ("campaign",      "Projects"),
+                ("digital product", "Digital-Products"),
+                ("data dictionary", "Data-Dictionaries"),
+                ("governance zone", "Governance-Zones"),
+                ("blueprint",     "Solution-Blueprint"),
+                ("solution",      "Solution-Blueprint"),
+            ]:
+                if kw in ql:
+                    report_spec = spec
+                    break
+            return {
+                "title": f"View {report_spec} Report",
+                "purpose": q[:120],
+                "objects": [{
+                    "type": "view_report",
+                    "name": target_name or report_spec,
+                    "report_spec": report_spec,
+                    "output_format": output_fmt,
+                    "search_string": target_name,
+                    "low_confidence_suggestions": [],
+                }],
+                "roles": [],
+            }
+
+        # Tracks entity-type inferences that used the keyword index (low confidence)
+        # so confirm_commands can surface "Did you mean X?"
+        _low_confidence_suggestions: list[dict] = []
+
+        def _infer_type_from_context(scope: str = "") -> tuple[str, Optional[str]]:
+            """
+            Returns (entity_type, action). action is None when entity_type is one of
+            the small set of hand-mapped types below (the existing _ENTITY_TO_ACTION
+            lookup in _entities_to_commands already resolves those correctly). For
+            anything else, action carries the *actual* resolved command name from the
+            keyword index directly — this covers every one of the ~126 known Dr.Egeria
+            commands, not just the ~25 pre-registered in _ENTITY_TO_ACTION. Previously
+            a confident keyword-index match for a command NOT already in that dict was
+            silently discarded (the inverse-lookup `inv.get(...)` returned None) and
+            fell through to a generic "project" default — this is what made e.g.
+            "Create an External Reference to X" fail even though External Reference IS
+            a real, catalogued Dr.Egeria action.
+
+            `scope`, when given, restricts the search to just that text (the captured
+            "type phrase" from the generic catch-all pattern) instead of the whole
+            query. Without this, a query like "Create an external reference to the
+            Egeria Project web site" would find "Project" (an exact, high-confidence
+            match, since it's also a real command name) inside the *name* portion of
+            the sentence and wrongly prefer it over the weaker partial match on
+            "external reference" earlier in the sentence — the same class of bug as
+            the CreateRouter "Egeria-Project" false positive, one layer deeper.
+            """
+            search_text = scope.lower() if scope else ql
+            for kw, etype in _KW_MAP.items():
+                if kw in search_text:
+                    return etype, None
+            if "agreement" in search_text or "data sharing" in search_text:
+                return "agreement", None
+            if "investigation" in search_text:
+                return "study_project", None
+            # Last resort: consult the full keyword index (~126 commands) against the
+            # (scoped, if given) text, longest phrase first so multi-word command
+            # names/aliases ("external reference", "digital product") aren't shadowed
+            # by a shorter, weaker single-word partial match.
+            try:
+                from advisor.command_keyword_index import get_command_keyword_index
+                idx = get_command_keyword_index()
+                words = search_text.split()
+                best_match = None
+                best_phrase = ""
+                for length in (4, 3, 2, 1):
+                    for i in range(len(words) - length, -1, -1):
+                        phrase = " ".join(words[i:i + length])
+                        match = idx.lookup(phrase)
+                        if match and (best_match is None or match.confidence > best_match.confidence):
+                            best_match, best_phrase = match, phrase
+                    if best_match and best_match.confidence >= 0.90:
+                        break  # exact match already found at this length; no need to try shorter phrases
+                if best_match and best_match.confidence >= 0.50:
+                    if best_match.confidence < 0.80:
+                        _low_confidence_suggestions.append({
+                            "phrase": best_phrase,
+                            "suggested_command": best_match.command,
+                            "family": best_match.family,
+                            "confidence": best_match.confidence,
+                        })
+                    return _command_to_entity_type(best_match.command), best_match.command
+            except Exception:
+                pass
+            return "project", None
+
+        # Detect main entity type and name
+        main_type = ""
+        main_action: Optional[str] = None
+        main_name = ""
+        for pattern, etype in self._ENTITY_PATTERNS:
+            m = re.search(pattern, q, re.IGNORECASE)
+            if m:
+                if etype == "__generic__":
+                    # Two-group pattern: group(1) is the type phrase, group(2) is the
+                    # name. Resolve the type SCOPED to just that phrase — never the
+                    # whole query — so a proper noun elsewhere in the name can't be
+                    # mistaken for the type (see _infer_type_from_context docstring).
+                    type_phrase = m.group(1).strip()
+                    main_name = m.group(2).strip().strip('"\'')
+                    main_type, main_action = _infer_type_from_context(scope=type_phrase)
+                    break
+                main_name = m.group(1).strip().strip('"\'')
+                if etype:
+                    main_type = etype
+                else:
+                    matched_lower = m.group(0).lower()
+                    matched_type = next(
+                        (et for kw, et in _KW_MAP.items() if kw in matched_lower), None
+                    )
+                    if matched_type:
+                        main_type = matched_type
+                    elif "agreement" in matched_lower or "data sharing" in matched_lower:
+                        main_type = "agreement"
+                    else:
+                        main_type, main_action = _infer_type_from_context()
+                break
+
+        if not main_name:
+            return {"objects": [], "roles": []}
+
+        main_obj = {
+            "type": main_type or "project",
+            "name": main_name,
+            "low_confidence_suggestions": _low_confidence_suggestions,
+        }
+        if main_action:
+            main_obj["action"] = main_action
+        objects.append(main_obj)
+
+        # Sub-projects
+        sub_m = self._SUBPROJECT_PATTERN.search(q)
+        if sub_m:
+            sub_text = sub_m.group(1)
+            # Split on commas, "and", quotes
+            sub_names = re.split(r'",?\s+"|\s*,\s*|\s+and\s+', sub_text)
+            for sn in sub_names:
+                sn = sn.strip().strip('"\'').strip()
+                if sn and sn.lower() != main_name.lower():
+                    objects.append({"type": "sub_project", "name": sn, "parent": main_name})
+
+        # Role assignments
+        roles = self._extract_roles(q)
+
+        main_type_label = main_type.replace("_", " ").title()
+        title = f"{main_name} {main_type_label} Setup" if main_name else query[:50]
+        return {
+            "title":   title,
+            "purpose": f"Set up a {main_type_label.lower()} called {main_name}",
+            "objects": objects,
+            "roles":   roles,
+        }
+
+    def _extract_roles(self, q: str) -> list[dict]:
+        """Extract role assignments from query text using _ROLE_PATTERNS."""
+        roles = []
+        for pattern in self._ROLE_PATTERNS:
+            m = re.search(pattern, q, re.IGNORECASE)
+            if m:
+                person = m.group(1).strip().strip('"\'')
+                role   = (m.group(2).strip().title()
+                          if m.lastindex and m.lastindex >= 2 and m.group(2)
+                          else "Project Leader")
+                if person and 1 <= len(person.split()) <= 5:
+                    roles.append({"role": role, "person": person})
+                    break
+        return roles
+
+    def _extract_entities_llm(
+        self, query: str, perspective_hint: str, existing_hint: str, llm
+    ) -> Dict:
+        """LLM-based entity extraction — fallback when pattern matching fails."""
+        prompt = f"""Extract ALL objects and role assignments from this request.
+Return ONLY valid JSON. Each distinct named object appears EXACTLY ONCE.
+
+Object types:
+  project, campaign, sub_project (child project — include "parent" field),
+  glossary, glossary_term, glossary_category,
+  team, collection, governance_zone,
+  solution_blueprint, solution_component (architectural building block),
+  information_supply_chain, solution_role,
+  data_dictionary, data_structure, data_field, data_spec,
+  certification_type, governance_policy, governance_rule,
+  digital_product, agreement, external_reference
+
+Rules:
+- For solution_component: if the user mentions a blueprint as container, also include
+  a solution_blueprint object (infer name from context if not explicitly given).
+- For sub_project: include "parent" with the parent campaign/project name.
+- "name" must be copied EXACTLY from the request — never use the type word as the name.
+- If a list of names is given for the same type, create one object per name.
+- "title" must be a real 3-6 word summary of THIS request (e.g. "Finance Zone Setup") —
+  never copy the placeholder text below verbatim.
+
+{existing_hint}{perspective_hint}Request: "{query}"
+
+Return (the field values below are placeholders showing the expected shape —
+replace every one of them with real content derived from the request):
+{{
+  "title": "<3-6 word summary of this request>",
+  "purpose": "<one sentence>",
+  "objects": [{{"type": "...", "name": "exact name from request"}}],
+  "roles": [{{"role": "role title", "person": "person name"}}]
+}}
+JSON:"""
+        try:
+            raw = llm.generate(prompt, temperature=0.0, max_tokens=700)
+            raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```$", "", raw.strip())
+            m   = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not m:
+                raise ValueError("no JSON in LLM output")
+            result = json.loads(_extract_balanced_json(m.group()))
+            # Defense in depth: a weak model can still echo the placeholder
+            # verbatim (confirmed live 2026-07-09 — literally returned the
+            # string "short title"). Never trust a title that looks like the
+            # prompt's own placeholder text rather than real content.
+            bad_titles = {"short title", "<3-6 word summary of this request>", ""}
+            if str(result.get("title", "")).strip().lower() in bad_titles:
+                result["title"] = query[:50].strip()
+            return result
+        except Exception as exc:
+            logger.warning(f"GovernancePlanAgent: LLM extraction failed: {exc}")
+            return {"objects": [], "roles": []}
+
+    def _entities_to_commands(
+        self, entities: Dict, existing_commands: List[Dict]
+    ) -> List[Dict]:
+        """
+        Deterministically map extracted entities and roles to Dr.Egeria commands.
+        """
+        from advisor.action_catalog import get_action_catalog
+        catalog = get_action_catalog()
+        commands: List[Dict] = []
+        existing_names = {c.get("display_name", "").lower() for c in existing_commands}
+        _ACTION_TO_EGERIA_TYPE = self._ACTION_TO_EGERIA_TYPE
+
+        def _make_cmd(action: str, display_name: str, pre_filled: Optional[Dict] = None,
+                      narrative: str = "") -> Dict:
+            pf = dict(pre_filled) if pre_filled else {}
+            # Auto-generate Qualified Name using the same convention as pyegeria's
+            # __create_qualified_name__(type_name, display_name) → "Type::display-name"
+            egeria_type = _ACTION_TO_EGERIA_TYPE.get(action)
+            if egeria_type and display_name and "Qualified Name" not in pf:
+                # Strip anything that isn't a word char/space/hyphen first (quotes,
+                # colons, slashes, pipes, parens, …) so the result is always a
+                # valid identifier, then collapse whitespace to hyphens.
+                dn_slug = re.sub(r'[^\w\s-]', '', display_name.strip())
+                dn_slug = re.sub(r'\s+', '-', dn_slug).strip('-') or 'unnamed'
+                pf["Qualified Name"] = f"{egeria_type}::{dn_slug}"
+            return {
+                "action":       action,
+                "display_name": display_name,
+                # Unique key so multiple commands of the same action type each get
+                # their own slot in the answers dict (fixes display of repeated actions)
+                "_answers_key": f"{action}:{display_name}" if display_name else action,
+                "description":  "",
+                "rationale":    "",
+                "narrative":    narrative or catalog.narrative_template(action),
+                "pre_filled":   pf,
+                "placeholders": {},
+            }
+
+        # Identify the top-level container (campaign or first unparented project)
+        # so we can infer parent for unparented sub-items
+        top_level_name = ""
+        for obj in entities.get("objects", []):
+            otype = (obj.get("type") or "").lower()
+            if otype in ("campaign",):
+                top_level_name = (obj.get("name") or "").strip()
+                break
+        if not top_level_name:
+            # Also check existing commands for a campaign/top-level project
+            for ec in existing_commands:
+                if ec.get("action") in ("Create Campaign", "Create Project") \
+                        and not (ec.get("pre_filled") or {}).get("Parent ID"):
+                    top_level_name = ec.get("display_name", "")
+                    break
+
+        # Identify the solution blueprint qualified name (from extracted objects or existing
+        # commands) so solution_components can pre-fill "In Solution Blueprints" at creation.
+        # Using the qualified name (not just display name) ensures Dr.Egeria resolves the
+        # reference unambiguously.  Falls back to display name if QN not yet computed.
+        blueprint_qname = ""
+        blueprint_name = ""
+        for obj in entities.get("objects", []):
+            otype = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
+            if otype in ("solution_blueprint", "blueprint"):
+                blueprint_name = (obj.get("name") or "").strip()
+                if blueprint_name:
+                    slug = re.sub(r'\s+', '-', blueprint_name.strip())
+                    blueprint_qname = f"SolutionBlueprint::{slug}"
+                break
+        if not blueprint_name:
+            for ec in existing_commands:
+                if ec.get("action") == "Create Solution Blueprint":
+                    blueprint_name = ec.get("display_name", "")
+                    # Try to read QN from already-computed pre_filled
+                    blueprint_qname = (
+                        (ec.get("pre_filled") or {}).get("Qualified Name")
+                        or (f"SolutionBlueprint::{re.sub(r'\s+', '-', blueprint_name)}"
+                            if blueprint_name else "")
+                    )
+                    break
+
+        for obj in entities.get("objects", []):
+            entity_type = (obj.get("type") or "").lower().replace("-", "_").replace(" ", "_")
+            name = (obj.get("name") or "").strip()
+            if not name or name.lower() in existing_names:
+                continue
+
+            # ── View Report: read-only command, pre-fill from extracted attrs ──
+            if entity_type in ("view_report", "report"):
+                report_spec   = obj.get("report_spec", "Solution-Blueprint")
+                output_format = obj.get("output_format", "TABLE")
+                search_string = obj.get("search_string", name)
+                pf: Dict[str, str] = {
+                    "Report Spec":   report_spec,
+                    "Output Format": output_format,
+                }
+                if search_string:
+                    pf["Search String"] = search_string
+                # No Qualified Name for View Report — it's not creating an Egeria object
+                cmd = {
+                    "action":       "View Report",
+                    "display_name": search_string or report_spec,
+                    "_answers_key": f"View Report:{search_string or report_spec}",
+                    "description":  "",
+                    "rationale":    "",
+                    "narrative":    catalog.narrative_template("View Report")
+                        or f"Runs the {report_spec} report to view results.",
+                    "pre_filled":   pf,
+                    "placeholders": {},
+                }
+                commands.append(cmd)
+                continue
+
+            # A "project" with a parent field is implicitly a sub-project
+            parent = (obj.get("parent") or "").strip()
+            if parent and entity_type == "project":
+                entity_type = "sub_project"
+
+            # Unparented projects when a campaign exists → infer as sub-projects
+            if entity_type == "project" and not parent and top_level_name \
+                    and name != top_level_name:
+                parent = top_level_name
+                entity_type = "sub_project"
+
+            # obj["action"], when present, is a command name already resolved directly
+            # against the full command keyword index (see _infer_type_from_context) —
+            # use it as-is rather than re-deriving from entity_type, which only covers
+            # the ~25 types hand-registered in _ENTITY_TO_ACTION.
+            action = obj.get("action") or self._ENTITY_TO_ACTION.get(entity_type)
+            if not action:
+                action = catalog.find_by_alias(entity_type) or "Create Project"
+
+            pre_filled: Dict[str, str] = {"Display Name": name}
+            if parent and entity_type == "sub_project":
+                pre_filled["Parent ID"] = parent
+                pre_filled["Parent Relationship Type Name"] = "ProjectHierarchy"
+
+            # Pre-fill the parent-reference field on children when the container is known.
+            # Use the qualified name so Dr.Egeria resolves the cross-reference unambiguously.
+            bp_ref = (obj.get("blueprint_parent") and
+                      (f"SolutionBlueprint::{re.sub(r'\s+', '-', obj['blueprint_parent'])}"
+                       if obj.get("blueprint_parent") else "")) or blueprint_qname
+            if action == "Create Solution Component" and bp_ref:
+                pre_filled["In Solution Blueprints"] = bp_ref
+
+            commands.append(_make_cmd(action, name, pre_filled))
+
+        for role in entities.get("roles", []):
+            # Accept both "role" and "role_name" as field names
+            role_title  = (role.get("role") or role.get("role_name") or "").strip().title()
+            person_name = (role.get("person") or role.get("person_name") or "").strip()
+            if not role_title:
+                continue
+
+            commands.append(_make_cmd(
+                "Create Person Role", role_title,
+                {"Display Name": role_title},
+            ))
+            if person_name:
+                appt_pre_filled: Dict[str, str] = {
+                    "role_name":   role_title,
+                    "person_name": person_name,
+                }
+                # Use Egeria-resolved qualified name when available (avoids execution failure)
+                if role.get("actor_found") and role.get("actor_qualified_name"):
+                    appt_pre_filled["Actor Profile Qualified Name"] = role["actor_qualified_name"]
+                commands.append(_make_cmd(
+                    "Link Person Role Appointment", "",
+                    appt_pre_filled,
+                ))
+
+        # ── Auto-append visualization report for Solution Architect plans ──
+        # When the plan creates a Solution Blueprint and no View Report step
+        # already exists (new or existing commands), add one automatically so
+        # the user gets a Mermaid diagram of the result after execution.
+        all_cmds = commands + existing_commands
+        has_view_report = any(c.get("action") == "View Report" for c in all_cmds)
+        if blueprint_name and not has_view_report:
+            commands.append({
+                "action":       "View Report",
+                "display_name": blueprint_name,
+                "_answers_key": f"View Report:{blueprint_name}",
+                "description":  "",
+                "rationale":    "",
+                "narrative":    (
+                    f"Visualizes the completed '{blueprint_name}' solution blueprint "
+                    "as a Mermaid architecture diagram."
+                ),
+                "pre_filled": {
+                    "Report Spec":   "Solution-Blueprint",
+                    "Output Format": "MERMAID",
+                    "Search String": blueprint_name,
+                },
+                "placeholders": {},
+                "_auto_appended": True,  # flag for elicitor to surface a note
+            })
+
+        return commands
+
+    # ---------------------------------------------------------------------- #
+    # Template loading                                                         #
+    # ---------------------------------------------------------------------- #
+
+    def _load_template(self, action: str) -> Optional[Dict]:
+        """
+        Find and parse the best-matching basic template file for *action*.
+
+        Returns the parsed template dict, or None if not found.
+        """
+        from advisor.agents.tools import _templates_root, _normalise
+        from advisor.agents.dr_egeria_agent import parse_template
+
+        root = _templates_root()
+        if root is None:
+            return None
+
+        level_dir = root / "basic"
+        if not level_dir.is_dir():
+            level_dir = root
+
+        query_norm = _normalise(action)
+        words = [_normalise(w) for w in action.split() if len(w) > 3]
+
+        best_score = 0
+        best_file: Optional[Path] = None
+
+        for md_file in sorted(level_dir.rglob("*.md")):
+            stem_norm = _normalise(md_file.stem)
+            score = 0
+            if query_norm == stem_norm:
+                score = 50          # exact match: highest priority
+            elif query_norm in stem_norm:
+                score = 40          # query is a prefix/substring of stem
+            elif stem_norm in query_norm:
+                score = 35          # stem is a prefix of query (less specific template)
+            elif words:
+                hits = sum(1 for w in words if w in stem_norm)
+                if hits == len(words):
+                    score = 30
+                elif hits > 0:
+                    score = 20 + hits
+            if score > best_score:
+                best_score = score
+                best_file = md_file
+
+        if best_file is None or best_score == 0:
+            return None
+
+        try:
+            return parse_template(str(best_file))
+        except Exception as exc:
+            logger.warning(
+                f"GovernancePlanAgent: failed to parse template {best_file}: {exc}"
+            )
+            return None
+
+    # ---------------------------------------------------------------------- #
+    # Narrative generation                                                     #
+    # ---------------------------------------------------------------------- #
+
+    def _generate_narrative(
+        self,
+        query: str,
+        purpose: str,
+        perspective: str | None,
+        commands: List[Dict],
+        llm,
+    ) -> Tuple[str, List[str], str]:
+        """
+        Generate Goal (paragraph), Requirements (bullet list), and Approach (numbered list).
+        """
+        command_list = "\n".join(
+            f"  {i + 1}. {c['action']}: {c.get('description', '')}"
+            for i, c in enumerate(commands)
+        )
+        perspective_line = (
+            f"User role: {perspective}\n" if perspective else ""
+        )
+
+        prompt = f"""Write three sections for a data management plan.
+
+User request: "{query}"
+{perspective_line}Commands to execute (in order):
+{command_list}
+
+Write these three sections in order:
+
+GOAL:
+A single paragraph explaining what this plan achieves and why.
+
+REQUIREMENTS:
+3-5 bullet points (one per line, starting with "-") listing key requirements or constraints.
+
+APPROACH:
+A numbered list matching the commands above. Each line: "N. Command Name (Family) — brief rationale".
+
+Keep all sections concise and use plain language.
+
+GOAL:"""
+
+        try:
+            raw = llm.generate(prompt, temperature=0.3, max_tokens=700)
+
+            # Parse the three sections
+            parts = re.split(
+                r'\n(?:REQUIREMENTS?|APPROACH):\s*\n?', raw, flags=re.IGNORECASE
+            )
+
+            goal = ""
+            requirements: List[str] = []
+            approach = ""
+
+            if parts:
+                goal = re.sub(r'^GOAL:\s*', '', parts[0], flags=re.IGNORECASE).strip()
+            if len(parts) >= 2:
+                req_block = parts[1].strip()
+                requirements = [
+                    line.lstrip("-•*0123456789. ").strip()
+                    for line in req_block.splitlines()
+                    if line.strip() and len(line.strip()) > 5
+                ]
+            if len(parts) >= 3:
+                approach = parts[2].strip()
+
+        except Exception as exc:
+            logger.warning(
+                f"GovernancePlanAgent: narrative generation failed: {exc}"
+            )
+            goal = purpose
+            requirements = []
+            approach = ""
+
+        # Fallback: build approach from command list if LLM didn't produce one
+        if not approach:
+            approach = "\n".join(
+                f"{i + 1}. {c['action']} — {c['spec'].get('rationale', c.get('description', ''))}"
+                for i, c in enumerate(commands)
+            )
+
+        if not requirements:
+            requirements = [
+                "All required governance objects must be created before linking steps",
+                "Use consistent display names that match your organisation's naming conventions",
+                "Fill in any `<!-- TODO: fill in -->` placeholders before execution",
+            ]
+
+        return goal or purpose, requirements, approach
+
+    # ---------------------------------------------------------------------- #
+    # Document composition                                                     #
+    # ---------------------------------------------------------------------- #
+
+    def _compose_command_block(
+        self, cmd: Dict, step_num: int
+    ) -> str:
+        """Compose one annotated Dr.Egeria command block."""
+        action = cmd["action"]
+        # Prefer user-edited narrative, then LLM rationale, then description
+        narrative = (
+            cmd.get("narrative")
+            or cmd.get("spec", {}).get("rationale")
+            or cmd.get("rationale")
+            or cmd.get("description", "")
+        )
+        params: Dict[str, Any] = cmd.get("params", {})
+        template: Optional[Dict] = cmd.get("template_parsed")
+
+        lines: List[str] = []
+
+        # Narrative comment header
+        comment_body = action
+        if narrative:
+            # Wrap long narrative at ~80 chars, indented
+            wrapped = "\n     ".join(
+                narrative[i:i+80] for i in range(0, len(narrative), 80)
+            )
+            comment_body += f"\n     {wrapped}"
+        lines.append(f"<!-- Step {step_num}: {comment_body} -->")
+
+        lines.append(f"## {action}")
+        lines.append("")
+
+        if template:
+            for attr in template["attributes"]:
+                attr_name = attr["name"]
+
+                # Resolve value: direct match, then alias
+                value = params.get(attr_name) or params.get(attr_name.lower())
+                if value is None:
+                    for alias in attr.get("alternative_labels", []):
+                        if not alias:
+                            continue
+                        for k, v in params.items():
+                            if k.lower() == alias.lower():
+                                value = v
+                                break
+                        if value is not None:
+                            break
+
+                if attr["required"]:
+                    display = str(value) if value else "<!-- TODO: fill in -->"
+                    lines.append(f"### {attr_name}")
+                    lines.append(display)
+                    lines.append("")
+                elif value:
+                    lines.append(f"### {attr_name}")
+                    lines.append(str(value))
+                    lines.append("")
+        else:
+            # No template available — minimal placeholder block
+            display_name = (
+                cmd.get("display_name") or cmd.get("description") or "<!-- TODO: fill in -->"
+            )
+            lines.append(f"### Display Name")
+            lines.append(display_name)
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def _compose_document(
+        self,
+        title: str,
+        purpose: str,
+        perspective: str,
+        goal: str,
+        requirements: List[str],
+        approach: str,
+        commands: List[Dict],
+        created_by: Optional[str] = None,
+    ) -> str:
+        """Assemble the complete GPD markdown."""
+        import os
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        creator = created_by or os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
+
+        parts: List[str] = [
+            f"# {title}",
+            f"**Created:** {now}   **Last edited:** {now}   **Status:** Draft",
+            f"**Created by:** {creator}   **Last edited by:** {creator}   **Perspective:** {perspective}",
+            f"**Purpose:** {purpose}",
+            "",
+            "---",
+            "",
+            "## Goal",
+            "",
+            goal,
+            "",
+            "## Requirements",
+            "",
+        ]
+
+        for req in requirements:
+            parts.append(f"- {req}")
+
+        parts += [
+            "",
+            "## Approach",
+            "",
+            approach,
+            "",
+            "---",
+            "",
+            "## Command Sequence",
+            "",
+        ]
+
+        for i, cmd in enumerate(commands):
+            parts.append(self._compose_command_block(cmd, i + 1))
+
+        return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _error_result(query: str, message: str) -> Dict[str, Any]:
+    return {
+        "query": query,
+        "response": message,
+        "query_type": "plan",
+        "sources": [],
+        "num_sources": 0,
+        "retrieval_time": 0.0,
+        "generation_time": 0.0,
+        "avg_relevance_score": 0.0,
+        "context_length": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction helper
+# ---------------------------------------------------------------------------
+
+def _extract_balanced_json(raw: str) -> str:
+    """
+    Find the outermost balanced {...} object in raw, even if the LLM appended
+    trailing text or commentary after the closing brace.
+    """
+    depth = 0
+    in_str = False
+    escape = False
+    for i, ch in enumerate(raw):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return raw[:i + 1]
+    return raw  # fallback: return as-is
+
+
+# ---------------------------------------------------------------------------
+# Singleton
+# ---------------------------------------------------------------------------
+
+_agent: Optional[GovernancePlanAgent] = None
+
+
+# Signals that a plain-text (non-JSON-envelope) Dr.Egeria response is actually
+# a failure — an unhandled exception/crash on Dr.Egeria's side (e.g. a
+# database error) comes back as plain text too, not the expected envelope, and
+# must never be reported as a successful execution just because it didn't
+# parse as JSON. See BACKLOG.md.
+_PLAIN_TEXT_FAILURE_RE = re.compile(
+    r'\b(traceback|exception|error|failed|failure|no space left|'
+    r'connection refused|could not connect|permission denied|'
+    r'internal server error|out of memory)\b',
+    re.IGNORECASE,
+)
+
+
+def _parse_dr_egeria_response(raw: str) -> "tuple[bool, str, list[dict], list[dict], dict]":
+    """
+    Parse Dr.Egeria's output from validate/process directives.
+
+    Returns (success, output_text, validation_errors, execution_errors, counts)
+    where counts = {total, succeeded, failed}.
+
+    Handles two formats:
+    1. JSON envelope: {"success": bool, "output": "...", "validation_errors": [...], ...}
+    2. Plain text: scanned for common failure signals before being trusted as
+       success — see _PLAIN_TEXT_FAILURE_RE.
+    """
+    if not raw or not raw.strip():
+        return False, "(no output returned by Dr.Egeria)", [], [], {}
+
+    stripped = raw.strip()
+    if stripped.startswith('{'):
+        data = None
+        try:
+            import json as _json
+            data = _json.loads(stripped)
+        except Exception:
+            pass
+        if data is None:
+            # MCP may return Python repr (single quotes, True/False) instead of JSON
+            try:
+                import ast as _ast
+                data = _ast.literal_eval(stripped)
+            except Exception:
+                pass
+        if isinstance(data, dict) and 'success' in data:
+            success  = bool(data['success'])
+            output   = str(data.get('output', '') or '')
+            val_errs = data.get('validation_errors', [])
+            exe_errs = data.get('execution_errors', [])
+            counts   = {
+                'total':     data.get('commands_total', 0),
+                'succeeded': data.get('commands_succeeded', 0),
+                'failed':    data.get('commands_failed', 0),
+                'detail':    data.get('commands_detail', []),
+            }
+            return success, output, val_errs, exe_errs, counts
+
+    # Plain text — no structured envelope. Don't blindly assume success: an
+    # unhandled crash on Dr.Egeria's side (e.g. the Postgres "no space left on
+    # device" case) also comes back as plain text, not JSON, and reporting
+    # that as a successful execution would be actively misleading.
+    if _PLAIN_TEXT_FAILURE_RE.search(raw):
+        return (
+            False, raw, [],
+            [{"step": "?", "command": "?", "message": raw.strip()[:500]}],
+            {},
+        )
+    return True, raw, [], [], {}
+
+
+def _strip_trailing_separators(text: str) -> str:
+    """
+    Strip one or more trailing "---" block separators (with surrounding blank
+    lines). Loops a simple, anchored, non-ambiguous regex rather than using a
+    single quantified group of overlapping character classes (e.g.
+    `(?:\\n+-{3,}\\s*)+`) — that shape causes catastrophic backtracking on
+    inputs with several separators in a row, hanging for many seconds or more.
+    """
+    text = text.rstrip()
+    while re.search(r'\n-{3,}\Z', text) or re.match(r'^-{3,}\Z', text):
+        text = re.sub(r'\n?-{3,}\Z', '', text).rstrip()
+    return text
+
+
+def _split_augmented_output(ex_output: str) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Split Dr.Egeria's augmented execution output into per-command echo blocks
+    plus a trailing provenance note.
+
+    Each command is echoed back as a "## Action" block with resolved field
+    values. Some commands (e.g. View Report) also render display content —
+    that content always starts at the first bare "# " (H1) line inside the
+    block, with no other separator; everything before it is field data,
+    everything from it onward is materialized report/diagram output, not
+    part of the command definition.
+
+    Returns (blocks, provenance) where each block is:
+        {"action": str, "fields": {name: value}, "display": str}
+    """
+    if not ex_output or not ex_output.strip():
+        return [], ""
+
+    # Split off a trailing "## Provenance:" footer, if present.
+    provenance = ""
+    prov_m = re.search(r'^##\s+Provenance:?\s*\n(.*)\Z', ex_output, re.MULTILINE | re.DOTALL)
+    body = ex_output[:prov_m.start()] if prov_m else ex_output
+    if prov_m:
+        provenance = prov_m.group(1).strip()
+
+    blocks: List[Dict[str, Any]] = []
+    for part in re.split(r'(?m)^##\s+', body)[1:]:
+        lines = part.splitlines()
+        if not lines:
+            continue
+        action = lines[0].strip()
+        rest = "\n".join(lines[1:])
+
+        h1_m = re.search(r'^#(?!#)\s+.*$', rest, re.MULTILINE)
+        if h1_m:
+            fields_text = rest[:h1_m.start()]
+            display_text = rest[h1_m.start():].strip()
+        else:
+            fields_text = rest
+            display_text = ""
+
+        # Trim trailing "---" block separator(s) — pyegeria sometimes emits more
+        # than one in a row before the next block.
+        fields_text = _strip_trailing_separators(fields_text)
+        display_text = _strip_trailing_separators(display_text)
+
+        fields: Dict[str, str] = {}
+        for fp in re.split(r'(?m)^###\s+', fields_text)[1:]:
+            f_lines = fp.splitlines()
+            if not f_lines:
+                continue
+            f_name = f_lines[0].strip()
+            fields[f_name] = "\n".join(f_lines[1:]).strip()
+
+        blocks.append({"action": action, "fields": fields, "display": display_text})
+
+    return blocks, provenance
+
+
+def _build_raw_output_section(raw_output: str) -> str:
+    """
+    Wrap the raw Dr.Egeria execution output in a collapsible markdown section.
+    This is appended to the outbox plan so the full output (including View Report
+    results and Mermaid diagrams) is always preserved and accessible.
+    """
+    if not raw_output or not raw_output.strip():
+        return ""
+    return (
+        "## Dr.Egeria Execution Output\n\n"
+        "<details>\n"
+        "<summary>View raw Dr.Egeria output (click to expand)</summary>\n\n"
+        f"{raw_output.strip()}\n\n"
+        "</details>\n"
+    )
+
+
+def get_governance_plan_agent() -> GovernancePlanAgent:
+    global _agent
+    if _agent is None:
+        _agent = GovernancePlanAgent()
+    return _agent

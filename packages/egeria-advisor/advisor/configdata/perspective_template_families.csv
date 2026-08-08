@@ -1,0 +1,27 @@
+perspective,family,level
+# ANY rows apply to every perspective
+any,Report,both
+any,Feedback,both
+any,External Reference,basic
+# Developer
+developer,Data Designer,both
+developer,Collections,basic
+developer,Solution Architect,basic
+developer,Actor Manager,basic
+# Data Engineer
+data_engineer,Data Designer,both
+data_engineer,Collections,both
+data_engineer,External Reference,both
+data_engineer,Digital Product Manager,basic
+# Data Steward
+data_steward,Glossary,both
+data_steward,Collections,both
+data_steward,Governance Officer,basic
+data_steward,Feedback,both
+data_steward,External Reference,basic
+# Governance Officer
+governance_officer,Governance Officer,both
+governance_officer,Collections,basic
+governance_officer,Projects,both
+governance_officer,Digital Product Manager,basic
+governance_officer,Actor Manager,basic

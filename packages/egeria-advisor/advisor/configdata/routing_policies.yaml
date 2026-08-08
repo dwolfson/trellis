@@ -1,0 +1,33 @@
+# Routing policies mapping intents to responsible agents
+# Extensible: organizations can define new intents and map them to agents/handlers.
+intents:
+  explanation:
+    agent: doc_agent
+    description: "Conceptual questions and general documentation lookup"
+    boosted_collections:
+      - documentation
+  code_help:
+    agent: examples_agent
+    description: "Code examples, SDK snippets, and pyegeria usage"
+    boosted_collections:
+      - examples
+  code_intel:
+    agent: code_intel_agent
+    description: "Maintainer codebase structure queries, inheritance lookups, and statistics"
+    boosted_collections:
+      - code_elements
+  live_report:
+    agent: report_pipeline
+    description: "Running or listing live Egeria metadata reports"
+  action_execute:
+    agent: dr_egeria_agent
+    description: "Executing action commands against active Egeria instances"
+  action_template:
+    agent: dre_template_agent
+    description: "Generating or viewing Dr. Egeria command templates"
+  plan:
+    agent: governance_plan_agent
+    description: "Multi-step planning and governance blueprints creation"
+  debugging:
+    agent: pyegeria_agent
+    description: "Troubleshooting connection errors and diagnostics"
