@@ -23,15 +23,27 @@ native re-survey of an already-cataloged resource via
 EgeriaDatabaseSurveyor.trigger_survey_by_guid(), passing this schedule's
 next_run as Egeria's own start_time so its engine host (not RE's poll loop)
 owns the precise timing; (c) a local analysis_catalog entry that's neither of
-the above (currently just repo's 'egeria_publish') — writes NEW things into
-Egeria (registers + publishes), deliberately excluded from scheduling, which
-needs explicit operator intent, not a cadence; or (d) not in the local
-catalog at all — a Discovery Survey Definition's qualified_name, dispatched
-through the same run_survey_definition() executor the manual Discovery "Run"
-button uses. Previously (b)/(c)/(d) were never distinguished from (a) — every
-scheduled database analysis silently ran the generic local scan regardless of
-which one was actually selected, a real gap found while wiring this up, not
-by design.
+the above (currently repo's 'egeria_publish' and database's equivalent) —
+writes NEW things into Egeria (registers + publishes), deliberately excluded
+from scheduling, which needs explicit operator intent, not a cadence; or (d)
+not in the local catalog at all — a Discovery Survey Definition's
+qualified_name, dispatched through the same run_survey_definition() executor
+the manual Discovery "Run" button uses (database only — see _run_repo_survey
+below for why repo has no equivalent case). Previously (b)/(c)/(d) were never
+distinguished from (a) — every scheduled database analysis silently ran the
+generic local scan regardless of which one was actually selected, a real gap
+found while wiring this up, not by design.
+
+Repo dispatch, separately: previously _run_repo_survey always ran the full
+SurveyOrchestrator (all 10 sub-surveyors) regardless of which analysis_id was
+scheduled — repo's own version of the (a)-only gap above, fixed the same way:
+_REPO_ANALYSIS_STEP_MAP resolves a scheduled analysis_id to the specific
+SurveyOrchestrator step key(s) to run via SurveyOrchestrator.run(steps=...).
+Repo has no (b)/(d) equivalent — no repo analysis_catalog entry is flagged
+for native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
+merge only ever applies to 'database' — so a repo analysis_id is always
+either a local catalog entry (dispatch by step map) or 'egeria_publish' /
+unrecognized (excluded/error, matching (c) above).
 """
 from __future__ import annotations
 
@@ -153,28 +165,71 @@ def _execute(
     """Returns (entity_name, entity_location, errors) — errors is [] on a
     clean run. Only truly unexpected failures propagate to the caller.
 
-    Dispatch (database only — see module docstring for the (a)/(b)/(c)/(d)
-    breakdown; repo always takes the local-scan path, matching its previous
-    behavior, since no repo catalog entry is flagged for native re-survey
-    dispatch and there's no verified single-call "re-run by GUID" equivalent
-    for repos in this codebase yet):
+    Dispatch — see module docstring for the (a)/(b)/(c)/(d) breakdown
+    (database) and the repo-specific paragraph beneath it.
     """
     if entity_type == "repo":
-        return _run_repo_survey(entity_slug, registry)
+        return _run_repo_survey(entity_slug, analysis_id, registry)
     elif entity_type == "database":
         return _run_db_survey(entity_slug, analysis_id, registry, next_run)
     else:
         return (entity_slug, "", [f"Unknown entity_type '{entity_type}'"])
 
 
-def _run_repo_survey(slug: str, registry) -> tuple[str, str, list[str]]:
+# analysis_catalog "repo_analyses" id -> SurveyOrchestrator step key(s) it
+# maps to (same step-key vocabulary as repo_survey_definition_adapter.py's
+# re_analysis_steps). "language_file_classification" is the one genuinely
+# ambiguous entry — its catalog description ("file types, languages, and
+# project structure") and annotation_types span what three separate
+# sub-surveyors emit, so all three are bundled here rather than guessing at
+# just one. repo_file_size has no catalog entry at all (never independently
+# schedulable today) so it isn't listed — it stays bundled only in a full,
+# steps=None survey. egeria_publish is intentionally absent — excluded from
+# scheduling entirely, handled by the action=="publish" branch below.
+_REPO_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
+    "language_file_classification": ["repo_language", "repo_file_classification", "repo_file_structure"],
+    "repository_health": ["repo_health"],
+    "dependency_analysis": ["repo_dependency"],
+    "security_scan": ["repo_security"],
+    "documentation_coverage": ["repo_documentation"],
+    "data_file_profiling": ["repo_data_profiling"],
+    "api_structure": ["repo_api_structure"],
+}
+
+
+def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, list[str]]:
     project = registry.get(slug)
     if not project:
         return (slug, "", [f"Repo '{slug}' not found — schedule may be stale"])
+
+    entry = _catalog_entry("repo", analysis_id)
+    if entry is None:
+        # Repo scheduling has no live-Egeria-merge equivalent to database's
+        # case (d) — every valid repo analysis_id comes from the local
+        # catalog, so "not found" means the catalog entry was since removed,
+        # not a Discovery Survey Definition reference. Report it as stale
+        # rather than silently falling back to a full survey, which would
+        # hide exactly the kind of staleness this dispatch exists to surface.
+        return (project.display_name, project.github_url, [
+            f"Analysis '{analysis_id}' not found in the current analysis catalog — schedule may be stale."
+        ])
+
+    if entry.get("action") == "publish":
+        return (project.display_name, project.github_url, [
+            f"'{entry['name']}' writes new data into Egeria (action: publish) — excluded from "
+            "scheduled runs by design. Run it manually when you intend that write."
+        ])
+
+    steps = _REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    if not steps:
+        return (project.display_name, project.github_url, [
+            f"Analysis '{analysis_id}' has no mapped survey step(s) — internal configuration gap."
+        ])
+
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
     orch = SurveyOrchestrator(registry)
-    result = orch.run(slug)
+    result = orch.run(slug, steps=steps)
     errors = list(result.errors) if result.errors else []
     return (project.display_name, project.github_url, errors)
 
