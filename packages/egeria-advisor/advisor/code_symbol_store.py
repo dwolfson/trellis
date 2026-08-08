@@ -1,4 +1,19 @@
-"""PostgreSQL-backed symbol table for queryable code structure across all ingested collections.
+"""DEPRECATED write path — no longer called from the ingestion pipeline
+(AST-ownership-transfer plan Phase 8). Resource Explorer now owns code_symbols
+/code_relationships-equivalent data (resource_explorer.project_code_symbols /
+project_code_relationships) for the repos in RE's "egeria" project group.
+Every real consumer of this data (CodeIntelAgent, analytics.py, rag_retrieval.py)
+was migrated to read RE's tables directly in Phases 6-7 — this class's own
+code_symbols/code_relationships tables are left in place, unwritten, as a
+rollback safety net (decision D8), not actively read by anything anymore.
+
+Kept in place, not deleted, for the same reason. The `language` parameter
+added to upsert_symbols() (Phase 0) and the ON CONFLICT fix for it are real,
+independent bug fixes worth keeping even though this class is otherwise
+unused now — if this write path is ever reactivated (rollback), it should
+still be correct.
+
+PostgreSQL-backed symbol table for queryable code structure across all ingested collections.
 
 Populated during ingestion alongside pgvector embeddings. Enables direct SQL answers
 to structural questions ("what classes does pyegeria have?", "how many methods does
@@ -28,8 +43,17 @@ class CodeSymbolStore:
         self.db_manager.execute_update("DELETE FROM code_relationships WHERE collection = %s", (collection,))
         logger.info(f"CodeSymbolStore: cleared symbols and relationships for '{collection}'")
 
-    def upsert_symbols(self, collection: str, elements: list[Any]) -> int:
-        """Accept a list of CodeElement objects (from advisor/data_prep/code_parser.py)."""
+    def upsert_symbols(self, collection: str, elements: list[Any], language: str = "python") -> int:
+        """Accept a list of CodeElement (advisor/data_prep/code_parser.py, Python) or
+        JavaSymbol (advisor/data_prep/java_symbol_extractor.py, Java) objects.
+
+        language must be passed explicitly by the caller — it used to be hardcoded
+        to "python" here regardless of what was actually being upserted, so every
+        Java symbol landed in the table tagged language='python'. That silently
+        broke every `language != 'python'` branch in code_intel_agent.py's query
+        filters for Java data. Default stays "python" only for source compatibility
+        with any other caller that doesn't pass it explicitly.
+        """
         rows = []
         relationships = []
         for el in elements:
@@ -37,7 +61,7 @@ class CodeSymbolStore:
             rows.append((
                 collection,
                 str(el.file_path),
-                "python",
+                language,
                 el.type,            # class | function | method
                 el.name,
                 qname,
@@ -79,6 +103,7 @@ class CodeSymbolStore:
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT(collection, file_path, qualified_name)
             DO UPDATE SET
+                language=EXCLUDED.language,
                 kind=EXCLUDED.kind, signature=EXCLUDED.signature,
                 docstring=EXCLUDED.docstring, parent_class=EXCLUDED.parent_class,
                 return_type=EXCLUDED.return_type, start_line=EXCLUDED.start_line,

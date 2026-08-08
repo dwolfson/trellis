@@ -7895,15 +7895,15 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "sqlglot" },
     { name = "textual" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-java" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.optional-dependencies]
 ast = [
-    { name = "tree-sitter" },
     { name = "tree-sitter-go" },
-    { name = "tree-sitter-java" },
     { name = "tree-sitter-javascript" },
     { name = "tree-sitter-python" },
 ]
@@ -7973,9 +7973,9 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "sqlglot", specifier = ">=25.0.0" },
     { name = "textual", specifier = ">=8.2.4" },
-    { name = "tree-sitter", marker = "extra == 'ast'", specifier = ">=0.21" },
+    { name = "tree-sitter", specifier = ">=0.21" },
     { name = "tree-sitter-go", marker = "extra == 'ast'", specifier = ">=0.21" },
-    { name = "tree-sitter-java", marker = "extra == 'ast'", specifier = ">=0.21" },
+    { name = "tree-sitter-java", specifier = ">=0.21" },
     { name = "tree-sitter-javascript", marker = "extra == 'ast'", specifier = ">=0.21" },
     { name = "tree-sitter-python", marker = "extra == 'ast'", specifier = ">=0.21" },
     { name = "typer", specifier = ">=0.12.0" },

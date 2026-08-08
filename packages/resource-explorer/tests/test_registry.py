@@ -427,3 +427,111 @@ class TestProjectGroups:
                 "SELECT group_slug FROM projects WHERE slug = ?", ("test_project",)
             ).fetchone()
         assert row["group_slug"] == ""
+
+
+class TestCodeSymbolsAndRelationships:
+    """AST-ownership-transfer plan Phase 3 — project_code_symbols' new fields
+    (parent_class/return_type/is_private/is_async/complexity) and the new
+    project_code_relationships table, both written by upsert_code_symbols()
+    in a single call (mirroring Egeria Advisor's CodeSymbolStore.upsert_symbols())."""
+
+    def _symbol(self, **overrides):
+        from resource_explorer.ingestion.code_symbol_extractor import CodeSymbol
+        defaults = dict(
+            project_slug="test-project", file_path="mod.py", language="python",
+            kind="function", name="f", qualified_name="f", signature="()",
+            docstring="", start_line=1, end_line=2,
+        )
+        defaults.update(overrides)
+        return CodeSymbol(**defaults)
+
+    def test_upsert_persists_new_fields(self, db, sample_project):
+        db.add(sample_project)
+        sym = self._symbol(
+            kind="method", name="method", qualified_name="Widget.method",
+            parent_class="Widget", return_type="int", is_private=True,
+            is_async=True, complexity=5,
+        )
+        db.upsert_code_symbols("test-project", [sym])
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT parent_class, return_type, is_private, is_async, complexity "
+                "FROM project_code_symbols WHERE qualified_name = ?",
+                ("Widget.method",),
+            ).fetchone()
+        assert row["parent_class"] == "Widget"
+        assert row["return_type"] == "int"
+        assert bool(row["is_private"]) is True
+        assert bool(row["is_async"]) is True
+        assert row["complexity"] == 5
+
+    def test_upsert_derives_inherits_from_relationships(self, db, sample_project):
+        db.add(sample_project)
+        cls = self._symbol(
+            kind="class", name="Child", qualified_name="Child",
+            bases=["Base", "Mixin"],
+        )
+        db.upsert_code_symbols("test-project", [cls])
+        rels = db.get_code_relationships("test-project")
+        assert {(r["source_name"], r["target_name"]) for r in rels} == {
+            ("Child", "Base"), ("Child", "Mixin"),
+        }
+
+    def test_non_class_symbols_produce_no_relationships(self, db, sample_project):
+        db.add(sample_project)
+        fn = self._symbol(kind="function", name="f", qualified_name="f")
+        db.upsert_code_symbols("test-project", [fn])
+        assert db.get_code_relationships("test-project") == []
+
+    def test_upsert_conflict_updates_new_fields(self, db, sample_project):
+        """ON CONFLICT DO UPDATE must cover the new columns too — re-upserting
+        the same symbol with a different complexity/parent_class must update
+        in place, not silently keep the stale value."""
+        db.add(sample_project)
+        sym1 = self._symbol(qualified_name="f", complexity=1)
+        sym2 = self._symbol(qualified_name="f", complexity=9, return_type="str")
+        db.upsert_code_symbols("test-project", [sym1])
+        db.upsert_code_symbols("test-project", [sym2])
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT complexity, return_type FROM project_code_symbols WHERE qualified_name = ?",
+                ("f",),
+            ).fetchone()
+        assert row["complexity"] == 9
+        assert row["return_type"] == "str"
+
+    def test_relationship_conflict_does_nothing_no_duplicate(self, db, sample_project):
+        db.add(sample_project)
+        cls = self._symbol(kind="class", name="Child", qualified_name="Child", bases=["Base"])
+        db.upsert_code_symbols("test-project", [cls])
+        db.upsert_code_symbols("test-project", [cls])  # re-upsert same relationship
+        rels = db.get_code_relationships("test-project")
+        assert len(rels) == 1
+
+    def test_clear_code_symbols_full_also_clears_relationships(self, db, sample_project):
+        db.add(sample_project)
+        cls = self._symbol(kind="class", name="Child", qualified_name="Child", bases=["Base"])
+        db.upsert_code_symbols("test-project", [cls])
+        assert db.get_code_relationships("test-project") != []
+        db.clear_code_symbols("test-project")
+        assert db.get_code_relationships("test-project") == []
+
+    def test_clear_code_symbols_language_filtered_keeps_relationships(self, db, sample_project):
+        db.add(sample_project)
+        cls = self._symbol(kind="class", name="Child", qualified_name="Child", bases=["Base"])
+        db.upsert_code_symbols("test-project", [cls])
+        db.clear_code_symbols("test-project", language="python")
+        # language-filtered clear intentionally leaves relationships alone (see docstring)
+        assert db.get_code_relationships("test-project") != []
+
+    def test_remove_project_cleans_up_relationships(self, db, sample_project):
+        db.add(sample_project)
+        cls = self._symbol(kind="class", name="Child", qualified_name="Child", bases=["Base"])
+        db.upsert_code_symbols("test-project", [cls])
+        db.remove("test-project")
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_code_relationships WHERE project_slug = ?",
+                ("test_project",),
+            ).fetchall()
+        assert rows == []

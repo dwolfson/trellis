@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -18,6 +18,17 @@ class CodeSymbol:
     docstring: str       # first line of docstring; "" if none
     start_line: int
     end_line: int
+    # Added for AST-ownership-transfer plan Phase 1 — fields Egeria Advisor's
+    # code_symbols schema has and RE's didn't, needed for CodeIntelAgent-style
+    # queries (inheritance, hierarchy, complexity). Defaulted so JS/Go/interface
+    # symbols (not upgraded in this pass) don't need every extractor call site
+    # touched.
+    parent_class: str = ""      # immediate enclosing class name, for methods and nested classes
+    return_type: str = ""       # function/method return type annotation, if any
+    is_private: bool = False    # leading underscore, not dunder
+    is_async: bool = False
+    complexity: int = 0         # cyclomatic complexity; 0 for non-function symbols (classes/interfaces)
+    bases: list[str] = field(default_factory=list)  # class-kind only: raw base-class expressions, not FQN-resolved
 
 
 class CodeSymbolExtractor:
@@ -25,8 +36,12 @@ class CodeSymbolExtractor:
     Extract structured symbol information from source files at ingestion time.
 
     Python uses the stdlib ast module (zero new dependencies, full type annotation
-    support). JS/TS, Java, and Go use targeted regex — reliable for the common
-    patterns without requiring tree-sitter.
+    support). Java uses tree-sitter (see ingestion/java_symbol_extractor.py) —
+    upgraded from a regex heuristic in the AST-ownership-transfer plan Phase 2,
+    since Java's grammar (nested classes, annotations, multi-line signatures)
+    doesn't hold up well under single-line-anchored regex matching. JS/TS and
+    Go still use targeted regex — reliable for the common patterns, and there's
+    no external consumer (Egeria Advisor) needing better quality from them yet.
     """
 
     def extract(
@@ -38,12 +53,18 @@ class CodeSymbolExtractor:
             if language in ("javascript", "typescript"):
                 return self._extract_js(file_path, content, project_slug, language)
             if language == "java":
-                return self._extract_java(file_path, content, project_slug)
+                return self._extract_java_tree_sitter(file_path, content, project_slug)
             if language == "go":
                 return self._extract_go(file_path, content, project_slug)
         except Exception:
             pass
         return []
+
+    # ── Java — tree-sitter (see ingestion/java_symbol_extractor.py) ────────
+
+    def _extract_java_tree_sitter(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+        from resource_explorer.ingestion.java_symbol_extractor import JavaSymbolExtractor
+        return JavaSymbolExtractor().extract(file_path, content, project_slug)
 
     # ── Python — AST ─────────────────────────────────────────────────────────
 
@@ -125,73 +146,6 @@ class CodeSymbolExtractor:
 
         return symbols
 
-    # ── Java — regex ─────────────────────────────────────────────────────────
-
-    _JAVA_CLASS = re.compile(
-        r'(?:^|\s)(?:public\s+|private\s+|protected\s+|abstract\s+|final\s+)*class\s+(\w+)',
-        re.M,
-    )
-    _JAVA_IFACE = re.compile(
-        r'(?:^|\s)(?:public\s+|private\s+|protected\s+)*interface\s+(\w+)', re.M
-    )
-    _JAVA_ENUM = re.compile(
-        r'(?:^|\s)(?:public\s+|private\s+|protected\s+)*enum\s+(\w+)', re.M
-    )
-    _JAVA_METHOD = re.compile(
-        r'(?:public|private|protected|static|final|abstract|synchronized|\s)+'
-        r'(?:<[^>]+>\s+)?'
-        r'([\w][\w<>\[\],.\s?]*?)\s+(\w+)\s*(\([^)]*\))\s*(?:throws\s+[\w,\s]+)?\s*[{;]',
-        re.M,
-    )
-    _JAVA_SKIP = frozenset({
-        "if", "for", "while", "switch", "catch", "return", "new",
-        "class", "interface", "enum", "import", "package",
-    })
-
-    def _extract_java(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
-        symbols: list[CodeSymbol] = []
-        current_class: str | None = None
-
-        def ln(m: re.Match) -> int:
-            return content[: m.start()].count("\n") + 1
-
-        for m in self._JAVA_CLASS.finditer(content):
-            current_class = m.group(1)
-            symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="java",
-                kind="class", name=m.group(1), qualified_name=m.group(1),
-                signature="", docstring="", start_line=ln(m), end_line=ln(m),
-            ))
-
-        for m in self._JAVA_IFACE.finditer(content):
-            symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="java",
-                kind="interface", name=m.group(1), qualified_name=m.group(1),
-                signature="", docstring="", start_line=ln(m), end_line=ln(m),
-            ))
-
-        for m in self._JAVA_ENUM.finditer(content):
-            symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="java",
-                kind="enum", name=m.group(1), qualified_name=m.group(1),
-                signature="", docstring="", start_line=ln(m), end_line=ln(m),
-            ))
-
-        for m in self._JAVA_METHOD.finditer(content):
-            ret_type = m.group(1).strip()
-            name = m.group(2)
-            if name in self._JAVA_SKIP or ret_type in self._JAVA_SKIP:
-                continue
-            qname = f"{current_class}.{name}" if current_class else name
-            symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="java",
-                kind="method", name=name, qualified_name=qname,
-                signature=f"({m.group(3).strip()}) -> {ret_type}",
-                docstring="", start_line=ln(m), end_line=ln(m),
-            ))
-
-        return symbols
-
     # ── Go — regex ───────────────────────────────────────────────────────────
 
     _GO_FUNC   = re.compile(
@@ -265,8 +219,29 @@ class _PythonVisitor(ast.NodeVisitor):
         self.symbols.append(self._make_func(node, kind))
         # Don't recurse — nested functions clutter the index
 
+    @staticmethod
+    def _is_private(name: str) -> bool:
+        """Leading underscore but not a dunder (__init__, __repr__, ...)."""
+        return name.startswith("_") and not (name.startswith("__") and name.endswith("__"))
+
+    @staticmethod
+    def _calculate_complexity(node: ast.AST) -> int:
+        """Simplified cyclomatic complexity — same formula as Egeria Advisor's
+        code_parser.py, ported for consistent complexity scores across both
+        apps' Python code: base 1, +1 per If/For/While/ExceptHandler, +1 per
+        And/Or boolean operator."""
+        complexity = 1
+        for child in ast.walk(node):
+            if isinstance(child, (ast.If, ast.For, ast.While, ast.ExceptHandler)):
+                complexity += 1
+            elif isinstance(child, ast.BoolOp):
+                complexity += len(child.values) - 1
+        return complexity
+
     def _make_class(self, node: ast.ClassDef) -> CodeSymbol:
         doc = (ast.get_docstring(node) or "").strip()
+        parent_class = self._class_stack[-2] if len(self._class_stack) > 1 else ""
+        bases = [ast.unparse(b) for b in node.bases]
         return CodeSymbol(
             project_slug=self._project_slug,
             file_path=self._file_path,
@@ -278,10 +253,15 @@ class _PythonVisitor(ast.NodeVisitor):
             docstring=doc.split("\n")[0][:200] if doc else "",
             start_line=node.lineno,
             end_line=getattr(node, "end_lineno", node.lineno),
+            parent_class=parent_class,
+            is_private=self._is_private(node.name),
+            bases=bases,
         )
 
     def _make_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef, kind: str) -> CodeSymbol:
         doc = (ast.get_docstring(node) or "").strip()
+        parent_class = self._class_stack[-1] if self._class_stack else ""
+        return_type = ast.unparse(node.returns) if node.returns else ""
         return CodeSymbol(
             project_slug=self._project_slug,
             file_path=self._file_path,
@@ -293,6 +273,11 @@ class _PythonVisitor(ast.NodeVisitor):
             docstring=doc.split("\n")[0][:200] if doc else "",
             start_line=node.lineno,
             end_line=getattr(node, "end_lineno", node.lineno),
+            parent_class=parent_class,
+            return_type=return_type,
+            is_private=self._is_private(node.name),
+            is_async=isinstance(node, ast.AsyncFunctionDef),
+            complexity=self._calculate_complexity(node),
         )
 
     def _build_sig(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:

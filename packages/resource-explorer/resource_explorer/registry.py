@@ -508,10 +508,27 @@ class ProjectRegistry:
                     summary        TEXT DEFAULT '',
                     start_line     INTEGER DEFAULT 0,
                     end_line       INTEGER DEFAULT 0,
+                    parent_class   TEXT DEFAULT '',
+                    return_type    TEXT DEFAULT '',
+                    is_private     INTEGER DEFAULT 0,
+                    is_async       INTEGER DEFAULT 0,
+                    complexity     INTEGER DEFAULT 0,
                     UNIQUE(project_slug, file_path, qualified_name),
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            # Migrations: add new columns to existing databases (AST-ownership-
+            # transfer plan Phase 3 — these five didn't exist before)
+            existing_symbol_cols = self._get_table_columns(conn, "project_code_symbols")
+            for col, defn in [
+                ("parent_class", "TEXT DEFAULT ''"),
+                ("return_type", "TEXT DEFAULT ''"),
+                ("is_private", "INTEGER DEFAULT 0"),
+                ("is_async", "INTEGER DEFAULT 0"),
+                ("complexity", "INTEGER DEFAULT 0"),
+            ]:
+                if col not in existing_symbol_cols:
+                    conn.execute(f"ALTER TABLE project_code_symbols ADD COLUMN {col} {defn}")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_symbols_slug_kind "
                 "ON project_code_symbols(project_slug, kind)"
@@ -519,6 +536,29 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_symbols_name "
                 "ON project_code_symbols(project_slug, name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_symbols_parent_class "
+                "ON project_code_symbols(project_slug, parent_class)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_code_relationships (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug      TEXT NOT NULL,
+                    relationship_type TEXT NOT NULL DEFAULT 'inherits_from',
+                    source_name       TEXT NOT NULL,
+                    target_name       TEXT NOT NULL,
+                    UNIQUE(project_slug, relationship_type, source_name, target_name),
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_relationships_source "
+                "ON project_code_relationships(project_slug, source_name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_relationships_target "
+                "ON project_code_relationships(project_slug, target_name)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_aliases (
@@ -1364,31 +1404,64 @@ class ProjectRegistry:
                 )
 
     def upsert_code_symbols(self, project_slug: str, symbols: list) -> None:
-        """Insert or replace extracted code symbols. symbols is a list of CodeSymbol dataclasses."""
+        """Insert or replace extracted code symbols, and derive+write
+        inherits_from relationship rows from each class-kind symbol's
+        `bases` list in the same call — mirroring Egeria Advisor's own
+        CodeSymbolStore.upsert_symbols(), which does both in one pass (see
+        AST-ownership-transfer plan Phase 3). symbols is a list of
+        CodeSymbol dataclasses (resource_explorer/ingestion/code_symbol_extractor.py).
+        """
         if not symbols:
             return
         slug = self._normalize_slug(project_slug)
         rows = [
-            (slug, s.file_path, s.language, s.kind, s.name,
-             s.qualified_name, s.signature, s.docstring, "", s.start_line, s.end_line)
+            (
+                slug, s.file_path, s.language, s.kind, s.name, s.qualified_name,
+                s.signature, s.docstring, "", s.start_line, s.end_line,
+                s.parent_class, s.return_type, int(s.is_private), int(s.is_async), s.complexity,
+            )
             for s in symbols
+        ]
+        relationships = [
+            (slug, "inherits_from", s.qualified_name, base)
+            for s in symbols if s.kind == "class"
+            for base in (s.bases or [])
         ]
         with self._conn() as conn:
             conn.executemany(
                 """INSERT INTO project_code_symbols
                    (project_slug, file_path, language, kind, name, qualified_name,
-                    signature, docstring, summary, start_line, end_line)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    signature, docstring, summary, start_line, end_line,
+                    parent_class, return_type, is_private, is_async, complexity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(project_slug, file_path, qualified_name)
                    DO UPDATE SET
                      language=excluded.language, kind=excluded.kind, name=excluded.name,
                      signature=excluded.signature, docstring=excluded.docstring,
-                     start_line=excluded.start_line, end_line=excluded.end_line""",
+                     start_line=excluded.start_line, end_line=excluded.end_line,
+                     parent_class=excluded.parent_class, return_type=excluded.return_type,
+                     is_private=excluded.is_private, is_async=excluded.is_async,
+                     complexity=excluded.complexity""",
                 rows,
             )
+            if relationships:
+                conn.executemany(
+                    """INSERT INTO project_code_relationships
+                       (project_slug, relationship_type, source_name, target_name)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(project_slug, relationship_type, source_name, target_name)
+                       DO NOTHING""",
+                    relationships,
+                )
 
     def clear_code_symbols(self, project_slug: str, language: str | None = None) -> None:
-        """Remove symbol entries for a project, optionally filtered by language."""
+        """Remove symbol (and, when clearing a whole project, relationship)
+        entries. Relationships aren't language-tagged themselves, so a
+        language-filtered clear leaves them alone — they get reconciled
+        naturally on the next full upsert_code_symbols() call for that
+        project via ON CONFLICT DO NOTHING (stale target names, e.g. from a
+        renamed/removed base class, are a known accepted gap — see migration
+        plan decision D3, matching Egeria Advisor's own equivalent behavior)."""
         slug = self._normalize_slug(project_slug)
         with self._conn() as conn:
             if language:
@@ -1400,6 +1473,23 @@ class ProjectRegistry:
                 conn.execute(
                     "DELETE FROM project_code_symbols WHERE project_slug = ?", (slug,)
                 )
+                conn.execute(
+                    "DELETE FROM project_code_relationships WHERE project_slug = ?", (slug,)
+                )
+
+    def get_code_relationships(
+        self, project_slug: str, relationship_type: str = "inherits_from"
+    ) -> list[dict]:
+        """All relationship rows for a project, e.g. for CodeIntelAgent-style
+        inheritance/hierarchy queries."""
+        slug = self._normalize_slug(project_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT source_name, target_name FROM project_code_relationships "
+                "WHERE project_slug = ? AND relationship_type = ?",
+                (slug, relationship_type),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def upsert_contributor_stats(self, project_slug: str, rows: list[dict]) -> None:
         """Insert or replace aggregated per-contributor stats for a time period."""
@@ -1439,6 +1529,7 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_stats WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_commits WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_code_symbols WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_code_relationships WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))

@@ -1,4 +1,12 @@
-"""Backfill the code_symbols SQLite table from already-ingested collections.
+"""DEPRECATED — code_symbols/code_relationships are no longer read by
+anything (AST-ownership-transfer plan Phase 8; CodeIntelAgent/analytics.py/
+rag_retrieval.py all migrated to Resource Explorer's equivalent tables in
+Phases 6-7). Running this script still works (code_symbol_store.py's write
+path is intentionally kept functional as a rollback safety net) but writes
+to tables nothing consumes anymore — kept for that rollback scenario, not
+for routine use.
+
+Backfill the code_symbols table from already-ingested collections.
 
 Run this once after upgrading to populate the symbol table for existing collections
 without a full re-ingest into pgvector.  Handles both Python (AST) and Java
@@ -68,7 +76,7 @@ def backfill_python(collection_name: str, root: Path) -> int:
         if _should_skip(py_file):
             continue
         all_elements.extend(parser.parse_file(py_file))
-    count = store.upsert_symbols(collection_name, all_elements)
+    count = store.upsert_symbols(collection_name, all_elements, language="python")
     logger.info(f"  → {count} symbols written for '{collection_name}'")
     return count
 
@@ -87,7 +95,7 @@ def backfill_java(collection_name: str, root: Path) -> int:
         all_symbols.extend(extractor.extract_file(java_file))
         if i % 500 == 0:
             logger.info(f"  Progress: {i}/{len(java_files)} files, {len(all_symbols)} symbols so far")
-    count = store.upsert_symbols(collection_name, all_symbols)
+    count = store.upsert_symbols(collection_name, all_symbols, language="java")
     logger.info(f"  → {count} symbols written for '{collection_name}'")
     return count
 

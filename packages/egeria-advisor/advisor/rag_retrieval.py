@@ -249,55 +249,92 @@ class RAGRetriever:
         return context
 
     def _fetch_relational_metadata(self, name: str, file_path: str, element_type: str) -> str:
-        """Fetch parent class, inheritance tree, and sibling methods from Postgres symbol store."""
+        """Fetch parent class, inheritance tree, and sibling methods from
+        Resource Explorer's project_code_symbols/project_code_relationships
+        tables (cross-schema, same Postgres instance — AST-ownership-transfer
+        plan Phase 7; was EA's own code_symbols/code_relationships before).
+
+        No explicit collection/project scoping was ever threaded through this
+        call (name/file_path/element_type only) — the pre-migration version
+        queried EA's whole code_symbols/code_relationships tables unscoped.
+        Applying scope_clause(None) here bounds that same "no explicit scope"
+        behavior to RE's egeria-group code-bearing projects specifically,
+        rather than literally every project RE has ever ingested (which,
+        unlike EA's old tables, can include projects with no relation to
+        Egeria at all) — a safety improvement, not a behavior narrowing for
+        this agent's actual use case.
+        """
         try:
             from advisor.db_consolidated import get_db_manager
+            from advisor.re_code_scope import scope_clause
             db_manager = get_db_manager()
-            
+
+            symbols_table = "resource_explorer.project_code_symbols"
+            relationships_table = "resource_explorer.project_code_relationships"
+            scope_sql, scope_params = scope_clause(None)
+
             relational_info = []
-            
+
             # 1. If it's a method/function, find its parent class, sibling methods, and parent class inheritance
             if element_type in ("method", "function") or "method" in element_type:
-                sql = "SELECT parent_class FROM code_symbols WHERE name = %s AND (kind = 'method' OR kind = 'function') LIMIT 1"
-                rows = db_manager.execute_query(sql, (name,))
+                sql = (
+                    f"SELECT parent_class FROM {symbols_table} "
+                    f"WHERE name = %s AND (kind = 'method' OR kind = 'function') AND {scope_sql} LIMIT 1"
+                )
+                rows = db_manager.execute_query(sql, tuple([name] + scope_params))
                 if rows and rows[0].get("parent_class"):
                     parent_class = rows[0]["parent_class"]
                     relational_info.append(f"**Parent Class:** `{parent_class}`")
-                    
+
                     # Find sibling methods
-                    sql_siblings = "SELECT name, signature FROM code_symbols WHERE parent_class = %s AND kind = 'method' AND name != %s LIMIT 5"
-                    sib_rows = db_manager.execute_query(sql_siblings, (parent_class, name))
+                    sql_siblings = (
+                        f"SELECT name, signature FROM {symbols_table} "
+                        f"WHERE parent_class = %s AND kind = 'method' AND name != %s AND {scope_sql} LIMIT 5"
+                    )
+                    sib_rows = db_manager.execute_query(sql_siblings, tuple([parent_class, name] + scope_params))
                     if sib_rows:
                         sib_names = [f"`{r['name']}{r['signature']}`" for r in sib_rows]
                         relational_info.append(f"**Sibling Methods:** {', '.join(sib_names)}")
-                        
+
                     # Find parent class inheritance
-                    sql_parents = "SELECT target_name FROM code_relationships WHERE source_name = %s AND relationship_type = 'inherits_from'"
-                    parent_rows = db_manager.execute_query(sql_parents, (parent_class,))
+                    sql_parents = (
+                        f"SELECT target_name FROM {relationships_table} "
+                        f"WHERE source_name = %s AND relationship_type = 'inherits_from' AND {scope_sql}"
+                    )
+                    parent_rows = db_manager.execute_query(sql_parents, tuple([parent_class] + scope_params))
                     if parent_rows:
                         parents = [f"`{r['target_name']}`" for r in parent_rows]
                         relational_info.append(f"**Parent Class Inherits From:** {', '.join(parents)}")
-            
+
             # 2. If it's a class, find its parent classes, child classes, and methods
             elif element_type == "class" or "class" in element_type:
-                sql_parents = "SELECT target_name FROM code_relationships WHERE source_name = %s AND relationship_type = 'inherits_from'"
-                parent_rows = db_manager.execute_query(sql_parents, (name,))
+                sql_parents = (
+                    f"SELECT target_name FROM {relationships_table} "
+                    f"WHERE source_name = %s AND relationship_type = 'inherits_from' AND {scope_sql}"
+                )
+                parent_rows = db_manager.execute_query(sql_parents, tuple([name] + scope_params))
                 if parent_rows:
                     parents = [f"`{r['target_name']}`" for r in parent_rows]
                     relational_info.append(f"**Inherits From:** {', '.join(parents)}")
-                    
-                sql_children = "SELECT source_name FROM code_relationships WHERE target_name = %s AND relationship_type = 'inherits_from'"
-                child_rows = db_manager.execute_query(sql_children, (name,))
+
+                sql_children = (
+                    f"SELECT source_name FROM {relationships_table} "
+                    f"WHERE target_name = %s AND relationship_type = 'inherits_from' AND {scope_sql}"
+                )
+                child_rows = db_manager.execute_query(sql_children, tuple([name] + scope_params))
                 if child_rows:
                     children = [f"`{r['source_name']}`" for r in child_rows]
                     relational_info.append(f"**Subclasses:** {', '.join(children)}")
-                
-                sql_methods = "SELECT name, signature FROM code_symbols WHERE parent_class = %s AND kind = 'method' LIMIT 5"
-                method_rows = db_manager.execute_query(sql_methods, (name,))
+
+                sql_methods = (
+                    f"SELECT name, signature FROM {symbols_table} "
+                    f"WHERE parent_class = %s AND kind = 'method' AND {scope_sql} LIMIT 5"
+                )
+                method_rows = db_manager.execute_query(sql_methods, tuple([name] + scope_params))
                 if method_rows:
                     methods = [f"`{r['name']}{r['signature']}`" for r in method_rows]
                     relational_info.append(f"**Defined Methods:** {', '.join(methods)}")
-            
+
             if relational_info:
                 return "\n".join(relational_info)
         except Exception as e:
