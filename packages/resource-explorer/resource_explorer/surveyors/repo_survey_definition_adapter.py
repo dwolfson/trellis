@@ -8,6 +8,15 @@ case, repo surveys are already composed of 10 independent sub-surveyor units
 own re_analysis_step key, the most granular and natural fit for Survey
 Definition steps. Publishing reuses the existing EgeriaPublisher.publish
 unmodified — it's already narrow (no native-survey side effect).
+
+Each step key delegates to SurveyOrchestrator.run(steps=[key]) rather than
+instantiating its own surveyor closure — SurveyOrchestrator's own
+{step_key: surveyor} map (survey_orchestrator.py) is the single source of
+truth for what each key means and how its surveyor is constructed. This used
+to duplicate that mapping here via independent closures; two lists of the
+same ten surveyors that had to be kept in sync by hand. The scheduler's
+per-analysis-id dispatch (scheduler.py's _run_repo_survey) reuses the same
+SurveyOrchestrator.run(steps=...) entry point.
 """
 from __future__ import annotations
 
@@ -17,41 +26,30 @@ from resource_explorer.surveyors.survey_definition_executor import (
 )
 
 
-def _run_sub_surveyor(surveyor_cls, **extra_ctor_kwargs):
+def _run_step(step_key: str, **orchestrator_kwargs):
     def runner(project, registry, **_) -> dict:
-        surveyor = surveyor_cls(project, registry, **extra_ctor_kwargs)
-        annotations = surveyor.run()
-        return {"annotations": annotations}
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+        orch = SurveyOrchestrator(registry, **orchestrator_kwargs)
+        result = orch.run(project.slug, steps=[step_key])
+        return {"annotations": result.annotations}
 
     return runner
 
 
 def _build_re_analysis_steps() -> dict:
-    from resource_explorer.surveyors.sub_surveyors.file_structure import FileStructureSurveyor
-    from resource_explorer.surveyors.sub_surveyors.file_size import FileSizeSurveyor
-    from resource_explorer.surveyors.sub_surveyors.language import LanguageSurveyor
-    from resource_explorer.surveyors.sub_surveyors.health import HealthSurveyor
-    from resource_explorer.surveyors.sub_surveyors.dependency import DependencySurveyor
-    from resource_explorer.surveyors.sub_surveyors.documentation import DocumentationSurveyor
-    from resource_explorer.surveyors.sub_surveyors.security import SecuritySurveyor
-    from resource_explorer.surveyors.sub_surveyors.api_structure import ApiStructureSurveyor
-    from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
-    from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import (
-        FileClassifierSurveyor,
-    )
-
     return {
-        "repo_file_structure": _run_sub_surveyor(FileStructureSurveyor),
-        "repo_file_size": _run_sub_surveyor(FileSizeSurveyor),
-        "repo_language": _run_sub_surveyor(LanguageSurveyor),
-        "repo_health": _run_sub_surveyor(HealthSurveyor),
-        "repo_dependency": _run_sub_surveyor(DependencySurveyor),
-        "repo_documentation": _run_sub_surveyor(DocumentationSurveyor),
-        "repo_security": _run_sub_surveyor(SecuritySurveyor),
-        "repo_api_structure": _run_sub_surveyor(ApiStructureSurveyor),
-        "repo_data_profiling": _run_sub_surveyor(DataProfilerSurveyor, local_path=None),
-        "repo_file_classification": _run_sub_surveyor(
-            FileClassifierSurveyor, pyegeria_client=None, force_refresh=False
+        "repo_file_structure": _run_step("repo_file_structure"),
+        "repo_file_size": _run_step("repo_file_size"),
+        "repo_language": _run_step("repo_language"),
+        "repo_health": _run_step("repo_health"),
+        "repo_dependency": _run_step("repo_dependency"),
+        "repo_documentation": _run_step("repo_documentation"),
+        "repo_security": _run_step("repo_security"),
+        "repo_api_structure": _run_step("repo_api_structure"),
+        "repo_data_profiling": _run_step("repo_data_profiling", data_path=None),
+        "repo_file_classification": _run_step(
+            "repo_file_classification", pyegeria_client=None, force_refresh=False
         ),
     }
 

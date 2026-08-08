@@ -47,8 +47,15 @@ class SurveyOrchestrator:
         self._force_refresh = force_refresh
         self._data_path = data_path  # local clone path for DataProfilerSurveyor Tier 2
 
-    def run(self, project_slug: str) -> SurveyResult:
-        """Survey a single project and return the assembled SurveyResult."""
+    def run(self, project_slug: str, steps: list[str] | None = None) -> SurveyResult:
+        """Survey a single project and return the assembled SurveyResult.
+
+        steps : optional list of step keys (same vocabulary as
+            repo_survey_definition_adapter.py's re_analysis_steps — e.g.
+            "repo_health", "repo_api_structure") to run only those
+            sub-surveyors instead of the full set. None (default) runs
+            every sub-surveyor, exactly as before this parameter existed.
+        """
         project = self._registry.get(project_slug)
         if project is None:
             raise ValueError(f"Project '{project_slug}' not found in registry.")
@@ -60,23 +67,28 @@ class SurveyOrchestrator:
             surveyed_at=datetime.utcnow(),
         )
 
-        surveyors = [
-            FileClassifierSurveyor(
+        all_surveyors = {
+            "repo_file_classification": FileClassifierSurveyor(
                 project,
                 self._registry,
                 pyegeria_client=self._pyegeria_client,
                 force_refresh=self._force_refresh,
             ),
-            FileStructureSurveyor(project, self._registry),
-            FileSizeSurveyor(project, self._registry),
-            DataProfilerSurveyor(project, self._registry, local_path=self._data_path),
-            LanguageSurveyor(project, self._registry),
-            HealthSurveyor(project, self._registry),
-            DependencySurveyor(project, self._registry),
-            DocumentationSurveyor(project, self._registry),
-            SecuritySurveyor(project, self._registry),
-            ApiStructureSurveyor(project, self._registry),
-        ]
+            "repo_file_structure": FileStructureSurveyor(project, self._registry),
+            "repo_file_size": FileSizeSurveyor(project, self._registry),
+            "repo_data_profiling": DataProfilerSurveyor(project, self._registry, local_path=self._data_path),
+            "repo_language": LanguageSurveyor(project, self._registry),
+            "repo_health": HealthSurveyor(project, self._registry),
+            "repo_dependency": DependencySurveyor(project, self._registry),
+            "repo_documentation": DocumentationSurveyor(project, self._registry),
+            "repo_security": SecuritySurveyor(project, self._registry),
+            "repo_api_structure": ApiStructureSurveyor(project, self._registry),
+        }
+
+        if steps is None:
+            surveyors = list(all_surveyors.values())
+        else:
+            surveyors = [all_surveyors[key] for key in steps if key in all_surveyors]
 
         for surveyor in surveyors:
             log.info("Running %s for %s …", surveyor.step_name, project.slug)
@@ -97,34 +109,40 @@ class SurveyOrchestrator:
             len(result.errors),
         )
 
-        # Group annotations by analysis_step+type for a compact activity log entry
-        by_step: dict[str, dict] = defaultdict(lambda: {"annotation_type": "", "count": 0, "summary": ""})
-        for a in result.annotations:
-            step = getattr(a, "analysis_step", None) or a.annotation_type.value
-            by_step[step]["annotation_type"] = a.annotation_type.value
-            by_step[step]["count"] += 1
-            if not by_step[step]["summary"]:
-                by_step[step]["summary"] = (a.summary or "")[:200]
-        ann_summary = [
-            {"analysis_name": step, "annotation_type": v["annotation_type"],
-             "count": v["count"], "status": "local", "summary": v["summary"]}
-            for step, v in list(by_step.items())[:20]
-        ]
+        # Self-logging only applies to a full survey. A step-filtered (partial)
+        # run is always driven by a caller that writes its own, more specific
+        # activity-log entry (e.g. scheduler.py's per-analysis-id dispatch, or
+        # repo_survey_definition_adapter.py's Survey Definition executor) —
+        # logging here too would double-log every such run.
+        if steps is None:
+            # Group annotations by analysis_step+type for a compact activity log entry
+            by_step: dict[str, dict] = defaultdict(lambda: {"annotation_type": "", "count": 0, "summary": ""})
+            for a in result.annotations:
+                step = getattr(a, "analysis_step", None) or a.annotation_type.value
+                by_step[step]["annotation_type"] = a.annotation_type.value
+                by_step[step]["count"] += 1
+                if not by_step[step]["summary"]:
+                    by_step[step]["summary"] = (a.summary or "")[:200]
+            ann_summary = [
+                {"analysis_name": step, "annotation_type": v["annotation_type"],
+                 "count": v["count"], "status": "local", "summary": v["summary"]}
+                for step, v in list(by_step.items())[:20]
+            ]
 
-        try:
-            log_survey(
-                self._registry,
-                entity_type="repo",
-                entity_slug=project.slug,
-                entity_name=project.display_name,
-                entity_location=project.github_url,
-                intent="assessment",
-                status="error" if result.errors else "ok",
-                summary=f"{len(result.annotations)} annotation(s), {len(result.errors)} error(s)",
-                detail="; ".join(result.errors) if result.errors else "",
-                annotations=ann_summary,
-            )
-        except Exception as exc:
-            log.warning("Could not write activity log entry: %s", exc)
+            try:
+                log_survey(
+                    self._registry,
+                    entity_type="repo",
+                    entity_slug=project.slug,
+                    entity_name=project.display_name,
+                    entity_location=project.github_url,
+                    intent="assessment",
+                    status="error" if result.errors else "ok",
+                    summary=f"{len(result.annotations)} annotation(s), {len(result.errors)} error(s)",
+                    detail="; ".join(result.errors) if result.errors else "",
+                    annotations=ann_summary,
+                )
+            except Exception as exc:
+                log.warning("Could not write activity log entry: %s", exc)
 
         return result

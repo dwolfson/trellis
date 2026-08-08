@@ -302,6 +302,59 @@ class TestRunDueDispatch:
         assert "step 2 failed" in entries[0]["detail"]
 
 
+class TestRunDueRepoDispatch:
+    """Regression coverage for the repo-side version of the dispatch gap:
+    _run_repo_survey used to always run the full SurveyOrchestrator (all 10
+    sub-surveyors) regardless of which analysis_id was actually scheduled.
+    Now resolves to the specific step(s) via _REPO_ANALYSIS_STEP_MAP,
+    mirroring the database path's dispatch-by-analysis_id pattern."""
+
+    def test_mapped_analysis_id_dispatches_with_only_its_steps(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="repository_health")
+        fake_result = MagicMock(errors=[])
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = fake_result
+            scheduler._run_due()
+
+        MockOrch.return_value.run.assert_called_once_with(registered_project, steps=["repo_health"])
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "ok"
+
+    def test_multi_step_analysis_id_passes_all_mapped_steps(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="language_file_classification")
+        fake_result = MagicMock(errors=[])
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = fake_result
+            scheduler._run_due()
+
+        _, kwargs = MockOrch.return_value.run.call_args
+        assert set(kwargs["steps"]) == {"repo_language", "repo_file_classification", "repo_file_structure"}
+
+    def test_publish_analysis_id_is_excluded_not_run(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="egeria_publish")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            scheduler._run_due()
+
+        MockOrch.assert_not_called()
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "excluded from scheduled runs by design" in entries[0]["detail"]
+
+    def test_unrecognized_analysis_id_is_a_stale_schedule_error_not_a_full_survey(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="removed_catalog_entry")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            scheduler._run_due()
+
+        MockOrch.assert_not_called()  # must NOT silently fall back to a full survey
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "not found in the current analysis catalog" in entries[0]["detail"]
+
+
 class TestRunDueMisc:
     def test_no_due_schedules_is_a_noop(self, registry):
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
