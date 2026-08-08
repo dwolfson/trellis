@@ -1059,6 +1059,8 @@ let _surveyingFsSlug = null;
 let _dbMap           = {};  // slug → DatabaseSummary, populated by renderDatabaseList
 let _fsMap           = {};  // slug → FileSystemSummary
 let _groups          = [];  // list of GroupSummary from /api/projects/groups
+let _discoveredRepos = [];  // list of DiscoveredRepo from GET /api/projects/discover/{org}
+let _discoveredOrg   = '';
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
 let _activityUnread  = 0;   // count of entries since activity tab was last viewed
 let _srvMap          = {};  // slug → ServerSummary
@@ -6112,7 +6114,9 @@ function loadAnnotationTypesView(typeName = null) {
 
 // ── Admin — Groups (thin: list/create/delete only — per-resource group
 // assignment already exists via POST /{slug}/group but has no UI here yet;
-// deliberately out of scope for this "thin assembly" pass) ─────────────────
+// deliberately out of scope for this "thin assembly" pass) plus GitHub-org
+// discovery (bulk-register a whole org's repos into the catalog, no RAG
+// ingestion — see resource_explorer/github/org_importer.py) ────────────────
 async function loadAdminGroupsPanel() {
   const view = document.getElementById('admin-groups-view');
   view.innerHTML = _adminSubnavHtml('admin-groups') +
@@ -6170,6 +6174,25 @@ function renderAdminGroupsPanel() {
         <div id="new-group-feedback" class="text-xs text-slate-500"></div>
       </div>
 
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🔍 Discover from GitHub Org</div>
+        <div class="flex gap-2 flex-wrap items-end">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">GitHub org</label>
+            <input id="discover-org" type="text" placeholder="my-org" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-40">
+          </div>
+          <label class="flex items-center gap-1 text-xs text-slate-400 pb-1.5">
+            <input id="discover-include-forks" type="checkbox" class="accent-cyan-600"> Include forks
+          </label>
+          <label class="flex items-center gap-1 text-xs text-slate-400 pb-1.5">
+            <input id="discover-include-archived" type="checkbox" class="accent-cyan-600"> Include archived
+          </label>
+          <button onclick="discoverOrgRepos()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Discover</button>
+        </div>
+        <div id="discover-feedback" class="text-xs text-slate-500"></div>
+        <div id="discover-results"></div>
+      </div>
+
       <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
         <table class="w-full text-left border-collapse">
           <thead>
@@ -6187,6 +6210,101 @@ function renderAdminGroupsPanel() {
         </table>
       </div>
     </div>`;
+}
+
+async function discoverOrgRepos() {
+  const org = document.getElementById('discover-org').value.trim();
+  const includeForks = document.getElementById('discover-include-forks').checked;
+  const includeArchived = document.getElementById('discover-include-archived').checked;
+  const fb = document.getElementById('discover-feedback');
+  if (!org) { fb.textContent = 'Enter a GitHub org name.'; return; }
+  fb.textContent = `Discovering repos in '${org}'…`;
+  document.getElementById('discover-results').innerHTML = '';
+  try {
+    const params = new URLSearchParams({ include_forks: includeForks, include_archived: includeArchived });
+    const res = await fetch(`/api/projects/discover/${encodeURIComponent(org)}?${params}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    _discoveredRepos = await res.json();
+    _discoveredOrg = org;
+    fb.textContent = `Found ${_discoveredRepos.length} repo(s).`;
+    renderDiscoveredRepos();
+  } catch(e) {
+    fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+function renderDiscoveredRepos() {
+  const results = document.getElementById('discover-results');
+  if (!_discoveredRepos.length) { results.innerHTML = ''; return; }
+
+  const groupOptions = _groups.map(g => `<option value="${_esc(g.slug)}">${_esc(g.display_name)}</option>`).join('');
+  const rows = _discoveredRepos.map((r, i) => {
+    const disabled = r.already_registered ? 'disabled' : '';
+    const checked = r.already_registered ? '' : 'checked';
+    return `<tr class="border-b border-slate-800 ${r.already_registered ? 'opacity-50' : ''}">
+      <td class="px-3 py-2"><input type="checkbox" id="discover-repo-${i}" ${checked} ${disabled} class="accent-cyan-600"></td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-200">${_esc(r.full_name)}</td>
+      <td class="px-3 py-2 text-slate-400 text-xs max-w-sm truncate">${_esc(r.description) || '—'}</td>
+      <td class="px-3 py-2 text-slate-450 text-xs">★ ${r.stars}</td>
+      <td class="px-3 py-2 text-xs">${r.already_registered ? '<span class="text-slate-500">Already registered</span>' : ''}</td>
+    </tr>`;
+  }).join('');
+
+  results.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <button onclick="selectAllNewDiscovered()" class="text-xs text-cyan-400 hover:text-cyan-300">Select all new</button>
+      <div class="flex items-center gap-2">
+        <select id="discover-target-group" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5">
+          <option value="">No group</option>
+          ${groupOptions}
+        </select>
+        <button onclick="importSelectedDiscovered()" class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs font-semibold transition-colors">Import Selected</button>
+      </div>
+    </div>
+    <div class="bg-slate-950 border border-slate-800 rounded max-h-80 overflow-y-auto">
+      <table class="w-full text-left border-collapse">
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function selectAllNewDiscovered() {
+  _discoveredRepos.forEach((r, i) => {
+    if (!r.already_registered) document.getElementById(`discover-repo-${i}`).checked = true;
+  });
+}
+
+async function importSelectedDiscovered() {
+  const groupSlug = document.getElementById('discover-target-group').value;
+  const selected = _discoveredRepos.filter((r, i) => {
+    const cb = document.getElementById(`discover-repo-${i}`);
+    return cb && cb.checked && !r.already_registered;
+  });
+  if (!selected.length) { showToast('error', 'No new repos selected.', 4000); return; }
+
+  try {
+    const res = await fetch(`/api/projects/discover/${encodeURIComponent(_discoveredOrg)}/import`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        repos: selected.map(r => ({ github_url: r.html_url, display_name: r.full_name, description: r.description })),
+        group_slug: groupSlug,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    showToast('success', `Import started for ${data.queued} repo(s) — check Activity log for progress.${data.skipped.length ? ` (${data.skipped.length} already registered, skipped.)` : ''}`, 6000);
+    _discoveredRepos = [];
+    document.getElementById('discover-results').innerHTML = '';
+    document.getElementById('discover-feedback').textContent = '';
+  } catch(e) {
+    showToast('error', `Failed to start import: ${_esc(e.message)}`, 6000);
+  }
 }
 
 async function createAdminGroup() {
