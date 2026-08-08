@@ -1,4 +1,15 @@
-"""Java symbol extractor using tree-sitter.
+"""DEPRECATED — no longer called from anywhere in the ingestion pipeline
+(AST-ownership-transfer plan Phase 8). Resource Explorer now owns Java
+symbol extraction for the repos in RE's "egeria" project group (see
+resource_explorer/ingestion/java_symbol_extractor.py — a genuine upgrade:
+fixes a real bug this module had, where node.child_by_field_name("modifiers")
+silently returned None against the installed tree-sitter-java grammar,
+making is_private always False and @-annotation capture always empty).
+
+Kept in place, not deleted, as a rollback safety net (decision D8) — not
+wired into CodeIngester.ingest_file() anymore (see advisor/ingest_to_milvus.py).
+
+Java symbol extractor using tree-sitter.
 
 Extracts classes, interfaces, enums, methods, and constructors from Java source
 files. Produces the same shape as CodeElement from code_parser.py so they can
@@ -94,15 +105,27 @@ def _preceding_javadoc(node) -> Optional[str]:
     return None
 
 
+def _modifiers_node(node):
+    # NOT node.child_by_field_name("modifiers") — broken against the installed
+    # tree-sitter-java grammar (0.23.x): `modifiers` is a real positional
+    # child of method_declaration/class_declaration but isn't exposed as a
+    # named field, so field-name lookup always silently returns None. This
+    # made is_private always False and _annotations() always [] for every
+    # symbol ever extracted — found live while porting this extractor to
+    # Resource Explorer (AST-ownership-transfer plan Phase 2). Fixed here by
+    # looking the child up by type instead, which actually works.
+    return next((c for c in node.children if c.type == "modifiers"), None)
+
+
 def _modifiers(node) -> list[str]:
-    mods = node.child_by_field_name("modifiers")
+    mods = _modifiers_node(node)
     if mods is None:
         return []
     return [c.text.decode() for c in mods.children if c.type not in ("marker_annotation", "annotation")]
 
 
 def _annotations(node) -> list[str]:
-    mods = node.child_by_field_name("modifiers")
+    mods = _modifiers_node(node)
     if mods is None:
         return []
     return [c.text.decode() for c in mods.children if c.type in ("marker_annotation", "annotation")]

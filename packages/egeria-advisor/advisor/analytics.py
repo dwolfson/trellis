@@ -233,9 +233,15 @@ class AnalyticsManager:
     # ── symbol-store helpers ────────────────────────────────────────────────
 
     def _symbol_store(self):
+        """AST-ownership-transfer plan Phase 7 — reads Resource Explorer's
+        resource_explorer.project_code_symbols (cross-schema, same Postgres
+        instance) via ReCodeSymbolReader instead of EA's own CodeSymbolStore.
+        ReCodeSymbolReader mirrors CodeSymbolStore's exact method names/
+        return shapes (project_slug aliased as `collection` in every row),
+        so nothing below this line needed to change."""
         try:
-            from advisor.code_symbol_store import get_symbol_store
-            return get_symbol_store()
+            from advisor.re_code_symbol_reader import get_re_code_symbol_reader
+            return get_re_code_symbol_reader()
         except Exception:
             return None
 

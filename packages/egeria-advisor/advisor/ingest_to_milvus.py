@@ -509,10 +509,14 @@ class CodeIngester:
             if file_path.suffix == '.py':
                 return self._ingest_python_file(file_path)
             elif file_path.suffix == '.java':
-                result = self._ingest_text_file(file_path)
-                # Also extract symbols into SQLite (text chunks still go to pgvector)
-                self._extract_java_symbols(file_path)
-                return result
+                # Java symbol extraction (self._extract_java_symbols) stopped
+                # here — Resource Explorer now owns it (real tree-sitter, see
+                # AST-ownership-transfer plan Phases 2/8). Unlike Python, Java
+                # pgvector chunking was always plain text chunking
+                # (_ingest_text_file), fully independent of symbol extraction
+                # — so removing the extraction call has zero effect on
+                # pgvector content for Java files.
+                return self._ingest_text_file(file_path)
             else:
                 return self._ingest_text_file(file_path)
 
@@ -521,12 +525,15 @@ class CodeIngester:
             return 0, 0, []
 
     def _extract_java_symbols(self, file_path: Path) -> None:
+        """Deprecated, no longer called from ingest_file() — see the .java
+        branch above. Kept in place (not deleted) as a rollback safety net
+        per AST-ownership-transfer plan decision D8."""
         try:
             from advisor.data_prep.java_symbol_extractor import extract_java_symbols
             from advisor.code_symbol_store import get_symbol_store
             symbols = extract_java_symbols(file_path)
             if symbols:
-                get_symbol_store().upsert_symbols(self.collection_name, symbols)
+                get_symbol_store().upsert_symbols(self.collection_name, symbols, language="java")
         except Exception as exc:
             logger.warning(f"Java symbol extraction failed for {file_path}: {exc}")
     
@@ -627,12 +634,17 @@ class CodeIngester:
                 metadata=metadata
             )
 
-        # Write to SQLite symbol table for fast structural queries
-        try:
-            from advisor.code_symbol_store import get_symbol_store
-            get_symbol_store().upsert_symbols(self.collection_name, elements)
-        except Exception as exc:
-            logger.warning(f"CodeSymbolStore upsert failed for {file_path}: {exc}")
+        # Symbol-table writes to EA's own code_symbols/code_relationships
+        # stopped here — Resource Explorer now owns structural code
+        # intelligence extraction for the repos in RE's "egeria" project
+        # group (AST-ownership-transfer plan Phase 8; consumers migrated in
+        # Phases 6-7). `elements` (from CodeParser().parse_file() above) is
+        # still used for the pgvector text/metadata built above — only the
+        # code_symbols/code_relationships write is removed, not the parse
+        # itself, since pgvector chunking for Python is derived from the
+        # same parse. code_symbol_store.py's write path is deprecated, not
+        # deleted — see its module docstring; code_symbols/code_relationships
+        # are left in place, unwritten, as a rollback safety net (D8).
 
         return 1, len(elements), ids
     

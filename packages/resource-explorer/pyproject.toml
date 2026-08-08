@@ -60,6 +60,12 @@ dependencies = [
     "soda-core-postgres>=3.0.0",
     "great-expectations>=0.18.0",
     "sqlglot>=25.0.0",
+    # Java code-intelligence extraction (ingestion/java_symbol_extractor.py) —
+    # promoted out of the optional [ast] extra below: Java symbol/relationship
+    # data became load-bearing for Egeria Advisor's consumption (AST-ownership-
+    # transfer plan) once code intelligence is more than a chunking nicety.
+    "tree-sitter>=0.21",
+    "tree-sitter-java>=0.21",
 ]
 
 [project.optional-dependencies]
@@ -79,11 +85,12 @@ redis = [
     "redis>=5.0.0",
 ]
 ast = [
-    "tree-sitter>=0.21",
+    # tree-sitter / tree-sitter-java are core dependencies now (see above) —
+    # only the languages not required for code-intelligence extraction stay
+    # optional, for pgvector chunk-boundary splitting (ast_chunker.py) only.
     "tree-sitter-python>=0.21",
     "tree-sitter-javascript>=0.21",
     "tree-sitter-go>=0.21",
-    "tree-sitter-java>=0.21",
 ]
 
 [project.scripts]
