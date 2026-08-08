@@ -326,7 +326,14 @@
         </div>
       </div>
 
-      <!-- Survey report view (repos) -->
+      <!-- Scouting overview (repos) — light, fast, GitHub-API-derived facts;
+           "should I analyze this further?", not the deep survey report. -->
+      <div id="scouting-overview-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Survey report view (repos) — the deep report, reached via
+           Scouting's "View full report →" link, or from Analysis/
+           Assessment's "Run" cards until Phase B builds dedicated results
+           views for them. -->
       <div id="report-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
       <!-- Database survey view -->
@@ -1159,7 +1166,7 @@ function showIntentPlaceholder(intent) {
 function showScoutingPane() {
   if (resourceTypeFacet === 'repo') {
     if (!selectedProject) { showIntentEmptyState('a repo'); return; }
-    showMainView('report');
+    showMainView('scouting-overview');
   } else if (resourceTypeFacet === 'db') {
     if (!selectedDatabase) { showIntentEmptyState('a database'); return; }
     showMainView('db-survey');
@@ -1436,6 +1443,17 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${schedLabel}</button>`
       : `<button onclick="showToast('info', 'Select a resource first.', 4000)"
            class="text-xs px-2.5 py-1 rounded bg-slate-800 text-slate-600 transition-colors whitespace-nowrap" title="Select a resource to schedule this analysis">⏱ Schedule</button>`;
+    // Results/trend view (Phase B) — repo-only for now, and only for the 5
+    // analysis ids that actually have a results table (REPO_ANALYSIS_RESULTS_MAP
+    // on the backend; _REPO_RESULTS_ANALYSIS_IDS mirrors it here so the button
+    // doesn't appear for ids with nothing to show, e.g. scouting-tier ones).
+    const resultsButton = (entityType === 'repo' && slug && _REPO_RESULTS_ANALYSIS_IDS.has(a.id))
+      ? `<button onclick='toggleAnalysisResults(${JSON.stringify(a.id)}, ${JSON.stringify(slug)}, this)'
+           class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">
+           📊 Results
+         </button>`
+      : '';
+
     return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
       <div class="flex-1 min-w-0">
         <div class="text-xs font-semibold text-slate-200">${_esc(a.name)}${a.recommended ? ' <span class="text-cyan-400" title="Recommended">★</span>' : ''}</div>
@@ -1447,9 +1465,11 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
           Run →
         </button>
+        ${resultsButton}
         ${scheduleButton}
       </div>
       <div id="sched-form-${safeId}" class="hidden mt-1"></div>
+      <div id="results-${safeId}" class="hidden mt-2"></div>
     </div>`;
   }).join('');
 
@@ -1482,27 +1502,144 @@ async function _submitSchedule(analysisId, entityType, slug) {
   document.getElementById(`sched-form-${safeId}`)?.classList.add('hidden');
 }
 
-// "Run" doesn't (yet) trigger just this one named analysis — RE's survey
-// pipeline runs all local sub-surveyors for a resource type together, not
-// individual catalog entries in isolation, so every card's Run button
-// triggers the same per-resource-type survey action. This is an honest
-// reflection of how surveys actually work today, not a shortcut; unifying
-// survey launch onto something more granular is separately-scoped, larger
-// work (RE's own backlog item #5), not part of this slice.
+// ── Phase B: per-analysis results + trend (repo-only) ───────────────────────
+// analysis_id -> render function for the "latest results" section — mirrors
+// the backend's REPO_ANALYSIS_RESULTS_MAP (repo_survey_definition_adapter.py)
+// key-for-key, just for the UI-side "does this id have a results view" check
+// and the type-specific rendering below.
+const _REPO_RESULTS_ANALYSIS_IDS = new Set([
+  'dependency_analysis', 'data_file_profiling', 'security_scan',
+  'documentation_coverage', 'api_structure',
+]);
+
+async function toggleAnalysisResults(analysisId, slug, btn) {
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const el = document.getElementById(`results-${safeId}`);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  await loadAnalysisResults(analysisId, slug);
+}
+
+async function loadAnalysisResults(analysisId, slug) {
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const el = document.getElementById(`results-${safeId}`);
+  if (!el) return;
+  el.innerHTML = '<div class="text-slate-500 text-xs py-2">Loading results…</div>';
+  try {
+    const [resultsRes, trendRes] = await Promise.all([
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/results`),
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend`),
+    ]);
+    if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
+    const data = await resultsRes.json();
+    const trend = trendRes.ok ? (await trendRes.json()).runs || [] : [];
+    el.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-2 space-y-2">
+      ${_renderAnalysisResultsContent(analysisId, data)}
+      ${trend.length > 1 ? `<div id="trend-${safeId}" style="height:110px"></div>` : ''}
+    </div>`;
+    if (trend.length > 1) _renderAnalysisTrendChart(`trend-${safeId}`, trend, analysisId);
+  } catch(e) {
+    el.innerHTML = `<div class="text-red-400 text-xs py-2">Failed to load results: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _renderAnalysisResultsContent(analysisId, data) {
+  if (analysisId === 'dependency_analysis') {
+    const ecosystems = Object.entries(data.by_ecosystem || {});
+    if (!ecosystems.length) return `<div class="text-xs text-slate-500">No dependencies found. Run "Refresh &amp; profile" to re-scan.</div>`;
+    return `<div class="text-xs text-slate-400 mb-1">${data.total} dependenc${data.total === 1 ? 'y' : 'ies'} across ${ecosystems.length} ecosystem(s)</div>` +
+      ecosystems.map(([eco, deps]) => `
+        <div class="text-xs">
+          <span class="text-cyan-400 font-medium">${_esc(eco)}</span>
+          <span class="text-slate-500">(${deps.length})</span>
+          <div class="text-slate-400 truncate" title="${_esc(deps.map(d => d.dep_name).join(', '))}">
+            ${_esc(deps.slice(0, 10).map(d => d.dep_name).join(', '))}${deps.length > 10 ? ' …' : ''}
+          </div>
+        </div>`).join('');
+  }
+  if (analysisId === 'data_file_profiling') {
+    if (!data.profiles || !data.profiles.length) return `<div class="text-xs text-slate-500">No data files profiled yet.</div>`;
+    return `<div class="text-xs text-slate-400 mb-1">${data.total} data file(s) profiled</div>` +
+      data.profiles.slice(0, 8).map(p => `
+        <div class="text-xs text-slate-300 flex justify-between gap-2">
+          <span class="truncate" title="${_esc(p.file_path)}">${_esc(p.file_path)}</span>
+          <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
+        </div>`).join('');
+  }
+  if (analysisId === 'security_scan') {
+    if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+    return data.findings.map(f => `
+      <div class="text-xs flex items-center gap-1.5">
+        <span class="${f.status === 'pass' ? 'text-emerald-400' : 'text-amber-400'}">${f.status === 'pass' ? '✓' : '⚠'}</span>
+        <span class="text-slate-300">${_esc(f.summary)}</span>
+      </div>`).join('');
+  }
+  if (analysisId === 'documentation_coverage') {
+    if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+    const quality = data.findings.find(f => f.finding_type === 'quality_score');
+    const others = data.findings.filter(f => f.finding_type !== 'quality_score');
+    return (quality ? `<div class="text-xs text-slate-300 font-medium mb-1">Quality: ${_esc(quality.label)}</div>` : '') +
+      others.map(f => `<div class="text-xs text-slate-400">${_esc(f.label)}</div>`).join('');
+  }
+  if (analysisId === 'api_structure') {
+    const langs = Object.entries(data.by_language || {});
+    if (!langs.length) return `<div class="text-xs text-slate-500">No indexed symbols yet.</div>`;
+    return `<div class="text-xs text-slate-400 mb-1">${data.relationship_count} inheritance relationship(s)</div>` +
+      langs.map(([lang, kinds]) => `
+        <div class="text-xs text-slate-300">
+          <span class="text-cyan-400 font-medium">${_esc(lang)}</span>:
+          ${Object.entries(kinds).map(([k, c]) => `${c} ${_esc(k)}${c === 1 ? '' : 's'}`).join(', ')}
+        </div>`).join('');
+  }
+  return '<div class="text-xs text-slate-500">No results view for this analysis.</div>';
+}
+
+function _renderAnalysisTrendChart(elId, runs, analysisId) {
+  const el = document.getElementById(elId);
+  if (!el || typeof Plotly === 'undefined') return;
+  Plotly.newPlot(el, [{
+    type: 'scatter', mode: 'lines+markers',
+    x: runs.map(r => r.surveyed_at), y: runs.map(r => r.value),
+    line: { color: '#06b6d4', width: 2 },
+    marker: { color: '#06b6d4', size: 5 },
+    hovertemplate: '%{x}<br>%{y}<extra></extra>',
+  }], {
+    paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
+    font: { color: '#94a3b8', size: 9 },
+    margin: { l: 32, r: 8, t: 8, b: 30 },
+    xaxis: { gridcolor: '#1e293b', tickangle: -30, tickfont: { size: 8 } },
+    yaxis: { gridcolor: '#1e293b' },
+    height: 110,
+  }, { displayModeBar: false, responsive: true });
+}
+
+// For repos, "Run" triggers only the named analysis's sub-surveyor step(s)
+// (POST /api/projects/{slug}/analyses/{analysisId}/run — reuses the same
+// analysis_id -> step(s) map the scheduler's per-analysis-id dispatch uses),
+// not the whole 10-surveyor survey. On success, the results section (if
+// this analysis has one) refreshes and opens automatically — Phase B's
+// actual per-analysis results view, not just a toast pointing elsewhere.
 function _runAnalysisCatalogCard(_analysisId) {
   if (resourceTypeFacet === 'repo') {
     if (!selectedProject) { showToast('info', 'Select a repo first.', 4000); return; }
-    fetch(`/api/egeria/${selectedProject}/survey`, { method: 'POST' })
+    const slug = selectedProject;
+    fetch(`/api/projects/${slug}/analyses/${_analysisId}/run`, { method: 'POST' })
       .then(r => r.json())
       .then(data => {
         if (data.status === 'ok') {
-          showToast('success', `Survey complete for <strong>${_esc(selectedProject)}</strong>. Check Scouting for the report.`, 6000);
+          showToast('success', `'${_esc(_analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(data.message)}`, 6000);
+          if (_REPO_RESULTS_ANALYSIS_IDS.has(_analysisId)) {
+            const safeId = String(_analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+            document.getElementById(`results-${safeId}`)?.classList.remove('hidden');
+            loadAnalysisResults(_analysisId, slug);
+          }
         } else {
-          showToast('error', `Survey failed: ${_esc(data.error || (data.errors || []).join('; ') || 'unknown error')}`, 8000);
+          showToast('error', `'${_esc(_analysisId)}' failed: ${_esc(data.error || 'unknown error')}`, 8000);
         }
       })
-      .catch(e => showToast('error', `Survey request failed: ${_esc(e.message)}`, 8000));
-    showToast('running', `Surveying <strong>${_esc(selectedProject)}</strong>…`, 0);
+      .catch(e => showToast('error', `Request failed: ${_esc(e.message)}`, 8000));
+    showToast('running', `Running <strong>${_esc(_analysisId)}</strong> on <strong>${_esc(slug)}</strong>…`, 0);
   } else if (resourceTypeFacet === 'db') {
     if (!selectedDatabase) { showToast('info', 'Select a database first.', 4000); return; }
     showSurveyDbModal(selectedDatabase);
@@ -1557,13 +1694,28 @@ async function loadProjects() {
     btn.dataset.slug = p.slug;
     btn.dataset.githubUrl = p.github_url || '';
     btn.onclick = (e) => e.shiftKey ? toggleCompare(p.slug) : selectProject(p.slug);
+
+    // Lifecycle badge — survey/catalog state, distinct from `status` above
+    // (RAG-ingestion state). "Registered" is a real, common state now that
+    // GitHub-org discovery can bulk-add repos with no survey yet.
+    let lifecycleBadge, lifecycleTitle;
+    if (p.is_published) {
+      lifecycleBadge = '☁'; lifecycleTitle = 'Published to Egeria';
+    } else if (p.last_surveyed_at) {
+      lifecycleBadge = '📊'; lifecycleTitle = `Surveyed ${_relTime(p.last_surveyed_at)} (${p.last_surveyed_at})`;
+    } else {
+      lifecycleBadge = '🆕'; lifecycleTitle = 'Registered, not yet surveyed';
+    }
+
     btn.innerHTML = `
       <div class="flex items-center justify-between gap-1 min-w-0">
-        <div class="font-medium text-slate-200 truncate">${_esc(p.display_name)}</div>
+        <div class="font-medium text-slate-200 truncate flex items-center gap-1">
+          <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${_esc(p.display_name)}
+        </div>
         <div class="proj-actions">
           <button class="proj-action-btn" data-tip="Refresh &amp; profile"
             onclick="event.stopPropagation(); runRefreshFromSidebar('${_esc(p.slug)}', this)">🔄</button>
-          <button class="proj-action-btn" data-tip="Run survey"
+          <button class="proj-action-btn" data-tip="Run scouting scan"
             onclick="event.stopPropagation(); runSurveyFromSidebar('${_esc(p.slug)}', this)">📊</button>
           ${p.github_url ? `<a class="proj-action-btn" href="${_esc(p.github_url)}" target="_blank"
             data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
@@ -1572,6 +1724,11 @@ async function loadProjects() {
       <div class="text-xs ${color}">${p.status} · ${p.collections.length} collections${p.group_slug ? ` · <span class="text-purple-400 font-medium">${_esc(p.group_slug)}</span>` : ''}</div>`;
     list.appendChild(btn);
   });
+  // loadProjects() rebuilds every button fresh, wiping the 'selected'
+  // highlight — re-apply it for whichever repo is still the active scope.
+  if (selectedProject) {
+    document.querySelector(`.project-btn[data-slug="${selectedProject}"]`)?.classList.add('selected');
+  }
 }
 
 function selectProject(slug) {
@@ -1636,18 +1793,21 @@ async function runRefreshFromSidebar(slug, btn) {
 }
 
 async function runSurveyFromSidebar(slug, btn) {
+  // Coarse scan (fast, API-only) — matches Scouting's own "Run Scouting
+  // Scan" button, keeps the sidebar action cheap. The full/deep survey
+  // stays reachable from inside the repo's own tabs (Analysis/Assessment).
   selectProject(slug);
   const orig = btn.textContent;
   btn.textContent = '⟳';
   btn.classList.add('spinning');
   btn.disabled = true;
   try {
-    const res = await fetch(`/api/egeria/${slug}/survey`, { method: 'POST' });
+    const res = await fetch(`/api/projects/${slug}/scouting-scan`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
-      showMainView('report');
-      _reportLoaded = false;
-      loadSurveyReport();
+      showMainView('scouting-overview');
+      loadScoutingOverview();
+      loadProjects();  // refresh sidebar lifecycle badge
       btn.textContent = '✓';
       btn.style.color = '#4ade80';
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
@@ -4129,6 +4289,7 @@ function showMainView(tab) {
   const assessmentView = document.getElementById('assessment-view');
   const analysisView   = document.getElementById('analysis-view');
   const understandingView = document.getElementById('understanding-view');
+  const scoutingOverviewView = document.getElementById('scouting-overview-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -4142,7 +4303,7 @@ function showMainView(tab) {
   const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, curateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, curateView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
@@ -4158,6 +4319,9 @@ function showMainView(tab) {
   } else if (tab === 'understanding') {
     understandingView.classList.remove('hidden');
     loadUnderstandingCharts();
+  } else if (tab === 'scouting-overview') {
+    scoutingOverviewView.classList.remove('hidden');
+    loadScoutingOverview();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
@@ -4202,6 +4366,99 @@ function showMainView(tab) {
     loadCuratePanel();
   } else {
     placeholderView.classList.remove('hidden');
+  }
+}
+
+// ── Scouting overview (repos) — light, fast, GitHub-API-derived facts only.
+// Deliberately not the deep survey/profiling report (still reachable via
+// "View full report →", unchanged below) — see the Scouting/Analysis/
+// Assessment boundary plan for why this split exists.
+async function loadScoutingOverview() {
+  if (!selectedProject) return;
+  const view = document.getElementById('scouting-overview-view');
+  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const res = await fetch(`/api/projects/${selectedProject}/scouting-overview`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderScoutingOverview(await res.json());
+  } catch(e) {
+    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load overview: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderScoutingOverview(d) {
+  const view = document.getElementById('scouting-overview-view');
+  const surveyedBadge = d.last_surveyed_at
+    ? `<span class="text-emerald-400" title="Surveyed ${_esc(d.last_surveyed_at)}">📊 Surveyed ${_relTime(d.last_surveyed_at)}</span>`
+    : `<span class="text-slate-500">🆕 Not yet surveyed</span>`;
+  const publishedBadge = d.is_published
+    ? `<span class="text-cyan-400">☁ Published to Egeria</span>`
+    : `<span class="text-slate-500">Not published</span>`;
+
+  view.innerHTML = `
+    <div class="max-w-2xl space-y-4">
+      <div>
+        <h1 class="text-xl font-bold text-slate-100">${_esc(d.display_name)}</h1>
+        <a href="${_esc(d.github_url)}" target="_blank" class="text-xs text-cyan-400 hover:underline">${_esc(d.github_url)}</a>
+      </div>
+
+      <div class="text-sm text-slate-300">${_esc(d.description) || '<span class="text-slate-500">No description on GitHub.</span>'}</div>
+
+      <div class="flex flex-wrap gap-4 text-xs">${surveyedBadge}${publishedBadge}</div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+          <div class="text-[10px] text-slate-500 uppercase">Language</div>
+          <div class="text-sm text-slate-200 font-medium">${_esc(d.primary_language) || '—'}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+          <div class="text-[10px] text-slate-500 uppercase">Stars</div>
+          <div class="text-sm text-slate-200 font-medium">★ ${d.stars}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+          <div class="text-[10px] text-slate-500 uppercase">Forks</div>
+          <div class="text-sm text-slate-200 font-medium">${d.forks}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+          <div class="text-[10px] text-slate-500 uppercase">Contributors</div>
+          <div class="text-sm text-slate-200 font-medium">${d.contributors_count}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+          <div class="text-[10px] text-slate-500 uppercase">Last pushed</div>
+          <div class="text-sm text-slate-200 font-medium">${d.last_pushed_at ? _relTime(d.last_pushed_at) : '—'}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+          <div class="text-[10px] text-slate-500 uppercase">Size</div>
+          <div class="text-sm text-slate-200 font-medium">${d.repo_size_kb ? `${(d.repo_size_kb/1024).toFixed(1)} MB` : '—'}</div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-2 items-center pt-2">
+        <button onclick="runScoutingScan('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">📊 Run Scouting Scan</button>
+        <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
+      </div>
+    </div>`;
+}
+
+async function runScoutingScan(slug, btn) {
+  const orig = btn.textContent;
+  btn.textContent = '⟳ Scanning…';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/projects/${slug}/scouting-scan`, { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast('success', 'Scouting scan complete.', 3000);
+      loadScoutingOverview();
+      loadProjects();  // refresh sidebar lifecycle badge
+    } else {
+      showToast('error', `Scan failed: ${_esc(data.error || 'unknown error')}`, 5000);
+    }
+  } catch(e) {
+    showToast('error', `Scan failed: ${_esc(e.message)}`, 5000);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
   }
 }
 
@@ -5954,6 +6211,22 @@ function setThinking(on) {
 
 function _esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Relative time ("3d ago") for lifecycle badges (sidebar + Scouting) —
+// deliberately coarse (days, not hours/minutes); an exact timestamp is
+// always available in the title attribute wherever this is used.
+function _relTime(iso) {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const days = Math.floor((Date.now() - then) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return '1d ago';
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
 }
 
 // ── annotations registry ───────────────────────────────────────────────────────

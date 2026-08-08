@@ -135,6 +135,12 @@ class TestStatusUpdates:
         db.update_commit_sha("test-project", "abc123def456")
         assert db.get("test-project").last_commit_sha == "abc123def456"
 
+    def test_update_project_surveyed_at(self, db, sample_project):
+        db.add(sample_project)
+        assert db.get("test-project").last_surveyed_at == ""
+        db.update_project_surveyed_at("test-project")
+        assert db.get("test-project").last_surveyed_at != ""
+
 
 class TestSchemaMigration:
     def test_migration_adds_last_commit_sha_to_old_db(self, tmp_path):

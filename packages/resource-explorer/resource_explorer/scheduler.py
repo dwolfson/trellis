@@ -37,8 +37,11 @@ found while wiring this up, not by design.
 Repo dispatch, separately: previously _run_repo_survey always ran the full
 SurveyOrchestrator (all 10 sub-surveyors) regardless of which analysis_id was
 scheduled — repo's own version of the (a)-only gap above, fixed the same way:
-_REPO_ANALYSIS_STEP_MAP resolves a scheduled analysis_id to the specific
-SurveyOrchestrator step key(s) to run via SurveyOrchestrator.run(steps=...).
+repo_survey_definition_adapter.REPO_ANALYSIS_STEP_MAP resolves a scheduled
+analysis_id to the specific SurveyOrchestrator step key(s) to run via
+SurveyOrchestrator.run(steps=...) — public there, not scheduler-private,
+since web/routes/projects.py's per-card "Run just this one analysis" is a
+second real consumer of the same mapping.
 Repo has no (b)/(d) equivalent — no repo analysis_catalog entry is flagged
 for native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
 merge only ever applies to 'database' — so a repo analysis_id is always
@@ -176,27 +179,6 @@ def _execute(
         return (entity_slug, "", [f"Unknown entity_type '{entity_type}'"])
 
 
-# analysis_catalog "repo_analyses" id -> SurveyOrchestrator step key(s) it
-# maps to (same step-key vocabulary as repo_survey_definition_adapter.py's
-# re_analysis_steps). "language_file_classification" is the one genuinely
-# ambiguous entry — its catalog description ("file types, languages, and
-# project structure") and annotation_types span what three separate
-# sub-surveyors emit, so all three are bundled here rather than guessing at
-# just one. repo_file_size has no catalog entry at all (never independently
-# schedulable today) so it isn't listed — it stays bundled only in a full,
-# steps=None survey. egeria_publish is intentionally absent — excluded from
-# scheduling entirely, handled by the action=="publish" branch below.
-_REPO_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
-    "language_file_classification": ["repo_language", "repo_file_classification", "repo_file_structure"],
-    "repository_health": ["repo_health"],
-    "dependency_analysis": ["repo_dependency"],
-    "security_scan": ["repo_security"],
-    "documentation_coverage": ["repo_documentation"],
-    "data_file_profiling": ["repo_data_profiling"],
-    "api_structure": ["repo_api_structure"],
-}
-
-
 def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, list[str]]:
     project = registry.get(slug)
     if not project:
@@ -220,7 +202,9 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
             "scheduled runs by design. Run it manually when you intend that write."
         ])
 
-    steps = _REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+
+    steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
     if not steps:
         return (project.display_name, project.github_url, [
             f"Analysis '{analysis_id}' has no mapped survey step(s) — internal configuration gap."

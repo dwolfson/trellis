@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
@@ -48,12 +49,19 @@ class DocumentationSurveyor(BaseSurveyor):
       - An overall doc quality label (Comprehensive / Partial / Minimal)
     """
 
+    def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
+        super().__init__(project, registry)
+        # See SecuritySurveyor's identical constructor comment — shared
+        # run-timestamp from SurveyOrchestrator (Phase B, D1).
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+
     @property
     def step_name(self) -> str:
         return STEP
 
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
+        findings: list[dict] = []
         try:
             # ── collection presence from registry ─────────────────────────────
             slug = self.project.slug
@@ -72,6 +80,10 @@ class DocumentationSurveyor(BaseSurveyor):
                             confidence=100,
                         )
                     )
+                    findings.append({
+                        "finding_type": "collection_present", "label": col_type,
+                        "confidence": 100, "detail": {"display_label": label},
+                    })
 
             # ── hygiene files from code symbol paths ──────────────────────────
             with self.registry._conn() as conn:
@@ -98,6 +110,10 @@ class DocumentationSurveyor(BaseSurveyor):
                         confidence=95,
                     )
                 )
+                findings.append({
+                    "finding_type": "hygiene_files", "label": ", ".join(found_hygiene),
+                    "confidence": 95, "detail": {"files": found_hygiene},
+                })
 
             # ── overall quality label ─────────────────────────────────────────
             score = len(present_doc_types) + len(found_hygiene)
@@ -121,6 +137,20 @@ class DocumentationSurveyor(BaseSurveyor):
                     },
                 )
             )
+            findings.append({
+                "finding_type": "quality_score", "label": quality,
+                "confidence": 70,
+                "detail": {
+                    "doc_collection_types": present_doc_types,
+                    "hygiene_files": found_hygiene,
+                    "signal_count": score,
+                },
+            })
+
+            try:
+                self.registry.upsert_documentation_findings(slug, findings, surveyed_at=self._surveyed_at)
+            except Exception as exc:
+                log.warning("Could not persist documentation findings for %s: %s", slug, exc)
 
         except Exception as exc:
             log.exception("DocumentationSurveyor failed for %s", self.project.slug)
