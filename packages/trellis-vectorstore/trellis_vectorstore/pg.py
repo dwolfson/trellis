@@ -13,6 +13,7 @@ passes the exact values that reproduce its pre-extraction behavior.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
@@ -186,10 +187,21 @@ class PgVectorStore(BaseVectorStore):
         qualified = self._qualified(table)
         if schema is not None and schema.raw_ddl is not None:
             # Transitional escape hatch — the raw DDL string already names
-            # the bare table name (e.g. `CREATE TABLE IF NOT EXISTS
+            # some bare table name (e.g. `CREATE TABLE IF NOT EXISTS
             # "pyegeria" (...)`), matching each app's pre-extraction DDL
-            # exactly; substitute in the (possibly schema-qualified) name.
-            return schema.raw_ddl.replace(f'"{table}"', qualified, 1)
+            # exactly. Substitute whatever quoted name follows "CREATE
+            # TABLE IF NOT EXISTS" with the actual (possibly remapped,
+            # possibly schema-qualified) target — NOT a literal replace of
+            # `table`, since table_name_map can remap the canonical name
+            # itself (e.g. a test fixture retargeting "pyegeria" to a
+            # prefixed throwaway table), in which case `table` never
+            # appears verbatim inside raw_ddl at all and a literal replace
+            # would silently no-op, creating the wrong (real) table name.
+            return re.sub(
+                r'CREATE TABLE IF NOT EXISTS "[^"]+"',
+                f"CREATE TABLE IF NOT EXISTS {qualified}",
+                schema.raw_ddl, count=1,
+            )
         extra_columns = schema.extra_columns if schema is not None else ()
         return render_create_table_sql(qualified, extra_columns, self._config.embedding_dim)
 

@@ -94,6 +94,25 @@ class TestDdlRendering:
         assert ddl.startswith('CREATE TABLE IF NOT EXISTS "resource_explorer"."pyegeria"')
         assert ddl.count('"resource_explorer"."pyegeria"') == 1  # replaced once, not duplicated
 
+    def test_raw_ddl_renamed_when_table_name_map_remaps_the_canonical_name_itself(self):
+        """Regression guard: raw_ddl's embedded literal table name ("pyegeria")
+        does NOT need to match the final canonical/mapped table name — e.g. a
+        test fixture retargeting "pyegeria" to a prefixed throwaway table via
+        table_name_map. A literal string-replace on `table` would silently
+        no-op here (the mapped name never appears in raw_ddl at all),
+        creating a table under the WRONG (real, unprefixed) name instead."""
+        raw = 'CREATE TABLE IF NOT EXISTS "pyegeria" (\n    id VARCHAR(256) PRIMARY KEY\n)'
+        schema = CollectionSchema(raw_ddl=raw, extra_columns=())
+        store = _store(
+            collection_schemas={"zzz_test_pyegeria": schema},
+            table_name_map={"pyegeria": "zzz_test_pyegeria"},
+        )
+        table = store._table("pyegeria")
+        assert table == "zzz_test_pyegeria"
+        ddl = store._render_ddl(table)
+        assert 'CREATE TABLE IF NOT EXISTS "zzz_test_pyegeria"' in ddl
+        assert '"pyegeria"' not in ddl.split("(")[0]  # not left behind in the header
+
 
 class TestInsertSqlGeneration:
     def test_base_schema_insert_sql(self):

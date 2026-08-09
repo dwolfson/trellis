@@ -18,12 +18,21 @@ from advisor.assembly_metrics import (
 )
 
 
-class MockSearchResult:
-    """Mock search result for testing."""
+from advisor.vector_store_base import SearchResult
+
+
+class MockSearchResult(SearchResult):
+    """Test helper with the same score/file_path/text-first constructor
+    shape every call site below already uses — but a real SearchResult
+    subclass now (trellis-vectorstore extraction, Phase 4), not an
+    unrelated ad-hoc class. Previously this could silently drift from the
+    real dataclass's shape (a field added/renamed on SearchResult would
+    never need this mock to change to match, since nothing linked them)."""
     def __init__(self, score, file_path="test.py", text="test text"):
-        self.score = score
-        self.text = text
-        self.metadata = {'file_path': file_path, 'name': 'test', 'type': 'function'}
+        super().__init__(
+            id="mock", score=score, text=text,
+            metadata={"file_path": file_path, "name": "test", "type": "function"},
+        )
 
 
 class TestQueryClassifier:
