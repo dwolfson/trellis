@@ -28,6 +28,12 @@ Three things stay independent of each other, and understanding that split makes 
 2. **Resource-type facet** (left sidebar: Repos / DBs / FS) — which kind of resource you're looking at. Also exclusive-select, but orthogonal to intent — every intent applies across all three resource types (with a couple of documented exceptions, noted below).
 3. **Perspective** (the chip row under the intent nav) — who you are / what lens you're applying (DBA, Data Scientist, Steward, Security). This is **multi-select** — hold as many as apply to you at once. It's a filter, not a destination: it narrows what Assessment/Analysis show, it doesn't change what pane you're looking at.
 
+For repos specifically, the sidebar also carries two independent hide/show axes, both reversible and both off (visible) by default — a repo can drop out of the default list for either reason without affecting the other:
+- **Disposition** — 🧭 Disposition (under Scouting, above) set to `ignored` or `abandoned`.
+- **Working set** — a personal "not in front of me right now" toggle (the 👁/🚫 icon on each sidebar row), independent of disposition. Someone else can carry a repo all the way to Curate; that doesn't mean you want it cluttering your daily list.
+
+Either reason hides a repo behind the sidebar's **Show hidden (N)** toggle at the bottom of the list — nothing is ever silently deleted.
+
 Several more surfaces sit outside the intent nav entirely, reachable from the header regardless of which intent/facet/perspective you have selected:
 
 - **💬 Chat** — a persistent side panel for RAG-backed Q&A, scoped to whatever resource you have selected (or general if nothing's selected). Toggle it with the Chat button; it stays open across intent switches, and its collapsed/expanded state is remembered across reloads.
@@ -37,9 +43,17 @@ Several more surfaces sit outside the intent nav entirely, reachable from the he
 ## The seven intents
 
 ### 🔭 Scouting
-Fast, broad-strokes facts about a single selected resource — not the deep survey report. For repos: GitHub description, primary language, stars/forks/contributors, last-pushed date, and a lifecycle badge (🆕 registered / 📊 surveyed / ☁ published to Egeria — the same badges shown next to each repo in the left sidebar). Select a repo/database/filesystem in the sidebar to see it; Scouting reads its content from whichever resource-type facet is active. If nothing's selected, you'll see a prompt to pick one.
+Fast, broad-strokes facts about a single selected resource — not the deep survey report. For databases/filesystems, this is the same light overview it's always been. **For repos, Scouting is a 4-tab sub-workflow** (its own row of tabs above the content, separate from the main intent nav):
 
-For repos, **📊 Run Scouting Scan** runs a fast, API-only scan (repo stats + language — no clone needed); the sidebar's own 📊 action does the same thing. Need more than the at-a-glance facts? Click **View full report →** for the deep survey report (file types, dependencies, data profiling, Egeria survey history) — unchanged, just no longer Scouting's default view.
+- **🔍 Discover** — "where do we scout in the first place," shown by default when no repo is selected (and reachable any time from the tab row, even with one selected). Search GitHub for candidate repos before any of them are registered — keyword, min stars, language, license, pushed-after, org, topic, plus quick-filter chips for a few well-known foundations (CNCF, Apache, Apache PSF, Linux Foundation). Archived repos and forks are excluded by default; check the boxes to include them. Sort or resize any results column, filter the batch client-side, check the ones you want and **Import Selected** into a group. A result already registered, or previously marked ignored/abandoned, is shown dimmed with its reason as a tooltip — a repo you passed on before doesn't quietly resurface as if new.
+
+  Repeat searches worth saving become **discovery sources** — click **💾 Save as new source** on an ad-hoc search, or pick from **Saved sources** at the top of this tab. A source can also be a manually-curated *list* of repo URLs instead of a search — useful for foundations (Eclipse, for instance) that spread projects across hundreds of orgs with no single `org:` search that finds them all, or for your own enterprise repos. Manage sources in **⚙ Admin → Discovery Sources**.
+
+- **📊 Survey** — the light overview itself: GitHub description, primary language, stars/forks/contributors, last-pushed date, lifecycle badges (🆕 registered / 📊 surveyed / ☁ published to Egeria — the same badges shown next to each repo in the left sidebar), **Run Scouting Scan** (fast, API-only, no clone), and **Refresh & profile** (re-embeds the repo for RAG/chat search). Click **View full report →** for the deep survey report (file types, dependencies, data profiling, Egeria survey history) — unchanged, just no longer Scouting's default view.
+
+- **📈 Scouting Analysis** — a shortcut, not a separate view: switches straight to the real top-level 📈 Analysis intent for whichever repo is selected. (This label may change later — every survey is itself a form of analysis, so "Analysis" as a name is doing double duty right now.)
+
+- **🧭 Disposition** — was this repo, after scouting, worth pursuing further? Track it, investigate it, or decide to abandon/ignore it, with a full history of every past decision (not just the latest one) so the reasoning behind an old call isn't lost. `abandoned` and `ignored` are deliberately distinct: ignored means passed-on-early (never got past scouting), abandoned means you went further — investigated, maybe surveyed — and then decided against it. Either way, the repo drops out of the sidebar's default list (see "Working set," below) until you toggle "Show hidden."
 
 ### 🔎 Discovery
 Egeria's own Survey Definitions for the selected resource — the most Egeria-native way to launch a survey, showing exactly what steps a Survey Definition runs and where each step executes (locally in Resource Explorer, or natively in Egeria). Each candidate also has a **⏱ Schedule** button — see "Scheduling an analysis" below.
@@ -76,6 +90,7 @@ Reachable from the header, not the intent nav — this is system/catalog configu
 - **Annotation Types** — the registry of metadata annotation schemas: what each one means, what properties it carries, and its mapping to Egeria's own property classes. Register, edit, or delete entries here.
 - **Groups** — group related repos/databases/filesystems together (e.g. everything belonging to one product). Create and delete groups here; assigning an individual resource to a group is done from that resource's own record, not from this list.
 - **Schedules** — a monitoring overview, not an editor: every scheduled analysis across every resource, whether its last run succeeded (✓ ok) or failed (⚠ error, click to see the detail), when it last/next runs, and a 🗑️ to remove a stale schedule. To *set or change* a cadence, use the ⏱ Schedule action on the analysis card itself (Assessment/Analysis/Discovery) — this page is for watching everything at once, especially for errors that need follow-up. **Read the caveat shown at the top of this pane** — not every listed analysis is fully implemented yet; cross-check against Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.
+- **Discovery Sources** — named, reusable "where do we scout" configs, picked from Scouting's Discover sub-tab instead of re-typing a search every time. Create either a **search**-type source (the same filters the ad-hoc form uses) or a **list**-type source (a pasted set of GitHub URLs — for foundations whose projects live in many separate orgs, or your own enterprise repos). Delete a source here; there's no edit-in-place yet — delete and recreate.
 
 ## The RFA drawer
 
