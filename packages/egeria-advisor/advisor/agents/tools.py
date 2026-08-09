@@ -85,10 +85,18 @@ def get_egeria_symbol(name: str) -> str:
 
 
 def _get_egeria_symbol_raw(name: str) -> str:
-    """Direct call to symbol lookup without the BeeAI tool wrapper."""
-    from advisor.code_symbol_store import get_symbol_store
-    store = get_symbol_store()
-    
+    """Direct call to symbol lookup without the BeeAI tool wrapper.
+
+    Reads via ReCodeSymbolReader (resource_explorer.project_code_symbols),
+    not the deprecated CodeSymbolStore (code_symbols/code_relationships) —
+    nothing has written to those tables since the AST-ownership-transfer
+    migration (Phase 8), so the old code path always missed here and fell
+    straight through to the vector-search fallback below, silently, for
+    every call. analytics.py/re_code_scope.py already made this same switch;
+    this was the one remaining call site still on the old store."""
+    from advisor.re_code_symbol_reader import get_re_code_symbol_reader
+    store = get_re_code_symbol_reader()
+
     # Try exact match in PostgreSQL first (filter to pyegeria Python SDK symbols)
     symbols = store.search_symbols(name_pattern=name, collection="pyegeria", limit=5)
     
