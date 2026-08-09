@@ -343,11 +343,16 @@ Key endpoints:
 | `POST` | `/api/projects/{slug}/refresh` | Re-index a repo |
 | `GET` | `/api/databases/` | List registered databases |
 | `POST` | `/api/databases/{slug}/survey` | Run database survey |
-| `GET` | `/api/egeria/{slug}/survey-report` | Get survey report (local SQLite — no Egeria needed) |
+| `GET` | `/api/egeria/{slug}/survey-report` | Get the deep survey report (local SQLite — no Egeria needed) |
 | `POST` | `/api/egeria/{slug}/survey` | Run local survey only |
 | `POST` | `/api/egeria/{slug}/publish` | Run survey + publish to Egeria (accepts `{zone_names:[…]}`) |
 | `GET` | `/api/egeria/{slug}/diff` | Get file count delta vs previous survey |
 | `GET` | `/api/databases/{slug}/diff` | Get schema delta vs previous survey |
+| `GET` | `/api/projects/{slug}/scouting-overview` | Get the light Scouting-tier overview (description, stats, lifecycle badges) |
+| `POST` | `/api/projects/{slug}/scouting-scan` | Run the coarse "Repo Coarse Scout" Survey Definition (repo_health + repo_language only) |
+| `POST` | `/api/projects/{slug}/analyses/{analysis_id}/run` | Run only the named analysis's sub-surveyor step(s), not the whole survey |
+| `GET` | `/api/projects/{slug}/analyses/{analysis_id}/results` | Get the named analysis's latest structured results |
+| `GET` | `/api/projects/{slug}/analyses/{analysis_id}/trend` | Get the named analysis's run history, for the trend chart |
 | `GET` | `/api/activity/` | List activity log entries (filterable by entity_type, intent, operation, status) |
 | `GET` | `/api/activity/rfas` | List open RequestForAction annotations |
 | `GET` | `/api/analyses/{resource_type}` | List available analyses (`?intent=…&perspective=…`) |
