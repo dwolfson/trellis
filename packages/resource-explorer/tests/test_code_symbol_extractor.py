@@ -6,6 +6,8 @@ is_private, is_async, complexity, bases (inheritance).
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
 
 
@@ -138,3 +140,24 @@ class TestDocstringAndSignature:
     def test_no_docstring_is_empty_string(self):
         syms = _extract("def f():\n    pass\n")
         assert syms[0].docstring == ""
+
+
+class TestJsGoRegexFallback:
+    """JS/Go now try tree-sitter first (js_symbol_extractor.py /
+    go_symbol_extractor.py); when unavailable — e.g. the optional [ast]
+    extra isn't installed — extraction must fall back to the original regex
+    path rather than silently returning nothing."""
+
+    def test_js_falls_back_to_regex_when_tree_sitter_unavailable(self):
+        with patch("resource_explorer.ingestion.ast_chunker.ASTChunker._get_parser", return_value=None):
+            syms = CodeSymbolExtractor().extract(
+                "foo.js", "class Foo {\n  bar() {}\n}\n", "myproj", "javascript",
+            )
+        assert {s.name for s in syms} == {"Foo", "bar"}
+
+    def test_go_falls_back_to_regex_when_tree_sitter_unavailable(self):
+        with patch("resource_explorer.ingestion.ast_chunker.ASTChunker._get_parser", return_value=None):
+            syms = CodeSymbolExtractor().extract(
+                "foo.go", "package main\ntype Router struct{}\n", "myproj", "go",
+            )
+        assert {s.name for s in syms} == {"Router"}

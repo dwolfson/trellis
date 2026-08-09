@@ -36,12 +36,15 @@ class CodeSymbolExtractor:
     Extract structured symbol information from source files at ingestion time.
 
     Python uses the stdlib ast module (zero new dependencies, full type annotation
-    support). Java uses tree-sitter (see ingestion/java_symbol_extractor.py) —
-    upgraded from a regex heuristic in the AST-ownership-transfer plan Phase 2,
-    since Java's grammar (nested classes, annotations, multi-line signatures)
-    doesn't hold up well under single-line-anchored regex matching. JS/TS and
-    Go still use targeted regex — reliable for the common patterns, and there's
-    no external consumer (Egeria Advisor) needing better quality from them yet.
+    support). Java, JS/TS, and Go all use tree-sitter (java_symbol_extractor.py,
+    js_symbol_extractor.py, go_symbol_extractor.py) — upgraded from regex
+    heuristics starting with Java in the AST-ownership-transfer plan Phase 2,
+    since multi-line signatures and nested-scope attribution don't hold up well
+    under single-line-anchored regex matching. Java's tree-sitter grammar is a
+    required base dependency; JS/Go's stay under the optional [ast] extra (used
+    today only for pgvector chunk-boundary splitting, ast_chunker.py), so the
+    original regex extractors are kept as the fallback when that extra isn't
+    installed rather than silently returning nothing.
     """
 
     def extract(
@@ -77,7 +80,20 @@ class CodeSymbolExtractor:
         visitor.visit(tree)
         return visitor.symbols
 
-    # ── JavaScript / TypeScript — regex ──────────────────────────────────────
+    # ── JavaScript / TypeScript — tree-sitter, regex fallback ──────────────
+
+    def _extract_js(
+        self, file_path: str, content: str, project_slug: str, language: str
+    ) -> list[CodeSymbol]:
+        from resource_explorer.ingestion.js_symbol_extractor import JsSymbolExtractor
+        symbols = JsSymbolExtractor().extract(file_path, content, project_slug, language)
+        if symbols:
+            return symbols
+        # Empty from tree-sitter means either a genuinely empty file or the
+        # [ast] extra isn't installed (JsSymbolExtractor returns [] when its
+        # parser is unavailable) — the regex path below still gives partial
+        # coverage in that case rather than nothing.
+        return self._extract_js_regex(file_path, content, project_slug, language)
 
     _JS_CLASS  = re.compile(r'^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)', re.M)
     _JS_IFACE  = re.compile(r'^(?:export\s+)?interface\s+(\w+)', re.M)
@@ -95,7 +111,7 @@ class CodeSymbolExtractor:
     )
     _JS_KEYWORDS = frozenset({"if", "for", "while", "switch", "catch", "do", "else"})
 
-    def _extract_js(
+    def _extract_js_regex(
         self, file_path: str, content: str, project_slug: str, language: str
     ) -> list[CodeSymbol]:
         symbols: list[CodeSymbol] = []
@@ -146,7 +162,16 @@ class CodeSymbolExtractor:
 
         return symbols
 
-    # ── Go — regex ───────────────────────────────────────────────────────────
+    # ── Go — tree-sitter, regex fallback ────────────────────────────────────
+
+    def _extract_go(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+        from resource_explorer.ingestion.go_symbol_extractor import GoSymbolExtractor
+        symbols = GoSymbolExtractor().extract(file_path, content, project_slug)
+        if symbols:
+            return symbols
+        # Same fallback reasoning as _extract_js — empty means either a
+        # genuinely empty file or the [ast] extra isn't installed.
+        return self._extract_go_regex(file_path, content, project_slug)
 
     _GO_FUNC   = re.compile(
         r'^func\s+(?:\((\w+\s+\*?\w+)\)\s+)?(\w+)\s*(\([^)]*\))\s*(?:\(([^)]*)\)|([\w*\[\]]+))?',
@@ -155,7 +180,7 @@ class CodeSymbolExtractor:
     _GO_STRUCT = re.compile(r'^type\s+(\w+)\s+struct\b', re.M)
     _GO_IFACE  = re.compile(r'^type\s+(\w+)\s+interface\b', re.M)
 
-    def _extract_go(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def _extract_go_regex(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
         symbols: list[CodeSymbol] = []
 
         def ln(m: re.Match) -> int:

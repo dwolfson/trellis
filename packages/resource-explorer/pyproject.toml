@@ -85,9 +85,13 @@ redis = [
     "redis>=5.0.0",
 ]
 ast = [
-    # tree-sitter / tree-sitter-java are core dependencies now (see above) —
-    # only the languages not required for code-intelligence extraction stay
-    # optional, for pgvector chunk-boundary splitting (ast_chunker.py) only.
+    # tree-sitter / tree-sitter-java are core dependencies now (see above).
+    # javascript/go are used both for pgvector chunk-boundary splitting
+    # (ast_chunker.py) AND for symbol extraction (js_symbol_extractor.py /
+    # go_symbol_extractor.py) — kept optional rather than promoted to base
+    # deps like Java was, since the regex extractors they upgrade still work
+    # as a fallback when this extra isn't installed (CodeSymbolExtractor
+    # degrades gracefully; Java has no such fallback, hence its promotion).
     "tree-sitter-python>=0.21",
     "tree-sitter-javascript>=0.21",
     "tree-sitter-go>=0.21",
