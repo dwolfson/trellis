@@ -1941,34 +1941,16 @@ function selectProject(slug) {
   }
 }
 
-async function runRefreshFromSidebar(slug, btn) {
-  const orig = btn.textContent;
-  btn.textContent = '⟳';
-  btn.classList.add('spinning');
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/projects/${slug}/refresh`, { method: 'POST' });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      btn.textContent = '✓';
-      btn.style.color = '#4ade80';
-      if (selectedProject === slug) { _reportLoaded = false; loadSurveyReport(); }
-      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-    } else {
-      btn.textContent = '✗';
-      btn.title = data.error || 'Refresh failed';
-      btn.style.color = '#f87171';
-      setTimeout(() => { btn.textContent = orig; btn.title = ''; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 4000);
-    }
-  } catch(e) {
-    btn.textContent = '✗';
-    btn.style.color = '#f87171';
-    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-  }
-}
-
 // runSurveyFromSidebar() removed (D5) — was a pure duplicate of the "Run
 // Scouting Scan" button already on the Scouting overview / Survey sub-tab.
+
+// runRefreshFromSidebar() removed — "Refresh & profile" wasn't a Scouting-
+// tier action at all (it's IncrementalIndexer's pgvector re-embedding, a
+// RAG/chat-search concern), and duplicated the "Refresh & Re-ingest" card
+// that already exists under Analysis (analysis_catalog.yaml's rag_ingestion
+// entry) with its own Run + Schedule buttons via the generic analysis-card
+// renderer. The Scouting overview now just links to Analysis instead of
+// re-implementing the action locally.
 
 function toggleCompare(slug) {
   if (selectedProject && !compareSet.has(selectedProject)) compareSet.add(selectedProject);
@@ -4552,7 +4534,7 @@ function renderScoutingOverview(d) {
     ? `<span class="text-emerald-400" title="Surveyed ${_esc(d.last_surveyed_at)}">📊 Surveyed ${_relTime(d.last_surveyed_at)}</span>`
     : `<span class="text-slate-500">🆕 Not yet surveyed</span>`;
   const publishedBadge = d.is_published
-    ? `<span class="text-cyan-400">☁ Published to Egeria</span>`
+    ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published to Egeria${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
     : `<span class="text-slate-500">Not published</span>`;
 
   view.innerHTML = _scoutingSubnavHtml('survey') + `
@@ -4599,7 +4581,7 @@ function renderScoutingOverview(d) {
 
       <div class="flex flex-wrap gap-2 items-center pt-2">
         <button onclick="runScoutingScan('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">📊 Run Scouting Scan</button>
-        <button onclick="runRefreshFromSidebar('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs font-semibold transition-colors" title="Re-embed for RAG/chat search">🔄 Refresh &amp; profile</button>
+        <button onclick="setNavIntent('analysis')" class="text-xs text-slate-400 hover:text-slate-200 underline" title="Re-embedding for chat/search isn't a Scouting-tier action — it's the 'Refresh & Re-ingest' card under Analysis, which is independently on-demand and schedulable there">🔄 Refresh chat search index (Analysis) →</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
     </div>`;

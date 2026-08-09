@@ -212,6 +212,12 @@ class ScoutingOverview(BaseModel):
     repo_size_kb: int = 0
     last_surveyed_at: str = ""
     is_published: bool = False
+    # When egeria_publish last actually wrote to the catalog — distinct from
+    # is_published (a point-in-time boolean derived from whether a GUID is
+    # currently set). The data already existed (project_egeria_surveys.
+    # published_at, one row per publish) but was never surfaced here before;
+    # only the bare yes/no was shown.
+    last_published_at: str = ""
     disposition: str = "undecided"
     disposition_reason: str = ""
 
@@ -226,6 +232,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
 
     stats = registry.get_latest_project_stats(project.slug) or {}
     disp = registry.get_disposition(project.github_url) or {}
+    latest_survey = registry.get_latest_egeria_survey(project.slug)
     return ScoutingOverview(
         slug=project.slug,
         display_name=project.display_name,
@@ -239,6 +246,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         repo_size_kb=stats.get("repo_size_kb") or 0,
         last_surveyed_at=project.last_surveyed_at,
         is_published=bool(project.egeria_asset_guid),
+        last_published_at=(latest_survey or {}).get("published_at") or "",
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
     )
