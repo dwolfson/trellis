@@ -11,15 +11,15 @@ tables in `public` (not RE's named `resource_explorer` schema), and the two
 collections (`pyegeria`, `pyegeria_cli`) with extra denormalized scalar
 columns for fast filtered queries.
 
-EA_COLLECTION_SCHEMAS below carries the exact original CREATE TABLE strings
-verbatim via CollectionSchema.raw_ddl — a transitional escape hatch (see
-docs/trellis-vectorstore-extraction.md) that reproduces this cutover's DDL
-byte-for-byte with zero rendering risk. Since EA's config has schema=None,
-the shared class's DDL-qualification step is a no-op here (the raw string
-already names the bare, unqualified table), so raw_ddl really does pass
-straight through unchanged. extra_columns must still be declared alongside
-raw_ddl — INSERT/upsert column ordering and defaults come from there, not
-from the DDL string.
+EA_COLLECTION_SCHEMAS below used to carry the exact original CREATE TABLE
+strings verbatim via CollectionSchema.raw_ddl — a transitional escape hatch
+for the initial cutover (see docs/trellis-vectorstore-extraction.md).
+Dropped now that the generic renderer is proven equivalent: both
+pyegeria/pyegeria_cli's rendered DDL was live-verified against
+information_schema.columns for an identical golden baseline captured
+before the cutover (the real "byte-for-byte" guarantee — Postgres doesn't
+persist DDL whitespace, so this is the check that actually matters, not
+string diffing) — see trellis-vectorstore-extraction.md's Phase 5.
 """
 from __future__ import annotations
 
@@ -38,36 +38,8 @@ from advisor.config import settings
 # config passed to the shared PgVectorStore, see module docstring)
 # ---------------------------------------------------------------------------
 
-_PYEGERIA_DDL = """
-    CREATE TABLE IF NOT EXISTS "pyegeria" (
-        id           VARCHAR(256) PRIMARY KEY,
-        embedding    vector(384)  NOT NULL,
-        text         TEXT         NOT NULL,
-        metadata     JSONB        NOT NULL DEFAULT '{}',
-        element_type VARCHAR(50)  NOT NULL DEFAULT '',
-        class_name   VARCHAR(200) NOT NULL DEFAULT '',
-        method_name  VARCHAR(200) NOT NULL DEFAULT '',
-        module_path  VARCHAR(500) NOT NULL DEFAULT '',
-        is_async     BOOLEAN      NOT NULL DEFAULT FALSE,
-        is_private   BOOLEAN      NOT NULL DEFAULT FALSE
-    )
-"""
-
-_PYEGERIA_CLI_DDL = """
-    CREATE TABLE IF NOT EXISTS "pyegeria_cli" (
-        id           VARCHAR(256) PRIMARY KEY,
-        embedding    vector(384)  NOT NULL,
-        text         TEXT         NOT NULL,
-        metadata     JSONB        NOT NULL DEFAULT '{}',
-        main_command VARCHAR(100) NOT NULL DEFAULT '',
-        subcommand   VARCHAR(200) NOT NULL DEFAULT '',
-        full_command VARCHAR(500) NOT NULL DEFAULT ''
-    )
-"""
-
 EA_COLLECTION_SCHEMAS: Dict[str, CollectionSchema] = {
     "pyegeria": CollectionSchema(
-        raw_ddl=_PYEGERIA_DDL,
         extra_columns=(
             ExtraColumn("element_type", "VARCHAR(50)", "", "''"),
             ExtraColumn("class_name", "VARCHAR(200)", "", "''"),
@@ -78,7 +50,6 @@ EA_COLLECTION_SCHEMAS: Dict[str, CollectionSchema] = {
         ),
     ),
     "pyegeria_cli": CollectionSchema(
-        raw_ddl=_PYEGERIA_CLI_DDL,
         extra_columns=(
             ExtraColumn("main_command", "VARCHAR(100)", "", "''"),
             ExtraColumn("subcommand", "VARCHAR(200)", "", "''"),
