@@ -37,16 +37,20 @@ Several more surfaces sit outside the intent nav entirely, reachable from the he
 ## The seven intents
 
 ### 🔭 Scouting
-Broad, fast inventory of a single selected resource — the survey report. Select a repo/database/filesystem in the sidebar to see it; Scouting reads its content from whichever resource-type facet is active. If nothing's selected, you'll see a prompt to pick one.
+Fast, broad-strokes facts about a single selected resource — not the deep survey report. For repos: GitHub description, primary language, stars/forks/contributors, last-pushed date, and a lifecycle badge (🆕 registered / 📊 surveyed / ☁ published to Egeria — the same badges shown next to each repo in the left sidebar). Select a repo/database/filesystem in the sidebar to see it; Scouting reads its content from whichever resource-type facet is active. If nothing's selected, you'll see a prompt to pick one.
+
+For repos, **📊 Run Scouting Scan** runs a fast, API-only scan (repo stats + language — no clone needed); the sidebar's own 📊 action does the same thing. Need more than the at-a-glance facts? Click **View full report →** for the deep survey report (file types, dependencies, data profiling, Egeria survey history) — unchanged, just no longer Scouting's default view.
 
 ### 🔎 Discovery
 Egeria's own Survey Definitions for the selected resource — the most Egeria-native way to launch a survey, showing exactly what steps a Survey Definition runs and where each step executes (locally in Resource Explorer, or natively in Egeria). Each candidate also has a **⏱ Schedule** button — see "Scheduling an analysis" below.
 
 ### ✅ Assessment
-Scored evaluation of the selected resource against criteria — things like Security Scan, Documentation Coverage, Index Health, Privilege Audit. Each card shows what it produces, how fast it runs, and whether it's a local or Egeria-native analysis, plus **Run →** and **⏱ Schedule** actions. Filter the list further with the Perspective chips. A ⚠ note appears if Resource Explorer couldn't reach Egeria to merge in its native analyses — the list you see is still complete for locally-known analyses, it just may be missing Egeria's.
+Scored evaluation of the selected resource against criteria — things like Security Scan, Documentation Coverage, Index Health, Privilege Audit. Each card shows what it produces, how fast it runs, and whether it's a local or Egeria-native analysis, plus **Run →**, **📊 Results**, and **⏱ Schedule** actions. Filter the list further with the Perspective chips. A ⚠ note appears if Resource Explorer couldn't reach Egeria to merge in its native analyses — the list you see is still complete for locally-known analyses, it just may be missing Egeria's.
+
+For repos, **Run →** runs only that card's own analysis (e.g. clicking Security Scan's Run only runs the security checks, not every analysis) and, on success, opens **📊 Results** automatically — that section shows the latest findings, and once more than one run exists, a small trend chart of the run history too.
 
 ### 📈 Analysis
-Structural and quantitative work that isn't a scored evaluation — dependency scans, data profiling, API/symbol extraction. Same card layout, Run/Schedule actions, and Perspective filtering as Assessment; the distinction is purely about what kind of work each entry represents.
+Structural and quantitative work that isn't a scored evaluation — dependency scans, data profiling, API/symbol extraction. Same card layout, Run/Results/Schedule actions, and Perspective filtering as Assessment; the distinction is purely about what kind of work each entry represents.
 
 **Scheduling an analysis:** click ⏱ Schedule on any card (Assessment, Analysis, or a Discovery Survey Definition candidate) to set a recurring cadence — manual/daily/weekly/monthly — for that specific analysis on the currently-selected resource. The button shows the current cadence once one's set (e.g. "⏱ weekly"). This is per-analysis and per-resource, not a separate admin page — you schedule something from wherever you found it.
 
