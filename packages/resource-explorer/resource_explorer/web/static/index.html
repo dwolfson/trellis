@@ -7251,7 +7251,10 @@ function renderAdminDiscoverySourcesPanel() {
       <td class="px-4 py-3 font-mono text-purple-400 text-xs">${_esc(s.slug)}</td>
       <td class="px-4 py-3 text-xs"><span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">${s.source_type}</span></td>
       <td class="px-4 py-3 text-slate-350 text-xs max-w-sm truncate">${_esc(summary)}</td>
-      <td class="px-4 py-3 text-right">
+      <td class="px-4 py-3 text-right whitespace-nowrap">
+        ${s.source_type === 'list' && s.config.fetch_kind
+          ? `<button onclick="refreshAdminDiscoverySource('${_esc(s.slug)}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors mr-1">🔄 Refresh</button>`
+          : ''}
         <button onclick="deleteAdminDiscoverySource('${_esc(s.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
       </td>
     </tr>`;
@@ -7297,9 +7300,27 @@ function renderAdminDiscoverySourcesPanel() {
           <div class="flex-1 min-w-32"><label class="block text-[10px] text-slate-500 mb-0.5">Keyword</label>
             <input id="new-source-keyword" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full"></div>
         </div>
-        <div id="new-source-list-fields" class="hidden">
-          <label class="block text-[10px] text-slate-500 mb-0.5">GitHub URLs (one per line)</label>
-          <textarea id="new-source-urls" rows="4" placeholder="https://github.com/acme/foo&#10;https://github.com/acme/bar" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full font-mono"></textarea>
+        <div id="new-source-list-fields" class="hidden space-y-2">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">GitHub URLs (one per line)</label>
+            <textarea id="new-source-urls" rows="4" placeholder="https://github.com/acme/foo&#10;https://github.com/acme/bar" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full font-mono"></textarea>
+          </div>
+          <div class="flex gap-2 items-end">
+            <div>
+              <label class="block text-[10px] text-slate-500 mb-0.5">Auto-refresh from (optional)</label>
+              <select id="new-source-fetch-kind" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-48">
+                <option value="">— none, manual list only —</option>
+                <option value="cncf_landscape">CNCF landscape.yml</option>
+                <option value="eclipse_projects">Eclipse project API</option>
+                <option value="lfx_insights">LFX Insights (not yet supported)</option>
+              </select>
+            </div>
+            <div class="flex-1 min-w-40">
+              <label class="block text-[10px] text-slate-500 mb-0.5">Fetch URL override (optional)</label>
+              <input id="new-source-fetch-url" type="text" placeholder="defaults to the source's own canonical URL" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full">
+            </div>
+          </div>
+          <div class="text-[10px] text-slate-500">A source with an auto-refresh binding can be re-synced later from the table below (🔄 Refresh) — it always previews added/removed URLs before saving, never applies silently.</div>
         </div>
         <button onclick="createAdminDiscoverySource()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
         <div id="new-source-feedback" class="text-xs text-slate-500"></div>
@@ -7338,7 +7359,11 @@ async function createAdminDiscoverySource() {
   if (!slug || !displayName) { fb.textContent = 'Slug and display name are both required.'; return; }
 
   const config = sourceType === 'list'
-    ? { urls: document.getElementById('new-source-urls').value.split('\n').map(u => u.trim()).filter(Boolean) }
+    ? {
+        urls: document.getElementById('new-source-urls').value.split('\n').map(u => u.trim()).filter(Boolean),
+        fetch_kind: document.getElementById('new-source-fetch-kind').value,
+        fetch_url: document.getElementById('new-source-fetch-url').value.trim(),
+      }
     : {
         org: document.getElementById('new-source-org').value.trim(),
         topic: document.getElementById('new-source-topic').value.trim(),
@@ -7362,6 +7387,37 @@ async function createAdminDiscoverySource() {
     loadAdminDiscoverySourcesPanel();
   } catch(e) {
     fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function refreshAdminDiscoverySource(slug) {
+  // A manual, opt-in repair tool — for when a source's saved URL list is
+  // stale or was hand-edited into a bad state, not a routine sync. Always
+  // previews the diff before writing anything.
+  try {
+    const res = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const diff = await res.json();
+    if (!diff.added.length && !diff.removed.length) {
+      showToast('success', `Already up to date (${diff.fetched_count} URLs).`, 3000);
+      return;
+    }
+    const msg = `Fetched ${diff.fetched_count} URLs (currently ${diff.current_count} saved):\n`
+      + `+ ${diff.added.length} added\n- ${diff.removed.length} removed\n\nApply these changes?`;
+    if (!confirm(msg)) return;
+
+    const applyRes = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh-apply`, { method: 'POST' });
+    if (!applyRes.ok) {
+      const err = await applyRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${applyRes.status}`);
+    }
+    showToast('success', `Updated — ${diff.added.length} added, ${diff.removed.length} removed.`, 4000);
+    loadAdminDiscoverySourcesPanel();
+  } catch(e) {
+    showToast('error', `Refresh failed: ${_esc(e.message)}`, 5000);
   }
 }
 

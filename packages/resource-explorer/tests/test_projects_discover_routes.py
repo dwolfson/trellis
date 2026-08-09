@@ -299,6 +299,89 @@ class TestDiscoverySourcesRoutes:
         assert resp.status_code == 404
 
 
+class TestDiscoverySourceRefreshRoutes:
+    def test_preview_diffs_against_current_urls(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-list", "display_name": "CNCF List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/cncf/stale"], "fetch_kind": "cncf_landscape"},
+        })
+        with patch(
+            "resource_explorer.github.source_fetchers.fetch_source_urls",
+            return_value=["https://github.com/cncf/fresh"],
+        ):
+            resp = client.post("/api/discovery/sources/cncf-list/refresh")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["added"] == ["https://github.com/cncf/fresh"]
+        assert data["removed"] == ["https://github.com/cncf/stale"]
+        assert data["fetched_count"] == 1
+        assert data["current_count"] == 1
+
+        # Preview must not have persisted anything.
+        source = client.get("/api/discovery/sources").json()[0]
+        assert source["config"]["urls"] == ["https://github.com/cncf/stale"]
+
+    def test_apply_persists_the_fetched_urls(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-list", "display_name": "CNCF List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/cncf/stale"], "fetch_kind": "cncf_landscape"},
+        })
+        with patch(
+            "resource_explorer.github.source_fetchers.fetch_source_urls",
+            return_value=["https://github.com/cncf/fresh"],
+        ):
+            resp = client.post("/api/discovery/sources/cncf-list/refresh-apply")
+        assert resp.status_code == 200
+        assert resp.json()["config"]["urls"] == ["https://github.com/cncf/fresh"]
+
+        source = client.get("/api/discovery/sources").json()[0]
+        assert source["config"]["urls"] == ["https://github.com/cncf/fresh"]
+
+    def test_refresh_on_search_source_400s(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-search", "display_name": "CNCF Search",
+            "source_type": "search", "config": {"org": "cncf"},
+        })
+        resp = client.post("/api/discovery/sources/cncf-search/refresh")
+        assert resp.status_code == 400
+
+    def test_refresh_without_fetch_kind_400s(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "plain-list", "display_name": "Plain List",
+            "source_type": "list", "config": {"urls": ["https://github.com/acme/one"]},
+        })
+        resp = client.post("/api/discovery/sources/plain-list/refresh")
+        assert resp.status_code == 400
+
+    def test_refresh_unknown_source_404s(self, client):
+        resp = client.post("/api/discovery/sources/nope/refresh")
+        assert resp.status_code == 404
+
+    def test_unimplemented_fetcher_returns_501(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "lfx-list", "display_name": "LFX List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/lf/one"], "fetch_kind": "lfx_insights"},
+        })
+        resp = client.post("/api/discovery/sources/lfx-list/refresh")
+        assert resp.status_code == 501
+
+    def test_fetch_failure_returns_502(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-list", "display_name": "CNCF List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/cncf/existing"], "fetch_kind": "cncf_landscape"},
+        })
+        with patch(
+            "resource_explorer.github.source_fetchers.fetch_source_urls",
+            side_effect=RuntimeError("network down"),
+        ):
+            resp = client.post("/api/discovery/sources/cncf-list/refresh")
+        assert resp.status_code == 502
+
+
 class TestWorkingSetRoute:
     def test_round_trip(self, client, registry):
         resp = client.post("/api/discovery/working-set", json={
