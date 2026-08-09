@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, context, curate, databases, db_servers as db_servers_routes, egeria, feedback, projects, query, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, analyses, context, curate, databases, db_servers as db_servers_routes, discovery, egeria, feedback, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
 @asynccontextmanager
@@ -44,6 +44,7 @@ app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
+app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")

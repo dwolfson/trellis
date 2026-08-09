@@ -135,6 +135,12 @@ class TestStatusUpdates:
         db.update_commit_sha("test-project", "abc123def456")
         assert db.get("test-project").last_commit_sha == "abc123def456"
 
+    def test_update_project_surveyed_at(self, db, sample_project):
+        db.add(sample_project)
+        assert db.get("test-project").last_surveyed_at == ""
+        db.update_project_surveyed_at("test-project")
+        assert db.get("test-project").last_surveyed_at != ""
+
 
 class TestSchemaMigration:
     def test_migration_adds_last_commit_sha_to_old_db(self, tmp_path):
@@ -535,3 +541,58 @@ class TestCodeSymbolsAndRelationships:
                 ("test_project",),
             ).fetchall()
         assert rows == []
+
+
+class TestAppSettings:
+    """'Discover repos to scout' plan, D1 — generic runtime key-value store."""
+
+    def test_round_trip(self, db):
+        db.set_setting("github_base_url", "https://ghe.example.com/api/v3")
+        assert db.get_setting("github_base_url") == "https://ghe.example.com/api/v3"
+
+    def test_missing_key_returns_default(self, db):
+        assert db.get_setting("nope") is None
+        assert db.get_setting("nope", "fallback") == "fallback"
+
+    def test_set_overwrites_prior_value(self, db):
+        db.set_setting("k", "v1")
+        db.set_setting("k", "v2")
+        assert db.get_setting("k") == "v2"
+
+
+class TestRepoDispositions:
+    """'Discover repos to scout' plan, D10 — undecided/tracking/investigating/
+    ignored, keyed by github_url so it covers both never-imported search
+    candidates and already-registered repos."""
+
+    def test_never_decided_returns_none(self, db):
+        assert db.get_disposition("https://github.com/never/decided") is None
+
+    def test_round_trip_for_a_never_imported_candidate(self, db):
+        db.set_disposition(
+            "https://github.com/foo/bar", "ignored", reason="too small", decided_by="dan",
+        )
+        disp = db.get_disposition("https://github.com/foo/bar")
+        assert disp["disposition"] == "ignored"
+        assert disp["reason"] == "too small"
+        assert disp["decided_by"] == "dan"
+        assert disp["project_slug"] == ""
+
+    def test_set_overwrites_not_appends(self, db):
+        db.set_disposition("https://github.com/foo/bar", "ignored", reason="too small")
+        db.set_disposition("https://github.com/foo/bar", "tracking")
+        disp = db.get_disposition("https://github.com/foo/bar")
+        assert disp["disposition"] == "tracking"
+        assert disp["reason"] == ""  # overwritten, not merged with the prior reason
+
+    def test_url_normalization_matches_get_by_github_url(self, db):
+        db.set_disposition("https://github.com/foo/bar.git", "ignored")
+        assert db.get_disposition("https://github.com/foo/bar") is not None
+        assert db.get_disposition("https://github.com/foo/bar/") is not None
+        assert db.get_disposition("HTTPS://GITHUB.COM/foo/bar") is not None
+
+    def test_records_project_slug_when_given(self, db, sample_project):
+        db.add(sample_project)
+        db.set_disposition(sample_project.github_url, "investigating", project_slug=sample_project.slug)
+        disp = db.get_disposition(sample_project.github_url)
+        assert disp["project_slug"] == "test-project"

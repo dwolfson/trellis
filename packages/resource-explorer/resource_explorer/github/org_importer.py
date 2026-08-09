@@ -1,4 +1,4 @@
-"""Catalog-only registration for repos discovered via GitHubClient.list_org_repos().
+"""Catalog-only registration for repos discovered via GitHubClient.search_repos().
 
 Deliberately NOT OnboardingWizard (cli/wizard.py) — that always triggers a full
 IngestionPipeline run (pgvector embedding, can take minutes per repo) with no
@@ -33,6 +33,14 @@ def _url_to_slug(url: str) -> str:
     url = url.rstrip("/")
     slug = url.split("/")[-1]
     return re.sub(r"[^a-z0-9_]", "_", slug.lower())
+
+
+def _slugify_source_label(label: str) -> str:
+    """A source_label can be a plain org name (already slug-shaped) or a
+    free-text search description ("search: language:python stars:>=500") —
+    sanitize either into something safe to use as an activity-log
+    entity_slug ("Discover repos to scout" plan, D7)."""
+    return re.sub(r"[^a-z0-9_]+", "_", label.lower()).strip("_")[:80] or "import_batch"
 
 
 class OrgImporterError(RuntimeError):
@@ -78,13 +86,19 @@ class OrgImporter:
 
 
 def _run_import_batch(
-    org: str,
+    source_label: str,
     repos: list[dict],
     group_slug: str,
 ) -> None:
     """repos: list of {"github_url", "display_name", "description"} dicts —
     already filtered to not-yet-registered repos by the caller (the route).
-    Runs in a daemon thread; nothing here returns to an HTTP response."""
+    Runs in a daemon thread; nothing here returns to an HTTP response.
+
+    source_label describes what produced this batch — a GitHub org name
+    (e.g. "cncf") or a search description (e.g. "search: language:python
+    stars:>=500") — threaded into the activity-log summary text only; unlike
+    an org name it isn't necessarily a valid URL path, so it's never used to
+    build entity_location for the batch-summary entry below."""
     registry = ProjectRegistry()
     importer = OrgImporter(registry)
 
@@ -101,21 +115,21 @@ def _run_import_batch(
             log_scout(
                 registry, entity_type="repo", entity_slug=_url_to_slug(github_url),
                 entity_name=display_name, entity_location=github_url,
-                status="ok", summary=f"Imported '{display_name}' from GitHub org '{org}'",
+                status="ok", summary=f"Imported '{display_name}' from {source_label}",
             )
         except Exception as exc:
             failed += 1
-            log.exception("Org import: failed to register %s", github_url)
+            log.exception("Import: failed to register %s", github_url)
             log_scout(
                 registry, entity_type="repo", entity_slug=_url_to_slug(github_url),
                 entity_name=display_name, entity_location=github_url,
-                status="error", summary=f"Failed to import '{display_name}' from GitHub org '{org}'",
+                status="error", summary=f"Failed to import '{display_name}' from {source_label}",
                 detail=str(exc),
             )
 
     log_scout(
-        registry, entity_type="repo", entity_slug=org,
-        entity_name=f"GitHub org '{org}'", entity_location=f"https://github.com/{org}",
+        registry, entity_type="repo", entity_slug=_slugify_source_label(source_label),
+        entity_name=source_label, entity_location=source_label,
         status="error" if failed else "ok",
-        summary=f"Org import batch complete: {succeeded} succeeded, {failed} failed, out of {len(repos)} requested",
+        summary=f"Import batch complete ({source_label}): {succeeded} succeeded, {failed} failed, out of {len(repos)} requested",
     )

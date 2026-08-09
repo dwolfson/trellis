@@ -18,40 +18,55 @@ class GitHubClient:
     otherwise require many REST calls (e.g. commit counts per contributor).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, base_url: str | None = None) -> None:
         cfg = get_config().github
-        self._gh = Github(cfg.token or None, per_page=100)
+        self._base_url = base_url or cfg.base_url
+        self._gh = Github(cfg.token or None, base_url=self._base_url, per_page=100)
 
-    def list_org_repos(
-        self, org: str, include_forks: bool = False, include_archived: bool = False
+    def search_repos(
+        self, query: str, sort: str = "stars", order: str = "desc", limit: int = 100,
     ) -> list[dict]:
-        """List an organization's repos as lightweight dicts (not full Repository
-        objects — callers here only need discovery-list metadata, not the full
-        API surface get_repo() returns). Pagination is handled transparently by
-        PyGitHub's PaginatedList (per_page=100, set in __init__).
+        """General repo search via GitHub's search API (Github.search_repositories) —
+        replaces the old org-only list_org_repos(); an `org:X` qualifier in `query`
+        fully replicates that behavior. Returns the same lightweight-dict shape
+        list_org_repos() used, plus `license` and `forks`.
 
-        Raises GithubException on org-not-found / auth / rate-limit — same
-        division of responsibility as get_repo(), which also lets these
+        GitHub's search API has a much tighter rate limit than the core API
+        (30 req/min authenticated vs. 5000/hr) and caps at 1000 results per
+        query — this fetches one bounded batch (`limit`, default 100) per
+        call; callers do their own sort/filter within that batch afterward
+        rather than re-querying live-as-you-type.
+
+        Raises GithubException on auth/rate-limit/malformed-query errors —
+        same division of responsibility as get_repo(), which also lets these
         propagate for the caller to translate.
         """
-        org_obj = self._gh.get_organization(org)
+        results = self._gh.search_repositories(query=query, sort=sort, order=order)
         out = []
-        for repo in org_obj.get_repos():
-            if repo.fork and not include_forks:
-                continue
-            if repo.archived and not include_archived:
-                continue
-            out.append({
-                "full_name": repo.full_name,
-                "html_url": repo.html_url,
-                "description": repo.description or "",
-                "stars": repo.stargazers_count,
-                "language": repo.language or "",
-                "archived": repo.archived,
-                "fork": repo.fork,
-                "updated_at": repo.updated_at.isoformat() if repo.updated_at else "",
-            })
+        for repo in results:
+            if len(out) >= limit:
+                break
+            out.append(self._repo_to_dict(repo))
         return out
+
+    @staticmethod
+    def _repo_to_dict(repo: Repository) -> dict:
+        """Same lightweight-dict shape search_repos() has always returned —
+        shared with the "list" discovery-source path (get_repo() per URL),
+        so both produce results the frontend/discovery.py can render
+        identically regardless of which source type found them."""
+        return {
+            "full_name": repo.full_name,
+            "html_url": repo.html_url,
+            "description": repo.description or "",
+            "stars": repo.stargazers_count,
+            "language": repo.language or "",
+            "archived": repo.archived,
+            "fork": repo.fork,
+            "updated_at": repo.updated_at.isoformat() if repo.updated_at else "",
+            "license": (repo.license.spdx_id if repo.license else "") or "",
+            "forks": repo.forks_count,
+        }
 
     def get_repo(self, github_url: str) -> Repository:
         slug = self._url_to_slug(github_url)
@@ -81,7 +96,7 @@ class GitHubClient:
 
         cfg = get_config().github
         branch = repo.default_branch
-        url = f"https://api.github.com/repos/{repo.full_name}/zipball/{branch}"
+        url = f"{self._base_url}/repos/{repo.full_name}/zipball/{branch}"
         headers = {"Authorization": f"token {cfg.token}"} if cfg.token else {}
         zip_path = Path(dest_dir) / "_repo.zip"
 

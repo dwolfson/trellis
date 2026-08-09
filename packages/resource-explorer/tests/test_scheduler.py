@@ -306,8 +306,9 @@ class TestRunDueRepoDispatch:
     """Regression coverage for the repo-side version of the dispatch gap:
     _run_repo_survey used to always run the full SurveyOrchestrator (all 10
     sub-surveyors) regardless of which analysis_id was actually scheduled.
-    Now resolves to the specific step(s) via _REPO_ANALYSIS_STEP_MAP,
-    mirroring the database path's dispatch-by-analysis_id pattern."""
+    Now resolves to the specific step(s) via
+    repo_survey_definition_adapter.REPO_ANALYSIS_STEP_MAP, mirroring the
+    database path's dispatch-by-analysis_id pattern."""
 
     def test_mapped_analysis_id_dispatches_with_only_its_steps(self, registry, registered_project):
         _make_due(registry, "repo", registered_project, analysis_id="repository_health")

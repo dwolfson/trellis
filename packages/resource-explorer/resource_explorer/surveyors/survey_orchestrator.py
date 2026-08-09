@@ -7,18 +7,6 @@ from datetime import datetime
 
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
-from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
-from resource_explorer.surveyors.sub_surveyors import (
-    ApiStructureSurveyor,
-    DataProfilerSurveyor,
-    DependencySurveyor,
-    DocumentationSurveyor,
-    FileSizeSurveyor,
-    FileStructureSurveyor,
-    HealthSurveyor,
-    LanguageSurveyor,
-    SecuritySurveyor,
-)
 from resource_explorer.surveyors.survey_report import SurveyResult
 
 log = logging.getLogger(__name__)
@@ -60,30 +48,48 @@ class SurveyOrchestrator:
         if project is None:
             raise ValueError(f"Project '{project_slug}' not found in registry.")
 
+        surveyed_at_dt = datetime.utcnow()
+        # Shared run-timestamp, passed into the surveyors that persist
+        # structured findings at survey time (Phase B, D1) — lets one
+        # orchestrator run's writes across those tables be correlated,
+        # instead of each independently stamping datetime.utcnow() seconds
+        # apart. Dependency/DataProfiler persistence isn't threaded here —
+        # those write at ingest/refresh time via IngestionPipeline, a
+        # separate code path this orchestrator doesn't touch.
+        surveyed_at = surveyed_at_dt.isoformat()
+
         result = SurveyResult(
             project_slug=project.slug,
             project_display_name=project.display_name,
             github_url=project.github_url,
-            surveyed_at=datetime.utcnow(),
+            surveyed_at=surveyed_at_dt,
         )
 
-        all_surveyors = {
-            "repo_file_classification": FileClassifierSurveyor(
-                project,
-                self._registry,
-                pyegeria_client=self._pyegeria_client,
-                force_refresh=self._force_refresh,
-            ),
-            "repo_file_structure": FileStructureSurveyor(project, self._registry),
-            "repo_file_size": FileSizeSurveyor(project, self._registry),
-            "repo_data_profiling": DataProfilerSurveyor(project, self._registry, local_path=self._data_path),
-            "repo_language": LanguageSurveyor(project, self._registry),
-            "repo_health": HealthSurveyor(project, self._registry),
-            "repo_dependency": DependencySurveyor(project, self._registry),
-            "repo_documentation": DocumentationSurveyor(project, self._registry),
-            "repo_security": SecuritySurveyor(project, self._registry),
-            "repo_api_structure": ApiStructureSurveyor(project, self._registry),
-        }
+        # Derived from STEP_REGISTRY (analysis-kind extensibility redesign) —
+        # a plain (project, registry) construction is the default; the two
+        # surveyors needing genuine per-instance orchestrator context
+        # (FileClassifier's Egeria-refresh client, DataProfiler's clone
+        # path) are the only explicit special cases, kept small and
+        # commented rather than forcing a fully generic instance-attr-
+        # injection mechanism for just these two. StepInfo.accepts_surveyed_at
+        # marks the surveyors that persist structured findings/metrics and
+        # need the shared per-run timestamp threaded in.
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        all_surveyors = {}
+        for step_key, info in STEP_REGISTRY.items():
+            if step_key == "repo_file_classification":
+                kwargs = {
+                    "pyegeria_client": self._pyegeria_client,
+                    "force_refresh": self._force_refresh,
+                }
+            elif step_key == "repo_data_profiling":
+                kwargs = {"local_path": self._data_path}
+            else:
+                kwargs = {}
+            if info.accepts_surveyed_at:
+                kwargs["surveyed_at"] = surveyed_at
+            all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
 
         if steps is None:
             surveyors = list(all_surveyors.values())
@@ -108,6 +114,14 @@ class SurveyOrchestrator:
             len(result.annotations),
             len(result.errors),
         )
+
+        # Any survey counts as "surveyed" — coarse scan or deep, full or
+        # step-filtered — so this is unconditional, unlike the self-logging
+        # below which only applies to a full (steps=None) run.
+        try:
+            self._registry.update_project_surveyed_at(project.slug)
+        except Exception as exc:
+            log.warning("Could not update last_surveyed_at for %s: %s", project.slug, exc)
 
         # Self-logging only applies to a full survey. A step-filtered (partial)
         # run is always driven by a caller that writes its own, more specific
