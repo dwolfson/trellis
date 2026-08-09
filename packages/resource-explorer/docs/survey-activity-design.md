@@ -264,6 +264,35 @@ Migration path: SQLite → PostgreSQL. The registry, activity log, analysis resu
 - Connection pooling (asyncpg or psycopg3) for the async FastAPI routes
 - SQLite remains available for local/offline deployments via a config flag
 
+*(Historical — completed. Registry now runs on the shared Postgres instance by default, SQLite as an explicit fallback via `REGISTRY_DATABASE_URL`. Kept for context, not renumbered.)*
+
+---
+
+### D11 — Analysis-Kind Extensibility Registry [Decided]
+
+Phase B (per-analysis results + trend charts) shipped 5 analysis kinds, each requiring hand-touched changes across ~7 places: `analysis_catalog.yaml`, a catalog-id → step-key map, the repo survey adapter's per-step runner closures, `SurveyOrchestrator`'s hardcoded surveyor-construction dict, a bespoke registry table + its own `upsert`/`query`/`query_history` trio, a catalog-id → (results reader, trend reader) map, and a frontend render branch. Adding a 6th kind meant touching all seven. Separately, `SecuritySurveyor` was misleadingly named for what it actually did (3 hygiene-artifact checks, not real security scanning) — more security-family kinds are coming (secret scanning, CVE/dependency-vulnerability checks, SAST, branch-protection audit), and the naming needed to leave room for that.
+
+**Decision:**
+- A two-tier registry in `repo_survey_definition_adapter.py` — `StepInfo` (one entry per `SurveyOrchestrator` step key: surveyor class, description, annotation types, any special construction kwargs) and `AnalysisKind` (one entry per `analysis_catalog.yaml` id: which step key(s) it runs, an optional `family` tag for grouping related kinds, and an optional `AnalysisKindResults` for kinds with a results view). Every other lookup — the adapter's step runners, `SurveyOrchestrator.all_surveyors`, the catalog-id → step-keys map, the catalog-id → readers map — is now a thin derived view computed from these two registries, not independently maintained.
+- Two generic result-storage tables, `project_analysis_findings` and `project_analysis_metrics`, each with a `kind` discriminator column, replace what were four per-kind tables (the four reduced to exactly two real shapes: "list of typed findings" and "aggregate snapshot metric(s)"). A one-time forward migration copies old data across; the old tables are kept, deprecated, not dropped (soak period).
+- Frontend: `_renderAnalysisResultsContent()` dispatches on a small `render` tag (`findings_list` | `metrics` | `custom`) instead of one hardcoded branch per kind. A new kind using either of the first two modes needs zero new frontend code — only a genuinely bespoke shape (dependency-by-ecosystem, for instance) needs the `custom` escape hatch.
+- `SecuritySurveyor` → `SecurityHygieneSurveyor` (file and class rename only — `analysis_catalog.yaml`'s `security_scan` id and the `repo_security` step key are untouched, so no data/schedule migration). `family="security"` is reserved on its `AnalysisKind` entry as the convention future security-family kinds will share, so "all security findings" is one `kind LIKE 'security%'` query away later rather than a UNION across separate tables — not built yet, just reserved.
+
+Net effect: adding a new plain analysis kind is one new surveyor class + one new `StepInfo` entry + one new `AnalysisKind` entry, not a seven-file change.
+
+---
+
+### D12 — Repo Discovery, Disposition Lifecycle, and Working Set [Decided]
+
+"Which repos should we even be surveying" was entirely unaddressed — registration was one-URL-at-a-time via the CLI, with no way to search broadly, no memory of what was previously considered, and no distinction between "the canonical judgment on this resource" and "do I want to see it in my list right now."
+
+**Decision:**
+- **General search, not org-only.** `GitHubClient.search_repos()` (keyword/stars/language/license/pushed-after/org/topic, translated server-side into GitHub's qualifier-string query language) replaced an earlier org-only `list_org_repos()`. Archived repos and forks excluded by default.
+- **Named discovery sources**, two types: `search` (a saved set of the above filters) and `list` (a manually-curated set of `github_url`s). The `list` type exists because a single `org:` search qualifier only fits foundations whose projects live under one umbrella org (CNCF, Apache, PSF) — it doesn't fit Eclipse (450+ projects across hundreds of distinct orgs) or LF AI & Data (a curated member list spanning unrelated orgs; Egeria itself is `odpi/egeria`, nothing to do with the `lfai` org's own governance repos). Auto-fetching a foundation's own structured list (a `landscape.yml`, an API) is real per-source integration work, deliberately not built — `list` sources are hand-populated for now.
+- **Repo triage disposition** — `undecided` (default) → `tracking` / `investigating` → `abandoned` or `ignored` — keyed by `github_url` (not project slug) so it covers both an already-registered repo and a search candidate that was never imported at all. `ignored` (passed on early) and `abandoned` (went further, then decided against it) are kept as distinct terminal states rather than collapsed into one, specifically so the *history* — a separate, append-only `repo_disposition_history` table — reads honestly. The current-state table is upsert-only (one row per `github_url`); the history table is what backs a real timeline view.
+- **Personal working set**, a second and deliberately *separate* hide/show axis from disposition — "do I want this in front of me right now" (a view preference) vs. "what's the canonical judgment on this resource" (disposition, in principle visible/meaningful to anyone). There is no per-person auth in this codebase today (one fixed Egeria service-account identity, not a login system), so working-set state is currently global, exactly like disposition's own `decided_by` field is currently just free text — but it's modeled as its own table specifically so a `user_id` column can be added later without touching disposition's schema.
+- **Scouting becomes a 4-tab sub-workflow for repos** (Discover → Survey → Scouting Analysis → Disposition) — repo-facet-specific, DB/FS untouched. "Scouting Analysis" is a navigation shortcut to the real top-level Analysis intent, not a duplicated content pane; it's flagged as a likely future rename (to something like "Insights") since every survey is itself already a form of analysis, which makes "Analysis" as a name do double duty today.
+
 ---
 
 ## Implementation Phases

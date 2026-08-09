@@ -189,6 +189,23 @@ uv run resource-explorer add-project https://github.com/org/repo
 uv run resource-explorer index my-repo
 ```
 
+### Discovering repos via the web UI
+
+Adding one repo at a time by URL doesn't answer "which repos should we even be looking at." **Scouting → Discover** (shown when no repo is selected) is a general GitHub search: keyword, min stars, language, license, pushed-after, org, topic. Archived repos and forks are excluded by default. Check the ones you want, pick a target group, and **Import Selected** — registration runs in a background thread (catalog-only, no RAG ingestion) and shows up in the Activity log as it completes.
+
+Repeat searches are worth saving as a **discovery source** (⚙ Admin → Discovery Sources, or "💾 Save as new source" right on the search) so you don't retype the same filters. Two source types:
+
+- **search** — the same structured filters as the ad-hoc form, saved under a name.
+- **list** — a manually-curated set of `github_url`s. Needed for foundations that don't fit the "one org, one search" model — Eclipse spreads 450+ projects across hundreds of distinct GitHub orgs, and LF AI & Data curates a *member list* of projects living in unrelated orgs (Egeria itself is `odpi/egeria`, nothing to do with the `lfai` org's own governance repos). A `list` source is also how you'd register your own enterprise/internal repos the same way. There's no auto-fetching of an external structured list (CNCF's `landscape.yml`, LFX Insights' API, Eclipse's own project index) yet — paste the URLs in by hand.
+
+If you're pointed at an Enterprise GitHub instance rather than public GitHub, set the base URL once via the inline "GitHub source: … [edit]" control on the Discover tab — it's a runtime override on top of `.env`'s `GITHUB_BASE_URL`, stored in the registry, no restart needed.
+
+### Disposition and working set
+
+After scouting a repo, **Scouting → Disposition** records whether it's worth pursuing: `undecided` (default) → `tracking` / `investigating` → `abandoned` or `ignored`, with a full history of every decision, not just the latest. `ignored` means passed-on-early; `abandoned` means you went further and then decided against it — kept distinct so the history reads honestly. Either state hides the repo from the sidebar's default list (behind "Show hidden (N)") — reversible, not a delete.
+
+Separately, each sidebar row has a working-set toggle (👁/🚫) — a personal "not in front of me right now" filter, independent of disposition. A repo someone else carried all the way to Curate can still be toggled out of your own daily view without changing its canonical disposition, and vice versa.
+
 ### PostgreSQL databases
 
 ```bash
