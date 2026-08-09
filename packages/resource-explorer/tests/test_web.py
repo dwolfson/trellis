@@ -71,6 +71,54 @@ class TestProjectsRouter:
         assert "collections" in p
         assert "last_indexed_at" in p
 
+    def test_list_projects_defaults_disposition_to_undecided(self, client):
+        resp = client.get("/api/projects/")
+        assert resp.json()[0]["disposition"] == "undecided"
+
+    def test_list_projects_excludes_ignored_by_default(self, client, registry):
+        registry.set_disposition("https://github.com/test/myproj", "ignored", reason="too small")
+        resp = client.get("/api/projects/")
+        assert resp.json() == []
+
+    def test_list_projects_includes_ignored_when_requested(self, client, registry):
+        registry.set_disposition("https://github.com/test/myproj", "ignored", reason="too small")
+        resp = client.get("/api/projects/?include_ignored=true")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["disposition"] == "ignored"
+
+    def test_list_projects_does_not_exclude_tracking_or_investigating(self, client, registry):
+        registry.set_disposition("https://github.com/test/myproj", "investigating")
+        resp = client.get("/api/projects/")
+        assert len(resp.json()) == 1
+
+    def test_list_projects_excludes_abandoned_by_default(self, client, registry):
+        registry.set_disposition("https://github.com/test/myproj", "abandoned", reason="no longer maintained")
+        resp = client.get("/api/projects/")
+        assert resp.json() == []
+        resp = client.get("/api/projects/?include_ignored=true")
+        assert len(resp.json()) == 1
+
+    def test_list_projects_excludes_working_set_hidden_by_default(self, client, registry):
+        registry.set_working_set_hidden("repo", "myproj", True)
+        resp = client.get("/api/projects/")
+        assert resp.json() == []
+
+    def test_list_projects_includes_working_set_hidden_when_requested(self, client, registry):
+        registry.set_working_set_hidden("repo", "myproj", True)
+        resp = client.get("/api/projects/?include_working_set_hidden=true")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["working_set_hidden"] is True
+
+    def test_working_set_hidden_is_independent_of_disposition(self, client, registry):
+        # Hiding via working set must not touch the canonical disposition,
+        # and vice versa.
+        registry.set_working_set_hidden("repo", "myproj", True)
+        resp = client.get("/api/projects/myproj")
+        assert resp.json()["disposition"] == "undecided"
+        assert resp.json()["working_set_hidden"] is True
+
     def test_get_project_found(self, client):
         resp = client.get("/api/projects/myproj")
         assert resp.status_code == 200
@@ -90,6 +138,18 @@ class TestProjectsRouter:
     def test_delete_project_not_found(self, client):
         resp = client.delete("/api/projects/ghost")
         assert resp.status_code == 404
+
+    def test_delete_project_removes_registry_row_even_if_collection_drop_fails(self, client, registry):
+        # Regression guard — a broken/stale registration (e.g. a collection
+        # that was never actually created in pgvector) must not block
+        # removing the registry row itself; drop_collection() runs
+        # best-effort per collection.
+        with patch("resource_explorer.vector_store_pg.MultiCollectionStore") as mock_store:
+            mock_store.return_value.drop_collection.side_effect = RuntimeError("no such collection")
+            resp = client.delete("/api/projects/myproj")
+        assert resp.status_code == 200
+        assert resp.json()["removed"] == "myproj"
+        assert registry.get("myproj") is None
 
     @_pygithub_available
     def test_refresh_project_returns_ok(self, client):

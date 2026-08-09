@@ -23,6 +23,7 @@ from __future__ import annotations
 import json as _json
 import logging
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -114,9 +115,15 @@ class DataProfilerSurveyor(BaseSurveyor):
         project: Project,
         registry: ProjectRegistry,
         local_path: str | Path | None = None,
+        surveyed_at: str | None = None,
     ) -> None:
         super().__init__(project, registry)
         self.local_path: Path | None = Path(local_path) if local_path else None
+        # See SecurityHygieneSurveyor's identical constructor comment — shared
+        # run-timestamp from SurveyOrchestrator (Phase B, D1). Previously
+        # unused — this surveyor never persisted a snapshot at all (found
+        # while wiring the generic upsert_metric call below).
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
 
     @property
     def step_name(self) -> str:
@@ -242,6 +249,22 @@ class DataProfilerSurveyor(BaseSurveyor):
                 json_properties={"source": "project_file_inventory"},
             )
         )
+
+        try:
+            # Generic project_analysis_metrics table (analysis-kind
+            # extensibility redesign) — a real, previously-missing gap:
+            # this surveyor computed these aggregate numbers every run but
+            # never persisted them, so data_file_profiling had no trend
+            # data despite REPO_ANALYSIS_RESULTS_MAP/_data_profile_trend
+            # already expecting a "total_files" metric history.
+            self.registry.upsert_metric(
+                self.project.slug, "data_profile",
+                {"total_files": len(data_files), "total_size_bytes": total_bytes},
+                detail={"formats": fmt_summary},
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception as exc:
+            log.warning("Could not persist data profile snapshot for %s: %s", self.project.slug, exc)
 
     # ── tier 2b: stored profiles ──────────────────────────────────────────────
 

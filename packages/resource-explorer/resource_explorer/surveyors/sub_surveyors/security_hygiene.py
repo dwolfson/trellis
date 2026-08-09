@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
-from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation, RequestForActionAnnotation
+from resource_explorer.surveyors.survey_report import (
+    Annotation,
+    ClassificationAnnotation,
+    RequestForActionAnnotation,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +35,31 @@ _CI_INDICATORS = {
 _LICENSE_FILES = {"LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE.rst", "COPYING"}
 
 
-class SecuritySurveyor(BaseSurveyor):
+class SecurityHygieneSurveyor(BaseSurveyor):
     """
     Checks indexed file paths for the presence of security, CI, and license
     artifacts.  Emits RequestForAction for each gap found, and
     ClassificationAnnotation for each artifact present.
+
+    Renamed from "SecuritySurveyor" — that name implied real security
+    scanning (secrets, CVEs, SAST), but this only ever checked 3 hygiene
+    artifacts (SECURITY.md, CI config, license presence), matching its own
+    STEP = "SecurityHygieneCheck". The rename frees "security" as a family
+    name for future analyses that do real scanning (secret detection,
+    dependency-vulnerability/CVE checks, SAST, branch-protection audits) —
+    see repo_survey_definition_adapter.py's ANALYSIS_KINDS registry,
+    `family="security"`. Identifiers (analysis_catalog id "security_scan",
+    step key "repo_security") deliberately did NOT change — only the
+    Python class/file name, to avoid breaking existing schedules/data.
     """
+
+    def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
+        super().__init__(project, registry)
+        # Shared run-timestamp from SurveyOrchestrator, so this run's
+        # findings can be correlated with other surveyors' writes from the
+        # same orchestrator.run() call (Phase B, D1) — defaults to a fresh
+        # timestamp so this surveyor stays independently callable/testable.
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
 
     @property
     def step_name(self) -> str:
@@ -43,6 +67,7 @@ class SecuritySurveyor(BaseSurveyor):
 
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
+        findings: list[dict] = []
         try:
             with self.registry._conn() as conn:
                 path_rows = conn.execute(
@@ -76,6 +101,11 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=100,
                     )
                 )
+                findings.append({
+                    "check_name": "security_policy", "status": "pass",
+                    "summary": "Security policy file present",
+                    "detail": {"candidate_classifications": ["HasSecurityPolicy"]},
+                })
             else:
                 results.append(
                     RequestForActionAnnotation(
@@ -87,6 +117,14 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=90,
                     )
                 )
+                findings.append({
+                    "check_name": "security_policy", "status": "gap",
+                    "summary": "No SECURITY.md found",
+                    "detail": {
+                        "action_requested": "Add a SECURITY.md file describing the vulnerability disclosure process",
+                        "action_target_name": "SECURITY.md",
+                    },
+                })
 
             # ── CI configuration ──────────────────────────────────────────────
             has_ci = any(
@@ -108,6 +146,11 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=95,
                     )
                 )
+                findings.append({
+                    "check_name": "ci_config", "status": "pass",
+                    "summary": f"CI configuration present: {', '.join(ci_found)}",
+                    "detail": {"candidate_classifications": ci_found},
+                })
             else:
                 results.append(
                     RequestForActionAnnotation(
@@ -119,6 +162,14 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=85,
                     )
                 )
+                findings.append({
+                    "check_name": "ci_config", "status": "gap",
+                    "summary": "No CI configuration detected",
+                    "detail": {
+                        "action_requested": "Add a CI configuration (e.g. GitHub Actions workflow)",
+                        "action_target_name": ".github/workflows/",
+                    },
+                })
 
             # ── License ───────────────────────────────────────────────────────
             has_license = bool(license_from_stats) or bool(filenames & _LICENSE_FILES)
@@ -132,6 +183,11 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=100,
                     )
                 )
+                findings.append({
+                    "check_name": "license", "status": "pass",
+                    "summary": f"License: {license_label}",
+                    "detail": {"candidate_classifications": [license_label]},
+                })
             else:
                 results.append(
                     RequestForActionAnnotation(
@@ -143,9 +199,34 @@ class SecuritySurveyor(BaseSurveyor):
                         confidence=90,
                     )
                 )
+                findings.append({
+                    "check_name": "license", "status": "gap",
+                    "summary": "No license file detected",
+                    "detail": {
+                        "action_requested": "Add a LICENSE file to clarify terms of use",
+                        "action_target_name": "LICENSE",
+                    },
+                })
+
+            try:
+                # Generic findings table (analysis-kind extensibility
+                # redesign) — "status" (pass/gap) here becomes "label" in
+                # the generic schema, since other finding kinds (e.g.
+                # documentation) use "label" for a different kind of value.
+                self.registry.upsert_finding(
+                    self.project.slug, "security_hygiene",
+                    [
+                        {"check_name": f["check_name"], "label": f["status"],
+                         "summary": f["summary"], "detail": f.get("detail")}
+                        for f in findings
+                    ],
+                    surveyed_at=self._surveyed_at,
+                )
+            except Exception as exc:
+                log.warning("Could not persist security hygiene findings for %s: %s", self.project.slug, exc)
 
         except Exception as exc:
-            log.exception("SecuritySurveyor failed for %s", self.project.slug)
+            log.exception("SecurityHygieneSurveyor failed for %s", self.project.slug)
             self._warn(results, str(exc))
 
         return results

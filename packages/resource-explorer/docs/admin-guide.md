@@ -189,6 +189,23 @@ uv run resource-explorer add-project https://github.com/org/repo
 uv run resource-explorer index my-repo
 ```
 
+### Discovering repos via the web UI
+
+Adding one repo at a time by URL doesn't answer "which repos should we even be looking at." **Scouting → Discover** (shown when no repo is selected) is a general GitHub search: keyword, min stars, language, license, pushed-after, org, topic. Archived repos and forks are excluded by default. Check the ones you want, pick a target group, and **Import Selected** — registration runs in a background thread (catalog-only, no RAG ingestion) and shows up in the Activity log as it completes.
+
+Repeat searches are worth saving as a **discovery source** (⚙ Admin → Discovery Sources, or "💾 Save as new source" right on the search) so you don't retype the same filters. Two source types:
+
+- **search** — the same structured filters as the ad-hoc form, saved under a name.
+- **list** — a manually-curated set of `github_url`s. Needed for foundations that don't fit the "one org, one search" model — Eclipse spreads 450+ projects across hundreds of distinct GitHub orgs, and LF AI & Data curates a *member list* of projects living in unrelated orgs (Egeria itself is `odpi/egeria`, nothing to do with the `lfai` org's own governance repos). A `list` source is also how you'd register your own enterprise/internal repos the same way. There's no auto-fetching of an external structured list (CNCF's `landscape.yml`, LFX Insights' API, Eclipse's own project index) yet — paste the URLs in by hand.
+
+If you're pointed at an Enterprise GitHub instance rather than public GitHub, set the base URL once via the inline "GitHub source: … [edit]" control on the Discover tab — it's a runtime override on top of `.env`'s `GITHUB_BASE_URL`, stored in the registry, no restart needed.
+
+### Disposition and working set
+
+After scouting a repo, **Scouting → Disposition** records whether it's worth pursuing: `undecided` (default) → `tracking` / `investigating` → `abandoned` or `ignored`, with a full history of every decision, not just the latest. `ignored` means passed-on-early; `abandoned` means you went further and then decided against it — kept distinct so the history reads honestly. Either state hides the repo from the sidebar's default list (behind "Show hidden (N)") — reversible, not a delete.
+
+Separately, each sidebar row has a working-set toggle (👁/🚫) — a personal "not in front of me right now" filter, independent of disposition. A repo someone else carried all the way to Curate can still be toggled out of your own daily view without changing its canonical disposition, and vice versa.
+
 ### PostgreSQL databases
 
 ```bash
@@ -343,11 +360,16 @@ Key endpoints:
 | `POST` | `/api/projects/{slug}/refresh` | Re-index a repo |
 | `GET` | `/api/databases/` | List registered databases |
 | `POST` | `/api/databases/{slug}/survey` | Run database survey |
-| `GET` | `/api/egeria/{slug}/survey-report` | Get survey report (local SQLite — no Egeria needed) |
+| `GET` | `/api/egeria/{slug}/survey-report` | Get the deep survey report (local SQLite — no Egeria needed) |
 | `POST` | `/api/egeria/{slug}/survey` | Run local survey only |
 | `POST` | `/api/egeria/{slug}/publish` | Run survey + publish to Egeria (accepts `{zone_names:[…]}`) |
 | `GET` | `/api/egeria/{slug}/diff` | Get file count delta vs previous survey |
 | `GET` | `/api/databases/{slug}/diff` | Get schema delta vs previous survey |
+| `GET` | `/api/projects/{slug}/scouting-overview` | Get the light Scouting-tier overview (description, stats, lifecycle badges) |
+| `POST` | `/api/projects/{slug}/scouting-scan` | Run the coarse "Repo Coarse Scout" Survey Definition (repo_health + repo_language only) |
+| `POST` | `/api/projects/{slug}/analyses/{analysis_id}/run` | Run only the named analysis's sub-surveyor step(s), not the whole survey |
+| `GET` | `/api/projects/{slug}/analyses/{analysis_id}/results` | Get the named analysis's latest structured results |
+| `GET` | `/api/projects/{slug}/analyses/{analysis_id}/trend` | Get the named analysis's run history, for the trend chart |
 | `GET` | `/api/activity/` | List activity log entries (filterable by entity_type, intent, operation, status) |
 | `GET` | `/api/activity/rfas` | List open RequestForAction annotations |
 | `GET` | `/api/analyses/{resource_type}` | List available analyses (`?intent=…&perspective=…`) |

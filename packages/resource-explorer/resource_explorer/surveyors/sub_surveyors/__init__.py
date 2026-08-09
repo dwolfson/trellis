@@ -5,7 +5,7 @@ from resource_explorer.surveyors.sub_surveyors.dependency import DependencySurve
 from resource_explorer.surveyors.sub_surveyors.api_structure import ApiStructureSurveyor
 from resource_explorer.surveyors.sub_surveyors.health import HealthSurveyor
 from resource_explorer.surveyors.sub_surveyors.documentation import DocumentationSurveyor
-from resource_explorer.surveyors.sub_surveyors.security import SecuritySurveyor
+from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 
 __all__ = [
@@ -16,6 +16,6 @@ __all__ = [
     "ApiStructureSurveyor",
     "HealthSurveyor",
     "DocumentationSurveyor",
-    "SecuritySurveyor",
+    "SecurityHygieneSurveyor",
     "DataProfilerSurveyor",
 ]

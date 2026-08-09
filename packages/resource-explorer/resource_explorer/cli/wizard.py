@@ -79,6 +79,18 @@ class OnboardingWizard:
             if parent and not parent.subproject_path:
                 parent_slug = parent.slug
 
+        # Check by normalized URL as well as by slug — _url_to_slug() below
+        # doesn't strip a trailing ".git" (unlike get_by_github_url()'s own
+        # normalization), so "https://…/repo" and "https://…/repo.git" hash
+        # to two different slugs ("repo" vs "repo_git") and would otherwise
+        # both register as new (found live: a real "egeria-workspaces"/
+        # "egeria-workspaces.git" duplicate — same fix org_importer.py's
+        # OrgImporter.import_repo() already has). Skip this for a subproject
+        # registration — a second project scoped to a different subpath of
+        # the same URL is legitimately a distinct entry.
+        existing_by_url = None if subproject_path else self.registry.get_by_github_url(github_url)
+        if existing_by_url:
+            slug = existing_by_url.slug
         if self.registry.exists(slug):
             self.console.print(f"[yellow]Project '{slug}' is already registered.[/yellow]")
             if accept_all or Confirm.ask("Re-index it?"):
