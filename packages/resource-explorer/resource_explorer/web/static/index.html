@@ -1095,6 +1095,7 @@ const _DISPOSITION_LABELS = {
 const _HIDDEN_DISPOSITIONS = new Set(['ignored', 'abandoned']);
 function _dispositionIsHidden(d) { return _HIDDEN_DISPOSITIONS.has(d); }
 let _scoutFoundations = {}; // foundation-slug -> {label, org} from GET /api/discovery/foundations
+let _scoutQuickListSources = {}; // fetch_kind -> {label, display_name} from GET /api/discovery/quick-list-sources
 
 // Controlled vocabularies for the Discover-repos search form — language and
 // license were originally free-text, which let a query like "Apache 2"
@@ -6738,6 +6739,7 @@ async function renderScoutingDiscoverView() {
   try { baseUrlInfo = await (await fetch('/api/discovery/github-base-url')).json(); } catch(e) {}
   try { _scoutFoundations = await (await fetch('/api/discovery/foundations')).json(); } catch(e) {}
   try { _adminDiscoverySources = await (await fetch('/api/discovery/sources')).json(); } catch(e) {}
+  try { _scoutQuickListSources = await (await fetch('/api/discovery/quick-list-sources')).json(); } catch(e) {}
 
   const foundationChips = Object.entries(_scoutFoundations).map(([key, f]) => `
     <button onclick="_applyFoundationPrefilter('${_esc(key)}')"
@@ -6751,6 +6753,26 @@ async function renderScoutingDiscoverView() {
     </button>
   `).join('');
 
+  // Quick-add buttons for foundations with a real fetch_kind (e.g. LF AI &
+  // Data, Eclipse) that don't already have a saved source — the list-source
+  // equivalent of the search chips above, for foundations a GitHub search
+  // genuinely can't cover. One click creates the source, populates it from
+  // the foundation's own landscape/project-index data, and runs it —
+  // skipped entirely once a matching source already exists (it just shows
+  // up in "Saved sources" instead).
+  const _existingFetchKinds = new Set(
+    _adminDiscoverySources.map(s => s.config && s.config.fetch_kind).filter(Boolean)
+  );
+  const quickAddButtons = Object.entries(_scoutQuickListSources)
+    .filter(([fetchKind]) => !_existingFetchKinds.has(fetchKind))
+    .map(([fetchKind, f]) => `
+      <button onclick="_quickAddListSource('${_esc(fetchKind)}')"
+        class="text-xs px-2.5 py-1.5 rounded border border-dashed border-slate-700 hover:border-cyan-600 hover:bg-cyan-900/30 text-slate-300 transition-colors"
+        title="Add and populate a curated-list source from ${_esc(f.display_name)}'s own project index">
+        📋 + ${_esc(f.label)}
+      </button>
+    `).join('');
+
   view.innerHTML = _scoutingSubnavHtml('discover') + `
     <div class="max-w-4xl mx-auto space-y-4">
       <div>
@@ -6758,9 +6780,10 @@ async function renderScoutingDiscoverView() {
         <p class="text-xs text-slate-400 mt-1">Search GitHub for candidate repos, before any specific one is registered. Select repos and import them into the catalog to start Scouting them.</p>
       </div>
 
-      ${sourceButtons ? `<div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+      ${(sourceButtons || quickAddButtons) ? `<div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Saved sources</div>
-        <div class="flex flex-wrap gap-1.5">${sourceButtons}</div>
+        <div class="flex flex-wrap gap-1.5">${sourceButtons}${quickAddButtons}</div>
+        <div id="scout-quick-add-feedback" class="text-[10px] text-slate-500"></div>
         <div class="text-[10px] text-slate-500">Manage saved sources in ⚙ Admin → Discovery Sources.</div>
       </div>` : ''}
 
@@ -6839,6 +6862,43 @@ function _applyFoundationPrefilter(key) {
   document.getElementById('scout-org').value = f.org || '';
   document.getElementById('scout-topic').value = f.topic || '';
   searchScoutRepos();
+}
+
+async function _quickAddListSource(fetchKind) {
+  // One click = create (empty urls + fetch_kind) -> refresh-apply
+  // (populate urls from the foundation's own landscape/project-index data)
+  // -> run (search/enrich, same as any saved source). Matches the search
+  // chips' "one click, see results" feel for foundations a GitHub search
+  // can't reach.
+  const info = _scoutQuickListSources[fetchKind] || {};
+  const displayName = info.display_name || fetchKind;
+  const slug = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const fb = document.getElementById('scout-quick-add-feedback');
+  if (fb) fb.textContent = `Adding ${displayName}…`;
+
+  try {
+    const createRes = await fetch('/api/discovery/sources', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug, display_name: displayName, source_type: 'list', config: { fetch_kind: fetchKind } }),
+    });
+    if (!createRes.ok) {
+      const err = await createRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${createRes.status}`);
+    }
+
+    if (fb) fb.textContent = `Fetching ${displayName}'s project list…`;
+    const applyRes = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh-apply`, { method: 'POST' });
+    if (!applyRes.ok) {
+      const err = await applyRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${applyRes.status}`);
+    }
+
+    if (fb) fb.textContent = '';
+    await renderScoutingDiscoverView();  // re-fetches sources + re-renders, so this button moves from "quick add" to "Saved sources"
+    await runDiscoverySource(slug);
+  } catch(e) {
+    if (fb) fb.innerHTML = `<span class="text-red-400">Failed to add ${_esc(displayName)}: ${_esc(e.message)}</span>`;
+  }
 }
 
 async function runDiscoverySource(slug) {

@@ -70,6 +70,29 @@ class TestFoundationsRoute:
         assert resp.json() == {}
 
 
+class TestQuickListSourcesRoute:
+    def test_returns_curated_list(self, client):
+        resp = client.get("/api/discovery/quick-list-sources")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "lfai_landscape" in data
+        assert data["lfai_landscape"]["display_name"] == "LF AI & Data"
+
+    def test_cncf_landscape_deliberately_excluded(self, client):
+        # cncf_landscape is a real fetch_kind but CNCF's search chip
+        # (org:cncf) already covers it — a redundant quick-add would just
+        # be confusing.
+        data = client.get("/api/discovery/quick-list-sources").json()
+        assert "cncf_landscape" not in data
+
+    def test_missing_file_returns_empty_dict_not_500(self, client, tmp_path, monkeypatch):
+        from resource_explorer.web.routes import discovery
+        monkeypatch.setattr(discovery, "_QUICK_LIST_SOURCES_PATH", tmp_path / "nope.json")
+        resp = client.get("/api/discovery/quick-list-sources")
+        assert resp.status_code == 200
+        assert resp.json() == {}
+
+
 class TestSearchRoute:
     def test_excludes_archived_and_forks_by_default(self, client):
         with patch(
@@ -237,6 +260,18 @@ class TestDiscoverySourcesRoutes:
             "slug": "empty-list", "display_name": "Empty", "source_type": "list", "config": {},
         })
         assert resp.status_code == 400
+
+    def test_list_source_with_fetch_kind_allows_zero_urls(self, client):
+        # A fetch_kind-backed source can start empty — refresh-apply is
+        # what's meant to populate it, so requiring a seed URL first would
+        # defeat a one-click "add this foundation" flow (e.g. LF AI & Data's
+        # landscape.yml — there's no natural single seed URL to require).
+        resp = client.post("/api/discovery/sources", json={
+            "slug": "lfai-quick", "display_name": "LF AI & Data",
+            "source_type": "list", "config": {"fetch_kind": "lfai_landscape"},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["config"]["urls"] == []
 
     def test_run_search_source_dispatches_to_search_repos(self, client):
         client.post("/api/discovery/sources", json={

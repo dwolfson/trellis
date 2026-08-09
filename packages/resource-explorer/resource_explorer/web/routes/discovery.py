@@ -48,10 +48,20 @@ router = APIRouter()
 # LF AI & Data's own case is now solved properly, just not through this
 # file — its landscape.yml (same landscape2 tool CNCF's own site runs on)
 # is a real, working discovery-source fetch_kind ("lfai_landscape",
-# github/source_fetchers.py). Create a 'list'-type discovery source with
-# that fetch_kind set (Admin > Discovery Sources) instead of expecting a
-# quick-filter chip here.
+# github/source_fetchers.py). GET /quick-list-sources below is the actual
+# one-click equivalent for this shape — a search chip doesn't fit (there's
+# no org:/topic: qualifier to prefill), but a "create + populate + run" list
+# source does.
 _FOUNDATION_PREFILTERS_PATH = Path(__file__).parent.parent.parent / "configdata" / "foundation_prefilters.json"
+
+# Foundations with a real, working fetch_kind (github/source_fetchers.py) —
+# NOT the same list as foundation_prefilters.json above. cncf_landscape is
+# deliberately excluded here even though it's a real fetcher: CNCF's own
+# search chip (org:cncf) already covers it well, so a second, redundant
+# "quick add a list source too" button would just be confusing. lfx_insights
+# is excluded because it's a registered-but-unimplemented fetch_kind (see
+# source_fetchers.py) — nothing to quick-add yet.
+_QUICK_LIST_SOURCES_PATH = Path(__file__).parent.parent.parent / "configdata" / "quick_list_sources.json"
 
 
 def _load_foundation_prefilters() -> dict:
@@ -59,6 +69,24 @@ def _load_foundation_prefilters() -> dict:
         return json.loads(_FOUNDATION_PREFILTERS_PATH.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _load_quick_list_sources() -> dict:
+    try:
+        return json.loads(_QUICK_LIST_SOURCES_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+@router.get("/quick-list-sources")
+async def list_quick_list_sources() -> dict:
+    """fetch_kind -> {label, display_name} for foundations with a real
+    fetch_kind implementation, worth a one-click 'add + populate + run'
+    button on the Discover view — the list-source equivalent of
+    /foundations' search-chip prefills, for foundations a GitHub search
+    genuinely can't cover (Eclipse's hundreds of orgs, LF AI & Data's
+    governance-vs-code-org split)."""
+    return _load_quick_list_sources()
 
 
 @router.get("/foundations")
@@ -415,8 +443,16 @@ async def create_discovery_source(body: DiscoverySourceCreate) -> DiscoverySourc
             status_code=400,
             detail=f"Invalid source_type '{body.source_type}' — must be one of {sorted(_VALID_SOURCE_TYPES)}",
         )
-    if body.source_type == "list" and not body.config.urls:
-        raise HTTPException(status_code=400, detail="A 'list' source needs at least one URL.")
+    # A fetch_kind-backed list source can legitimately start with zero URLs —
+    # the whole point is that refresh-apply populates them, so requiring a
+    # seed URL first would defeat a one-click "add this foundation" flow.
+    # Only a purely-manual list (no fetch_kind) needs at least one URL up
+    # front, since nothing would ever populate it otherwise.
+    if body.source_type == "list" and not body.config.urls and not body.config.fetch_kind:
+        raise HTTPException(
+            status_code=400,
+            detail="A 'list' source needs at least one URL, unless it has a fetch_kind set.",
+        )
 
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
