@@ -1,0 +1,6 @@
+{
+  "cncf": {"label": "CNCF", "org": "cncf"},
+  "apache": {"label": "Apache Software Foundation", "org": "apache"},
+  "psf": {"label": "Python Software Foundation", "org": "python"},
+  "linuxfoundation": {"label": "Linux Foundation", "org": "linuxfoundation"}
+}
