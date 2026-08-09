@@ -330,6 +330,16 @@
            "should I analyze this further?", not the deep survey report. -->
       <div id="scouting-overview-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
+      <!-- Discover repos to scout (repos, no repo selected) — general GitHub
+           search for candidates, upstream of Scouting itself. -->
+      <div id="scouting-discover-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Disposition sub-tab (repos, repo selected) — dedicated view of
+           the current disposition + full history/timeline of past
+           decisions, replacing the compact button row on the Scouting
+           overview card. -->
+      <div id="scouting-disposition-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
       <!-- Survey report view (repos) — the deep report, reached via
            Scouting's "View full report →" link, or from Analysis/
            Assessment's "Run" cards until Phase B builds dedicated results
@@ -368,6 +378,10 @@
 
       <!-- Schedules view (Admin) -->
       <div id="admin-schedules-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Discovery Sources view (Admin) — named, reusable "where do we
+           scout" searches/lists, picked from Scouting's Discover sub-tab. -->
+      <div id="admin-discovery-sources-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -1066,8 +1080,47 @@ let _surveyingFsSlug = null;
 let _dbMap           = {};  // slug → DatabaseSummary, populated by renderDatabaseList
 let _fsMap           = {};  // slug → FileSystemSummary
 let _groups          = [];  // list of GroupSummary from /api/projects/groups
-let _discoveredRepos = [];  // list of DiscoveredRepo from GET /api/projects/discover/{org}
-let _discoveredOrg   = '';
+let _scoutResults    = [];  // list of DiscoveredRepo from POST /api/discovery/search
+let _scoutFilterText = '';  // client-side filter over the current results batch
+
+// Disposition vocabulary — undecided (default) -> tracking/investigating ->
+// {abandoned, ignored}. Both terminal "not pursuing" states hide from the
+// sidebar/auto-select and prompt for a reason; they're kept distinct so the
+// history reads honestly ("passed on it early" vs. "went further, then
+// decided against it") — Scouting workflow redesign plan, D3.
+const _DISPOSITION_LABELS = {
+  undecided: '', tracking: '👁 Tracking', investigating: '🔬 Investigating',
+  abandoned: '⛔ Abandoned', ignored: '🚫 Ignored',
+};
+const _HIDDEN_DISPOSITIONS = new Set(['ignored', 'abandoned']);
+function _dispositionIsHidden(d) { return _HIDDEN_DISPOSITIONS.has(d); }
+let _scoutFoundations = {}; // foundation-slug -> {label, org} from GET /api/discovery/foundations
+
+// Controlled vocabularies for the Discover-repos search form — language and
+// license were originally free-text, which let a query like "Apache 2"
+// (a space inside the value) get tokenized into an invalid GitHub search
+// qualifier and 400 the whole request. Dropdowns with a "(any)" empty
+// default close that off entirely. Topic and Org stay free text — GitHub
+// topics/org names are inherently open-ended, no fixed vocabulary fits.
+const _SCOUT_LANGUAGES = [
+  '', 'Python', 'JavaScript', 'TypeScript', 'Java', 'Go', 'Rust', 'C++', 'C',
+  'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Scala', 'Shell', 'HTML', 'CSS',
+];
+const _SCOUT_LICENSES = [
+  ['', '(any)'],
+  ['mit', 'MIT'],
+  ['apache-2.0', 'Apache 2.0'],
+  ['gpl-3.0', 'GPL 3.0'],
+  ['gpl-2.0', 'GPL 2.0'],
+  ['lgpl-3.0', 'LGPL 3.0'],
+  ['bsd-3-clause', 'BSD 3-Clause'],
+  ['bsd-2-clause', 'BSD 2-Clause'],
+  ['mpl-2.0', 'MPL 2.0'],
+  ['unlicense', 'Unlicense'],
+];
+let _allProjectSummaries = [];  // full ProjectSummary list (incl. ignored), populated by loadProjects()
+let _adminDiscoverySources = [];  // list of DiscoverySource from GET /api/discovery/sources
+let _showIgnoredRepos = false;  // sidebar "Show ignored (N)" toggle state
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
 let _activityUnread  = 0;   // count of entries since activity tab was last viewed
 let _srvMap          = {};  // slug → ServerSummary
@@ -1163,10 +1216,19 @@ function showIntentPlaceholder(intent) {
     `<div class="text-slate-600 text-sm text-center py-16">${_esc(INTENT_PLACEHOLDER_TEXT[intent] || 'Coming soon.')}</div>`;
 }
 
+// Repo-facet Scouting is a 4-tab sub-workflow: Discover -> Survey ->
+// Scouting Analysis (shortcut to the real Analysis intent) -> Disposition.
+// Deliberately scoped to repos only — DB/FS facets are unaffected by this
+// ("Scouting workflow redesign" plan, D6).
+let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'disposition' — persists across selection changes
+
 function showScoutingPane() {
   if (resourceTypeFacet === 'repo') {
-    if (!selectedProject) { showIntentEmptyState('a repo'); return; }
-    showMainView('scouting-overview');
+    // Picking a repo naturally means "now look at it" — jump off the
+    // discover form onto its Survey, but don't clobber an explicit choice
+    // of the disposition sub-tab.
+    if (selectedProject && _scoutingSubTab === 'discover') _scoutingSubTab = 'survey';
+    _showScoutingSubTab(_scoutingSubTab);
   } else if (resourceTypeFacet === 'db') {
     if (!selectedDatabase) { showIntentEmptyState('a database'); return; }
     showMainView('db-survey');
@@ -1174,6 +1236,40 @@ function showScoutingPane() {
     if (!selectedFilesystem) { showIntentEmptyState('a filesystem'); return; }
     showMainView('filesystem-survey');
   }
+}
+
+function _scoutingSubnavHtml(active) {
+  const tabs = [
+    { tab: 'discover',    label: '🔍 Discover' },
+    { tab: 'survey',      label: '📊 Survey' },
+    { tab: 'analysis',    label: '📈 Scouting Analysis' },  // working name — may become "Insights" later, since every survey is itself a form of analysis
+    { tab: 'disposition', label: '🧭 Disposition' },
+  ];
+  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_showScoutingSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
+function _showScoutingSubTab(tab) {
+  if (tab === 'analysis') {
+    // Shortcut, not a duplicated content pane — switches to the real
+    // top-level Analysis intent with the selected repo carried over.
+    _scoutingSubTab = 'discover';  // reset so returning to Scouting later doesn't land back on Analysis
+    setNavIntent('analysis');
+    return;
+  }
+  if (tab !== 'discover' && !selectedProject) {
+    _scoutingSubTab = 'discover';
+    showMainView('scouting-discover');
+    return;
+  }
+  _scoutingSubTab = tab;
+  if (tab === 'discover') showMainView('scouting-discover');
+  else if (tab === 'survey') showMainView('scouting-overview');
+  else if (tab === 'disposition') showMainView('scouting-disposition');
 }
 
 function showIntentEmptyState(what, forWhatPurpose = 'Scouting summary') {
@@ -1443,11 +1539,11 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${schedLabel}</button>`
       : `<button onclick="showToast('info', 'Select a resource first.', 4000)"
            class="text-xs px-2.5 py-1 rounded bg-slate-800 text-slate-600 transition-colors whitespace-nowrap" title="Select a resource to schedule this analysis">⏱ Schedule</button>`;
-    // Results/trend view (Phase B) — repo-only for now, and only for the 5
-    // analysis ids that actually have a results table (REPO_ANALYSIS_RESULTS_MAP
-    // on the backend; _REPO_RESULTS_ANALYSIS_IDS mirrors it here so the button
+    // Results/trend view — repo-only for now, and only for analysis ids that
+    // actually have a results table (ANALYSIS_KINDS[id].results on the
+    // backend; _REPO_RESULTS_RENDER_MODE mirrors it here so the button
     // doesn't appear for ids with nothing to show, e.g. scouting-tier ones).
-    const resultsButton = (entityType === 'repo' && slug && _REPO_RESULTS_ANALYSIS_IDS.has(a.id))
+    const resultsButton = (entityType === 'repo' && slug && (a.id in _REPO_RESULTS_RENDER_MODE))
       ? `<button onclick='toggleAnalysisResults(${JSON.stringify(a.id)}, ${JSON.stringify(slug)}, this)'
            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">
            📊 Results
@@ -1502,15 +1598,22 @@ async function _submitSchedule(analysisId, entityType, slug) {
   document.getElementById(`sched-form-${safeId}`)?.classList.add('hidden');
 }
 
-// ── Phase B: per-analysis results + trend (repo-only) ───────────────────────
-// analysis_id -> render function for the "latest results" section — mirrors
-// the backend's REPO_ANALYSIS_RESULTS_MAP (repo_survey_definition_adapter.py)
-// key-for-key, just for the UI-side "does this id have a results view" check
-// and the type-specific rendering below.
-const _REPO_RESULTS_ANALYSIS_IDS = new Set([
-  'dependency_analysis', 'data_file_profiling', 'security_scan',
-  'documentation_coverage', 'api_structure',
-]);
+// ── per-analysis results + trend (repo-only) ────────────────────────────────
+// analysis_id -> render mode for the "latest results" section — mirrors the
+// backend's ANALYSIS_KINDS[id].results.render (repo_survey_definition_adapter.py)
+// key-for-key (analysis-kind extensibility redesign, D4). "findings_list"
+// and "metrics" render any {findings:[{check_name,label,summary,confidence}]}
+// or {metric_name: value, ...} shape generically — a new analysis kind using
+// either needs ZERO new frontend code. "custom" is the escape hatch for
+// genuinely bespoke shapes handled by name in _renderCustomAnalysisResults()
+// below (dependency-by-ecosystem, data-profile summary, API structure).
+const _REPO_RESULTS_RENDER_MODE = {
+  dependency_analysis: 'custom',
+  data_file_profiling: 'custom',
+  security_scan: 'findings_list',
+  documentation_coverage: 'findings_list',
+  api_structure: 'custom',
+};
 
 async function toggleAnalysisResults(analysisId, slug, btn) {
   const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
@@ -1544,7 +1647,48 @@ async function loadAnalysisResults(analysisId, slug) {
   }
 }
 
+// Generic render modes (analysis-kind extensibility redesign, D4) — a new
+// analysis kind whose /results response is a {findings:[...]} or a flat
+// metrics dict needs zero new frontend code; only genuinely bespoke shapes
+// (dependency-by-ecosystem, data-profile summary, API structure) get a
+// named branch in _renderCustomAnalysisResults.
 function _renderAnalysisResultsContent(analysisId, data) {
+  const mode = _REPO_RESULTS_RENDER_MODE[analysisId];
+  if (mode === 'findings_list') return _renderFindingsListResults(data);
+  if (mode === 'metrics') return _renderMetricsResults(data);
+  return _renderCustomAnalysisResults(analysisId, data);
+}
+
+// Renders any {findings: [{check_name, label, summary, confidence}]} shape —
+// the uniform finding shape every kind's results_reader normalizes to
+// (repo_survey_definition_adapter.py's _security_results/_documentation_results).
+function _renderFindingsListResults(data) {
+  if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+  return data.findings.map(f => {
+    const ok = f.label === 'pass' || f.label === 'Comprehensive';
+    const warn = f.label === 'gap' || f.label === 'Minimal';
+    const icon = ok ? '✓' : (warn ? '⚠' : '•');
+    const color = ok ? 'text-emerald-400' : (warn ? 'text-amber-400' : 'text-slate-400');
+    return `<div class="text-xs flex items-center gap-1.5">
+      <span class="${color}">${icon}</span>
+      <span class="text-slate-300">${_esc(f.summary || f.label || f.check_name)}</span>
+    </div>`;
+  }).join('');
+}
+
+// Renders any {metric_name: value, ..., surveyed_at, detail?} shape (as
+// returned by registry.query_metrics()) as a small key-value grid.
+function _renderMetricsResults(data) {
+  const entries = Object.entries(data).filter(([k]) => k !== 'surveyed_at' && k !== 'detail');
+  if (!entries.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+  return entries.map(([name, value]) => `
+    <div class="text-xs text-slate-300 flex justify-between gap-2">
+      <span class="text-slate-500">${_esc(name.replace(/_/g, ' '))}</span>
+      <span>${_esc(String(value))}</span>
+    </div>`).join('');
+}
+
+function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'dependency_analysis') {
     const ecosystems = Object.entries(data.by_ecosystem || {});
     if (!ecosystems.length) return `<div class="text-xs text-slate-500">No dependencies found. Run "Refresh &amp; profile" to re-scan.</div>`;
@@ -1566,21 +1710,6 @@ function _renderAnalysisResultsContent(analysisId, data) {
           <span class="truncate" title="${_esc(p.file_path)}">${_esc(p.file_path)}</span>
           <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
         </div>`).join('');
-  }
-  if (analysisId === 'security_scan') {
-    if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
-    return data.findings.map(f => `
-      <div class="text-xs flex items-center gap-1.5">
-        <span class="${f.status === 'pass' ? 'text-emerald-400' : 'text-amber-400'}">${f.status === 'pass' ? '✓' : '⚠'}</span>
-        <span class="text-slate-300">${_esc(f.summary)}</span>
-      </div>`).join('');
-  }
-  if (analysisId === 'documentation_coverage') {
-    if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
-    const quality = data.findings.find(f => f.finding_type === 'quality_score');
-    const others = data.findings.filter(f => f.finding_type !== 'quality_score');
-    return (quality ? `<div class="text-xs text-slate-300 font-medium mb-1">Quality: ${_esc(quality.label)}</div>` : '') +
-      others.map(f => `<div class="text-xs text-slate-400">${_esc(f.label)}</div>`).join('');
   }
   if (analysisId === 'api_structure') {
     const langs = Object.entries(data.by_language || {});
@@ -1629,7 +1758,7 @@ function _runAnalysisCatalogCard(_analysisId) {
       .then(data => {
         if (data.status === 'ok') {
           showToast('success', `'${_esc(_analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(data.message)}`, 6000);
-          if (_REPO_RESULTS_ANALYSIS_IDS.has(_analysisId)) {
+          if (_analysisId in _REPO_RESULTS_RENDER_MODE) {
             const safeId = String(_analysisId).replace(/[^a-zA-Z0-9]/g, '_');
             document.getElementById(`results-${safeId}`)?.classList.remove('hidden');
             loadAnalysisResults(_analysisId, slug);
@@ -1682,15 +1811,31 @@ async function loadGroups() {
 }
 
 async function loadProjects() {
-  const res = await fetch('/api/projects/');
-  const projects = await res.json();
+  const res = await fetch('/api/projects/?include_ignored=true&include_working_set_hidden=true');
+  _allProjectSummaries = await res.json();
+  renderProjectList();
+}
+
+// Two independent reasons a repo can be hidden from the default sidebar —
+// disposition (a canonical judgment, ignored/abandoned) and working-set
+// (a personal "not in front of me right now" view filter). Distinct
+// mechanisms, but the default list combines them into one "Show hidden"
+// toggle for simplicity ("Scouting workflow redesign" plan, D3/D4).
+function _rowIsHidden(p) { return _dispositionIsHidden(p.disposition) || p.working_set_hidden; }
+
+function renderProjectList() {
   const list = document.getElementById('project-list');
   list.innerHTML = '';
+  const hiddenCount = _allProjectSummaries.filter(_rowIsHidden).length;
+  const projects = _showIgnoredRepos
+    ? _allProjectSummaries
+    : _allProjectSummaries.filter(p => !_rowIsHidden(p));
+
   projects.forEach(p => {
     const colors = { active: 'text-green-400', indexing: 'text-yellow-400', error: 'text-red-400', paused: 'text-slate-500' };
     const color = colors[p.status] || 'text-slate-400';
     const btn = document.createElement('button');
-    btn.className = 'project-btn w-full text-left px-3 py-1.5 rounded text-sm hover:bg-slate-700 transition-colors';
+    btn.className = 'project-btn w-full text-left px-3 py-1.5 rounded text-sm hover:bg-slate-700 transition-colors' + (_rowIsHidden(p) ? ' opacity-50' : '');
     btn.dataset.slug = p.slug;
     btn.dataset.githubUrl = p.github_url || '';
     btn.onclick = (e) => e.shiftKey ? toggleCompare(p.slug) : selectProject(p.slug);
@@ -1706,17 +1851,23 @@ async function loadProjects() {
     } else {
       lifecycleBadge = '🆕'; lifecycleTitle = 'Registered, not yet surveyed';
     }
+    // Disposition badge — separate axis from the lifecycle badge above:
+    // "was this worth pursuing further," decided after scouting. Only
+    // `investigating` gets a badge here (a real "actively being pursued"
+    // signal worth surfacing at a glance); `ignored` repos are excluded
+    // from this list entirely unless _showIgnoredRepos is on, in which
+    // case the whole row is just dimmed (no separate badge needed).
+    const dispositionBadge = p.disposition === 'investigating'
+      ? `<span data-tip="Investigating">🔬</span>` : '';
 
     btn.innerHTML = `
       <div class="flex items-center justify-between gap-1 min-w-0">
         <div class="font-medium text-slate-200 truncate flex items-center gap-1">
-          <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${_esc(p.display_name)}
+          <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${dispositionBadge}${_esc(p.display_name)}
         </div>
         <div class="proj-actions">
-          <button class="proj-action-btn" data-tip="Refresh &amp; profile"
-            onclick="event.stopPropagation(); runRefreshFromSidebar('${_esc(p.slug)}', this)">🔄</button>
-          <button class="proj-action-btn" data-tip="Run scouting scan"
-            onclick="event.stopPropagation(); runSurveyFromSidebar('${_esc(p.slug)}', this)">📊</button>
+          <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
+            onclick="event.stopPropagation(); toggleWorkingSetHidden('repo', '${_esc(p.slug)}', ${!p.working_set_hidden})">${p.working_set_hidden ? '🚫' : '👁'}</button>
           ${p.github_url ? `<a class="proj-action-btn" href="${_esc(p.github_url)}" target="_blank"
             data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
         </div>
@@ -1724,10 +1875,33 @@ async function loadProjects() {
       <div class="text-xs ${color}">${p.status} · ${p.collections.length} collections${p.group_slug ? ` · <span class="text-purple-400 font-medium">${_esc(p.group_slug)}</span>` : ''}</div>`;
     list.appendChild(btn);
   });
-  // loadProjects() rebuilds every button fresh, wiping the 'selected'
-  // highlight — re-apply it for whichever repo is still the active scope.
+
+  if (hiddenCount > 0) {
+    const toggle = document.createElement('button');
+    toggle.className = 'w-full text-left px-3 py-1.5 rounded text-xs text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors';
+    toggle.textContent = _showIgnoredRepos ? `Hide hidden (${hiddenCount})` : `Show hidden (${hiddenCount})`;
+    toggle.onclick = () => { _showIgnoredRepos = !_showIgnoredRepos; renderProjectList(); };
+    list.appendChild(toggle);
+  }
+
+  // loadProjects()/renderProjectList() rebuilds every button fresh, wiping
+  // the 'selected' highlight — re-apply it for whichever repo is still the
+  // active scope.
   if (selectedProject) {
     document.querySelector(`.project-btn[data-slug="${selectedProject}"]`)?.classList.add('selected');
+  }
+}
+
+async function toggleWorkingSetHidden(entityType, entitySlug, hidden) {
+  try {
+    const res = await fetch('/api/discovery/working-set', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ entity_type: entityType, entity_slug: entitySlug, hidden }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadProjects();
+  } catch(e) {
+    showToast('error', `Failed to update working set: ${_esc(e.message)}`, 5000);
   }
 }
 
@@ -1792,36 +1966,8 @@ async function runRefreshFromSidebar(slug, btn) {
   }
 }
 
-async function runSurveyFromSidebar(slug, btn) {
-  // Coarse scan (fast, API-only) — matches Scouting's own "Run Scouting
-  // Scan" button, keeps the sidebar action cheap. The full/deep survey
-  // stays reachable from inside the repo's own tabs (Analysis/Assessment).
-  selectProject(slug);
-  const orig = btn.textContent;
-  btn.textContent = '⟳';
-  btn.classList.add('spinning');
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/projects/${slug}/scouting-scan`, { method: 'POST' });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      showMainView('scouting-overview');
-      loadScoutingOverview();
-      loadProjects();  // refresh sidebar lifecycle badge
-      btn.textContent = '✓';
-      btn.style.color = '#4ade80';
-      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-    } else {
-      btn.textContent = '✗';
-      btn.style.color = '#f87171';
-      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-    }
-  } catch(e) {
-    btn.textContent = '✗';
-    btn.style.color = '#f87171';
-    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-  }
-}
+// runSurveyFromSidebar() removed (D5) — was a pure duplicate of the "Run
+// Scouting Scan" button already on the Scouting overview / Survey sub-tab.
 
 function toggleCompare(slug) {
   if (selectedProject && !compareSet.has(selectedProject)) compareSet.add(selectedProject);
@@ -4290,6 +4436,8 @@ function showMainView(tab) {
   const analysisView   = document.getElementById('analysis-view');
   const understandingView = document.getElementById('understanding-view');
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
+  const scoutingDiscoverView = document.getElementById('scouting-discover-view');
+  const scoutingDispositionView = document.getElementById('scouting-disposition-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -4300,10 +4448,11 @@ function showMainView(tab) {
   const annotationTypesView = document.getElementById('annotation-types-view');
   const adminGroupsView = document.getElementById('admin-groups-view');
   const adminSchedulesView = document.getElementById('admin-schedules-view');
+  const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
   const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, curateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
@@ -4322,6 +4471,12 @@ function showMainView(tab) {
   } else if (tab === 'scouting-overview') {
     scoutingOverviewView.classList.remove('hidden');
     loadScoutingOverview();
+  } else if (tab === 'scouting-discover') {
+    scoutingDiscoverView.classList.remove('hidden');
+    renderScoutingDiscoverView();
+  } else if (tab === 'scouting-disposition') {
+    scoutingDispositionView.classList.remove('hidden');
+    loadScoutingDispositionView();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
@@ -4361,6 +4516,10 @@ function showMainView(tab) {
     adminSchedulesView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminSchedulesPanel();
+  } else if (tab === 'admin-discovery-sources') {
+    adminDiscoverySourcesView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminDiscoverySourcesPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -4395,7 +4554,7 @@ function renderScoutingOverview(d) {
     ? `<span class="text-cyan-400">☁ Published to Egeria</span>`
     : `<span class="text-slate-500">Not published</span>`;
 
-  view.innerHTML = `
+  view.innerHTML = _scoutingSubnavHtml('survey') + `
     <div class="max-w-2xl space-y-4">
       <div>
         <h1 class="text-xl font-bold text-slate-100">${_esc(d.display_name)}</h1>
@@ -4404,7 +4563,11 @@ function renderScoutingOverview(d) {
 
       <div class="text-sm text-slate-300">${_esc(d.description) || '<span class="text-slate-500">No description on GitHub.</span>'}</div>
 
-      <div class="flex flex-wrap gap-4 text-xs">${surveyedBadge}${publishedBadge}</div>
+      <div class="flex flex-wrap gap-4 text-xs items-center">
+        ${surveyedBadge}${publishedBadge}
+        ${_DISPOSITION_LABELS[d.disposition] ? `<span class="text-slate-400">${_DISPOSITION_LABELS[d.disposition]}</span>` : ''}
+        <button onclick="_showScoutingSubTab('disposition')" class="text-cyan-400 hover:text-cyan-300 underline">Manage disposition →</button>
+      </div>
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
@@ -4435,7 +4598,98 @@ function renderScoutingOverview(d) {
 
       <div class="flex flex-wrap gap-2 items-center pt-2">
         <button onclick="runScoutingScan('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">📊 Run Scouting Scan</button>
+        <button onclick="runRefreshFromSidebar('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs font-semibold transition-colors" title="Re-embed for RAG/chat search">🔄 Refresh &amp; profile</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
+      </div>
+    </div>`;
+}
+
+// Disposition control shared by the Scouting overview card and (in its own,
+// per-row form) the Discover-repos search results table — "was this repo,
+// after scouting, worth pursuing further" (D10).
+function _renderDispositionControl(d) {
+  const current = d.disposition || 'undecided';
+  const opts = [
+    { key: 'tracking', icon: '👁', label: 'Track' },
+    { key: 'investigating', icon: '🔬', label: 'Investigate' },
+    { key: 'abandoned', icon: '⛔', label: 'Abandon' },
+    { key: 'ignored', icon: '🚫', label: 'Ignore' },
+  ];
+  const buttons = opts.map(o => `
+    <button onclick="_setProjectDisposition('${_esc(d.github_url)}', '${o.key}')"
+      class="text-xs px-2 py-1 rounded transition-colors ${current === o.key ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${o.icon} ${o.label}</button>
+  `).join('');
+  const reasonNote = (_dispositionIsHidden(current) && d.disposition_reason)
+    ? `<div class="text-xs text-slate-500 mt-1">Reason: ${_esc(d.disposition_reason)}</div>` : '';
+  return `<div class="pt-1">
+      <div class="text-[10px] text-slate-500 uppercase mb-1">Disposition</div>
+      <div class="flex gap-1.5">${buttons}</div>
+      ${reasonNote}
+    </div>`;
+}
+
+async function _setProjectDisposition(githubUrl, disposition) {
+  let reason = '';
+  if (_dispositionIsHidden(disposition)) {
+    const verb = disposition === 'abandoned' ? 'abandon' : 'ignore';
+    reason = prompt(`Why ${verb} this repo? (optional — helps if it comes up again later)`, '') || '';
+  }
+  try {
+    const res = await fetch('/api/discovery/disposition', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ github_url: githubUrl, disposition, reason }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', `Marked ${disposition}.`, 3000);
+    if (_scoutingSubTab === 'disposition') loadScoutingDispositionView();
+    else if (selectedProject) loadScoutingOverview();
+    loadProjects();
+  } catch(e) {
+    showToast('error', `Failed to set disposition: ${_esc(e.message)}`, 5000);
+  }
+}
+
+// ── Disposition sub-tab — dedicated view of the current disposition + full
+// history/timeline, replacing the compact button row that used to live
+// directly on the Scouting overview card ("Scouting workflow redesign"
+// plan, D6). ──────────────────────────────────────────────────────────────
+async function loadScoutingDispositionView() {
+  if (!selectedProject) return;
+  const view = document.getElementById('scouting-disposition-view');
+  view.innerHTML = _scoutingSubnavHtml('disposition') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const overviewRes = await fetch(`/api/projects/${selectedProject}/scouting-overview`);
+    if (!overviewRes.ok) throw new Error(`HTTP ${overviewRes.status}`);
+    const d = await overviewRes.json();
+    const historyRes = await fetch(`/api/discovery/disposition-history?${new URLSearchParams({ github_url: d.github_url })}`);
+    const history = historyRes.ok ? await historyRes.json() : [];
+    _renderScoutingDispositionView(d, history);
+  } catch(e) {
+    view.innerHTML = _scoutingSubnavHtml('disposition') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _renderScoutingDispositionView(d, history) {
+  const view = document.getElementById('scouting-disposition-view');
+  const timeline = history.length ? history.slice().reverse().map(h => `
+    <div class="text-xs border-l-2 border-slate-700 pl-3 py-1.5">
+      <div class="text-slate-300 font-medium">${_DISPOSITION_LABELS[h.disposition] || h.disposition} <span class="text-slate-500 font-normal">— ${_esc(h.decided_at)}</span></div>
+      ${h.reason ? `<div class="text-slate-500 mt-0.5">${_esc(h.reason)}</div>` : ''}
+    </div>
+  `).join('') : '<div class="text-xs text-slate-500">No disposition set yet — this repo is undecided.</div>';
+
+  view.innerHTML = _scoutingSubnavHtml('disposition') + `
+    <div class="max-w-2xl space-y-4">
+      <div>
+        <h1 class="text-xl font-bold text-slate-100">${_esc(d.display_name)}</h1>
+        <p class="text-xs text-slate-400 mt-1">Was this repo, after scouting, worth pursuing further? Track it, investigate it further, or decide to abandon/ignore it — reversible any time.</p>
+      </div>
+      ${_renderDispositionControl(d)}
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">History</div>
+        <div class="space-y-1">${timeline}</div>
       </div>
     </div>`;
 }
@@ -6264,6 +6518,7 @@ function _adminSubnavHtml(active) {
     { tab: 'annotations',       label: '📝 Annotation Types' },
     { tab: 'admin-groups',     label: '🗂 Groups' },
     { tab: 'admin-schedules',  label: '⏱ Schedules' },
+    { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -6447,23 +6702,8 @@ function renderAdminGroupsPanel() {
         <div id="new-group-feedback" class="text-xs text-slate-500"></div>
       </div>
 
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
-        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">🔍 Discover from GitHub Org</div>
-        <div class="flex gap-2 flex-wrap items-end">
-          <div>
-            <label class="block text-[10px] text-slate-500 mb-0.5">GitHub org</label>
-            <input id="discover-org" type="text" placeholder="my-org" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-40">
-          </div>
-          <label class="flex items-center gap-1 text-xs text-slate-400 pb-1.5">
-            <input id="discover-include-forks" type="checkbox" class="accent-cyan-600"> Include forks
-          </label>
-          <label class="flex items-center gap-1 text-xs text-slate-400 pb-1.5">
-            <input id="discover-include-archived" type="checkbox" class="accent-cyan-600"> Include archived
-          </label>
-          <button onclick="discoverOrgRepos()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Discover</button>
-        </div>
-        <div id="discover-feedback" class="text-xs text-slate-500"></div>
-        <div id="discover-results"></div>
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
+        🔍 Discover and add new repos via <strong class="text-slate-300">Scouting → (no repo selected) → Discover repos</strong> — assign a group there, or from an individual repo's own record.
       </div>
 
       <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
@@ -6485,85 +6725,443 @@ function renderAdminGroupsPanel() {
     </div>`;
 }
 
-async function discoverOrgRepos() {
-  const org = document.getElementById('discover-org').value.trim();
-  const includeForks = document.getElementById('discover-include-forks').checked;
-  const includeArchived = document.getElementById('discover-include-archived').checked;
-  const fb = document.getElementById('discover-feedback');
-  if (!org) { fb.textContent = 'Enter a GitHub org name.'; return; }
-  fb.textContent = `Discovering repos in '${org}'…`;
-  document.getElementById('discover-results').innerHTML = '';
+// ── Discover repos to scout (Scouting, no repo selected) — general GitHub
+// search for candidates, upstream of Scouting itself. Retired/generalized
+// from the old org-only Admin > Groups discovery block above (D8/D9). ─────
+
+async function renderScoutingDiscoverView() {
+  const view = document.getElementById('scouting-discover-view');
+  if (!_groups.length) {
+    try { _groups = await (await fetch('/api/projects/groups')).json(); } catch(e) {}
+  }
+  let baseUrlInfo = { base_url: 'api.github.com', is_override: false };
+  try { baseUrlInfo = await (await fetch('/api/discovery/github-base-url')).json(); } catch(e) {}
+  try { _scoutFoundations = await (await fetch('/api/discovery/foundations')).json(); } catch(e) {}
+  try { _adminDiscoverySources = await (await fetch('/api/discovery/sources')).json(); } catch(e) {}
+
+  const foundationChips = Object.entries(_scoutFoundations).map(([key, f]) => `
+    <button onclick="_applyFoundationPrefilter('${_esc(key)}')"
+      class="text-xs px-2 py-1 rounded-full bg-slate-800 hover:bg-cyan-800 text-slate-300 transition-colors">${_esc(f.label)}</button>
+  `).join('');
+
+  const sourceButtons = _adminDiscoverySources.map(s => `
+    <button onclick="runDiscoverySource('${_esc(s.slug)}')"
+      class="text-xs px-2.5 py-1.5 rounded bg-slate-800 hover:bg-cyan-800 text-slate-200 transition-colors" title="${_esc(s.source_type)} source">
+      ${s.source_type === 'list' ? '📋' : '🔍'} ${_esc(s.display_name)}
+    </button>
+  `).join('');
+
+  view.innerHTML = _scoutingSubnavHtml('discover') + `
+    <div class="max-w-4xl mx-auto space-y-4">
+      <div>
+        <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔍 Discover repos to scout</h1>
+        <p class="text-xs text-slate-400 mt-1">Search GitHub for candidate repos, before any specific one is registered. Select repos and import them into the catalog to start Scouting them.</p>
+      </div>
+
+      ${sourceButtons ? `<div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Saved sources</div>
+        <div class="flex flex-wrap gap-1.5">${sourceButtons}</div>
+        <div class="text-[10px] text-slate-500">Manage saved sources in ⚙ Admin → Discovery Sources.</div>
+      </div>` : ''}
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Ad-hoc search</div>
+          <button onclick="_saveCurrentSearchAsSource()" class="text-xs text-cyan-400 hover:text-cyan-300">💾 Save as new source</button>
+        </div>
+        <div class="flex items-center gap-2 text-xs text-slate-500">
+          <span>GitHub source: <span class="font-mono text-slate-400">${_esc(baseUrlInfo.base_url)}</span>${baseUrlInfo.is_override ? ' <span class="text-cyan-400">(override)</span>' : ''}</span>
+          <button onclick="_toggleGithubSourceEdit()" class="text-cyan-400 hover:text-cyan-300">[edit]</button>
+        </div>
+        <div id="github-source-edit" class="hidden flex gap-2 items-center">
+          <input id="github-source-input" type="text" placeholder="https://api.github.com or https://ghe.example.com/api/v3"
+            value="${baseUrlInfo.is_override ? _esc(baseUrlInfo.base_url) : ''}"
+            class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 flex-1">
+          <button onclick="_saveGithubSource()" class="text-xs px-2 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded font-semibold">Save</button>
+          <button onclick="_saveGithubSource(true)" class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded">Reset to default</button>
+        </div>
+
+        ${foundationChips ? `<div class="flex flex-wrap gap-1.5">${foundationChips}</div>` : ''}
+
+        <div class="flex gap-2 flex-wrap items-end">
+          <div class="flex-1 min-w-40">
+            <label class="block text-[10px] text-slate-500 mb-0.5">Keyword</label>
+            <input id="scout-keyword" type="text" placeholder="data catalog" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Min stars</label>
+            <input id="scout-min-stars" type="number" min="0" placeholder="0" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-24">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Language</label>
+            <select id="scout-language" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-28">
+              ${_SCOUT_LANGUAGES.map(l => `<option value="${_esc(l)}">${_esc(l) || '(any)'}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">License</label>
+            <select id="scout-license" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-32">
+              ${_SCOUT_LICENSES.map(([v, label]) => `<option value="${_esc(v)}">${_esc(label)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Pushed after</label>
+            <input id="scout-pushed-after" type="date" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Org</label>
+            <input id="scout-org" type="text" placeholder="my-org" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-28">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Topic</label>
+            <input id="scout-topic" type="text" placeholder="data-catalog" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-32">
+          </div>
+          <button onclick="searchScoutRepos()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Search</button>
+        </div>
+        <div class="flex gap-4">
+          <label class="flex items-center gap-1 text-xs text-slate-400">
+            <input id="scout-include-archived" type="checkbox" class="accent-cyan-600"> Include archived
+          </label>
+          <label class="flex items-center gap-1 text-xs text-slate-400">
+            <input id="scout-include-forks" type="checkbox" class="accent-cyan-600"> Include forks
+          </label>
+        </div>
+        <div id="scout-feedback" class="text-xs text-slate-500"></div>
+      </div>
+
+      <div id="scout-results"></div>
+    </div>`;
+}
+
+function _applyFoundationPrefilter(key) {
+  const f = _scoutFoundations[key];
+  if (!f) return;
+  document.getElementById('scout-org').value = f.org || '';
+  document.getElementById('scout-topic').value = f.topic || '';
+  searchScoutRepos();
+}
+
+async function runDiscoverySource(slug) {
+  const fb = document.getElementById('scout-feedback');
+  fb.textContent = 'Running saved source…';
+  document.getElementById('scout-results').innerHTML = '';
   try {
-    const params = new URLSearchParams({ include_forks: includeForks, include_archived: includeArchived });
-    const res = await fetch(`/api/projects/discover/${encodeURIComponent(org)}?${params}`);
+    const res = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/run`, { method: 'POST' });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${res.status}`);
     }
-    _discoveredRepos = await res.json();
-    _discoveredOrg = org;
-    fb.textContent = `Found ${_discoveredRepos.length} repo(s).`;
-    renderDiscoveredRepos();
+    _scoutResults = await res.json();
+    _scoutFilterText = '';
+    fb.textContent = `Found ${_scoutResults.length} repo(s).`;
+    renderScoutResults();
   } catch(e) {
     fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
   }
 }
 
-function renderDiscoveredRepos() {
-  const results = document.getElementById('discover-results');
-  if (!_discoveredRepos.length) { results.innerHTML = ''; return; }
+async function _saveCurrentSearchAsSource() {
+  const filters = _currentScoutFilters();
+  if (!Object.entries(filters).some(([k, v]) => k !== 'min_stars' ? !!v : v > 0)) {
+    showToast('info', 'Fill in at least one search filter before saving it as a source.', 4000);
+    return;
+  }
+  const displayName = prompt('Name this source (e.g. "CNCF Data Tools"):', '');
+  if (!displayName) return;
+  const slug = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  try {
+    const res = await fetch('/api/discovery/sources', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug, display_name: displayName, source_type: 'search', config: filters }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    showToast('success', `Saved "${_esc(displayName)}" as a discovery source.`, 4000);
+    renderScoutingDiscoverView();
+  } catch(e) {
+    showToast('error', `Failed to save source: ${_esc(e.message)}`, 5000);
+  }
+}
+
+function _toggleGithubSourceEdit() {
+  document.getElementById('github-source-edit').classList.toggle('hidden');
+}
+
+async function _saveGithubSource(reset = false) {
+  const value = reset ? '' : document.getElementById('github-source-input').value.trim();
+  try {
+    const res = await fetch('/api/discovery/github-base-url', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ base_url: value }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'GitHub source updated.', 3000);
+    renderScoutingDiscoverView();
+  } catch(e) {
+    showToast('error', `Failed to update GitHub source: ${_esc(e.message)}`, 5000);
+  }
+}
+
+function _currentScoutFilters() {
+  return {
+    keyword: document.getElementById('scout-keyword').value.trim(),
+    min_stars: parseInt(document.getElementById('scout-min-stars').value, 10) || 0,
+    language: document.getElementById('scout-language').value.trim(),
+    license: document.getElementById('scout-license').value.trim(),
+    pushed_after: document.getElementById('scout-pushed-after').value,
+    org: document.getElementById('scout-org').value.trim(),
+    // GitHub topics are always lowercase-hyphenated — normalize here so a
+    // human-typed "Data Catalog" becomes the valid qualifier "data-catalog"
+    // instead of another malformed-query 400.
+    topic: document.getElementById('scout-topic').value.trim().toLowerCase().replace(/\s+/g, '-'),
+    include_archived: document.getElementById('scout-include-archived').checked,
+    include_forks: document.getElementById('scout-include-forks').checked,
+  };
+}
+
+// Fields that don't count as "a filter" for the "enter at least one
+// filter" guard below — booleans and numeric defaults, not search terms.
+const _SCOUT_NON_FILTER_KEYS = new Set(['min_stars', 'include_archived', 'include_forks']);
+
+async function searchScoutRepos() {
+  const fb = document.getElementById('scout-feedback');
+  const body = _currentScoutFilters();
+  if (!Object.entries(body).some(([k, v]) => _SCOUT_NON_FILTER_KEYS.has(k) ? (k === 'min_stars' && v > 0) : !!v)) {
+    fb.innerHTML = '<span class="text-amber-400">Enter at least one filter.</span>';
+    return;
+  }
+  fb.textContent = 'Searching…';
+  document.getElementById('scout-results').innerHTML = '';
+  try {
+    const res = await fetch('/api/discovery/search', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    _scoutResults = await res.json();
+    _scoutFilterText = '';
+    fb.textContent = `Found ${_scoutResults.length} repo(s).`;
+    renderScoutResults();
+  } catch(e) {
+    fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+
+function _applyScoutFilter(value) {
+  _scoutFilterText = value;
+  renderScoutResults();
+  // renderScoutResults() rebuilds the whole results panel (fresh DOM),
+  // which drops focus — restore it and put the cursor back at the end so
+  // typing feels continuous, not like the field keeps blurring.
+  const el = document.getElementById('scout-filter');
+  if (el) {
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }
+}
+
+// Column sort state — click a header to sort by it, click again to flip
+// direction. Sorting is over the full _scoutResults batch (stable index
+// mapping preserved via the {r,i} pairs below), not just what's currently
+// filtered into view.
+let _scoutSortKey = null;   // 'full_name' | 'stars' | 'language' | 'license' | null
+let _scoutSortDir = 1;      // 1 = asc, -1 = desc
+
+// Column widths (px) — resizable via the drag handle in each header cell.
+// Persisted only for the current session/render, not saved server-side.
+const _scoutColWidths = { name: 220, description: 260, stars: 80, language: 100, license: 110, status: 140, actions: 110 };
+
+function _setScoutSort(key) {
+  if (_scoutSortKey === key) _scoutSortDir *= -1;
+  else { _scoutSortKey = key; _scoutSortDir = 1; }
+  renderScoutResults();
+}
+
+function _startScoutColResize(e, col) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startWidth = _scoutColWidths[col];
+  function onMove(ev) {
+    _scoutColWidths[col] = Math.max(60, startWidth + (ev.clientX - startX));
+    const colEl = document.getElementById(`scout-col-${col}`);
+    if (colEl) colEl.style.width = _scoutColWidths[col] + 'px';
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function renderScoutResults() {
+  const results = document.getElementById('scout-results');
+  if (!_scoutResults.length) { results.innerHTML = ''; return; }
 
   const groupOptions = _groups.map(g => `<option value="${_esc(g.slug)}">${_esc(g.display_name)}</option>`).join('');
-  const rows = _discoveredRepos.map((r, i) => {
+  // Client-side filter over the already-fetched batch — not a new search.
+  // Matches across every visible column (name, description, language,
+  // license) so "find the one repo I care about in these 100 results"
+  // doesn't need a round trip.
+  const term = (_scoutFilterText || '').toLowerCase();
+  let visible = _scoutResults
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => !term || [r.full_name, r.description, r.language, r.license]
+      .some(v => (v || '').toLowerCase().includes(term)));
+
+  if (_scoutSortKey) {
+    visible = visible.slice().sort((a, b) => {
+      const av = a.r[_scoutSortKey], bv = b.r[_scoutSortKey];
+      if (typeof av === 'number' || typeof bv === 'number') return ((av || 0) - (bv || 0)) * _scoutSortDir;
+      return String(av || '').localeCompare(String(bv || '')) * _scoutSortDir;
+    });
+  }
+
+  const sortIndicator = (key) => _scoutSortKey === key ? (_scoutSortDir === 1 ? ' ▲' : ' ▼') : '';
+  const resizeHandle = (col) => `<span onmousedown="_startScoutColResize(event, '${col}')"
+    class="inline-block w-1 h-3 ml-1 cursor-col-resize hover:bg-cyan-500 align-middle"></span>`;
+
+  // Rows default to UNCHECKED — a search/list result is a candidate to
+  // review, not an assumed import; explicit "Select all new" opts in.
+  const rows = visible.map(({ r, i }) => {
+    const hidden = _dispositionIsHidden(r.disposition);
     const disabled = r.already_registered ? 'disabled' : '';
-    const checked = r.already_registered ? '' : 'checked';
-    return `<tr class="border-b border-slate-800 ${r.already_registered ? 'opacity-50' : ''}">
-      <td class="px-3 py-2"><input type="checkbox" id="discover-repo-${i}" ${checked} ${disabled} class="accent-cyan-600"></td>
-      <td class="px-3 py-2 font-mono text-xs text-slate-200">${_esc(r.full_name)}</td>
-      <td class="px-3 py-2 text-slate-400 text-xs max-w-sm truncate">${_esc(r.description) || '—'}</td>
+    const dispBadge = _DISPOSITION_LABELS[r.disposition]
+      ? `<span class="text-slate-500" title="${_esc(r.disposition_reason)}${r.disposition_decided_at ? ' — ' + _esc(r.disposition_decided_at) : ''}">${_DISPOSITION_LABELS[r.disposition]}</span>` : '';
+    return `<tr class="border-b border-slate-800 ${(r.already_registered || hidden) ? 'opacity-50' : ''}">
+      <td class="px-3 py-2"><input type="checkbox" id="scout-repo-${i}" ${disabled} class="accent-cyan-600"></td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-200 truncate">
+        <a href="${_esc(r.html_url)}" target="_blank" class="hover:text-cyan-400">${_esc(r.full_name)}</a>
+      </td>
+      <td class="px-3 py-2 text-slate-400 text-xs truncate">${_esc(r.description) || '—'}</td>
       <td class="px-3 py-2 text-slate-450 text-xs">★ ${r.stars}</td>
-      <td class="px-3 py-2 text-xs">${r.already_registered ? '<span class="text-slate-500">Already registered</span>' : ''}</td>
+      <td class="px-3 py-2 text-slate-450 text-xs truncate">${_esc(r.language) || '—'}</td>
+      <td class="px-3 py-2 text-slate-450 text-xs truncate">${_esc(r.license) || '—'}</td>
+      <td class="px-3 py-2 text-xs truncate">${r.already_registered ? '<span class="text-slate-500">Already registered</span>' : dispBadge}</td>
+      <td class="px-3 py-2 text-xs whitespace-nowrap">
+        <button onclick="_setScoutDisposition(${i}, 'tracking')" title="Track" class="px-1 hover:text-cyan-400">👁</button>
+        <button onclick="_setScoutDisposition(${i}, 'investigating')" title="Investigate" class="px-1 hover:text-cyan-400">🔬</button>
+        <button onclick="_setScoutDisposition(${i}, 'abandoned')" title="Abandon" class="px-1 hover:text-red-400">⛔</button>
+        <button onclick="_setScoutDisposition(${i}, 'ignored')" title="Ignore" class="px-1 hover:text-red-400">🚫</button>
+      </td>
     </tr>`;
   }).join('');
 
   results.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
-      <button onclick="selectAllNewDiscovered()" class="text-xs text-cyan-400 hover:text-cyan-300">Select all new</button>
+    <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
       <div class="flex items-center gap-2">
-        <select id="discover-target-group" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5">
+        <button onclick="_selectAllNewScoutRepos()" class="text-xs text-cyan-400 hover:text-cyan-300">Select all new</button>
+        <button onclick="_deselectAllScoutRepos()" class="text-xs text-slate-400 hover:text-slate-300">Deselect all</button>
+        <input id="scout-filter" type="text" placeholder="Filter results…" value="${_esc(_scoutFilterText)}"
+          oninput="_applyScoutFilter(this.value)"
+          class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1 w-40">
+        <span class="text-[10px] text-slate-500">${visible.length} of ${_scoutResults.length} shown</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <select id="scout-target-group" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5">
           <option value="">No group</option>
           ${groupOptions}
         </select>
-        <button onclick="importSelectedDiscovered()" class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs font-semibold transition-colors">Import Selected</button>
+        <button onclick="importSelectedScoutRepos()" class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs font-semibold transition-colors">Import Selected</button>
       </div>
     </div>
-    <div class="bg-slate-950 border border-slate-800 rounded max-h-80 overflow-y-auto">
-      <table class="w-full text-left border-collapse">
+    <div class="bg-slate-950 border border-slate-800 rounded max-h-96 overflow-auto">
+      <table class="text-left border-collapse" style="table-layout:fixed; width:max-content;">
+        <colgroup>
+          <col style="width:32px">
+          <col id="scout-col-name" style="width:${_scoutColWidths.name}px">
+          <col id="scout-col-description" style="width:${_scoutColWidths.description}px">
+          <col id="scout-col-stars" style="width:${_scoutColWidths.stars}px">
+          <col id="scout-col-language" style="width:${_scoutColWidths.language}px">
+          <col id="scout-col-license" style="width:${_scoutColWidths.license}px">
+          <col id="scout-col-status" style="width:${_scoutColWidths.status}px">
+          <col id="scout-col-actions" style="width:${_scoutColWidths.actions}px">
+        </colgroup>
+        <thead class="sticky top-0 bg-slate-900 text-[10px] text-slate-500 uppercase">
+          <tr class="border-b border-slate-800">
+            <th class="px-3 py-1.5"></th>
+            <th class="px-3 py-1.5"><span class="cursor-pointer hover:text-slate-300" onclick="_setScoutSort('full_name')">Name${sortIndicator('full_name')}</span>${resizeHandle('name')}</th>
+            <th class="px-3 py-1.5">Description${resizeHandle('description')}</th>
+            <th class="px-3 py-1.5"><span class="cursor-pointer hover:text-slate-300" onclick="_setScoutSort('stars')">Stars${sortIndicator('stars')}</span>${resizeHandle('stars')}</th>
+            <th class="px-3 py-1.5"><span class="cursor-pointer hover:text-slate-300" onclick="_setScoutSort('language')">Language${sortIndicator('language')}</span>${resizeHandle('language')}</th>
+            <th class="px-3 py-1.5"><span class="cursor-pointer hover:text-slate-300" onclick="_setScoutSort('license')">License${sortIndicator('license')}</span>${resizeHandle('license')}</th>
+            <th class="px-3 py-1.5">Status${resizeHandle('status')}</th>
+            <th class="px-3 py-1.5">Disposition</th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
 }
 
-function selectAllNewDiscovered() {
-  _discoveredRepos.forEach((r, i) => {
-    if (!r.already_registered) document.getElementById(`discover-repo-${i}`).checked = true;
+function _selectAllNewScoutRepos() {
+  // Only affects currently-filtered-in rows — a filtered-out row has no
+  // checkbox element in the DOM right now.
+  _scoutResults.forEach((r, i) => {
+    if (r.already_registered || _dispositionIsHidden(r.disposition)) return;
+    const cb = document.getElementById(`scout-repo-${i}`);
+    if (cb) cb.checked = true;
   });
 }
 
-async function importSelectedDiscovered() {
-  const groupSlug = document.getElementById('discover-target-group').value;
-  const selected = _discoveredRepos.filter((r, i) => {
-    const cb = document.getElementById(`discover-repo-${i}`);
+function _deselectAllScoutRepos() {
+  _scoutResults.forEach((r, i) => {
+    const cb = document.getElementById(`scout-repo-${i}`);
+    if (cb) cb.checked = false;
+  });
+}
+
+async function _setScoutDisposition(i, disposition) {
+  const r = _scoutResults[i];
+  let reason = '';
+  if (_dispositionIsHidden(disposition)) {
+    const verb = disposition === 'abandoned' ? 'abandon' : 'ignore';
+    reason = prompt(`Why ${verb} ${r.full_name}? (optional — helps if this comes up again later)`, '') || '';
+  }
+  try {
+    const res = await fetch('/api/discovery/disposition', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ github_url: r.html_url, disposition, reason }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    r.disposition = disposition;
+    r.disposition_reason = reason;
+    renderScoutResults();
+  } catch(e) {
+    showToast('error', `Failed to set disposition: ${_esc(e.message)}`, 5000);
+  }
+}
+
+async function _pollProjectsAfterImport(expectedNewCount) {
+  const baseline = _allProjectSummaries.length;
+  const delaysMs = [2000, 4000, 6000, 8000];  // ~20s total, backing off
+  for (const delay of delaysMs) {
+    await new Promise(r => setTimeout(r, delay));
+    await loadProjects();
+    if (_allProjectSummaries.length >= baseline + expectedNewCount) return;
+  }
+}
+
+async function importSelectedScoutRepos() {
+  const groupSlug = document.getElementById('scout-target-group').value;
+  const selected = _scoutResults.filter((r, i) => {
+    const cb = document.getElementById(`scout-repo-${i}`);
     return cb && cb.checked && !r.already_registered;
   });
   if (!selected.length) { showToast('error', 'No new repos selected.', 4000); return; }
 
   try {
-    const res = await fetch(`/api/projects/discover/${encodeURIComponent(_discoveredOrg)}/import`, {
+    const res = await fetch('/api/discovery/import', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         repos: selected.map(r => ({ github_url: r.html_url, display_name: r.full_name, description: r.description })),
         group_slug: groupSlug,
+        source_label: 'search: ' + (document.getElementById('scout-keyword')?.value || 'discover repos'),
       }),
     });
     if (!res.ok) {
@@ -6572,9 +7170,16 @@ async function importSelectedDiscovered() {
     }
     const data = await res.json();
     showToast('success', `Import started for ${data.queued} repo(s) — check Activity log for progress.${data.skipped.length ? ` (${data.skipped.length} already registered, skipped.)` : ''}`, 6000);
-    _discoveredRepos = [];
-    document.getElementById('discover-results').innerHTML = '';
-    document.getElementById('discover-feedback').textContent = '';
+    _scoutResults = [];
+    document.getElementById('scout-results').innerHTML = '';
+    document.getElementById('scout-feedback').textContent = '';
+    // Import runs in a background thread (POST /api/discovery/import
+    // returns as soon as it's queued, not once registration is done) — one
+    // immediate refresh here would almost always race it and still show
+    // the old list. Poll a few more times over the next ~20s to pick up
+    // newly-registered repos without the user having to reload manually.
+    if (data.queued > 0) _pollProjectsAfterImport(data.queued);
+    else loadProjects();
   } catch(e) {
     showToast('error', `Failed to start import: ${_esc(e.message)}`, 6000);
   }
@@ -6612,6 +7217,162 @@ async function deleteAdminGroup(slug) {
     loadAdminGroupsPanel();
   } catch(e) {
     showToast('error', `Failed to delete group: ${_esc(e.message)}`, 6000);
+  }
+}
+
+// ── Admin — Discovery Sources: named, reusable "where do we scout" configs
+// (a saved search, or a manually-curated list of github_urls) — picked from
+// Scouting's Discover sub-tab instead of re-typing filters every time.
+// "Scouting workflow redesign" plan, D1/D2. ─────────────────────────────────
+
+async function loadAdminDiscoverySourcesPanel() {
+  const view = document.getElementById('admin-discovery-sources-view');
+  view.innerHTML = _adminSubnavHtml('admin-discovery-sources') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading discovery sources…</div>';
+  try {
+    const res = await fetch('/api/discovery/sources');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _adminDiscoverySources = await res.json();
+    renderAdminDiscoverySourcesPanel();
+  } catch(e) {
+    view.innerHTML = _adminSubnavHtml('admin-discovery-sources') +
+      `<div class="text-red-400 text-xs p-4">Failed to load discovery sources: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAdminDiscoverySourcesPanel() {
+  const view = document.getElementById('admin-discovery-sources-view');
+  const rows = _adminDiscoverySources.map(s => {
+    const summary = s.source_type === 'list'
+      ? `${(s.config.urls || []).length} URL(s)`
+      : ['org', 'topic', 'language', 'license', 'keyword'].map(k => s.config[k] ? `${k}:${s.config[k]}` : '').filter(Boolean).join(' ') || '(no filters)';
+    return `<tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+      <td class="px-4 py-3 font-semibold text-slate-200">${_esc(s.display_name)}</td>
+      <td class="px-4 py-3 font-mono text-purple-400 text-xs">${_esc(s.slug)}</td>
+      <td class="px-4 py-3 text-xs"><span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">${s.source_type}</span></td>
+      <td class="px-4 py-3 text-slate-350 text-xs max-w-sm truncate">${_esc(summary)}</td>
+      <td class="px-4 py-3 text-right">
+        <button onclick="deleteAdminDiscoverySource('${_esc(s.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-discovery-sources') + `
+    <div class="p-6 space-y-6">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">🔍 Discovery Sources</h1>
+        <p class="text-xs text-slate-400 mt-1">Named, reusable "where do we scout" configs — a saved GitHub search, or a manually-curated list of repos (for foundations that spread projects across many orgs, like Eclipse, or your own enterprise repos). Picked from Scouting → Discover repos.</p>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">+ New Discovery Source</div>
+        <div class="flex gap-2 flex-wrap items-end">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Slug</label>
+            <input id="new-source-slug" type="text" placeholder="cncf-data-tools" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-36">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Display name</label>
+            <input id="new-source-name" type="text" placeholder="CNCF Data Tools" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-48">
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">Type</label>
+            <select id="new-source-type" onchange="_toggleSourceTypeFields()" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5">
+              <option value="search">Search (org/language/topic/...)</option>
+              <option value="list">List of URLs</option>
+            </select>
+          </div>
+        </div>
+        <div id="new-source-search-fields" class="flex gap-2 flex-wrap items-end">
+          <div><label class="block text-[10px] text-slate-500 mb-0.5">Org</label>
+            <input id="new-source-org" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-28"></div>
+          <div><label class="block text-[10px] text-slate-500 mb-0.5">Topic</label>
+            <input id="new-source-topic" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-28"></div>
+          <div><label class="block text-[10px] text-slate-500 mb-0.5">Language</label>
+            <input id="new-source-language" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-24"></div>
+          <div><label class="block text-[10px] text-slate-500 mb-0.5">License</label>
+            <input id="new-source-license" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-24"></div>
+          <div><label class="block text-[10px] text-slate-500 mb-0.5">Min stars</label>
+            <input id="new-source-min-stars" type="number" min="0" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-20"></div>
+          <div class="flex-1 min-w-32"><label class="block text-[10px] text-slate-500 mb-0.5">Keyword</label>
+            <input id="new-source-keyword" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full"></div>
+        </div>
+        <div id="new-source-list-fields" class="hidden">
+          <label class="block text-[10px] text-slate-500 mb-0.5">GitHub URLs (one per line)</label>
+          <textarea id="new-source-urls" rows="4" placeholder="https://github.com/acme/foo&#10;https://github.com/acme/bar" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full font-mono"></textarea>
+        </div>
+        <button onclick="createAdminDiscoverySource()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
+        <div id="new-source-feedback" class="text-xs text-slate-500"></div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
+              <th class="px-4 py-3">Display Name</th>
+              <th class="px-4 py-3">Slug</th>
+              <th class="px-4 py-3">Type</th>
+              <th class="px-4 py-3">Config</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500 text-xs">No discovery sources yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function _toggleSourceTypeFields() {
+  const isList = document.getElementById('new-source-type').value === 'list';
+  document.getElementById('new-source-search-fields').classList.toggle('hidden', isList);
+  document.getElementById('new-source-list-fields').classList.toggle('hidden', !isList);
+}
+
+async function createAdminDiscoverySource() {
+  const slug = document.getElementById('new-source-slug').value.trim();
+  const displayName = document.getElementById('new-source-name').value.trim();
+  const sourceType = document.getElementById('new-source-type').value;
+  const fb = document.getElementById('new-source-feedback');
+  if (!slug || !displayName) { fb.textContent = 'Slug and display name are both required.'; return; }
+
+  const config = sourceType === 'list'
+    ? { urls: document.getElementById('new-source-urls').value.split('\n').map(u => u.trim()).filter(Boolean) }
+    : {
+        org: document.getElementById('new-source-org').value.trim(),
+        topic: document.getElementById('new-source-topic').value.trim(),
+        language: document.getElementById('new-source-language').value.trim(),
+        license: document.getElementById('new-source-license').value.trim(),
+        min_stars: parseInt(document.getElementById('new-source-min-stars').value, 10) || 0,
+        keyword: document.getElementById('new-source-keyword').value.trim(),
+      };
+
+  fb.textContent = 'Creating…';
+  try {
+    const res = await fetch('/api/discovery/sources', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug, display_name: displayName, source_type: sourceType, config }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    fb.textContent = '';
+    loadAdminDiscoverySourcesPanel();
+  } catch(e) {
+    fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function deleteAdminDiscoverySource(slug) {
+  try {
+    const res = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Discovery source deleted.', 3000);
+    loadAdminDiscoverySourcesPanel();
+  } catch(e) {
+    showToast('error', `Failed to delete: ${_esc(e.message)}`, 5000);
   }
 }
 

@@ -9,6 +9,13 @@ from pydantic import BaseModel
 router = APIRouter()
 
 
+# Disposition values that hide a repo from the sidebar by default — matches
+# the frontend's _HIDDEN_DISPOSITIONS set exactly (index.html). "ignored" =
+# passed on it early; "abandoned" = went further, then decided against it
+# ("Scouting workflow redesign" plan, D3).
+_HIDDEN_DISPOSITIONS = {"ignored", "abandoned"}
+
+
 class ProjectSummary(BaseModel):
     slug: str
     display_name: str
@@ -21,9 +28,18 @@ class ProjectSummary(BaseModel):
     group_slug: str = ""
     last_surveyed_at: str = ""  # "" = never surveyed (coarse scan or deep)
     is_published: bool = False  # egeria_asset_guid set — boolean only, not the raw GUID
+    disposition: str = "undecided"  # undecided | tracking | investigating | abandoned | ignored — see registry.py's repo_dispositions
+    working_set_hidden: bool = False  # personal view filter, separate axis from disposition — see registry.py's resource_working_set
 
 
-def _to_summary(p) -> ProjectSummary:
+def _to_summary(p, registry=None) -> ProjectSummary:
+    disposition = "undecided"
+    working_set_hidden = False
+    if registry is not None:
+        disp = registry.get_disposition(p.github_url)
+        if disp:
+            disposition = disp["disposition"]
+        working_set_hidden = registry.is_working_set_hidden("repo", p.slug)
     return ProjectSummary(
         slug=p.slug,
         display_name=p.display_name,
@@ -36,13 +52,27 @@ def _to_summary(p) -> ProjectSummary:
         group_slug=getattr(p, "group_slug", "") or "",
         last_surveyed_at=getattr(p, "last_surveyed_at", "") or "",
         is_published=bool(getattr(p, "egeria_asset_guid", "") or ""),
+        disposition=disposition,
+        working_set_hidden=working_set_hidden,
     )
 
 
 @router.get("/", response_model=list[ProjectSummary])
-async def list_projects() -> list[ProjectSummary]:
+async def list_projects(include_ignored: bool = False, include_working_set_hidden: bool = False) -> list[ProjectSummary]:
+    """Excludes `ignored`/`abandoned`-disposition repos and working-set-hidden
+    repos by default — the sidebar's "Show hidden (N)" toggle passes both
+    params to reveal everything. Reversible, not a hard delete either way
+    (registry.py's repo_dispositions/resource_working_set rows are
+    untouched) ("Discover repos to scout" plan, D10; "Scouting workflow
+    redesign" plan, D3/D4)."""
     from resource_explorer.registry import ProjectRegistry
-    return [_to_summary(p) for p in ProjectRegistry().list_all()]
+    registry = ProjectRegistry()
+    summaries = [_to_summary(p, registry) for p in registry.list_all()]
+    if not include_ignored:
+        summaries = [s for s in summaries if s.disposition not in _HIDDEN_DISPOSITIONS]
+    if not include_working_set_hidden:
+        summaries = [s for s in summaries if not s.working_set_hidden]
+    return summaries
 
 
 class GroupStats(BaseModel):
@@ -154,110 +184,14 @@ async def assign_group(slug: str, body: GroupAssign) -> dict:
     return {"slug": slug, "resource_type": body.resource_type, "group_slug": body.group_slug}
 
 
-class DiscoveredRepo(BaseModel):
-    full_name: str
-    html_url: str
-    description: str = ""
-    stars: int = 0
-    language: str = ""
-    already_registered: bool = False
-
-
-class ImportRepoSpec(BaseModel):
-    github_url: str
-    display_name: str
-    description: str = ""
-
-
-class ImportRequest(BaseModel):
-    repos: list[ImportRepoSpec]
-    group_slug: str = ""
-
-
-class ImportResponse(BaseModel):
-    queued: int
-    skipped: list[str]  # github_urls already registered, not re-queued
-
-
-@router.get("/discover/{org}", response_model=list[DiscoveredRepo])
-async def discover_org_repos(
-    org: str, include_forks: bool = False, include_archived: bool = False
-) -> list[DiscoveredRepo]:
-    """Read-only — lists an org's repos via the GitHub API, flagging which
-    are already registered. Does not touch the registry."""
-    from github import GithubException
-
-    from resource_explorer.github.client import GitHubClient
-    from resource_explorer.registry import ProjectRegistry
-
-    def _list():
-        return GitHubClient().list_org_repos(org, include_forks=include_forks, include_archived=include_archived)
-
-    try:
-        repos = await asyncio.to_thread(_list)
-    except GithubException as exc:
-        if exc.status == 404:
-            raise HTTPException(status_code=404, detail=f"GitHub org '{org}' not found") from exc
-        if exc.status in (401, 403):
-            raise HTTPException(
-                status_code=502,
-                detail="GitHub authentication/rate-limit error — check GITHUB_TOKEN in .env",
-            ) from exc
-        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}") from exc
-
-    registry = ProjectRegistry()
-    out = []
-    for r in repos:
-        out.append(DiscoveredRepo(
-            full_name=r["full_name"], html_url=r["html_url"], description=r["description"],
-            stars=r["stars"], language=r["language"],
-            already_registered=registry.get_by_github_url(r["html_url"]) is not None,
-        ))
-    out.sort(key=lambda r: r.stars, reverse=True)
-    return out
-
-
-@router.post("/discover/{org}/import", response_model=ImportResponse)
-async def import_org_repos(org: str, body: ImportRequest) -> ImportResponse:
-    """Queues a background import — see resource_explorer/github/org_importer.py.
-    Returns immediately; progress is written to the activity log (operation
-    'scout') as each repo completes, not polled from this response."""
-    import threading
-
-    from resource_explorer.github.org_importer import _run_import_batch
-    from resource_explorer.registry import ProjectRegistry
-
-    registry = ProjectRegistry()
-    if body.group_slug and not registry.get_group(body.group_slug):
-        raise HTTPException(status_code=404, detail=f"Group '{body.group_slug}' not found")
-
-    to_queue = []
-    skipped = []
-    for r in body.repos:
-        if registry.get_by_github_url(r.github_url):
-            skipped.append(r.github_url)
-        else:
-            to_queue.append(r.model_dump())
-
-    if to_queue:
-        t = threading.Thread(
-            target=_run_import_batch,
-            args=(org, to_queue, body.group_slug),
-            daemon=True,
-            name=f"resource-explorer-org-import-{org}",
-        )
-        t.start()
-
-    return ImportResponse(queued=len(to_queue), skipped=skipped)
-
-
 @router.get("/{slug}", response_model=ProjectSummary)
 async def get_project(slug: str) -> ProjectSummary:
     from resource_explorer.registry import ProjectRegistry
-    project = ProjectRegistry().get(slug)
+    registry = ProjectRegistry()
+    project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return _to_summary(project)
+    return _to_summary(project, registry)
 
 
 class ScoutingOverview(BaseModel):
@@ -278,6 +212,8 @@ class ScoutingOverview(BaseModel):
     repo_size_kb: int = 0
     last_surveyed_at: str = ""
     is_published: bool = False
+    disposition: str = "undecided"
+    disposition_reason: str = ""
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -289,6 +225,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
     stats = registry.get_latest_project_stats(project.slug) or {}
+    disp = registry.get_disposition(project.github_url) or {}
     return ScoutingOverview(
         slug=project.slug,
         display_name=project.display_name,
@@ -302,6 +239,8 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         repo_size_kb=stats.get("repo_size_kb") or 0,
         last_surveyed_at=project.last_surveyed_at,
         is_published=bool(project.egeria_asset_guid),
+        disposition=disp.get("disposition", "undecided"),
+        disposition_reason=disp.get("reason", ""),
     )
 
 
@@ -499,8 +438,23 @@ async def remove_project(slug: str) -> dict:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    store = MultiCollectionStore()
-    for collection in project.collections:
-        store.drop_collection(collection)
-    registry.remove(slug)
+
+    def _do_remove():
+        store = MultiCollectionStore()
+        for collection in project.collections:
+            try:
+                store.drop_collection(collection)
+            except Exception:
+                # A stale/never-created collection (e.g. a broken registration
+                # that errored before ingestion completed) shouldn't block
+                # removing the registry row itself — best-effort, matching
+                # OrgImporter's stats-fetch-failure precedent elsewhere.
+                pass
+        registry.remove(slug)
+
+    # Blocking pgvector work — every other route in this file already runs
+    # its blocking work via asyncio.to_thread; this one didn't, and a slow/
+    # unreachable pgvector call here blocked the whole event loop (found
+    # live: a delete on a broken registration hung indefinitely).
+    await asyncio.to_thread(_do_remove)
     return {"removed": slug}

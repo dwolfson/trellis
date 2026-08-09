@@ -69,6 +69,20 @@ class TestScoutingOverview:
         assert data["last_surveyed_at"] != ""
         assert data["is_published"] is True
 
+    def test_defaults_to_undecided_disposition(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        data = resp.json()
+        assert data["disposition"] == "undecided"
+
+    def test_reflects_a_set_disposition(self, client, registry):
+        registry.set_disposition(
+            "https://github.com/test/myproj", "investigating", reason="looks promising",
+        )
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        data = resp.json()
+        assert data["disposition"] == "investigating"
+        assert data["disposition_reason"] == "looks promising"
+
 
 class TestScoutingScan:
     def test_unknown_repo_returns_404(self, client):
