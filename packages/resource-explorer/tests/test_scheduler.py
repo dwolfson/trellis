@@ -356,6 +356,38 @@ class TestRunDueRepoDispatch:
         assert "not found in the current analysis catalog" in entries[0]["detail"]
 
 
+class TestRunDueRepoIngestDispatch:
+    """rag_ingestion (action:"ingest") isn't a SurveyOrchestrator step — it
+    dispatches to IncrementalIndexer instead, and unlike action:"publish"
+    it IS schedulable (a local re-index, not a new Egeria catalog write)."""
+
+    def test_ingest_analysis_id_dispatches_to_incremental_indexer(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="rag_ingestion")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.ingestion.incremental.IncrementalIndexer") as MockIndexer, \
+             patch("resource_explorer.query_cache.QueryCache"), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            scheduler._run_due()
+
+        MockIndexer.return_value.refresh.assert_called_once()
+        MockOrch.assert_not_called()
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "ok"
+
+    def test_ingest_failure_is_recorded_as_error_not_raised(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="rag_ingestion")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.incremental.IncrementalIndexer.refresh",
+                 side_effect=RuntimeError("clone missing"),
+             ):
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "clone missing" in entries[0]["detail"]
+
+
 class TestRunDueMisc:
     def test_no_due_schedules_is_a_noop(self, registry):
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):

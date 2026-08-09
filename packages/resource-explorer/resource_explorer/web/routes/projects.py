@@ -305,6 +305,7 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     Assessment. Reuses the same analysis_id -> step(s) map the scheduler's
     per-analysis-id dispatch uses (repo_survey_definition_adapter.py)."""
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
     from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
@@ -312,6 +313,26 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # action:"ingest" (currently just rag_ingestion) isn't a SurveyOrchestrator
+    # step at all — it re-embeds content into pgvector via IncrementalIndexer,
+    # not a survey. Checked before the step-map lookup below, same as
+    # scheduler.py's own action:"publish" special-case.
+    catalog_entry = next(
+        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
+    )
+    if catalog_entry and catalog_entry.get("action") == "ingest":
+        def _run_ingest():
+            from resource_explorer.ingestion.incremental import IncrementalIndexer
+            from resource_explorer.query_cache import QueryCache
+            IncrementalIndexer().refresh(project)
+            QueryCache().invalidate_project(slug)
+
+        try:
+            await asyncio.to_thread(_run_ingest)
+        except Exception as exc:
+            return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+        return AnalysisRunResult(status="ok", slug=slug, analysis_id=analysis_id, message="Re-ingested into pgvector.")
 
     steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
     if not steps:

@@ -143,3 +143,30 @@ class TestRunSingleAnalysis:
         data = resp.json()
         assert data["status"] == "ok"
         MockOrch.return_value.run.assert_called_once_with("myproj", steps=["repo_security"])
+
+    def test_ingest_action_id_dispatches_to_incremental_indexer_not_survey_orchestrator(self, client):
+        # rag_ingestion (action:"ingest") isn't a SurveyOrchestrator step —
+        # it re-embeds content into pgvector via IncrementalIndexer.
+        with patch("resource_explorer.ingestion.incremental.IncrementalIndexer") as MockIndexer, \
+             patch("resource_explorer.query_cache.QueryCache"), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            resp = client.post("/api/projects/myproj/analyses/rag_ingestion/run")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["analysis_id"] == "rag_ingestion"
+        MockIndexer.return_value.refresh.assert_called_once()
+        MockOrch.assert_not_called()
+
+    def test_ingest_failure_is_surfaced_as_error_not_a_500(self, client):
+        with patch(
+            "resource_explorer.ingestion.incremental.IncrementalIndexer.refresh",
+            side_effect=RuntimeError("clone missing"),
+        ):
+            resp = client.post("/api/projects/myproj/analyses/rag_ingestion/run")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "clone missing" in data["error"]

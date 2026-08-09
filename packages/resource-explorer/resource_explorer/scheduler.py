@@ -47,6 +47,13 @@ for native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
 merge only ever applies to 'database' — so a repo analysis_id is always
 either a local catalog entry (dispatch by step map) or 'egeria_publish' /
 unrecognized (excluded/error, matching (c) above).
+
+One more repo-only case: action:"ingest" (currently just 'rag_ingestion' —
+"Refresh & Re-ingest," pgvector re-embedding via IncrementalIndexer). Unlike
+action:"publish" this IS schedulable — it's a local re-index, not a new
+write into Egeria's catalog of record — so it gets its own dispatch branch
+in _run_repo_survey rather than going through REPO_ANALYSIS_STEP_MAP (it
+isn't a SurveyOrchestrator step at all).
 """
 from __future__ import annotations
 
@@ -201,6 +208,22 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
             f"'{entry['name']}' writes new data into Egeria (action: publish) — excluded from "
             "scheduled runs by design. Run it manually when you intend that write."
         ])
+
+    if entry.get("action") == "ingest":
+        # rag_ingestion re-embeds content into pgvector via IncrementalIndexer,
+        # not a SurveyOrchestrator step — unlike "publish" this IS schedulable
+        # (it's a local re-index, not a new write into Egeria's catalog of
+        # record), so it gets its own dispatch branch rather than the
+        # step-map lookup below.
+        from resource_explorer.ingestion.incremental import IncrementalIndexer
+        from resource_explorer.query_cache import QueryCache
+
+        try:
+            IncrementalIndexer().refresh(project)
+            QueryCache().invalidate_project(slug)
+        except Exception as exc:
+            return (project.display_name, project.github_url, [str(exc)])
+        return (project.display_name, project.github_url, [])
 
     from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
 
