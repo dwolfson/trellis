@@ -9,11 +9,12 @@ self-logging too would double it.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
 
@@ -34,25 +35,27 @@ def project(registry):
 
 
 def _patch_all_surveyors():
-    """Patch every sub-surveyor class the orchestrator instantiates so
-    .run() returns [] with no real filesystem/network work, while leaving
-    us able to see which ones were actually constructed."""
-    targets = [
-        "resource_explorer.surveyors.survey_orchestrator.FileClassifierSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.FileStructureSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.FileSizeSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.DataProfilerSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.LanguageSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.HealthSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.DependencySurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.DocumentationSurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.SecuritySurveyor",
-        "resource_explorer.surveyors.survey_orchestrator.ApiStructureSurveyor",
-    ]
-    patchers = {t.rsplit(".", 1)[-1]: patch(t) for t in targets}
-    mocks = {name: p.start() for name, p in patchers.items()}
-    for m in mocks.values():
-        m.return_value.run.return_value = []
+    """Patch every StepInfo.surveyor_cls in STEP_REGISTRY so .run() returns
+    [] with no real filesystem/network work, while leaving us able to see
+    which ones were actually constructed.
+
+    Patching module-level class names (e.g. patch(".survey_orchestrator.
+    HealthSurveyor")) doesn't work post-registry-consolidation — SurveyOrchestrator
+    no longer imports these classes itself, and STEP_REGISTRY's StepInfo
+    entries already hold direct references to the real class objects
+    (captured once, at module-import time). Patching info.surveyor_cls on
+    each entry directly is the only thing that actually intercepts
+    construction.
+    """
+    mocks: dict[str, MagicMock] = {}
+    patchers = []
+    for step_key, info in STEP_REGISTRY.items():
+        mock_cls = MagicMock()
+        mock_cls.return_value.run.return_value = []
+        p = patch.object(info, "surveyor_cls", mock_cls)
+        p.start()
+        patchers.append(p)
+        mocks[step_key] = mock_cls
     return mocks, patchers
 
 
@@ -66,7 +69,7 @@ class TestStepsNone:
                     m.return_value.run.assert_called_once()
                 mock_log.assert_called_once()
         finally:
-            for p in patchers.values():
+            for p in patchers:
                 p.stop()
 
     def test_updates_last_surveyed_at(self, registry, project):
@@ -77,7 +80,7 @@ class TestStepsNone:
                 SurveyOrchestrator(registry).run(project)
                 assert registry.get(project).last_surveyed_at != ""
         finally:
-            for p in patchers.values():
+            for p in patchers:
                 p.stop()
 
 
@@ -87,13 +90,13 @@ class TestStepsFiltered:
         try:
             with patch("resource_explorer.surveyors.survey_orchestrator.log_survey") as mock_log:
                 SurveyOrchestrator(registry).run(project, steps=["repo_health"])
-                mocks["HealthSurveyor"].return_value.run.assert_called_once()
-                for name, m in mocks.items():
-                    if name != "HealthSurveyor":
+                mocks["repo_health"].return_value.run.assert_called_once()
+                for key, m in mocks.items():
+                    if key != "repo_health":
                         m.return_value.run.assert_not_called()
                 mock_log.assert_not_called()
         finally:
-            for p in patchers.values():
+            for p in patchers:
                 p.stop()
 
     def test_multiple_steps_all_run(self, registry, project):
@@ -103,12 +106,12 @@ class TestStepsFiltered:
                 SurveyOrchestrator(registry).run(
                     project, steps=["repo_language", "repo_file_classification", "repo_file_structure"]
                 )
-                mocks["LanguageSurveyor"].return_value.run.assert_called_once()
-                mocks["FileClassifierSurveyor"].return_value.run.assert_called_once()
-                mocks["FileStructureSurveyor"].return_value.run.assert_called_once()
-                mocks["HealthSurveyor"].return_value.run.assert_not_called()
+                mocks["repo_language"].return_value.run.assert_called_once()
+                mocks["repo_file_classification"].return_value.run.assert_called_once()
+                mocks["repo_file_structure"].return_value.run.assert_called_once()
+                mocks["repo_health"].return_value.run.assert_not_called()
         finally:
-            for p in patchers.values():
+            for p in patchers:
                 p.stop()
 
     def test_unknown_step_key_is_silently_ignored(self, registry, project):
@@ -120,7 +123,7 @@ class TestStepsFiltered:
                     m.return_value.run.assert_not_called()
                 assert result.annotations == []
         finally:
-            for p in patchers.values():
+            for p in patchers:
                 p.stop()
 
     def test_step_filtered_run_also_updates_last_surveyed_at(self, registry, project):
@@ -131,5 +134,5 @@ class TestStepsFiltered:
                 SurveyOrchestrator(registry).run(project, steps=["repo_health"])
                 assert registry.get(project).last_surveyed_at != ""
         finally:
-            for p in patchers.values():
+            for p in patchers:
                 p.stop()

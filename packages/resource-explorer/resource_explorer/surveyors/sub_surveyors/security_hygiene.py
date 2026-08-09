@@ -35,11 +35,22 @@ _CI_INDICATORS = {
 _LICENSE_FILES = {"LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE.rst", "COPYING"}
 
 
-class SecuritySurveyor(BaseSurveyor):
+class SecurityHygieneSurveyor(BaseSurveyor):
     """
     Checks indexed file paths for the presence of security, CI, and license
     artifacts.  Emits RequestForAction for each gap found, and
     ClassificationAnnotation for each artifact present.
+
+    Renamed from "SecuritySurveyor" — that name implied real security
+    scanning (secrets, CVEs, SAST), but this only ever checked 3 hygiene
+    artifacts (SECURITY.md, CI config, license presence), matching its own
+    STEP = "SecurityHygieneCheck". The rename frees "security" as a family
+    name for future analyses that do real scanning (secret detection,
+    dependency-vulnerability/CVE checks, SAST, branch-protection audits) —
+    see repo_survey_definition_adapter.py's ANALYSIS_KINDS registry,
+    `family="security"`. Identifiers (analysis_catalog id "security_scan",
+    step key "repo_security") deliberately did NOT change — only the
+    Python class/file name, to avoid breaking existing schedules/data.
     """
 
     def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
@@ -198,12 +209,24 @@ class SecuritySurveyor(BaseSurveyor):
                 })
 
             try:
-                self.registry.upsert_security_findings(self.project.slug, findings, surveyed_at=self._surveyed_at)
+                # Generic findings table (analysis-kind extensibility
+                # redesign) — "status" (pass/gap) here becomes "label" in
+                # the generic schema, since other finding kinds (e.g.
+                # documentation) use "label" for a different kind of value.
+                self.registry.upsert_finding(
+                    self.project.slug, "security_hygiene",
+                    [
+                        {"check_name": f["check_name"], "label": f["status"],
+                         "summary": f["summary"], "detail": f.get("detail")}
+                        for f in findings
+                    ],
+                    surveyed_at=self._surveyed_at,
+                )
             except Exception as exc:
-                log.warning("Could not persist security findings for %s: %s", self.project.slug, exc)
+                log.warning("Could not persist security hygiene findings for %s: %s", self.project.slug, exc)
 
         except Exception as exc:
-            log.exception("SecuritySurveyor failed for %s", self.project.slug)
+            log.exception("SecurityHygieneSurveyor failed for %s", self.project.slug)
             self._warn(results, str(exc))
 
         return results

@@ -51,7 +51,7 @@ class DocumentationSurveyor(BaseSurveyor):
 
     def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
         super().__init__(project, registry)
-        # See SecuritySurveyor's identical constructor comment — shared
+        # See SecurityHygieneSurveyor's identical constructor comment — shared
         # run-timestamp from SurveyOrchestrator (Phase B, D1).
         self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
 
@@ -82,6 +82,7 @@ class DocumentationSurveyor(BaseSurveyor):
                     )
                     findings.append({
                         "finding_type": "collection_present", "label": col_type,
+                        "summary": f"Collection present: {label}",
                         "confidence": 100, "detail": {"display_label": label},
                     })
 
@@ -112,6 +113,7 @@ class DocumentationSurveyor(BaseSurveyor):
                 )
                 findings.append({
                     "finding_type": "hygiene_files", "label": ", ".join(found_hygiene),
+                    "summary": f"Hygiene files found: {', '.join(found_hygiene)}",
                     "confidence": 95, "detail": {"files": found_hygiene},
                 })
 
@@ -139,6 +141,7 @@ class DocumentationSurveyor(BaseSurveyor):
             )
             findings.append({
                 "finding_type": "quality_score", "label": quality,
+                "summary": f"Documentation quality: {quality} ({score} signal(s) detected)",
                 "confidence": 70,
                 "detail": {
                     "doc_collection_types": present_doc_types,
@@ -148,7 +151,22 @@ class DocumentationSurveyor(BaseSurveyor):
             })
 
             try:
-                self.registry.upsert_documentation_findings(slug, findings, surveyed_at=self._surveyed_at)
+                # Generic project_analysis_findings table (analysis-kind
+                # extensibility redesign) — translate this surveyor's own
+                # "finding_type"/"label" vocabulary to the generic
+                # check_name/label field names at the call boundary.
+                self.registry.upsert_finding(
+                    slug, "documentation",
+                    [
+                        {
+                            "check_name": f["finding_type"], "label": f["label"],
+                            "summary": f.get("summary", ""),
+                            "confidence": f.get("confidence", 100), "detail": f.get("detail"),
+                        }
+                        for f in findings
+                    ],
+                    surveyed_at=self._surveyed_at,
+                )
             except Exception as exc:
                 log.warning("Could not persist documentation findings for %s: %s", slug, exc)
 

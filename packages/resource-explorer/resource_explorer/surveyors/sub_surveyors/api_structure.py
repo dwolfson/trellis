@@ -40,7 +40,7 @@ class ApiStructureSurveyor(BaseSurveyor):
 
     def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
         super().__init__(project, registry)
-        # See SecuritySurveyor's identical constructor comment — shared
+        # See SecurityHygieneSurveyor's identical constructor comment — shared
         # run-timestamp from SurveyOrchestrator (Phase B, D1).
         self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
 
@@ -125,11 +125,14 @@ class ApiStructureSurveyor(BaseSurveyor):
             )
 
             try:
-                self.registry.store_api_structure_snapshot(
-                    slug,
-                    symbol_count=len(rows),
-                    by_language={lang: len(syms) for lang, syms in by_lang.items()},
-                    relationship_count=len(relationships),
+                # Generic project_analysis_metrics table (analysis-kind
+                # extensibility redesign) — symbol/relationship counts as
+                # the two trendable metrics; by_language breakdown attaches
+                # as this run's detail blob.
+                self.registry.upsert_metric(
+                    slug, "api_structure",
+                    {"symbol_count": len(rows), "relationship_count": len(relationships)},
+                    detail={"by_language": {lang: len(syms) for lang, syms in by_lang.items()}},
                     surveyed_at=self._surveyed_at,
                 )
             except Exception as exc:

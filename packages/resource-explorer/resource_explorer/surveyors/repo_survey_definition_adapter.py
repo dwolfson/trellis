@@ -1,25 +1,55 @@
 """
-Survey Definition adapter for Git repositories.
+Survey Definition adapter for Git repositories, and the repo analysis-kind
+registry (STEP_REGISTRY / ANALYSIS_KINDS) — the single source of truth for
+"what are the repo survey steps, and what analyses do users actually see/
+run/schedule from them."
 
-Registers a ResourceTypeAdapter (entity_type="repo") with
-resource_explorer.surveyors.survey_definition_executor. Unlike the database
-case, repo surveys are already composed of 10 independent sub-surveyor units
-(resource_explorer.surveyors.sub_surveyors) — each one is exposed here as its
-own re_analysis_step key, the most granular and natural fit for Survey
-Definition steps. Publishing reuses the existing EgeriaPublisher.publish
-unmodified — it's already narrow (no native-survey side effect).
+Analysis-kind extensibility redesign: this used to be four independently-
+maintained parallel structures (re_analysis_steps' closures,
+_RE_ANALYSIS_STEP_INFO, REPO_ANALYSIS_STEP_MAP, REPO_ANALYSIS_RESULTS_MAP),
+each requiring its own hand-edit whenever a step or analysis kind changed —
+plus SurveyOrchestrator's own separately-hardcoded surveyor-construction
+dict. They're now two registries, everything else is a thin derived view:
 
-Each step key delegates to SurveyOrchestrator.run(steps=[key]) rather than
-instantiating its own surveyor closure — SurveyOrchestrator's own
-{step_key: surveyor} map (survey_orchestrator.py) is the single source of
-truth for what each key means and how its surveyor is constructed. This used
-to duplicate that mapping here via independent closures; two lists of the
-same ten surveyors that had to be kept in sync by hand. The scheduler's
-per-analysis-id dispatch (scheduler.py's _run_repo_survey) reuses the same
-SurveyOrchestrator.run(steps=...) entry point.
+  STEP_REGISTRY   — step_key -> StepInfo (surveyor class, description,
+                     annotation types, any special constructor kwargs).
+                     The 10 granular sub-surveyor units SurveyOrchestrator
+                     can run individually via steps=[...].
+  ANALYSIS_KINDS  — analysis_catalog id -> AnalysisKind (which step_key(s)
+                     it runs, its "family" for grouping related kinds e.g.
+                     "security", and — for the 5 kinds shown under
+                     Analysis/Assessment — how to read/render its results).
+
+Adding a new plain analysis kind (accepts (project, registry, surveyed_at)
+like the existing finding/metric-writing surveyors) needs exactly one new
+StepInfo entry and one new AnalysisKind entry — SurveyOrchestrator derives
+its surveyor-construction dict from STEP_REGISTRY automatically. See
+StepInfo.accepts_surveyed_at / .static_kwargs for the few surveyors that
+need something other than the generic (project, registry) construction.
+
+Unlike the database case, repo surveys are already composed of independent
+sub-surveyor units — each one is exposed as its own re_analysis_step key,
+the most granular and natural fit for Survey Definition steps. Publishing
+reuses the existing EgeriaPublisher.publish unmodified — it's already
+narrow (no native-survey side effect).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Callable
+
+from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
+from resource_explorer.surveyors.sub_surveyors import (
+    ApiStructureSurveyor,
+    DataProfilerSurveyor,
+    DependencySurveyor,
+    DocumentationSurveyor,
+    FileSizeSurveyor,
+    FileStructureSurveyor,
+    HealthSurveyor,
+    LanguageSurveyor,
+    SecurityHygieneSurveyor,
+)
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
@@ -38,6 +68,86 @@ from resource_explorer.surveyors.survey_definition_executor import (
 REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN = "GovActionProcess::RepoCoarseScout"
 
 
+# ── Step-level registry ──────────────────────────────────────────────────
+
+@dataclass
+class StepInfo:
+    """One SurveyOrchestrator step — a single sub-surveyor unit."""
+    step_key: str
+    surveyor_cls: type
+    description: str
+    annotation_types: list[str]
+    # Extra kwargs re_analysis_steps' Survey-Definition-triggered runners
+    # pass when running this step in isolation (always safe defaults —
+    # a single-step run never has real pyegeria_client/force_refresh/
+    # data_path context to forward).
+    static_kwargs: dict = field(default_factory=dict)
+    # Whether this surveyor's constructor accepts surveyed_at (the shared
+    # per-orchestrator-run timestamp, Phase B D1) — only the surveyors that
+    # persist structured findings/metrics at survey time need this.
+    accepts_surveyed_at: bool = False
+
+
+STEP_REGISTRY: dict[str, StepInfo] = {
+    "repo_file_structure": StepInfo(
+        "repo_file_structure", FileStructureSurveyor,
+        "File counts, per-language breakdown, and top-level directory structure.",
+        ["ResourceMeasureAnnotation"],
+    ),
+    "repo_file_size": StepInfo(
+        "repo_file_size", FileSizeSurveyor,
+        "Per-file sizes, total footprint, size-by-type, top-10 largest files.",
+        ["ResourceMeasureAnnotation", "RequestForActionAnnotation"],
+    ),
+    "repo_language": StepInfo(
+        "repo_language", LanguageSurveyor,
+        "Primary/secondary language and coarse project-type classification.",
+        ["ClassificationAnnotation"],
+    ),
+    "repo_health": StepInfo(
+        "repo_health", HealthSurveyor,
+        "Activity, community, release-cadence, and freshness scoring from GitHub stats.",
+        ["QualityScoreAnnotation"],
+    ),
+    "repo_dependency": StepInfo(
+        "repo_dependency", DependencySurveyor,
+        "Package dependencies per ecosystem (PyPI/npm/Maven).",
+        ["DataClassAnnotation", "ResourceMeasureAnnotation"],
+    ),
+    "repo_documentation": StepInfo(
+        "repo_documentation", DocumentationSurveyor,
+        "Presence of README/CHANGELOG/CONTRIBUTING/SECURITY and overall doc-quality label.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    "repo_security": StepInfo(
+        "repo_security", SecurityHygieneSurveyor,
+        "Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.",
+        ["ClassificationAnnotation", "RequestForActionAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    "repo_api_structure": StepInfo(
+        "repo_api_structure", ApiStructureSurveyor,
+        "Public API surface (functions/classes/methods) per language.",
+        ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    "repo_data_profiling": StepInfo(
+        "repo_data_profiling", DataProfilerSurveyor,
+        "Inventories data files and profiles their schema (rows/columns/dtypes/nulls).",
+        ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation", "RequestForActionAnnotation"],
+        static_kwargs={"data_path": None},
+        accepts_surveyed_at=True,
+    ),
+    "repo_file_classification": StepInfo(
+        "repo_file_classification", FileClassifierSurveyor,
+        "Classifies every file by type using filename/extension mapping (Egeria-enrichable).",
+        ["ClassificationAnnotation", "ResourceMeasureAnnotation"],
+        static_kwargs={"pyegeria_client": None, "force_refresh": False},
+    ),
+}
+
+
 def _run_step(step_key: str, **orchestrator_kwargs):
     def runner(project, registry, **_) -> dict:
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
@@ -50,55 +160,27 @@ def _run_step(step_key: str, **orchestrator_kwargs):
 
 
 def _build_re_analysis_steps() -> dict:
-    return {
-        "repo_file_structure": _run_step("repo_file_structure"),
-        "repo_file_size": _run_step("repo_file_size"),
-        "repo_language": _run_step("repo_language"),
-        "repo_health": _run_step("repo_health"),
-        "repo_dependency": _run_step("repo_dependency"),
-        "repo_documentation": _run_step("repo_documentation"),
-        "repo_security": _run_step("repo_security"),
-        "repo_api_structure": _run_step("repo_api_structure"),
-        "repo_data_profiling": _run_step("repo_data_profiling", data_path=None),
-        "repo_file_classification": _run_step(
-            "repo_file_classification", pyegeria_client=None, force_refresh=False
-        ),
-    }
+    """Derived from STEP_REGISTRY — each step key delegates to
+    SurveyOrchestrator.run(steps=[key]) rather than instantiating its own
+    surveyor closure, so STEP_REGISTRY stays the single source of truth for
+    what each key means and how its surveyor is constructed."""
+    return {key: _run_step(key, **info.static_kwargs) for key, info in STEP_REGISTRY.items()}
 
 
-# analysis_catalog "repo_analyses" id -> SurveyOrchestrator step key(s) it
-# maps to (same step-key vocabulary as re_analysis_steps above). Public —
-# consumed by both scheduler.py (per-analysis-id scheduled dispatch) and
-# web/routes/projects.py's per-card "Run just this one analysis" endpoint;
-# moved here (rather than staying scheduler-private) once it got a second
-# real consumer, so there's one source of truth for the mapping.
-#
-# "language_file_classification" is the one genuinely ambiguous entry — its
-# catalog description ("file types, languages, and project structure") and
-# annotation_types span what three separate sub-surveyors emit, so all three
-# are bundled here rather than guessing at just one. repo_file_size has no
-# catalog entry at all (never independently schedulable/runnable today) so
-# it isn't listed — it stays bundled only in a full, steps=None survey.
-# egeria_publish is intentionally absent — it's an explicit write action,
-# not a survey step; both scheduler.py and the analysis-run route special-
-# case entries with action=="publish" before ever consulting this map.
-REPO_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
-    "language_file_classification": ["repo_language", "repo_file_classification", "repo_file_structure"],
-    "repository_health": ["repo_health"],
-    "dependency_analysis": ["repo_dependency"],
-    "security_scan": ["repo_security"],
-    "documentation_coverage": ["repo_documentation"],
-    "data_file_profiling": ["repo_data_profiling"],
-    "api_structure": ["repo_api_structure"],
+_RE_ANALYSIS_STEP_INFO = {
+    key: {"description": info.description, "annotation_types": info.annotation_types}
+    for key, info in STEP_REGISTRY.items()
 }
 
 
-# analysis_id -> (results_reader, trend_reader) — Phase B. Only the 5
-# analysis-catalog entries actually shown under Analysis/Assessment (per
-# their intent tags — language_file_classification/repository_health are
-# scouting-tagged, no results view). Each results_reader(registry, slug) ->
-# dict of latest structured results; each trend_reader(registry, slug) ->
-# list[{"surveyed_at": str, "value": number, ...}] for the trend chart.
+# ── Analysis-kind (catalog-id) level registry ────────────────────────────
+# analysis_id -> (results_reader, trend_reader). Each results_reader(registry,
+# slug) -> dict of latest structured results; each trend_reader(registry,
+# slug) -> list[{"surveyed_at": str, "value": number, ...}] for the trend
+# chart. Only the 5 analysis-catalog entries actually shown under Analysis/
+# Assessment have one — language_file_classification/repository_health are
+# scouting-tagged, no results view.
+
 def _dependency_results(registry, slug: str) -> dict:
     deps = registry.query_dependencies(slug)
     by_ecosystem: dict[str, list] = {}
@@ -121,38 +203,69 @@ def _data_profile_results(registry, slug: str) -> dict:
 
 def _data_profile_trend(registry, slug: str) -> list[dict]:
     return [
-        {"surveyed_at": r["surveyed_at"], "value": r["total_files"]}
-        for r in registry.query_data_profile_history(slug)
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "data_profile", "total_files")
     ]
 
 
 def _security_results(registry, slug: str) -> dict:
-    findings = registry.query_security_findings(slug)
-    return {"findings": findings, "gap_count": sum(1 for f in findings if f["status"] == "gap")}
+    # Generic findings table (analysis-kind extensibility redesign) — same
+    # uniform {check_name, label, summary, confidence} shape as
+    # _documentation_results below, so the frontend's "findings_list" render
+    # mode needs zero per-kind logic (D4). "gap_count" stays as an extra,
+    # kind-specific top-level key alongside the generic findings list.
+    rows = registry.query_findings(slug, "security_hygiene")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    return {"findings": findings, "gap_count": sum(1 for f in findings if f["label"] == "gap")}
 
 
 def _security_trend(registry, slug: str) -> list[dict]:
+    # query_findings_history_raw returns raw rows across all runs — this
+    # kind's own trend aggregation (gap-count per run) lives here, not as
+    # per-kind SQL in the registry layer.
+    by_run: dict[str, dict] = {}
+    for r in registry.query_findings_history_raw(slug, "security_hygiene"):
+        bucket = by_run.setdefault(r["surveyed_at"], {"gap": 0, "total": 0})
+        bucket["total"] += 1
+        if r["label"] == "gap":
+            bucket["gap"] += 1
     return [
-        {"surveyed_at": r["surveyed_at"], "value": r["gap_count"], "total_checks": r["total_checks"]}
-        for r in registry.query_security_findings_history(slug)
+        {"surveyed_at": ts, "value": counts["gap"], "total_checks": counts["total"]}
+        for ts, counts in sorted(by_run.items())
     ]
 
 
 def _documentation_results(registry, slug: str) -> dict:
-    return {"findings": registry.query_documentation_findings(slug)}
+    # Same uniform finding shape _security_results uses — see its comment.
+    rows = registry.query_findings(slug, "documentation")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    return {"findings": findings}
+
+
+_DOC_QUALITY_RANK = {"Minimal": 1, "Partial": 2, "Comprehensive": 3}
 
 
 def _documentation_trend(registry, slug: str) -> list[dict]:
+    quality_rows = [
+        r for r in registry.query_findings_history_raw(slug, "documentation")
+        if r["check_name"] == "quality_score"
+    ]
     return [
-        {"surveyed_at": r["surveyed_at"], "value": r["quality_rank"], "label": r["quality"]}
-        for r in registry.query_documentation_findings_history(slug)
+        {"surveyed_at": r["surveyed_at"], "value": _DOC_QUALITY_RANK.get(r["label"], 0), "label": r["label"]}
+        for r in quality_rows
     ]
 
 
 def _api_structure_results(registry, slug: str) -> dict:
     # Always-current live read (project_code_symbols/project_code_relationships
     # are repopulated at ingestion, not survey time) — no "latest results"
-    # snapshot table needed, see D5.
+    # snapshot needed for this one, unlike the others above.
     with registry._conn() as conn:
         rows = conn.execute(
             "SELECT language, kind, COUNT(*) as c FROM project_code_symbols "
@@ -168,61 +281,82 @@ def _api_structure_results(registry, slug: str) -> dict:
 
 def _api_structure_trend(registry, slug: str) -> list[dict]:
     return [
-        {"surveyed_at": r["surveyed_at"], "value": r["symbol_count"]}
-        for r in registry.query_api_structure_history(slug)
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "api_structure", "symbol_count")
     ]
 
 
-REPO_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
-    "dependency_analysis": (_dependency_results, _dependency_trend),
-    "data_file_profiling": (_data_profile_results, _data_profile_trend),
-    "security_scan": (_security_results, _security_trend),
-    "documentation_coverage": (_documentation_results, _documentation_trend),
-    "api_structure": (_api_structure_results, _api_structure_trend),
+@dataclass
+class AnalysisKindResults:
+    results_reader: Callable    # (registry, slug) -> dict
+    trend_reader: Callable | None
+    # A small fixed render-mode tag the frontend switches on generically —
+    # "findings_list" and "metrics" need zero new frontend code for a new
+    # kind; "custom" is the escape hatch for shapes that don't fit either
+    # (dependency-by-ecosystem, data-profile summary, API structure).
+    render: str
+
+
+@dataclass
+class AnalysisKind:
+    """One analysis_catalog.yaml entry — what a user actually sees, runs,
+    and schedules. May span more than one STEP_REGISTRY step_key (e.g.
+    language_file_classification bundles three)."""
+    id: str
+    step_keys: list[str]
+    family: str = ""             # e.g. "security" — groups related kinds on
+                                  # the generic findings/metrics tables' `kind`
+                                  # column, so future security-family members
+                                  # (secret scanning, CVE checks, SAST,
+                                  # branch-protection audit) share one query
+                                  # surface without a UNION across tables.
+    results: AnalysisKindResults | None = None   # None for scouting-tier kinds
+
+
+# "language_file_classification" is the one genuinely ambiguous entry — its
+# catalog description ("file types, languages, and project structure") and
+# annotation_types span what three separate sub-surveyors emit, so all three
+# are bundled here rather than guessing at just one. repo_file_size has no
+# catalog entry at all (never independently schedulable/runnable today) so
+# it isn't listed — it stays bundled only in a full, steps=None survey.
+# egeria_publish is intentionally absent — it's an explicit write action,
+# not a survey step; both scheduler.py and the analysis-run route special-
+# case entries with action=="publish" before ever consulting this registry.
+ANALYSIS_KINDS: dict[str, AnalysisKind] = {
+    "language_file_classification": AnalysisKind(
+        "language_file_classification",
+        ["repo_language", "repo_file_classification", "repo_file_structure"],
+    ),
+    "repository_health": AnalysisKind("repository_health", ["repo_health"]),
+    "dependency_analysis": AnalysisKind(
+        "dependency_analysis", ["repo_dependency"],
+        results=AnalysisKindResults(_dependency_results, _dependency_trend, "custom"),
+    ),
+    "security_scan": AnalysisKind(
+        "security_scan", ["repo_security"], family="security",
+        results=AnalysisKindResults(_security_results, _security_trend, "findings_list"),
+    ),
+    "documentation_coverage": AnalysisKind(
+        "documentation_coverage", ["repo_documentation"],
+        results=AnalysisKindResults(_documentation_results, _documentation_trend, "findings_list"),
+    ),
+    "data_file_profiling": AnalysisKind(
+        "data_file_profiling", ["repo_data_profiling"],
+        results=AnalysisKindResults(_data_profile_results, _data_profile_trend, "custom"),
+    ),
+    "api_structure": AnalysisKind(
+        "api_structure", ["repo_api_structure"],
+        results=AnalysisKindResults(_api_structure_results, _api_structure_trend, "custom"),
+    ),
 }
 
-
-_RE_ANALYSIS_STEP_INFO = {
-    "repo_file_structure": {
-        "description": "File counts, per-language breakdown, and top-level directory structure.",
-        "annotation_types": ["ResourceMeasureAnnotation"],
-    },
-    "repo_file_size": {
-        "description": "Per-file sizes, total footprint, size-by-type, top-10 largest files.",
-        "annotation_types": ["ResourceMeasureAnnotation", "RequestForActionAnnotation"],
-    },
-    "repo_language": {
-        "description": "Primary/secondary language and coarse project-type classification.",
-        "annotation_types": ["ClassificationAnnotation"],
-    },
-    "repo_health": {
-        "description": "Activity, community, release-cadence, and freshness scoring from GitHub stats.",
-        "annotation_types": ["QualityScoreAnnotation"],
-    },
-    "repo_dependency": {
-        "description": "Package dependencies per ecosystem (PyPI/npm/Maven).",
-        "annotation_types": ["DataClassAnnotation", "ResourceMeasureAnnotation"],
-    },
-    "repo_documentation": {
-        "description": "Presence of README/CHANGELOG/CONTRIBUTING/SECURITY and overall doc-quality label.",
-        "annotation_types": ["ClassificationAnnotation"],
-    },
-    "repo_security": {
-        "description": "Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.",
-        "annotation_types": ["ClassificationAnnotation", "RequestForActionAnnotation"],
-    },
-    "repo_api_structure": {
-        "description": "Public API surface (functions/classes/methods) per language.",
-        "annotation_types": ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
-    },
-    "repo_data_profiling": {
-        "description": "Inventories data files and profiles their schema (rows/columns/dtypes/nulls).",
-        "annotation_types": ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation", "RequestForActionAnnotation"],
-    },
-    "repo_file_classification": {
-        "description": "Classifies every file by type using filename/extension mapping (Egeria-enrichable).",
-        "annotation_types": ["ClassificationAnnotation", "ResourceMeasureAnnotation"],
-    },
+# Derived views — kept as the same names/shapes scheduler.py and
+# web/routes/projects.py already import, so this consolidation doesn't
+# force churn in every caller; only ANALYSIS_KINDS is hand-maintained now.
+REPO_ANALYSIS_STEP_MAP: dict[str, list[str]] = {k: v.step_keys for k, v in ANALYSIS_KINDS.items()}
+REPO_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
+    k: (v.results.results_reader, v.results.trend_reader)
+    for k, v in ANALYSIS_KINDS.items() if v.results
 }
 
 

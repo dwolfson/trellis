@@ -69,8 +69,10 @@ class TestResultsRoute:
         assert set(data["by_ecosystem"].keys()) == {"python", "npm"}
 
     def test_security_results_reflect_latest_findings(self, client, registry):
-        registry.upsert_security_findings("myproj", [
-            {"check_name": "license", "status": "pass", "summary": "License: MIT"},
+        # security_scan reads the generic project_analysis_findings table
+        # (kind="security_hygiene") now — analysis-kind extensibility redesign.
+        registry.upsert_finding("myproj", "security_hygiene", [
+            {"check_name": "license", "label": "pass", "summary": "License: MIT"},
         ])
         resp = client.get("/api/projects/myproj/analyses/security_scan/results")
         data = resp.json()
@@ -106,8 +108,14 @@ class TestTrendRoute:
         assert runs[1]["value"] == 2
 
     def test_security_trend_tracks_gap_count(self, client, registry):
-        registry.upsert_security_findings("myproj", [{"check_name": "license", "status": "gap", "summary": ""}], surveyed_at="2026-01-01T00:00:00")
-        registry.upsert_security_findings("myproj", [{"check_name": "license", "status": "pass", "summary": ""}], surveyed_at="2026-01-02T00:00:00")
+        registry.upsert_finding(
+            "myproj", "security_hygiene",
+            [{"check_name": "license", "label": "gap", "summary": ""}], surveyed_at="2026-01-01T00:00:00",
+        )
+        registry.upsert_finding(
+            "myproj", "security_hygiene",
+            [{"check_name": "license", "label": "pass", "summary": ""}], surveyed_at="2026-01-02T00:00:00",
+        )
         resp = client.get("/api/projects/myproj/analyses/security_scan/trend")
         runs = resp.json()["runs"]
         assert [r["value"] for r in runs] == [1, 0]

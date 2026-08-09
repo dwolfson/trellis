@@ -781,6 +781,118 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_api_structure_snapshots_slug "
                 "ON project_api_structure_snapshots(project_slug)"
             )
+            # Analysis-kind extensibility redesign: the four tables above
+            # (project_security_findings, project_documentation_findings,
+            # project_data_profile_snapshots, project_api_structure_snapshots)
+            # reduce to exactly two real shapes — "list of typed findings"
+            # and "aggregate snapshot metric(s)" — so new analysis kinds
+            # (more security-family checks, etc.) register into ONE of these
+            # two generic tables via a `kind` discriminator instead of
+            # getting their own bespoke table each time. The four old
+            # tables/functions above are kept, DEPRECATED (not dropped) —
+            # see the one-time migration below — for a soak period.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_analysis_findings (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug TEXT NOT NULL,
+                    kind         TEXT NOT NULL,
+                    surveyed_at  TEXT NOT NULL,
+                    check_name   TEXT NOT NULL,
+                    label        TEXT NOT NULL,
+                    summary      TEXT DEFAULT '',
+                    confidence   INTEGER DEFAULT 100,
+                    detail_json  TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_findings_slug_kind "
+                "ON project_analysis_findings(project_slug, kind)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_analysis_metrics (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug TEXT NOT NULL,
+                    kind         TEXT NOT NULL,
+                    surveyed_at  TEXT NOT NULL,
+                    metric_name  TEXT NOT NULL,
+                    metric_value REAL NOT NULL,
+                    detail_json  TEXT DEFAULT NULL,
+                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_slug_kind "
+                "ON project_analysis_metrics(project_slug, kind, metric_name)"
+            )
+            # One-time forward migration, guarded on "the new table is still
+            # empty" rather than a per-row check — correct because after the
+            # first successful migration, any real analysis run writes
+            # directly into the new tables via upsert_finding()/
+            # upsert_metric(), so they're never empty again afterward. Old
+            # tables are left untouched either way (soak period, not deleted).
+            findings_empty = conn.execute(
+                "SELECT COUNT(*) FROM project_analysis_findings"
+            ).fetchone()[0] == 0
+            if findings_empty:
+                for row in conn.execute(
+                    "SELECT project_slug, surveyed_at, check_name, status, summary, detail_json "
+                    "FROM project_security_findings"
+                ).fetchall():
+                    conn.execute(
+                        "INSERT INTO project_analysis_findings "
+                        "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
+                        "VALUES (?, 'security_hygiene', ?, ?, ?, ?, 100, ?)",
+                        (row["project_slug"], row["surveyed_at"], row["check_name"],
+                         row["status"], row["summary"], row["detail_json"]),
+                    )
+                for row in conn.execute(
+                    "SELECT project_slug, surveyed_at, finding_type, label, confidence, detail_json "
+                    "FROM project_documentation_findings"
+                ).fetchall():
+                    conn.execute(
+                        "INSERT INTO project_analysis_findings "
+                        "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
+                        "VALUES (?, 'documentation', ?, ?, ?, '', ?, ?)",
+                        (row["project_slug"], row["surveyed_at"], row["finding_type"],
+                         row["label"], row["confidence"], row["detail_json"]),
+                    )
+            metrics_empty = conn.execute(
+                "SELECT COUNT(*) FROM project_analysis_metrics"
+            ).fetchone()[0] == 0
+            if metrics_empty:
+                for row in conn.execute(
+                    "SELECT project_slug, surveyed_at, total_files, total_size_bytes, format_breakdown_json "
+                    "FROM project_data_profile_snapshots"
+                ).fetchall():
+                    conn.execute(
+                        "INSERT INTO project_analysis_metrics "
+                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
+                        "VALUES (?, 'data_profile', ?, 'total_files', ?, ?)",
+                        (row["project_slug"], row["surveyed_at"], row["total_files"], row["format_breakdown_json"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO project_analysis_metrics "
+                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
+                        "VALUES (?, 'data_profile', ?, 'total_size_bytes', ?, NULL)",
+                        (row["project_slug"], row["surveyed_at"], row["total_size_bytes"]),
+                    )
+                for row in conn.execute(
+                    "SELECT project_slug, surveyed_at, symbol_count, by_language_json, relationship_count "
+                    "FROM project_api_structure_snapshots"
+                ).fetchall():
+                    conn.execute(
+                        "INSERT INTO project_analysis_metrics "
+                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
+                        "VALUES (?, 'api_structure', ?, 'symbol_count', ?, ?)",
+                        (row["project_slug"], row["surveyed_at"], row["symbol_count"], row["by_language_json"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO project_analysis_metrics "
+                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
+                        "VALUES (?, 'api_structure', ?, 'relationship_count', ?, NULL)",
+                        (row["project_slug"], row["surveyed_at"], row["relationship_count"]),
+                    )
             # One-time repair for project_dependencies rows written before
             # this Phase B change: upsert_dependencies() used to compute
             # datetime.utcnow() inside its per-row list comprehension, so
@@ -1112,6 +1224,84 @@ class ProjectRegistry:
                             item["python_class"],
                         ),
                     )
+            # Generic runtime-settings key-value store — the first one in this
+            # codebase (everything else is .env/Pydantic, loaded once at process
+            # start). Reusable for any future runtime setting, not GitHub-specific
+            # ("Discover repos to scout" plan, D1).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key        TEXT PRIMARY KEY,
+                    value      TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            # Repo triage disposition — undecided (default) / tracking /
+            # investigating / ignored. Keyed by github_url (not project_slug)
+            # so it covers both a never-imported discovery-search candidate
+            # and an already-registered repo with the same row ("Discover
+            # repos to scout" plan, D10). One row per github_url — upsert,
+            # not append-only, since there's only ever one *current* decision.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS repo_dispositions (
+                    github_url   TEXT PRIMARY KEY,
+                    disposition  TEXT NOT NULL DEFAULT 'undecided',
+                    reason       TEXT DEFAULT '',
+                    decided_by   TEXT DEFAULT '',
+                    decided_at   TEXT NOT NULL,
+                    project_slug TEXT DEFAULT ''
+                )
+            """)
+            # Append-only companion to repo_dispositions above — that table
+            # is upsert-only (one row per github_url, only the *current*
+            # decision), so it can't answer "what was the history of
+            # decisions on this repo." Every set_disposition() call writes
+            # here too, in addition to upserting the current-state row
+            # (Scouting workflow redesign plan, D3/D6 — the Disposition
+            # sub-tab's timeline view reads this).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS repo_disposition_history (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    github_url   TEXT NOT NULL,
+                    disposition  TEXT NOT NULL,
+                    reason       TEXT DEFAULT '',
+                    decided_by   TEXT DEFAULT '',
+                    decided_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
+                "ON repo_disposition_history(github_url, decided_at)"
+            )
+            # Named, reusable discovery sources — a saved search (org/
+            # language/license/... filters) or a manually-curated list of
+            # github_urls (for foundations like Eclipse that spread projects
+            # across hundreds of orgs, or a user's own enterprise repos) —
+            # Scouting workflow redesign plan, D1.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS discovery_sources (
+                    slug         TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    source_type  TEXT NOT NULL,
+                    config_json  TEXT NOT NULL,
+                    created_at   TEXT NOT NULL
+                )
+            """)
+            # Personal "do I want this in front of me right now" view filter
+            # — deliberately separate from repo_dispositions (a canonical
+            # judgment about the resource). Global for now (no per-person
+            # auth exists in this codebase yet — see repo_dispositions'
+            # decided_by comment for the same constraint), but its own table
+            # so a user_id column can be added later without touching
+            # disposition's model (D4).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_working_set (
+                    entity_type TEXT NOT NULL,
+                    entity_slug TEXT NOT NULL,
+                    hidden      INTEGER NOT NULL DEFAULT 0,
+                    updated_at  TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
 
     def get_survey_definition_guid(
         self, entity_type: str, entity_slug: str, technology_type: str
@@ -1162,6 +1352,26 @@ class ProjectRegistry:
                     process_qualified_name,
                     datetime.utcnow().isoformat(),
                 ),
+            )
+
+    # ── generic runtime settings ("Discover repos to scout" plan, D1) ──────────
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO app_settings (key, value, updated_at)
+                       VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET
+                       value = excluded.value,
+                       updated_at = excluded.updated_at""",
+                (key, value, datetime.utcnow().isoformat()),
             )
 
     def save_context(self, entity_type: str, entity_slug: str, context: dict) -> None:
@@ -1865,11 +2075,15 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    # ── Phase B: per-analysis-type snapshot/finding history ────────────────
-    # Each trio below (store/upsert, query latest, query history) copies
-    # project_file_type_counts's proven append pattern — see that table's
-    # own upsert_file_type_counts()/query_file_type_counts()/
-    # query_file_type_history() for the template this mirrors.
+    # ── DEPRECATED (Phase B): per-analysis-type snapshot/finding tables ────
+    # Superseded by the generic project_analysis_findings/
+    # project_analysis_metrics tables + upsert_finding()/query_findings()/
+    # query_findings_history_raw() and upsert_metric()/query_metrics()/
+    # query_metrics_history() below (analysis-kind extensibility redesign) —
+    # new analysis kinds should use those, not these. Kept, unused by new
+    # code, for a soak period (matches the AST-ownership-transfer plan's D8
+    # precedent) — not removed, and their data was already migrated forward
+    # by _init_schema()'s one-time migration.
 
     def store_data_profile_snapshot(
         self, slug: str, total_files: int, total_size_bytes: int,
@@ -2048,6 +2262,145 @@ class ProjectRegistry:
                 "FROM project_api_structure_snapshots WHERE project_slug = ? "
                 "ORDER BY surveyed_at ASC",
                 (slug,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Generic per-analysis-kind findings/metrics storage ─────────────────
+    # The two tables every NEW analysis kind should use — see the
+    # analysis-kind extensibility redesign. `kind` is the discriminator
+    # (e.g. "security_hygiene", "documentation", "data_profile",
+    # "api_structure", and whatever's added next) — one physical table each,
+    # not one per kind. Both still copy project_file_type_counts's append
+    # pattern (no UNIQUE constraint, append-only, MAX(surveyed_at) = latest
+    # batch) — only the "one table per kind" part changes, not the pattern
+    # itself.
+
+    def upsert_finding(self, slug: str, kind: str, findings: list[dict], surveyed_at: str | None = None) -> None:
+        """Append one survey run's findings for one analysis kind.
+        findings: list of {check_name, label, summary="", confidence=100, detail: dict|None}.
+        `check_name` is "what kind of check" (e.g. a security check name, a
+        documentation finding_type); `label` is its value/classification
+        (e.g. "pass"/"gap", or a quality label) — callers translate these
+        back to whatever field names their own /results API response uses."""
+        if not findings:
+            return
+        slug = self._normalize_slug(slug)
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO project_analysis_findings "
+                "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
+                "VALUES (:project_slug, :kind, :surveyed_at, :check_name, :label, :summary, :confidence, :detail_json)",
+                [
+                    {
+                        "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
+                        "check_name": f["check_name"], "label": f["label"],
+                        "summary": f.get("summary", ""), "confidence": f.get("confidence", 100),
+                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
+                    }
+                    for f in findings
+                ],
+            )
+
+    def query_findings(self, slug: str, kind: str) -> list[dict]:
+        """Latest run's findings for one analysis kind."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            latest_ts = conn.execute(
+                "SELECT MAX(surveyed_at) FROM project_analysis_findings WHERE project_slug = ? AND kind = ?",
+                (slug, kind),
+            ).fetchone()[0]
+            if not latest_ts:
+                return []
+            rows = conn.execute(
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
+                "FROM project_analysis_findings WHERE project_slug = ? AND kind = ? AND surveyed_at = ? "
+                "ORDER BY check_name",
+                (slug, kind, latest_ts),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_findings_history_raw(self, slug: str, kind: str) -> list[dict]:
+        """All finding rows for one analysis kind, across every run, ordered
+        by surveyed_at — deliberately NOT aggregated here. What "the trend"
+        means differs per kind (a gap-count for security, a quality-rank for
+        documentation) — that aggregation belongs in each kind's own
+        trend_reader (repo_survey_definition_adapter.py), not as per-kind
+        SQL branches in this otherwise-generic function."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
+                "FROM project_analysis_findings WHERE project_slug = ? AND kind = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug, kind),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_metric(
+        self, slug: str, kind: str, metrics: dict[str, float],
+        detail: dict | None = None, surveyed_at: str | None = None,
+    ) -> None:
+        """Append one survey run's metric(s) for one analysis kind.
+        metrics: {metric_name: value} — one row per metric, sharing one
+        surveyed_at (same "one row per label per run" shape
+        project_file_type_counts and project_dependencies already use).
+        detail (optional) attaches to only the first metric row, to avoid
+        duplicating a potentially large JSON blob across every metric from
+        the same run."""
+        if not metrics:
+            return
+        slug = self._normalize_slug(slug)
+        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        rows = [
+            {
+                "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
+                "metric_name": name, "metric_value": value,
+                "detail_json": json.dumps(detail) if detail and i == 0 else None,
+            }
+            for i, (name, value) in enumerate(metrics.items())
+        ]
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO project_analysis_metrics "
+                "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
+                "VALUES (:project_slug, :kind, :surveyed_at, :metric_name, :metric_value, :detail_json)",
+                rows,
+            )
+
+    def query_metrics(self, slug: str, kind: str) -> dict:
+        """Latest run's metrics for one analysis kind, as
+        {metric_name: value, ..., "surveyed_at": ..., "detail": {...}?}."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            latest_ts = conn.execute(
+                "SELECT MAX(surveyed_at) FROM project_analysis_metrics WHERE project_slug = ? AND kind = ?",
+                (slug, kind),
+            ).fetchone()[0]
+            if not latest_ts:
+                return {}
+            rows = conn.execute(
+                "SELECT metric_name, metric_value, detail_json FROM project_analysis_metrics "
+                "WHERE project_slug = ? AND kind = ? AND surveyed_at = ?",
+                (slug, kind, latest_ts),
+            ).fetchall()
+        out: dict = {"surveyed_at": latest_ts}
+        for r in rows:
+            out[r["metric_name"]] = r["metric_value"]
+            if r["detail_json"]:
+                out["detail"] = json.loads(r["detail_json"])
+        return out
+
+    def query_metrics_history(self, slug: str, kind: str, metric_name: str) -> list[dict]:
+        """One row per run for one specific named metric, for trending —
+        e.g. query_metrics_history(slug, "api_structure", "symbol_count")."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, metric_value FROM project_analysis_metrics "
+                "WHERE project_slug = ? AND kind = ? AND metric_name = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug, kind, metric_name),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -2293,6 +2646,146 @@ class ProjectRegistry:
             if stored == normalized:
                 return self._row_to_project(row)
         return None
+
+    @staticmethod
+    def _normalize_github_url(url: str) -> str:
+        """Same normalization get_by_github_url() already uses — shared here
+        so a disposition set against '.../repo.git' is found when later
+        queried as '.../repo' (and vice versa)."""
+        return url.lower().rstrip("/").removesuffix(".git")
+
+    def set_disposition(
+        self, github_url: str, disposition: str,
+        reason: str = "", decided_by: str = "", project_slug: str = "",
+    ) -> None:
+        """Upsert the current triage disposition for a repo — one row per
+        github_url, overwriting any prior decision (unlike the append-only
+        findings/metrics tables, there's only ever one *current* disposition)
+        — and append a row to repo_disposition_history so the Disposition
+        sub-tab can show a real timeline, not just the latest value
+        ("Discover repos to scout" plan, D10; Scouting workflow redesign
+        plan, D3/D6). Applies whether or not the repo has been imported yet —
+        project_slug is best-effort context, not required."""
+        key = self._normalize_github_url(github_url)
+        decided_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO repo_dispositions
+                       (github_url, disposition, reason, decided_by, decided_at, project_slug)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(github_url) DO UPDATE SET
+                       disposition = excluded.disposition,
+                       reason = excluded.reason,
+                       decided_by = excluded.decided_by,
+                       decided_at = excluded.decided_at,
+                       project_slug = excluded.project_slug""",
+                (key, disposition, reason, decided_by, decided_at, project_slug),
+            )
+            conn.execute(
+                """INSERT INTO repo_disposition_history
+                       (github_url, disposition, reason, decided_by, decided_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (key, disposition, reason, decided_by, decided_at),
+            )
+
+    def get_disposition(self, github_url: str) -> dict | None:
+        """The current disposition for a repo, or None if nobody has ever
+        decided on it (callers should treat that the same as "undecided")."""
+        key = self._normalize_github_url(github_url)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM repo_dispositions WHERE github_url = ?", (key,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_disposition_history(self, github_url: str) -> list[dict]:
+        """Every disposition ever set for this repo, oldest first — backs
+        the Disposition sub-tab's timeline view."""
+        key = self._normalize_github_url(github_url)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT disposition, reason, decided_by, decided_at "
+                "FROM repo_disposition_history WHERE github_url = ? ORDER BY decided_at ASC",
+                (key,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── discovery sources ("Scouting workflow redesign" plan, D1/D2) ───────────
+
+    def create_discovery_source(
+        self, slug: str, display_name: str, source_type: str, config: dict,
+    ) -> None:
+        """Create (or overwrite) a named, reusable discovery source —
+        source_type is 'search' (config = the RepoSearchRequest filter
+        fields) or 'list' (config = {"urls": [...]})."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO discovery_sources (slug, display_name, source_type, config_json, created_at)
+                       VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(slug) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       source_type = excluded.source_type,
+                       config_json = excluded.config_json""",
+                (slug, display_name, source_type, json.dumps(config), datetime.utcnow().isoformat()),
+            )
+
+    def get_discovery_source(self, slug: str) -> dict | None:
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM discovery_sources WHERE slug = ?", (slug,)
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["config"] = json.loads(d.pop("config_json"))
+        return d
+
+    def list_discovery_sources(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM discovery_sources ORDER BY display_name"
+            ).fetchall()
+        out = []
+        for row in rows:
+            d = dict(row)
+            d["config"] = json.loads(d.pop("config_json"))
+            out.append(d)
+        return out
+
+    def delete_discovery_source(self, slug: str) -> int:
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM discovery_sources WHERE slug = ?", (slug,))
+            return cursor.rowcount
+
+    # ── personal working set ("Scouting workflow redesign" plan, D4) ───────────
+    # Separate axis from repo_dispositions — "do I want this in front of me
+    # right now" (a view preference) vs. "what's the canonical judgment on
+    # this resource" (disposition). Global for now (no per-person auth
+    # exists yet), architected as its own table so a user_id column can be
+    # added later without touching disposition's model.
+
+    def set_working_set_hidden(self, entity_type: str, entity_slug: str, hidden: bool) -> None:
+        entity_slug = self._normalize_slug(entity_slug)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO resource_working_set (entity_type, entity_slug, hidden, updated_at)
+                       VALUES (?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                       hidden = excluded.hidden, updated_at = excluded.updated_at""",
+                (entity_type, entity_slug, int(hidden), datetime.utcnow().isoformat()),
+            )
+
+    def is_working_set_hidden(self, entity_type: str, entity_slug: str) -> bool:
+        entity_slug = self._normalize_slug(entity_slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT hidden FROM resource_working_set WHERE entity_type = ? AND entity_slug = ?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return bool(row["hidden"]) if row else False
 
     def exists(self, slug: str) -> bool:
         return self.get(slug) is not None
