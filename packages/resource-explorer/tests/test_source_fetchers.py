@@ -48,6 +48,30 @@ class TestCncfLandscapeFetcher:
                 fetch_source_urls("cncf_landscape")
 
 
+class TestLfaiLandscapeFetcher:
+    """LF AI & Data's own landscape.yml — same landscape2 tool/schema as
+    CNCF's (confirmed live against github.com/lfai/lfai-landscape: 367 repo
+    URLs, includes odpi/egeria) — the real fix for the exact gap
+    foundation_prefilters.json flagged and left unsolved (lfai's own GitHub
+    org holds governance repos, not member project code, so a search-based
+    org: qualifier was always going to be wrong for this foundation)."""
+
+    def test_parses_repo_urls_via_shared_landscape2_parser(self):
+        resp = MagicMock(text=_LANDSCAPE_YAML)
+        resp.raise_for_status.return_value = None
+        with patch("httpx.get", return_value=resp) as mock_get:
+            urls = fetch_source_urls("lfai_landscape")
+        assert urls == ["https://github.com/cncf/bar", "https://github.com/cncf/foo"]
+        assert "lfai-landscape/main/landscape.yml" in mock_get.call_args[0][0]
+
+    def test_custom_fetch_url_overrides_default(self):
+        resp = MagicMock(text=_LANDSCAPE_YAML)
+        resp.raise_for_status.return_value = None
+        with patch("httpx.get", return_value=resp) as mock_get:
+            fetch_source_urls("lfai_landscape", "https://example.com/mirror.yml")
+        assert mock_get.call_args[0][0] == "https://example.com/mirror.yml"
+
+
 class TestEclipseProjectsFetcher:
     def test_parses_github_repos_and_source_repo_shapes(self):
         resp = MagicMock()
@@ -79,6 +103,6 @@ class TestUnknownFetchKind:
 
 
 def test_all_registered_fetchers_are_callable():
-    assert set(FETCHERS) == {"cncf_landscape", "eclipse_projects", "lfx_insights"}
+    assert set(FETCHERS) == {"cncf_landscape", "lfai_landscape", "eclipse_projects", "lfx_insights"}
     for fn in FETCHERS.values():
         assert callable(fn)

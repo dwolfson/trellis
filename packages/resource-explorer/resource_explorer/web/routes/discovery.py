@@ -44,9 +44,13 @@ router = APIRouter()
 # odpi/egeria, not under lfai). Adding an `org:lfai`-style entry for those
 # would silently return the wrong repos rather than the intended ones — so
 # it's deliberately left out here rather than added as a broken chip.
-# Supporting that shape needs a different source type (a curated list of
-# github_urls, not a search qualifier) — not built yet, tracked as followup
-# work alongside the rest of the "named discovery sources" design.
+#
+# LF AI & Data's own case is now solved properly, just not through this
+# file — its landscape.yml (same landscape2 tool CNCF's own site runs on)
+# is a real, working discovery-source fetch_kind ("lfai_landscape",
+# github/source_fetchers.py). Create a 'list'-type discovery source with
+# that fetch_kind set (Admin > Discovery Sources) instead of expecting a
+# quick-filter chip here.
 _FOUNDATION_PREFILTERS_PATH = Path(__file__).parent.parent.parent / "configdata" / "foundation_prefilters.json"
 
 
