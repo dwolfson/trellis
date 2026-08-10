@@ -420,6 +420,21 @@ class TestRunDueRepoProfileDispatch:
         entries = registry.list_activity(entity_slug=registered_project)
         assert entries[0]["status"] == "ok"
 
+    def test_scheduled_profile_refresh_updates_last_profiled_at(self, registry, registered_project):
+        assert registry.get(registered_project).last_profiled_at == ""
+        _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
+        fake_result = MagicMock(file_count=3, symbol_count=0)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.pipeline.IngestionPipeline.refresh_profile",
+                 return_value=fake_result,
+             ), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = MagicMock(errors=[])
+            scheduler._run_due()
+
+        assert registry.get(registered_project).last_profiled_at != ""
+
     def test_profile_failure_is_recorded_as_error_not_raised(self, registry, registered_project):
         _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \

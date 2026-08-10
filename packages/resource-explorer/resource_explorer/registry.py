@@ -46,6 +46,7 @@ class Project:
     last_stats_fetched_at: str = ""
     last_commit_sha: str = ""
     last_surveyed_at: str = ""  # mirrors DatabaseEntity/FileSystemEntity — "" = never surveyed
+    last_profiled_at: str = ""  # last successful Coarse Profile refresh (IngestionPipeline.refresh_profile()) — "" = never profiled
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     error_message: str = ""
     subproject_path: str = ""   # relative subdir to index, e.g. "commands" — "" means full repo
@@ -409,6 +410,7 @@ class ProjectRegistry:
                     last_stats_fetched_at TEXT DEFAULT '',
                     last_commit_sha TEXT DEFAULT '',
                     last_surveyed_at TEXT DEFAULT '',
+                    last_profiled_at TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     error_message TEXT DEFAULT '',
                     subproject_path TEXT DEFAULT '',
@@ -424,6 +426,7 @@ class ProjectRegistry:
             for col, defn in [
                 ("last_commit_sha", "TEXT DEFAULT ''"),
                 ("last_surveyed_at", "TEXT DEFAULT ''"),
+                ("last_profiled_at", "TEXT DEFAULT ''"),
                 ("subproject_path", "TEXT DEFAULT ''"),
                 ("parent_slug", "TEXT DEFAULT ''"),
                 ("extra_docs_paths", "TEXT DEFAULT '[]'"),
@@ -1621,14 +1624,14 @@ class ProjectRegistry:
                     slug, display_name, github_url, description, homepage_url,
                     docs_url, github_token_encrypted, collections, status,
                     last_indexed_at, last_stats_fetched_at, last_commit_sha,
-                    last_surveyed_at, created_at, error_message, subproject_path,
+                    last_surveyed_at, last_profiled_at, created_at, error_message, subproject_path,
                     parent_slug, extra_docs_paths, egeria_asset_guid,
                     governance_state, group_slug
                 ) VALUES (
                     :slug, :display_name, :github_url, :description, :homepage_url,
                     :docs_url, :github_token_encrypted, :collections, :status,
                     :last_indexed_at, :last_stats_fetched_at, :last_commit_sha,
-                    :last_surveyed_at, :created_at, :error_message, :subproject_path,
+                    :last_surveyed_at, :last_profiled_at, :created_at, :error_message, :subproject_path,
                     :parent_slug, :extra_docs_paths, :egeria_asset_guid,
                     :governance_state, :group_slug
                 )""",
@@ -1696,6 +1699,18 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE projects SET last_surveyed_at = ? WHERE slug = ?",
+                (datetime.utcnow().isoformat(), slug),
+            )
+
+    def update_project_profiled_at(self, slug: str) -> None:
+        """Update the last_profiled_at timestamp — set by a successful
+        Coarse Profile refresh (IngestionPipeline.refresh_profile()), the
+        one Scouting-tier action with no staleness signal at all before
+        this existed. Mirrors update_project_surveyed_at()'s pattern."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET last_profiled_at = ? WHERE slug = ?",
                 (datetime.utcnow().isoformat(), slug),
             )
 

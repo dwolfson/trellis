@@ -211,6 +211,10 @@ class ScoutingOverview(BaseModel):
     last_pushed_at: str = ""
     repo_size_kb: int = 0
     last_surveyed_at: str = ""
+    # Last successful Coarse Profile refresh (IngestionPipeline.refresh_profile())
+    # — the one Scouting-tier action that had no staleness signal at all
+    # before this existed.
+    last_profiled_at: str = ""
     is_published: bool = False
     # When egeria_publish last actually wrote to the catalog — distinct from
     # is_published (a point-in-time boolean derived from whether a GUID is
@@ -245,6 +249,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         last_pushed_at=stats.get("last_pushed_at") or "",
         repo_size_kb=stats.get("repo_size_kb") or 0,
         last_surveyed_at=project.last_surveyed_at,
+        last_profiled_at=project.last_profiled_at,
         is_published=bool(project.egeria_asset_guid),
         last_published_at=(latest_survey or {}).get("published_at") or "",
         disposition=disp.get("disposition", "undecided"),
@@ -379,6 +384,8 @@ async def run_profile_scan(slug: str, req: ProfileScanRequest | None = None) -> 
         result = await asyncio.to_thread(_run)
     except Exception as exc:
         return ProfileScanResult(status="error", slug=slug, error=str(exc))
+
+    registry.update_project_profiled_at(slug)
 
     message = f"{result.file_count} file(s) profiled"
     if include_symbols:

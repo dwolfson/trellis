@@ -4731,6 +4731,7 @@ function renderScoutingOverview(d) {
         <button onclick="setNavIntent('analysis')" class="text-xs text-slate-400 hover:text-slate-200 underline" title="Re-embedding for chat/search isn't a Scouting-tier action — it's the 'Refresh & Re-ingest' card under Analysis, which is independently on-demand and schedulable there">🔄 Refresh chat search index (Analysis) →</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
+      <div class="text-[11px] text-slate-500">${surveyedBadge} · ${publishedBadge}</div>
     </div>`;
 }
 
@@ -4866,7 +4867,14 @@ async function _publishScopedSteps(slug, steps, btn, label) {
     if (data.status === 'ok') {
       showToast('success', `${label}: published ${data.annotation_count} annotation(s).`, 4000);
       loadActivityLog();
-      if (selectedProject === slug) loadScoutingOverview();
+      // Refresh whichever Scouting sub-tab is actually visible — this can
+      // be called from either Survey or Coarse Profile, and each has its
+      // own "Published X ago" badge; always reloading the Survey tab's view
+      // left Coarse Profile's badge silently stale until a manual tab switch.
+      if (selectedProject === slug) {
+        if (_scoutingSubTab === 'profile') loadScoutingProfileView();
+        else loadScoutingOverview();
+      }
     } else {
       const stage = data.stage ? ` (failed at ${data.stage} step)` : '';
       showToast('error', `${label} failed: ${_esc(data.error || 'unknown error')}${stage}`, 6000);
@@ -4904,6 +4912,12 @@ async function loadScoutingProfileView() {
 
 function renderScoutingProfileView(d) {
   const view = document.getElementById('scouting-profile-view');
+  const profiledBadge = d.last_profiled_at
+    ? `<span class="text-emerald-400" title="Refreshed ${_esc(d.last_profiled_at)}">📄 Refreshed ${_relTime(d.last_profiled_at)}</span>`
+    : `<span class="text-slate-500">🆕 Never refreshed</span>`;
+  const publishedBadge = d.is_published
+    ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
+    : `<span class="text-slate-500">Not published</span>`;
   view.innerHTML = _scoutingSubnavHtml('profile') + `
     <div class="max-w-2xl space-y-4">
       <div>
@@ -4935,6 +4949,7 @@ function renderScoutingProfileView(d) {
             ☁ Publish this phase's findings
           </button>
         </div>
+        <div id="profile-refresh-badges" class="text-[11px] text-slate-500">${profiledBadge} · ${publishedBadge}</div>
         <div id="profile-scan-feedback" class="text-xs"></div>
       </div>
 
@@ -4974,6 +4989,14 @@ async function runProfileScan(slug, btn) {
         loadAnalysisResults('language_file_classification', slug);
       } else if (data.classification_error) {
         if (fb) fb.innerHTML += `<div class="text-amber-400 mt-1">⚠ Classification failed: ${_esc(data.classification_error)}</div>`;
+      }
+      // Update the "Refreshed X ago" badge in place — a full loadScoutingProfileView()
+      // re-render would blow away the feedback message above and re-fetch
+      // results redundantly; the published badge doesn't need to change here.
+      const badges = document.getElementById('profile-refresh-badges');
+      if (badges) {
+        const publishedSpan = badges.querySelector('span:last-child');
+        badges.innerHTML = `<span class="text-emerald-400" title="Refreshed just now">📄 Refreshed just now</span> · ${publishedSpan ? publishedSpan.outerHTML : ''}`;
       }
       loadProjects();  // refresh sidebar
     } else {

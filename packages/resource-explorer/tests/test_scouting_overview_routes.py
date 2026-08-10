@@ -89,6 +89,15 @@ class TestScoutingOverview:
         latest_by_surveyed_at = max(first, key=lambda s: s["surveyed_at"])
         assert data["last_published_at"] == latest_by_surveyed_at["published_at"]
 
+    def test_last_profiled_at_empty_when_never_profiled(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_profiled_at"] == ""
+
+    def test_last_profiled_at_reflects_a_profile_refresh(self, client, registry):
+        registry.update_project_profiled_at("myproj")
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_profiled_at"] != ""
+
     def test_defaults_to_undecided_disposition(self, client):
         resp = client.get("/api/projects/myproj/scouting-overview")
         data = resp.json()

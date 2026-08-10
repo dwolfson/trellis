@@ -247,6 +247,8 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
         except Exception as exc:
             return (project.display_name, project.github_url, [str(exc)])
 
+        registry.update_project_profiled_at(slug)
+
         errors = []
         try:
             classify_result = SurveyOrchestrator(registry).run(
