@@ -1,7 +1,6 @@
-"""Fetches GitHub statistics and writes them to the SQLite project_stats time-series table."""
+"""Fetches GitHub statistics and writes them to the project_stats time-series table."""
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from resource_explorer.github.client import GitHubClient
@@ -50,8 +49,6 @@ class StatsFetcher:
         self.registry = ProjectRegistry()
 
     def fetch(self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> dict:
-        import sqlite3
-
         project = self.registry.get(project_slug)
         if not project:
             raise ValueError(f"Project '{project_slug}' not found")
@@ -89,22 +86,29 @@ class StatsFetcher:
             "last_pushed_at": repo.pushed_at.isoformat() if repo.pushed_at else "",
         }
 
-        conn = sqlite3.connect(self.registry.db_path)
-        conn.execute("""
-            INSERT INTO project_stats
-            (project_slug, fetched_at, stars, forks, watchers, open_issues,
-             contributors_count, commits_30d, commits_90d, commits_365d, releases_count,
-             latest_release, latest_release_at, avg_release_interval_days,
-             primary_language, language_breakdown, lines_of_code, file_count,
-             repo_size_kb, license, topics, repo_created_at, last_pushed_at)
-            VALUES (:project_slug, :fetched_at, :stars, :forks, :watchers, :open_issues,
-                    :contributors_count, :commits_30d, :commits_90d, :commits_365d, :releases_count,
-                    :latest_release, :latest_release_at, :avg_release_interval_days,
-                    :primary_language, :language_breakdown, :lines_of_code, :file_count,
-                    :repo_size_kb, :license, :topics, :repo_created_at, :last_pushed_at)
-        """, stats)
-        conn.commit()
-        conn.close()
+        # Was a raw sqlite3 connection opened directly against
+        # self.registry.db_path — a leftover from before the registry's
+        # Postgres cutover. That wrote into an orphaned
+        # local SQLite file nobody reads (registry._conn() routes to Postgres
+        # now), so every "refresh stats" call silently no-op'd from the UI's
+        # point of view — confirmed live: last_pushed_at stayed stale no
+        # matter how many times fetch() ran. registry._conn() routes to
+        # whichever backend is actually configured, same as every other
+        # registry write.
+        with self.registry._conn() as conn:
+            conn.execute("""
+                INSERT INTO project_stats
+                (project_slug, fetched_at, stars, forks, watchers, open_issues,
+                 contributors_count, commits_30d, commits_90d, commits_365d, releases_count,
+                 latest_release, latest_release_at, avg_release_interval_days,
+                 primary_language, language_breakdown, lines_of_code, file_count,
+                 repo_size_kb, license, topics, repo_created_at, last_pushed_at)
+                VALUES (:project_slug, :fetched_at, :stars, :forks, :watchers, :open_issues,
+                        :contributors_count, :commits_30d, :commits_90d, :commits_365d, :releases_count,
+                        :latest_release, :latest_release_at, :avg_release_interval_days,
+                        :primary_language, :language_breakdown, :lines_of_code, :file_count,
+                        :repo_size_kb, :license, :topics, :repo_created_at, :last_pushed_at)
+            """, stats)
         try:
             count = self._fetch_commits(slug, repo, lookback_days=lookback_days)
             stats["commits_fetched"] = count
@@ -122,14 +126,13 @@ class StatsFetcher:
         commits = repo.get_commits(since=since)  # raises on API failure — caller handles
 
         # SHAs already stored with non-null additions — skip extra API call for these
-        conn = sqlite3.connect(self.registry.db_path)
-        existing_with_stats = {
-            row[0] for row in conn.execute(
-                "SELECT sha FROM project_commits WHERE project_slug = ? AND additions IS NOT NULL",
-                (project_slug,),
-            ).fetchall()
-        }
-        conn.close()
+        with self.registry._conn() as conn:
+            existing_with_stats = {
+                row[0] for row in conn.execute(
+                    "SELECT sha FROM project_commits WHERE project_slug = ? AND additions IS NOT NULL",
+                    (project_slug,),
+                ).fetchall()
+            }
 
         # Pre-check quota: skip diff stats entirely if fewer than 100 calls remain.
         # Each new commit needs one extra REST call; for long histories this depletes the limit fast.
@@ -188,20 +191,18 @@ class StatsFetcher:
         if not rows:
             return 0
 
-        conn = sqlite3.connect(self.registry.db_path)
         # Use ON CONFLICT DO UPDATE so additions/deletions get backfilled for rows already stored
-        conn.executemany(
-            """INSERT INTO project_commits
-               (project_slug, sha, message, author_name, author_email, committed_at,
-                additions, deletions)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(project_slug, sha) DO UPDATE SET
-                 additions = COALESCE(excluded.additions, project_commits.additions),
-                 deletions = COALESCE(excluded.deletions, project_commits.deletions)""",
-            rows,
-        )
-        conn.commit()
-        conn.close()
+        with self.registry._conn() as conn:
+            conn.executemany(
+                """INSERT INTO project_commits
+                   (project_slug, sha, message, author_name, author_email, committed_at,
+                    additions, deletions)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(project_slug, sha) DO UPDATE SET
+                     additions = COALESCE(excluded.additions, project_commits.additions),
+                     deletions = COALESCE(excluded.deletions, project_commits.deletions)""",
+                rows,
+            )
 
         self._compute_contributor_stats(project_slug, lookback_days=lookback_days)
         return len(rows)
@@ -219,19 +220,18 @@ class StatsFetcher:
             period_start = (now - timedelta(days=days)).date().isoformat()
             period_end = now.date().isoformat()
 
-            conn = sqlite3.connect(self.registry.db_path)
-            raw = conn.execute(
-                """SELECT author_email, author_name,
-                          COUNT(*) AS commits,
-                          COALESCE(SUM(additions), 0) AS additions,
-                          COALESCE(SUM(deletions), 0) AS deletions
-                   FROM project_commits
-                   WHERE project_slug = ? AND committed_at >= ?
-                   GROUP BY author_email
-                   ORDER BY commits DESC""",
-                (project_slug, cutoff),
-            ).fetchall()
-            conn.close()
+            with self.registry._conn() as conn:
+                raw = conn.execute(
+                    """SELECT author_email, author_name,
+                              COUNT(*) AS commits,
+                              COALESCE(SUM(additions), 0) AS additions,
+                              COALESCE(SUM(deletions), 0) AS deletions
+                       FROM project_commits
+                       WHERE project_slug = ? AND committed_at >= ?
+                       GROUP BY author_email, author_name
+                       ORDER BY commits DESC""",
+                    (project_slug, cutoff),
+                ).fetchall()
 
             if not raw:
                 continue
