@@ -169,17 +169,21 @@ class IncrementalIndexer:
         self._store_last_sha(project.slug, latest_sha)
 
     def _run_profile_only(self, repo, project: Project) -> None:
-        """Download the repo just to populate file inventory and data profiles."""
-        import tempfile
-        from pathlib import Path
+        """Download the repo just to populate file inventory and data profiles.
 
-        pipeline = IngestionPipeline()
-        subproject_path = project.subproject_path or None
+        Thin wrapper over IngestionPipeline.refresh_profile() (single zipball
+        download, shared with the Scouting 'Profile' tab's on-demand refresh).
+        """
         print("  Downloading repository for data profiling…")
-        with tempfile.TemporaryDirectory() as tmp:
-            local_root = self.client.download_zipball(repo, Path(tmp), subproject_path)
-            pipeline._store_file_inventory(project.slug, local_root)
-            pipeline._profile_data_files(project.slug, local_root)
+        IngestionPipeline().refresh_profile(
+            project.slug,
+            project.github_url,
+            project.collections or [],
+            subproject_path=project.subproject_path or None,
+            include_symbols=False,
+            client=self.client,
+            repo=repo,
+        )
         print("  Data profiles updated.")
 
     def _get_changed_files(self, repo, old_sha: str, new_sha: str) -> list[str]:

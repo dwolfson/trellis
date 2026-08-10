@@ -356,6 +356,102 @@ class TestRunDueRepoDispatch:
         assert "not found in the current analysis catalog" in entries[0]["detail"]
 
 
+class TestRunDueRepoIngestDispatch:
+    """rag_ingestion (action:"ingest") isn't a SurveyOrchestrator step — it
+    dispatches to IncrementalIndexer instead, and unlike action:"publish"
+    it IS schedulable (a local re-index, not a new Egeria catalog write)."""
+
+    def test_ingest_analysis_id_dispatches_to_incremental_indexer(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="rag_ingestion")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.ingestion.incremental.IncrementalIndexer") as MockIndexer, \
+             patch("resource_explorer.query_cache.QueryCache"), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            scheduler._run_due()
+
+        MockIndexer.return_value.refresh.assert_called_once()
+        MockOrch.assert_not_called()
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "ok"
+
+    def test_ingest_failure_is_recorded_as_error_not_raised(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="rag_ingestion")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.incremental.IncrementalIndexer.refresh",
+                 side_effect=RuntimeError("clone missing"),
+             ):
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "clone missing" in entries[0]["detail"]
+
+
+class TestRunDueRepoProfileDispatch:
+    """repo_profile_refresh (action:"profile") isn't a SurveyOrchestrator step
+    either — it dispatches to IngestionPipeline.refresh_profile() instead.
+    Schedulable, like "ingest", unlike "publish"."""
+
+    def test_profile_analysis_id_dispatches_to_refresh_profile_and_auto_classifies(
+        self, registry, registered_project,
+    ):
+        _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
+        fake_result = MagicMock(file_count=3, symbol_count=0)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.pipeline.IngestionPipeline.refresh_profile",
+                 return_value=fake_result,
+             ) as mock_refresh, \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = MagicMock(errors=[])
+            scheduler._run_due()
+
+        mock_refresh.assert_called_once()
+        _, kwargs = mock_refresh.call_args
+        assert kwargs["include_symbols"] is False
+        # Auto-chains the classification survey, matching the interactive
+        # Profile tab's own POST .../profile-scan behavior — a scheduled
+        # refresh shouldn't produce data nothing ever displays.
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        MockOrch.return_value.run.assert_called_once_with(
+            registered_project, steps=REPO_ANALYSIS_STEP_MAP["language_file_classification"],
+        )
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "ok"
+
+    def test_profile_failure_is_recorded_as_error_not_raised(self, registry, registered_project):
+        _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.pipeline.IngestionPipeline.refresh_profile",
+                 side_effect=RuntimeError("rate limited"),
+             ):
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "rate limited" in entries[0]["detail"]
+
+    def test_classification_failure_after_successful_refresh_is_recorded_as_error(
+        self, registry, registered_project,
+    ):
+        _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
+        fake_result = MagicMock(file_count=3, symbol_count=0)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.pipeline.IngestionPipeline.refresh_profile",
+                 return_value=fake_result,
+             ), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.side_effect = RuntimeError("classifier exploded")
+            scheduler._run_due()  # must not raise
+
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "classifier exploded" in entries[0]["detail"]
+
+
 class TestRunDueMisc:
     def test_no_due_schedules_is_a_noop(self, registry):
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):

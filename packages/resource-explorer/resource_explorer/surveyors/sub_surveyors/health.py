@@ -34,6 +34,20 @@ class HealthSurveyor(BaseSurveyor):
         try:
             slug = self.project.slug
 
+            # Refresh project_stats before reading it — previously this
+            # surveyor only ever read whatever StatsFetcher wrote at
+            # registration time (wizard.py/org_importer.py, never again),
+            # so "Repository Health" silently scored stale stars/forks/
+            # commit-activity data no matter how often it was run or
+            # scheduled. Best-effort: a GitHub API hiccup here shouldn't
+            # fail the whole health check — fall back to whatever's
+            # already in project_stats, same as before this fix.
+            try:
+                from resource_explorer.github.stats_fetcher import StatsFetcher
+                StatsFetcher().fetch(slug)
+            except Exception:
+                log.warning("HealthSurveyor: stats refresh failed for %s, using existing data", slug)
+
             with self.registry._conn() as conn:
                 stats_row = conn.execute(
                     "SELECT stars, forks, contributors_count, commits_30d, commits_90d, "

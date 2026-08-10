@@ -70,6 +70,29 @@ class TestFoundationsRoute:
         assert resp.json() == {}
 
 
+class TestQuickListSourcesRoute:
+    def test_returns_curated_list(self, client):
+        resp = client.get("/api/discovery/quick-list-sources")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "lfai_landscape" in data
+        assert data["lfai_landscape"]["display_name"] == "LF AI & Data"
+
+    def test_cncf_landscape_deliberately_excluded(self, client):
+        # cncf_landscape is a real fetch_kind but CNCF's search chip
+        # (org:cncf) already covers it — a redundant quick-add would just
+        # be confusing.
+        data = client.get("/api/discovery/quick-list-sources").json()
+        assert "cncf_landscape" not in data
+
+    def test_missing_file_returns_empty_dict_not_500(self, client, tmp_path, monkeypatch):
+        from resource_explorer.web.routes import discovery
+        monkeypatch.setattr(discovery, "_QUICK_LIST_SOURCES_PATH", tmp_path / "nope.json")
+        resp = client.get("/api/discovery/quick-list-sources")
+        assert resp.status_code == 200
+        assert resp.json() == {}
+
+
 class TestSearchRoute:
     def test_excludes_archived_and_forks_by_default(self, client):
         with patch(
@@ -238,6 +261,18 @@ class TestDiscoverySourcesRoutes:
         })
         assert resp.status_code == 400
 
+    def test_list_source_with_fetch_kind_allows_zero_urls(self, client):
+        # A fetch_kind-backed source can start empty — refresh-apply is
+        # what's meant to populate it, so requiring a seed URL first would
+        # defeat a one-click "add this foundation" flow (e.g. LF AI & Data's
+        # landscape.yml — there's no natural single seed URL to require).
+        resp = client.post("/api/discovery/sources", json={
+            "slug": "lfai-quick", "display_name": "LF AI & Data",
+            "source_type": "list", "config": {"fetch_kind": "lfai_landscape"},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["config"]["urls"] == []
+
     def test_run_search_source_dispatches_to_search_repos(self, client):
         client.post("/api/discovery/sources", json={
             "slug": "cncf-data", "display_name": "CNCF Data Tools",
@@ -297,6 +332,89 @@ class TestDiscoverySourcesRoutes:
     def test_run_unknown_source_404s(self, client):
         resp = client.post("/api/discovery/sources/nope/run")
         assert resp.status_code == 404
+
+
+class TestDiscoverySourceRefreshRoutes:
+    def test_preview_diffs_against_current_urls(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-list", "display_name": "CNCF List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/cncf/stale"], "fetch_kind": "cncf_landscape"},
+        })
+        with patch(
+            "resource_explorer.github.source_fetchers.fetch_source_urls",
+            return_value=["https://github.com/cncf/fresh"],
+        ):
+            resp = client.post("/api/discovery/sources/cncf-list/refresh")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["added"] == ["https://github.com/cncf/fresh"]
+        assert data["removed"] == ["https://github.com/cncf/stale"]
+        assert data["fetched_count"] == 1
+        assert data["current_count"] == 1
+
+        # Preview must not have persisted anything.
+        source = client.get("/api/discovery/sources").json()[0]
+        assert source["config"]["urls"] == ["https://github.com/cncf/stale"]
+
+    def test_apply_persists_the_fetched_urls(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-list", "display_name": "CNCF List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/cncf/stale"], "fetch_kind": "cncf_landscape"},
+        })
+        with patch(
+            "resource_explorer.github.source_fetchers.fetch_source_urls",
+            return_value=["https://github.com/cncf/fresh"],
+        ):
+            resp = client.post("/api/discovery/sources/cncf-list/refresh-apply")
+        assert resp.status_code == 200
+        assert resp.json()["config"]["urls"] == ["https://github.com/cncf/fresh"]
+
+        source = client.get("/api/discovery/sources").json()[0]
+        assert source["config"]["urls"] == ["https://github.com/cncf/fresh"]
+
+    def test_refresh_on_search_source_400s(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-search", "display_name": "CNCF Search",
+            "source_type": "search", "config": {"org": "cncf"},
+        })
+        resp = client.post("/api/discovery/sources/cncf-search/refresh")
+        assert resp.status_code == 400
+
+    def test_refresh_without_fetch_kind_400s(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "plain-list", "display_name": "Plain List",
+            "source_type": "list", "config": {"urls": ["https://github.com/acme/one"]},
+        })
+        resp = client.post("/api/discovery/sources/plain-list/refresh")
+        assert resp.status_code == 400
+
+    def test_refresh_unknown_source_404s(self, client):
+        resp = client.post("/api/discovery/sources/nope/refresh")
+        assert resp.status_code == 404
+
+    def test_unimplemented_fetcher_returns_501(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "lfx-list", "display_name": "LFX List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/lf/one"], "fetch_kind": "lfx_insights"},
+        })
+        resp = client.post("/api/discovery/sources/lfx-list/refresh")
+        assert resp.status_code == 501
+
+    def test_fetch_failure_returns_502(self, client):
+        client.post("/api/discovery/sources", json={
+            "slug": "cncf-list", "display_name": "CNCF List",
+            "source_type": "list",
+            "config": {"urls": ["https://github.com/cncf/existing"], "fetch_kind": "cncf_landscape"},
+        })
+        with patch(
+            "resource_explorer.github.source_fetchers.fetch_source_urls",
+            side_effect=RuntimeError("network down"),
+        ):
+            resp = client.post("/api/discovery/sources/cncf-list/refresh")
+        assert resp.status_code == 502
 
 
 class TestWorkingSetRoute:

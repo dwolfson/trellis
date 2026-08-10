@@ -72,7 +72,9 @@ class TestLoadCatalog:
 class TestFilterByIntent:
     def test_filters_to_scouting(self):
         analyses = acr.get_analyses("repo", intent="scouting", include_egeria_live=False)
-        assert {a["id"] for a in analyses} == {"language_file_classification", "repository_health"}
+        assert {a["id"] for a in analyses} == {
+            "language_file_classification", "repository_health", "repo_profile_refresh",
+        }
 
     def test_filters_to_assessment(self):
         analyses = acr.get_analyses("repo", intent="assessment", include_egeria_live=False)

@@ -4,14 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Resource Explorer</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
-  <script>
-    tailwind.config = { darkMode: 'class' };
-  </script>
+  <!-- Bundled, not CDN — see frontend-build/README.md. marked was
+       previously pulled unpinned ("latest") on every page load: a version
+       bump upstream could silently break this page with no warning and no
+       way to pin/roll back. Vendored (with a pinned version in
+       frontend-build/package.json) fixes that the same way the Tailwind
+       bundling did. Mermaid is NOT vendored here — diagrams render
+       server-side via the shared Kroki container (POST
+       /api/diagrams/mermaid, see diagrams.py) instead of client-side
+       mermaid.js, so the browser never needs mermaid at all. svg-pan-zoom
+       still runs client-side against whatever SVG comes back. -->
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/plotly.min.js" charset="utf-8"></script>
+  <script src="/static/vendor/svg-pan-zoom.min.js"></script>
   <style>
     body { font-family: 'Inter', system-ui, sans-serif; }
     #messages { scroll-behavior: smooth; }
@@ -151,6 +156,21 @@
     .ctx-input.filled { border-color:#065f46; }
     .ctx-rfa-hint { font-size:.6rem; color:#f59e0b; margin-top:.15rem; }
   </style>
+  <!-- Bundled, not CDN — cdn.tailwindcss.com is a runtime JIT compiler
+       explicitly documented as unsuitable for production, and generates a
+       stylesheet dynamically on every load. Built via frontend-build/
+       (npm run build) into tailwind.css, checked in like any other static
+       asset. Update frontend-build/tailwind.config.js's `content` glob and
+       re-run the build if new utility classes are added to this file.
+       MUST come after the <style> block above: several elements combine a
+       plain CSS class (e.g. .modal-overlay, which sets display:flex) with
+       Tailwind's .hidden utility (display:none) — equal specificity, so
+       cascade ORDER decides the tie. The old CDN script injected its
+       generated stylesheet after this inline <style> block too (it runs
+       and appends its own <style> tag once the page has already parsed
+       this one); putting the bundled link earlier silently flipped that
+       order and left every modal-overlay element visible by default. -->
+  <link rel="stylesheet" href="/static/tailwind.css">
 </head>
 <body class="dark bg-slate-900 text-slate-100 h-screen flex flex-col overflow-hidden">
 
@@ -330,9 +350,15 @@
            "should I analyze this further?", not the deep survey report. -->
       <div id="scouting-overview-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
-      <!-- Discover repos to scout (repos, no repo selected) — general GitHub
+      <!-- Search repos to scout (repos, no repo selected) — general GitHub
            search for candidates, upstream of Scouting itself. -->
       <div id="scouting-discover-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
+      <!-- Coarse Profile sub-tab (repos, repo selected) — on-demand file/language
+           zipball refresh, decoupled from pgvector re-ingestion. Owns
+           project_file_inventory/project_data_profiles (+ optionally
+           project_code_symbols) independent of any full survey. -->
+      <div id="scouting-profile-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
       <!-- Disposition sub-tab (repos, repo selected) — dedicated view of
            the current disposition + full history/timeline of past
@@ -1095,6 +1121,7 @@ const _DISPOSITION_LABELS = {
 const _HIDDEN_DISPOSITIONS = new Set(['ignored', 'abandoned']);
 function _dispositionIsHidden(d) { return _HIDDEN_DISPOSITIONS.has(d); }
 let _scoutFoundations = {}; // foundation-slug -> {label, org} from GET /api/discovery/foundations
+let _scoutQuickListSources = {}; // fetch_kind -> {label, display_name} from GET /api/discovery/quick-list-sources
 
 // Controlled vocabularies for the Discover-repos search form — language and
 // license were originally free-text, which let a query like "Apache 2"
@@ -1216,11 +1243,23 @@ function showIntentPlaceholder(intent) {
     `<div class="text-slate-600 text-sm text-center py-16">${_esc(INTENT_PLACEHOLDER_TEXT[intent] || 'Coming soon.')}</div>`;
 }
 
-// Repo-facet Scouting is a 4-tab sub-workflow: Discover -> Survey ->
-// Scouting Analysis (shortcut to the real Analysis intent) -> Disposition.
-// Deliberately scoped to repos only — DB/FS facets are unaffected by this
-// ("Scouting workflow redesign" plan, D6).
-let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'disposition' — persists across selection changes
+// Repo-facet Scouting is a 4-tab sub-workflow: Search -> Survey -> Coarse
+// Profile -> Disposition. Deliberately scoped to repos only — DB/FS facets
+// are unaffected by this ("Scouting workflow redesign" plan, D6). The
+// "Search" tab's internal key stays 'discover' (mechanical, not user-facing)
+// for historical reasons — it was renamed from "Discover" to "Search" only
+// at the label level, since it collided visually/textually with the
+// top-level "🔎 Discovery" nav intent.
+//
+// A 5th tab, "Scouting Analysis," existed briefly as a pure shortcut to the
+// top-level Analysis intent (no content of its own — every survey is itself
+// a form of analysis, so a separate pane would just duplicate Analysis's
+// own tab). Removed as redundant once Coarse Profile started showing real
+// inline results of its own; nothing else in Scouting redirects out like
+// that anymore. If a real need for repo-scoped analysis inside Scouting
+// shows up later, re-add it with actual content rather than restoring the
+// redirect.
+let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'profile' | 'disposition' — persists across selection changes
 
 function showScoutingPane() {
   if (resourceTypeFacet === 'repo') {
@@ -1240,9 +1279,9 @@ function showScoutingPane() {
 
 function _scoutingSubnavHtml(active) {
   const tabs = [
-    { tab: 'discover',    label: '🔍 Discover' },
+    { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
-    { tab: 'analysis',    label: '📈 Scouting Analysis' },  // working name — may become "Insights" later, since every survey is itself a form of analysis
+    { tab: 'profile',     label: '📄 Coarse Profile' },  // "Coarse" to distinguish from any future deeper content-analysis pass; deliberately not "Discovery" (collides with the nav intent + the Discover sub-tab)
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
   return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1254,13 +1293,6 @@ function _scoutingSubnavHtml(active) {
 }
 
 function _showScoutingSubTab(tab) {
-  if (tab === 'analysis') {
-    // Shortcut, not a duplicated content pane — switches to the real
-    // top-level Analysis intent with the selected repo carried over.
-    _scoutingSubTab = 'discover';  // reset so returning to Scouting later doesn't land back on Analysis
-    setNavIntent('analysis');
-    return;
-  }
   if (tab !== 'discover' && !selectedProject) {
     _scoutingSubTab = 'discover';
     showMainView('scouting-discover');
@@ -1269,6 +1301,7 @@ function _showScoutingSubTab(tab) {
   _scoutingSubTab = tab;
   if (tab === 'discover') showMainView('scouting-discover');
   else if (tab === 'survey') showMainView('scouting-overview');
+  else if (tab === 'profile') showMainView('scouting-profile');
   else if (tab === 'disposition') showMainView('scouting-disposition');
 }
 
@@ -1613,6 +1646,20 @@ const _REPO_RESULTS_RENDER_MODE = {
   security_scan: 'findings_list',
   documentation_coverage: 'findings_list',
   api_structure: 'custom',
+  language_file_classification: 'custom',
+};
+
+// What the trend chart's Y axis actually is, per analysis kind — the chart
+// itself is generic/shared (_renderAnalysisTrendChart), so without this the
+// value has no stated unit. Mirrors each kind's *_trend() reader in
+// repo_survey_definition_adapter.py.
+const _REPO_TREND_LABEL = {
+  language_file_classification: 'Total files',
+  dependency_analysis: 'Total dependencies',
+  data_file_profiling: 'Total files profiled',
+  security_scan: 'Security gaps found',
+  documentation_coverage: 'Documentation quality (rank)',
+  api_structure: 'Total code symbols',
 };
 
 async function toggleAnalysisResults(analysisId, slug, btn) {
@@ -1637,10 +1684,19 @@ async function loadAnalysisResults(analysisId, slug) {
     if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
     const data = await resultsRes.json();
     const trend = trendRes.ok ? (await trendRes.json()).runs || [] : [];
+    const hasPie = analysisId === 'language_file_classification' && data.by_type && data.by_type.length > 1;
     el.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-2 space-y-2">
       ${_renderAnalysisResultsContent(analysisId, data)}
-      ${trend.length > 1 ? `<div id="trend-${safeId}" style="height:110px"></div>` : ''}
+      ${hasPie ? `
+        <div class="text-[10px] text-slate-500 uppercase tracking-wide">Share by file type</div>
+        <div id="pie-${safeId}" style="height:160px"></div>
+      ` : ''}
+      ${trend.length > 1 ? `
+        <div class="text-[10px] text-slate-500 uppercase tracking-wide">${_esc(_REPO_TREND_LABEL[analysisId] || 'Trend')} over time</div>
+        <div id="trend-${safeId}" style="height:110px"></div>
+      ` : ''}
     </div>`;
+    if (hasPie) _renderFileTypePieChart(`pie-${safeId}`, data.by_type);
     if (trend.length > 1) _renderAnalysisTrendChart(`trend-${safeId}`, trend, analysisId);
   } catch(e) {
     el.innerHTML = `<div class="text-red-400 text-xs py-2">Failed to load results: ${_esc(e.message)}</div>`;
@@ -1711,6 +1767,15 @@ function _renderCustomAnalysisResults(analysisId, data) {
           <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
         </div>`).join('');
   }
+  if (analysisId === 'language_file_classification') {
+    if (!data.by_type || !data.by_type.length) return `<div class="text-xs text-slate-500">No classification yet — click Refresh coarse profile.</div>`;
+    return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
+      data.by_type.map(t => `
+        <div class="text-xs text-slate-300 flex justify-between gap-2">
+          <span>${_esc(t.type_label)}</span>
+          <span class="text-slate-500">${t.file_count}</span>
+        </div>`).join('');
+  }
   if (analysisId === 'api_structure') {
     const langs = Object.entries(data.by_language || {});
     if (!langs.length) return `<div class="text-xs text-slate-500">No indexed symbols yet.</div>`;
@@ -1722,6 +1787,28 @@ function _renderCustomAnalysisResults(analysisId, data) {
         </div>`).join('');
   }
   return '<div class="text-xs text-slate-500">No results view for this analysis.</div>';
+}
+
+const _PIE_COLORS = ['#06b6d4', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444', '#3b82f6', '#ec4899', '#84cc16', '#64748b'];
+
+function _renderFileTypePieChart(elId, byType) {
+  const el = document.getElementById(elId);
+  if (!el || typeof Plotly === 'undefined') return;
+  Plotly.newPlot(el, [{
+    type: 'pie',
+    labels: byType.map(t => t.type_label),
+    values: byType.map(t => t.file_count),
+    marker: { colors: _PIE_COLORS, line: { color: '#0f172a', width: 1 } },
+    textfont: { color: '#0f172a', size: 9 },
+    hovertemplate: '%{label}: %{value} (%{percent})<extra></extra>',
+  }], {
+    paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
+    font: { color: '#94a3b8', size: 9 },
+    margin: { l: 4, r: 4, t: 4, b: 4 },
+    showlegend: true,
+    legend: { font: { size: 8 }, orientation: 'v', x: 1, y: 0.5 },
+    height: 160,
+  }, { displayModeBar: false, responsive: true });
 }
 
 function _renderAnalysisTrendChart(elId, runs, analysisId) {
@@ -1940,34 +2027,16 @@ function selectProject(slug) {
   }
 }
 
-async function runRefreshFromSidebar(slug, btn) {
-  const orig = btn.textContent;
-  btn.textContent = '⟳';
-  btn.classList.add('spinning');
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/projects/${slug}/refresh`, { method: 'POST' });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      btn.textContent = '✓';
-      btn.style.color = '#4ade80';
-      if (selectedProject === slug) { _reportLoaded = false; loadSurveyReport(); }
-      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-    } else {
-      btn.textContent = '✗';
-      btn.title = data.error || 'Refresh failed';
-      btn.style.color = '#f87171';
-      setTimeout(() => { btn.textContent = orig; btn.title = ''; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 4000);
-    }
-  } catch(e) {
-    btn.textContent = '✗';
-    btn.style.color = '#f87171';
-    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; btn.classList.remove('spinning'); }, 2500);
-  }
-}
-
 // runSurveyFromSidebar() removed (D5) — was a pure duplicate of the "Run
 // Scouting Scan" button already on the Scouting overview / Survey sub-tab.
+
+// runRefreshFromSidebar() removed — "Refresh & profile" wasn't a Scouting-
+// tier action at all (it's IncrementalIndexer's pgvector re-embedding, a
+// RAG/chat-search concern), and duplicated the "Refresh & Re-ingest" card
+// that already exists under Analysis (analysis_catalog.yaml's rag_ingestion
+// entry) with its own Run + Schedule buttons via the generic analysis-card
+// renderer. The Scouting overview now just links to Analysis instead of
+// re-implementing the action locally.
 
 function toggleCompare(slug) {
   if (selectedProject && !compareSet.has(selectedProject)) compareSet.add(selectedProject);
@@ -4438,6 +4507,7 @@ function showMainView(tab) {
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
   const scoutingDiscoverView = document.getElementById('scouting-discover-view');
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
+  const scoutingProfileView = document.getElementById('scouting-profile-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -4452,7 +4522,7 @@ function showMainView(tab) {
   const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
@@ -4477,6 +4547,9 @@ function showMainView(tab) {
   } else if (tab === 'scouting-disposition') {
     scoutingDispositionView.classList.remove('hidden');
     loadScoutingDispositionView();
+  } else if (tab === 'scouting-profile') {
+    scoutingProfileView.classList.remove('hidden');
+    loadScoutingProfileView();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
@@ -4551,7 +4624,7 @@ function renderScoutingOverview(d) {
     ? `<span class="text-emerald-400" title="Surveyed ${_esc(d.last_surveyed_at)}">📊 Surveyed ${_relTime(d.last_surveyed_at)}</span>`
     : `<span class="text-slate-500">🆕 Not yet surveyed</span>`;
   const publishedBadge = d.is_published
-    ? `<span class="text-cyan-400">☁ Published to Egeria</span>`
+    ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published to Egeria${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
     : `<span class="text-slate-500">Not published</span>`;
 
   view.innerHTML = _scoutingSubnavHtml('survey') + `
@@ -4598,7 +4671,13 @@ function renderScoutingOverview(d) {
 
       <div class="flex flex-wrap gap-2 items-center pt-2">
         <button onclick="runScoutingScan('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">📊 Run Scouting Scan</button>
-        <button onclick="runRefreshFromSidebar('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs font-semibold transition-colors" title="Re-embed for RAG/chat search">🔄 Refresh &amp; profile</button>
+        <button onclick="publishScoutingRegistration('${_esc(d.slug)}', this)"
+          class="text-xs px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
+          title="Registers/finds the SourceControlLibrary asset in Egeria and publishes just the repository_health annotation — the minimal 'this repo exists' catalog entry">
+          ☁ Publish registration only
+        </button>
+        <button onclick="_showScoutingSubTab('profile')" class="text-xs text-slate-400 hover:text-slate-200 underline">📄 Coarse profile this repo →</button>
+        <button onclick="setNavIntent('analysis')" class="text-xs text-slate-400 hover:text-slate-200 underline" title="Re-embedding for chat/search isn't a Scouting-tier action — it's the 'Refresh & Re-ingest' card under Analysis, which is independently on-demand and schedulable there">🔄 Refresh chat search index (Analysis) →</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
     </div>`;
@@ -4714,6 +4793,160 @@ async function runScoutingScan(slug, btn) {
     btn.textContent = orig;
     btn.disabled = false;
   }
+}
+
+// Phase-scoped Egeria publish — reuses the same POST /api/egeria/{slug}/publish
+// route the deep report's full "Publish survey →" button uses, just with an
+// explicit `steps` list so only that phase's findings become their own
+// SurveyReport (linked to the same asset) instead of re-running everything.
+// steps=[] (or omitted) there means "full survey" — never pass an empty list
+// here expecting a no-op; callers always pass a real, non-empty step list.
+async function _publishScopedSteps(slug, steps, btn, label) {
+  const orig = btn.textContent;
+  btn.textContent = '⟳ Publishing…';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/egeria/${slug}/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ steps }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast('success', `${label}: published ${data.annotation_count} annotation(s).`, 4000);
+      loadActivityLog();
+      if (selectedProject === slug) loadScoutingOverview();
+    } else {
+      const stage = data.stage ? ` (failed at ${data.stage} step)` : '';
+      showToast('error', `${label} failed: ${_esc(data.error || 'unknown error')}${stage}`, 6000);
+    }
+  } catch(e) {
+    showToast('error', `${label} failed: ${_esc(e.message)}`, 6000);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+}
+
+function publishScoutingRegistration(slug, btn) {
+  // Scouting-tier publish: just registers/finds the SourceControlLibrary
+  // asset + a small repository_health annotation — no file/language or
+  // deeper survey data. steps=["repo_health"] is all that's needed; the
+  // asset-registration itself happens unconditionally inside publish().
+  return _publishScopedSteps(slug, ['repo_health'], btn, 'Registration');
+}
+
+// ── Profile sub-tab — on-demand file/language zipball refresh ─────────────────
+async function loadScoutingProfileView() {
+  if (!selectedProject) return;
+  const view = document.getElementById('scouting-profile-view');
+  view.innerHTML = _scoutingSubnavHtml('profile') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const res = await fetch(`/api/projects/${selectedProject}/scouting-overview`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderScoutingProfileView(await res.json());
+  } catch(e) {
+    view.innerHTML = _scoutingSubnavHtml('profile') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderScoutingProfileView(d) {
+  const view = document.getElementById('scouting-profile-view');
+  view.innerHTML = _scoutingSubnavHtml('profile') + `
+    <div class="max-w-2xl space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-200">Coarse Profile: ${_esc(d.display_name)}</h2>
+        <p class="text-xs text-slate-500 mt-1">Download the repo's zipball once and refresh what's actually in it —
+          file types, sizes, and language shape — independent of pgvector re-ingestion (see the "Refresh &amp;
+          Re-ingest" card under Analysis for that). Assessment's security/documentation checks and Analysis's API
+          structure both read from code symbols, which only the checkbox below refreshes.</p>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 space-y-2">
+        <label class="flex items-center gap-2 text-xs text-slate-300">
+          <input type="checkbox" id="profile-include-symbols" class="rounded bg-slate-800 border-slate-600">
+          Also refresh code symbols (needed for Assessment's security/documentation checks and Analysis's API structure)
+        </label>
+        <div class="flex flex-wrap gap-2 items-center pt-1">
+          <button onclick="runProfileScan('${_esc(d.slug)}', this)"
+            class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">
+            📄 Refresh coarse profile
+          </button>
+          <button onclick="publishScoutingRegistration('${_esc(d.slug)}', this)"
+            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
+            title="Registers/finds the catalog asset and publishes just the repository_health annotation — not this tab's file/language findings">
+            ☁ Publish registration only
+          </button>
+          <button onclick="publishProfileFindings('${_esc(d.slug)}', this)"
+            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
+            title="Publishes this phase's file/language-classification and data-profiling findings as their own SurveyReport">
+            ☁ Publish this phase's findings
+          </button>
+        </div>
+        <div id="profile-scan-feedback" class="text-xs"></div>
+      </div>
+
+      <div>
+        <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">File/language breakdown</h3>
+        <div id="results-language_file_classification" class="bg-slate-950 border border-slate-800 rounded p-2 space-y-1">
+          <div class="text-xs text-slate-500">Refresh the profile to classify this repo's files.</div>
+        </div>
+      </div>
+    </div>`;
+  // Show whatever's already there from a prior refresh, if any — the empty
+  // placeholder above only shows until this resolves.
+  loadAnalysisResults('language_file_classification', d.slug);
+}
+
+async function runProfileScan(slug, btn) {
+  const orig = btn.textContent;
+  const includeSymbols = document.getElementById('profile-include-symbols')?.checked || false;
+  const fb = document.getElementById('profile-scan-feedback');
+  btn.textContent = '⟳ Downloading & profiling…';
+  btn.disabled = true;
+  if (fb) fb.innerHTML = '<span class="text-slate-400">This downloads the zipball — may take a moment on large repos.</span>';
+  try {
+    const res = await fetch(`/api/projects/${slug}/profile-scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ include_symbols: includeSymbols }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast('success', data.message || 'Profile refreshed.', 4000);
+      if (fb) fb.innerHTML = `<span class="text-emerald-400">✓ ${_esc(data.message)}</span>`;
+      if (data.classified) {
+        // Auto-chained language_file_classification survey succeeded —
+        // refresh the breakdown shown below so the tab reflects it without
+        // a second click.
+        loadAnalysisResults('language_file_classification', slug);
+      } else if (data.classification_error) {
+        if (fb) fb.innerHTML += `<div class="text-amber-400 mt-1">⚠ Classification failed: ${_esc(data.classification_error)}</div>`;
+      }
+      loadProjects();  // refresh sidebar
+    } else {
+      showToast('error', `Refresh failed: ${_esc(data.error || 'unknown error')}`, 6000);
+      if (fb) fb.innerHTML = `<span class="text-amber-400">✗ ${_esc(data.error || 'Unknown error')}</span>`;
+    }
+  } catch(e) {
+    showToast('error', `Refresh failed: ${_esc(e.message)}`, 6000);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+}
+
+function publishProfileFindings(slug, btn) {
+  // Profile-tab publish: the file-classification + data-profiling step
+  // keys (language_file_classification's 3 steps + data_file_profiling's 1),
+  // matching what this tab actually refreshes — not repo_health, not
+  // security/docs/api structure/dependency findings.
+  return _publishScopedSteps(
+    slug,
+    ['repo_language', 'repo_file_classification', 'repo_file_structure', 'repo_data_profiling'],
+    btn, "Profile phase",
+  );
 }
 
 // ── repo survey report view ───────────────────────────────────────────────────
@@ -6703,7 +6936,7 @@ function renderAdminGroupsPanel() {
       </div>
 
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
-        🔍 Discover and add new repos via <strong class="text-slate-300">Scouting → (no repo selected) → Discover repos</strong> — assign a group there, or from an individual repo's own record.
+        🔍 Discover and add new repos via <strong class="text-slate-300">Scouting → (no repo selected) → Search</strong> — assign a group there, or from an individual repo's own record.
       </div>
 
       <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
@@ -6725,7 +6958,7 @@ function renderAdminGroupsPanel() {
     </div>`;
 }
 
-// ── Discover repos to scout (Scouting, no repo selected) — general GitHub
+// ── Search repos to scout (Scouting, no repo selected) — general GitHub
 // search for candidates, upstream of Scouting itself. Retired/generalized
 // from the old org-only Admin > Groups discovery block above (D8/D9). ─────
 
@@ -6738,6 +6971,7 @@ async function renderScoutingDiscoverView() {
   try { baseUrlInfo = await (await fetch('/api/discovery/github-base-url')).json(); } catch(e) {}
   try { _scoutFoundations = await (await fetch('/api/discovery/foundations')).json(); } catch(e) {}
   try { _adminDiscoverySources = await (await fetch('/api/discovery/sources')).json(); } catch(e) {}
+  try { _scoutQuickListSources = await (await fetch('/api/discovery/quick-list-sources')).json(); } catch(e) {}
 
   const foundationChips = Object.entries(_scoutFoundations).map(([key, f]) => `
     <button onclick="_applyFoundationPrefilter('${_esc(key)}')"
@@ -6751,16 +6985,37 @@ async function renderScoutingDiscoverView() {
     </button>
   `).join('');
 
+  // Quick-add buttons for foundations with a real fetch_kind (e.g. LF AI &
+  // Data, Eclipse) that don't already have a saved source — the list-source
+  // equivalent of the search chips above, for foundations a GitHub search
+  // genuinely can't cover. One click creates the source, populates it from
+  // the foundation's own landscape/project-index data, and runs it —
+  // skipped entirely once a matching source already exists (it just shows
+  // up in "Saved sources" instead).
+  const _existingFetchKinds = new Set(
+    _adminDiscoverySources.map(s => s.config && s.config.fetch_kind).filter(Boolean)
+  );
+  const quickAddButtons = Object.entries(_scoutQuickListSources)
+    .filter(([fetchKind]) => !_existingFetchKinds.has(fetchKind))
+    .map(([fetchKind, f]) => `
+      <button onclick="_quickAddListSource('${_esc(fetchKind)}')"
+        class="text-xs px-2.5 py-1.5 rounded border border-dashed border-slate-700 hover:border-cyan-600 hover:bg-cyan-900/30 text-slate-300 transition-colors"
+        title="Add and populate a curated-list source from ${_esc(f.display_name)}'s own project index">
+        📋 + ${_esc(f.label)}
+      </button>
+    `).join('');
+
   view.innerHTML = _scoutingSubnavHtml('discover') + `
     <div class="max-w-4xl mx-auto space-y-4">
       <div>
-        <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔍 Discover repos to scout</h1>
+        <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔍 Search repos to scout</h1>
         <p class="text-xs text-slate-400 mt-1">Search GitHub for candidate repos, before any specific one is registered. Select repos and import them into the catalog to start Scouting them.</p>
       </div>
 
-      ${sourceButtons ? `<div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+      ${(sourceButtons || quickAddButtons) ? `<div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Saved sources</div>
-        <div class="flex flex-wrap gap-1.5">${sourceButtons}</div>
+        <div class="flex flex-wrap gap-1.5">${sourceButtons}${quickAddButtons}</div>
+        <div id="scout-quick-add-feedback" class="text-[10px] text-slate-500"></div>
         <div class="text-[10px] text-slate-500">Manage saved sources in ⚙ Admin → Discovery Sources.</div>
       </div>` : ''}
 
@@ -6839,6 +7094,43 @@ function _applyFoundationPrefilter(key) {
   document.getElementById('scout-org').value = f.org || '';
   document.getElementById('scout-topic').value = f.topic || '';
   searchScoutRepos();
+}
+
+async function _quickAddListSource(fetchKind) {
+  // One click = create (empty urls + fetch_kind) -> refresh-apply
+  // (populate urls from the foundation's own landscape/project-index data)
+  // -> run (search/enrich, same as any saved source). Matches the search
+  // chips' "one click, see results" feel for foundations a GitHub search
+  // can't reach.
+  const info = _scoutQuickListSources[fetchKind] || {};
+  const displayName = info.display_name || fetchKind;
+  const slug = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const fb = document.getElementById('scout-quick-add-feedback');
+  if (fb) fb.textContent = `Adding ${displayName}…`;
+
+  try {
+    const createRes = await fetch('/api/discovery/sources', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug, display_name: displayName, source_type: 'list', config: { fetch_kind: fetchKind } }),
+    });
+    if (!createRes.ok) {
+      const err = await createRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${createRes.status}`);
+    }
+
+    if (fb) fb.textContent = `Fetching ${displayName}'s project list…`;
+    const applyRes = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh-apply`, { method: 'POST' });
+    if (!applyRes.ok) {
+      const err = await applyRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${applyRes.status}`);
+    }
+
+    if (fb) fb.textContent = '';
+    await renderScoutingDiscoverView();  // re-fetches sources + re-renders, so this button moves from "quick add" to "Saved sources"
+    await runDiscoverySource(slug);
+  } catch(e) {
+    if (fb) fb.innerHTML = `<span class="text-red-400">Failed to add ${_esc(displayName)}: ${_esc(e.message)}</span>`;
+  }
 }
 
 async function runDiscoverySource(slug) {
@@ -7251,7 +7543,10 @@ function renderAdminDiscoverySourcesPanel() {
       <td class="px-4 py-3 font-mono text-purple-400 text-xs">${_esc(s.slug)}</td>
       <td class="px-4 py-3 text-xs"><span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">${s.source_type}</span></td>
       <td class="px-4 py-3 text-slate-350 text-xs max-w-sm truncate">${_esc(summary)}</td>
-      <td class="px-4 py-3 text-right">
+      <td class="px-4 py-3 text-right whitespace-nowrap">
+        ${s.source_type === 'list' && s.config.fetch_kind
+          ? `<button onclick="refreshAdminDiscoverySource('${_esc(s.slug)}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors mr-1">🔄 Refresh</button>`
+          : ''}
         <button onclick="deleteAdminDiscoverySource('${_esc(s.slug)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">🗑️ Delete</button>
       </td>
     </tr>`;
@@ -7261,7 +7556,7 @@ function renderAdminDiscoverySourcesPanel() {
     <div class="p-6 space-y-6">
       <div>
         <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">🔍 Discovery Sources</h1>
-        <p class="text-xs text-slate-400 mt-1">Named, reusable "where do we scout" configs — a saved GitHub search, or a manually-curated list of repos (for foundations that spread projects across many orgs, like Eclipse, or your own enterprise repos). Picked from Scouting → Discover repos.</p>
+        <p class="text-xs text-slate-400 mt-1">Named, reusable "where do we scout" configs — a saved GitHub search, or a manually-curated list of repos (for foundations that spread projects across many orgs, like Eclipse, or your own enterprise repos). Picked from Scouting → Search.</p>
       </div>
 
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
@@ -7297,9 +7592,28 @@ function renderAdminDiscoverySourcesPanel() {
           <div class="flex-1 min-w-32"><label class="block text-[10px] text-slate-500 mb-0.5">Keyword</label>
             <input id="new-source-keyword" type="text" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full"></div>
         </div>
-        <div id="new-source-list-fields" class="hidden">
-          <label class="block text-[10px] text-slate-500 mb-0.5">GitHub URLs (one per line)</label>
-          <textarea id="new-source-urls" rows="4" placeholder="https://github.com/acme/foo&#10;https://github.com/acme/bar" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full font-mono"></textarea>
+        <div id="new-source-list-fields" class="hidden space-y-2">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">GitHub URLs (one per line)</label>
+            <textarea id="new-source-urls" rows="4" placeholder="https://github.com/acme/foo&#10;https://github.com/acme/bar" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full font-mono"></textarea>
+          </div>
+          <div class="flex gap-2 items-end">
+            <div>
+              <label class="block text-[10px] text-slate-500 mb-0.5">Auto-refresh from (optional)</label>
+              <select id="new-source-fetch-kind" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-48">
+                <option value="">— none, manual list only —</option>
+                <option value="cncf_landscape">CNCF landscape.yml</option>
+                <option value="lfai_landscape">LF AI &amp; Data landscape.yml</option>
+                <option value="eclipse_projects">Eclipse project API</option>
+                <option value="lfx_insights">LFX Insights (not yet supported)</option>
+              </select>
+            </div>
+            <div class="flex-1 min-w-40">
+              <label class="block text-[10px] text-slate-500 mb-0.5">Fetch URL override (optional)</label>
+              <input id="new-source-fetch-url" type="text" placeholder="defaults to the source's own canonical URL" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 w-full">
+            </div>
+          </div>
+          <div class="text-[10px] text-slate-500">A source with an auto-refresh binding can be re-synced later from the table below (🔄 Refresh) — it always previews added/removed URLs before saving, never applies silently.</div>
         </div>
         <button onclick="createAdminDiscoverySource()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">+ Create</button>
         <div id="new-source-feedback" class="text-xs text-slate-500"></div>
@@ -7338,7 +7652,11 @@ async function createAdminDiscoverySource() {
   if (!slug || !displayName) { fb.textContent = 'Slug and display name are both required.'; return; }
 
   const config = sourceType === 'list'
-    ? { urls: document.getElementById('new-source-urls').value.split('\n').map(u => u.trim()).filter(Boolean) }
+    ? {
+        urls: document.getElementById('new-source-urls').value.split('\n').map(u => u.trim()).filter(Boolean),
+        fetch_kind: document.getElementById('new-source-fetch-kind').value,
+        fetch_url: document.getElementById('new-source-fetch-url').value.trim(),
+      }
     : {
         org: document.getElementById('new-source-org').value.trim(),
         topic: document.getElementById('new-source-topic').value.trim(),
@@ -7362,6 +7680,37 @@ async function createAdminDiscoverySource() {
     loadAdminDiscoverySourcesPanel();
   } catch(e) {
     fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function refreshAdminDiscoverySource(slug) {
+  // A manual, opt-in repair tool — for when a source's saved URL list is
+  // stale or was hand-edited into a bad state, not a routine sync. Always
+  // previews the diff before writing anything.
+  try {
+    const res = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const diff = await res.json();
+    if (!diff.added.length && !diff.removed.length) {
+      showToast('success', `Already up to date (${diff.fetched_count} URLs).`, 3000);
+      return;
+    }
+    const msg = `Fetched ${diff.fetched_count} URLs (currently ${diff.current_count} saved):\n`
+      + `+ ${diff.added.length} added\n- ${diff.removed.length} removed\n\nApply these changes?`;
+    if (!confirm(msg)) return;
+
+    const applyRes = await fetch(`/api/discovery/sources/${encodeURIComponent(slug)}/refresh-apply`, { method: 'POST' });
+    if (!applyRes.ok) {
+      const err = await applyRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${applyRes.status}`);
+    }
+    showToast('success', `Updated — ${diff.added.length} added, ${diff.removed.length} removed.`, 4000);
+    loadAdminDiscoverySourcesPanel();
+  } catch(e) {
+    showToast('error', `Refresh failed: ${_esc(e.message)}`, 5000);
   }
 }
 
@@ -7703,20 +8052,27 @@ async function renderAllDbViewsMermaid() {
     
     const viewName = container.dataset.view;
     const mcode = container.dataset.mcode;
-    const containerId = container.id;
-    const graphId = `svg-${containerId}`;
-    
+
     try {
       container.innerHTML = `<div class="text-xs text-slate-500">Generating diagram...</div>`;
-      
-      // Initialize mermaid
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: 'dark',
-        flowchart: { useMaxWidth: false, htmlLabels: true }
+
+      // Rendered server-side via the shared Kroki container (POST
+      // /api/diagrams/mermaid, a thin backend proxy — see diagrams.py) —
+      // no client-side mermaid.js. The %%{init}%% directive is Kroki's own
+      // mechanism for per-request theme options, replacing the old
+      // mermaid.initialize({theme:'dark', ...}) call.
+      const res = await fetch('/api/diagrams/mermaid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: `%%{init: {"theme":"dark","flowchart":{"useMaxWidth":false,"htmlLabels":true}}}%%\n${mcode}`,
+        }),
       });
-      
-      const { svg } = await mermaid.render(graphId, mcode);
+      if (!res.ok) {
+        const detail = (await res.json().catch(() => null))?.detail || `HTTP ${res.status}`;
+        throw new Error(detail);
+      }
+      const svg = await res.text();
       container.innerHTML = svg;
       container.dataset.rendered = 'true';
       

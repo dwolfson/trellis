@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
@@ -10,6 +11,13 @@ from rich.progress import Progress
 from resource_explorer.configdata.collection_config import CollectionType
 from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
+
+
+@dataclass
+class ProfileResult:
+    """Return value of IngestionPipeline.refresh_profile()."""
+    file_count: int = 0
+    symbol_count: int = 0
 
 
 class IngestionPipeline:
@@ -209,6 +217,70 @@ class IngestionPipeline:
         return self.store.insert(collection_name, [c.text for c in chunks],
                                  [c.metadata for c in chunks])
 
+    def refresh_profile(
+        self,
+        project_slug: str,
+        github_url: str,
+        collections: list[str],
+        subproject_path: str | None = None,
+        include_symbols: bool = False,
+        client=None,
+        repo=None,
+    ) -> "ProfileResult":
+        """
+        Download the repo ONCE and refresh its file-inventory + data-profile
+        tables, optionally also its code symbols — without touching pgvector.
+
+        Combines what used to be two independently-downloading paths
+        (IncrementalIndexer._run_profile_only + the old extract_symbols_only)
+        into a single zipball download. include_symbols=False is the fast,
+        common "what's actually in this repo" pass (Scouting's Profile tab);
+        include_symbols=True additionally refreshes project_code_symbols,
+        which is what Assessment's SecurityHygieneSurveyor/DocumentationSurveyor
+        and Analysis's ApiStructureSurveyor depend on (previously only ever
+        populated by the original full ingestion, never by any refresh path).
+
+        client/repo are optional pass-throughs so a caller that already has
+        both (IncrementalIndexer.refresh() already fetched `repo` to compare
+        commit SHAs) doesn't pay for a second GitHubClient + get_repo() call.
+        """
+        from resource_explorer.github.client import GitHubClient
+        from resource_explorer.configdata.collection_config import COLLECTION_TYPES
+
+        client = client or GitHubClient()
+        repo = repo if repo is not None else client.get_repo(github_url)
+        symbol_count = 0
+        file_count = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.console.print("[cyan]Downloading repository for profiling...[/cyan]")
+            local_root = client.download_zipball(repo, Path(tmp), subproject_path)
+
+            file_count = self._store_file_inventory(project_slug, local_root)
+            self._profile_data_files(project_slug, local_root)
+
+            if include_symbols:
+                from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
+
+                code_ctypes = [
+                    COLLECTION_TYPES[name]
+                    for name in self._CTYPE_LANGUAGE
+                    if name in COLLECTION_TYPES and f"{project_slug}_{name}" in collections
+                ]
+                extractor = CodeSymbolExtractor()
+                for ctype in code_ctypes:
+                    language = self._CTYPE_LANGUAGE[ctype.name]
+                    self.registry.clear_code_symbols(project_slug, language)
+                    symbols = []
+                    for path, content in self._local_files(local_root, ctype.file_extensions):
+                        symbols.extend(extractor.extract(path, content, project_slug, language))
+                    if symbols:
+                        self.registry.upsert_code_symbols(project_slug, symbols)
+                        symbol_count += len(symbols)
+                        self.console.print(f"  [dim]{ctype.name}: {len(symbols)} symbols[/dim]")
+
+        return ProfileResult(file_count=file_count, symbol_count=symbol_count)
+
     def extract_symbols_only(self, project_slug: str, github_url: str, collections: list[str]) -> int:
         """
         Download the repo and extract code symbols to SQLite without touching pgvector.
@@ -216,40 +288,14 @@ class IngestionPipeline:
         Used to backfill symbols for projects that were indexed before code intelligence
         was added, and by 'refresh --symbols' when code hasn't changed.
         Returns the total number of symbols extracted.
+
+        Thin wrapper over refresh_profile(include_symbols=True) — kept as its
+        own method so the CLI's 'refresh --symbols' call site and its
+        `-> int` contract are unchanged.
         """
-        from resource_explorer.github.client import GitHubClient
-        from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
-        from resource_explorer.configdata.collection_config import COLLECTION_TYPES
-
-        code_ctypes = [
-            COLLECTION_TYPES[name]
-            for name in self._CTYPE_LANGUAGE
-            if name in COLLECTION_TYPES and f"{project_slug}_{name}" in collections
-        ]
-        if not code_ctypes:
-            return 0
-
-        client = GitHubClient()
-        repo = client.get_repo(github_url)
-        extractor = CodeSymbolExtractor()
-        total = 0
-
-        with tempfile.TemporaryDirectory() as tmp:
-            self.console.print("[cyan]Downloading repository for symbol extraction...[/cyan]")
-            local_root = client.download_zipball(repo, Path(tmp))
-
-            for ctype in code_ctypes:
-                language = self._CTYPE_LANGUAGE[ctype.name]
-                self.registry.clear_code_symbols(project_slug, language)
-                symbols = []
-                for path, content in self._local_files(local_root, ctype.file_extensions):
-                    symbols.extend(extractor.extract(path, content, project_slug, language))
-                if symbols:
-                    self.registry.upsert_code_symbols(project_slug, symbols)
-                    total += len(symbols)
-                    self.console.print(f"  [dim]{ctype.name}: {len(symbols)} symbols[/dim]")
-
-        return total
+        return self.refresh_profile(
+            project_slug, github_url, collections, include_symbols=True,
+        ).symbol_count
 
     def _parse_dependencies(self, project_slug: str, local_root: Path) -> None:
         try:
@@ -285,8 +331,13 @@ class IngestionPipeline:
                     pass
         return file_count, line_count
 
-    def _store_file_inventory(self, project_slug: str, local_root: Path) -> None:
-        """Persist every file path (relative to local_root) and its size to SQLite."""
+    def _store_file_inventory(self, project_slug: str, local_root: Path) -> int:
+        """Persist every file path (relative to local_root) and its size to SQLite.
+
+        Returns the number of paths stored (0 on skip/failure). The return
+        value was unused by every existing caller prior to refresh_profile()
+        — adding it is additive, not a behavior change for them.
+        """
         paths_with_sizes: list[tuple[str, int]] = []
         for p in local_root.rglob("*"):
             if not p.is_file():
@@ -301,8 +352,10 @@ class IngestionPipeline:
             self.console.print(
                 f"[dim]File inventory: {len(paths_with_sizes)} paths stored.[/dim]"
             )
+            return len(paths_with_sizes)
         except Exception as exc:
             self.console.print(f"[dim]File inventory skipped: {exc}[/dim]")
+            return 0
 
     def _profile_data_files(self, project_slug: str, local_root: Path) -> None:
         """Profile CSV/XLSX/Parquet files while the repo is still on disk.

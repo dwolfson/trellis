@@ -69,6 +69,26 @@ class TestScoutingOverview:
         assert data["last_surveyed_at"] != ""
         assert data["is_published"] is True
 
+    def test_last_published_at_empty_when_never_published(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_published_at"] == ""
+
+    def test_last_published_at_reflects_most_recent_survey(self, client, registry):
+        # is_published (a bare boolean, derived from whether egeria_asset_guid
+        # is currently set) and last_published_at (a real timestamp, from
+        # project_egeria_surveys) are deliberately separate fields — a
+        # project can have one without necessarily reflecting the other in
+        # sync, so both need their own explicit coverage.
+        registry.record_egeria_survey("myproj", "2026-08-01T00:00:00", "guid-1")
+        registry.record_egeria_survey("myproj", "2026-08-05T00:00:00", "guid-2")
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        data = resp.json()
+        assert data["last_published_at"] != ""
+        # Newest surveyed_at's own published_at wins, not the oldest.
+        first = registry.get_egeria_surveys("myproj")
+        latest_by_surveyed_at = max(first, key=lambda s: s["surveyed_at"])
+        assert data["last_published_at"] == latest_by_surveyed_at["published_at"]
+
     def test_defaults_to_undecided_disposition(self, client):
         resp = client.get("/api/projects/myproj/scouting-overview")
         data = resp.json()
@@ -143,3 +163,30 @@ class TestRunSingleAnalysis:
         data = resp.json()
         assert data["status"] == "ok"
         MockOrch.return_value.run.assert_called_once_with("myproj", steps=["repo_security"])
+
+    def test_ingest_action_id_dispatches_to_incremental_indexer_not_survey_orchestrator(self, client):
+        # rag_ingestion (action:"ingest") isn't a SurveyOrchestrator step —
+        # it re-embeds content into pgvector via IncrementalIndexer.
+        with patch("resource_explorer.ingestion.incremental.IncrementalIndexer") as MockIndexer, \
+             patch("resource_explorer.query_cache.QueryCache"), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            resp = client.post("/api/projects/myproj/analyses/rag_ingestion/run")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["analysis_id"] == "rag_ingestion"
+        MockIndexer.return_value.refresh.assert_called_once()
+        MockOrch.assert_not_called()
+
+    def test_ingest_failure_is_surfaced_as_error_not_a_500(self, client):
+        with patch(
+            "resource_explorer.ingestion.incremental.IncrementalIndexer.refresh",
+            side_effect=RuntimeError("clone missing"),
+        ):
+            resp = client.post("/api/projects/myproj/analyses/rag_ingestion/run")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "clone missing" in data["error"]

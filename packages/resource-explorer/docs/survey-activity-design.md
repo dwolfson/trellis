@@ -295,6 +295,25 @@ Net effect: adding a new plain analysis kind is one new surveyor class + one new
 
 ---
 
+### D13 — Disposition Recommendation Scoring [Designed, Not Built]
+
+D12's disposition lifecycle deliberately left "a future recommendation step, scored against user-defined criteria, to help decide disposition" unscoped — noted only so D11's `AnalysisKind`-style extensibility would have an obvious home for it later. This entry does the design pass; it does not implement anything.
+
+**The constraint that shapes the design:** disposition is keyed by `github_url`, not project slug, specifically so it can apply to a search candidate that was *never imported* — the actual "should I even bother registering this" moment D10/D12 exist to serve. A recommendation step that only works after a repo is registered and surveyed would miss that moment entirely. This rules out building it as a real `AnalysisKind` (D11's registry) as the primary mechanism: `SurveyOrchestrator` only ever runs against a registered `Project` with a local clone — an unregistered `DiscoveredRepo` has neither.
+
+**Decision: two tiers, not one.**
+
+- **Tier 1 — search-time scoring, computed from fields the discovery search already returns** (stars, forks, language, license, last-pushed date, already covers both `already_registered` and never-imported candidates uniformly, since `DiscoveredRepo` carries the same fields either way). No clone, no survey run, no new backend call — a pure function over data already in hand at `POST /api/discovery/search`/`/sources/{slug}/run`'s response, computed server-side and attached to each `DiscoveredRepo` as `recommendation_score` (0–100) + `recommendation_reasons` (short strings, e.g. "no commits in 400+ days", "no OSI license detected"). This is the tier that actually answers "should I even bother" — before any registration decision.
+- **Tier 2 — an optional deepen-after-import step**, real `AnalysisKind` machinery (D11), that folds in signals only a survey can produce (`repository_health`'s quality score, `security_scan` findings) to refine the Tier 1 score once a repo has actually been registered and surveyed. This is a natural `AnalysisKind` entry (`family="scoring"` or similar) — reserved as an extension point, not built now, exactly like D11's `family="security"` reservation for not-yet-built security-family kinds.
+
+**User-defined criteria, not a hardcoded formula.** A small weighted-criteria shape (e.g. `{min_stars, min_contributors, max_days_since_push, license_allowlist, language_allowlist}` → weights) — global default, with an optional per-discovery-source override (the same extension pattern D1's `fetch_kind`/`fetch_url` used: a new optional field on `DiscoverySourceConfig`, defaulting to the global set when absent). Different discovery sources plausibly want different weighting — an internal-enterprise-repos `list` source cares about internal activity signals, not GitHub stars, which a public-foundation `search` source cares about a great deal.
+
+**Suggestion, never an auto-write.** Matches this codebase's standing convention (disposition, publish, working-set toggles — every state change is a deliberate human action, never an inferred side effect): the score and its reasons render as a badge/tooltip next to each search result and the existing disposition control, informing the Track/Investigate/Ignore decision — the recommendation step never sets a disposition itself. `decided_by`/`reason` on an actual disposition change can optionally reference the score that informed it (e.g. `reason: "score 82 — active, permissive license, matches team's Python stack"`), but that's the human's own free-text note, not something the scorer writes.
+
+**Not scoped by this entry:** the exact criteria-weighting formula, whether Tier 1 criteria live in a new `configdata/*.json` file (matching `foundation_prefilters.json`'s existing precedent) or a new `app_settings` key (D1's existing generic key-value table already fits this without a schema change), and the UI placement of the score badge relative to the existing disposition control. These are implementation-time decisions once this actually gets built, not design decisions to lock in now.
+
+---
+
 ## Implementation Phases
 
 ### Phase 0 — Project Foundation

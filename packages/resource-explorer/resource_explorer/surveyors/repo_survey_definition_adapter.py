@@ -181,6 +181,29 @@ _RE_ANALYSIS_STEP_INFO = {
 # Assessment have one — language_file_classification/repository_health are
 # scouting-tagged, no results view.
 
+def _file_classification_results(registry, slug: str) -> dict:
+    # project_file_type_counts is written by FileClassifierSurveyor
+    # (repo_file_classification step) — already has full history/trend
+    # support from Phase B (the "Understanding" survey_history chart reads
+    # the same table). Surfaced here so the Scouting "Profile" tab's
+    # auto-chained refresh->classify has something real to display, closing
+    # the gap where classification data was refreshed but never shown.
+    rows = registry.query_file_type_counts(slug)
+    surveyed_at = rows[0]["surveyed_at"] if rows else ""
+    return {
+        "by_type": [{"type_label": r["type_label"], "file_count": r["file_count"]} for r in rows],
+        "total_files": sum(r["file_count"] for r in rows),
+        "surveyed_at": surveyed_at,
+    }
+
+
+def _file_classification_trend(registry, slug: str) -> list[dict]:
+    return [
+        {"surveyed_at": r["surveyed_at"], "value": r["total_files"]}
+        for r in registry.query_file_type_history(slug)
+    ]
+
+
 def _dependency_results(registry, slug: str) -> dict:
     deps = registry.query_dependencies(slug)
     by_ecosystem: dict[str, list] = {}
@@ -310,7 +333,7 @@ class AnalysisKind:
                                   # (secret scanning, CVE checks, SAST,
                                   # branch-protection audit) share one query
                                   # surface without a UNION across tables.
-    results: AnalysisKindResults | None = None   # None for scouting-tier kinds
+    results: AnalysisKindResults | None = None   # None for kinds with no results view (repository_health)
 
 
 # "language_file_classification" is the one genuinely ambiguous entry — its
@@ -323,9 +346,16 @@ class AnalysisKind:
 # not a survey step; both scheduler.py and the analysis-run route special-
 # case entries with action=="publish" before ever consulting this registry.
 ANALYSIS_KINDS: dict[str, AnalysisKind] = {
+    # Gained a results view when Scouting's "Profile" tab was built — that
+    # tab's "Refresh profile" auto-chains this survey against the freshly
+    # refreshed file inventory and displays project_file_type_counts, closing
+    # the gap where classification data was refreshed but never shown
+    # anywhere. repository_health (below) still has no results view; it's
+    # covered by the Scouting overview's own stat cards instead.
     "language_file_classification": AnalysisKind(
         "language_file_classification",
         ["repo_language", "repo_file_classification", "repo_file_structure"],
+        results=AnalysisKindResults(_file_classification_results, _file_classification_trend, "custom"),
     ),
     "repository_health": AnalysisKind("repository_health", ["repo_health"]),
     "dependency_analysis": AnalysisKind(

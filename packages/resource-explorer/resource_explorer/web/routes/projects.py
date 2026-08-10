@@ -212,6 +212,12 @@ class ScoutingOverview(BaseModel):
     repo_size_kb: int = 0
     last_surveyed_at: str = ""
     is_published: bool = False
+    # When egeria_publish last actually wrote to the catalog — distinct from
+    # is_published (a point-in-time boolean derived from whether a GUID is
+    # currently set). The data already existed (project_egeria_surveys.
+    # published_at, one row per publish) but was never surfaced here before;
+    # only the bare yes/no was shown.
+    last_published_at: str = ""
     disposition: str = "undecided"
     disposition_reason: str = ""
 
@@ -226,6 +232,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
 
     stats = registry.get_latest_project_stats(project.slug) or {}
     disp = registry.get_disposition(project.github_url) or {}
+    latest_survey = registry.get_latest_egeria_survey(project.slug)
     return ScoutingOverview(
         slug=project.slug,
         display_name=project.display_name,
@@ -239,6 +246,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         repo_size_kb=stats.get("repo_size_kb") or 0,
         last_surveyed_at=project.last_surveyed_at,
         is_published=bool(project.egeria_asset_guid),
+        last_published_at=(latest_survey or {}).get("published_at") or "",
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
     )
@@ -290,6 +298,90 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     return ScoutingScanResult(status="ok", slug=slug, message="Coarse scan complete.")
 
 
+class ProfileScanRequest(BaseModel):
+    include_symbols: bool = False
+
+
+class ProfileScanResult(BaseModel):
+    status: str  # "ok" | "error"
+    slug: str
+    file_count: int = 0
+    symbol_count: int = 0
+    classified: bool = False
+    classification_error: str | None = None
+    message: str = ""
+    error: str | None = None
+
+
+@router.post("/{slug}/profile-scan", response_model=ProfileScanResult)
+async def run_profile_scan(slug: str, req: ProfileScanRequest | None = None) -> ProfileScanResult:
+    """Scouting's 'Profile' tab: download the zipball once and refresh
+    project_file_inventory (+ project_data_profiles), optionally also
+    project_code_symbols — decoupled from full pgvector re-ingestion.
+    See IngestionPipeline.refresh_profile().
+
+    Auto-chains the language_file_classification survey (repo_language +
+    repo_file_classification + repo_file_structure) against the freshly
+    refreshed file inventory, so "Refresh profile" actually shows a
+    breakdown — previously the data was refreshed but nothing ever read it
+    into a displayed result. Classification is best-effort: a failure here
+    doesn't undo a successful refresh, it's just surfaced separately.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    include_symbols = bool(req.include_symbols) if req else False
+
+    def _run():
+        from resource_explorer.ingestion.pipeline import IngestionPipeline
+        return IngestionPipeline().refresh_profile(
+            project.slug,
+            project.github_url,
+            project.collections or [],
+            subproject_path=project.subproject_path or None,
+            include_symbols=include_symbols,
+        )
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        return ProfileScanResult(status="error", slug=slug, error=str(exc))
+
+    message = f"{result.file_count} file(s) profiled"
+    if include_symbols:
+        message += f", {result.symbol_count} symbol(s) extracted"
+
+    classified = False
+    classification_error = None
+
+    def _classify():
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+        steps = REPO_ANALYSIS_STEP_MAP["language_file_classification"]
+        return SurveyOrchestrator(registry).run(slug, steps=steps)
+
+    try:
+        survey_result = await asyncio.to_thread(_classify)
+        if survey_result.errors:
+            classification_error = "; ".join(survey_result.errors)
+        else:
+            classified = True
+            message += " Classification updated."
+    except Exception as exc:
+        classification_error = str(exc)
+
+    return ProfileScanResult(
+        status="ok", slug=slug,
+        file_count=result.file_count, symbol_count=result.symbol_count,
+        classified=classified, classification_error=classification_error,
+        message=message + ("" if message.endswith(".") else "."),
+    )
+
+
 class AnalysisRunResult(BaseModel):
     status: str  # "ok" | "error"
     slug: str
@@ -305,6 +397,7 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     Assessment. Reuses the same analysis_id -> step(s) map the scheduler's
     per-analysis-id dispatch uses (repo_survey_definition_adapter.py)."""
     from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
     from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
@@ -312,6 +405,26 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # action:"ingest" (currently just rag_ingestion) isn't a SurveyOrchestrator
+    # step at all — it re-embeds content into pgvector via IncrementalIndexer,
+    # not a survey. Checked before the step-map lookup below, same as
+    # scheduler.py's own action:"publish" special-case.
+    catalog_entry = next(
+        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
+    )
+    if catalog_entry and catalog_entry.get("action") == "ingest":
+        def _run_ingest():
+            from resource_explorer.ingestion.incremental import IncrementalIndexer
+            from resource_explorer.query_cache import QueryCache
+            IncrementalIndexer().refresh(project)
+            QueryCache().invalidate_project(slug)
+
+        try:
+            await asyncio.to_thread(_run_ingest)
+        except Exception as exc:
+            return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+        return AnalysisRunResult(status="ok", slug=slug, analysis_id=analysis_id, message="Re-ingested into pgvector.")
 
     steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
     if not steps:

@@ -161,6 +161,36 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: repo_profile_refresh
+    name: "Refresh Coarse Profile"
+    description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."
+    resource_types: ["repo"]
+    intent: scouting
+    perspectives: ["all"]
+    annotation_types: []
+    source: local
+    run_time: minutes
+    action: profile
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: rag_ingestion
+    name: "Refresh & Re-ingest"
+    description: "Pull the latest commits and re-embed changed content into pgvector (incremental, commit-diff based). Keeps chat/RAG answers current with the repo."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["all"]
+    annotation_types: []
+    source: local
+    run_time: minutes
+    action: ingest
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: egeria_publish
     name: "Publish to Egeria Catalog"
     description: "Register the repository in Egeria and publish all survey annotations as a SurveyReport asset. Requires Egeria connection."

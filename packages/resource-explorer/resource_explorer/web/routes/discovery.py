@@ -44,10 +44,24 @@ router = APIRouter()
 # odpi/egeria, not under lfai). Adding an `org:lfai`-style entry for those
 # would silently return the wrong repos rather than the intended ones — so
 # it's deliberately left out here rather than added as a broken chip.
-# Supporting that shape needs a different source type (a curated list of
-# github_urls, not a search qualifier) — not built yet, tracked as followup
-# work alongside the rest of the "named discovery sources" design.
+#
+# LF AI & Data's own case is now solved properly, just not through this
+# file — its landscape.yml (same landscape2 tool CNCF's own site runs on)
+# is a real, working discovery-source fetch_kind ("lfai_landscape",
+# github/source_fetchers.py). GET /quick-list-sources below is the actual
+# one-click equivalent for this shape — a search chip doesn't fit (there's
+# no org:/topic: qualifier to prefill), but a "create + populate + run" list
+# source does.
 _FOUNDATION_PREFILTERS_PATH = Path(__file__).parent.parent.parent / "configdata" / "foundation_prefilters.json"
+
+# Foundations with a real, working fetch_kind (github/source_fetchers.py) —
+# NOT the same list as foundation_prefilters.json above. cncf_landscape is
+# deliberately excluded here even though it's a real fetcher: CNCF's own
+# search chip (org:cncf) already covers it well, so a second, redundant
+# "quick add a list source too" button would just be confusing. lfx_insights
+# is excluded because it's a registered-but-unimplemented fetch_kind (see
+# source_fetchers.py) — nothing to quick-add yet.
+_QUICK_LIST_SOURCES_PATH = Path(__file__).parent.parent.parent / "configdata" / "quick_list_sources.json"
 
 
 def _load_foundation_prefilters() -> dict:
@@ -55,6 +69,24 @@ def _load_foundation_prefilters() -> dict:
         return json.loads(_FOUNDATION_PREFILTERS_PATH.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _load_quick_list_sources() -> dict:
+    try:
+        return json.loads(_QUICK_LIST_SOURCES_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+@router.get("/quick-list-sources")
+async def list_quick_list_sources() -> dict:
+    """fetch_kind -> {label, display_name} for foundations with a real
+    fetch_kind implementation, worth a one-click 'add + populate + run'
+    button on the Discover view — the list-source equivalent of
+    /foundations' search-chip prefills, for foundations a GitHub search
+    genuinely can't cover (Eclipse's hundreds of orgs, LF AI & Data's
+    governance-vs-code-org split)."""
+    return _load_quick_list_sources()
 
 
 @router.get("/foundations")
@@ -370,6 +402,14 @@ class DiscoverySourceConfig(BaseModel):
     topic: str = ""
     # 'list' fields:
     urls: list[str] = []
+    # Optional auto-refresh binding for a 'list' source — populated urls
+    # can still be hand-edited even when set. fetch_kind selects a fetcher
+    # from github/source_fetchers.py (e.g. "cncf_landscape",
+    # "eclipse_projects"); fetch_url overrides that fetcher's own default
+    # endpoint, mainly useful for pointing at a pinned/mirrored copy.
+    # Never auto-runs — see POST /sources/{slug}/refresh.
+    fetch_kind: str = ""
+    fetch_url: str = ""
 
 
 class DiscoverySourceCreate(BaseModel):
@@ -403,8 +443,16 @@ async def create_discovery_source(body: DiscoverySourceCreate) -> DiscoverySourc
             status_code=400,
             detail=f"Invalid source_type '{body.source_type}' — must be one of {sorted(_VALID_SOURCE_TYPES)}",
         )
-    if body.source_type == "list" and not body.config.urls:
-        raise HTTPException(status_code=400, detail="A 'list' source needs at least one URL.")
+    # A fetch_kind-backed list source can legitimately start with zero URLs —
+    # the whole point is that refresh-apply populates them, so requiring a
+    # seed URL first would defeat a one-click "add this foundation" flow.
+    # Only a purely-manual list (no fetch_kind) needs at least one URL up
+    # front, since nothing would ever populate it otherwise.
+    if body.source_type == "list" and not body.config.urls and not body.config.fetch_kind:
+        raise HTTPException(
+            status_code=400,
+            detail="A 'list' source needs at least one URL, unless it has a fetch_kind set.",
+        )
 
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
@@ -443,6 +491,91 @@ async def run_discovery_source(slug: str) -> list[DiscoveredRepo]:
         repos = await _run_list_urls(source["config"].get("urls", []), registry)
 
     return _enrich_repos(repos, registry)
+
+
+class SourceRefreshPreview(BaseModel):
+    added: list[str]
+    removed: list[str]
+    fetched_count: int
+    current_count: int
+
+
+def _require_fetch_binding(source: dict) -> tuple[str, str]:
+    if source["source_type"] != "list":
+        raise HTTPException(
+            status_code=400,
+            detail="Only 'list'-type sources support fetch/refresh — 'search' sources always run live.",
+        )
+    fetch_kind = source["config"].get("fetch_kind", "")
+    if not fetch_kind:
+        raise HTTPException(
+            status_code=400,
+            detail="This source has no fetch_kind configured — set one (e.g. 'cncf_landscape') to enable refresh.",
+        )
+    return fetch_kind, source["config"].get("fetch_url", "")
+
+
+async def _fetch_source_urls(source: dict, registry) -> list[str]:
+    """Shared by both refresh routes so the preview and the apply always
+    run the exact same fetch — no separate 'apply the previewed diff'
+    endpoint that could drift from what a second fetch would actually
+    return."""
+    from resource_explorer.github.source_fetchers import fetch_source_urls
+
+    fetch_kind, fetch_url = _require_fetch_binding(source)
+    try:
+        return await asyncio.to_thread(fetch_source_urls, fetch_kind, fetch_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except Exception as exc:  # httpx.HTTPStatusError, yaml errors, etc. — the fetcher hit a live third-party source
+        raise HTTPException(status_code=502, detail=f"Fetch failed: {exc}") from exc
+
+
+@router.post("/sources/{slug}/refresh", response_model=SourceRefreshPreview)
+async def preview_discovery_source_refresh(slug: str) -> SourceRefreshPreview:
+    """Read-only — fetches fresh URLs from the source's fetch_kind and
+    diffs against its currently-saved list, but does NOT persist anything.
+    Matches this codebase's convention that state changes are always a
+    deliberate, separate action (see disposition/publish) — the frontend
+    shows this diff and a human clicks Apply to actually save it."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    source = registry.get_discovery_source(slug)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Discovery source '{slug}' not found")
+
+    fetched = await _fetch_source_urls(source, registry)
+    current = set(source["config"].get("urls", []))
+    fetched_set = set(fetched)
+    return SourceRefreshPreview(
+        added=sorted(fetched_set - current),
+        removed=sorted(current - fetched_set),
+        fetched_count=len(fetched_set),
+        current_count=len(current),
+    )
+
+
+@router.post("/sources/{slug}/refresh-apply", response_model=DiscoverySource)
+async def apply_discovery_source_refresh(slug: str) -> DiscoverySource:
+    """Re-runs the same fetch as the preview (cheap — one HTTP call) and
+    overwrites the source's urls with the result. Re-fetching rather than
+    trusting a client-supplied diff means the applied state always matches
+    a fetch that actually just happened, not a stale preview."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    source = registry.get_discovery_source(slug)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Discovery source '{slug}' not found")
+
+    fetched = await _fetch_source_urls(source, registry)
+    new_config = dict(source["config"])
+    new_config["urls"] = fetched
+    registry.create_discovery_source(slug, source["display_name"], source["source_type"], new_config)
+    return DiscoverySource(**registry.get_discovery_source(slug))
 
 
 # ── personal working set (D4) ────────────────────────────────────────────
