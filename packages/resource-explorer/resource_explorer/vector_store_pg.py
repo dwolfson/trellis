@@ -1,54 +1,70 @@
 """
 pgvector (PostgreSQL) vector store backend for Resource Explorer.
 
-Replaces multi_collection_store.py's Milvus-backed MultiCollectionStore
-(migration plan: Milvus → pgvector, shared with Egeria Advisor's own
-egeria_advisor Postgres database). Structurally adapted from
-egeria-advisor/advisor/vector_store_pg.py (connection pooling, HNSW
-provisioning) per decision D3 — but RE uses one uniform per-collection
-schema (id, embedding, text, metadata) for every collection, no
-per-collection extra scalar columns, and cosine distance (not EA's L2
-default) per decision D2, since RE's existing min_score threshold semantics
-(collection_router.py, agents) were calibrated against Milvus's COSINE/FLAT
-setup.
+PgVectorStore is now a thin adapter over the shared trellis-vectorstore
+package (packages/trellis-vectorstore/) — extracted alongside Egeria
+Advisor's independently-evolved equivalent (advisor/vector_store_pg.py).
+See docs/trellis-vectorstore-extraction.md for the full design rationale.
+This adapter's entire job is reproducing RE's exact pre-extraction
+behavior: cosine distance (not EA's L2 default — RE's existing min_score
+threshold semantics were calibrated against Milvus's COSINE/FLAT setup,
+migration plan decision D2), a named Postgres schema (not EA's unqualified
+`public`, decision D1), and no per-collection extra scalar columns (RE's
+uniform 4-column schema, unlike EA's `pyegeria`/`pyegeria_cli`).
+
+MultiCollectionStore below is unchanged — it stays package-local per the
+extraction design (RE's and EA's MultiCollectionStore are different
+abstractions wearing the same name; only BaseVectorStore/SearchResult/
+PgVectorStore moved to the shared package).
 
 Two classes:
-  - PgVectorStore: generic BaseVectorStore implementation, one Postgres
-    table per collection, all living in the `resource_explorer` schema.
+  - PgVectorStore: RE's adapter over the shared implementation, same public
+    constructor signature as before extraction — every existing call site
+    (`PgVectorStore(schema=...)` in tests/conftest.py, the migration
+    script) keeps working unmodified.
   - MultiCollectionStore: thin compatibility wrapper preserving the exact
-    public method names/signatures the ~10 existing call sites already use
+    public method names/signatures the ~15 existing call sites already use
     (search/insert/drop_collection/count/list_source_files/collection_name),
     so this migration is a mechanical import swap at every call site rather
     than a rewrite of the callers themselves.
 """
 
-import json
 import re
 import threading
-from typing import Any
 
-import numpy as np
-import psycopg2
-import psycopg2.extras
-from pgvector.psycopg2 import register_vector
-from psycopg2.pool import ThreadedConnectionPool
+from trellis_vectorstore import PgVectorStoreConfig, SearchResult
+from trellis_vectorstore.pg import PgVectorStore as _SharedPgVectorStore
 
 from resource_explorer.config import get_config
-from resource_explorer.vector_store_base import BaseVectorStore, SearchResult
-
-_DDL = """
-    CREATE TABLE IF NOT EXISTS "{schema}"."{name}" (
-        id        VARCHAR(256) PRIMARY KEY,
-        embedding vector(384)  NOT NULL,
-        text      TEXT         NOT NULL,
-        metadata  JSONB        NOT NULL DEFAULT '{{}}'
-    )
-"""
 
 
-class PgVectorStore(BaseVectorStore):
+class _ReEmbeddingProvider:
+    """Satisfies trellis_vectorstore.EmbeddingProvider by wrapping RE's
+    existing module-level embed_texts/embed_one functions. The import stays
+    inside these methods (not at module top) deliberately — same reasoning
+    as the pre-extraction code: keeps heavy ML imports (sentence-
+    transformers) off this module's import path until an embedding is
+    actually needed."""
+
+    def embed_texts(self, texts):
+        from resource_explorer.embeddings import embed_texts
+        return embed_texts(list(texts))
+
+    def embed_query(self, text):
+        from resource_explorer.embeddings import embed_one
+        return embed_one(text)
+
+
+class PgVectorStore(_SharedPgVectorStore):
     """pgvector implementation of BaseVectorStore. One table per collection,
-    all in the `resource_explorer` schema (decision D1)."""
+    all in the `resource_explorer` schema (migration plan decision D1).
+
+    Same public constructor signature RE had before the shared-package
+    extraction — host/port/dbname/user/password/schema/max_connections/
+    ef_search, each defaulting to get_config().pgvector's value — so every
+    existing call site (tests/conftest.py's `PgVectorStore(schema=...)`,
+    scripts/migrate_vectors_milvus_to_pg.py) keeps working unmodified.
+    """
 
     def __init__(
         self,
@@ -62,371 +78,22 @@ class PgVectorStore(BaseVectorStore):
         ef_search: int | None = None,
     ):
         cfg = get_config().pgvector
-        self.host = host or cfg.host
-        self.port = port or cfg.port
-        self.dbname = dbname or cfg.dbname
-        self.user = user or cfg.db_user
-        self.password = password or cfg.password
-        self.schema = schema or cfg.schema_name
-        self._max_connections = max_connections or cfg.max_connections
-        self._ef_search = ef_search or cfg.ef_search
-
-        self._pool: ThreadedConnectionPool | None = None
-        self._connect_lock = threading.Lock()
-
-    # ------------------------------------------------------------------
-    # Connection
-    # ------------------------------------------------------------------
-
-    def connect(self) -> None:
-        if self._pool is not None:
-            return
-        with self._connect_lock:
-            if self._pool is not None:  # re-check inside lock
-                return
-            self._pool = ThreadedConnectionPool(
-                minconn=1,
-                maxconn=self._max_connections,
-                host=self.host,
-                port=self.port,
-                dbname=self.dbname,
-                user=self.user,
-                password=self.password,
-            )
-            with psycopg2.connect(
-                host=self.host, port=self.port, dbname=self.dbname,
-                user=self.user, password=self.password,
-            ) as bootstrap:
-                self._ensure_schema(bootstrap)
-
-    def disconnect(self) -> None:
-        if self._pool is not None:
-            self._pool.closeall()
-            self._pool = None
-
-    def is_connected(self) -> bool:
-        return self._pool is not None
-
-    def _get_conn(self):
-        conn = self._pool.getconn()
-        register_vector(conn)
-        with conn.cursor() as cur:
-            cur.execute(f"SET hnsw.ef_search = {self._ef_search}")
-        return conn
-
-    def _put_conn(self, conn) -> None:
-        self._pool.putconn(conn)
-
-    def _ensure_schema(self, conn) -> None:
-        with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
-        conn.commit()
-
-    # ------------------------------------------------------------------
-    # Collection (table) management
-    # ------------------------------------------------------------------
-
-    def create_collection(self, collection_name: str, drop_if_exists: bool = False) -> str:
-        self.connect()
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                if drop_if_exists:
-                    cur.execute(f'DROP TABLE IF EXISTS "{self.schema}"."{collection_name}" CASCADE')
-                cur.execute(_DDL.format(schema=self.schema, name=collection_name))
-            conn.commit()
-        finally:
-            self._put_conn(conn)
-        return collection_name
-
-    def create_index(
-        self,
-        collection_name: str,
-        index_type: str = "HNSW",
-        metric_type: str = "COSINE",
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        """Create an HNSW index on the embedding column.
-
-        Deliberately defaults to COSINE (vector_cosine_ops), not EA's L2
-        default — see migration plan decision D2. RE's existing min_score
-        threshold semantics (collection_router.py, agents) were calibrated
-        against Milvus's COSINE/FLAT setup; switching to L2 here would
-        silently change what "score >= threshold" means. Do not "fix" this
-        to match EA's pattern.
-        """
-        self.connect()
-        ops = "vector_l2_ops" if metric_type.upper() == "L2" else "vector_cosine_ops"
-        m = (params or {}).get("m", 16)
-        ef_construction = (params or {}).get("ef_construction", 64)
-        index_name = f"{collection_name}_embedding_idx"
-
-        sql = (
-            f'CREATE INDEX IF NOT EXISTS "{index_name}" '
-            f'ON "{self.schema}"."{collection_name}" '
-            f"USING hnsw (embedding {ops}) "
-            f"WITH (m = {m}, ef_construction = {ef_construction})"
+        config = PgVectorStoreConfig(
+            host=host or cfg.host,
+            port=port or cfg.port,
+            dbname=dbname or cfg.dbname,
+            user=user or cfg.db_user,
+            password=password or cfg.password,
+            schema=schema or cfg.schema_name,
+            max_connections=max_connections or cfg.max_connections,
+            ef_search=ef_search or cfg.ef_search,
         )
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-            conn.commit()
-        finally:
-            self._put_conn(conn)
-
-    def collection_exists(self, collection_name: str) -> bool:
-        self.connect()
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM information_schema.tables "
-                    "WHERE table_schema = %s AND table_name = %s",
-                    (self.schema, collection_name),
-                )
-                return cur.fetchone() is not None
-        finally:
-            self._put_conn(conn)
-
-    # ------------------------------------------------------------------
-    # Data insertion
-    # ------------------------------------------------------------------
-
-    def insert_data(
-        self,
-        collection_name: str,
-        texts: list[str],
-        ids: list[str] | None = None,
-        metadata: list[dict[str, Any]] | None = None,
-        batch_size: int = 1000,
-    ) -> int:
-        from resource_explorer.embeddings import embed_texts
-
-        embeddings = embed_texts(texts)
-        return self.insert_with_embeddings(collection_name, texts, embeddings, ids, metadata, batch_size)
-
-    def insert_with_embeddings(
-        self,
-        collection_name: str,
-        texts: list[str],
-        embeddings: list[Any],
-        ids: list[str] | None = None,
-        metadata: list[dict[str, Any]] | None = None,
-        batch_size: int = 1000,
-    ) -> int:
-        """Insert rows using pre-computed embeddings, skipping re-embedding.
-
-        Used by the one-time Milvus→pgvector data migration script — both
-        stacks use the same 384-dim all-MiniLM-L6-v2 model, so existing
-        embeddings transplant directly without needing to be regenerated.
-        insert_data() above is just this with embeddings computed on the fly.
-        """
-        self.create_collection(collection_name)
-        self.create_index(collection_name)
-
-        if ids is None:
-            ids = [f"{collection_name}_{i}" for i in range(len(texts))]
-        if metadata is None:
-            metadata = [{} for _ in range(len(texts))]
-        if len(texts) != len(ids) or len(texts) != len(metadata) or len(texts) != len(embeddings):
-            raise ValueError("texts, ids, embeddings, and metadata must have the same length")
-
-        sql = (
-            f'INSERT INTO "{self.schema}"."{collection_name}" (id, embedding, text, metadata) '
-            f"VALUES %s "
-            f"ON CONFLICT (id) DO UPDATE SET "
-            f"embedding = EXCLUDED.embedding, text = EXCLUDED.text, metadata = EXCLUDED.metadata"
+        super().__init__(
+            config,
+            metric="cosine",  # decision D2 — do not "fix" to match EA's L2 default
+            embeddings=_ReEmbeddingProvider(),
+            auto_provision_on_insert=True,  # RE's insert_with_embeddings always self-provisions
         )
-
-        total_inserted = 0
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                for i in range(0, len(texts), batch_size):
-                    end = min(i + batch_size, len(texts))
-                    rows = [
-                        (
-                            ids[j],
-                            embeddings[j].tolist() if isinstance(embeddings[j], np.ndarray) else list(embeddings[j]),
-                            texts[j],
-                            json.dumps(metadata[j]),
-                        )
-                        for j in range(i, end)
-                    ]
-                    psycopg2.extras.execute_values(cur, sql, rows)
-                    total_inserted += end - i
-            conn.commit()
-        finally:
-            self._put_conn(conn)
-        return total_inserted
-
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-
-    def search(
-        self,
-        collection_name: str,
-        query_text: str | None = None,
-        query_embedding: np.ndarray | None = None,
-        top_k: int = 5,
-    ) -> list[SearchResult]:
-        from resource_explorer.embeddings import embed_one
-
-        if query_text is None and query_embedding is None:
-            raise ValueError("Either query_text or query_embedding must be provided")
-
-        self.connect()
-        if not self.collection_exists(collection_name):
-            return []
-
-        if query_embedding is None:
-            query_embedding = embed_one(query_text)  # already list[float] (embeddings.py .tolist())
-        # .tolist() only if it's actually an ndarray — calling list() on a
-        # numpy array (rather than .tolist()) leaves np.float64 elements
-        # behind, which psycopg2 cannot adapt into a vector literal.
-        vec = query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else list(query_embedding)
-
-        # Cosine distance operator <=> ranges [0, 2]; convert to a
-        # Milvus-COSINE-compatible similarity score in [-1, 1] (1 - distance)
-        # so RE's existing min_score thresholds keep meaning unchanged.
-        sql = (
-            f'SELECT id, text, metadata, (embedding <=> %s::vector) AS distance '
-            f'FROM "{self.schema}"."{collection_name}" '
-            f"ORDER BY distance "
-            f"LIMIT %s"
-        )
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, [vec, top_k])
-                rows = cur.fetchall()
-        finally:
-            self._put_conn(conn)
-
-        results = []
-        for rid, text, meta_raw, distance in rows:
-            meta = meta_raw if isinstance(meta_raw, dict) else json.loads(meta_raw or "{}")
-            score = 1.0 - float(distance)
-            results.append(SearchResult(id=rid, score=score, text=text, metadata=meta))
-        return results
-
-    # ------------------------------------------------------------------
-    # Filter-only query
-    # ------------------------------------------------------------------
-
-    def query_by_filter(
-        self,
-        collection_name: str,
-        field: str,
-        limit: int = 500,
-    ) -> list[dict[str, Any]]:
-        """Return {id, text, metadata} rows, no vector search — used by
-        list_source_files()-style scans that only need the `field` metadata key."""
-        self.connect()
-        if not self.collection_exists(collection_name):
-            return []
-        sql = (
-            f'SELECT id, text, metadata FROM "{self.schema}"."{collection_name}" '
-            f"LIMIT %s"
-        )
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, [limit])
-                rows = cur.fetchall()
-        finally:
-            self._put_conn(conn)
-        results = []
-        for rid, text, meta_raw in rows:
-            meta = meta_raw if isinstance(meta_raw, dict) else json.loads(meta_raw or "{}")
-            results.append({"id": rid, "text": text, "metadata": meta})
-        return results
-
-    # ------------------------------------------------------------------
-    # Delete
-    # ------------------------------------------------------------------
-
-    def delete_entities(self, collection_name: str, ids: list[str]) -> int:
-        if not ids:
-            return 0
-        self.connect()
-        placeholders = ", ".join(["%s"] * len(ids))
-        sql = f'DELETE FROM "{self.schema}"."{collection_name}" WHERE id IN ({placeholders})'
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, ids)
-                deleted = cur.rowcount
-            conn.commit()
-        finally:
-            self._put_conn(conn)
-        return deleted
-
-    def delete_by_metadata(self, collection_name: str, field: str, values: list[str]) -> int:
-        """Delete every row whose metadata->>field is in values. Backs the
-        real row-level incremental-indexing rework (migration plan D4)."""
-        if not values:
-            return 0
-        self.connect()
-        if not self.collection_exists(collection_name):
-            return 0
-        sql = (
-            f'DELETE FROM "{self.schema}"."{collection_name}" '
-            f"WHERE metadata->>%s = ANY(%s)"
-        )
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, [field, values])
-                deleted = cur.rowcount
-            conn.commit()
-        finally:
-            self._put_conn(conn)
-        return deleted
-
-    # ------------------------------------------------------------------
-    # Stats / admin
-    # ------------------------------------------------------------------
-
-    def get_collection_stats(self, collection_name: str) -> dict[str, Any]:
-        self.connect()
-        if not self.collection_exists(collection_name):
-            return {"name": collection_name, "num_entities": 0}
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f'SELECT COUNT(*) FROM "{self.schema}"."{collection_name}"')
-                count = cur.fetchone()[0]
-        finally:
-            self._put_conn(conn)
-        return {"name": collection_name, "num_entities": count}
-
-    def list_collections(self) -> list[str]:
-        self.connect()
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = %s ORDER BY table_name",
-                    (self.schema,),
-                )
-                return [row[0] for row in cur.fetchall()]
-        finally:
-            self._put_conn(conn)
-
-    def delete_collection(self, collection_name: str) -> None:
-        self.connect()
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f'DROP TABLE IF EXISTS "{self.schema}"."{collection_name}" CASCADE')
-            conn.commit()
-        finally:
-            self._put_conn(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +220,7 @@ class MultiCollectionStore:
         paths: set[str] = set()
         for collection in collections:
             try:
-                rows = self._store.query_by_filter(collection, "file_path", limit=batch_size)
+                rows = self._store.query_by_filter(collection, limit=batch_size)
                 _log.debug("list_source_files: %s → %d rows", collection, len(rows))
                 for row in rows:
                     meta = row.get("metadata") or {}
