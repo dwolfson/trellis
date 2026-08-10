@@ -134,7 +134,74 @@ class TestScoutingScan:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "error"
-        assert "step failed" in data["error"]
+
+
+class TestScoutingScanMissingSurveyDefinitionFallback:
+    """A dev Egeria database reset wipes out the 'Repo Coarse Scout' Survey
+    Definition — a real, recurring event, not a one-off mistake. Without a
+    fallback this hard-blocks Scouting Scan entirely, including the
+    git-stats refresh HealthSurveyor does at scan time."""
+
+    def test_falls_back_to_local_steps_when_survey_definition_missing(self, client):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+
+        fake_survey_result = MagicMock(errors=[])
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("No Survey Definition found matching '...'"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.return_value = fake_survey_result
+            resp = client.post("/api/projects/myproj/scouting-scan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "ran locally" in data["message"]
+        MockOrch.return_value.run.assert_called_once_with("myproj", steps=["repo_health", "repo_language"])
+
+    def test_fallback_step_errors_are_surfaced(self, client):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+
+        fake_survey_result = MagicMock(errors=["repo_health failed: rate limited"])
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("not found"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.return_value = fake_survey_result
+            resp = client.post("/api/projects/myproj/scouting-scan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "rate limited" in data["error"]
+
+    def test_fallback_itself_failing_reports_both_errors(self, client):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("not found"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.side_effect = RuntimeError("clone missing")
+            resp = client.post("/api/projects/myproj/scouting-scan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "not found" in data["error"]
+        assert "clone missing" in data["error"]
 
 
 class TestRunSingleAnalysis:

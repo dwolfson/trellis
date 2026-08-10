@@ -290,7 +290,36 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     try:
         result = await asyncio.to_thread(_run)
     except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
-        return ScoutingScanResult(status="error", slug=slug, error=str(exc))
+        # Egeria-side Survey Definitions don't survive an Egeria database
+        # reset — a real, recurring event in development, not a one-off
+        # mistake. Without a fallback, that silently breaks Scouting Scan
+        # entirely (including the git-stats refresh HealthSurveyor does at
+        # scan time — the reason stale stats and a failed scan are usually
+        # the same underlying problem, not two bugs) until someone notices
+        # and manually re-authors the definition in Egeria. Scouting Scan
+        # never actually needed Egeria to know *what* the two steps are,
+        # only to name/bundle them — so fall back to running them directly.
+        def _run_fallback():
+            from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+            return SurveyOrchestrator(registry).run(slug, steps=["repo_health", "repo_language"])
+
+        try:
+            survey_result = await asyncio.to_thread(_run_fallback)
+        except Exception as fallback_exc:
+            return ScoutingScanResult(
+                status="error", slug=slug,
+                error=f"{exc} (local fallback also failed: {fallback_exc})",
+            )
+        if survey_result.errors:
+            return ScoutingScanResult(status="error", slug=slug, error="; ".join(survey_result.errors))
+        return ScoutingScanResult(
+            status="ok", slug=slug,
+            message=(
+                "Coarse scan complete — ran locally. Egeria's 'Repo Coarse Scout' "
+                "Survey Definition wasn't found (likely an Egeria database reset); "
+                "re-author it if you want scans to route through Egeria again."
+            ),
+        )
 
     errors = result.get("errors") or []
     if errors:
