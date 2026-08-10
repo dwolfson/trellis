@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.scheduler import start_scheduler
@@ -53,7 +53,34 @@ app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 @app.get("/health")
 async def health() -> dict:
+    """Pure liveness check — the process is up and answering HTTP, nothing
+    more. Deliberately does NOT touch the database: returns 200 even when
+    Postgres (and therefore almost every /api/ route) is unreachable, e.g.
+    Docker not running after a reboot. Confirmed live — this genuinely
+    happened and is exactly why /health/ready exists below: every /api/
+    route 500'd while this kept returning 200, which is useless for
+    detecting the actual problem. Frontend uses /health/ready instead."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Readiness check — actually exercises the registry's database
+    connection, so it fails the same way real /api/ routes do rather than
+    reporting healthy while they 500. Backs the frontend's startup +
+    periodic connectivity banner (see index.html's checkBackendHealth())."""
+    from resource_explorer.registry import ProjectRegistry
+
+    try:
+        registry = ProjectRegistry()
+        with registry._conn() as conn:
+            conn.execute("SELECT 1")
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "database": "unreachable", "detail": str(exc)},
+        )
+    return JSONResponse(content={"status": "ok", "database": "ok"})
 
 
 @app.get("/")

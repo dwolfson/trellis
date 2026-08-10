@@ -177,6 +177,18 @@
 <!-- Toast container (fixed overlay, survives all re-renders) -->
 <div id="toast-container"></div>
 
+<!-- Backend connectivity banner — hidden by default, shown by
+     checkBackendHealth() when GET /health/ready reports the database is
+     unreachable (e.g. Docker/Postgres not running). This is what a whole
+     session of "buttons don't work" debugging turned out to actually be:
+     every /api/ route was 500ing, but /health (a pure liveness check) kept
+     reporting 200, so nothing surfaced the real cause. See app.py's
+     /health vs /health/ready docstrings. -->
+<div id="backend-health-banner" class="hidden shrink-0 bg-red-900 border-b border-red-700 text-red-100 text-xs px-4 py-2 flex items-center justify-between gap-3">
+  <span>⚠ Can't reach the database — is Docker (and the shared Postgres container) running? <span id="backend-health-detail" class="text-red-300"></span></span>
+  <button onclick="checkBackendHealth()" class="px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-red-100 font-semibold shrink-0">Retry now</button>
+</div>
+
 <!-- Header -->
 <header class="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
   <div class="flex items-center gap-3">
@@ -1160,8 +1172,47 @@ if (!sessionId) {
   localStorage.setItem('pe_session_id', sessionId);
 }
 
+// ── backend connectivity health check ───────────────────────────────────────
+// GET /health/ready actually exercises the registry's DB connection (unlike
+// plain /health, a pure liveness check that returns 200 even when Postgres
+// is unreachable — confirmed live: this is exactly why a whole Docker-down
+// session read as "buttons don't work" instead of an obvious error). Runs
+// once at startup (before the flood of loadProjects()-style calls below,
+// so the banner is up before those start failing) and on a slow poll
+// afterward, so the banner also clears itself automatically once the
+// database comes back — no manual reload required.
+let _backendHealthPollTimer = null;
+async function checkBackendHealth() {
+  const banner = document.getElementById('backend-health-banner');
+  const detail = document.getElementById('backend-health-detail');
+  try {
+    const res = await fetch('/health/ready');
+    const ok = res.ok;
+    banner.classList.toggle('hidden', ok);
+    if (!ok) {
+      const data = await res.json().catch(() => null);
+      // First line only — the raw Postgres error is a multi-line wall of
+      // text (duplicate host/port messages for IPv4/IPv6 attempts); the
+      // first line is enough to confirm "yes, this is really DB
+      // connectivity" without dominating the banner.
+      detail.textContent = data?.detail ? `(${data.detail.split('\n')[0]})` : '';
+    }
+  } catch (e) {
+    // fetch() itself threw — the server process isn't answering at all,
+    // an even more basic failure than "database unreachable."
+    banner.classList.remove('hidden');
+    detail.textContent = '(server not responding)';
+  }
+}
+function _startBackendHealthPoll() {
+  if (_backendHealthPollTimer) return;
+  _backendHealthPollTimer = setInterval(checkBackendHealth, 20000);
+}
+
 // ── init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  checkBackendHealth();
+  _startBackendHealthPoll();
   loadProjects();
   loadGroups();
   loadDatabases();
