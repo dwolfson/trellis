@@ -142,6 +142,37 @@ class EgeriaConfig(BaseSettings):
     model_config = SettingsConfigDict(populate_by_name=True)
 
 
+class KrokiConfig(BaseSettings):
+    """Self-hosted diagram-rendering service (mermaid, among others) —
+    backs POST /api/diagrams/mermaid, which the frontend calls instead of
+    rendering mermaid client-side. Same shared container the rest of the
+    egeria-v6 checkout uses (egeria-shared-kroki, defined in
+    egeria-workspaces-fs/compose-configs/shared-infra/shared-infra.yaml),
+    reached via its published host port — resource-explorer runs as a bare
+    `uv run` process, not on the egeria_network docker network, so it can't
+    resolve the container by name (http://egeria-shared-kroki:8000, the URL
+    other *containerized* Egeria services use) the way they can.
+
+    The default assumes Kroki runs on the same host as resource-explorer
+    (a single-box dev checkout). In a deployment where Egeria/Kroki run on a
+    different host, override KROKI_URL to that host's published Kroki port
+    — nothing else needs to change; diagrams.py never assumes localhost.
+    See docs/kroki-diagram-rendering.md for the full picture, including why
+    this is deliberately a backend proxy rather than the browser calling
+    Kroki directly, and what happens when Kroki is unreachable (a real
+    concern once it's on a different host — network hiccups become more
+    likely, not just "container isn't running").
+    """
+    url: str = Field(default="http://localhost:8000", alias="KROKI_URL")
+    # Higher than diagrams.py's old flat 15s default — a remote Kroki adds
+    # real network latency on top of render time, which local-only testing
+    # can't surface. Tune down for a known-fast local setup if 30s ever
+    # feels too patient for a hung request.
+    timeout_seconds: float = Field(default=30.0, alias="KROKI_TIMEOUT_SECONDS")
+
+    model_config = SettingsConfigDict(populate_by_name=True)
+
+
 class PrefectConfig(BaseSettings):
     api_url: str = Field(default="http://localhost:4200/api", alias="PREFECT_API_URL")
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
@@ -200,6 +231,7 @@ class ExplorerConfig(BaseSettings):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     egeria: EgeriaConfig = Field(default_factory=EgeriaConfig)
+    kroki: KrokiConfig = Field(default_factory=KrokiConfig)
     prefect: PrefectConfig = Field(default_factory=PrefectConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)

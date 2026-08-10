@@ -298,6 +298,90 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     return ScoutingScanResult(status="ok", slug=slug, message="Coarse scan complete.")
 
 
+class ProfileScanRequest(BaseModel):
+    include_symbols: bool = False
+
+
+class ProfileScanResult(BaseModel):
+    status: str  # "ok" | "error"
+    slug: str
+    file_count: int = 0
+    symbol_count: int = 0
+    classified: bool = False
+    classification_error: str | None = None
+    message: str = ""
+    error: str | None = None
+
+
+@router.post("/{slug}/profile-scan", response_model=ProfileScanResult)
+async def run_profile_scan(slug: str, req: ProfileScanRequest | None = None) -> ProfileScanResult:
+    """Scouting's 'Profile' tab: download the zipball once and refresh
+    project_file_inventory (+ project_data_profiles), optionally also
+    project_code_symbols — decoupled from full pgvector re-ingestion.
+    See IngestionPipeline.refresh_profile().
+
+    Auto-chains the language_file_classification survey (repo_language +
+    repo_file_classification + repo_file_structure) against the freshly
+    refreshed file inventory, so "Refresh profile" actually shows a
+    breakdown — previously the data was refreshed but nothing ever read it
+    into a displayed result. Classification is best-effort: a failure here
+    doesn't undo a successful refresh, it's just surfaced separately.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    include_symbols = bool(req.include_symbols) if req else False
+
+    def _run():
+        from resource_explorer.ingestion.pipeline import IngestionPipeline
+        return IngestionPipeline().refresh_profile(
+            project.slug,
+            project.github_url,
+            project.collections or [],
+            subproject_path=project.subproject_path or None,
+            include_symbols=include_symbols,
+        )
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        return ProfileScanResult(status="error", slug=slug, error=str(exc))
+
+    message = f"{result.file_count} file(s) profiled"
+    if include_symbols:
+        message += f", {result.symbol_count} symbol(s) extracted"
+
+    classified = False
+    classification_error = None
+
+    def _classify():
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+        steps = REPO_ANALYSIS_STEP_MAP["language_file_classification"]
+        return SurveyOrchestrator(registry).run(slug, steps=steps)
+
+    try:
+        survey_result = await asyncio.to_thread(_classify)
+        if survey_result.errors:
+            classification_error = "; ".join(survey_result.errors)
+        else:
+            classified = True
+            message += " Classification updated."
+    except Exception as exc:
+        classification_error = str(exc)
+
+    return ProfileScanResult(
+        status="ok", slug=slug,
+        file_count=result.file_count, symbol_count=result.symbol_count,
+        classified=classified, classification_error=classification_error,
+        message=message + ("" if message.endswith(".") else "."),
+    )
+
+
 class AnalysisRunResult(BaseModel):
     status: str  # "ok" | "error"
     slug: str

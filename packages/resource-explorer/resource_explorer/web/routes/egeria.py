@@ -425,11 +425,18 @@ async def run_survey(slug: str) -> SurveyOnlyResult:
 
 class PublishRequest(BaseModel):
     zone_names: list[str] = []
+    # None (default) = full survey, byte-for-byte the existing behavior.
+    # A list scopes the survey (and therefore the published SurveyReport) to
+    # just those SurveyOrchestrator step keys — lets each phase (Scouting,
+    # the Profile tab, etc.) publish only what it actually knows, as its own
+    # SurveyReport linked to the same asset, rather than one all-or-nothing
+    # publish. Same step-key vocabulary as REPO_ANALYSIS_STEP_MAP.
+    steps: list[str] | None = None
 
 
 @router.post("/{slug}/publish", response_model=PublishResult)
 async def publish_survey(slug: str, req: PublishRequest | None = None) -> PublishResult:
-    """Run a full survey then publish the result to Egeria.
+    """Run a survey (full, or scoped to req.steps) then publish the result to Egeria.
 
     The survey and publish steps both call blocking synchronous code (pyegeria's
     sync wrappers use loop.run_until_complete internally).  Running them inside
@@ -438,12 +445,14 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     """
     project, registry = _get_project_or_404(slug)
 
+    steps = req.steps if req else None
+
     # ── Step 1: survey (blocking — run in thread) ─────────────────────────────
     try:
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
         def _run_survey():
-            return SurveyOrchestrator(registry=registry).run(slug)
+            return SurveyOrchestrator(registry=registry).run(slug, steps=steps)
 
         result = await asyncio.to_thread(_run_survey)
     except Exception as exc:

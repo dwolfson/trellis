@@ -1,0 +1,17 @@
+{
+  "name": "resource-explorer-frontend-build",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Build step for bundled (non-CDN) frontend assets — Tailwind CSS plus vendored marked/plotly.js/svg-pan-zoom — for resource_explorer/web/static/index.html. Mermaid renders server-side via Kroki instead (see diagrams.py), so it isn't vendored here.",
+  "scripts": {
+    "build:css": "tailwindcss -c tailwind.config.js -i ./input.css -o ../resource_explorer/web/static/tailwind.css --minify",
+    "build:vendor": "node build-vendor.js",
+    "build": "npm run build:css && npm run build:vendor"
+  },
+  "devDependencies": {
+    "marked": "^18.0.9",
+    "plotly.js-dist-min": "^3.7.0",
+    "svg-pan-zoom": "^3.6.2",
+    "tailwindcss": "^3.4.0"
+  }
+}

@@ -225,6 +225,38 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
             return (project.display_name, project.github_url, [str(exc)])
         return (project.display_name, project.github_url, [])
 
+    if entry.get("action") == "profile":
+        # repo_profile_refresh downloads the zipball once and refreshes
+        # project_file_inventory/project_data_profiles (local-only, not a
+        # SurveyOrchestrator step) — schedulable like "ingest", not excluded
+        # like "publish". Auto-chains the language_file_classification survey
+        # against the freshly refreshed inventory, matching the interactive
+        # Profile tab's own behavior (POST .../profile-scan) — a scheduled
+        # refresh should produce the same displayed result an on-demand one
+        # does, not a data-only update nothing ever reads.
+        from resource_explorer.ingestion.pipeline import IngestionPipeline
+        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+        try:
+            IngestionPipeline().refresh_profile(
+                project.slug, project.github_url, project.collections or [],
+                subproject_path=project.subproject_path or None,
+                include_symbols=False,
+            )
+        except Exception as exc:
+            return (project.display_name, project.github_url, [str(exc)])
+
+        errors = []
+        try:
+            classify_result = SurveyOrchestrator(registry).run(
+                slug, steps=REPO_ANALYSIS_STEP_MAP["language_file_classification"],
+            )
+            errors = list(classify_result.errors) if classify_result.errors else []
+        except Exception as exc:
+            errors = [f"classification failed: {exc}"]
+        return (project.display_name, project.github_url, errors)
+
     from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
 
     steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
