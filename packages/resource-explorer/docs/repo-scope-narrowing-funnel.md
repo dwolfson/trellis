@@ -24,6 +24,26 @@ worked example of a repo:
 > certain folders (or all) to do deeper discovery surveys on. From that we might find subsets
 > from those folders (or maybe their entirety) and run Assessment or Analysis activities.
 
+**Revision (2026-08-11, second pass)**: the first draft of this doc treated "select a scope,
+catalog it, run deeper analysis on it" as roughly one linear gate. Discussion surfaced six real
+problems with that framing, each addressed by its own decision below:
+
+1. Sub-resource *identity* and how multiple surveys attach to one path weren't actually defined.
+2. A selection UI needs to be a real filterable/sortable table over the metrics you're deciding
+   from, not a plain checklist.
+3. There is no single point in the funnel with "enough information" to select once — Scouting
+   might select a little, Discovery might refine it further, and re-selection has to be a
+   repeatable action against the same underlying catalog, not a one-time gate in one fixed place.
+4. There is no universally-correct mapping of survey-type to scope — different organizations will
+   want different answers, so the mapping needs to be config-driven and easy to move, not
+   hardcoded.
+5. Selecting a scope doesn't mean every survey in a phase should run against it — a survey type
+   only makes sense against certain *shapes* of target (a whole corpus, a single container, a
+   single leaf), and that compatibility has to gate what's even offered.
+6. Point 5 can't be designed in the abstract — it needs grounding in what RE's actual survey types
+   read today. That grounding pass is now done (see "Target-shape inventory" below) and it
+   overturned at least one of my own earlier guesses.
+
 ## The funnel, mapped to what exists today
 
 | Stage | RE mechanism today | Status |
@@ -34,38 +54,87 @@ worked example of a repo:
 | **Recommend which folders/files are worth a closer look** | `SubResourceSurveyor` (`repo_sub_resource_survey` step) — heuristic recommendation list, local-only, no Egeria | exists, **invisible in the UI** (no `analysis_catalog.yaml` entry, no frontend render mode — this is the immediate bug that started this conversation) |
 | **Select which recommended items to actually pursue** | — | **does not exist.** `EgeriaPublisher._catalog_sub_resources()` catalogs *every* "worthy" recommendation automatically, with no review/selection gate |
 | **Catalog the selection** (track locally; optionally push to Egeria) | — | **partially exists, wrong shape.** "Catalog" today is defined *only* as "create Egeria `FileFolder`/`DataFile` assets" (`_catalog_sub_resources()`) — there is no local-only representation of "this folder is now a tracked sub-resource," so there's no way to catalog without also publishing to Egeria |
-| **Deeper survey/analysis scoped to the selection** | — | **does not exist at all.** Confirmed by direct code read: every Assessment/Analysis sub-surveyor (`DataProfilerSurveyor`, `ApiStructureSurveyor`, `SecurityHygieneSurveyor`, `DocumentationSurveyor`) queries its data source unconditionally by `project_slug` only — no sub-surveyor has a scope/path-narrowing parameter. `project_analysis_findings`/`project_analysis_metrics` have no scope column either — only `(project_slug, kind)`. `DataProfilerSurveyor.local_path` looks like scoping but isn't: it's a data-source switch (fresh local clone vs. stored profile), applied uniformly to the *entire* already-computed file set, not a filter |
+| **Deeper survey/analysis scoped to the selection** | — | **does not exist for repos, and is only partially real for databases** — see "Target-shape inventory" below |
 
 **One piece of good news confirmed by direct code read**: local survey and Egeria publish are
 *already* fully decoupled at the whole-survey level. `SurveyOrchestrator.run()` has zero Egeria
 dependency and produces a plain-Python `SurveyResult`; `EgeriaPublisher.publish()` is a separate
 call a caller can simply not make. This is exactly the "track locally, publish to Egeria only if
-you choose" model already working today for the survey findings themselves (`project_analysis_findings`/`project_analysis_metrics`) — it just doesn't yet extend to the *sub-resource
-cataloging* step, which currently has no local-only mode at all.
+you choose" model already working today for the survey findings themselves — it just doesn't yet
+extend to the *sub-resource cataloging* step, which currently has no local-only mode at all.
 
-## Key decisions (draft — flagging where I'm not certain)
+## Target-shape inventory (grounded, 2026-08-11 code audit)
 
-**D1 — Generic funnel vocabulary, decoupled from any specific resource type.** Repo is the
-worked example, but the pattern should read the same for databases/filesystems eventually
-(schemas → tables → columns is the same shape as repos → folders → files). This doc's concrete
-schema/UI decisions below are repo-scoped for now; the vocabulary is written to generalize.
+Every survey/analysis kind that exists today, and what shape of target it can mechanically operate
+on if scope were narrowed below "the whole resource." **Corpus** = works over the whole resource
+or any container + everything recursively below it, because the underlying query/walk is already
+per-leaf and just needs a path-prefix filter. **Single-container** = has a real hierarchy in its
+own code shape (e.g. database's schema→table) but doesn't sensibly recurse arbitrarily deep.
+**Whole-resource-only** = the data it reads is inherently a single aggregate for the whole
+resource; narrowing it isn't a query change, it's a different analysis.
 
-Four generic stages, repeatable/recursive:
+### Repo
+
+| Analysis kind | Reads | Shape | Why |
+|---|---|---|---|
+| `repo_file_size` | `project_file_inventory` (per-file) | **Corpus** | Synthetic per-file table; `WHERE file_path LIKE 'dir/%'` is trivial. |
+| `repo_api_structure` | `project_code_symbols` (has `file_path`, currently unfiltered) | **Corpus** | Per-symbol/per-file table; path-prefix filter trivial to add. |
+| `repo_data_profiling` | `project_file_inventory` + `project_data_profiles`, both per-file | **Corpus** | Same as above. |
+| `repo_file_classification` | Flat path list from `project_file_inventory`/fallbacks | **Corpus** | `classify_file_paths()` is explicitly path-agnostic already. |
+| `repo_sub_resource_survey` | `project_file_inventory` (per-file) | **Corpus** | Its own "depth-1 folder" heuristic naturally re-baselines to whatever root is passed in. |
+| `repo_file_structure` | **Mixed**: `project_code_symbols` (per-file, 2 of 3 annotations) + `project_stats` (1 aggregate row) | **Corpus for 2/3 outputs, whole-resource-only for the third** | The file/dir-count-by-language annotations are path-filterable; the size/loc aggregate is a single GitHub-derived row with no per-path breakdown. A single surveyor producing mixed-shape outputs — the compatibility check has to be per-output, not just per-surveyor, in the general case. |
+| `repo_language` | `project_stats.language_breakdown` (1 aggregate row, GitHub-computed) | **Whole-resource-only** | No per-file/per-directory row exists to filter — would need re-deriving from `project_code_symbols` instead, a different analysis. |
+| `repo_health` | `project_stats` + live GitHub stats (stars/forks/releases) | **Whole-resource-only** | Repo-level GitHub metadata; no folder/file concept applies. |
+| `repo_documentation` | `project.collections` + hygiene filenames | **Whole-resource-only** | README/CHANGELOG/LICENSE presence and doc-collection membership are inherently repo-root concepts. "Does this folder have its own README" is a different, unbuilt question. |
+| `repo_security` | Hygiene filenames + `project_stats.license` | **Whole-resource-only** — **correction from my first draft**, which guessed this was "plausibly" scopable. It isn't: SECURITY.md/LICENSE presence is a root-level artifact by definition; a subfolder doesn't have "its own" security policy. |
+
+### Database
+
+| Analysis kind | Backing | Shape | Why |
+|---|---|---|---|
+| `schema_inventory` | `get_schema_info()` — **already loops per-schema in its own code** | **Whole-DB → schema → table**, a real existing hierarchy | Narrowing to one schema is a one-line change (skip the loop); narrowing to one table is also natural (`_get_tables_for_schema` already returns one dict per table). |
+| `row_count_snapshot` | `pg_stat_user_tables`, unfiltered but has `schemaname`/`relname` per row | **Single-container-or-corpus** | Trivial to filter to one schema or a table list; a single-column floor makes no sense (counts are table-level). |
+| `index_health` | **No implementation exists at all.** | n/a | Aspirational catalog entry — flagging as a separate, real gap, not part of this design. |
+| `privilege_audit` | **No implementation exists at all.** | n/a | Same — aspirational, zero backing code. If built, likely whole-DB-or-schema in spirit (grants aren't folder-like). |
+| `egeria_db_survey` | Egeria's native async survey, triggered by asset guid only | **Whole-resource-only** | No schema/table target parameter exists in the trigger API. |
+
+**Also found, unrelated to scope shape but relevant to trusting any of this**: the web UI's "Run"
+action for database analyses doesn't dispatch by catalog id at all — clicking any of the four
+database cards (`schema_inventory`/`row_count_snapshot`/`index_health`/`privilege_audit`) triggers
+the identical whole-database `DatabaseSurveyor.survey()`, regardless of which was clicked. Repo
+already does real per-card scoped dispatch (`REPO_ANALYSIS_STEP_MAP`); database doesn't. A
+prerequisite for database ever getting real scope-narrowing is first making its per-card dispatch
+real, which it isn't today.
+
+### Filesystem
+
+| Analysis kind | Backing | Shape | Why |
+|---|---|---|---|
+| `filesystem_inventory` | `LocalFileSystemSurveyor`, walks recursively from `self.root_path` | **Corpus — the cleanest case of all three resource types** | The surveyor was never table-query-based; it's already parameterized by a single root path. Pointing that path at any subfolder instead of the configured mount point produces the identical shape of result for that subtree. No query/schema change needed at all. |
+
+## Key decisions
+
+**D1 — Generic funnel vocabulary, decoupled from any specific resource type.** Repo is the worked
+example and the concrete implementation below is repo-scoped, but the target-shape inventory above
+already confirms the same four generic stages recur for database (schema→table has a real
+hierarchy) and filesystem (the cleanest corpus case of the three). Four stages, repeatable and
+non-linear (see D4):
 1. **Survey** — examine what's in scope, produce findings/recommendations. Always local-only,
-   already true today (`SurveyOrchestrator.run()`).
-2. **Select** — human reviews recommendations, picks a subset to pursue further. New.
+   already true today.
+2. **Select** — human reviews recommendations, picks a subset to pursue further.
 3. **Catalog** — the selection becomes a durable, addressable entity: always tracked locally;
    optionally also created as a real Egeria asset, per the user's choice at catalog time (default:
-   both). New local-only mode; Egeria-creation part already exists (`_catalog_sub_resources()`)
-   but currently isn't optional.
-4. **Narrow** — the catalog becomes the new scope for the next Survey, recursively.
+   both).
+4. **Narrow** — the catalog becomes the new scope for the next Survey, recursively — but only for
+   survey types whose target shape is compatible with what was selected (see D6).
 
-**D2 — New local table for "tracked sub-resource," independent of Egeria.** Something like:
+**D2 — New local table for "tracked sub-resource," independent of Egeria. Identity is
+`(project_slug, path, kind)`; survey associations are NOT a new junction table.**
 ```sql
 CREATE TABLE project_sub_resources (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     project_slug   TEXT NOT NULL,
-    path           TEXT NOT NULL,       -- relative path; '' = the repo root itself
+    path           TEXT NOT NULL,       -- relative path; '' = the repo root itself. THIS is the name.
     kind           TEXT NOT NULL,       -- 'file' | 'folder'
     cataloged_at   TEXT NOT NULL,
     source_finding TEXT DEFAULT '',     -- which survey run recommended it (traceability)
@@ -73,73 +142,111 @@ CREATE TABLE project_sub_resources (
     UNIQUE(project_slug, path)
 )
 ```
-This is the missing "local catalog" — the thing D1's Select stage writes to. Egeria publish
-becomes a *second*, optional step per row (or bulk): if chosen, run the existing
-`_catalog_sub_resources()` logic for just the selected rows and store the returned GUID back.
-Un-choosing Egeria at catalog time just leaves `egeria_guid` empty — pure sandbox tracking,
-revisitable later (a repo can be re-published incrementally, matching D8's existing idempotency
-guard).
+This table only records *that something is a tracked target* — it is not where "which surveys ran
+against it" lives. That question is answered by extending `project_analysis_findings`/
+`project_analysis_metrics` with a `scope_path` column (default `''` = whole-resource, matching
+every existing row unchanged): "what's been run against `docs/`" becomes
+`WHERE project_slug=? AND scope_path='docs'`, the same shape of query already used for
+`WHERE scope_path=''` today. Multiple surveys against one cataloged path fall out of this for
+free — no new table needed for that part.
 
-**D3 — Selection UI reuses the existing Scouting-discover checklist pattern.** `SubResourceSurveyor`'s
-recommendation list already looks exactly like `DiscoveredRepo` search results — a set of
-candidates, some worthy, some not, needing a human "select which ones matter" pass. Scouting's
-discover-results table already has this UI (checkbox column, "Select all new"/"Deselect all",
-default-unchecked-except-recommended) — reuse that component rather than inventing a new pattern.
-Confirm/submit writes to D2's table, with an "also publish to Egeria" checkbox (default checked
-per the stated default, unchecking is the sandbox-mode escape hatch).
+**D3 — Selection UI is a real filterable/sortable metrics table, not a checklist.** The
+`SubResourceSurveyor` recommendation list already carries D9/D10's metadata (size, mode, owners,
+last-updated) per entry — the selection UI should surface those as real columns you can sort and
+filter by, reusing the exact component pattern already built for Scouting's discover-results table
+(checkbox column, column sort, client-side filter, "Select all"/"Deselect all", default-unchecked
+except what the heuristic already marked worthy) rather than a plain list of checkboxes. Confirm
+writes to D2's table, with an "also publish to Egeria" checkbox (default checked, unchecking is
+the sandbox-mode escape hatch).
 
-**D4 — `analysis_catalog.yaml` placement for `repo_sub_resource_survey`, reconsidered.** Given
-this framing, it's *not* a normal Assessment/Analysis card to browse results on — it's a
-funnel-narrowing step, more like Discovery's role ("find resources by what surveys revealed") than
-a scored evaluation or structural extraction. Leaning toward **not** giving it a traditional
-results card at all, and instead building it as its own small UI surface (recommendation list →
-selection → catalog), similar in spirit to how Scouting's Discover tab is its own bespoke view
-rather than a generic analysis-catalog card. Open question I don't want to guess past: should this
-live under Scouting (as the next tab after Coarse Profile) or under Discovery (matching its
-"survey reveals candidates" framing)? Scouting currently has Discover/Survey/Coarse
-Profile/Disposition tabs — a "Sub-Resources" tab there would keep the whole repo-level funnel in
-one place, but Discovery's stated purpose ("find resources by what surveys revealed") is a closer
-semantic match.
+**D4 — Selection/cataloging is a repeatable action reachable from multiple places, not a one-time
+gate in one fixed UI location.** There's no single point in the funnel with "enough information"
+to select once and be done — a user might catalog a couple of obviously-important folders from
+Scouting, then come back after a deeper Discovery-stage survey and catalog more (or reconsider
+earlier choices) with better information. The UI for "review recommendations → select → catalog"
+needs to be a reusable panel/component backed by the same `project_sub_resources` table, invokable
+from wherever the user currently has relevant information — not hard-coded to live under exactly
+one of Scouting or Discovery. This replaces my first draft's D4, which asked "which single intent
+should own this" — the answer is that ownership-by-one-intent was the wrong frame.
 
-**D5 — Scoped deeper survey/analysis (D1's "Narrow" stage applied to Assessment/Analysis) is
-real, separate, larger work — not designed in this pass.** Confirmed by direct code read: it
-needs (a) a `scope_path` parameter threaded into whichever sub-surveyors make sense to scope
-(`ApiStructureSurveyor`/`DataProfilerSurveyor`/`SecurityHygieneSurveyor` plausibly; `DocumentationSurveyor` less obviously so — a doc-coverage check is naturally repo-wide), each
-adding a path-prefix filter to its own queries (`project_code_symbols` already has `file_path`,
-so this is mechanically possible for API-structure at least); (b) a `scope_path` column added to
-`project_analysis_findings`/`project_analysis_metrics` (currently keyed only by
-`project_slug, kind[, metric_name]` — no way to keep a folder-scoped run's results distinct from
-a whole-repo run's under the same `kind` without this); (c) UI for "run this analysis scoped to
-this cataloged sub-resource" and a way to view/compare scoped vs. whole-repo results. Flagging
-this explicitly as its own follow-up design pass, not bundled into D1-D4 above — it touches five
-surveyors and two core tables, versus D1-D4's one new table and one new UI surface.
+**D5 — Target-shape compatibility must be config-driven and extensible, not hardcoded — no
+mapping here is universally correct.** Different organizations will reasonably want different
+answers to "should `repo_security` ever be offered against a single folder" — the inventory above
+is RE's own best-guess grounding, not gospel. Mirror the existing `ANALYSIS_KINDS`/`STEP_REGISTRY`
+extensibility pattern already used elsewhere in this codebase: add a `target_shape` field to each
+`analysis_catalog.yaml` entry (`corpus` | `single_container` | `single_leaf` | `whole_resource_only`,
+with `repo_file_structure`-style mixed cases needing per-output granularity — flagged as an open
+question, not resolved here) rather than encoding shape compatibility as branching logic anywhere
+in Python. A new analysis kind declares its own shape in one YAML field; nothing else needs to
+change to make the compatibility check aware of it.
+
+**D6 — Selecting a scope must gate which analyses are even offered, not just parameterize all of
+them.** Directly from the inventory: if a user has cataloged a single file, offering `repo_health`
+or `repo_documentation` against it is nonsensical (whole-resource-only), while `repo_api_structure`
+or `repo_data_profiling` make real sense. The "run scoped analysis" UI for a cataloged sub-resource
+must filter its own menu by D5's target-shape compatibility against what was actually selected
+(corpus target → offer corpus + single-container + single-leaf kinds; single-leaf target → offer
+only single-leaf + corpus kinds that degrade sensibly to one file; etc.) — never present a control
+for a combination that can't produce a meaningful result.
+
+**D7 — `perspectives` is currently orthogonal to intent placement; this doc surfaces a real
+question about whether it should stay that way.** Today `perspectives` (`dba`/`data_scientist`/
+`steward`/`security`/`all`) is a cross-cutting filter applied *within* whichever intent tab is
+already active — it narrows the cards you see, it never decides which tab a card lives under in
+the first place (that's `intent`, one scalar per entry, confirmed by the target-shape audit). D4's
+still-open "should a kind be reachable from multiple intents" question and perspective may not be
+independent: a DBA persona plausibly wants `repo_dependency` surfaced as early as Scouting, while a
+`data_scientist` persona doesn't care until Analysis — i.e. the *right* intent for a kind may
+itself be perspective-dependent, not fixed. If so, the catalog schema needs to move from "one
+`intent` scalar per entry" toward "a set of `(intent, perspective)` pairs per entry," which is a
+bigger schema change than D4's original framing implied. Not resolving this here — flagging that
+it needs to be settled before or alongside D4/D5's implementation, since it changes the shape of
+the `analysis_catalog.yaml` schema decision either way.
 
 ## Explicitly not decided here (need your input)
 
-- **D4's placement** (Scouting vs. Discovery) — see above, genuinely unsure which reads better.
-- **Which sub-surveyors D5 should support scoping for first** — all four, or just the ones where
-  "run this on just one folder" is obviously meaningful (API structure, data profiling, security)?
-- **Whether `project_sub_resources` (D2) is repo-specific or should be designed as a generic
-  cross-resource-type table now**, given D1's stated goal of the vocabulary generalizing to
-  databases/filesystems later — building it generically now costs a bit more design care but
-  avoids a rename/migration later if databases get their own "schema → table → column" narrowing.
+- **D7's `(intent, perspective)` pairing** — does perspective actually change which intent a kind
+  belongs under, or should it stay a pure within-intent filter as it is today? This is probably the
+  single highest-leverage open question, since it changes the catalog schema shape for everything
+  else in this doc.
+- **`repo_file_structure`'s mixed-shape output** — does per-output shape tagging belong in the
+  target-shape registry (D5), or should mixed surveyors like this one eventually split into two
+  separate analysis kinds (one corpus-shaped, one whole-resource-only) so every kind has exactly
+  one shape? Splitting is cleaner for D6's gating logic; not splitting avoids proliferating catalog
+  entries for what's conceptually one survey pass.
+- **Whether `project_sub_resources` (D2) should be designed as a generic cross-resource-type table
+  now**, given the target-shape inventory confirms database/filesystem have their own real
+  narrowing shapes too — building it generically now costs more design care but avoids a
+  rename/migration later.
+- **Database's per-card dispatch gap** — worth fixing (`REPO_ANALYSIS_STEP_MAP`-equivalent for
+  database) before or alongside this work, since scope-narrowing for database is meaningless while
+  every card triggers the same whole-DB survey regardless of which was clicked?
+- **`index_health`/`privilege_audit`** — leave as aspirational catalog entries, or remove them
+  until they have real implementations, so the catalog doesn't advertise capabilities that don't
+  exist?
 
 ## Suggested phasing (if this direction is right)
 
-1. **Phase 1** — D2 (local table) + D3 (selection UI) + Egeria-publish-per-catalog-action choice.
-   Makes the existing `SubResourceSurveyor`/`_catalog_sub_resources()` work actually visible and
-   human-gated, without touching Assessment/Analysis surveyors at all.
-2. **Phase 2** — D5 (scoped deeper survey/analysis). Larger, separate design pass once Phase 1's
-   local-catalog table exists to scope *against*.
+1. **Phase 1** — D2 (local table) + D3 (selection UI, reusable per D4) + Egeria-publish-per-catalog-
+   action choice. Makes the existing `SubResourceSurveyor`/`_catalog_sub_resources()` work actually
+   visible and human-gated, without touching Assessment/Analysis surveyors at all.
+2. **Phase 2** — D5 (target-shape registry) + D6 (compatibility-gated scoped analysis). Larger,
+   separate design pass — touches five-plus surveyors and two core tables, once Phase 1's local
+   catalog exists to scope *against*.
 
 ## Verification (once decisions are settled)
 
 - Unit tests: `project_sub_resources` CRUD; selection UI submit round-trip (some selected →
   cataloged, unselected → left as findings-only); Egeria-publish-optional behavior (unchecked →
   `egeria_guid` stays empty, no Egeria calls made at all — a real regression guard, not just "it
-  works when checked").
-- Live: run the funnel end-to-end against a real repo — survey, review recommendations, select a
-  subset (not all), catalog locally-only for one, catalog+publish for another, confirm the
-  local-only one never touches Egeria and the published one appears correctly nested (reusing the
-  D5/D8 verification already done for the underlying `_catalog_sub_resources()` mechanism).
+  works when checked"); D5's target-shape registry — every existing analysis kind's declared shape
+  matches the inventory above (regression guard against the audit going stale); D6's menu-filtering
+  — a single-leaf-selected sub-resource never offers a whole-resource-only kind.
+- Live: run the funnel end-to-end against a real repo — survey, review recommendations (sortable/
+  filterable by size/staleness/owners per D3), select a subset (not all), catalog locally-only for
+  one, catalog+publish for another, confirm the local-only one never touches Egeria and the
+  published one appears correctly nested (reusing the D5/D8 verification already done for the
+  underlying `_catalog_sub_resources()` mechanism). Confirm re-opening the selection panel later
+  (simulating "came back with more information") correctly shows prior selections and allows
+  adding more without disturbing them.
 - Full RE test suite green.
