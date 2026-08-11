@@ -8252,25 +8252,26 @@ let _feedbackBtnDragged = false;  // declared here so the button's inline onclic
     <div style="margin-bottom:.75rem;">
       <div id="feedback-stars" style="font-size:1.4rem; cursor:pointer; letter-spacing:.15rem;">☆☆☆☆☆</div>
     </div>
-    <select id="feedback-category" style="width:100%; margin-bottom:.5rem; padding:.4rem; border-radius:.375rem;">
+    <select id="feedback-category" class="modal-input" style="margin-bottom:.5rem;">
       <option value="">Category (optional)</option>
       <option value="bug">Bug</option>
       <option value="confusing">Confusing</option>
       <option value="suggestion">Suggestion</option>
       <option value="praise">Praise</option>
     </select>
-    <textarea id="feedback-message" placeholder="What's on your mind?" rows="4"
-              style="width:100%; margin-bottom:.5rem; padding:.4rem; border-radius:.375rem; resize:vertical;"></textarea>
-    <input id="feedback-email" type="email" placeholder="Email (optional)"
-           style="width:100%; margin-bottom:.5rem; padding:.4rem; border-radius:.375rem;">
-    <label style="display:flex; align-items:center; gap:.4rem; font-size:.85rem; margin-bottom:.25rem;">
+    <textarea id="feedback-message" placeholder="What's on your mind?" rows="4" class="modal-input"
+              style="margin-bottom:.5rem; resize:vertical;"></textarea>
+    <input id="feedback-email" type="email" placeholder="Email (optional)" class="modal-input"
+           style="margin-bottom:.5rem;">
+    <label style="display:flex; align-items:center; gap:.4rem; font-size:.85rem; margin-bottom:.25rem; color:#cbd5e1;">
       <input type="checkbox" id="feedback-wants-response"> I'd like a response
     </label>
-    <label style="display:flex; align-items:center; gap:.4rem; font-size:.85rem; margin-bottom:.75rem;">
+    <label style="display:flex; align-items:center; gap:.4rem; font-size:.85rem; margin-bottom:.75rem; color:#cbd5e1;">
       <input type="checkbox" id="feedback-consent"> OK to contact me about this feedback
     </label>
     <div style="display:flex; justify-content:flex-end; gap:.5rem;">
-      <button onclick="closeFeedbackModal()" style="padding:.4rem .8rem; border-radius:.375rem;">Cancel</button>
+      <button onclick="closeFeedbackModal()" style="padding:.4rem .8rem; border-radius:.375rem;
+              background:#334155; color:#e2e8f0; border:1px solid #475569;">Cancel</button>
       <button onclick="submitFeedback()" style="padding:.4rem .8rem; border-radius:.375rem;
               background:var(--accent, #38bdf8); color:#0f172a; border:none; font-weight:600;">Send</button>
     </div>
