@@ -220,11 +220,10 @@ matters more here than the two approaches' minor capability differences — a ca
 whether the parent happens to be a repo or a filesystem mount. `AutomatedCuration
 .create_folder_element_from_template()` (proven, already used by `EgeriaFileSystemSurveyor`, template
 resolved live via `_async_get_template_guid_for_technology_type("File System Directory")`) creates the
-folder assets; the equivalent `"Data File"` technology-type template lookup creates the file assets
-(the filesystem precedent's *hardcoded* CSV/Parquet/Excel template GUIDs happened to still be valid on
-the live instance checked, but its hardcoded *generic*-file GUID did not — see D5). `CollectionManager`'s
-model stays the right choice for genuinely organizational groupings elsewhere in this codebase; this is
-asset cataloging, not grouping.
+folder assets; a **per-file-kind** technology-type template lookup creates the file assets — corrected
+2026-08-11, see D5a — not one blanket `"Data File"` call for every file regardless of kind.
+`CollectionManager`'s model stays the right choice for genuinely organizational groupings elsewhere in
+this codebase; this is asset cataloging, not grouping.
 
 **D4 — Folders can now be cataloged too, not just files** (reverses the original draft's D4 "no
 intermediate Folder asset layer" — that constraint existed only because the original design's selection
@@ -265,12 +264,65 @@ this instance's catalog for unrelated purposes (actor profiles, projects, commun
 `CapabilityAssetUse` is semantically exact: `SourceControlLibrary` **is** a `SoftwareCapability`, and a
 `FileFolder` **is** an `Asset` — "a capability is associated with an asset" is precisely this
 relationship. `NestedFolder` (guessed in the original draft) does not exist as a type at all — Egeria's
-real name for that edge is `FolderHierarchy`, confirmed by the same live check. Also confirmed live: the
-generic-DataFile template GUID hardcoded in `EgeriaFileSystemSurveyor._create_data_file_asset()`
-(`ae3067c7-cc72-4a18-88e1-746803c2c86f`) **does not exist on this Egeria instance** (a 404) — template
-GUIDs are content-pack/environment-specific, not portable constants; the correct approach (used in the
-pre-flight script and carried into Implementation below) is `AutomatedCuration
-._async_get_template_guid_for_technology_type("Data File")`, resolved live rather than hardcoded.
+real name for that edge is `FolderHierarchy`, confirmed by the same live check.
+
+**D5a — File assets must be created from the *specific* technology-type template matching the file's
+kind, not one blanket generic template — correction, 2026-08-11.** The original draft (and the
+`EgeriaFileSystemSurveyor` precedent it copied) resolved one hardcoded "generic file" template GUID
+(`ae3067c7-cc72-4a18-88e1-746803c2c86f`) for anything that wasn't CSV/Parquet/Excel — confirmed live that
+this specific GUID **doesn't exist on this Egeria instance at all** (404), and separately, even where a
+generic template *does* resolve, it discards real classification information the file already carries
+(a Python script and a Dockerfile are both "just a file" under a blanket template, when Egeria's own
+technology-type catalog can represent each correctly). Queried live via RE's own
+`EgeriaTechTypeCatalog.list_technology_types(search="File")`: **39 file-related technology types exist**
+in this instance, but only a subset actually have a registered catalog template — `_async_get_template
+_guid_for_technology_type()` succeeds for some very plausible-looking names and fails for others,
+confirmed one by one:
+
+| Technology type | Template registered? | Egeria's description |
+|---|---|---|
+| `Source Code File` | ✅ | "...needs to be compiled into an executable form before it can run" |
+| `Script File` | ✅ | "...code that is interpreted when it is run" |
+| `Program File` | ❌ no template | "A file containing program logic" (umbrella of the two above) |
+| `Document File` | ✅ | "A data file containing formatted text" |
+| `Markdown Document File` | ❌ no template | (falls back to `Document File`) |
+| `JSON Data File` / `YAML File` / `XML Data File` / `CSV Data File` / `Parquet Data File` / `Avro Data File` / `Spreadsheet Data File` | ✅ (all) | format-specific data files |
+| `Jupyter Notebook File` | ❌ no template | (`.ipynb` is JSON under the hood — falls back to `JSON Data File`) |
+| `Build Instruction File` | ✅ | "...instructions to run a build of a software artifact or system" |
+| `Properties File` | ✅ | "...a list of properties, typically used for configuration" |
+| `Archive File` | ✅ | zip/tar/etc. |
+| `Executable File` | ✅ | compiled binaries |
+| `Log File` / `Webpage File` | ❌ no template | not usable this pass |
+| `File` | ❌ **no template** | the most generic type of all has none — **cannot be the fallback** |
+| `Data File` | ✅ | the actual working generic fallback (not `File`) |
+
+This becomes RE's own extension→technology-type mapping (mirroring `type_cache.py`'s existing
+`_BUILTIN_BY_EXTENSION` structure, but mapping to *Egeria's* template-bearing technology-type names, not
+RE's own display-label vocabulary — the two are related but not the same strings, e.g. RE's own
+`deployedImplementationType` for a `.py` file is `"Python Source File"`, which is not a real Egeria
+technology type at all):
+- Compiled-language source (`.java`, `.c`, `.h`, `.cpp`, `.hpp`, `.go`, `.rs`, `.kt`, `.scala`) →
+  `Source Code File`.
+- Interpreted-language source/scripts (`.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.rb`, `.sh`, `.bash`,
+  `.zsh`, `.ps1`, `.bat`, `.sql`) → `Script File`.
+- Documentation (`.md`, `.mdx`, `.rst`, `.txt`, `.pdf`) → `Document File` (no more-specific markdown
+  template exists, per the table above).
+- Structured data with a direct match (`.json`→`JSON Data File`, `.yaml`/`.yml`→`YAML File`,
+  `.xml`→`XML Data File`, `.csv`/`.tsv`→`CSV Data File`, `.parquet`→`Parquet Data File`,
+  `.avro`→`Avro Data File`, `.xlsx`/`.xls`→`Spreadsheet Data File`).
+- `.ipynb` → `JSON Data File` (no Jupyter-specific template; it's valid JSON, closest real match).
+- Build/CI files (`Dockerfile`, `Makefile`, CI YAML, `buildspec.*`) → `Build Instruction File`.
+- Config (`.toml`, `.ini`, `.cfg`, `.env`, `.properties`) → `Properties File`.
+- Archives (`.zip`, `.tar`, `.gz`, `.tgz`, `.7z`, `.rar`) → `Archive File`.
+- Compiled binaries → `Executable File`.
+- **Everything else / unrecognized → `Data File`** — not `"File"` (confirmed to have no template at
+  all, so it can never be the fallback despite being the most semantically generic type).
+
+Every one of these is resolved live via `AutomatedCuration
+._async_get_template_guid_for_technology_type(<name>)`, never hardcoded — the same lesson D5's
+pre-flight check already established for the folder template (template GUIDs are content-pack/
+environment-specific, confirmed by the fact that `EgeriaFileSystemSurveyor`'s own hardcoded generic-file
+GUID doesn't exist here even though its CSV/Parquet/Excel GUIDs happened to still resolve correctly).
 
 **D6 — Cataloging happens in `EgeriaPublisher`, driven by `SubResourceSurveyor`'s finding — not inside
 any surveyor.** Surveyors keep the existing clean layering: they read registry tables and return
@@ -398,17 +450,30 @@ size/mode distribution snapshots via `upsert_metric()` (D10/D11).
 registry pattern from the analysis-kind extensibility redesign — one new entry, not four hand-touched
 files).
 
+**New `resource_explorer/surveyors/sub_resource_templates.py`**: the D5a extension→technology-type
+mapping table (`_TECH_TYPE_BY_EXTENSION`, `_TECH_TYPE_BY_NAME` for build files) plus a small
+`resolve_technology_type(file_path: str) -> str` function, structurally mirroring `file_classifier/
+type_cache.py`'s existing `_BUILTIN_BY_EXTENSION`/`_BUILTIN_BY_NAME` split but returning Egeria's
+confirmed template-bearing technology-type names (D5a), not RE's own display-label vocabulary. Kept as
+its own small module rather than folded into `type_cache.py` since the two mappings serve different
+purposes (display classification vs. template selection) and will very likely diverge further as each
+is tuned independently.
+
 **`resource_explorer/surveyors/egeria_publisher.py`**: new private method,
 `_catalog_sub_resources(self, asset_guid: str, finding: dict) -> None`, called when publishing the
 `repo_sub_resource_survey` finding. Processes folder-kind entries first (creating each `FileFolder` via
-`create_elem_from_template()` with `parentGUID` = the repo asset and `parentRelationshipTypeName =
+`create_elem_from_template()`, template resolved live via `_async_get_template_guid_for_technology_type
+("File System Directory")`, with `parentGUID` = the repo asset and `parentRelationshipTypeName =
 "CapabilityAssetUse"` for a folder parented directly to the repo, or `parentGUID` = an already-created
 ancestor folder's GUID and `parentRelationshipTypeName = "FolderHierarchy"` for a subfolder — per D5's
-confirmed types), then file-kind entries (`parentGUID` = its containing folder's GUID — always some
-`FileFolder`, per D4's revised rule — and `parentRelationshipTypeName = "NestedFile"`). Each creation is
-qualified-name-guarded per D8, and each created asset's properties include whatever D9 metadata that
-entry carries (owners, last-updated, mode) as `additionalProperties` — the catalog gets the richer
-metadata too, not just RE's own local findings view.
+confirmed types), then file-kind entries (template resolved via `resolve_technology_type()` (D5a) →
+`_async_get_template_guid_for_technology_type()`, `parentGUID` = its containing folder's GUID — always
+some `FileFolder`, per D4's revised rule — and `parentRelationshipTypeName = "NestedFile"`). Each
+creation is qualified-name-guarded per D8, and each created asset's properties include whatever D9
+metadata that entry carries (owners, last-updated, mode) as `additionalProperties` — the catalog gets
+the richer metadata too, not just RE's own local findings view. Template GUID lookups are cached
+per-`SubResourceSurveyor` publish call (a handful of distinct technology types per repo, not per-file) —
+avoiding a redundant live lookup for every file sharing the same kind.
 
 ## Verification
 
@@ -425,6 +490,13 @@ metadata too, not just RE's own local findings view.
   correct `parentGUID` resolution (repo vs. an ancestor folder created this same pass vs. a
   previously-existing one found via lookup), skip-if-already-found idempotency, correct
   `parentRelationshipTypeName` per edge shape.
+- Unit tests (D5a): `resolve_technology_type()` — correct name returned for every mapped extension/
+  build-filename category, and the unrecognized-extension case returns `"Data File"` specifically (a
+  regression guard against ever reverting to `"File"`, which has no registered template — see D5a's
+  table). Separately, one live-checked (not mocked) smoke test confirming every technology-type name the
+  mapping can return still resolves to a real template GUID on a real Egeria instance — a template being
+  silently deregistered in a future Egeria upgrade should fail loudly here, not as a mystery cataloging
+  failure deep in `_catalog_sub_resources()`.
 - Unit tests (D9-D12): `CODEOWNERS` parsing/pattern-matching against a representative set of paths
   (including the "no CODEOWNERS file" case → `owners: []` everywhere, not an error); Tier-2 commit-date
   fetching called only for worthy entries (mock-assert call count equals the worthy-set size, not the
