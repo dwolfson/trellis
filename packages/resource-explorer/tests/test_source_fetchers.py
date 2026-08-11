@@ -90,6 +90,76 @@ class TestEclipseProjectsFetcher:
         assert urls == ["https://github.com/eclipse/x"]
 
 
+_ASF_JSON = {
+    "airflow": {"repository": ["https://github.com/apache/airflow.git"]},
+    "accumulo": {"repository": ["https://gitbox.apache.org/repos/asf/accumulo.git"]},
+    "arrow": {"repository": [
+        "https://gitbox.apache.org/repos/asf/arrow.git",
+        "https://github.com/apache/arrow.git",
+    ]},
+    "single-string-shape": {"repository": "https://github.com/apache/single.git"},
+    "no-repository-field": {"description": "retired project, no repository key"},
+    "dict-browse-shape": {"repository": [{"browse": "https://github.com/apache?q=datasketches"}]},
+}
+
+
+class TestAsfProjectsFetcher:
+    """ASF's projects.json — verified live (2026-08-10): one JSON object
+    keyed by project id, "repository" is always a list. Gitbox-only
+    entries (no github.com URL) are skipped rather than guessing ASF's
+    github.com/apache/<name> mirror convention — matches Eclipse's own
+    skip-non-GitHub behavior."""
+
+    def test_parses_github_entries_only_dedupes_and_sorts(self):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = _ASF_JSON
+        with patch("httpx.get", return_value=resp) as mock_get:
+            urls = fetch_source_urls("asf_projects")
+        assert urls == ["https://github.com/apache/airflow.git", "https://github.com/apache/arrow.git",
+                         "https://github.com/apache/single.git", "https://github.com/apache?q=datasketches"]
+        assert "projects.apache.org/json/foundation/projects.json" in mock_get.call_args[0][0]
+
+    def test_gitbox_only_project_skipped(self):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"accumulo": _ASF_JSON["accumulo"]}
+        with patch("httpx.get", return_value=resp):
+            urls = fetch_source_urls("asf_projects")
+        assert urls == []
+
+    def test_dict_browse_shape_handled(self):
+        """A rare-but-real item shape (e.g. datasketches, confirmed live) —
+        {"browse": "..."} instead of a plain URL string."""
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"dict-browse-shape": _ASF_JSON["dict-browse-shape"]}
+        with patch("httpx.get", return_value=resp):
+            urls = fetch_source_urls("asf_projects")
+        assert urls == ["https://github.com/apache?q=datasketches"]
+
+    def test_missing_repository_field_skipped_not_erroring(self):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"no-repository-field": _ASF_JSON["no-repository-field"]}
+        with patch("httpx.get", return_value=resp):
+            urls = fetch_source_urls("asf_projects")
+        assert urls == []
+
+    def test_custom_fetch_url_overrides_default(self):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {}
+        with patch("httpx.get", return_value=resp) as mock_get:
+            fetch_source_urls("asf_projects", "https://example.com/mirror.json")
+        assert mock_get.call_args[0][0] == "https://example.com/mirror.json"
+
+    def test_http_error_propagates(self):
+        with patch("httpx.get", side_effect=httpx.HTTPStatusError("boom", request=MagicMock(), response=MagicMock())):
+            with pytest.raises(httpx.HTTPStatusError):
+                fetch_source_urls("asf_projects")
+
+
 class TestLfxInsightsFetcher:
     def test_raises_not_implemented(self):
         with pytest.raises(NotImplementedError):
@@ -103,6 +173,8 @@ class TestUnknownFetchKind:
 
 
 def test_all_registered_fetchers_are_callable():
-    assert set(FETCHERS) == {"cncf_landscape", "lfai_landscape", "eclipse_projects", "lfx_insights"}
+    assert set(FETCHERS) == {
+        "cncf_landscape", "lfai_landscape", "eclipse_projects", "asf_projects", "lfx_insights",
+    }
     for fn in FETCHERS.values():
         assert callable(fn)
