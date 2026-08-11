@@ -194,6 +194,13 @@ scoring did):
   can show "47 folders seen, 6 recommended, 41 skipped as too broad/too small" rather than looking
   incomplete.
 - Everything else at or beyond `max_depth`, or a folder outside the browsable range → not recommended.
+- **Synthetic root folder rule** (added after D5's pre-flight check confirmed a file can never be
+  parented directly to the repo's `SourceControlLibrary` — see D4): whenever at least one depth-1 file
+  is worthy by the well-known-file rule, a synthetic root-folder entry (`path=""`, `reason=
+  "root_container_for_worthy_files"`) is added to the worthy set automatically, even if depth-1's file
+  count would otherwise fall outside the 2–200 browsable range. This is bookkeeping to satisfy Egeria's
+  real type constraints, not a new judgment call — it never appears as a *skipped* candidate the way the
+  file-count heuristic's rejections do.
 
 **D2 — `SecurityHygieneSurveyor`/`DocumentationSurveyor` stay exactly as they are — decoupled from
 cataloging.** The original draft had them each emit a `flagged_files` list feeding cataloging directly;
@@ -204,37 +211,66 @@ reach the same files (SECURITY.md, README, etc.) for its own reason (structural 
 architecturally coupled. This avoids a cross-surveyor dependency (one surveyor's output shape driving
 another's behavior) that the original draft would have introduced.
 
-**D3 — Model as DataFile *and* DataFolder Asset elements (matching the filesystem precedent), not
-Collection membership.** Consistency with `EgeriaFileSystemSurveyor` matters more here than the two
-approaches' minor capability differences — a catalog user browsing "files/folders across all resource
-types" shouldn't hit two different element shapes depending on whether the parent happens to be a repo
-or a filesystem mount. `AutomatedCuration.create_folder_element_from_template()` (proven, already used
-by `EgeriaFileSystemSurveyor`) creates the folder assets; the existing format-specific DataFile template
-selection creates the file assets. `CollectionManager`'s model stays the right choice for genuinely
-organizational groupings elsewhere in this codebase; this is asset cataloging, not grouping.
+**D3 — Model as DataFile *and* FileFolder Asset elements (matching the filesystem precedent), not
+Collection membership.** (Corrected 2026-08-11: Egeria's real type is `FileFolder`, not `DataFolder` —
+confirmed live in D5's pre-flight check via both the relationship type descriptions and the actual
+entity-type-mismatch error messages Egeria returned.) Consistency with `EgeriaFileSystemSurveyor`
+matters more here than the two approaches' minor capability differences — a catalog user browsing
+"files/folders across all resource types" shouldn't hit two different element shapes depending on
+whether the parent happens to be a repo or a filesystem mount. `AutomatedCuration
+.create_folder_element_from_template()` (proven, already used by `EgeriaFileSystemSurveyor`, template
+resolved live via `_async_get_template_guid_for_technology_type("File System Directory")`) creates the
+folder assets; the equivalent `"Data File"` technology-type template lookup creates the file assets
+(the filesystem precedent's *hardcoded* CSV/Parquet/Excel template GUIDs happened to still be valid on
+the live instance checked, but its hardcoded *generic*-file GUID did not — see D5). `CollectionManager`'s
+model stays the right choice for genuinely organizational groupings elsewhere in this codebase; this is
+asset cataloging, not grouping.
 
 **D4 — Folders can now be cataloged too, not just files** (reverses the original draft's D4 "no
 intermediate Folder asset layer" — that constraint existed only because the original design's selection
 was file-only and incidental; a real survey step with a folder-worthiness heuristic (D1) makes folder
 assets a first-class, deliberate output, matching Egeria's own `survey-folders`/`survey-all-folders`
-variants treating folders as surveyable in their own right). A worthy folder becomes a `DataFolder`
+variants treating folders as surveyable in their own right). A worthy folder becomes a `FileFolder`
 asset parented to the repo's `SourceControlLibrary`; a worthy file inside a worthy folder is parented to
-*that* folder asset (real nesting), not flattened directly under the repo root. A worthy file whose
-containing folder was *not* itself flagged worthy (e.g. a lone `SECURITY.md` at repo root, `max_depth`
-1) is parented directly to the repo asset — matching D1's well-known-file rule, which doesn't require
-its containing folder to also pass the folder heuristic.
+*that* folder asset (real nesting), not flattened directly under the repo root.
 
-**D5 — Fix the parent-linkage gap; do not repeat it.** Every cataloged asset (file or folder) gets a
-real `parentGUID` and `parentRelationshipTypeName` set in the `create_elem_from_template` body — not
-just a naming convention. **Unverified, needs a live check before implementation**: this design assumes
-`NestedFile`/`NestedFolder` (or equivalent) are real Egeria open-metadata relationship types valid
-between `SourceControlLibrary`→`DataFolder`, `DataFolder`→`DataFolder`, and `DataFolder`/
-`SourceControlLibrary`→`DataFile` — those names were inferred by analogy to Egeria's own naming
-conventions elsewhere, not confirmed by reading actual type definitions or a working call. **First
-implementation step must be a throwaway `create_elem_from_template` call against a real Egeria instance
-to confirm the relationship type name(s) and required properties for each of those three edge shapes**,
-mirroring how other plans in this repo (e.g. the AST-ownership plan) front-loaded a pre-flight
-verification phase before writing real code against an unconfirmed API shape.
+**Revised after D5's pre-flight check**: a worthy *file* can never be parented directly to the repo's
+`SourceControlLibrary` — Egeria's real `NestedFile` relationship strictly requires a `FileFolder` on the
+parent end (confirmed live, see D5). So the original plan for "a lone `SECURITY.md` at repo root, no
+containing folder flagged worthy" — parent it directly to the repo asset — **does not work** and is
+replaced: `SubResourceSurveyor`'s heuristic (D1) is revised so a synthetic **root folder** (representing
+the repo's own top level, `relativePath=""`) is *always* included in the worthy set whenever at least
+one top-level file is worthy, even if the root itself wouldn't otherwise pass the folder file-count
+heuristic. Every worthy file's immediate parent is always some `FileFolder` — either a heuristic-flagged
+real subfolder, or this always-present root-level one — never the `SourceControlLibrary` asset directly.
+
+**D5 — Fix the parent-linkage gap; do not repeat it — confirmed live, 2026-08-11.** Every cataloged
+asset (file or folder) gets a real `parentGUID` and `parentRelationshipTypeName` set in the
+`create_elem_from_template` body — not just a naming convention. The pre-flight check flagged as
+required before implementation has been run against a real Egeria instance (`qs-metadata-store`, via a
+throwaway `SourceControlLibrary`→`FileFolder`→`FileFolder`/`DataFile` chain created and deleted against
+the live `sqlglot` asset) and confirmed all three edge shapes, using Egeria's own error messages (which
+name the exact expected entity types on each end when a type is wrong) and each type's own registered
+description to pick the semantically correct name where more than one candidate technically succeeded:
+
+| Edge | Confirmed relationship type | Egeria's own description |
+|---|---|---|
+| `SourceControlLibrary` → `FileFolder` | **`CapabilityAssetUse`** | "Defines that a server capability is associated with an asset." |
+| `FileFolder` → `FileFolder` (subfolder) | **`FolderHierarchy`** | "A nested relationship between two file folders." |
+| `FileFolder` → `DataFile` | **`NestedFile`** | "The link between a data file and its containing folder." |
+
+`CapabilityAssetUse` was chosen over `ResourceList` for the first edge — both technically succeeded in
+the live test, but `ResourceList` is a generic "supporting resources" link already reused 679 times in
+this instance's catalog for unrelated purposes (actor profiles, projects, communities, ...), while
+`CapabilityAssetUse` is semantically exact: `SourceControlLibrary` **is** a `SoftwareCapability`, and a
+`FileFolder` **is** an `Asset` — "a capability is associated with an asset" is precisely this
+relationship. `NestedFolder` (guessed in the original draft) does not exist as a type at all — Egeria's
+real name for that edge is `FolderHierarchy`, confirmed by the same live check. Also confirmed live: the
+generic-DataFile template GUID hardcoded in `EgeriaFileSystemSurveyor._create_data_file_asset()`
+(`ae3067c7-cc72-4a18-88e1-746803c2c86f`) **does not exist on this Egeria instance** (a 404) — template
+GUIDs are content-pack/environment-specific, not portable constants; the correct approach (used in the
+pre-flight script and carried into Implementation below) is `AutomatedCuration
+._async_get_template_guid_for_technology_type("Data File")`, resolved live rather than hardcoded.
 
 **D6 — Cataloging happens in `EgeriaPublisher`, driven by `SubResourceSurveyor`'s finding — not inside
 any surveyor.** Surveyors keep the existing clean layering: they read registry tables and return
@@ -364,20 +400,24 @@ files).
 
 **`resource_explorer/surveyors/egeria_publisher.py`**: new private method,
 `_catalog_sub_resources(self, asset_guid: str, finding: dict) -> None`, called when publishing the
-`repo_sub_resource_survey` finding. Processes folder-kind entries first (creating each `DataFolder`,
-`parentGUID` = the repo asset or an already-created ancestor folder's GUID), then file-kind entries
-(`parentGUID` = its containing folder's GUID if that folder was itself created this pass, else the repo
-asset GUID directly per D4). Each creation is qualified-name-guarded per D8, and each created asset's
-properties include whatever D9 metadata that entry carries (owners, last-updated, mode) as
-`additionalProperties` — the catalog gets the richer metadata too, not just RE's own local findings view.
+`repo_sub_resource_survey` finding. Processes folder-kind entries first (creating each `FileFolder` via
+`create_elem_from_template()` with `parentGUID` = the repo asset and `parentRelationshipTypeName =
+"CapabilityAssetUse"` for a folder parented directly to the repo, or `parentGUID` = an already-created
+ancestor folder's GUID and `parentRelationshipTypeName = "FolderHierarchy"` for a subfolder — per D5's
+confirmed types), then file-kind entries (`parentGUID` = its containing folder's GUID — always some
+`FileFolder`, per D4's revised rule — and `parentRelationshipTypeName = "NestedFile"`). Each creation is
+qualified-name-guarded per D8, and each created asset's properties include whatever D9 metadata that
+entry carries (owners, last-updated, mode) as `additionalProperties` — the catalog gets the richer
+metadata too, not just RE's own local findings view.
 
 ## Verification
 
-- **Pre-flight (must happen before any other implementation work, per D5)**: throwaway
-  `create_elem_from_template` calls against a real Egeria instance covering all three parent-child edge
-  shapes (repo→folder, folder→folder, folder-or-repo→file), to confirm the real relationship-type
-  name(s) and required `placeholderPropertyValues` for each — write down what's confirmed before writing
-  the real `_catalog_sub_resources()` body.
+- **Pre-flight — done, 2026-08-11 (per D5).** Throwaway `create_elem_from_template` calls run against
+  the real `qs-metadata-store`/`qs-view-server` Egeria instance (using `sqlglot`'s live
+  `SourceControlLibrary` asset as the parent), covering all three parent-child edge shapes, then cleaned
+  up (`MetadataExpert.delete_metadata_element()`, verified via a follow-up search returning no residual
+  elements). Confirmed relationship types recorded in D5. No code written against these types yet — that
+  starts now.
 - Unit tests: `SubResourceSurveyor` — heuristic correctness for each rule in D1 (well-known filenames at
   various depths, folder file-count boundary cases at 1/2/200/201, `max_depth` cutoff), and that the
   finding's `detail_json` includes both worthy and not-worthy entries with reasons. `EgeriaPublisher
