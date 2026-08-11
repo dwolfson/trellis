@@ -1,6 +1,8 @@
 # Repo scope-narrowing funnel: recommend → select → catalog → scoped analysis
 
-**Status: draft, for discussion. Not yet implemented.**
+**Status: Phase 1 implemented, tested (860 tests), and live-verified end-to-end against
+`sqlglot` (2026-08-11) — see "Phase 1 verification" at the end. Phase 2 (target-shape registry +
+compatibility-gated scoped analysis, D5/D6) not started.**
 
 **Decisions confirmed 2026-08-11 (third pass)**: D7 resolved (perspective stays a within-intent
 filter, no schema change); mixed-shape kinds get one conservative shape, not per-output tagging,
@@ -260,29 +262,71 @@ repo with its own `SourceControlLibrary`. Two ideas raised, neither designed her
 
 ## Suggested phasing (if this direction is right)
 
-1. **Phase 1** — D2 (local table) + D3 (selection UI, reusable per D4) + Egeria-publish-per-catalog-
-   action choice. Makes the existing `SubResourceSurveyor`/`_catalog_sub_resources()` work actually
-   visible and human-gated, without touching Assessment/Analysis surveyors at all.
-2. **Phase 2** — D5 (target-shape registry) + D6 (compatibility-gated scoped analysis). Larger,
+1. **Phase 1 — implemented 2026-08-11.** D2 (local table) + D3 (selection UI, reusable per D4) +
+   Egeria-publish-per-catalog-action choice. Makes the existing `SubResourceSurveyor`/
+   `EgeriaPublisher.publish_sub_resources()` (renamed from `_catalog_sub_resources()` — it's no
+   longer an automatic side effect of a full publish, always an explicit, separate action now)
+   work actually visible and human-gated, without touching Assessment/Analysis surveyors at all.
+   See "Phase 1 verification" below for what shipped and how it was confirmed.
+2. **Phase 2 — not started.** D5 (target-shape registry) + D6 (compatibility-gated scoped analysis). Larger,
    separate design pass — touches five-plus surveyors and two core tables, once Phase 1's local
    catalog exists to scope *against*. **Confirmed 2026-08-11: database's per-card dispatch fix
    (`REPO_ANALYSIS_STEP_MAP`-equivalent for database) happens alongside this phase** — a
    prerequisite for database's schema→table narrowing to mean anything, since all three remaining
    database cards currently trigger the identical whole-DB survey regardless of which was clicked.
 
-## Verification (once decisions are settled)
+## Phase 1 verification (done, 2026-08-11)
 
-- Unit tests: `project_sub_resources` CRUD; selection UI submit round-trip (some selected →
-  cataloged, unselected → left as findings-only); Egeria-publish-optional behavior (unchecked →
-  `egeria_guid` stays empty, no Egeria calls made at all — a real regression guard, not just "it
-  works when checked"); D5's target-shape registry — every existing analysis kind's declared shape
-  matches the inventory above (regression guard against the audit going stale); D6's menu-filtering
-  — a single-leaf-selected sub-resource never offers a whole-resource-only kind.
-- Live: run the funnel end-to-end against a real repo — survey, review recommendations (sortable/
-  filterable by size/staleness/owners per D3), select a subset (not all), catalog locally-only for
-  one, catalog+publish for another, confirm the local-only one never touches Egeria and the
-  published one appears correctly nested (reusing the D5/D8 verification already done for the
-  underlying `_catalog_sub_resources()` mechanism). Confirm re-opening the selection panel later
-  (simulating "came back with more information") correctly shows prior selections and allows
-  adding more without disturbing them.
+**What shipped, with two deviations from the design above, both noted at the point they were
+made:**
+- `sub_resources` table (D2's schema) gained one extra column beyond what's written above:
+  `detail_json` — a denormalized snapshot of the source finding's owners/dates at catalog time,
+  so `publish_sub_resources()` never needs to re-join back to `project_analysis_findings` (which a
+  later survey run could have superseded). Everything else matches D2 exactly.
+- D4 left "which intent owns the selection UI" deliberately unresolved (repeatable action,
+  reachable from wherever). Phase 1 shipped it as a fifth Scouting sub-tab ("🗂 Sub-Resources",
+  alongside Search/Survey/Coarse Profile/Disposition) — a real decision, not a re-opening of D4's
+  point: the panel/component itself (`loadScoutingSubResourcesView`) is a normal, callable
+  function, not hard-wired into Scouting's routing in a way that would block adding a second entry
+  point (e.g. from Discovery) later without rework.
+
+**Backend**: `sub_resources` registry table + CRUD (`catalog_sub_resource`/`uncatalog_sub_resource`/
+`list_sub_resources`/`set_sub_resource_egeria_guid`, all idempotent per D4); `EgeriaPublisher
+.publish_sub_resources(resource_slug, github_url, asset_guid, locators)` replacing the old
+auto-triggered `_catalog_sub_resources()` — reads only already-locally-catalogued rows, never
+findings directly; three new routes (`GET/POST/DELETE /api/projects/{slug}/sub-resources[/catalog]`)
+with ancestor-folder auto-inclusion at catalog time (mirroring `SubResourceSurveyor`'s own
+guarantee — promoted `_ancestor_folder_paths` to a public module-level `ancestor_folder_paths()`
+so the route didn't need to reach into a private survey-internal method).
+
+**Frontend**: new Scouting sub-tab, reusing the sortable/filterable table pattern from Scouting's
+discover-results view (D3) — click-to-sort columns (path/kind/worthy/reason/last-updated),
+substring filter, checkbox column pre-checked for "worthy" findings, already-catalogued rows shown
+disabled with a ☁ Published / 🗂 Catalogued status badge, "also publish to Egeria" checkbox
+(default checked).
+
+**Tests**: 25 new (9 registry CRUD, 12 rewritten `EgeriaPublisher` tests for the new
+`publish_sub_resources()` signature, 14 new route tests including the ancestor-auto-inclusion
+regression guard) — 860 total passing.
+
+**Live, against `sqlglot`, through the real UI** (not just direct Python/API calls): sortable
+columns and substring filter both confirmed correct; catalogued `LICENSE` locally-only
+(unchecked "publish to Egeria") and confirmed via direct registry query that `egeria_guid` stayed
+empty and zero Egeria calls were made — the sandbox-mode escape hatch actually works, not just "it
+works when checked"; catalogued `CHANGELOG.md` with Egeria publish checked and confirmed both it
+and its ancestor synthetic-root folder resolved to the *exact same* Egeria GUIDs as an earlier,
+unrelated live-verification pass earlier in this session — real proof that qualifiedName-based
+idempotency holds across independent publish calls, not just within one. Ancestor auto-inclusion
+confirmed both for the local-only and Egeria-publish paths, through the real click path (not a
+direct function call).
+
+## Verification (Phase 2, once its decisions are settled)
+
+- Unit tests: D5's target-shape registry — every existing analysis kind's declared shape matches
+  the inventory above (regression guard against the audit going stale); D6's menu-filtering — a
+  single-leaf-selected sub-resource never offers a whole-resource-only kind.
+- Live: from a cataloged sub-resource, run a scoped analysis and confirm the menu only offers
+  target-shape-compatible kinds; confirm database's per-card dispatch fix actually runs only the
+  clicked analysis, not the whole-DB survey, mirroring the regression check already done for repo's
+  `REPO_ANALYSIS_STEP_MAP` when it shipped.
 - Full RE test suite green.

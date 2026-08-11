@@ -1,9 +1,12 @@
 """Sub-surveyor: repo sub-resource survey → ClassificationAnnotation.
 
 Assessment sub-resource cataloging plan (docs/assessment-sub-resource-
-cataloging.md) — this is the *survey* half, explicitly separate from
-*cataloging* (EgeriaPublisher._catalog_sub_resources() does that, later,
-consuming this surveyor's finding). This surveyor never talks to Egeria.
+cataloging.md) and the repo scope-narrowing funnel (docs/repo-scope-
+narrowing-funnel.md) — this is the *survey* half, explicitly separate from
+*catalog* (the local `sub_resources` registry table + selection UI) and
+*Egeria publish* (EgeriaPublisher.publish_sub_resources()), both of which
+consume this surveyor's finding, later, only for whatever a human selects.
+This surveyor never talks to Egeria.
 
 D1: walks `project_file_inventory` (already persisted, no new fetch) to
 determine which top-level folders and which well-known files are "worthy"
@@ -53,6 +56,23 @@ _SIZE_BUCKETS = [
 
 # D9 — where CODEOWNERS is looked for, in GitHub's own lookup order.
 _CODEOWNERS_PATHS = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
+
+
+def ancestor_folder_paths(file_path: str) -> list[str]:
+    """Immediate parent first, then each ancestor folder up to (but not
+    including) the repo root — a depth-1 folder attaches directly to the
+    repo's SourceControlLibrary asset via CapabilityAssetUse, so it never
+    needs a synthetic root *folder* above it. The synthetic root ("") is
+    only needed when the file itself has no real containing folder at all
+    — i.e. it sits at the repo root. Public/module-level (not just an
+    internal survey-heuristic detail) because the sub-resources catalog
+    route (projects.py) needs the identical ancestor-chain logic to
+    guarantee every selected file has a locally-catalogued folder parent
+    before Egeria publish — NestedFile strictly requires one."""
+    parts = file_path.split("/")[:-1]  # drop the filename itself
+    if not parts:
+        return [""]
+    return ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
 
 
 def _mode_kind(mode: str) -> str:
@@ -261,16 +281,7 @@ class SubResourceSurveyor(BaseSurveyor):
 
     @staticmethod
     def _ancestor_folder_paths(file_path: str) -> list[str]:
-        """Immediate parent first, then each ancestor folder up to (but not
-        including) the repo root — a depth-1 folder attaches directly to
-        the repo's SourceControlLibrary asset via CapabilityAssetUse (D4),
-        so it never needs a synthetic root *folder* above it. The synthetic
-        root ("") is only needed when the file itself has no real containing
-        folder at all — i.e. it sits at the repo root."""
-        parts = file_path.split("/")[:-1]  # drop the filename itself
-        if not parts:
-            return [""]
-        return ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
+        return ancestor_folder_paths(file_path)
 
     def _codeowners_rules(self) -> list[tuple[str, list[str]]]:
         """D9/D12 — one file fetch, best-effort. Never raises; a missing/

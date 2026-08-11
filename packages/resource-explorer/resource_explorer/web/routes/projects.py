@@ -682,3 +682,134 @@ async def remove_project(slug: str) -> dict:
     # live: a delete on a broken registration hung indefinitely).
     await asyncio.to_thread(_do_remove)
     return {"removed": slug}
+
+
+# ── sub-resources — the "Select"/"Catalog" stages of the repo scope-
+# narrowing funnel (docs/repo-scope-narrowing-funnel.md, D2/D3/D4). Repo
+# only for Phase 1; the underlying registry table is already generic
+# across resource types (resource_type='repo' here) for when database/
+# filesystem catch up. ───────────────────────────────────────────────────
+
+class SubResourceRow(BaseModel):
+    locator: str
+    kind: str
+    cataloged_at: str
+    egeria_guid: str = ""
+
+
+@router.get("/{slug}/sub-resources", response_model=list[SubResourceRow])
+async def list_sub_resources(slug: str) -> list[SubResourceRow]:
+    """What's currently tracked locally for this repo — backs the selection
+    UI's "already cataloged" state so re-opening the panel later shows
+    prior selections (D4 — catalog is repeatable, not a one-time gate)."""
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    rows = registry.list_sub_resources("repo", slug)
+    return [
+        SubResourceRow(
+            locator=r["locator"], kind=r["kind"],
+            cataloged_at=r["cataloged_at"], egeria_guid=r.get("egeria_guid") or "",
+        )
+        for r in rows
+    ]
+
+
+class SubResourceCatalogItem(BaseModel):
+    locator: str
+    kind: str  # 'file' | 'folder'
+
+
+class SubResourceCatalogRequest(BaseModel):
+    items: list[SubResourceCatalogItem]
+    publish_to_egeria: bool = True  # default both (local + Egeria); False = sandbox-mode escape hatch
+
+
+class SubResourceCatalogResult(BaseModel):
+    cataloged: list[str]              # locators tracked locally (incl. auto-included ancestors)
+    published: dict[str, str] = {}    # locator -> Egeria guid; empty unless publish_to_egeria
+
+
+@router.post("/{slug}/sub-resources/catalog", response_model=SubResourceCatalogResult)
+async def catalog_sub_resources(slug: str, body: SubResourceCatalogRequest) -> SubResourceCatalogResult:
+    """Track the selected sub-resources locally (always), and optionally
+    publish them to Egeria as real FileFolder/DataFile assets in the same
+    action (D3 — default both; unchecking publish_to_egeria is the
+    sandbox-mode escape hatch). Repeatable (D4): re-cataloging an
+    already-tracked locator is a no-op that never disturbs its
+    egeria_guid. Every selected file's ancestor folders are auto-included
+    even if not explicitly selected, mirroring SubResourceSurveyor's own
+    ancestor-folder guarantee — NestedFile strictly requires a FileFolder
+    parent, so an inconsistent selection would otherwise silently fail to
+    publish."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_publisher import EgeriaConnectionError, EgeriaPublisher
+    from resource_explorer.surveyors.sub_surveyors import ancestor_folder_paths
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items given to catalog")
+
+    # Snapshot each item's owners/dates from the current findings into the
+    # local row (denormalized — publish_sub_resources() shouldn't need to
+    # re-join back to findings that a later survey run might supersede).
+    findings_by_path: dict[str, dict] = {}
+    for f in registry.query_findings(slug, "repo_sub_resource_survey"):
+        detail = {}
+        if f.get("detail_json"):
+            try:
+                detail = json.loads(f["detail_json"])
+            except (TypeError, ValueError):
+                detail = {}
+        findings_by_path[detail.get("path", "")] = detail
+
+    selected_kind_by_locator: dict[str, str] = {item.locator: item.kind for item in body.items}
+    for item in body.items:
+        if item.kind != "file":
+            continue
+        for ancestor in ancestor_folder_paths(item.locator):
+            selected_kind_by_locator.setdefault(ancestor, "folder")
+
+    cataloged: list[str] = []
+    for locator in sorted(selected_kind_by_locator):
+        registry.catalog_sub_resource(
+            "repo", slug, locator, selected_kind_by_locator[locator],
+            source_finding="repo_sub_resource_survey",
+            detail=findings_by_path.get(locator),
+        )
+        cataloged.append(locator)
+
+    published: dict[str, str] = {}
+    if body.publish_to_egeria:
+        if not project.egeria_asset_guid:
+            raise HTTPException(
+                status_code=409,
+                detail="Repo has no Egeria asset yet — publish the repo itself first before publishing sub-resources.",
+            )
+        publisher = EgeriaPublisher(registry=registry)
+        try:
+            published = await asyncio.to_thread(
+                publisher.publish_sub_resources,
+                slug, project.github_url, project.egeria_asset_guid, cataloged,
+            )
+        except EgeriaConnectionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    return SubResourceCatalogResult(cataloged=cataloged, published=published)
+
+
+@router.delete("/{slug}/sub-resources")
+async def uncatalog_sub_resource(slug: str, locator: str = "") -> dict:
+    """Reversible (D4) — removes RE's local tracking record only; does not
+    touch anything already published to Egeria. locator is a query param
+    (not a path segment) so the root locator ("") is representable."""
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    registry.uncatalog_sub_resource("repo", slug, locator)
+    return {"slug": slug, "locator": locator, "uncataloged": True}

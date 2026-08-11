@@ -35,6 +35,7 @@ narrow (no native-survey side effect).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -282,12 +283,28 @@ def _documentation_results(registry, slug: str) -> dict:
 
 def _sub_resource_survey_results(registry, slug: str) -> dict:
     # Same uniform finding shape _security_results/_documentation_results
-    # use — "worthy"/"not_worthy" are this kind's own label vocabulary.
+    # use ("worthy"/"not_worthy" are this kind's own label vocabulary) —
+    # plus path/kind/owners/dates parsed out of detail_json, since the
+    # repo scope-narrowing funnel's selection UI (D3) needs those as real
+    # sortable/filterable columns and needs `kind` to build a correct
+    # catalog request, not just a display string.
     rows = registry.query_findings(slug, "repo_sub_resource_survey")
-    findings = [
-        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
-        for r in rows
-    ]
+    findings = []
+    for r in rows:
+        detail = {}
+        if r.get("detail_json"):
+            try:
+                detail = json.loads(r["detail_json"])
+            except (TypeError, ValueError):
+                detail = {}
+        findings.append({
+            "check_name": r["check_name"], "label": r["label"],
+            "summary": r["summary"], "confidence": r["confidence"],
+            "path": detail.get("path", ""), "kind": detail.get("kind", "file"),
+            "owners": detail.get("owners", []),
+            "last_updated_at": detail.get("last_updated_at", ""),
+            "first_added_at": detail.get("first_added_at", ""),
+        })
     metrics = registry.query_metrics(slug, "repo_sub_resource_survey")
     return {"findings": findings, "metrics": metrics}
 

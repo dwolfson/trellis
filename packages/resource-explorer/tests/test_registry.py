@@ -1,6 +1,7 @@
 """Tests for ProjectRegistry — SQLite CRUD, schema migration, stats."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -640,3 +641,68 @@ class TestFileInventoryModes:
         db.upsert_file_inventory(sample_project.slug, [("b.py", 2)], modes_by_path={"b.py": "100755"})
         rows = db.get_file_inventory_with_sizes(sample_project.slug)
         assert [r["file_path"] for r in rows] == ["b.py"]
+
+
+class TestSubResources:
+    """Repo scope-narrowing funnel plan, D2/D4 — the local "Catalog" stage,
+    generic across resource types (only 'repo' is exercised in these tests,
+    matching Phase 1's scope) and deliberately repeatable/idempotent."""
+
+    def test_catalog_and_list_round_trip(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert len(rows) == 1
+        assert rows[0]["locator"] == "docs"
+        assert rows[0]["kind"] == "folder"
+        assert rows[0]["egeria_guid"] == ""
+
+    def test_root_locator_is_representable(self, db):
+        db.catalog_sub_resource("repo", "myproj", "", "folder")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert rows[0]["locator"] == ""
+
+    def test_recataloging_is_a_no_op_not_a_duplicate(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder", source_finding="run-1")
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder", source_finding="run-2")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert len(rows) == 1
+        assert rows[0]["source_finding"] == "run-1"  # first write wins, not overwritten
+
+    def test_recataloging_never_clobbers_an_existing_egeria_guid(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.set_sub_resource_egeria_guid("repo", "myproj", "docs", "real-guid-123")
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")  # re-select, e.g. from the UI again
+        rows = db.list_sub_resources("repo", "myproj")
+        assert rows[0]["egeria_guid"] == "real-guid-123"
+
+    def test_detail_is_stored_as_denormalized_json(self, db):
+        db.catalog_sub_resource(
+            "repo", "myproj", "docs/SECURITY.md", "file",
+            detail={"owners": ["@team"], "last_updated_at": "2026-01-01"},
+        )
+        rows = db.list_sub_resources("repo", "myproj")
+        detail = json.loads(rows[0]["detail_json"])
+        assert detail == {"owners": ["@team"], "last_updated_at": "2026-01-01"}
+
+    def test_uncatalog_removes_the_row(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.uncatalog_sub_resource("repo", "myproj", "docs")
+        assert db.list_sub_resources("repo", "myproj") == []
+
+    def test_uncatalog_of_untracked_locator_does_not_raise(self, db):
+        db.uncatalog_sub_resource("repo", "myproj", "never-cataloged")  # just shouldn't blow up
+
+    def test_list_is_scoped_to_resource_type_and_slug(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.catalog_sub_resource("repo", "other-proj", "docs", "folder")
+        db.catalog_sub_resource("database", "myproj", "public", "schema")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert len(rows) == 1
+        assert rows[0]["resource_type"] == "repo"
+        assert rows[0]["resource_slug"] == "myproj"
+
+    def test_set_egeria_guid_updates_the_row(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.set_sub_resource_egeria_guid("repo", "myproj", "docs", "guid-abc")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert rows[0]["egeria_guid"] == "guid-abc"

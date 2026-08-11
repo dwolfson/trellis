@@ -1339,6 +1339,40 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
                 "ON repo_disposition_history(github_url, decided_at)"
             )
+            # Locally-tracked sub-resources — the "Catalog" stage of the
+            # repo scope-narrowing funnel (docs/repo-scope-narrowing-funnel.md,
+            # D2). Built generically across resource types from the start,
+            # even though only 'repo' has a UI/route wired up in Phase 1.
+            # `locator`'s meaning is resource-type-specific: a relative path
+            # for repo/filesystem, a 'schema' or 'schema.table' reference for
+            # database. '' = the resource root itself. This table only
+            # records THAT something is a tracked target — "what's been
+            # surveyed against it" lives on project_analysis_findings/
+            # _metrics via their own scope_locator column, not here.
+            # `detail_json` is a denormalized snapshot of the source
+            # finding's detail at catalog time (owners/dates/etc) so
+            # publish_sub_resources() doesn't need to re-join back to
+            # findings that might have been superseded by a later survey.
+            # Idempotent catalog (D4 — repeatable, never clobbers
+            # egeria_guid on re-catalog of an already-tracked locator).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sub_resources (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    resource_type  TEXT NOT NULL,
+                    resource_slug  TEXT NOT NULL,
+                    locator        TEXT NOT NULL,
+                    kind           TEXT NOT NULL,
+                    cataloged_at   TEXT NOT NULL,
+                    source_finding TEXT DEFAULT '',
+                    detail_json    TEXT DEFAULT '',
+                    egeria_guid    TEXT DEFAULT '',
+                    UNIQUE(resource_type, resource_slug, locator)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sub_resources_resource "
+                "ON sub_resources(resource_type, resource_slug)"
+            )
             # Named, reusable discovery sources — a saved search (org/
             # language/license/... filters) or a manually-curated list of
             # github_urls (for foundations like Eclipse that spread projects
@@ -2811,6 +2845,68 @@ class ProjectRegistry:
                 (key,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── sub-resources — the local "Catalog" stage of the repo scope-
+    # narrowing funnel (docs/repo-scope-narrowing-funnel.md, D2/D4) ────────────
+
+    def catalog_sub_resource(
+        self, resource_type: str, resource_slug: str, locator: str, kind: str,
+        source_finding: str = "", detail: dict | None = None,
+    ) -> None:
+        """Track a sub-resource locally — idempotent: re-cataloging an
+        already-tracked locator is a no-op and never clobbers a previously
+        set egeria_guid (D4 — catalog is a repeatable action, not a
+        one-time gate; a user coming back later with more information
+        should be able to add to the selection without disturbing what's
+        already there)."""
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM sub_resources WHERE resource_type=? AND resource_slug=? AND locator=?",
+                (resource_type, resource_slug, locator),
+            ).fetchone()
+            if existing:
+                return
+            conn.execute(
+                """INSERT INTO sub_resources
+                       (resource_type, resource_slug, locator, kind, cataloged_at, source_finding, detail_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    resource_type, resource_slug, locator, kind,
+                    datetime.utcnow().isoformat(), source_finding,
+                    json.dumps(detail) if detail else "",
+                ),
+            )
+
+    def uncatalog_sub_resource(self, resource_type: str, resource_slug: str, locator: str) -> None:
+        """Remove a sub-resource from local tracking — reversible, does not
+        touch anything already published to Egeria (that asset stays put;
+        only RE's own local record of "we're tracking this" goes away)."""
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM sub_resources WHERE resource_type=? AND resource_slug=? AND locator=?",
+                (resource_type, resource_slug, locator),
+            )
+
+    def list_sub_resources(self, resource_type: str, resource_slug: str) -> list[dict]:
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sub_resources WHERE resource_type=? AND resource_slug=? ORDER BY locator",
+                (resource_type, resource_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_sub_resource_egeria_guid(
+        self, resource_type: str, resource_slug: str, locator: str, guid: str,
+    ) -> None:
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE sub_resources SET egeria_guid=? WHERE resource_type=? AND resource_slug=? AND locator=?",
+                (guid, resource_type, resource_slug, locator),
+            )
 
     # ── discovery sources ("Scouting workflow redesign" plan, D1/D2) ───────────
 

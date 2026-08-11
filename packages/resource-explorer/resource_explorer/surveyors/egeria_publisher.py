@@ -85,7 +85,6 @@ class EgeriaPublisher:
         asset_guid = self._find_or_create_asset(result)
         report_guid = self._create_survey_report(result, asset_guid)
         self._create_annotations(result, report_guid)
-        self._catalog_sub_resources(result, asset_guid)
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.project_slug,
@@ -349,64 +348,69 @@ class EgeriaPublisher:
                     i, ann.annotation_type.value, exc,
                 )
 
-    # ── sub-resource cataloging (D6/D8) ─────────────────────────────────────
+    # ── sub-resource cataloging (repo scope-narrowing funnel doc, D2/D3) ────
 
-    _SUB_RESOURCE_STEP = "SubResourceSurvey"
     _FOLDER_TECH_TYPE = "File System Directory"
 
-    def _catalog_sub_resources(self, result: SurveyResult, asset_guid: str) -> None:
-        """Catalog worthy sub-resources (folders/files) as their own Egeria
-        FileFolder/DataFile assets, parented under the repo's
-        SourceControlLibrary asset (or under an already-catalogued ancestor
-        folder). Only runs when this publish included the SubResourceSurvey
-        step (D7 — phase-scoped publish); a no-op otherwise so ordinary
-        publishes are unaffected.
+    def publish_sub_resources(
+        self, resource_slug: str, github_url: str, asset_guid: str, locators: list[str],
+    ) -> dict[str, str]:
+        """Publish specific, already-locally-catalogued sub-resources (repo
+        only today — resource_type='repo') to Egeria as FileFolder/DataFile
+        assets, parented under the repo's SourceControlLibrary asset (or an
+        already-catalogued ancestor folder).
+
+        This replaces the old auto-publish behavior (finding "worthy" ->
+        immediately create in Egeria, with every publish() call). Egeria
+        publish is now always an explicit, separate action from local
+        cataloging (registry.catalog_sub_resource) — see
+        docs/repo-scope-narrowing-funnel.md D2/D3. Only locators that are
+        already rows in the local `sub_resources` table are published;
+        the caller (the catalog route) is responsible for ensuring every
+        selected file's ancestor folders are locally catalogued too, since
+        NestedFile strictly requires a FileFolder parent.
+
+        Returns {locator: guid} for everything successfully created or
+        already found. Idempotent — re-publishing an already-published
+        locator finds it by qualifiedName rather than duplicating it.
         """
         if not self._registry:
-            return
-        if not any(
-            getattr(ann, "analysis_step", "") == self._SUB_RESOURCE_STEP
-            for ann in result.annotations
-        ):
-            return
+            return {}
+        self._connect()
 
-        try:
-            findings = self._registry.query_findings(
-                result.project_slug, "repo_sub_resource_survey"
-            )
-        except Exception as exc:
-            log.warning("Could not read sub-resource findings for %s: %s", result.project_slug, exc)
-            return
-
+        rows = {
+            r["locator"]: r
+            for r in self._registry.list_sub_resources("repo", resource_slug)
+            if r["locator"] in locators
+        }
         entries = []
-        for f in findings:
-            if f.get("label") != "worthy":
-                continue
+        for locator, row in rows.items():
             detail = {}
-            if f.get("detail_json"):
+            if row.get("detail_json"):
                 try:
-                    detail = json.loads(f["detail_json"])
+                    detail = json.loads(row["detail_json"])
                 except (TypeError, ValueError):
                     detail = {}
             entries.append({
-                "path": detail.get("path", ""),
-                "kind": detail.get("kind", "file"),
+                "path": locator,
+                "kind": row["kind"],
                 "owners": detail.get("owners", []),
                 "last_updated_at": detail.get("last_updated_at", ""),
                 "first_added_at": detail.get("first_added_at", ""),
             })
         if not entries:
-            return
+            return {}
 
-        # Folders before files (D6) — a file's parentGUID must already exist.
+        # Folders before files — a file's parentGUID must already exist.
         entries.sort(key=lambda e: 0 if e["kind"] == "folder" else 1)
 
         guids_by_path: dict[str, str] = {}
         template_guid_cache: dict[str, str] = {}
+        results: dict[str, str] = {}
 
         for entry in entries:
             path = entry["path"]
-            qualified_name = f"SourceControlLibrary::{result.github_url}::{path}"
+            qualified_name = f"SourceControlLibrary::{github_url}::{path}"
             try:
                 existing_guid = self._find_element_guid(qualified_name)
             except Exception as exc:
@@ -414,13 +418,15 @@ class EgeriaPublisher:
                 existing_guid = ""
             if existing_guid:
                 guids_by_path[path] = existing_guid
+                results[path] = existing_guid
+                self._registry.set_sub_resource_egeria_guid("repo", resource_slug, path, existing_guid)
                 continue
 
             parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
             if entry["kind"] == "file":
-                # NestedFile strictly requires a FileFolder parent (D4/D5) —
-                # the survey's ancestor-folder generalization guarantees an
-                # entry exists for parent_path, even the synthetic root ("").
+                # NestedFile strictly requires a FileFolder parent — the
+                # caller (catalog route) guarantees an ancestor chain exists
+                # in the local table for every selected file.
                 parent_guid = guids_by_path.get(parent_path)
                 relationship_type = "NestedFile"
             elif path == "" or parent_path == "":
@@ -448,6 +454,10 @@ class EgeriaPublisher:
                 continue
             if guid:
                 guids_by_path[path] = guid
+                results[path] = guid
+                self._registry.set_sub_resource_egeria_guid("repo", resource_slug, path, guid)
+
+        return results
 
     def _create_sub_resource(
         self,
