@@ -527,9 +527,25 @@ real code.
   second time after the fix and confirmed zero new `create_elem_from_template` calls (D8 idempotency
   holds). All synthetic findings and their created Egeria elements were cleaned up afterward
   (`MetadataExpert.delete_metadata_element()`, files before their containing folders) — `sqlglot`'s real
-  catalog state is unaffected. **Deferred**: end-to-end verification with a real `SubResourceSurveyor` run
-  (real CODEOWNERS/Tier-2 commit dates) once the GitHub rate limit clears — a wakeup is already scheduled
-  for this.
+  catalog state is unaffected. Root cause of the rate-limit exhaustion: `GITHUB_TOKEN` was unset in
+  `.env`, running `GitHubClient` fully unauthenticated (60 req/hr vs. 5000 req/hr) — fixed and confirmed
+  (4996/5000 remaining).
+- **Live — end-to-end with a real `SubResourceSurveyor` run, done 2026-08-11.** Ran the real surveyor
+  against `sqlglot` (real CODEOWNERS lookup — none present, `owners: []` correctly everywhere; real
+  Tier-2 commit dates populated only for the 12 worthy entries). Recommendation list looked sane by eye:
+  4 well-known root files + 7 depth-1 structural folders + the synthetic root container, nothing
+  over-broad or empty. Published `steps=["repo_sub_resource_survey"]` twice in a row — all 12
+  folders/files created as real, correctly nested Egeria assets on the first publish (spot-checked
+  `README.md`'s `mermaidGraph`: `NestedFile`-linked to the synthetic root `FileFolder`, which is itself
+  `CapabilityAssetUse`-linked to the `sqlglot` `SourceControlLibrary`), and all 12 GUIDs were
+  byte-for-byte identical on the second publish (D8 idempotency holds against real data, not just
+  synthetic). Published a full survey (`steps=None`): 28 annotations, 0 errors, `SubResourceSurvey`
+  represented alongside all 7 other steps, and all 12 sub-resource GUIDs still unchanged afterward — full
+  survey cataloging coexists cleanly. `project_analysis_metrics`/`project_analysis_findings` carry 4
+  distinct `surveyed_at` rows across the 4 runs (direct call, two scoped publishes, one full-survey
+  publish) — confirmed append-only, not overwritten (D11 growth-over-time). This data was left live in
+  Egeria (not cleaned up) — `sqlglot` is a real registered project and this is the feature actually
+  working as designed, not throwaway test data.
 - Full RE test suite green (826 tests as of this pass).
 
 ## Explicitly deferred (destination on record, not designed here)
