@@ -2,6 +2,13 @@
 
 **Status: draft, for discussion. Not yet implemented.**
 
+**Decisions confirmed 2026-08-11 (third pass)**: D7 resolved (perspective stays a within-intent
+filter, no schema change); mixed-shape kinds get one conservative shape, not per-output tagging,
+until real friction shows up; D2's local table is generic across resource types from the start;
+database's schema→table narrowing is acknowledged as a natural fit for later, no urgency now;
+D6's payoff is repo-specific-weak/other-types-strong, and a genuinely new, repo-specific idea
+(dependency-graph lateral exploration) was raised as a result — see the new section below.
+
 ## Context
 
 Discussed 2026-08-11, prompted by the question "why can't I see sub-resource cataloging in the
@@ -82,7 +89,7 @@ resource; narrowing it isn't a query change, it's a different analysis.
 | `repo_data_profiling` | `project_file_inventory` + `project_data_profiles`, both per-file | **Corpus** | Same as above. |
 | `repo_file_classification` | Flat path list from `project_file_inventory`/fallbacks | **Corpus** | `classify_file_paths()` is explicitly path-agnostic already. |
 | `repo_sub_resource_survey` | `project_file_inventory` (per-file) | **Corpus** | Its own "depth-1 folder" heuristic naturally re-baselines to whatever root is passed in. |
-| `repo_file_structure` | **Mixed**: `project_code_symbols` (per-file, 2 of 3 annotations) + `project_stats` (1 aggregate row) | **Corpus for 2/3 outputs, whole-resource-only for the third** | The file/dir-count-by-language annotations are path-filterable; the size/loc aggregate is a single GitHub-derived row with no per-path breakdown. A single surveyor producing mixed-shape outputs — the compatibility check has to be per-output, not just per-surveyor, in the general case. |
+| `repo_file_structure` | **Mixed**: `project_code_symbols` (per-file, 2 of 3 annotations) + `project_stats` (1 aggregate row) | **Whole-resource-only (by decision, not by necessity)** | Two of three outputs are genuinely path-filterable; the size/loc aggregate isn't. Per D-resolved below, RE stays with one shape per kind rather than per-output tagging until real friction shows up — so this kind takes its most restrictive shape rather than gaining special-case logic. Revisit if this turns out to matter in practice. |
 | `repo_language` | `project_stats.language_breakdown` (1 aggregate row, GitHub-computed) | **Whole-resource-only** | No per-file/per-directory row exists to filter — would need re-deriving from `project_code_symbols` instead, a different analysis. |
 | `repo_health` | `project_stats` + live GitHub stats (stars/forks/releases) | **Whole-resource-only** | Repo-level GitHub metadata; no folder/file concept applies. |
 | `repo_documentation` | `project.collections` + hygiene filenames | **Whole-resource-only** | README/CHANGELOG/LICENSE presence and doc-collection membership are inherently repo-root concepts. "Does this folder have its own README" is a different, unbuilt question. |
@@ -128,27 +135,35 @@ non-linear (see D4):
 4. **Narrow** — the catalog becomes the new scope for the next Survey, recursively — but only for
    survey types whose target shape is compatible with what was selected (see D6).
 
-**D2 — New local table for "tracked sub-resource," independent of Egeria. Identity is
-`(project_slug, path, kind)`; survey associations are NOT a new junction table.**
+**D2 — New local table for "tracked sub-resource," independent of Egeria, built generically across
+resource types from the start (confirmed — not repo-specific, even though repo ships first).**
+Identity is `(resource_type, resource_slug, locator, kind)`; survey associations are NOT a new
+junction table.
 ```sql
-CREATE TABLE project_sub_resources (
+CREATE TABLE sub_resources (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_slug   TEXT NOT NULL,
-    path           TEXT NOT NULL,       -- relative path; '' = the repo root itself. THIS is the name.
-    kind           TEXT NOT NULL,       -- 'file' | 'folder'
+    resource_type  TEXT NOT NULL,       -- 'repo' | 'database' | 'filesystem'
+    resource_slug  TEXT NOT NULL,       -- project_slug / database_slug / filesystem_slug
+    locator        TEXT NOT NULL,       -- hierarchical locator: repo/fs relative path;
+                                         -- database is 'schema' or 'schema.table'. '' = the
+                                         -- resource root itself. THIS is the sub-resource's name.
+    kind           TEXT NOT NULL,       -- 'file' | 'folder' (repo/fs); 'schema' | 'table' (database)
     cataloged_at   TEXT NOT NULL,
     source_finding TEXT DEFAULT '',     -- which survey run recommended it (traceability)
     egeria_guid    TEXT DEFAULT '',     -- '' until/unless published to Egeria
-    UNIQUE(project_slug, path)
+    UNIQUE(resource_type, resource_slug, locator)
 )
 ```
-This table only records *that something is a tracked target* — it is not where "which surveys ran
-against it" lives. That question is answered by extending `project_analysis_findings`/
-`project_analysis_metrics` with a `scope_path` column (default `''` = whole-resource, matching
-every existing row unchanged): "what's been run against `docs/`" becomes
-`WHERE project_slug=? AND scope_path='docs'`, the same shape of query already used for
-`WHERE scope_path=''` today. Multiple surveys against one cataloged path fall out of this for
-free — no new table needed for that part.
+`locator`'s meaning is resource-type-specific (a path for repo/filesystem, a dotted
+schema/schema.table reference for database) but the table itself, its CRUD, and the selection UI
+built against it (D3) are shared. This table only records *that something is a tracked target* —
+it is not where "which surveys ran against it" lives. That question is answered by extending
+`project_analysis_findings`/`project_analysis_metrics` (and their eventual database/filesystem
+counterparts) with a `scope_locator` column (default `''` = whole-resource, matching every
+existing row unchanged): "what's been run against `docs/`" becomes
+`WHERE project_slug=? AND scope_locator='docs'`, the same shape of query already used for
+`WHERE scope_locator=''` today. Multiple surveys against one cataloged locator fall out of this
+for free — no new table needed for that part.
 
 **D3 — Selection UI is a real filterable/sortable metrics table, not a checklist.** The
 `SubResourceSurveyor` recommendation list already carries D9/D10's metadata (size, mode, owners,
@@ -170,60 +185,78 @@ one of Scouting or Discovery. This replaces my first draft's D4, which asked "wh
 should own this" — the answer is that ownership-by-one-intent was the wrong frame.
 
 **D5 — Target-shape compatibility must be config-driven and extensible, not hardcoded — no
-mapping here is universally correct.** Different organizations will reasonably want different
+mapping here is universally correct. One shape per analysis kind (confirmed) — no per-output
+tagging until real friction shows up.** Different organizations will reasonably want different
 answers to "should `repo_security` ever be offered against a single folder" — the inventory above
 is RE's own best-guess grounding, not gospel. Mirror the existing `ANALYSIS_KINDS`/`STEP_REGISTRY`
 extensibility pattern already used elsewhere in this codebase: add a `target_shape` field to each
-`analysis_catalog.yaml` entry (`corpus` | `single_container` | `single_leaf` | `whole_resource_only`,
-with `repo_file_structure`-style mixed cases needing per-output granularity — flagged as an open
-question, not resolved here) rather than encoding shape compatibility as branching logic anywhere
-in Python. A new analysis kind declares its own shape in one YAML field; nothing else needs to
-change to make the compatibility check aware of it.
+`analysis_catalog.yaml` entry (`corpus` | `single_container` | `single_leaf` | `whole_resource_only`)
+rather than encoding shape compatibility as branching logic anywhere in Python. A new analysis kind
+declares its own shape in one YAML field; nothing else needs to change to make the compatibility
+check aware of it. Mixed-output kinds like `repo_file_structure` take their single most-restrictive
+shape (see the table above) rather than gaining per-output special-casing — simplicity wins until
+there's a concrete case where it doesn't.
 
 **D6 — Selecting a scope must gate which analyses are even offered, not just parameterize all of
-them.** Directly from the inventory: if a user has cataloged a single file, offering `repo_health`
-or `repo_documentation` against it is nonsensical (whole-resource-only), while `repo_api_structure`
-or `repo_data_profiling` make real sense. The "run scoped analysis" UI for a cataloged sub-resource
-must filter its own menu by D5's target-shape compatibility against what was actually selected
-(corpus target → offer corpus + single-container + single-leaf kinds; single-leaf target → offer
-only single-leaf + corpus kinds that degrade sensibly to one file; etc.) — never present a control
-for a combination that can't produce a meaningful result.
+them — though this payoff is uneven across resource types, confirmed weaker for repo than for
+database/filesystem.** Directly from the inventory: repo's own analysis kinds split heavily toward
+whole-resource-only (health, language, documentation, security, and now file-structure by D5's
+single-shape decision) — only four of ten repo kinds are actually corpus-shaped. Database's
+schema→table hierarchy and filesystem's clean recursive-corpus shape get more real mileage out of
+this gating than repo does. Keep D6 as the general mechanism (it's still correct for the kinds that
+do vary), but don't expect it to be repo's highest-value payoff — that turned out to be something
+else, see "Lateral exploration via dependencies" below.
 
-**D7 — `perspectives` is currently orthogonal to intent placement; this doc surfaces a real
-question about whether it should stay that way.** Today `perspectives` (`dba`/`data_scientist`/
-`steward`/`security`/`all`) is a cross-cutting filter applied *within* whichever intent tab is
-already active — it narrows the cards you see, it never decides which tab a card lives under in
-the first place (that's `intent`, one scalar per entry, confirmed by the target-shape audit). D4's
-still-open "should a kind be reachable from multiple intents" question and perspective may not be
-independent: a DBA persona plausibly wants `repo_dependency` surfaced as early as Scouting, while a
-`data_scientist` persona doesn't care until Analysis — i.e. the *right* intent for a kind may
-itself be perspective-dependent, not fixed. If so, the catalog schema needs to move from "one
-`intent` scalar per entry" toward "a set of `(intent, perspective)` pairs per entry," which is a
-bigger schema change than D4's original framing implied. Not resolving this here — flagging that
-it needs to be settled before or alongside D4/D5's implementation, since it changes the shape of
-the `analysis_catalog.yaml` schema decision either way.
+**D7 — `perspectives` stays a pure within-intent filter (confirmed, no schema change).**
+`perspectives` (`dba`/`data_scientist`/`steward`/`security`/`all`) continues to narrow which cards
+are visible *within* whichever intent tab is already active; it does not influence which intent a
+kind is placed under. `intent` stays a single scalar per `analysis_catalog.yaml` entry — no move to
+`(intent, perspective)` pairs. This resolves what the first revision flagged as the highest-leverage
+open question, in favor of the simpler existing model.
 
-## Explicitly not decided here (need your input)
+## Other decisions confirmed, not requiring new design
 
-- **D7's `(intent, perspective)` pairing** — does perspective actually change which intent a kind
-  belongs under, or should it stay a pure within-intent filter as it is today? This is probably the
-  single highest-leverage open question, since it changes the catalog schema shape for everything
-  else in this doc.
-- **`repo_file_structure`'s mixed-shape output** — does per-output shape tagging belong in the
-  target-shape registry (D5), or should mixed surveyors like this one eventually split into two
-  separate analysis kinds (one corpus-shaped, one whole-resource-only) so every kind has exactly
-  one shape? Splitting is cleaner for D6's gating logic; not splitting avoids proliferating catalog
-  entries for what's conceptually one survey pass.
-- **Whether `project_sub_resources` (D2) should be designed as a generic cross-resource-type table
-  now**, given the target-shape inventory confirms database/filesystem have their own real
-  narrowing shapes too — building it generically now costs more design care but avoids a
-  rename/migration later.
+- **Database's schema→table narrowing** is acknowledged as a natural fit for D1-D6's model
+  whenever it's built — no urgency, no design changes needed now beyond what's already generic
+  (D2). Noted explicitly since "we haven't spent a lot of effort recently beyond Repos" is the
+  reason it's not further along, not a sign the model doesn't fit.
+- **`repo_file_structure`'s mixed-shape output** — resolved by D5 (single most-restrictive shape,
+  not per-output tagging).
+- **`project_sub_resources`/`sub_resources` (D2) is generic across resource types**, confirmed —
+  see the revised schema above.
+
+## Still open (need your input)
+
 - **Database's per-card dispatch gap** — worth fixing (`REPO_ANALYSIS_STEP_MAP`-equivalent for
   database) before or alongside this work, since scope-narrowing for database is meaningless while
   every card triggers the same whole-DB survey regardless of which was clicked?
 - **`index_health`/`privilege_audit`** — leave as aspirational catalog entries, or remove them
   until they have real implementations, so the catalog doesn't advertise capabilities that don't
   exist?
+- **Dependency-graph lateral exploration** (new, see below) — how far does the "follow a
+  dependency to its own source repo" chain go before stopping, and does it write anything (a
+  suggestion, a disposition-`undecided` pre-registration) or purely surface a "you might also want
+  to scout these" list for the human to act on?
+
+## Lateral exploration via dependencies (new, repo-specific — not part of the vertical funnel above)
+
+Everything above is a *vertical* narrowing pattern — repo → folder → file, schema → table →
+column. Repo dependency analysis suggests a genuinely different, *lateral* pattern: `repo_dependency`
+already surveys a repo's declared external dependencies (`project_dependencies`, populated by
+`DependencySurveyor` from manifest files) — each dependency is itself, often, a real open-source
+repo with its own `SourceControlLibrary`. Two ideas raised, neither designed here:
+
+1. **Dependency health** — a future summary view answering "how healthy are the things this repo
+   depends on" (staleness, maintenance activity, security posture of each dependency) — a natural
+   extension of `repo_dependency`'s existing data, read *about* the dependencies rather than
+   surveying them directly.
+2. **Dependency-driven Scouting discovery** — following a dependency to its own GitHub repo could
+   feed directly into Scouting's existing "candidate repos to explore" flow (`discovery.py`'s
+   search/import path already built this session), rather than requiring a fresh manual search.
+   This needs an explicit stopping rule (depth limit, opt-in per hop, dedup against
+   already-registered/already-dispositioned repos) — "you obviously have to stop somewhere," in the
+   user's own words — not designed here, just named so it's on record as the next real idea once
+   the vertical funnel work above lands.
 
 ## Suggested phasing (if this direction is right)
 
