@@ -98,6 +98,71 @@ class TestScoutingOverview:
         resp = client.get("/api/projects/myproj/scouting-overview")
         assert resp.json()["last_profiled_at"] != ""
 
+
+class TestScoutingOverviewExtendedGitHubAttributes:
+    """'display lifecycle state, homepage, security_and_analysis and
+    get_deployments' — the four newly-surfaced Scouting-tier fields."""
+
+    def test_defaults_with_no_stats_row(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        data = resp.json()
+        assert data["lifecycle_state"] == "active"
+        assert data["homepage"] == ""
+        assert data["security_and_analysis"] == {}
+        assert data["deployments_count"] == 0
+
+    def _seed(self, registry, **overrides):
+        cols = {
+            "archived": 0, "disabled": 0, "is_fork": 0, "is_template": 0,
+            "homepage": "", "security_and_analysis_json": "{}",
+            "deployments_count": 0, "latest_deployment_at": "",
+            "latest_deployment_environment": "", "latest_deployment_ref": "",
+        }
+        cols.update(overrides)
+        with registry._conn() as conn:
+            cols_sql = ", ".join(cols.keys())
+            placeholders = ", ".join(["?"] * len(cols))
+            conn.execute(
+                f"INSERT INTO project_stats (project_slug, fetched_at, {cols_sql}) "
+                f"VALUES (?, ?, {placeholders})",
+                ("myproj", "2026-08-01T00:00:00", *cols.values()),
+            )
+
+    def test_archived_wins_lifecycle_state(self, client, registry):
+        self._seed(registry, archived=1, is_fork=1)
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["lifecycle_state"] == "archived"
+
+    def test_fork_lifecycle_state(self, client, registry):
+        self._seed(registry, is_fork=1)
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["lifecycle_state"] == "fork"
+
+    def test_homepage_and_security_and_analysis_surfaced(self, client, registry):
+        self._seed(
+            registry,
+            homepage="https://example.com",
+            security_and_analysis_json='{"secret_scanning": "enabled"}',
+        )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["homepage"] == "https://example.com"
+        assert data["security_and_analysis"] == {"secret_scanning": "enabled"}
+
+    def test_malformed_security_and_analysis_json_degrades_to_empty_dict(self, client, registry):
+        self._seed(registry, security_and_analysis_json="not-json")
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["security_and_analysis"] == {}
+
+    def test_deployments_surfaced(self, client, registry):
+        self._seed(
+            registry, deployments_count=3, latest_deployment_at="2026-08-01T00:00:00",
+            latest_deployment_environment="prod", latest_deployment_ref="main",
+        )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["deployments_count"] == 3
+        assert data["latest_deployment_environment"] == "prod"
+        assert data["latest_deployment_ref"] == "main"
+
     def test_defaults_to_undecided_disposition(self, client):
         resp = client.get("/api/projects/myproj/scouting-overview")
         data = resp.json()

@@ -4677,18 +4677,29 @@ function renderScoutingOverview(d) {
   const publishedBadge = d.is_published
     ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published to Egeria${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
     : `<span class="text-slate-500">Not published</span>`;
+  const _LIFECYCLE_LABELS = {
+    active: '', archived: '📦 Archived', disabled: '🚫 Disabled',
+    fork: '🍴 Fork', template: '📋 Template',
+  };
+  const lifecycleBadge = _LIFECYCLE_LABELS[d.lifecycle_state]
+    ? `<span class="text-amber-400">${_LIFECYCLE_LABELS[d.lifecycle_state]}</span>` : '';
+  const secFeatures = Object.entries(d.security_and_analysis || {}).filter(([, v]) => v);
+  const secEnabledCount = secFeatures.filter(([, v]) => v === 'enabled').length;
 
   view.innerHTML = _scoutingSubnavHtml('survey') + `
     <div class="max-w-2xl space-y-4">
       <div>
         <h1 class="text-xl font-bold text-slate-100">${_esc(d.display_name)}</h1>
-        <a href="${_esc(d.github_url)}" target="_blank" class="text-xs text-cyan-400 hover:underline">${_esc(d.github_url)}</a>
+        <div class="flex flex-wrap gap-3 items-center">
+          <a href="${_esc(d.github_url)}" target="_blank" class="text-xs text-cyan-400 hover:underline">${_esc(d.github_url)}</a>
+          ${d.homepage ? `<a href="${_esc(d.homepage)}" target="_blank" class="text-xs text-cyan-400 hover:underline">🔗 ${_esc(d.homepage)}</a>` : ''}
+        </div>
       </div>
 
       <div class="text-sm text-slate-300">${_esc(d.description) || '<span class="text-slate-500">No description on GitHub.</span>'}</div>
 
       <div class="flex flex-wrap gap-4 text-xs items-center">
-        ${surveyedBadge}${publishedBadge}
+        ${surveyedBadge}${publishedBadge}${lifecycleBadge}
         ${_DISPOSITION_LABELS[d.disposition] ? `<span class="text-slate-400">${_DISPOSITION_LABELS[d.disposition]}</span>` : ''}
         <button onclick="_showScoutingSubTab('disposition')" class="text-cyan-400 hover:text-cyan-300 underline">Manage disposition →</button>
       </div>
@@ -4717,6 +4728,14 @@ function renderScoutingOverview(d) {
         <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
           <div class="text-[10px] text-slate-500 uppercase">Size</div>
           <div class="text-sm text-slate-200 font-medium">${d.repo_size_kb ? `${(d.repo_size_kb/1024).toFixed(1)} MB` : '—'}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3" title="${secFeatures.map(([k,v]) => `${k}: ${v}`).join(', ') || 'No security/analysis config visible (usually requires admin access to the repo)'}">
+          <div class="text-[10px] text-slate-500 uppercase">Security &amp; analysis</div>
+          <div class="text-sm text-slate-200 font-medium">${secFeatures.length ? `${secEnabledCount}/${secFeatures.length} enabled` : '—'}</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3" title="${d.latest_deployment_environment ? `Latest: ${_esc(d.latest_deployment_environment)}${d.latest_deployment_ref ? ` @ ${_esc(d.latest_deployment_ref)}` : ''}` : ''}">
+          <div class="text-[10px] text-slate-500 uppercase">Deployments</div>
+          <div class="text-sm text-slate-200 font-medium">${d.deployments_count ? `${d.deployments_count}${d.latest_deployment_at ? ` · ${_relTime(d.latest_deployment_at)}` : ''}` : '—'}</div>
         </div>
       </div>
 

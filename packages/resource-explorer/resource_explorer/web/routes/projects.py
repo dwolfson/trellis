@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -224,6 +225,15 @@ class ScoutingOverview(BaseModel):
     last_published_at: str = ""
     disposition: str = "undecided"
     disposition_reason: str = ""
+    # Computed from archived/disabled/is_fork/is_template — "archived" >
+    # "disabled" > "fork" > "template" > "active", first match wins.
+    lifecycle_state: str = "active"
+    homepage: str = ""
+    security_and_analysis: dict = {}
+    deployments_count: int = 0
+    latest_deployment_at: str = ""
+    latest_deployment_environment: str = ""
+    latest_deployment_ref: str = ""
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -237,6 +247,22 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
     stats = registry.get_latest_project_stats(project.slug) or {}
     disp = registry.get_disposition(project.github_url) or {}
     latest_survey = registry.get_latest_egeria_survey(project.slug)
+
+    lifecycle_state = "active"
+    if stats.get("archived"):
+        lifecycle_state = "archived"
+    elif stats.get("disabled"):
+        lifecycle_state = "disabled"
+    elif stats.get("is_fork"):
+        lifecycle_state = "fork"
+    elif stats.get("is_template"):
+        lifecycle_state = "template"
+
+    try:
+        security_and_analysis = json.loads(stats.get("security_and_analysis_json") or "{}")
+    except (TypeError, ValueError):
+        security_and_analysis = {}
+
     return ScoutingOverview(
         slug=project.slug,
         display_name=project.display_name,
@@ -254,6 +280,13 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         last_published_at=(latest_survey or {}).get("published_at") or "",
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
+        lifecycle_state=lifecycle_state,
+        homepage=stats.get("homepage") or "",
+        security_and_analysis=security_and_analysis,
+        deployments_count=stats.get("deployments_count") or 0,
+        latest_deployment_at=stats.get("latest_deployment_at") or "",
+        latest_deployment_environment=stats.get("latest_deployment_environment") or "",
+        latest_deployment_ref=stats.get("latest_deployment_ref") or "",
     )
 
 

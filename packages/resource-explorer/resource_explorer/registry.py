@@ -484,6 +484,55 @@ class ProjectRegistry:
                 ("ingestion_file_count", "INTEGER DEFAULT NULL"),
                 ("ingestion_lines_of_code", "INTEGER DEFAULT NULL"),
                 ("commits_365d", "INTEGER DEFAULT NULL"),
+                # Lifecycle/repo-config flags — all free (already on the same
+                # `repo` object StatsFetcher already has, zero extra API
+                # calls), previously fetched but never persisted. Not all
+                # are surfaced in Scouting's UI today, but kept for future
+                # calculated attributes (per 2026-08-10 decision) — e.g. an
+                # "actually still maintained" score could weight archived/
+                # disabled/is_fork without a schema change later.
+                ("archived", "INTEGER DEFAULT 0"),
+                ("disabled", "INTEGER DEFAULT 0"),
+                ("is_fork", "INTEGER DEFAULT 0"),
+                ("is_template", "INTEGER DEFAULT 0"),
+                ("default_branch", "TEXT DEFAULT ''"),
+                ("has_issues", "INTEGER DEFAULT 1"),
+                ("has_wiki", "INTEGER DEFAULT 1"),
+                ("has_discussions", "INTEGER DEFAULT 0"),
+                ("has_projects", "INTEGER DEFAULT 1"),
+                ("has_pages", "INTEGER DEFAULT 0"),
+                ("network_count", "INTEGER DEFAULT 0"),
+                ("subscribers_count", "INTEGER DEFAULT 0"),
+                ("visibility", "TEXT DEFAULT 'public'"),
+                ("is_private", "INTEGER DEFAULT 0"),
+                ("homepage", "TEXT DEFAULT ''"),
+                ("mirror_url", "TEXT DEFAULT ''"),
+                ("parent_full_name", "TEXT DEFAULT ''"),  # fork source, e.g. "torvalds/linux" — "" if not a fork
+                ("allow_merge_commit", "INTEGER DEFAULT 1"),
+                ("allow_squash_merge", "INTEGER DEFAULT 1"),
+                ("allow_rebase_merge", "INTEGER DEFAULT 1"),
+                ("allow_auto_merge", "INTEGER DEFAULT 0"),
+                ("allow_update_branch", "INTEGER DEFAULT 0"),
+                ("delete_branch_on_merge", "INTEGER DEFAULT 0"),
+                # security_and_analysis: 7 boolean-ish feature toggles
+                # (secret scanning, push protection, Dependabot updates,
+                # etc.) — GitHub's own reported *configuration* state, not
+                # findings. Stored as one JSON blob (mirrors
+                # language_breakdown's existing convention) rather than 7
+                # more columns, since it's always read/written as a unit.
+                ("security_and_analysis_json", "TEXT DEFAULT '{}'"),
+                # Deployments/environments — each its own extra API call
+                # (get_environments()/get_deployments()), unlike everything
+                # above. environments_json is a JSON list of environment
+                # names; the rest describe only the single most recent
+                # deployment, not full history (that's what the *_json
+                # trend tables are for elsewhere in this codebase, and
+                # deployment history isn't needed for a scouting-tier read).
+                ("environments_json", "TEXT DEFAULT '[]'"),
+                ("deployments_count", "INTEGER DEFAULT 0"),
+                ("latest_deployment_at", "TEXT DEFAULT ''"),
+                ("latest_deployment_environment", "TEXT DEFAULT ''"),
+                ("latest_deployment_ref", "TEXT DEFAULT ''"),
             ]:
                 if col not in existing_stats:
                     conn.execute(f"ALTER TABLE project_stats ADD COLUMN {col} {defn}")
