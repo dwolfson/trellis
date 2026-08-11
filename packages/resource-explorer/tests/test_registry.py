@@ -602,3 +602,41 @@ class TestRepoDispositions:
         db.set_disposition(sample_project.github_url, "investigating", project_slug=sample_project.slug)
         disp = db.get_disposition(sample_project.github_url)
         assert disp["project_slug"] == "test-project"
+
+
+class TestFileInventoryModes:
+    """Assessment sub-resource cataloging plan, D9 Tier 1 — file_mode is
+    optional/additive on top of the existing path+size inventory."""
+
+    def test_modes_by_path_threaded_through(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(
+            sample_project.slug,
+            [("README.md", 100), ("run.sh", 200), ("no_mode.txt", 50)],
+            modes_by_path={"README.md": "100644", "run.sh": "100755"},
+        )
+        rows = {r["file_path"]: r for r in db.get_file_inventory_with_sizes(sample_project.slug)}
+        assert rows["README.md"]["file_mode"] == "100644"
+        assert rows["run.sh"]["file_mode"] == "100755"
+        assert rows["no_mode.txt"]["file_mode"] == ""  # not in modes_by_path — empty, not an error
+
+    def test_modes_by_path_omitted_defaults_to_empty_string(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("a.py", 10)])
+        rows = db.get_file_inventory_with_sizes(sample_project.slug)
+        assert rows[0]["file_mode"] == ""
+
+    def test_get_file_inventory_with_sizes_includes_size_and_mode(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(
+            sample_project.slug, [("a.py", 123)], modes_by_path={"a.py": "100644"},
+        )
+        rows = db.get_file_inventory_with_sizes(sample_project.slug)
+        assert rows == [{"file_path": "a.py", "file_size_bytes": 123, "file_mode": "100644"}]
+
+    def test_repeated_upsert_replaces_not_appends(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("a.py", 1)], modes_by_path={"a.py": "100644"})
+        db.upsert_file_inventory(sample_project.slug, [("b.py", 2)], modes_by_path={"b.py": "100755"})
+        rows = db.get_file_inventory_with_sizes(sample_project.slug)
+        assert [r["file_path"] for r in rows] == ["b.py"]

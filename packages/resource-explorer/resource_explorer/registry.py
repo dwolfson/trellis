@@ -725,6 +725,17 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_file_inventory_slug "
                 "ON project_file_inventory(project_slug)"
             )
+            # file_mode: the git tree entry's mode bits ("100644" regular,
+            # "100755" executable, "120000" symlink) — free data already in
+            # the get_git_tree() response this table's writer already calls,
+            # just never captured before (Assessment sub-resource cataloging
+            # plan, D9 Tier 1). Default '' (unknown/never refreshed since
+            # this column existed), not a fabricated mode.
+            existing_fi = self._get_table_columns(conn, "project_file_inventory")
+            if "file_mode" not in existing_fi:
+                conn.execute(
+                    "ALTER TABLE project_file_inventory ADD COLUMN file_mode TEXT DEFAULT ''"
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_egeria_surveys (
                     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2062,19 +2073,32 @@ class ProjectRegistry:
     # ── full file inventory ───────────────────────────────────────────────────
 
     def upsert_file_inventory(
-        self, slug: str, paths_with_sizes: list[tuple[str, int]]
+        self,
+        slug: str,
+        paths_with_sizes: list[tuple[str, int]],
+        modes_by_path: dict[str, str] | None = None,
     ) -> None:
-        """Replace the file inventory for a project (called during add/refresh)."""
+        """Replace the file inventory for a project (called during add/refresh).
+
+        modes_by_path is optional and additive — a caller with no git-tree
+        mode data (e.g. a purely local filesystem walk) simply omits it and
+        every row gets file_mode='' (Assessment sub-resource cataloging
+        plan, D9 Tier 1)."""
         slug = self._normalize_slug(slug)
         indexed_at = datetime.utcnow().isoformat()
+        modes_by_path = modes_by_path or {}
         with self._conn() as conn:
             conn.execute(
                 "DELETE FROM project_file_inventory WHERE project_slug = ?", (slug,)
             )
             conn.executemany(
                 "INSERT INTO project_file_inventory "
-                "(project_slug, file_path, file_size_bytes, indexed_at) VALUES (?, ?, ?, ?)",
-                [(slug, path, size, indexed_at) for path, size in paths_with_sizes],
+                "(project_slug, file_path, file_size_bytes, indexed_at, file_mode) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (slug, path, size, indexed_at, modes_by_path.get(path, ""))
+                    for path, size in paths_with_sizes
+                ],
             )
 
     def get_file_inventory(self, slug: str) -> list[str]:
@@ -2469,17 +2493,27 @@ class ProjectRegistry:
         return [dict(r) for r in rows]
 
     def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
-        """Return file paths and sizes from the inventory for a project.
+        """Return file paths, sizes, and git mode bits from the inventory for a project.
 
-        Each dict has keys: ``file_path`` (str) and ``file_size_bytes`` (int).
+        Each dict has keys: ``file_path`` (str), ``file_size_bytes`` (int),
+        and ``file_mode`` (str, '' if never captured — see D9 Tier 1 of the
+        Assessment sub-resource cataloging plan).
         """
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT file_path, file_size_bytes FROM project_file_inventory WHERE project_slug = ?",
+                "SELECT file_path, file_size_bytes, file_mode FROM project_file_inventory "
+                "WHERE project_slug = ?",
                 (slug,),
             ).fetchall()
-        return [{"file_path": r["file_path"], "file_size_bytes": r["file_size_bytes"] or 0} for r in rows]
+        return [
+            {
+                "file_path": r["file_path"],
+                "file_size_bytes": r["file_size_bytes"] or 0,
+                "file_mode": r["file_mode"] or "",
+            }
+            for r in rows
+        ]
 
     # ── Egeria integration ────────────────────────────────────────────────────
 

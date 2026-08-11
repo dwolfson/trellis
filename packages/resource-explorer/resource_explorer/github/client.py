@@ -182,6 +182,41 @@ class GitHubClient:
                 pass
         return paths
 
+    def list_file_modes(self, repo: Repository) -> dict[str, str]:
+        """Return {path: mode} for every blob in the repo's git tree —
+        "100644" regular, "100755" executable, "120000" symlink. Mirrors
+        list_files()'s truncation handling (mode is free on the exact same
+        tree entries list_files() already walks, just discarded there) but
+        kept as its own method rather than folded into list_files() to
+        avoid changing that method's existing, widely-used return shape.
+        Best-effort: returns {} on any failure, matching list_files()'s own
+        fail-soft behavior — a missing mode should never fail an inventory
+        refresh (Assessment sub-resource cataloging plan, D9 Tier 1)."""
+        try:
+            tree = repo.get_git_tree(repo.default_branch, recursive=True)
+            if not tree.truncated:
+                return {e.path: e.mode for e in tree.tree if e.type == "blob"}
+            root = repo.get_git_tree(repo.default_branch, recursive=False)
+            return self._list_file_modes_walk(repo, root, "")
+        except Exception:
+            return {}
+
+    def _list_file_modes_walk(self, repo: Repository, tree, prefix: str) -> dict[str, str]:
+        modes = {e.path: e.mode for e in tree.tree if e.type == "blob"}
+        for entry in tree.tree:
+            if entry.type != "tree":
+                continue
+            entry_prefix = f"{prefix}/{entry.name}" if prefix else entry.name
+            try:
+                subtree = repo.get_git_tree(entry.sha, recursive=True)
+                if not subtree.truncated:
+                    modes.update({f"{entry_prefix}/{e.path}": e.mode for e in subtree.tree if e.type == "blob"})
+                else:
+                    modes.update(self._list_file_modes_walk(repo, subtree, entry_prefix))
+            except Exception:
+                pass
+        return modes
+
     def get_file_content(self, repo: Repository, path: str) -> str | None:
         try:
             return repo.get_contents(path).decoded_content.decode("utf-8", errors="ignore")

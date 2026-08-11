@@ -7,6 +7,7 @@ from resource_explorer.surveyors.sub_surveyors.health import HealthSurveyor
 from resource_explorer.surveyors.sub_surveyors.documentation import DocumentationSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
+from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import SubResourceSurveyor
 
 __all__ = [
     "FileStructureSurveyor",
@@ -18,4 +19,5 @@ __all__ = [
     "DocumentationSurveyor",
     "SecurityHygieneSurveyor",
     "DataProfilerSurveyor",
+    "SubResourceSurveyor",
 ]

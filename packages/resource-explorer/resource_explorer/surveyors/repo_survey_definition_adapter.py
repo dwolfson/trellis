@@ -49,6 +49,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     HealthSurveyor,
     LanguageSurveyor,
     SecurityHygieneSurveyor,
+    SubResourceSurveyor,
 )
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
@@ -144,6 +145,14 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "Classifies every file by type using filename/extension mapping (Egeria-enrichable).",
         ["ClassificationAnnotation", "ResourceMeasureAnnotation"],
         static_kwargs={"pyegeria_client": None, "force_refresh": False},
+    ),
+    "repo_sub_resource_survey": StepInfo(
+        "repo_sub_resource_survey", SubResourceSurveyor,
+        "Surveys file/folder characteristics to recommend which sub-resources "
+        "are worthy of cataloging as their own Egeria assets (Assessment "
+        "sub-resource cataloging plan) — survey only, does not catalog.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
     ),
 }
 
@@ -271,6 +280,35 @@ def _documentation_results(registry, slug: str) -> dict:
     return {"findings": findings}
 
 
+def _sub_resource_survey_results(registry, slug: str) -> dict:
+    # Same uniform finding shape _security_results/_documentation_results
+    # use — "worthy"/"not_worthy" are this kind's own label vocabulary.
+    rows = registry.query_findings(slug, "repo_sub_resource_survey")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    metrics = registry.query_metrics(slug, "repo_sub_resource_survey")
+    return {"findings": findings, "metrics": metrics}
+
+
+def _sub_resource_survey_trend(registry, slug: str) -> list[dict]:
+    # Growth over time (D11) — total_size_bytes is the headline trend
+    # value; file_count is included per-point for context.
+    size_history = {
+        r["surveyed_at"]: r["metric_value"]
+        for r in registry.query_metrics_history(slug, "repo_sub_resource_survey", "total_size_bytes")
+    }
+    count_history = {
+        r["surveyed_at"]: r["metric_value"]
+        for r in registry.query_metrics_history(slug, "repo_sub_resource_survey", "file_count")
+    }
+    return [
+        {"surveyed_at": ts, "value": value, "file_count": count_history.get(ts)}
+        for ts, value in sorted(size_history.items())
+    ]
+
+
 _DOC_QUALITY_RANK = {"Minimal": 1, "Partial": 2, "Comprehensive": 3}
 
 
@@ -377,6 +415,10 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "api_structure": AnalysisKind(
         "api_structure", ["repo_api_structure"],
         results=AnalysisKindResults(_api_structure_results, _api_structure_trend, "custom"),
+    ),
+    "sub_resource_survey": AnalysisKind(
+        "sub_resource_survey", ["repo_sub_resource_survey"],
+        results=AnalysisKindResults(_sub_resource_survey_results, _sub_resource_survey_trend, "custom"),
     ),
 }
 

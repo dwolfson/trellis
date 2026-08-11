@@ -141,7 +141,7 @@ class IngestionPipeline:
                 progress.advance(task)
 
         file_count, loc = self._count_repo_stats(code_root)
-        self._store_file_inventory(project_slug, code_root)
+        self._store_file_inventory(project_slug, code_root, repo=repo)
         self._parse_dependencies(project_slug, code_root)
         self._profile_data_files(project_slug, code_root)
         return file_count, loc
@@ -256,7 +256,7 @@ class IngestionPipeline:
             self.console.print("[cyan]Downloading repository for profiling...[/cyan]")
             local_root = client.download_zipball(repo, Path(tmp), subproject_path)
 
-            file_count = self._store_file_inventory(project_slug, local_root)
+            file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
             self._profile_data_files(project_slug, local_root)
 
             if include_symbols:
@@ -331,8 +331,22 @@ class IngestionPipeline:
                     pass
         return file_count, line_count
 
-    def _store_file_inventory(self, project_slug: str, local_root: Path) -> int:
+    def _store_file_inventory(
+        self, project_slug: str, local_root: Path, repo=None, client=None,
+    ) -> int:
         """Persist every file path (relative to local_root) and its size to SQLite.
+
+        repo is an optional PyGithub Repository — when given, this also
+        fetches real git mode bits (100644/100755/120000) via
+        GitHubClient.list_file_modes() and stores them alongside each path
+        (Assessment sub-resource cataloging plan, D9 Tier 1). Best-effort:
+        a failed/omitted mode fetch just leaves file_mode='' for every row,
+        never fails the inventory write itself. `client` reuses an
+        already-constructed GitHubClient when the caller has one (matching
+        refresh_profile()'s existing "don't pay for a second client" contract
+        — see test_reuses_passed_in_client_and_repo_no_new_githubclient);
+        only constructed fresh here if no repo/client relationship already
+        exists to reuse.
 
         Returns the number of paths stored (0 on skip/failure). The return
         value was unused by every existing caller prior to refresh_profile()
@@ -347,8 +361,21 @@ class IngestionPipeline:
             except Exception:
                 size = 0
             paths_with_sizes.append((str(p.relative_to(local_root)), size))
+
+        modes_by_path: dict[str, str] = {}
+        if repo is not None:
+            try:
+                if client is None:
+                    from resource_explorer.github.client import GitHubClient
+                    client = GitHubClient()
+                result = client.list_file_modes(repo)
+                if isinstance(result, dict):
+                    modes_by_path = result
+            except Exception:
+                pass
+
         try:
-            self.registry.upsert_file_inventory(project_slug, paths_with_sizes)
+            self.registry.upsert_file_inventory(project_slug, paths_with_sizes, modes_by_path)
             self.console.print(
                 f"[dim]File inventory: {len(paths_with_sizes)} paths stored.[/dim]"
             )
