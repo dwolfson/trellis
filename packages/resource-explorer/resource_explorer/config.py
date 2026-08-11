@@ -4,6 +4,22 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Every nested *Config class below is instantiated independently via
+# Field(default_factory=...) on ExplorerConfig — pydantic-settings does
+# NOT cascade a parent's env_file down into nested BaseSettings models
+# constructed this way. Only ExplorerConfig itself declared env_file
+# below, historically, which meant .env support silently never worked
+# for ANY of these classes' own fields (GITHUB_TOKEN, EGERIA_*,
+# KROKI_URL, FEEDBACK_ADMIN_TOKEN, ...) despite .env.example's own
+# instructions to edit .env — only real exported process env vars ever
+# took effect. Found 2026-08-10 while wiring up feedback-admin access.
+# Fixed by giving every nested class the same env_file declaration;
+# extra="ignore" is required alongside it since each class will now see
+# the *whole* .env file, including keys meant for its sibling configs.
+_ENV_FILE_CONFIG = SettingsConfigDict(
+    populate_by_name=True, env_file=".env", env_file_encoding="utf-8", extra="ignore",
+)
+
 
 class PgVectorConfig(BaseSettings):
     """Connection to the shared egeria_advisor Postgres/pgvector instance.
@@ -30,7 +46,7 @@ class PgVectorConfig(BaseSettings):
     max_connections: int = Field(default=10, alias="PGVECTOR_MAX_CONNECTIONS")
     ef_search: int = Field(default=100, alias="PGVECTOR_EF_SEARCH")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class OllamaConfig(BaseSettings):
@@ -87,7 +103,7 @@ class GitHubConfig(BaseSettings):
     # the per-instance value ("Discover repos to scout" plan, D2).
     base_url: str = Field(default="https://api.github.com", alias="GITHUB_BASE_URL")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class MLflowConfig(BaseSettings):
@@ -139,7 +155,7 @@ class EgeriaConfig(BaseSettings):
     secrets_store_guid: str = Field(default="", alias="EGERIA_SECRETS_STORE_GUID")
     secrets_store_path_name: str = Field(default="integration.omsecrets", alias="EGERIA_SECRETS_STORE_PATH_NAME")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class KrokiConfig(BaseSettings):
@@ -170,7 +186,7 @@ class KrokiConfig(BaseSettings):
     # feels too patient for a hung request.
     timeout_seconds: float = Field(default=30.0, alias="KROKI_TIMEOUT_SECONDS")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class PrefectConfig(BaseSettings):
@@ -179,7 +195,7 @@ class PrefectConfig(BaseSettings):
     enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class RegistryConfig(BaseSettings):
@@ -200,7 +216,7 @@ class RegistryConfig(BaseSettings):
         alias="REGISTRY_DATABASE_URL",
     )
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class FeedbackConfig(BaseSettings):
@@ -218,7 +234,7 @@ class FeedbackConfig(BaseSettings):
     admin_users: list[str] = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
     admin_token: str = Field(default="", alias="FEEDBACK_ADMIN_TOKEN")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = _ENV_FILE_CONFIG
 
 
 class ExplorerConfig(BaseSettings):

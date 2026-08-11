@@ -1946,6 +1946,10 @@ async function loadGroups() {
     const res = await fetch('/api/projects/groups');
     if (res.ok) _groups = await res.json();
   } catch(e) {}
+  // loadProjects() and loadGroups() fire independently at init — re-render
+  // once group metadata (display names) lands, in case the project list
+  // already rendered first using only raw group_slug values as fallback.
+  if (_allProjectSummaries.length) renderProjectList();
 }
 
 async function loadProjects() {
@@ -1961,6 +1965,72 @@ async function loadProjects() {
 // toggle for simplicity ("Scouting workflow redesign" plan, D3/D4).
 function _rowIsHidden(p) { return _dispositionIsHidden(p.disposition) || p.working_set_hidden; }
 
+// Groups render as collapsible sections instead of a trailing badge per
+// row (feedback: a badge doesn't scale/scan as well as a real grouping
+// once several repos share a group — collapsing also lets a large group
+// get out of the way). Collapse state persists per-browser via
+// localStorage, same pattern the chat-panel-open flag already uses.
+const _COLLAPSED_GROUPS_KEY = 're_collapsed_sidebar_groups';
+function _collapsedGroups() {
+  try { return JSON.parse(localStorage.getItem(_COLLAPSED_GROUPS_KEY) || '[]'); } catch (e) { return []; }
+}
+function _toggleGroupCollapsed(slug) {
+  let collapsed = _collapsedGroups();
+  collapsed = collapsed.includes(slug) ? collapsed.filter(s => s !== slug) : [...collapsed, slug];
+  localStorage.setItem(_COLLAPSED_GROUPS_KEY, JSON.stringify(collapsed));
+  renderProjectList();
+}
+function _groupDisplayName(slug) {
+  return _groups.find(g => g.slug === slug)?.display_name || slug;
+}
+
+function _renderProjectRow(p) {
+  const colors = { active: 'text-green-400', indexing: 'text-yellow-400', error: 'text-red-400', paused: 'text-slate-500' };
+  const color = colors[p.status] || 'text-slate-400';
+  const btn = document.createElement('button');
+  btn.className = 'project-btn w-full text-left px-3 py-1.5 rounded text-sm hover:bg-slate-700 transition-colors' + (_rowIsHidden(p) ? ' opacity-50' : '');
+  btn.dataset.slug = p.slug;
+  btn.dataset.githubUrl = p.github_url || '';
+  btn.onclick = (e) => e.shiftKey ? toggleCompare(p.slug) : selectProject(p.slug);
+
+  // Lifecycle badge — survey/catalog state, distinct from `status` above
+  // (RAG-ingestion state). "Registered" is a real, common state now that
+  // GitHub-org discovery can bulk-add repos with no survey yet.
+  let lifecycleBadge, lifecycleTitle;
+  if (p.is_published) {
+    lifecycleBadge = '☁'; lifecycleTitle = 'Published to Egeria';
+  } else if (p.last_surveyed_at) {
+    lifecycleBadge = '📊'; lifecycleTitle = `Surveyed ${_relTime(p.last_surveyed_at)} (${p.last_surveyed_at})`;
+  } else {
+    lifecycleBadge = '🆕'; lifecycleTitle = 'Registered, not yet surveyed';
+  }
+  // Disposition badge — separate axis from the lifecycle badge above:
+  // "was this worth pursuing further," decided after scouting. Only
+  // `investigating` gets a badge here (a real "actively being pursued"
+  // signal worth surfacing at a glance); `ignored` repos are excluded
+  // from this list entirely unless _showIgnoredRepos is on, in which
+  // case the whole row is just dimmed (no separate badge needed).
+  const dispositionBadge = p.disposition === 'investigating'
+    ? `<span data-tip="Investigating">🔬</span>` : '';
+
+  btn.innerHTML = `
+    <div class="flex items-center justify-between gap-1 min-w-0">
+      <div class="font-medium text-slate-200 truncate flex items-center gap-1">
+        <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${dispositionBadge}${_esc(p.display_name)}
+      </div>
+      <div class="proj-actions">
+        <button class="proj-action-btn" data-tip="Assign to group"
+          onclick="event.stopPropagation(); openAssignGroupModal('${_esc(p.slug)}', '${_esc(p.group_slug)}')">🗂</button>
+        <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
+          onclick="event.stopPropagation(); toggleWorkingSetHidden('repo', '${_esc(p.slug)}', ${!p.working_set_hidden})">${p.working_set_hidden ? '🚫' : '👁'}</button>
+        ${p.github_url ? `<a class="proj-action-btn" href="${_esc(p.github_url)}" target="_blank"
+          data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
+      </div>
+    </div>
+    <div class="text-xs ${color}">${p.status} · ${p.collections.length} collections</div>`;
+  return btn;
+}
+
 function renderProjectList() {
   const list = document.getElementById('project-list');
   list.innerHTML = '';
@@ -1969,49 +2039,33 @@ function renderProjectList() {
     ? _allProjectSummaries
     : _allProjectSummaries.filter(p => !_rowIsHidden(p));
 
+  // Group repos by group_slug — only groups with at least one visible repo
+  // get a section; ungrouped repos render flat, above the group sections
+  // (matches the prior default look for the common single-group-or-none case).
+  const byGroup = {};
+  const ungrouped = [];
   projects.forEach(p => {
-    const colors = { active: 'text-green-400', indexing: 'text-yellow-400', error: 'text-red-400', paused: 'text-slate-500' };
-    const color = colors[p.status] || 'text-slate-400';
-    const btn = document.createElement('button');
-    btn.className = 'project-btn w-full text-left px-3 py-1.5 rounded text-sm hover:bg-slate-700 transition-colors' + (_rowIsHidden(p) ? ' opacity-50' : '');
-    btn.dataset.slug = p.slug;
-    btn.dataset.githubUrl = p.github_url || '';
-    btn.onclick = (e) => e.shiftKey ? toggleCompare(p.slug) : selectProject(p.slug);
+    if (p.group_slug) (byGroup[p.group_slug] = byGroup[p.group_slug] || []).push(p);
+    else ungrouped.push(p);
+  });
 
-    // Lifecycle badge — survey/catalog state, distinct from `status` above
-    // (RAG-ingestion state). "Registered" is a real, common state now that
-    // GitHub-org discovery can bulk-add repos with no survey yet.
-    let lifecycleBadge, lifecycleTitle;
-    if (p.is_published) {
-      lifecycleBadge = '☁'; lifecycleTitle = 'Published to Egeria';
-    } else if (p.last_surveyed_at) {
-      lifecycleBadge = '📊'; lifecycleTitle = `Surveyed ${_relTime(p.last_surveyed_at)} (${p.last_surveyed_at})`;
-    } else {
-      lifecycleBadge = '🆕'; lifecycleTitle = 'Registered, not yet surveyed';
+  ungrouped.forEach(p => list.appendChild(_renderProjectRow(p)));
+
+  Object.keys(byGroup).sort((a, b) => _groupDisplayName(a).localeCompare(_groupDisplayName(b))).forEach(slug => {
+    const members = byGroup[slug];
+    const collapsed = _collapsedGroups().includes(slug);
+    const header = document.createElement('button');
+    header.className = 'w-full text-left px-3 py-1.5 rounded text-xs text-purple-400 font-medium hover:bg-slate-800 transition-colors flex items-center gap-1 mt-1';
+    header.innerHTML = `<span class="inline-block transition-transform" style="transform:rotate(${collapsed ? '-90deg' : '0deg'})">▾</span>
+      🗂 ${_esc(_groupDisplayName(slug))} <span class="text-slate-500 font-normal">(${members.length})</span>`;
+    header.onclick = () => _toggleGroupCollapsed(slug);
+    list.appendChild(header);
+    if (!collapsed) {
+      const wrap = document.createElement('div');
+      wrap.className = 'pl-3 border-l border-slate-800 ml-3';
+      members.forEach(p => wrap.appendChild(_renderProjectRow(p)));
+      list.appendChild(wrap);
     }
-    // Disposition badge — separate axis from the lifecycle badge above:
-    // "was this worth pursuing further," decided after scouting. Only
-    // `investigating` gets a badge here (a real "actively being pursued"
-    // signal worth surfacing at a glance); `ignored` repos are excluded
-    // from this list entirely unless _showIgnoredRepos is on, in which
-    // case the whole row is just dimmed (no separate badge needed).
-    const dispositionBadge = p.disposition === 'investigating'
-      ? `<span data-tip="Investigating">🔬</span>` : '';
-
-    btn.innerHTML = `
-      <div class="flex items-center justify-between gap-1 min-w-0">
-        <div class="font-medium text-slate-200 truncate flex items-center gap-1">
-          <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${dispositionBadge}${_esc(p.display_name)}
-        </div>
-        <div class="proj-actions">
-          <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
-            onclick="event.stopPropagation(); toggleWorkingSetHidden('repo', '${_esc(p.slug)}', ${!p.working_set_hidden})">${p.working_set_hidden ? '🚫' : '👁'}</button>
-          ${p.github_url ? `<a class="proj-action-btn" href="${_esc(p.github_url)}" target="_blank"
-            data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
-        </div>
-      </div>
-      <div class="text-xs ${color}">${p.status} · ${p.collections.length} collections${p.group_slug ? ` · <span class="text-purple-400 font-medium">${_esc(p.group_slug)}</span>` : ''}</div>`;
-    list.appendChild(btn);
   });
 
   if (hiddenCount > 0) {
@@ -2027,6 +2081,38 @@ function renderProjectList() {
   // active scope.
   if (selectedProject) {
     document.querySelector(`.project-btn[data-slug="${selectedProject}"]`)?.classList.add('selected');
+  }
+}
+
+// ── Assign repo to group — closes the "how do we assign repos to
+// projects?" gap: previously the only way was the raw POST /{slug}/group
+// API itself, or the group-select shown at discovery/import time. This
+// is the first UI for re-assigning an already-registered repo. ─────────
+function openAssignGroupModal(slug, currentGroupSlug) {
+  document.getElementById('assign-group-slug').value = slug;
+  const select = document.getElementById('assign-group-select');
+  select.innerHTML = '<option value="">— Ungrouped —</option>' +
+    _groups.map(g => `<option value="${_esc(g.slug)}" ${g.slug === currentGroupSlug ? 'selected' : ''}>${_esc(g.display_name)}</option>`).join('');
+  document.getElementById('assign-group-modal').classList.remove('hidden');
+}
+function closeAssignGroupModal() {
+  document.getElementById('assign-group-modal').classList.add('hidden');
+}
+async function submitAssignGroup() {
+  const slug = document.getElementById('assign-group-slug').value;
+  const group_slug = document.getElementById('assign-group-select').value;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/group`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resource_type: 'repo', group_slug }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    closeAssignGroupModal();
+    await loadGroups();
+    await loadProjects();
+    showToast('success', group_slug ? `Assigned to ${_groupDisplayName(group_slug)}` : 'Removed from group', 3000);
+  } catch (e) {
+    showToast('error', `Failed to assign group: ${_esc(e.message)}`, 5000);
   }
 }
 
@@ -8274,6 +8360,21 @@ let _feedbackBtnDragged = false;  // declared here so the button's inline onclic
               background:#334155; color:#e2e8f0; border:1px solid #475569;">Cancel</button>
       <button onclick="submitFeedback()" style="padding:.4rem .8rem; border-radius:.375rem;
               background:var(--accent, #38bdf8); color:#0f172a; border:none; font-weight:600;">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Assign-to-group modal — the sidebar's 🗂 action opens this. -->
+<div id="assign-group-modal" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:22rem">
+    <h3 style="margin:0 0 .75rem; font-size:1rem;">Assign to group</h3>
+    <input type="hidden" id="assign-group-slug">
+    <select id="assign-group-select" class="modal-input" style="margin-bottom:.75rem;"></select>
+    <div style="display:flex; justify-content:flex-end; gap:.5rem;">
+      <button onclick="closeAssignGroupModal()" style="padding:.4rem .8rem; border-radius:.375rem;
+              background:#334155; color:#e2e8f0; border:1px solid #475569;">Cancel</button>
+      <button onclick="submitAssignGroup()" style="padding:.4rem .8rem; border-radius:.375rem;
+              background:var(--accent, #38bdf8); color:#0f172a; border:none; font-weight:600;">Save</button>
     </div>
   </div>
 </div>
