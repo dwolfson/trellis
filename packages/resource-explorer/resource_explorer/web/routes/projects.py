@@ -116,6 +116,48 @@ class GroupAssign(BaseModel):
     group_slug: str     # "" clears the assignment
 
 
+class GroupSuggestion(BaseModel):
+    org: str
+    repo_slugs: list[str]
+    repo_count: int
+    suggested_display_name: str
+
+
+@router.get("/groups/suggestions", response_model=list[GroupSuggestion])
+async def suggest_groups() -> list[GroupSuggestion]:
+    """Suggests — never auto-applies — groupings for currently-ungrouped
+    repos that share a GitHub org. Importing multiple repos from the same
+    org-scoped search at once (e.g. unitycatalog/unitycatalog,
+    unitycatalog/unitycatalog-python, unitycatalog/unitycatalog-rs) is a
+    strong signal they're the same logical project, but nothing at import
+    time assigns a group automatically — grouping stays a deliberate,
+    explicit action (matches how `set_project_group()` is only ever called
+    from a real user click, never from `add()`/import code paths). Only
+    orgs with 2+ ungrouped repos are surfaced; already-grouped repos are
+    excluded so an accepted suggestion never gets re-suggested."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.github.client import GitHubClient
+
+    registry = ProjectRegistry()
+    by_org: dict[str, list[str]] = {}
+    for p in registry.list_all():
+        if getattr(p, "group_slug", ""):
+            continue
+        slug = GitHubClient._url_to_slug(p.github_url)
+        if "/" not in slug:
+            continue
+        org = slug.split("/")[0]
+        by_org.setdefault(org, []).append(p.slug)
+
+    suggestions = [
+        GroupSuggestion(org=org, repo_slugs=slugs, repo_count=len(slugs), suggested_display_name=org)
+        for org, slugs in by_org.items()
+        if len(slugs) >= 2
+    ]
+    suggestions.sort(key=lambda s: -s.repo_count)
+    return suggestions
+
+
 @router.get("/groups", response_model=list[GroupSummary])
 async def list_groups() -> list[GroupSummary]:
     from resource_explorer.registry import ProjectRegistry

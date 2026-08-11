@@ -4454,6 +4454,9 @@ async function loadCuratePanel() {
   if (!entityType || !slug) return;  // showCuratePane() already gates this; defensive only
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
+    if (!_groups.length) {
+      try { _groups = await (await fetch('/api/projects/groups')).json(); } catch(e) {}
+    }
     const [tags, feedback, notes, allTags] = await Promise.all([
       fetch(`/api/curate/tags/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
       fetch(`/api/curate/feedback/${entityType}/${encodeURIComponent(slug)}`).then(r => r.json()),
@@ -4461,13 +4464,27 @@ async function loadCuratePanel() {
       fetch('/api/curate/tags').then(r => r.json()),
     ]);
     _curateAllTagsCache = allTags;
-    renderCuratePanel(entityType, slug, tags, feedback, notes);
+    const currentGroupSlug = _curateCurrentGroupSlug(entityType, slug);
+    renderCuratePanel(entityType, slug, tags, feedback, notes, currentGroupSlug);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
 }
 
-function renderCuratePanel(entityType, slug, tags, feedback, notes) {
+// Looks up the entity's current group_slug from whichever list/map that
+// resource type already keeps in memory — no dedicated single-entity
+// fetch exists (or is needed) for this. "" if not found/ungrouped.
+function _curateCurrentGroupSlug(entityType, slug) {
+  if (entityType === 'repo') {
+    const p = _allProjectSummaries.find(p => p.slug === slug);
+    return p ? (p.group_slug || '') : '';
+  }
+  if (entityType === 'database') return (_dbMap[slug] && _dbMap[slug].group_slug) || '';
+  if (entityType === 'filesystem') return (_fsMap[slug] && _fsMap[slug].group_slug) || '';
+  return '';
+}
+
+function renderCuratePanel(entityType, slug, tags, feedback, notes, currentGroupSlug) {
   const view = document.getElementById('curate-view');
   const icon = { repo: '📁', database: '🗄', filesystem: '💾' }[entityType] || '•';
 
@@ -4502,6 +4519,18 @@ function renderCuratePanel(entityType, slug, tags, feedback, notes) {
       <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Curate — ${icon} ${_esc(slug)}</span>
     </div>
     <div class="p-4 space-y-6 max-w-2xl">
+
+      <div>
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🗂 Project Group</div>
+        <div class="text-xs text-slate-700 mb-2">Related resources that belong together (e.g. one product's several repos) — see <a href="#" onclick="showMainView('admin-groups'); return false;" class="text-cyan-500 hover:text-cyan-400">Admin → Groups</a> for group management.</div>
+        <div class="flex gap-2 items-center">
+          <select id="curate-group-select" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5 flex-1">
+            <option value="">— Ungrouped —</option>
+            ${_groups.map(g => `<option value="${_esc(g.slug)}" ${g.slug === currentGroupSlug ? 'selected' : ''}>${_esc(g.display_name)}</option>`).join('')}
+          </select>
+          <button onclick="saveCurateGroup('${entityType}','${_esc(slug)}')" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Save</button>
+        </div>
+      </div>
 
       <div>
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">🏷 Tags — make this easier to find</div>
@@ -4557,6 +4586,24 @@ function renderCuratePanel(entityType, slug, tags, feedback, notes) {
         Not here yet: digital-product evaluation, sample dataset creation, and a dedicated quality-remediation workflow — each needs its own design pass. See <code>docs/curate-followups.md</code>.
       </div>
     </div>`;
+}
+
+async function saveCurateGroup(entityType, slug) {
+  const groupSlug = document.getElementById('curate-group-select').value;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/group`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resource_type: entityType, group_slug: groupSlug }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    showToast('success', groupSlug ? `Assigned to ${_esc((_groups.find(g => g.slug === groupSlug) || {}).display_name || groupSlug)}` : 'Removed from group', 3000);
+    if (entityType === 'repo' && typeof loadProjects === 'function') loadProjects();
+  } catch(e) {
+    showToast('error', `Failed to save group: ${_esc(e.message)}`, 5000);
+  }
 }
 
 async function addCurateTag(entityType, slug) {
@@ -7057,14 +7104,20 @@ function loadAnnotationTypesView(typeName = null) {
 // deliberately out of scope for this "thin assembly" pass) plus GitHub-org
 // discovery (bulk-register a whole org's repos into the catalog, no RAG
 // ingestion — see resource_explorer/github/org_importer.py) ────────────────
+let _groupSuggestions = [];  // list of GroupSuggestion from GET /api/projects/groups/suggestions
+
 async function loadAdminGroupsPanel() {
   const view = document.getElementById('admin-groups-view');
   view.innerHTML = _adminSubnavHtml('admin-groups') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading groups…</div>';
   try {
-    const res = await fetch('/api/projects/groups');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _groups = await res.json();
+    const [groupsRes, suggestionsRes] = await Promise.all([
+      fetch('/api/projects/groups'),
+      fetch('/api/projects/groups/suggestions'),
+    ]);
+    if (!groupsRes.ok) throw new Error(`HTTP ${groupsRes.status}`);
+    _groups = await groupsRes.json();
+    _groupSuggestions = suggestionsRes.ok ? await suggestionsRes.json() : [];
     renderAdminGroupsPanel();
   } catch(e) {
     view.innerHTML = _adminSubnavHtml('admin-groups') +
@@ -7074,6 +7127,18 @@ async function loadAdminGroupsPanel() {
 
 function renderAdminGroupsPanel() {
   const view = document.getElementById('admin-groups-view');
+  const suggestionRows = _groupSuggestions.map((s, i) => `
+    <div class="flex items-center justify-between gap-3 bg-slate-950 border border-slate-800 rounded p-2.5">
+      <div class="text-xs text-slate-300">
+        <span class="font-mono text-cyan-400">${_esc(s.org)}</span> —
+        ${s.repo_count} ungrouped repos share this GitHub org:
+        <span class="text-slate-500">${s.repo_slugs.map(_esc).join(', ')}</span>
+      </div>
+      <button onclick="applyGroupSuggestion(${i})"
+        class="shrink-0 text-xs px-2.5 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors">
+        + Group these ${s.repo_count}
+      </button>
+    </div>`).join('');
   const rows = _groups.map(g => {
     const counts = `${g.projects.length} repo${g.projects.length!==1?'s':''} · ${g.databases.length} db${g.databases.length!==1?'s':''} · ${g.filesystems.length} fs`;
     return `<tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
@@ -7115,8 +7180,15 @@ function renderAdminGroupsPanel() {
       </div>
 
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
-        🔍 Discover and add new repos via <strong class="text-slate-300">Scouting → (no repo selected) → Search</strong> — assign a group there, or from an individual repo's own record.
+        🔍 Discover and add new repos via <strong class="text-slate-300">Scouting → (no repo selected) → Search</strong> — assign a group there, or from an individual repo's own record. You can also assign a group per-resource from <strong class="text-slate-300">Curate</strong>.
       </div>
+
+      ${_groupSuggestions.length ? `
+      <div class="bg-slate-900 border border-amber-800/50 rounded-lg p-4 space-y-2">
+        <div class="text-xs font-semibold text-amber-400 uppercase tracking-wide">💡 Suggested groupings</div>
+        <div class="text-xs text-slate-500 mb-2">These ungrouped repos share a GitHub org — often a sign they're the same logical project (e.g. selected together from one org-scoped Scouting search). Nothing is grouped automatically; review and apply.</div>
+        <div class="space-y-2">${suggestionRows}</div>
+      </div>` : ''}
 
       <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
         <table class="w-full text-left border-collapse">
@@ -7676,6 +7748,37 @@ async function createAdminGroup() {
     loadAdminGroupsPanel();
   } catch(e) {
     fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+async function applyGroupSuggestion(index) {
+  const s = _groupSuggestions[index];
+  if (!s) return;
+  let groupSlug = s.org.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // Avoid colliding with an existing group slug (e.g. two orgs that both
+  // normalize to the same thing, or a manually-created group of the same name).
+  if (_groups.some(g => g.slug === groupSlug)) groupSlug = `${groupSlug}-${Date.now().toString(36)}`;
+  try {
+    const createRes = await fetch('/api/projects/groups', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug: groupSlug, display_name: s.suggested_display_name, description: `Auto-suggested from shared GitHub org: ${s.org}` }),
+    });
+    if (!createRes.ok) {
+      const err = await createRes.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${createRes.status}`);
+    }
+    for (const repoSlug of s.repo_slugs) {
+      const assignRes = await fetch(`/api/projects/${encodeURIComponent(repoSlug)}/group`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ resource_type: 'repo', group_slug: groupSlug }),
+      });
+      if (!assignRes.ok) throw new Error(`Failed to assign ${repoSlug} (HTTP ${assignRes.status})`);
+    }
+    showToast('success', `Grouped ${s.repo_count} repos under "${s.suggested_display_name}".`, 4000);
+    loadAdminGroupsPanel();
+    if (typeof loadProjects === 'function') loadProjects();
+  } catch(e) {
+    showToast('error', `Failed to apply suggestion: ${_esc(e.message)}`, 6000);
   }
 }
 
