@@ -202,8 +202,7 @@ class SubResourceSurveyor(BaseSurveyor):
                 "owners": _codeowners_match(path, owners_rules),
             }
             findings.append(finding)
-            if "/" not in path:
-                worthy_root_files.append(finding)
+            worthy_root_files.append(finding)
 
         # Depth-1 folders.
         folder_counts: dict[str, int] = {}
@@ -214,6 +213,7 @@ class SubResourceSurveyor(BaseSurveyor):
             top = path.split("/", 1)[0]
             folder_counts[top] = folder_counts.get(top, 0) + 1
 
+        folder_entries: dict[str, dict] = {}
         for folder, count in sorted(folder_counts.items()):
             if count < _FOLDER_MIN_FILES:
                 worthy, reason = False, "too_small"
@@ -221,25 +221,56 @@ class SubResourceSurveyor(BaseSurveyor):
                 worthy, reason = False, "too_broad"
             else:
                 worthy, reason = True, "top_level_structural_folder"
-            findings.append({
+            entry = {
                 "path": folder, "entry_kind": "folder", "worthy": worthy,
                 "reason": reason,
                 "owners": _codeowners_match(folder, owners_rules),
-            })
+            }
+            folder_entries[folder] = entry
+            findings.append(entry)
 
-        # Synthetic root folder — required whenever a root-level file is
-        # worthy, since NestedFile strictly requires a FileFolder parent
-        # (D4/D5, confirmed live: a file can never attach directly to the
-        # repo's SourceControlLibrary asset).
-        if worthy_root_files:
-            findings.append({
-                "path": "", "entry_kind": "folder", "worthy": True,
-                "reason": "root_container_for_worthy_files",
-                "owners": [],
-            })
+        # Every worthy file needs a real FileFolder chain up to the repo
+        # root — NestedFile strictly requires a FileFolder parent (D4/D5,
+        # confirmed live: a file can never attach directly to the repo's
+        # SourceControlLibrary asset). This isn't limited to root-level
+        # files: a worthy nested file (e.g. "docs/SECURITY.md") whose
+        # immediate parent folder wasn't itself worthy (e.g. "docs" has
+        # only that one file -> too_small) still needs "docs" to exist as
+        # a folder asset, just not for the folder-worthiness reason. Any
+        # ancestor folder path not already a worthy entry gets promoted
+        # (if it exists but wasn't worthy) or synthesized (if it was never
+        # considered at all, e.g. beyond depth 1).
+        for finding in worthy_root_files:
+            for ancestor in self._ancestor_folder_paths(finding["path"]):
+                existing = folder_entries.get(ancestor)
+                if existing is not None:
+                    if not existing["worthy"]:
+                        existing["worthy"] = True
+                        existing["reason"] = "container_for_worthy_file"
+                    continue
+                new_entry = {
+                    "path": ancestor, "entry_kind": "folder", "worthy": True,
+                    "reason": "container_for_worthy_file",
+                    "owners": _codeowners_match(ancestor, owners_rules) if ancestor else [],
+                }
+                folder_entries[ancestor] = new_entry
+                findings.append(new_entry)
 
         self._attach_tier2_dates(findings)
         return findings
+
+    @staticmethod
+    def _ancestor_folder_paths(file_path: str) -> list[str]:
+        """Immediate parent first, then each ancestor folder up to (but not
+        including) the repo root — a depth-1 folder attaches directly to
+        the repo's SourceControlLibrary asset via CapabilityAssetUse (D4),
+        so it never needs a synthetic root *folder* above it. The synthetic
+        root ("") is only needed when the file itself has no real containing
+        folder at all — i.e. it sits at the repo root."""
+        parts = file_path.split("/")[:-1]  # drop the filename itself
+        if not parts:
+            return [""]
+        return ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
 
     def _codeowners_rules(self) -> list[tuple[str, list[str]]]:
         """D9/D12 — one file fetch, best-effort. Never raises; a missing/

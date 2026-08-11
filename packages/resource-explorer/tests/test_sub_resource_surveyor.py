@@ -163,6 +163,31 @@ class TestSyntheticRootFolderRule:
         findings = registry.query_findings("myproj", "repo_sub_resource_survey")
         assert not any(f["check_name"] == "(root)" for f in findings)
 
+    def test_nested_worthy_file_gets_a_promoted_ancestor_folder(self, registry, project):
+        """Regression guard for the ancestor-folder gap: a worthy nested file
+        (docs/SECURITY.md) whose immediate folder (docs) has only that one
+        file — too_small by the folder-count heuristic — must still get a
+        real 'docs' folder entry promoted to worthy, since NestedFile
+        strictly requires a FileFolder parent. Without this, EgeriaPublisher
+        could never resolve a parentGUID for the file."""
+        _seed_inventory(registry, "myproj", [("docs/SECURITY.md", 10)])
+        with _no_codeowners_no_commits():
+            SubResourceSurveyor(project, registry, max_depth=2).run()
+        findings = registry.query_findings("myproj", "repo_sub_resource_survey")
+        docs_folder = next(f for f in findings if f["check_name"] == "docs")
+        assert docs_folder["label"] == "worthy"
+        assert docs_folder["summary"] == "container_for_worthy_file"
+
+    def test_ancestor_promotion_does_not_add_a_spurious_root_folder(self, registry, project):
+        """The generalized ancestor rule must not regress into adding a
+        synthetic root ('') entry for every worthy file — only a
+        root-level file (no real containing folder at all) needs one."""
+        _seed_inventory(registry, "myproj", [("docs/SECURITY.md", 10)])
+        with _no_codeowners_no_commits():
+            SubResourceSurveyor(project, registry, max_depth=2).run()
+        findings = registry.query_findings("myproj", "repo_sub_resource_survey")
+        assert not any(f["check_name"] == "(root)" for f in findings)
+
 
 class TestCodeowners:
     def test_owners_attached_when_codeowners_present(self, registry, project):

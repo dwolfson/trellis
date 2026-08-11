@@ -475,6 +475,17 @@ the richer metadata too, not just RE's own local findings view. Template GUID lo
 per-`SubResourceSurveyor` publish call (a handful of distinct technology types per repo, not per-file) —
 avoiding a redundant live lookup for every file sharing the same kind.
 
+**Real bug found and fixed during implementation, 2026-08-11**: `create_elem_from_template()` derives
+its own `qualifiedName` from the template's placeholder values using Egeria's own convention
+(`"FileFolder::~{fileSystemName}~:<directoryPathName>"`), **not** the `qualified_name` string this code
+builds — confirmed live by inspecting a created asset's actual stored properties. Left as-is, this
+silently breaks D8's find-by-`qualifiedName` idempotency guard: every publish would re-create a
+duplicate rather than finding the existing element. Fixed by setting `replacementProperties:
+{"class": "AssetProperties", "qualifiedName": qualified_name}` in the `TemplateRequestBody` — the
+`"class"` discriminator is required or Egeria 400s (`InvalidTypeIdException`: missing type id on
+`EntityProperties`), also confirmed live via a throwaway experiment before the fix was applied to the
+real code.
+
 ## Verification
 
 - **Pre-flight — done, 2026-08-11 (per D5).** Throwaway `create_elem_from_template` calls run against
@@ -503,18 +514,23 @@ avoiding a redundant live lookup for every file sharing the same kind.
   full inventory size — the actual cost-boundary regression guard); size/mode distribution bucketing
   (`upsert_metric()` calls, correct bucket assignment at boundary values); `file_mode` correctly captured
   and threaded through from the existing `get_git_tree()` call into `project_file_inventory`.
-- Live: run `SubResourceSurveyor` against a real repo, confirm its finding's recommendation list looks
-  sane by eye (not too broad, not empty) before ever publishing anything, and confirm `owners`/`file_mode`
-  are populated correctly for a repo that has a real `CODEOWNERS` file. Publish
-  `steps=["repo_sub_resource_survey"]`, confirm the recommended folders/files appear as real, correctly
-  nested Egeria assets (browsable via The Catalog, not just present in a raw search) — spot-check that a
-  file inside a recommended folder is parented to *that folder's* GUID, not flattened to the repo root,
-  and that its Egeria `additionalProperties` carry the D9 metadata. Re-publish the same step and confirm
-  no duplicates (D8). Publish a full survey (`steps=None`) and confirm sub-resource cataloging runs
-  alongside every other step without disrupting them. Re-run the survey a second time (no repo changes)
-  and confirm `project_analysis_metrics` gained a second, distinct `surveyed_at` row per D11 (the growth-
-  over-time regression check) rather than overwriting the first.
-- Full RE test suite green.
+- **Live — `_catalog_sub_resources()` cataloging, done 2026-08-11.** GitHub's API rate limit was
+  exhausted mid-session (Tier-2 commit-date fetching), so this pass verified the cataloging half directly
+  against real Egeria using synthetic findings seeded straight into `project_analysis_findings` (bypassing
+  `SubResourceSurveyor`'s GitHub calls, which aren't part of what this method needs to prove) against
+  `sqlglot`'s real `SourceControlLibrary` asset. Confirmed: a `docs` `FileFolder` created and correctly
+  `CapabilityAssetUse`-linked to the repo asset; `docs/SECURITY.md` created as a `Document` (a `DataFile`
+  subtype — NestedFile accepts it) and correctly `NestedFile`-linked to `docs`; the synthetic root folder
+  and a root-level `README.md` correctly linked the same way. Found and fixed the `replacementProperties`
+  qualifiedName bug (see Implementation section above) during this pass — the first attempt silently
+  created assets that `_find_element_guid()` could never re-find. Re-ran `_catalog_sub_resources()` a
+  second time after the fix and confirmed zero new `create_elem_from_template` calls (D8 idempotency
+  holds). All synthetic findings and their created Egeria elements were cleaned up afterward
+  (`MetadataExpert.delete_metadata_element()`, files before their containing folders) — `sqlglot`'s real
+  catalog state is unaffected. **Deferred**: end-to-end verification with a real `SubResourceSurveyor` run
+  (real CODEOWNERS/Tier-2 commit dates) once the GitHub rate limit clears — a wakeup is already scheduled
+  for this.
+- Full RE test suite green (826 tests as of this pass).
 
 ## Explicitly deferred (destination on record, not designed here)
 

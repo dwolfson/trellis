@@ -59,6 +59,7 @@ class EgeriaPublisher:
         self._registry = registry
         self._asset_maker = None
         self._discovery = None
+        self._automated_curation = None
         # Zone names: caller-supplied > config default > []
         if zone_names is not None:
             self.zone_names = zone_names
@@ -84,6 +85,7 @@ class EgeriaPublisher:
         asset_guid = self._find_or_create_asset(result)
         report_guid = self._create_survey_report(result, asset_guid)
         self._create_annotations(result, report_guid)
+        self._catalog_sub_resources(result, asset_guid)
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.project_slug,
@@ -158,7 +160,7 @@ class EgeriaPublisher:
                 "Add it to your .env file or pass platform_url= to EgeriaPublisher."
             )
         try:
-            from pyegeria import AssetMaker
+            from pyegeria import AssetMaker, AutomatedCuration
             from pyegeria.omvs.data_discovery import DataDiscovery
 
             self._asset_maker = AssetMaker(
@@ -170,6 +172,13 @@ class EgeriaPublisher:
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
             self._discovery.create_egeria_bearer_token(self.user_id, self.user_password)
+
+            # Used only by _catalog_sub_resources() (D6) — template-based
+            # FileFolder/DataFile creation for worthy sub-resources.
+            self._automated_curation = AutomatedCuration(
+                self.view_server, self.platform_url, self.user_id, self.user_password
+            )
+            self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -339,6 +348,209 @@ class EgeriaPublisher:
                     "Failed to create annotation %d (%s): %s",
                     i, ann.annotation_type.value, exc,
                 )
+
+    # ── sub-resource cataloging (D6/D8) ─────────────────────────────────────
+
+    _SUB_RESOURCE_STEP = "SubResourceSurvey"
+    _FOLDER_TECH_TYPE = "File System Directory"
+
+    def _catalog_sub_resources(self, result: SurveyResult, asset_guid: str) -> None:
+        """Catalog worthy sub-resources (folders/files) as their own Egeria
+        FileFolder/DataFile assets, parented under the repo's
+        SourceControlLibrary asset (or under an already-catalogued ancestor
+        folder). Only runs when this publish included the SubResourceSurvey
+        step (D7 — phase-scoped publish); a no-op otherwise so ordinary
+        publishes are unaffected.
+        """
+        if not self._registry:
+            return
+        if not any(
+            getattr(ann, "analysis_step", "") == self._SUB_RESOURCE_STEP
+            for ann in result.annotations
+        ):
+            return
+
+        try:
+            findings = self._registry.query_findings(
+                result.project_slug, "repo_sub_resource_survey"
+            )
+        except Exception as exc:
+            log.warning("Could not read sub-resource findings for %s: %s", result.project_slug, exc)
+            return
+
+        entries = []
+        for f in findings:
+            if f.get("label") != "worthy":
+                continue
+            detail = {}
+            if f.get("detail_json"):
+                try:
+                    detail = json.loads(f["detail_json"])
+                except (TypeError, ValueError):
+                    detail = {}
+            entries.append({
+                "path": detail.get("path", ""),
+                "kind": detail.get("kind", "file"),
+                "owners": detail.get("owners", []),
+                "last_updated_at": detail.get("last_updated_at", ""),
+                "first_added_at": detail.get("first_added_at", ""),
+            })
+        if not entries:
+            return
+
+        # Folders before files (D6) — a file's parentGUID must already exist.
+        entries.sort(key=lambda e: 0 if e["kind"] == "folder" else 1)
+
+        guids_by_path: dict[str, str] = {}
+        template_guid_cache: dict[str, str] = {}
+
+        for entry in entries:
+            path = entry["path"]
+            qualified_name = f"SourceControlLibrary::{result.github_url}::{path}"
+            try:
+                existing_guid = self._find_element_guid(qualified_name)
+            except Exception as exc:
+                log.debug("Sub-resource lookup failed for %s (will attempt create): %s", path, exc)
+                existing_guid = ""
+            if existing_guid:
+                guids_by_path[path] = existing_guid
+                continue
+
+            parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
+            if entry["kind"] == "file":
+                # NestedFile strictly requires a FileFolder parent (D4/D5) —
+                # the survey's ancestor-folder generalization guarantees an
+                # entry exists for parent_path, even the synthetic root ("").
+                parent_guid = guids_by_path.get(parent_path)
+                relationship_type = "NestedFile"
+            elif path == "" or parent_path == "":
+                # A root-level (or the synthetic root itself) folder attaches
+                # directly to the repo's SourceControlLibrary asset.
+                parent_guid = asset_guid
+                relationship_type = "CapabilityAssetUse"
+            else:
+                parent_guid = guids_by_path.get(parent_path)
+                relationship_type = "FolderHierarchy"
+
+            if not parent_guid:
+                log.warning(
+                    "Skipping sub-resource %s — no parent GUID resolved for %r",
+                    path or "(root)", parent_path,
+                )
+                continue
+
+            try:
+                guid = self._create_sub_resource(
+                    entry, qualified_name, parent_guid, relationship_type, template_guid_cache
+                )
+            except Exception as exc:
+                log.warning("Could not catalog sub-resource %s: %s", path or "(root)", exc)
+                continue
+            if guid:
+                guids_by_path[path] = guid
+
+    def _create_sub_resource(
+        self,
+        entry: dict,
+        qualified_name: str,
+        parent_guid: str,
+        relationship_type: str,
+        template_guid_cache: dict[str, str],
+    ) -> str:
+        path = entry["path"]
+        name = path.rsplit("/", 1)[-1] if path else qualified_name.split("::")[1].rstrip("/")
+
+        if entry["kind"] == "folder":
+            tech_type = self._FOLDER_TECH_TYPE
+            placeholder_values = {
+                "directoryPathName": qualified_name,
+                "directoryName": name or "/",
+                "description": f"Sub-resource folder cataloged from survey: {path or '(root)'}",
+            }
+        else:
+            from resource_explorer.surveyors.sub_resource_templates import resolve_technology_type
+
+            tech_type = resolve_technology_type(path)
+            ext = path.rsplit(".", 1)[-1].lower() if "." in name else ""
+            placeholder_values = {
+                "fileName": name,
+                "fileType": tech_type,
+                "filePathName": qualified_name,
+                "fileExtension": ext,
+                "description": f"Sub-resource file cataloged from survey: {path}",
+                "versionIdentifier": "1.0",
+            }
+
+        template_guid = template_guid_cache.get(tech_type)
+        if not template_guid:
+            template_guid = self._resolve_template_guid(tech_type)
+            template_guid_cache[tech_type] = template_guid
+
+        additional_props = {"path": path or "(root)", "kind": entry["kind"]}
+        if entry.get("owners"):
+            additional_props["owners"] = ",".join(entry["owners"])
+        if entry.get("last_updated_at"):
+            additional_props["last_updated_at"] = entry["last_updated_at"]
+        if entry.get("first_added_at"):
+            additional_props["first_added_at"] = entry["first_added_at"]
+
+        body = {
+            "class": "TemplateRequestBody",
+            "templateGUID": template_guid,
+            "isOwnAnchor": False,
+            "parentGUID": parent_guid,
+            "parentRelationshipTypeName": relationship_type,
+            "placeholderPropertyValues": placeholder_values,
+            # Without this, the template derives its own qualifiedName from
+            # its placeholder values using Egeria's own convention
+            # ("FileFolder::~{fileSystemName}~:<directoryPathName>", not our
+            # qualified_name string byte-for-byte) — confirmed live,
+            # 2026-08-11: that mismatch silently breaks D8's find-by-
+            # qualifiedName idempotency guard (every publish re-creates a
+            # duplicate). "class": "AssetProperties" is required here or
+            # Egeria 400s (InvalidTypeIdException: missing "class" on
+            # EntityProperties), also confirmed live.
+            "replacementProperties": {"class": "AssetProperties", "qualifiedName": qualified_name},
+        }
+        guid = self._automated_curation.create_elem_from_template(body)
+        if guid and additional_props:
+            # Best-effort: template creation doesn't accept additionalProperties
+            # directly, so attach D9 metadata via a follow-up update if the
+            # client supports it; skip quietly on older pyegeria versions.
+            try:
+                self._asset_maker.update_asset(
+                    guid, body={"class": "UpdateElementRequestBody",
+                                 "mergeUpdate": True,
+                                 "properties": {"class": "AssetProperties",
+                                                 "additionalProperties": additional_props}},
+                )
+            except Exception as exc:
+                log.debug("Could not attach additionalProperties to %s: %s", guid, exc)
+        return guid
+
+    def _resolve_template_guid(self, technology_type: str) -> str:
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(
+            self._automated_curation._async_get_template_guid_for_technology_type(technology_type)
+        )
+
+    def _find_element_guid(self, qualified_name: str) -> str:
+        """Return the GUID of an existing Egeria element by qualified name,
+        or '' if not found — the D8 idempotency guard for sub-resources."""
+        import re as _re
+
+        uuid_re = _re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.IGNORECASE
+        )
+        result = self._automated_curation.get_guid_for_name(qualified_name)
+        if isinstance(result, list) and result:
+            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
+            return candidate if uuid_re.match(candidate or "") else ""
+        if isinstance(result, str) and uuid_re.match(result):
+            return result
+        return ""
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:
