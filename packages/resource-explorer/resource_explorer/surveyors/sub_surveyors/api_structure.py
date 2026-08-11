@@ -7,6 +7,7 @@ from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.surveyors.scoping import sql_scope_filter
 from resource_explorer.surveyors.survey_report import (
     Annotation,
     ResourceMeasureAnnotation,
@@ -38,11 +39,19 @@ class ApiStructureSurveyor(BaseSurveyor):
     without any separate opt-in scheduling (migration plan decision D7).
     """
 
-    def __init__(self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None) -> None:
+    def __init__(
+        self, project: Project, registry: ProjectRegistry, surveyed_at: str | None = None,
+        scope_locator: str = "",
+    ) -> None:
         super().__init__(project, registry)
         # See SecurityHygieneSurveyor's identical constructor comment — shared
         # run-timestamp from SurveyOrchestrator (Phase B, D1).
         self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        # Repo scope-narrowing funnel plan (docs/repo-scope-narrowing-funnel.md),
+        # D5/D6 — "" (default) = whole-repo, unchanged from every existing
+        # caller; a non-empty locator narrows to one cataloged sub-resource
+        # (this kind is target_shape="corpus" — a path-prefix filter).
+        self._scope_locator = scope_locator
 
     @property
     def step_name(self) -> str:
@@ -53,16 +62,22 @@ class ApiStructureSurveyor(BaseSurveyor):
         try:
             slug = self.project.slug
 
+            scope_sql, scope_params = sql_scope_filter(self._scope_locator)
             with self.registry._conn() as conn:
                 rows = conn.execute(
                     "SELECT language, kind, name, qualified_name, file_path, complexity "
-                    "FROM project_code_symbols WHERE project_slug = ? ORDER BY language, kind, name",
-                    (slug,),
+                    "FROM project_code_symbols WHERE project_slug = ?" + scope_sql +
+                    " ORDER BY language, kind, name",
+                    (slug, *scope_params),
                 ).fetchall()
 
             if not rows:
                 return results
 
+            # Inheritance/relationship edges are a cross-cutting graph, not
+            # cleanly per-file — left whole-repo-scoped even for a scoped
+            # run rather than guessing a filtering rule; the symbol-level
+            # data above (this method's primary output) is correctly scoped.
             relationships = self.registry.get_code_relationships(slug)
 
             by_lang: dict[str, list] = defaultdict(list)
@@ -134,6 +149,7 @@ class ApiStructureSurveyor(BaseSurveyor):
                     {"symbol_count": len(rows), "relationship_count": len(relationships)},
                     detail={"by_language": {lang: len(syms) for lang, syms in by_lang.items()}},
                     surveyed_at=self._surveyed_at,
+                    scope_locator=self._scope_locator,
                 )
             except Exception as exc:
                 log.warning("Could not persist API structure snapshot for %s: %s", slug, exc)

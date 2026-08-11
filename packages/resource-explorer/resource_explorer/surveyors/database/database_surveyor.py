@@ -12,6 +12,23 @@ from resource_explorer.surveyors.survey_report import (
 
 from .connection import database_connection
 
+# analysis_catalog.yaml database entry id -> DatabaseSurveyor.survey() steps.
+# Database per-card dispatch fix (D6 prerequisite, repo-scope-narrowing-
+# funnel plan) — closes the gap where every local database analysis card
+# triggered the identical whole-DB survey() regardless of which was
+# clicked. "schema" always runs (see DatabaseSurveyor._ALL_STEPS's
+# comment), so schema_inventory/row_count_snapshot genuinely diverge in
+# what extra work they do (views vs. statistics), not just in label.
+# privilege_audit has no dedicated check today (confirmed — "database-only,
+# aspirational" per the target-shape audit) so it still runs the full
+# survey; a real audit would replace this entry with its own steps once one
+# exists, not add a fourth DatabaseSurveyor step.
+DATABASE_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
+    "schema_inventory": ["schema", "views"],
+    "row_count_snapshot": ["schema", "statistics"],
+    "privilege_audit": ["schema", "statistics", "views"],
+}
+
 
 class DatabaseSurveyor:
     """Custom surveyor for databases when Egeria can't access them directly."""
@@ -33,12 +50,31 @@ class DatabaseSurveyor:
         self.credentials = credentials
         self.registry = registry
 
-    def survey(self) -> dict:
-        """Run comprehensive database survey.
-        
+    # Every step other than "schema" reads from schema_info to attach its
+    # results (row counts onto tables, view dependencies onto tables/views),
+    # so "schema" always runs regardless of what's requested — it's the
+    # structural backbone every other step is enrichment on top of, not an
+    # independently optional step. Database per-card dispatch fix (D6
+    # prerequisite, repo-scope-narrowing-funnel plan) — see
+    # DATABASE_ANALYSIS_STEP_MAP in web/routes/databases.py for the
+    # analysis_id -> steps mapping this enables.
+    _ALL_STEPS = ("schema", "statistics", "views")
+
+    def survey(self, steps: list[str] | None = None) -> dict:
+        """Run a database survey.
+
+        steps : optional subset of {"schema", "statistics", "views"} — None
+            (default) runs all three, exactly as before this parameter
+            existed. "schema" always runs even if omitted (see _ALL_STEPS's
+            comment) since statistics/views results are meaningless without
+            the table list schema produces.
+
         Returns:
             Dict with survey results including annotations and statistics
         """
+        requested = set(steps) if steps is not None else set(self._ALL_STEPS)
+        requested.add("schema")
+
         results = {
             "database_slug": self.db_entity.slug,
             "surveyed_at": datetime.utcnow().isoformat(),
@@ -51,7 +87,7 @@ class DatabaseSurveyor:
 
         try:
             with database_connection(self.db_entity, self.credentials) as conn:
-                # Survey schema
+                # Survey schema — always runs, see _ALL_STEPS's comment.
                 schema_info = self._survey_schema(conn)
                 results["schema_info"] = schema_info
                 results["annotations"].extend(
@@ -59,24 +95,26 @@ class DatabaseSurveyor:
                 )
 
                 # Survey statistics — non-fatal; proceed even if stats fail
-                try:
-                    stats_info = self._survey_statistics(conn)
-                    results["statistics"] = stats_info
-                    results["annotations"].extend(
-                        self._create_statistics_annotations(stats_info)
-                    )
-                except Exception as stats_err:
-                    results["errors"].append(f"Statistics query failed (non-fatal): {stats_err}")
+                if "statistics" in requested:
+                    try:
+                        stats_info = self._survey_statistics(conn)
+                        results["statistics"] = stats_info
+                        results["annotations"].extend(
+                            self._create_statistics_annotations(stats_info)
+                        )
+                    except Exception as stats_err:
+                        results["errors"].append(f"Statistics query failed (non-fatal): {stats_err}")
 
                 # SQL views static analysis using SQLGlot (non-fatal)
-                try:
-                    views_info = self._survey_views(conn, schema_info)
-                    results["views"] = views_info
-                    results["annotations"].extend(
-                        self._create_views_annotations(views_info)
-                    )
-                except Exception as views_err:
-                    results["errors"].append(f"SQL view static analysis failed (non-fatal): {views_err}")
+                if "views" in requested:
+                    try:
+                        views_info = self._survey_views(conn, schema_info)
+                        results["views"] = views_info
+                        results["annotations"].extend(
+                            self._create_views_annotations(views_info)
+                        )
+                    except Exception as views_err:
+                        results["errors"].append(f"SQL view static analysis failed (non-fatal): {views_err}")
 
         except Exception as e:
             error_msg = str(e)
@@ -525,17 +563,21 @@ def run_database_survey(
     db_slug: str,
     credentials: dict,
     registry: ProjectRegistry | None = None,
+    steps: list[str] | None = None,
 ) -> dict:
     """Convenience function to run a database survey.
-    
+
     Args:
         db_slug: Database slug to survey
         credentials: Dict with 'user' and 'password' keys
         registry: Optional ProjectRegistry (creates new one if not provided)
-        
+        steps: optional subset of {"schema", "statistics", "views"} — see
+            DatabaseSurveyor.survey()'s docstring. None (default) runs all
+            three, unchanged from before this parameter existed.
+
     Returns:
         Survey results dict
-        
+
     Example:
         results = run_database_survey(
             "my-postgres",
@@ -550,6 +592,6 @@ def run_database_survey(
         raise ValueError(f"Database '{db_slug}' not found in registry")
 
     surveyor = DatabaseSurveyor(db_entity, credentials, registry)
-    return surveyor.survey()
+    return surveyor.survey(steps=steps)
 
 # Made with Bob

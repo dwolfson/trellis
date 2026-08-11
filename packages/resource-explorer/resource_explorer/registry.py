@@ -865,12 +865,26 @@ class ProjectRegistry:
                     summary      TEXT DEFAULT '',
                     confidence   INTEGER DEFAULT 100,
                     detail_json  TEXT DEFAULT NULL,
+                    scope_locator TEXT DEFAULT '',
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            # Migration: add scope_locator to project_analysis_findings for
+            # DBs created before the repo scope-narrowing funnel plan
+            # (docs/repo-scope-narrowing-funnel.md), D5/D6 — '' = whole-
+            # resource, matching every pre-existing row unchanged.
+            existing_findings_cols = self._get_table_columns(conn, "project_analysis_findings")
+            if "scope_locator" not in existing_findings_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_findings ADD COLUMN scope_locator TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_findings_slug_kind "
                 "ON project_analysis_findings(project_slug, kind)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_findings_scope "
+                "ON project_analysis_findings(project_slug, kind, scope_locator)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_analysis_metrics (
@@ -881,12 +895,22 @@ class ProjectRegistry:
                     metric_name  TEXT NOT NULL,
                     metric_value REAL NOT NULL,
                     detail_json  TEXT DEFAULT NULL,
+                    scope_locator TEXT DEFAULT '',
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            existing_metrics_cols = self._get_table_columns(conn, "project_analysis_metrics")
+            if "scope_locator" not in existing_metrics_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_metrics ADD COLUMN scope_locator TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_slug_kind "
                 "ON project_analysis_metrics(project_slug, kind, metric_name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_scope "
+                "ON project_analysis_metrics(project_slug, kind, metric_name, scope_locator)"
             )
             # One-time forward migration, guarded on "the new table is still
             # empty" rather than a per-row check — correct because after the
@@ -2401,13 +2425,21 @@ class ProjectRegistry:
     # batch) — only the "one table per kind" part changes, not the pattern
     # itself.
 
-    def upsert_finding(self, slug: str, kind: str, findings: list[dict], surveyed_at: str | None = None) -> None:
+    def upsert_finding(
+        self, slug: str, kind: str, findings: list[dict], surveyed_at: str | None = None,
+        scope_locator: str = "",
+    ) -> None:
         """Append one survey run's findings for one analysis kind.
         findings: list of {check_name, label, summary="", confidence=100, detail: dict|None}.
         `check_name` is "what kind of check" (e.g. a security check name, a
         documentation finding_type); `label` is its value/classification
         (e.g. "pass"/"gap", or a quality label) — callers translate these
-        back to whatever field names their own /results API response uses."""
+        back to whatever field names their own /results API response uses.
+        scope_locator (repo scope-narrowing funnel plan, D5/D6): '' (default)
+        = whole-resource, matching every pre-scope-aware caller unchanged;
+        a non-empty value scopes this run's findings to one cataloged
+        sub-resource, kept distinct from whole-resource findings under the
+        same `kind` rather than mixed together."""
         if not findings:
             return
         slug = self._normalize_slug(slug)
@@ -2415,34 +2447,39 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_analysis_findings "
-                "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
-                "VALUES (:project_slug, :kind, :surveyed_at, :check_name, :label, :summary, :confidence, :detail_json)",
+                "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json, scope_locator) "
+                "VALUES (:project_slug, :kind, :surveyed_at, :check_name, :label, :summary, :confidence, :detail_json, :scope_locator)",
                 [
                     {
                         "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
                         "check_name": f["check_name"], "label": f["label"],
                         "summary": f.get("summary", ""), "confidence": f.get("confidence", 100),
                         "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
+                        "scope_locator": scope_locator,
                     }
                     for f in findings
                 ],
             )
 
-    def query_findings(self, slug: str, kind: str) -> list[dict]:
-        """Latest run's findings for one analysis kind."""
+    def query_findings(self, slug: str, kind: str, scope_locator: str = "") -> list[dict]:
+        """Latest run's findings for one analysis kind, scoped to
+        scope_locator (default '' = whole-resource, matching every
+        pre-scope-aware caller unchanged)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_analysis_findings WHERE project_slug = ? AND kind = ?",
-                (slug, kind),
+                "SELECT MAX(surveyed_at) FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ?",
+                (slug, kind, scope_locator),
             ).fetchone()[0]
             if not latest_ts:
                 return []
             rows = conn.execute(
-                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
-                "FROM project_analysis_findings WHERE project_slug = ? AND kind = ? AND surveyed_at = ? "
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at, scope_locator "
+                "FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ? AND surveyed_at = ? "
                 "ORDER BY check_name",
-                (slug, kind, latest_ts),
+                (slug, kind, scope_locator, latest_ts),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -2466,6 +2503,7 @@ class ProjectRegistry:
     def upsert_metric(
         self, slug: str, kind: str, metrics: dict[str, float],
         detail: dict | None = None, surveyed_at: str | None = None,
+        scope_locator: str = "",
     ) -> None:
         """Append one survey run's metric(s) for one analysis kind.
         metrics: {metric_name: value} — one row per metric, sharing one
@@ -2473,7 +2511,9 @@ class ProjectRegistry:
         project_file_type_counts and project_dependencies already use).
         detail (optional) attaches to only the first metric row, to avoid
         duplicating a potentially large JSON blob across every metric from
-        the same run."""
+        the same run. scope_locator: see upsert_finding's docstring —
+        '' (default) = whole-resource, unchanged for every pre-scope-aware
+        caller."""
         if not metrics:
             return
         slug = self._normalize_slug(slug)
@@ -2483,32 +2523,35 @@ class ProjectRegistry:
                 "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
                 "metric_name": name, "metric_value": value,
                 "detail_json": json.dumps(detail) if detail and i == 0 else None,
+                "scope_locator": scope_locator,
             }
             for i, (name, value) in enumerate(metrics.items())
         ]
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_analysis_metrics "
-                "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                "VALUES (:project_slug, :kind, :surveyed_at, :metric_name, :metric_value, :detail_json)",
+                "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json, scope_locator) "
+                "VALUES (:project_slug, :kind, :surveyed_at, :metric_name, :metric_value, :detail_json, :scope_locator)",
                 rows,
             )
 
-    def query_metrics(self, slug: str, kind: str) -> dict:
+    def query_metrics(self, slug: str, kind: str, scope_locator: str = "") -> dict:
         """Latest run's metrics for one analysis kind, as
-        {metric_name: value, ..., "surveyed_at": ..., "detail": {...}?}."""
+        {metric_name: value, ..., "surveyed_at": ..., "detail": {...}?},
+        scoped to scope_locator (default '' = whole-resource)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_analysis_metrics WHERE project_slug = ? AND kind = ?",
-                (slug, kind),
+                "SELECT MAX(surveyed_at) FROM project_analysis_metrics "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ?",
+                (slug, kind, scope_locator),
             ).fetchone()[0]
             if not latest_ts:
                 return {}
             rows = conn.execute(
                 "SELECT metric_name, metric_value, detail_json FROM project_analysis_metrics "
-                "WHERE project_slug = ? AND kind = ? AND surveyed_at = ?",
-                (slug, kind, latest_ts),
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ? AND surveyed_at = ?",
+                (slug, kind, scope_locator, latest_ts),
             ).fetchall()
         out: dict = {"surveyed_at": latest_ts}
         for r in rows:
@@ -2517,16 +2560,17 @@ class ProjectRegistry:
                 out["detail"] = json.loads(r["detail_json"])
         return out
 
-    def query_metrics_history(self, slug: str, kind: str, metric_name: str) -> list[dict]:
+    def query_metrics_history(self, slug: str, kind: str, metric_name: str, scope_locator: str = "") -> list[dict]:
         """One row per run for one specific named metric, for trending —
-        e.g. query_metrics_history(slug, "api_structure", "symbol_count")."""
+        e.g. query_metrics_history(slug, "api_structure", "symbol_count").
+        Scoped to scope_locator (default '' = whole-resource)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT surveyed_at, metric_value FROM project_analysis_metrics "
-                "WHERE project_slug = ? AND kind = ? AND metric_name = ? "
+                "WHERE project_slug = ? AND kind = ? AND metric_name = ? AND scope_locator = ? "
                 "ORDER BY surveyed_at ASC",
-                (slug, kind, metric_name),
+                (slug, kind, metric_name, scope_locator),
             ).fetchall()
         return [dict(r) for r in rows]
 

@@ -88,6 +88,12 @@ class StepInfo:
     # per-orchestrator-run timestamp, Phase B D1) — only the surveyors that
     # persist structured findings/metrics at survey time need this.
     accepts_surveyed_at: bool = False
+    # Whether this surveyor's constructor accepts scope_locator (D5/D6 repo
+    # scope-narrowing funnel plan) — only the corpus-shaped surveyors
+    # (target_shape="corpus" in analysis_catalog.yaml) implement the
+    # path-prefix filter; SurveyOrchestrator.run() only forwards
+    # scope_locator to steps flagged True here.
+    accepts_scope_locator: bool = False
 
 
 STEP_REGISTRY: dict[str, StepInfo] = {
@@ -100,6 +106,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_file_size", FileSizeSurveyor,
         "Per-file sizes, total footprint, size-by-type, top-10 largest files.",
         ["ResourceMeasureAnnotation", "RequestForActionAnnotation"],
+        accepts_scope_locator=True,
     ),
     "repo_language": StepInfo(
         "repo_language", LanguageSurveyor,
@@ -133,6 +140,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "Public API surface (functions/classes/methods) per language.",
         ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
+        accepts_scope_locator=True,
     ),
     "repo_data_profiling": StepInfo(
         "repo_data_profiling", DataProfilerSurveyor,
@@ -140,12 +148,14 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ResourceMeasureAnnotation", "SchemaAnalysisAnnotation", "RequestForActionAnnotation"],
         static_kwargs={"data_path": None},
         accepts_surveyed_at=True,
+        accepts_scope_locator=True,
     ),
     "repo_file_classification": StepInfo(
         "repo_file_classification", FileClassifierSurveyor,
         "Classifies every file by type using filename/extension mapping (Egeria-enrichable).",
         ["ClassificationAnnotation", "ResourceMeasureAnnotation"],
         static_kwargs={"pyegeria_client": None, "force_refresh": False},
+        accepts_scope_locator=True,
     ),
     "repo_sub_resource_survey": StepInfo(
         "repo_sub_resource_survey", SubResourceSurveyor,

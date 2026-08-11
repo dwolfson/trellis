@@ -136,3 +136,43 @@ class TestStepsFiltered:
         finally:
             for p in patchers:
                 p.stop()
+
+
+class TestScopeLocator:
+    """D5/D6 repo scope-narrowing funnel plan — scope_locator is only
+    forwarded to surveyors whose StepInfo.accepts_scope_locator is True;
+    every other step is constructed exactly as before (no scope_locator
+    kwarg at all), regardless of what scope_locator was passed to run()."""
+
+    def test_forwarded_only_to_accepting_step(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(
+                    project, steps=["repo_api_structure", "repo_health"], scope_locator="src",
+                )
+                # repo_api_structure accepts_scope_locator=True
+                _, kwargs = mocks["repo_api_structure"].call_args
+                assert kwargs["scope_locator"] == "src"
+                # repo_health does not declare accepts_scope_locator — must
+                # never receive the kwarg (its constructor doesn't accept it).
+                _, kwargs = mocks["repo_health"].call_args
+                assert "scope_locator" not in kwargs
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_default_scope_locator_is_empty_string(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project, steps=["repo_api_structure"])
+                _, kwargs = mocks["repo_api_structure"].call_args
+                assert kwargs["scope_locator"] == ""
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_all_four_corpus_shaped_steps_accept_scope_locator(self):
+        for key in ("repo_file_size", "repo_api_structure", "repo_data_profiling", "repo_file_classification"):
+            assert STEP_REGISTRY[key].accepts_scope_locator is True

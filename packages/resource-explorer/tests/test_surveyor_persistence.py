@@ -13,13 +13,16 @@ from __future__ import annotations
 import pytest
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors.api_structure import ApiStructureSurveyor
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.documentation import DocumentationSurveyor
+from resource_explorer.surveyors.sub_surveyors.file_size import FileSizeSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.survey_report import (
     ClassificationAnnotation,
     RequestForActionAnnotation,
+    ResourceMeasureAnnotation,
 )
 
 
@@ -115,6 +118,23 @@ class TestApiStructureSurveyorPersistence:
         metrics = registry.query_metrics("myproj", "api_structure")
         assert metrics["surveyed_at"] == "2026-01-01T00:00:00"
 
+    def test_scope_locator_filters_symbols_and_persists_scoped(self, registry, project):
+        # D5/D6 repo scope-narrowing funnel plan — scoping.py-based path filter.
+        self._seed_symbols(registry, "myproj")
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_code_symbols (project_slug, file_path, language, kind, name, "
+                "qualified_name, signature, docstring, start_line, end_line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("myproj", "other/mod2.py", "python", "function", "g", "mod2.g", "def g()", "", 1, 2),
+            )
+        annotations = ApiStructureSurveyor(project, registry, scope_locator="mod.py").run()
+        assert len(annotations) == 2
+        metrics = registry.query_metrics("myproj", "api_structure", scope_locator="mod.py")
+        assert metrics["symbol_count"] == 1  # only mod.py's symbol, not other/mod2.py's
+        # Whole-resource metrics (default scope_locator="") stay untouched/absent.
+        assert registry.query_metrics("myproj", "api_structure") == {}
+
 
 class TestDataProfilerSurveyorPersistence:
     def _seed_inventory(self, registry, slug):
@@ -144,3 +164,86 @@ class TestDataProfilerSurveyorPersistence:
         DataProfilerSurveyor(project, registry, surveyed_at="2026-01-01T00:00:00").run()
         metrics = registry.query_metrics("myproj", "data_profile")
         assert metrics["surveyed_at"] == "2026-01-01T00:00:00"
+
+    def test_scope_locator_filters_data_files_and_persists_scoped(self, registry, project):
+        self._seed_inventory(registry, "myproj")
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_file_inventory (project_slug, file_path, file_size_bytes, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("myproj", "other/sample2.csv", 999, "2026-01-01T00:00:00"),
+            )
+        annotations = DataProfilerSurveyor(project, registry, scope_locator="data").run()
+        assert len(annotations) >= 1
+        metrics = registry.query_metrics("myproj", "data_profile", scope_locator="data")
+        assert metrics["total_files"] == 1
+        assert metrics["total_size_bytes"] == 1234
+        assert registry.query_metrics("myproj", "data_profile") == {}
+
+
+class TestFileSizeSurveyorScoping:
+    """FileSizeSurveyor has no catalog entry (never independently persisted a
+    metric snapshot — findings-only) but is mechanically corpus-shaped per
+    the target-shape audit; D5/D6 repo scope-narrowing funnel plan."""
+
+    def _seed_inventory(self, registry, slug):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_file_inventory (project_slug, file_path, file_size_bytes, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (slug, "src/big.bin", 2_000_000, "2026-01-01T00:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO project_file_inventory (project_slug, file_path, file_size_bytes, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (slug, "other/small.bin", 100, "2026-01-01T00:00:00"),
+            )
+
+    def test_default_scope_sees_all_files(self, registry, project):
+        self._seed_inventory(registry, "myproj")
+        annotations = FileSizeSurveyor(project, registry).run()
+        measures = [a for a in annotations if isinstance(a, ResourceMeasureAnnotation)]
+        assert measures[0].resource_properties["total_files"] == 2
+
+    def test_scope_locator_filters_to_matching_files_only(self, registry, project):
+        self._seed_inventory(registry, "myproj")
+        annotations = FileSizeSurveyor(project, registry, scope_locator="src").run()
+        measures = [a for a in annotations if isinstance(a, ResourceMeasureAnnotation)]
+        assert measures[0].resource_properties["total_files"] == 1
+        assert measures[0].resource_properties["total_size_bytes"] == 2_000_000
+
+
+class TestFileClassifierSurveyorScoping:
+    """D5/D6 repo scope-narrowing funnel plan — repo_file_classification is
+    mechanically corpus-shaped (classify_file_paths() is already
+    path-agnostic), even though its bundling catalog id
+    (language_file_classification) is gated whole_resource_only for the UI
+    (D6) since a sibling bundled step's output can't be scoped. The trend
+    write (upsert_file_type_counts) must be skipped for a scoped run."""
+
+    def _seed_inventory(self, registry, slug):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_file_inventory (project_slug, file_path, file_size_bytes, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (slug, "src/mod.py", 100, "2026-01-01T00:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO project_file_inventory (project_slug, file_path, file_size_bytes, indexed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (slug, "other/mod2.py", 100, "2026-01-01T00:00:00"),
+            )
+
+    def test_default_scope_persists_trend_row(self, registry, project):
+        self._seed_inventory(registry, "myproj")
+        FileClassifierSurveyor(project, registry).run()
+        assert registry.query_file_type_counts("myproj") != []
+
+    def test_scope_locator_filters_paths_and_skips_trend_write(self, registry, project):
+        self._seed_inventory(registry, "myproj")
+        annotations = FileClassifierSurveyor(project, registry, scope_locator="src").run()
+        assert annotations  # still produces classification annotations for the scoped subset
+        measures = [a for a in annotations if isinstance(a, ResourceMeasureAnnotation)]
+        assert measures[0].json_properties["total_files"] == 1
+        # Scoped runs must not pollute the whole-repo file-type-count trend.
+        assert registry.query_file_type_counts("myproj") == []

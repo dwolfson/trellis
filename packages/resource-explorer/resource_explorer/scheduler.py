@@ -293,7 +293,7 @@ def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") ->
                 f"'{entry['name']}' writes new data into Egeria (action: publish) — excluded from "
                 "scheduled runs by design. Run it manually when you intend that write."
             ])
-        return _run_local_db_survey(db, registry)
+        return _run_local_db_survey(db, registry, analysis_id)
 
     if entry is not None and egeria_reg.get("native_process_ref"):
         # (b) Egeria-native re-survey of an already-cataloged database.
@@ -306,7 +306,7 @@ def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") ->
     return _run_survey_definition(db, analysis_id, registry)
 
 
-def _run_local_db_survey(db, registry) -> tuple[str, str, list[str]]:
+def _run_local_db_survey(db, registry, analysis_id: str = "") -> tuple[str, str, list[str]]:
     # Same credential resolution as the manual survey route
     # (web/routes/databases.py) — stored db_user/db_password at registration,
     # nothing else. There is no separate env-var/config fallback inside
@@ -321,12 +321,23 @@ def _run_local_db_survey(db, registry) -> tuple[str, str, list[str]]:
             "with credentials, before scheduling it."
         ])
 
-    from resource_explorer.surveyors.database.database_surveyor import run_database_survey
+    from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_ANALYSIS_STEP_MAP,
+        run_database_survey,
+    )
+
+    # Database per-card dispatch fix (D6 prerequisite) — only run the
+    # step(s) this specific analysis_id needs, not every local check every
+    # time. analysis_id="" (or an unmapped id) falls back to steps=None
+    # (the full survey), matching this function's exact prior behavior for
+    # any caller that doesn't have an analysis_id in hand.
+    steps = DATABASE_ANALYSIS_STEP_MAP.get(analysis_id)
 
     errors: list[str] = []
     try:
         run_database_survey(
-            db.slug, credentials={"user": db.db_user, "password": db.db_password}, registry=registry
+            db.slug, credentials={"user": db.db_user, "password": db.db_password},
+            registry=registry, steps=steps,
         )
     except Exception as exc:
         errors.append(str(exc))

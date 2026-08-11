@@ -55,6 +55,12 @@ class AnalysisCatalogEntry:
     action: str
     recommended: bool
     egeria_registration: dict = field(default_factory=dict)
+    # repo scope-narrowing funnel plan (docs/repo-scope-narrowing-funnel.md),
+    # D5 — "corpus" | "single_container" | "single_leaf" | "whole_resource_only".
+    # Defaults to the conservative "whole_resource_only" for any entry that
+    # doesn't declare one (e.g. live-Egeria-merged entries, whose actual
+    # shape isn't known) — never assume scopability without confirming it.
+    target_shape: str = "whole_resource_only"
 
     def to_dict(self) -> dict:
         return {
@@ -70,6 +76,7 @@ class AnalysisCatalogEntry:
             "action": self.action,
             "recommended": self.recommended,
             "egeria_registration": self.egeria_registration,
+            "target_shape": self.target_shape,
         }
 
 
@@ -87,6 +94,7 @@ def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
         action=raw.get("action", "survey"),
         recommended=bool(raw.get("recommended", False)),
         egeria_registration=dict(raw.get("egeria_registration") or {}),
+        target_shape=raw.get("target_shape", "whole_resource_only"),
     )
 
 
@@ -179,6 +187,9 @@ def _egeria_merge_entries(resource_type: str) -> list[dict]:
             "recommended": False,
             "egeria_registration": {"candidate": True, "native_process_ref": [resource_type, tech_type]},
             "live_from_egeria": True,
+            # Real shape unknown for a live-Egeria-native process — never
+            # assume scopability without confirming it (D5).
+            "target_shape": "whole_resource_only",
         })
     return entries
 
@@ -208,3 +219,38 @@ def get_analyses(
     if perspective and perspective != "all":
         analyses = [a for a in analyses if "all" in a["perspectives"] or perspective in a["perspectives"]]
     return analyses
+
+
+# ── D6 — target-shape compatibility gate ────────────────────────────────────
+# A "container" kind (folder/schema) can host a corpus- or container-shaped
+# analysis; a "leaf" kind (file/table/column) can host a corpus- or
+# leaf-shaped analysis; whole_resource_only is never compatible with any
+# selected sub-resource — it's only ever offered against the whole resource
+# itself, never a narrower catalog selection.
+_CONTAINER_KINDS = {"folder", "schema"}
+_LEAF_KINDS = {"file", "table", "column"}
+
+
+def is_shape_compatible(target_shape: str, selection_kind: str) -> bool:
+    """Would an analysis declaring this target_shape produce a meaningful
+    result if scoped to a sub-resource of this kind? Pure function over the
+    D5 vocabulary — no I/O, safe to call from both the run-time gating route
+    and any UI-facing "what can I run here" listing."""
+    if target_shape == "corpus":
+        return True
+    if target_shape == "single_container":
+        return selection_kind in _CONTAINER_KINDS
+    if target_shape == "single_leaf":
+        return selection_kind in _LEAF_KINDS
+    return False  # whole_resource_only, or an unrecognized shape — never compatible
+
+
+def compatible_analyses(resource_type: str, selection_kind: str, **get_analyses_kwargs) -> list[dict]:
+    """The subset of get_analyses()'s catalog that could meaningfully run
+    scoped to a sub-resource of this kind (D6). Thin filter over
+    get_analyses() — same kwargs, same dict shape, so callers don't need a
+    second code path for "all analyses" vs. "analyses I can run here"."""
+    return [
+        a for a in get_analyses(resource_type, **get_analyses_kwargs)
+        if is_shape_compatible(a.get("target_shape", "whole_resource_only"), selection_kind)
+    ]

@@ -1,8 +1,8 @@
 # Repo scope-narrowing funnel: recommend → select → catalog → scoped analysis
 
-**Status: Phase 1 implemented, tested (860 tests), and live-verified end-to-end against
-`sqlglot` (2026-08-11) — see "Phase 1 verification" at the end. Phase 2 (target-shape registry +
-compatibility-gated scoped analysis, D5/D6) not started.**
+**Status: Phase 1 AND Phase 2 both implemented, tested (916 tests total), and live-verified
+end-to-end against `sqlglot` (2026-08-11) — see "Phase 1 verification" and "Phase 2 verification"
+below.**
 
 **Decisions confirmed 2026-08-11 (third pass)**: D7 resolved (perspective stays a within-intent
 filter, no schema change); mixed-shape kinds get one conservative shape, not per-output tagging,
@@ -268,12 +268,9 @@ repo with its own `SourceControlLibrary`. Two ideas raised, neither designed her
    longer an automatic side effect of a full publish, always an explicit, separate action now)
    work actually visible and human-gated, without touching Assessment/Analysis surveyors at all.
    See "Phase 1 verification" below for what shipped and how it was confirmed.
-2. **Phase 2 — not started.** D5 (target-shape registry) + D6 (compatibility-gated scoped analysis). Larger,
-   separate design pass — touches five-plus surveyors and two core tables, once Phase 1's local
-   catalog exists to scope *against*. **Confirmed 2026-08-11: database's per-card dispatch fix
-   (`REPO_ANALYSIS_STEP_MAP`-equivalent for database) happens alongside this phase** — a
-   prerequisite for database's schema→table narrowing to mean anything, since all three remaining
-   database cards currently trigger the identical whole-DB survey regardless of which was clicked.
+2. **Phase 2 — implemented 2026-08-11.** D5 (target-shape registry) + D6 (compatibility-gated
+   scoped analysis), plus the confirmed database per-card dispatch fix alongside it. See "Phase 2
+   verification" below for what shipped and how it was confirmed.
 
 ## Phase 1 verification (done, 2026-08-11)
 
@@ -320,13 +317,65 @@ idempotency holds across independent publish calls, not just within one. Ancesto
 confirmed both for the local-only and Egeria-publish paths, through the real click path (not a
 direct function call).
 
-## Verification (Phase 2, once its decisions are settled)
+## Phase 2 verification (done, 2026-08-11)
 
-- Unit tests: D5's target-shape registry — every existing analysis kind's declared shape matches
-  the inventory above (regression guard against the audit going stale); D6's menu-filtering — a
-  single-leaf-selected sub-resource never offers a whole-resource-only kind.
-- Live: from a cataloged sub-resource, run a scoped analysis and confirm the menu only offers
-  target-shape-compatible kinds; confirm database's per-card dispatch fix actually runs only the
-  clicked analysis, not the whole-DB survey, mirroring the regression check already done for repo's
-  `REPO_ANALYSIS_STEP_MAP` when it shipped.
-- Full RE test suite green.
+**What shipped, matching the design above with no deviations:**
+
+**D5 — target-shape registry**: `target_shape` field added to every `analysis_catalog.yaml` entry
+(grounded in the earlier code audit — see the "Target-shape inventory" table above), threaded
+through `AnalysisCatalogEntry`/`_entry_from_yaml`/`_egeria_merge_entries` (the live-Egeria-merge
+path defaults unknown shapes to `whole_resource_only`, never guessing scopability). New
+`is_shape_compatible(target_shape, selection_kind)` and `compatible_analyses(resource_type,
+selection_kind, ...)` pure functions in `analysis_catalog_reader.py`.
+
+**D6 — compatibility-gated scoped analysis**: new `resource_explorer/surveyors/scoping.py`
+(`path_matches_scope`/`sql_scope_filter`) — the one shared path-prefix-filter implementation every
+corpus-shaped surveyor uses, so the filtering logic lives in exactly one place. `scope_locator`
+column added to the generic `project_analysis_findings`/`project_analysis_metrics` tables (default
+`""` = whole-resource, every existing caller unchanged). All 4 corpus-shaped repo surveyors
+(`FileSizeSurveyor`, `ApiStructureSurveyor`, `DataProfilerSurveyor`, `FileClassifierSurveyor`)
+gained a `scope_locator` constructor kwarg — `FileClassifierSurveyor`'s scoped runs deliberately
+skip persisting to the whole-repo file-type-count trend table (its bundling catalog id,
+`language_file_classification`, is gated `whole_resource_only` at the UI level since a sibling
+bundled step's output can't be scoped — the mechanical filtering capability is there for
+consistency/future-proofing, just never invoked scoped through the gated UI today).
+`SurveyOrchestrator.run()` gained a `scope_locator` param, forwarded only to steps whose
+`StepInfo.accepts_scope_locator` is `True` (`repo_survey_definition_adapter.py`). New routes:
+`POST /{slug}/sub-resources/analyses/{analysis_id}/run` (looks up the cataloged sub-resource's
+`kind`, gates via `is_shape_compatible`, dispatches `SurveyOrchestrator.run(steps=..., scope_locator=...)`)
+and `GET /{slug}/sub-resources/analyses/{analysis_id}/results` (reads scoped
+`project_analysis_metrics` by `kind`).
+
+**Database per-card dispatch fix**: `DatabaseSurveyor.survey()` gained a `steps` param (subset of
+`{"schema", "statistics", "views"}` — `"schema"` always runs since every other step enriches its
+table list, not independently optional). New `DATABASE_ANALYSIS_STEP_MAP` —
+`schema_inventory → ["schema", "views"]`, `row_count_snapshot → ["schema", "statistics"]`,
+`privilege_audit → all three` (no dedicated check exists yet, so it keeps its prior full-survey
+behavior — matches the earlier "keep it as-is, aspirational" decision, not a regression).
+`scheduler.py`'s `_run_local_db_survey` and a new `POST /api/databases/{slug}/analyses/{analysis_id}/run`
+route both dispatch through this map — closes the real gap where every local database analysis card
+triggered the identical whole-DB survey regardless of which was clicked.
+
+**Frontend**: new "Cataloged Sub-Resources — Scoped Analysis" section on the Sub-Resources sub-tab
+— one row per cataloged locator, an "Analyze" dropdown filtered client-side to target-shape-
+compatible analyses (`_isShapeCompatible`, mirroring `is_shape_compatible` — the repo analysis
+catalog, incl. `target_shape`, is fetched once and cached), a "▶ Run" button, and inline scoped
+results rendered as a small generic key:value line (same "no per-kind frontend code" spirit as the
+existing `metrics` render mode).
+
+**Tests**: 56 new (4 target-shape/6 shape-compatibility unit tests; 5 registry scope_locator tests;
+15 surveyor-scoping tests incl. a new `test_scoping.py` for the shared filter helpers; 9
+`SurveyOrchestrator`/route tests for scope_locator threading and the two new sub-resources-analyses
+routes; 4 `DatabaseSurveyor` steps tests; 2 scheduler dispatch tests; 7 database analysis-run route
+tests) — 916 total passing (up from 874 before this phase).
+
+**Live, against `sqlglot`, both direct API and through the real UI**: confirmed the D6 gate rejects
+a whole-resource-only analysis (`security_scan`) scoped to a real cataloged sub-resource (400,
+"cannot be scoped"), and a corpus-shaped one (`api_structure`) succeeds against both a `folder` and
+a `file` kind; confirmed an uncataloged locator 404s with a clear message; ran the scoped-analysis
+UI through the actual click/select path on the Sub-Resources sub-tab — the Analyze dropdown
+correctly offered only `data_file_profiling`/`api_structure` (both `corpus`) for `CHANGELOG.md`,
+Run dispatched the real `POST .../run` call, and the results panel rendered the real (empty, since
+this repo has no extracted code symbols yet) response with no console errors.
+
+Full RE test suite green (916 passing).

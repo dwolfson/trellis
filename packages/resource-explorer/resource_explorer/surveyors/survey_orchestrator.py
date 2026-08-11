@@ -35,7 +35,10 @@ class SurveyOrchestrator:
         self._force_refresh = force_refresh
         self._data_path = data_path  # local clone path for DataProfilerSurveyor Tier 2
 
-    def run(self, project_slug: str, steps: list[str] | None = None) -> SurveyResult:
+    def run(
+        self, project_slug: str, steps: list[str] | None = None,
+        scope_locator: str = "",
+    ) -> SurveyResult:
         """Survey a single project and return the assembled SurveyResult.
 
         steps : optional list of step keys (same vocabulary as
@@ -43,6 +46,15 @@ class SurveyOrchestrator:
             "repo_health", "repo_api_structure") to run only those
             sub-surveyors instead of the full set. None (default) runs
             every sub-surveyor, exactly as before this parameter existed.
+        scope_locator : D5/D6 repo scope-narrowing funnel plan — "" (default,
+            unchanged) surveys the whole repo. A non-empty locator narrows
+            corpus-shaped steps (StepInfo.accepts_scope_locator=True) to one
+            cataloged sub-resource; steps that don't accept it ignore this
+            entirely (they always run whole-repo, matching their
+            target_shape). Only meaningful alongside steps=[...] — a scoped
+            full survey isn't a supported combination and callers should
+            gate on D6 target-shape compatibility before calling this with
+            both set.
         """
         project = self._registry.get(project_slug)
         if project is None:
@@ -89,6 +101,8 @@ class SurveyOrchestrator:
                 kwargs = {}
             if info.accepts_surveyed_at:
                 kwargs["surveyed_at"] = surveyed_at
+            if info.accepts_scope_locator:
+                kwargs["scope_locator"] = scope_locator
             all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
 
         if steps is None:

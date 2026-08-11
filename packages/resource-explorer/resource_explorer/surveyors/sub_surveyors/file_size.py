@@ -14,6 +14,7 @@ from pathlib import Path
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.file_classifier.type_cache import get_cache
+from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
     Annotation,
     RequestForActionAnnotation,
@@ -46,6 +47,17 @@ class FileSizeSurveyor(BaseSurveyor):
       - RequestForActionAnnotation: any file exceeding the large-file threshold
     """
 
+    def __init__(
+        self, project: Project, registry: ProjectRegistry,
+        scope_locator: str = "",
+    ) -> None:
+        super().__init__(project, registry)
+        # Repo scope-narrowing funnel plan (docs/repo-scope-narrowing-funnel.md),
+        # D5/D6 — "" (default) = whole-repo, unchanged from every existing
+        # caller; a non-empty locator narrows to one cataloged sub-resource
+        # (this kind is target_shape="corpus" — a path-prefix filter).
+        self._scope_locator = scope_locator
+
     @property
     def step_name(self) -> str:
         return STEP
@@ -54,6 +66,8 @@ class FileSizeSurveyor(BaseSurveyor):
         results: list[Annotation] = []
         try:
             rows = self.registry.get_file_inventory_with_sizes(self.project.slug)
+            if self._scope_locator:
+                rows = [r for r in rows if path_matches_scope(r["file_path"], self._scope_locator)]
             if not rows:
                 log.debug("FileSizeSurveyor: no inventory for %s", self.project.slug)
                 return results

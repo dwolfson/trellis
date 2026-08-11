@@ -39,6 +39,31 @@
 #   run_time          - fast | minutes | async — UI speed badge.
 #   action            - "survey" (read-only analysis) or "publish" (writes
 #                       to the Egeria catalog of record).
+#   target_shape      - repo scope-narrowing funnel plan (docs/repo-scope-
+#                       narrowing-funnel.md), D5/D6 — what shape of target
+#                       this analysis can mechanically operate on if scope
+#                       is narrowed below "the whole resource":
+#                         corpus             - the whole resource, or any
+#                                              container + everything
+#                                              recursively below it (a
+#                                              path-prefix filter).
+#                         single_container   - a real hierarchy exists
+#                                              (e.g. database schema->table)
+#                                              but doesn't recurse
+#                                              arbitrarily deep.
+#                         whole_resource_only - the data is inherently one
+#                                              aggregate for the whole
+#                                              resource; narrowing it is a
+#                                              different analysis, not a
+#                                              query change.
+#                       Grounded in a real code audit (see that doc's
+#                       "Target-shape inventory"), not guessed — RE's own
+#                       best judgment, not gospel; a new analysis kind
+#                       declares its own shape here, no Python change
+#                       needed elsewhere for the compatibility check to
+#                       pick it up. Mixed-output kinds take their single
+#                       most-restrictive shape (simplicity over per-output
+#                       tagging, until real friction shows up).
 #   recommended       - shown with a ★ star as a suggested starting point.
 #   egeria_registration - schema-only hook for eventual GovernanceActionType
 #                       registration of this analysis as a native Egeria
@@ -66,6 +91,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -81,6 +107,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -96,6 +123,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -111,6 +139,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -126,6 +155,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -141,6 +171,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: survey
+    target_shape: corpus
     recommended: true
     egeria_registration:
       candidate: false
@@ -156,6 +187,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: corpus
     recommended: false
     egeria_registration:
       candidate: false
@@ -171,6 +203,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: profile
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -186,6 +219,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: ingest
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -201,6 +235,7 @@ repo_analyses:
     source: egeria
     run_time: minutes
     action: publish
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -217,6 +252,7 @@ database_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: single_container
     recommended: true
     egeria_registration:
       candidate: false
@@ -232,6 +268,7 @@ database_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: corpus
     recommended: true
     egeria_registration:
       candidate: false
@@ -247,6 +284,7 @@ database_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -262,6 +300,7 @@ database_analyses:
     source: egeria
     run_time: async
     action: publish
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: true
@@ -282,6 +321,7 @@ filesystem_analyses:
     source: local
     run_time: minutes
     action: survey
+    target_shape: corpus
     recommended: true
     egeria_registration:
       candidate: false

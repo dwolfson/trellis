@@ -207,6 +207,28 @@ class TestRunDueDatabaseSurvey:
         assert entries[0]["status"] == "error"
         assert "connection refused" in entries[0]["detail"]
 
+    def test_schema_inventory_dispatches_schema_and_views_steps_only(self, registry, registered_database_with_credentials):
+        # Database per-card dispatch fix (D6 prerequisite) — schema_inventory
+        # must not also run the statistics step.
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="schema_inventory")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_run:
+            mock_run.return_value = {}
+            scheduler._run_due()
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["steps"] == ["schema", "views"]
+
+    def test_row_count_snapshot_dispatches_schema_and_statistics_steps_only(self, registry, registered_database_with_credentials):
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="row_count_snapshot")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_run:
+            mock_run.return_value = {}
+            scheduler._run_due()
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["steps"] == ["schema", "statistics"]
+
 
 class TestRunDueDispatch:
     """Regression coverage for the dispatch gap found while wiring up

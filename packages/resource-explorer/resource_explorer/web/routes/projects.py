@@ -813,3 +813,110 @@ async def uncatalog_sub_resource(slug: str, locator: str = "") -> dict:
         raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
     registry.uncatalog_sub_resource("repo", slug, locator)
     return {"slug": slug, "locator": locator, "uncataloged": True}
+
+
+# ── scoped analysis — the "Narrow" stage of the repo scope-narrowing funnel
+# (docs/repo-scope-narrowing-funnel.md, D5/D6). Runs a corpus-shaped analysis
+# against one cataloged sub-resource instead of the whole repo; gated by
+# is_shape_compatible() so a whole_resource_only (or shape-mismatched)
+# analysis can never be requested scoped. ──────────────────────────────────
+
+class ScopedAnalysisRequest(BaseModel):
+    locator: str  # must already be tracked via /sub-resources/catalog
+
+
+@router.post("/{slug}/sub-resources/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
+async def run_scoped_analysis(slug: str, analysis_id: str, body: ScopedAnalysisRequest) -> AnalysisRunResult:
+    """Runs one analysis's step(s) scoped to a single cataloged sub-resource
+    (SurveyOrchestrator.run(steps=..., scope_locator=...)) rather than the
+    whole repo. Only reachable for analyses whose target_shape is compatible
+    with the sub-resource's kind (D6) — mirrors run_single_analysis above,
+    plus the scope gate and scope_locator passthrough."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses, is_shape_compatible
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    sub_resource = next(
+        (r for r in registry.list_sub_resources("repo", slug) if r["locator"] == body.locator), None,
+    )
+    if not sub_resource:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{body.locator}' is not a cataloged sub-resource of '{slug}' — "
+                   "catalog it first via POST /sub-resources/catalog.",
+        )
+
+    catalog_entry = next(
+        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
+    )
+    if not catalog_entry:
+        raise HTTPException(status_code=400, detail=f"Unknown analysis '{analysis_id}'")
+
+    target_shape = catalog_entry.get("target_shape", "whole_resource_only")
+    if not is_shape_compatible(target_shape, sub_resource["kind"]):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' (target_shape={target_shape}) cannot be scoped "
+                   f"to a '{sub_resource['kind']}' sub-resource.",
+        )
+
+    steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    if not steps:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' has no mapped survey step(s).",
+        )
+
+    def _run():
+        return SurveyOrchestrator(registry).run(slug, steps=steps, scope_locator=body.locator)
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+
+    if result.errors:
+        return AnalysisRunResult(
+            status="error", slug=slug, analysis_id=analysis_id, error="; ".join(result.errors),
+        )
+    return AnalysisRunResult(
+        status="ok", slug=slug, analysis_id=analysis_id,
+        message=f"{len(result.annotations)} annotation(s), scoped to '{body.locator}'.",
+    )
+
+
+@router.get("/{slug}/sub-resources/analyses/{analysis_id}/results")
+async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str) -> dict:
+    """Latest structured results for one analysis, scoped to a single
+    cataloged sub-resource — reads the generic project_analysis_metrics
+    table filtered by scope_locator. Only meaningful for the corpus-shaped
+    kinds that persist scoped metrics today (api_structure, data_file_
+    profiling — see repo_survey_definition_adapter.STEP_REGISTRY's
+    accepts_scope_locator flag); other analysis_ids return an empty dict
+    since nothing was ever persisted under a non-empty scope_locator for
+    them (they're whole_resource_only and D6-gated out of this route by
+    run_scoped_analysis above)."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # analysis_id (analysis_catalog.yaml) -> project_analysis_metrics `kind`
+    # discriminator — same mapping used to write these rows in the
+    # surveyors themselves (upsert_metric(slug, kind, ...)).
+    metrics_kind_by_analysis_id = {
+        "api_structure": "api_structure",
+        "data_file_profiling": "data_profile",
+    }
+    kind = metrics_kind_by_analysis_id.get(analysis_id)
+    if not kind:
+        return {}
+    return registry.query_metrics(slug, kind, scope_locator=locator)

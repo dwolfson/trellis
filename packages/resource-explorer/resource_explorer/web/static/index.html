@@ -5217,6 +5217,35 @@ let _subResSortKey = null;
 let _subResSortDir = 1;
 let _subResFilterText = '';
 
+// D5/D6 repo scope-narrowing funnel plan — "Narrow" stage. Full repo
+// analysis catalog (incl. target_shape) fetched once and cached, so each
+// cataloged sub-resource's "Analyze" dropdown can filter to shape-
+// compatible analyses client-side without a round-trip per row.
+let _subResAnalysisCatalog = null;   // null = not yet fetched
+let _subResScopedResults = {};       // "locator::analysis_id" -> last-fetched results dict
+
+async function _ensureSubResAnalysisCatalog() {
+  if (_subResAnalysisCatalog) return _subResAnalysisCatalog;
+  try {
+    // repo has no live-Egeria Technology Type mapping configured today
+    // (_RESOURCE_TYPE_TO_TECH_TYPE only covers "database"), so this is
+    // always local-catalog-only regardless — no include_egeria_live param
+    // needed/exposed by GET /api/analyses/{resource_type}.
+    const res = await fetch('/api/analyses/repo');
+    _subResAnalysisCatalog = res.ok ? await res.json() : [];
+  } catch { _subResAnalysisCatalog = []; }
+  return _subResAnalysisCatalog;
+}
+
+// Mirrors analysis_catalog_reader.is_shape_compatible() (D6) — kept in sync
+// by hand since this is a small, stable 4-value enum, not worth a round-trip.
+function _isShapeCompatible(targetShape, kind) {
+  if (targetShape === 'corpus') return true;
+  if (targetShape === 'single_container') return kind === 'folder' || kind === 'schema';
+  if (targetShape === 'single_leaf') return kind === 'file' || kind === 'table' || kind === 'column';
+  return false;  // whole_resource_only, or unrecognized
+}
+
 async function loadScoutingSubResourcesView() {
   if (!selectedProject) return;
   const slug = selectedProject;
@@ -5227,6 +5256,7 @@ async function loadScoutingSubResourcesView() {
     const [resultsRes, catalogedRes] = await Promise.all([
       fetch(`/api/projects/${slug}/analyses/sub_resource_survey/results`),
       fetch(`/api/projects/${slug}/sub-resources`),
+      _ensureSubResAnalysisCatalog(),
     ]);
     _subResFindings = resultsRes.ok ? ((await resultsRes.json()).findings || []) : [];
     const catalogedRows = catalogedRes.ok ? await catalogedRes.json() : [];
@@ -5273,16 +5303,20 @@ function _subResApplyFilter(text) {
 
 function _renderScoutingSubResourcesView(slug) {
   const view = document.getElementById('scouting-sub-resources-view');
+  const catalogedSectionHtml = _renderCatalogedSubResourcesSection(slug);
   if (!_subResFindings.length) {
     view.innerHTML = _scoutingSubnavHtml('sub-resources') + `
-      <div class="max-w-2xl">
-        <h2 class="text-sm font-semibold text-slate-200 mb-2">Sub-Resources: ${_esc(slug)}</h2>
-        <p class="text-xs text-slate-500 mb-3">No survey results yet — recommends which folders/files are worth
-          cataloging as their own Egeria assets, based on the current file inventory.</p>
-        <button onclick="_runSubResourceSurvey('${_esc(slug)}', this)"
-          class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">
-          🗂 Run sub-resource survey
-        </button>
+      <div class="max-w-2xl space-y-4">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-200 mb-2">Sub-Resources: ${_esc(slug)}</h2>
+          <p class="text-xs text-slate-500 mb-3">No survey results yet — recommends which folders/files are worth
+            cataloging as their own Egeria assets, based on the current file inventory.</p>
+          <button onclick="_runSubResourceSurvey('${_esc(slug)}', this)"
+            class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">
+            🗂 Run sub-resource survey
+          </button>
+        </div>
+        ${catalogedSectionHtml}
       </div>`;
     return;
   }
@@ -5382,7 +5416,135 @@ function _renderScoutingSubResourcesView(slug) {
         </button>
         <div id="subres-catalog-feedback" class="text-xs"></div>
       </div>
+
+      ${catalogedSectionHtml}
     </div>`;
+}
+
+// ── Scoped analysis — the "Narrow" stage of the repo scope-narrowing funnel
+// (D5/D6). One row per cataloged sub-resource, with an "Analyze" dropdown
+// filtered to target-shape-compatible analyses (via _isShapeCompatible)
+// and inline scoped results. ────────────────────────────────────────────
+
+function _renderCatalogedSubResourcesSection(slug) {
+  const locators = Object.keys(_subResCataloged).sort();
+  if (!locators.length) return '';
+
+  const catalog = _subResAnalysisCatalog || [];
+  const rowsHtml = locators.map(locator => {
+    const row = _subResCataloged[locator];
+    const compatible = catalog.filter(a => _isShapeCompatible(a.target_shape, row.kind));
+    const selId = `subres-analyze-select-${_slugifyForId(locator)}`;
+    const resultsId = `subres-analyze-results-${_slugifyForId(locator)}`;
+    const optionsHtml = compatible.length
+      ? compatible.map(a => `<option value="${_esc(a.id)}">${_esc(a.name)}</option>`).join('')
+      : '<option value="">(no scopable analyses)</option>';
+    const publishedBadge = row.egeria_guid
+      ? '<span class="text-cyan-400" title="Published to Egeria">☁</span>'
+      : '<span class="text-slate-500" title="Tracked locally only">🗂</span>';
+    return `
+      <tr class="border-b border-slate-800">
+        <td class="px-3 py-2">${publishedBadge}</td>
+        <td class="px-3 py-2 font-mono text-xs text-slate-200 truncate">${_esc(locator) || '(root)'}</td>
+        <td class="px-3 py-2 text-xs text-slate-400">${row.kind === 'folder' ? '📁' : '📄'} ${_esc(row.kind)}</td>
+        <td class="px-3 py-2">
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <select id="${selId}" ${compatible.length ? '' : 'disabled'}
+              class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-1.5 py-1">
+              ${optionsHtml}
+            </select>
+            <button ${compatible.length ? '' : 'disabled'}
+              onclick="_runScopedAnalysis('${_esc(slug)}', '${_esc(locator)}', '${selId}', '${resultsId}', this)"
+              class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors">
+              ▶ Run
+            </button>
+          </div>
+          <div id="${resultsId}" class="text-xs text-slate-400 mt-1"></div>
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-x-auto">
+      <div class="px-3 py-2 border-b border-slate-800">
+        <h3 class="text-xs font-semibold text-slate-300">Cataloged Sub-Resources — Scoped Analysis</h3>
+        <p class="text-[10px] text-slate-500 mt-0.5">Run a corpus/container/leaf-shaped analysis narrowed to just
+          this sub-resource, instead of the whole repo (D6 target-shape gate — only analyses that make sense for
+          this item's kind are offered).</p>
+      </div>
+      <table class="w-full text-left border-collapse">
+        <thead><tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
+          <th class="px-3 py-2"></th>
+          <th class="px-3 py-2">Locator</th>
+          <th class="px-3 py-2">Kind</th>
+          <th class="px-3 py-2">Analyze</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+}
+
+function _slugifyForId(s) {
+  return (s || 'root').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+async function _runScopedAnalysis(slug, locator, selId, resultsId, btn) {
+  const analysisId = document.getElementById(selId)?.value;
+  const resultsDiv = document.getElementById(resultsId);
+  if (!analysisId) return;
+  const orig = btn.textContent;
+  btn.textContent = '⟳';
+  btn.disabled = true;
+  if (resultsDiv) resultsDiv.textContent = 'Running…';
+  try {
+    const res = await fetch(
+      `/api/projects/${slug}/sub-resources/analyses/${encodeURIComponent(analysisId)}/run`,
+      {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locator }),
+      },
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (data.status === 'ok') {
+      showToast('success', data.message || 'Scoped analysis complete.', 4000);
+      await _loadScopedAnalysisResults(slug, locator, analysisId, resultsDiv);
+    } else {
+      if (resultsDiv) resultsDiv.innerHTML = `<span class="text-amber-400">✗ ${_esc(data.error || 'failed')}</span>`;
+    }
+  } catch(e) {
+    if (resultsDiv) resultsDiv.innerHTML = `<span class="text-amber-400">✗ ${_esc(e.message)}</span>`;
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+}
+
+async function _loadScopedAnalysisResults(slug, locator, analysisId, resultsDiv) {
+  try {
+    const res = await fetch(
+      `/api/projects/${slug}/sub-resources/analyses/${encodeURIComponent(analysisId)}/results`
+      + `?locator=${encodeURIComponent(locator)}`,
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _subResScopedResults[`${locator}::${analysisId}`] = data;
+    if (!resultsDiv) return;
+    if (!Object.keys(data).length) {
+      resultsDiv.innerHTML = '<span class="text-slate-500">No results yet.</span>';
+      return;
+    }
+    // Small, generic key:value rendering — same "no per-kind frontend code
+    // needed" spirit as the metrics render mode elsewhere (D4, analysis-kind
+    // extensibility redesign) — this is metrics-shaped data only (see
+    // get_scoped_analysis_results' docstring).
+    const parts = Object.entries(data)
+      .filter(([k]) => k !== 'surveyed_at')
+      .map(([k, v]) => `${_esc(k)}: <span class="text-slate-200">${_esc(String(v))}</span>`);
+    resultsDiv.innerHTML = parts.join(' · ') || '<span class="text-slate-500">No results yet.</span>';
+  } catch(e) {
+    if (resultsDiv) resultsDiv.innerHTML = `<span class="text-amber-400">Failed to load results: ${_esc(e.message)}</span>`;
+  }
 }
 
 function _subResSelectAll(checked) {

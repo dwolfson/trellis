@@ -706,3 +706,55 @@ class TestSubResources:
         db.set_sub_resource_egeria_guid("repo", "myproj", "docs", "guid-abc")
         rows = db.list_sub_resources("repo", "myproj")
         assert rows[0]["egeria_guid"] == "guid-abc"
+
+
+class TestScopeLocatorOnFindingsAndMetrics:
+    """Repo scope-narrowing funnel plan, D5/D6 — scope_locator keeps a
+    scoped analysis run's findings/metrics distinct from whole-resource
+    runs under the same `kind`, without disturbing any pre-scope-aware
+    caller (default '' everywhere)."""
+
+    def test_default_scope_locator_is_whole_resource(self, db):
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "a.py", "label": "ok", "summary": ""},
+        ])
+        rows = db.query_findings("myproj", "api_structure")
+        assert len(rows) == 1
+        assert rows[0]["scope_locator"] == ""
+
+    def test_scoped_and_whole_resource_findings_stay_distinct(self, db):
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "whole", "label": "ok", "summary": ""},
+        ])
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "scoped", "label": "ok", "summary": ""},
+        ], scope_locator="src")
+        whole = db.query_findings("myproj", "api_structure")
+        scoped = db.query_findings("myproj", "api_structure", scope_locator="src")
+        assert [r["check_name"] for r in whole] == ["whole"]
+        assert [r["check_name"] for r in scoped] == ["scoped"]
+
+    def test_scoped_and_whole_resource_metrics_stay_distinct(self, db):
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 100})
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 7}, scope_locator="src")
+        assert db.query_metrics("myproj", "api_structure")["symbol_count"] == 100
+        assert db.query_metrics("myproj", "api_structure", scope_locator="src")["symbol_count"] == 7
+
+    def test_metrics_history_is_scope_aware(self, db):
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 1}, surveyed_at="2026-01-01")
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 2}, surveyed_at="2026-01-02")
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 99}, scope_locator="src", surveyed_at="2026-01-01")
+        whole_history = db.query_metrics_history("myproj", "api_structure", "symbol_count")
+        scoped_history = db.query_metrics_history("myproj", "api_structure", "symbol_count", scope_locator="src")
+        assert [r["metric_value"] for r in whole_history] == [1, 2]
+        assert [r["metric_value"] for r in scoped_history] == [99]
+
+    def test_different_scopes_are_also_kept_distinct_from_each_other(self, db):
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "a", "label": "ok", "summary": ""},
+        ], scope_locator="src")
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "b", "label": "ok", "summary": ""},
+        ], scope_locator="tests")
+        assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "src")] == ["a"]
+        assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "tests")] == ["b"]
