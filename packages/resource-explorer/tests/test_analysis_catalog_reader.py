@@ -97,7 +97,12 @@ class TestFilterByPerspective:
         analyses = acr.get_analyses("database", perspective="security", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
         assert "privilege_audit" in ids
-        assert "index_health" not in ids  # tagged only 'dba', no 'all'
+
+    def test_perspective_excludes_entries_not_tagged_for_it(self):
+        analyses = acr.get_analyses("database", perspective="data_scientist", include_egeria_live=False)
+        ids = {a["id"] for a in analyses}
+        assert "privilege_audit" not in ids  # tagged 'security'/'dba', no 'all'
+        assert "schema_inventory" in ids  # tagged 'all'
 
     def test_all_perspective_entries_included_regardless(self):
         analyses = acr.get_analyses("repo", perspective="security", include_egeria_live=False)

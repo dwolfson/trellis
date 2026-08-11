@@ -9,6 +9,11 @@ database's schema→table narrowing is acknowledged as a natural fit for later, 
 D6's payoff is repo-specific-weak/other-types-strong, and a genuinely new, repo-specific idea
 (dependency-graph lateral exploration) was raised as a result — see the new section below.
 
+**Decisions confirmed 2026-08-11 (fourth pass)**: database's per-card dispatch gap gets fixed
+alongside Phase 2, not deferred indefinitely; `index_health` removed from `analysis_catalog.yaml`
+(zero backing implementation, not worth advertising); `privilege_audit` kept as-is (also
+unimplemented, but not worth deleting).
+
 ## Context
 
 Discussed 2026-08-11, prompted by the question "why can't I see sub-resource cataloging in the
@@ -101,17 +106,18 @@ resource; narrowing it isn't a query change, it's a different analysis.
 |---|---|---|---|
 | `schema_inventory` | `get_schema_info()` — **already loops per-schema in its own code** | **Whole-DB → schema → table**, a real existing hierarchy | Narrowing to one schema is a one-line change (skip the loop); narrowing to one table is also natural (`_get_tables_for_schema` already returns one dict per table). |
 | `row_count_snapshot` | `pg_stat_user_tables`, unfiltered but has `schemaname`/`relname` per row | **Single-container-or-corpus** | Trivial to filter to one schema or a table list; a single-column floor makes no sense (counts are table-level). |
-| `index_health` | **No implementation exists at all.** | n/a | Aspirational catalog entry — flagging as a separate, real gap, not part of this design. |
-| `privilege_audit` | **No implementation exists at all.** | n/a | Same — aspirational, zero backing code. If built, likely whole-DB-or-schema in spirit (grants aren't folder-like). |
+| `privilege_audit` | **No implementation exists at all.** | n/a | Aspirational, zero backing code — kept in the catalog anyway (confirmed 2026-08-11): not worth deleting, low priority to build. If built, likely whole-DB-or-schema in spirit (grants aren't folder-like). |
 | `egeria_db_survey` | Egeria's native async survey, triggered by asset guid only | **Whole-resource-only** | No schema/table target parameter exists in the trigger API. |
 
 **Also found, unrelated to scope shape but relevant to trusting any of this**: the web UI's "Run"
-action for database analyses doesn't dispatch by catalog id at all — clicking any of the four
-database cards (`schema_inventory`/`row_count_snapshot`/`index_health`/`privilege_audit`) triggers
-the identical whole-database `DatabaseSurveyor.survey()`, regardless of which was clicked. Repo
-already does real per-card scoped dispatch (`REPO_ANALYSIS_STEP_MAP`); database doesn't. A
+action for database analyses doesn't dispatch by catalog id at all — clicking any of the three
+remaining database cards (`schema_inventory`/`row_count_snapshot`/`privilege_audit`) triggers the
+identical whole-database `DatabaseSurveyor.survey()`, regardless of which was clicked. Repo already
+does real per-card scoped dispatch (`REPO_ANALYSIS_STEP_MAP`); database doesn't. **Confirmed
+2026-08-11: fix this alongside the rest of this doc's implementation**, not deferred — a
 prerequisite for database ever getting real scope-narrowing is first making its per-card dispatch
-real, which it isn't today.
+real. `index_health` (confirmed 2026-08-11: removed from `analysis_catalog.yaml` — zero backing
+implementation, not worth advertising) is no longer in this list.
 
 ### Filesystem
 
@@ -227,12 +233,6 @@ open question, in favor of the simpler existing model.
 
 ## Still open (need your input)
 
-- **Database's per-card dispatch gap** — worth fixing (`REPO_ANALYSIS_STEP_MAP`-equivalent for
-  database) before or alongside this work, since scope-narrowing for database is meaningless while
-  every card triggers the same whole-DB survey regardless of which was clicked?
-- **`index_health`/`privilege_audit`** — leave as aspirational catalog entries, or remove them
-  until they have real implementations, so the catalog doesn't advertise capabilities that don't
-  exist?
 - **Dependency-graph lateral exploration** (new, see below) — how far does the "follow a
   dependency to its own source repo" chain go before stopping, and does it write anything (a
   suggestion, a disposition-`undecided` pre-registration) or purely surface a "you might also want
@@ -265,7 +265,10 @@ repo with its own `SourceControlLibrary`. Two ideas raised, neither designed her
    visible and human-gated, without touching Assessment/Analysis surveyors at all.
 2. **Phase 2** — D5 (target-shape registry) + D6 (compatibility-gated scoped analysis). Larger,
    separate design pass — touches five-plus surveyors and two core tables, once Phase 1's local
-   catalog exists to scope *against*.
+   catalog exists to scope *against*. **Confirmed 2026-08-11: database's per-card dispatch fix
+   (`REPO_ANALYSIS_STEP_MAP`-equivalent for database) happens alongside this phase** — a
+   prerequisite for database's schema→table narrowing to mean anything, since all three remaining
+   database cards currently trigger the identical whole-DB survey regardless of which was clicked.
 
 ## Verification (once decisions are settled)
 

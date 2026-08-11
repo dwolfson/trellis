@@ -237,21 +237,6 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
-  - id: index_health
-    name: "Index Health"
-    description: "Identify unused indexes, missing indexes on foreign keys, and bloated indexes."
-    resource_types: ["database"]
-    intent: assessment  # scores index hygiene against best practice — unchanged
-    perspectives: ["dba"]
-    annotation_types: ["RequestForActionAnnotation", "DataClassAnnotation"]
-    source: local
-    run_time: fast
-    action: survey
-    recommended: true
-    egeria_registration:
-      candidate: false
-      native_process_ref: null
-
   - id: privilege_audit
     name: "Privilege Audit"
     description: "Review database roles, grants, and superuser accounts for security hygiene."
