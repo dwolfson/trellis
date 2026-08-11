@@ -6,9 +6,14 @@ not built, roadmap only"). This is that design pass, grounded in a direct read o
 the three Assessment sub-surveyors, `project_file_inventory`'s schema, and pyegeria's actual asset-
 creation APIs — not assumptions.
 
-**Revised 2026-08-11** to separate *survey* from *catalog* as two distinct steps, rather than treating
-"a sub-surveyor's finding mentions a file" as the trigger for creating it as an asset. See "Survey vs.
-catalog" below — this is the central architectural correction from the original pass.
+**Revised 2026-08-11 (1st pass)** to separate *survey* from *catalog* as two distinct steps, rather than
+treating "a sub-surveyor's finding mentions a file" as the trigger for creating it as an asset. See
+"Survey vs. catalog" below.
+
+**Revised 2026-08-11 (2nd pass)** to add real file/folder *metadata* capture (permissions, size, last-
+update, ownership) and the Assessment-facing analytics built on top of it (kind/size/staleness/ownership
+distributions, growth over time via re-survey) — see "Metadata capture" and "Analytics dimensions"
+below, and D9-D13.
 
 ## Context
 
@@ -64,6 +69,65 @@ Egeria's native engine to survey afterward. So RE's own code has to *do* the sur
 `project_file_inventory` (already persisted by the Profile phase, file paths + sizes, no content) as the
 data source — but it should adopt Egeria's same two-phase shape rather than re-inventing something
 weaker.
+
+## Metadata capture — what's actually available, and at what cost
+
+The survey should capture real filesystem/git metadata (permissions, size, last-update, ownership,
+created), not just path+size. What's genuinely available splits into two very different cost tiers —
+confirmed by reading PyGithub's actual response shapes and this codebase's existing API usage, not
+assumed:
+
+**Tier 1 — free, already in the one API call RE makes today.** `GitHubClient`/`StatsFetcher` already
+call `repo.get_git_tree(sha, recursive=True)` to build the file inventory. Each returned
+`GitTreeElement` carries `mode` (`"100644"` regular, `"100755"` executable, `"120000"` symlink,
+`"040000"` subtree) and `size` alongside `path` — RE's current code (`client.py`'s `list_files()`/
+`_list_files_walk()`) reads `.path` and discards `mode`/`size` even though they cost nothing extra.
+Capturing them for **every** inventoried file, not just the survey's worthy subset, is free.
+
+**Also Tier 1 — cheap, one file, covers the whole repo.** `CODEOWNERS` (root, `.github/`, or `docs/`,
+per GitHub's own lookup order) maps path *patterns* to owning teams/individuals. Parsing it is one file
+fetch + local glob-pattern matching against every path already in the inventory — no per-file API cost,
+and (unlike per-file commit history) it gives a real ownership signal for the *entire* repo, not just a
+small flagged subset. `DocumentationSurveyor` already checks for `CODEOWNERS`'s mere *presence* (as one
+of its hygiene files) but never parses its contents — this plan is the first thing to actually read it.
+
+**Tier 2 — expensive, and does not have a batch form.** "Last commit that touched path X" and "first
+commit that added path X" are git-history questions — the git tree/blob objects themselves are
+content-addressed and carry no timestamp at all (this is inherent to git's object model, not a PyGithub
+limitation). The only sources are `Repository.get_commits(path=X)` (REST, one call per file) or GraphQL's
+`history(path: X)` (still one query per file to reach a specific path's history) — confirmed: **no
+bulk/multi-path variant exists** in PyGithub's surface or in GitHub's REST API, and RE has zero existing
+GraphQL client code to fall back on (a docstring in `client.py` claims GraphQL is "available via
+`query()`" — confirmed false, no such method exists). Per-file, this is a real GitHub API cost that
+scales with file count.
+
+**The honest consequence**: a *complete, whole-repo* staleness/age distribution (every file's real
+last-modified date) is not cheap and is explicitly out of scope for this pass — it would need either a
+real `git clone` with history (a genuine architecture change away from RE's zipball-only, no-persistent-
+clone convention) or GitHub GraphQL query batching (aliased sub-queries in one request, reducing N calls
+toward N/50-ish — a real technique, but RE has no GraphQL client today, so this is new client
+infrastructure, not a config toggle). D9 below scopes staleness capture to what's actually affordable
+now: the survey's own small worthy-subset (already bounded by D1's heuristics), not the full inventory.
+
+## Analytics dimensions — what Assessment should be able to show
+
+Grounded in the cost tiers above, plus one important finding: **file-kind distribution and trending
+already exist** — `FileClassifierSurveyor` already classifies files (Egeria-first: `file_classifier.py`
+calls `ValidMetadataManager.get_valid_metadata_value()`/`get_valid_metadata_values()` against Egeria's
+own `DataFile` valid-value set for `fileName`/`fileExtension`, falling back to a small built-in table
+only when Egeria has no answer) and persists results to `project_file_type_counts`, an append-only,
+`surveyed_at`-stamped table with a working trend reader (`query_file_type_history()`) already powering a
+chart. **This plan should reuse that, not duplicate it** — "kind distribution, using Egeria's broader
+value set" is mostly already built; the gap is everything *else*:
+
+| Dimension | Source | Cost | Status |
+|---|---|---|---|
+| Kind/type distribution | `FileClassifierSurveyor` → Egeria `DataFile` valid values | Already paid for | **Already built** — reuse, don't duplicate |
+| Size distribution | Tier 1 (git tree, free) | Free, whole repo | New — D10 |
+| Permission/mode distribution (executable files, symlinks) | Tier 1 (git tree, free) | Free, whole repo | New — D10 |
+| Ownership (CODEOWNERS-mapped) | Tier 1 (one file, free) | Free, whole repo | New — D9/D12 |
+| Staleness/age distribution | Tier 2 (per-file commit history) | Expensive, no batch form | New, **scoped to the worthy subset only** — D9 |
+| Growth over time | Re-survey + append-only snapshot | Same pattern as `project_file_type_counts` | New — D11 |
 
 ## Grounding (confirmed via direct code/API inspection, 2026-08-10/11)
 
@@ -197,15 +261,101 @@ the top-level asset) — the recommended set stays small (single-to-low-double-d
 with folders included, per D1's browsable-range heuristic), so a live Egeria lookup on every publish is
 cheap, and a local cache would just be one more place these GUIDs could drift from Egeria's own state.
 
+**D9 — Metadata capture is tiered exactly along the cost lines above; staleness is scoped to the worthy
+subset, not the full inventory.** `SubResourceSurveyor` (D1) gains two additional, independent
+responsibilities beyond worthiness scoring:
+- **Tier 1, full-repo, every survey run**: `mode` and `size` (already free per-file from the existing
+  git tree call) get added as columns on `project_file_inventory` itself (`file_mode TEXT DEFAULT ''`,
+  matching the table's existing nullable-default style) — populated by `StatsFetcher`/whatever already
+  calls `get_git_tree()`, not by `SubResourceSurveyor`, since it's free data already flowing through an
+  existing call, not a new fetch this surveyor needs to make itself. `SubResourceSurveyor` then reads
+  it back out alongside `file_path`/`file_size_bytes` for its own analytics (D10).
+- **Tier 1, full-repo, CODEOWNERS**: `SubResourceSurveyor` fetches `CODEOWNERS` once (root → `.github/`
+  → `docs/`, GitHub's own lookup order, first hit wins) and pattern-matches it against every inventoried
+  path — cheap, whole-repo, no new registry column needed since it's derived at survey time, not stored
+  raw (see D12 for where the derived result lands).
+- **Tier 2, worthy-subset only**: for each entry the worthiness heuristic already flagged (D1's small,
+  bounded list — not the full inventory), `SubResourceSurveyor` calls `repo.get_commits(path=X)` once to
+  get the most recent commit's date (`[0].commit.author.date`) as "last updated," and once more with
+  pagination to the last page for "first added" (oldest commit touching that path) — both real API calls,
+  but bounded by the same single-to-low-double-digit count D1 already established, not by repo size.
+  **Explicitly not attempted for the full inventory** — see "Metadata capture" above for why.
+
+**D10 — Size and permission-mode distributions are computed full-repo, every run, and persisted as a
+metric snapshot — not part of the findings list.** These are repo-wide aggregate summaries (a histogram,
+not per-path detail), which is exactly what the existing `project_analysis_metrics` table (generic,
+`kind`-discriminated, from the earlier analysis-kind extensibility redesign) already models — no new
+table. `SubResourceSurveyor` calls `upsert_metric(slug, "repo_sub_resource_survey", metric_name=
+"size_distribution", metric_value=<total bytes>, detail={"buckets": {...}}, surveyed_at=...)` and again
+for `"mode_distribution"` (counts of regular/executable/symlink). Bucket boundaries for size (e.g. <1KB,
+1KB-10KB, 10KB-100KB, 100KB-1MB, >1MB) are a first-pass default, not validated against real repos yet —
+flagged as tunable, same posture as D1's folder file-count range.
+
+**D11 — Growth over time reuses `project_analysis_metrics`'s existing append-only + `surveyed_at`
+shape — the identical pattern `project_file_type_counts`/`query_file_type_history()` already
+established.** Every `SubResourceSurveyor` run appends new metric rows (D10) rather than overwriting —
+this is already `upsert_metric()`'s behavior for every other `AnalysisKind`, so no new code path, just a
+new `kind` value feeding into the generic `query_metrics_history()` reader that already exists. A
+repo-size-over-time or file-count-over-time trend chart falls out of re-running this survey periodically
+(e.g. via the existing schedule mechanism) with zero new trend-charting infrastructure.
+
+**D12 — Ownership is CODEOWNERS-derived, attached per-entry in the survey's findings list, not a
+separate table.** Each finding row (D1's `detail_json`) gains an `owners: list[str]` field — the
+CODEOWNERS pattern(s) matching that path, resolved at survey time (D9). This applies to *every*
+inventoried path the worthiness heuristic considered (worthy or not — CODEOWNERS matching is free, so
+there's no reason to withhold it from the not-worthy entries the finding already lists), giving "who
+owns this" for the whole repo's structure, not just the cataloged subset. No repos without a
+`CODEOWNERS` file simply get `owners: []` everywhere — not treated as an error.
+
+**"Visibility" — read as repo-level, already covered; not a new per-file signal.** The most direct
+reading of "ownership/visibility" as a paired phrase is GitHub's own repo-level `visibility`/`private`
+flag — already captured by `StatsFetcher`'s recent "persist the full GitHub attribute set" work
+(`project_stats.visibility`/`is_private`) and displayed in Scouting. A *per-file* visibility concept
+doesn't map cleanly onto a public (or even private) GitHub repo — every tracked file is equally visible
+to anyone with repo access; there's no per-path ACL to surface. If a different meaning was intended
+(e.g. "is this file publicly documented/exposed as an API surface" vs. internal-only), that's closer to
+`ApiStructureSurveyor`'s deferred file-level-significance territory (see "Explicitly deferred") than a
+metadata-capture concern — flagging the ambiguity rather than guessing further.
+
+**D13 — Other dimensions considered, and why each is in/out of this pass:**
+- **Orphaned/dead files** (inventoried but never referenced by anything in `project_code_relationships`)
+  — genuinely free (RE already has both tables; this is a join, not a new fetch) and a real "worth a
+  second look" signal. **In scope, folded into D1's worthiness heuristics** as an additional reason a
+  file might be flagged (or, inversely, a reason a large unreferenced folder is *more* interesting to
+  flag, not less) — not a separate feature.
+- **Churn/edit-frequency hot-spots** (files that change unusually often, not just when they last
+  changed) — same Tier 2 cost problem as staleness (needs per-file commit *counts*, not just the latest
+  date; `get_commits(path=X)` would need to be paginated to completion to count accurately). **Out of
+  scope this pass**, same reasoning as full-repo staleness.
+- **License-header consistency per file** — requires reading file *content*, which the survey's own
+  stated boundary explicitly excludes ("only file/folder characteristics ... not the contents"). **Out
+  of scope**, and arguably belongs to a content-aware surveyor if ever built, not this one.
+- **Binary vs. text mix** — derivable for free from the kind/type classification that already exists
+  (`FileClassifierSurveyor`'s output already implies binary-vs-text per file via its type mapping). **Not
+  a new capture**, just a possible new cross-tab view over data that already exists — worth noting as a
+  cheap future addition to the frontend, not backend work.
+
 ## Implementation
 
+**Registry** (`resource_explorer/registry.py`): `project_file_inventory` gains `file_mode TEXT DEFAULT
+''` (D9, Tier 1) via the existing migration-list pattern (`for col, defn in [...]`) — the only schema
+change in this whole plan. No new tables — the survey's worthiness/ownership list uses the existing
+generic `project_analysis_findings` (D1/D12); the size/mode distributions and growth trending use the
+existing generic `project_analysis_metrics` (D10/D11).
+
+**`resource_explorer/github/client.py` / `stats_fetcher.py`**: whichever already calls `get_git_tree()`
+for file inventory also captures `.mode` per entry and writes it into the new `file_mode` column —
+mechanical, since the data is already in the response being discarded today.
+
 **New `resource_explorer/surveyors/sub_surveyors/sub_resource_survey.py`**: `SubResourceSurveyor`,
-`STEP = "SubResourceSurvey"`. Reads `project_file_inventory` via the registry, builds a folder tree in
-memory by splitting `file_path` on `/`, applies D1's heuristics up to `max_depth`, and persists the
-recommendation list via `upsert_finding(slug, "repo_sub_resource_survey", findings, surveyed_at=...)`
-where each finding row's `detail_json` carries `{path, kind: "file"|"folder", reason, worthy: bool}` —
-including the *not*-worthy entries too (so the finding can report "considered N, recommended M", not
-just the winners).
+`STEP = "SubResourceSurvey"`. Reads `project_file_inventory` (now including `file_mode`) via the
+registry, builds a folder tree in memory by splitting `file_path` on `/`, applies D1's heuristics up to
+`max_depth`, fetches and parses `CODEOWNERS` once (D9/D12), fetches Tier-2 commit dates only for the
+worthy subset (D9), and persists two things: the recommendation list via `upsert_finding(slug,
+"repo_sub_resource_survey", findings, surveyed_at=...)` — each row's `detail_json` carrying `{path,
+kind: "file"|"folder", reason, worthy: bool, owners: list[str], last_updated_at?: str,
+first_added_at?: str}` (the last two only present for worthy entries, per D9's Tier-2 scoping) — and the
+size/mode distribution snapshots via `upsert_metric()` (D10/D11).
 
 **`resource_explorer/surveyors/repo_survey_definition_adapter.py`**: new `AnalysisKind` entry for
 `sub_resource_survey` (id/step-key/surveyor registration, following the existing `ANALYSIS_KINDS`
@@ -217,10 +367,9 @@ files).
 `repo_sub_resource_survey` finding. Processes folder-kind entries first (creating each `DataFolder`,
 `parentGUID` = the repo asset or an already-created ancestor folder's GUID), then file-kind entries
 (`parentGUID` = its containing folder's GUID if that folder was itself created this pass, else the repo
-asset GUID directly per D4). Each creation is qualified-name-guarded per D8.
-
-**No registry schema changes** — the existing generic `project_analysis_findings` table (with its
-`detail_json` column) covers the survey's recommendation list; no new table, no migration.
+asset GUID directly per D4). Each creation is qualified-name-guarded per D8, and each created asset's
+properties include whatever D9 metadata that entry carries (owners, last-updated, mode) as
+`additionalProperties` — the catalog gets the richer metadata too, not just RE's own local findings view.
 
 ## Verification
 
@@ -236,13 +385,23 @@ asset GUID directly per D4). Each creation is qualified-name-guarded per D8.
   correct `parentGUID` resolution (repo vs. an ancestor folder created this same pass vs. a
   previously-existing one found via lookup), skip-if-already-found idempotency, correct
   `parentRelationshipTypeName` per edge shape.
+- Unit tests (D9-D12): `CODEOWNERS` parsing/pattern-matching against a representative set of paths
+  (including the "no CODEOWNERS file" case → `owners: []` everywhere, not an error); Tier-2 commit-date
+  fetching called only for worthy entries (mock-assert call count equals the worthy-set size, not the
+  full inventory size — the actual cost-boundary regression guard); size/mode distribution bucketing
+  (`upsert_metric()` calls, correct bucket assignment at boundary values); `file_mode` correctly captured
+  and threaded through from the existing `get_git_tree()` call into `project_file_inventory`.
 - Live: run `SubResourceSurveyor` against a real repo, confirm its finding's recommendation list looks
-  sane by eye (not too broad, not empty) before ever publishing anything. Publish
+  sane by eye (not too broad, not empty) before ever publishing anything, and confirm `owners`/`file_mode`
+  are populated correctly for a repo that has a real `CODEOWNERS` file. Publish
   `steps=["repo_sub_resource_survey"]`, confirm the recommended folders/files appear as real, correctly
   nested Egeria assets (browsable via The Catalog, not just present in a raw search) — spot-check that a
-  file inside a recommended folder is parented to *that folder's* GUID, not flattened to the repo root.
-  Re-publish the same step and confirm no duplicates (D8). Publish a full survey (`steps=None`) and
-  confirm sub-resource cataloging runs alongside every other step without disrupting them.
+  file inside a recommended folder is parented to *that folder's* GUID, not flattened to the repo root,
+  and that its Egeria `additionalProperties` carry the D9 metadata. Re-publish the same step and confirm
+  no duplicates (D8). Publish a full survey (`steps=None`) and confirm sub-resource cataloging runs
+  alongside every other step without disrupting them. Re-run the survey a second time (no repo changes)
+  and confirm `project_analysis_metrics` gained a second, distinct `surveyed_at` row per D11 (the growth-
+  over-time regression check) rather than overwriting the first.
 - Full RE test suite green.
 
 ## Explicitly deferred (destination on record, not designed here)
@@ -254,6 +413,18 @@ asset GUID directly per D4). Each creation is qualified-name-guarded per D8.
   worthiness recommendation list rather than a separate cataloging path.
 - Tuning the D1 heuristics themselves (the 2–200 folder file-count range, the well-known-filename list,
   `max_depth`'s default of 2) against real, varied repos — first-pass defaults, expected to move after
-  live use, same as `HealthSurveyor`'s scoring weights did.
+  live use, same as `HealthSurveyor`'s scoring weights did. Same posture applies to D10's size-bucket
+  boundaries.
+- **Full-repo staleness/age distribution** (every file's real last-modified date, not just the worthy
+  subset) — needs either a real `git clone` with history (architecture change) or GitHub GraphQL query
+  batching (new client infrastructure RE doesn't have today). Named explicitly in "Metadata capture"
+  above so the cost tradeoff is on record, not designed here.
+- **Churn/edit-frequency hot-spots** and **license-header consistency** (D13) — same Tier-2 cost problem
+  and content-boundary problem respectively; not designed here.
+- `ApiStructureSurveyor`-driven cataloging (e.g. "the file with the most exported symbols") — it
+  currently aggregates by language, not by file, so it has no existing per-file significance signal;
+  `SubResourceSurveyor`'s own heuristics (D1) don't cover code-complexity-driven worthiness either.
+  Revisit once/if `ApiStructureSurveyor` gains file-level scoring, as its own contribution to the
+  worthiness recommendation list rather than a separate cataloging path.
 - Analysis/Enrichment's own publish scoping beyond what already exists — out of scope for this doc,
   named in `repo-phase-visibility-model.md` as a separate future item.
