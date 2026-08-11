@@ -1122,13 +1122,28 @@ let _scoutResults    = [];  // list of DiscoveredRepo from POST /api/discovery/s
 let _scoutFilterText = '';  // client-side filter over the current results batch
 
 // Disposition vocabulary — undecided (default) -> tracking/investigating ->
-// {abandoned, ignored}. Both terminal "not pursuing" states hide from the
-// sidebar/auto-select and prompt for a reason; they're kept distinct so the
-// history reads honestly ("passed on it early" vs. "went further, then
-// decided against it") — Scouting workflow redesign plan, D3.
+// {recommended, abandoned, ignored}. `recommended` is the positive terminal
+// state (added once real use showed the original vocabulary had a full
+// "decided against it" branch but nothing for "decided for it" — everything
+// else only implied "yes" indirectly, via group membership or survey
+// activity). Both "not pursuing" states hide from the sidebar/auto-select
+// and prompt for a reason; they're kept distinct so the history reads
+// honestly ("passed on it early" vs. "went further, then decided against
+// it") — Scouting workflow redesign plan, D3. Fully reversible in every
+// direction, same as the original four — this isn't a linear workflow, a
+// user can revisit any state from any other at any time.
+//
+// Each state's label doubles as its own button's text when it's the
+// *current* disposition (state/adjective form, e.g. "Recommended"); when
+// it's not current, the button shows the action form instead (imperative,
+// e.g. "Recommend") via _DISPOSITION_ACTION_LABELS below.
 const _DISPOSITION_LABELS = {
   undecided: '', tracking: '👁 Tracking', investigating: '🔬 Investigating',
-  abandoned: '⛔ Abandoned', ignored: '🚫 Ignored',
+  recommended: '👍 Recommended', abandoned: '⛔ Abandoned', ignored: '🚫 Ignored',
+};
+const _DISPOSITION_ACTION_LABELS = {
+  tracking: '👁 Track', investigating: '🔬 Investigate',
+  recommended: '👍 Recommend', abandoned: '⛔ Abandon', ignored: '🚫 Ignore',
 };
 const _HIDDEN_DISPOSITIONS = new Set(['ignored', 'abandoned']);
 function _dispositionIsHidden(d) { return _HIDDEN_DISPOSITIONS.has(d); }
@@ -2005,13 +2020,14 @@ function _renderProjectRow(p) {
     lifecycleBadge = '🆕'; lifecycleTitle = 'Registered, not yet surveyed';
   }
   // Disposition badge — separate axis from the lifecycle badge above:
-  // "was this worth pursuing further," decided after scouting. Only
-  // `investigating` gets a badge here (a real "actively being pursued"
-  // signal worth surfacing at a glance); `ignored` repos are excluded
-  // from this list entirely unless _showIgnoredRepos is on, in which
-  // case the whole row is just dimmed (no separate badge needed).
-  const dispositionBadge = p.disposition === 'investigating'
-    ? `<span data-tip="Investigating">🔬</span>` : '';
+  // "was this worth pursuing further," decided after scouting.
+  // `investigating` and `recommended` get a badge here (real "worth
+  // surfacing at a glance" signals — actively pursued, or positively
+  // decided on); `ignored`/`abandoned` repos are excluded from this list
+  // entirely unless _showIgnoredRepos is on, in which case the whole row
+  // is just dimmed (no separate badge needed).
+  const dispositionBadge = p.disposition === 'investigating' ? `<span data-tip="Investigating">🔬</span>`
+    : p.disposition === 'recommended' ? `<span data-tip="Recommended">👍</span>` : '';
 
   btn.innerHTML = `
     <div class="flex items-center justify-between gap-1 min-w-0">
@@ -4892,16 +4908,15 @@ function renderScoutingOverview(d) {
 // after scouting, worth pursuing further" (D10).
 function _renderDispositionControl(d) {
   const current = d.disposition || 'undecided';
-  const opts = [
-    { key: 'tracking', icon: '👁', label: 'Track' },
-    { key: 'investigating', icon: '🔬', label: 'Investigate' },
-    { key: 'abandoned', icon: '⛔', label: 'Abandon' },
-    { key: 'ignored', icon: '🚫', label: 'Ignore' },
-  ];
-  const buttons = opts.map(o => `
-    <button onclick="_setProjectDisposition('${_esc(d.github_url)}', '${o.key}')"
-      class="text-xs px-2 py-1 rounded transition-colors ${current === o.key ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${o.icon} ${o.label}</button>
-  `).join('');
+  const keys = ['tracking', 'investigating', 'recommended', 'abandoned', 'ignored'];
+  const buttons = keys.map(key => {
+    const isCurrent = current === key;
+    // Current disposition shows its state/adjective form ("Recommended");
+    // otherwise the action/imperative form ("Recommend") invites the click.
+    const text = isCurrent ? _DISPOSITION_LABELS[key] : _DISPOSITION_ACTION_LABELS[key];
+    return `<button onclick="_setProjectDisposition('${_esc(d.github_url)}', '${key}')"
+      class="text-xs px-2 py-1 rounded transition-colors ${isCurrent ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${text}</button>`;
+  }).join('');
   const reasonNote = (_dispositionIsHidden(current) && d.disposition_reason)
     ? `<div class="text-xs text-slate-500 mt-1">Reason: ${_esc(d.disposition_reason)}</div>` : '';
   return `<div class="pt-1">
@@ -4967,7 +4982,7 @@ function _renderScoutingDispositionView(d, history) {
     <div class="max-w-2xl space-y-4">
       <div>
         <h1 class="text-xl font-bold text-slate-100">${_esc(d.display_name)}</h1>
-        <p class="text-xs text-slate-400 mt-1">Was this repo, after scouting, worth pursuing further? Track it, investigate it further, or decide to abandon/ignore it — reversible any time.</p>
+        <p class="text-xs text-slate-400 mt-1">Was this repo, after scouting, worth pursuing further? Track it, investigate it further, recommend it, or decide to abandon/ignore it — reversible any time, in any direction.</p>
       </div>
       ${_renderDispositionControl(d)}
       <div>
@@ -7589,6 +7604,7 @@ function renderScoutResults() {
       <td class="px-3 py-2 text-xs whitespace-nowrap">
         <button onclick="_setScoutDisposition(${i}, 'tracking')" title="Track" class="px-1 hover:text-cyan-400">👁</button>
         <button onclick="_setScoutDisposition(${i}, 'investigating')" title="Investigate" class="px-1 hover:text-cyan-400">🔬</button>
+        <button onclick="_setScoutDisposition(${i}, 'recommended')" title="Recommend" class="px-1 hover:text-cyan-400">👍</button>
         <button onclick="_setScoutDisposition(${i}, 'abandoned')" title="Abandon" class="px-1 hover:text-red-400">⛔</button>
         <button onclick="_setScoutDisposition(${i}, 'ignored')" title="Ignore" class="px-1 hover:text-red-400">🚫</button>
       </td>

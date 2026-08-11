@@ -202,7 +202,7 @@ If you're pointed at an Enterprise GitHub instance rather than public GitHub, se
 
 ### Disposition and working set
 
-After scouting a repo, **Scouting → Disposition** records whether it's worth pursuing: `undecided` (default) → `tracking` / `investigating` → `abandoned` or `ignored`, with a full history of every decision, not just the latest. `ignored` means passed-on-early; `abandoned` means you went further and then decided against it — kept distinct so the history reads honestly. Either state hides the repo from the sidebar's default list (behind "Show hidden (N)") — reversible, not a delete.
+After scouting a repo, **Scouting → Disposition** records whether it's worth pursuing: `undecided` (default) → `tracking` / `investigating` → `recommended`, `abandoned`, or `ignored`, with a full history of every decision, not just the latest. Fully reversible in any direction at any time — this isn't a linear workflow, so any state can move to any other. `recommended` is the positive terminal state — "decided *for* it," distinct from the group/survey/publish activity that only implies "yes" indirectly. `ignored` means passed-on-early; `abandoned` means you went further and then decided against it — kept distinct so the history reads honestly. `ignored`/`abandoned` hide the repo from the sidebar's default list (behind "Show hidden (N)") — reversible, not a delete; `recommended` stays visible, same as `tracking`/`investigating`.
 
 Separately, each sidebar row has a working-set toggle (👁/🚫) — a personal "not in front of me right now" filter, independent of disposition. A repo someone else carried all the way to Curate can still be toggled out of your own daily view without changing its canonical disposition, and vice versa.
 

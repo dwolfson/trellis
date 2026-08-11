@@ -9,11 +9,16 @@ you already have." Reuses OrgImporter/_run_import_batch
 (github/org_importer.py) for the actual catalog-only registration, and
 GitHubClient.search_repos() for the search itself.
 
-Also owns repo triage disposition (undecided/tracking/investigating/ignored,
-registry.py's repo_dispositions table) — since a disposition can apply to a
-repo that was never imported at all, it's surfaced here on every search
-result, not just on already-registered projects (see projects.py's
-ProjectSummary.disposition for the registered-repo side of the same data).
+Also owns repo triage disposition (undecided/tracking/investigating/
+recommended/abandoned/ignored, registry.py's repo_dispositions table) —
+since a disposition can apply to a repo that was never imported at all,
+it's surfaced here on every search result, not just on already-registered
+projects (see projects.py's ProjectSummary.disposition for the
+registered-repo side of the same data). `recommended` is the positive
+terminal state — deliberately added later than the other four, once real
+use surfaced that the vocabulary had a full "decided against it" branch
+(abandoned/ignored) but nothing for "decided for it" (everything else
+implied "yes" only indirectly, via group membership or survey activity).
 
 "Discover repos to scout" plan, D4-D6, D10.
 """
@@ -347,7 +352,7 @@ async def import_repos(body: ImportRequest) -> ImportResponse:
 # further (investigated, maybe surveyed/analyzed) and then decided against
 # it — same hiding-from-sidebar treatment, but the history reads honestly
 # instead of collapsing both into one word (Scouting workflow redesign, D3).
-_VALID_DISPOSITIONS = {"undecided", "tracking", "investigating", "abandoned", "ignored"}
+_VALID_DISPOSITIONS = {"undecided", "tracking", "investigating", "recommended", "abandoned", "ignored"}
 
 
 class DispositionRequest(BaseModel):

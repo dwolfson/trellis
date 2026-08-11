@@ -92,6 +92,16 @@ class TestProjectsRouter:
         resp = client.get("/api/projects/")
         assert len(resp.json()) == 1
 
+    def test_list_projects_does_not_exclude_recommended(self, client, registry):
+        """recommended is the positive terminal state — stays visible, same
+        as tracking/investigating; only the negative terminal states
+        (abandoned/ignored) hide from the default sidebar list."""
+        registry.set_disposition("https://github.com/test/myproj", "recommended")
+        resp = client.get("/api/projects/")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["disposition"] == "recommended"
+
     def test_list_projects_excludes_abandoned_by_default(self, client, registry):
         registry.set_disposition("https://github.com/test/myproj", "abandoned", reason="no longer maintained")
         resp = client.get("/api/projects/")
