@@ -193,6 +193,22 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: ci_quality
+    name: "CI Quality"
+    description: "Whether CI workflows actually run tests/lint/build (keyword scan of workflow content), not just whether a CI config file exists."
+    resource_types: ["repo"]
+    intent: assessment  # true scoring against criteria — same family as security_scan
+    perspectives: ["steward", "security", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: data_file_profiling
     name: "Data File Profiling"
     description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."

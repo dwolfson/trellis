@@ -18,6 +18,7 @@ from resource_explorer.surveyors.sub_surveyors.api_structure import ApiStructure
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.documentation import DocumentationSurveyor
 from resource_explorer.surveyors.sub_surveyors.file_size import FileSizeSurveyor
+from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
@@ -223,6 +224,42 @@ class TestSecurityFeaturesSurveyorPersistence:
         self._seed_stats(registry, "myproj", '{"advanced_security": "enabled"}')
         SecurityFeaturesSurveyor(project, registry, surveyed_at="2026-01-01T00:00:00").run()
         findings = registry.query_findings("myproj", "security_features")
+        assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
+
+
+class TestCiQualitySurveyorPersistence:
+    """CiQualitySurveyor is read-only at survey time (same relationship
+    DependencySurveyor has with project_dependencies) — it just re-emits
+    whatever IngestionPipeline._parse_ci_workflows() last wrote."""
+
+    def test_no_findings_yields_no_annotations(self, registry, project):
+        assert CiQualitySurveyor(project, registry).run() == []
+
+    def test_reemits_persisted_findings_as_annotations(self, registry, project):
+        registry.upsert_finding(
+            "myproj", "ci_quality",
+            [
+                {"check_name": "ci_runs_tests", "label": "pass", "summary": "CI runs tests", "confidence": 80},
+                {"check_name": "ci_runs_lint", "label": "gap", "summary": "CI does not run lint", "confidence": 80},
+            ],
+            surveyed_at="2026-01-01T00:00:00",
+        )
+        annotations = CiQualitySurveyor(project, registry).run()
+        assert len(annotations) == 2
+        labels = {a.json_properties["check_name"]: a.candidate_classifications[0] for a in annotations}
+        assert labels == {"ci_runs_tests": "pass", "ci_runs_lint": "gap"}
+
+    def test_does_not_write_new_findings(self, registry, project):
+        # Regression guard: this surveyor must never call upsert_finding
+        # itself — re-parsing/re-persisting is IngestionPipeline's job.
+        registry.upsert_finding(
+            "myproj", "ci_quality",
+            [{"check_name": "ci_runs_tests", "label": "pass", "summary": "x", "confidence": 80}],
+            surveyed_at="2026-01-01T00:00:00",
+        )
+        CiQualitySurveyor(project, registry).run()
+        findings = registry.query_findings("myproj", "ci_quality")
+        assert len(findings) == 1
         assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
 
 

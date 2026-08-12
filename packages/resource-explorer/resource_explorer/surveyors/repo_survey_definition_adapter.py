@@ -42,6 +42,7 @@ from typing import Callable
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
     ApiStructureSurveyor,
+    CiQualitySurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
     DocumentationSurveyor,
@@ -150,6 +151,12 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "scanning, etc.) — configuration state, not artifact presence.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+    ),
+    "repo_ci_quality": StepInfo(
+        "repo_ci_quality", CiQualitySurveyor,
+        "Whether CI workflows actually run tests/lint/build, via a keyword "
+        "scan of workflow content — not just whether a CI config exists.",
+        ["ClassificationAnnotation"],
     ),
     "repo_api_structure": StepInfo(
         "repo_api_structure", ApiStructureSurveyor,
@@ -350,6 +357,30 @@ def _security_features_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _ci_quality_results(registry, slug: str) -> dict:
+    # Same uniform finding shape as _security_results/_license_results.
+    rows = registry.query_findings(slug, "ci_quality")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    return {"findings": findings}
+
+
+def _ci_quality_trend(registry, slug: str) -> list[dict]:
+    # Pass-count per run — mirrors _security_features_trend's shape.
+    by_run: dict[str, dict] = {}
+    for r in registry.query_findings_history_raw(slug, "ci_quality"):
+        bucket = by_run.setdefault(r["surveyed_at"], {"passing": 0, "total": 0})
+        bucket["total"] += 1
+        if r["label"] == "pass":
+            bucket["passing"] += 1
+    return [
+        {"surveyed_at": ts, "value": counts["passing"], "total_checks": counts["total"]}
+        for ts, counts in sorted(by_run.items())
+    ]
+
+
 def _sub_resource_survey_results(registry, slug: str) -> dict:
     # Same uniform finding shape _security_results/_documentation_results
     # use ("worthy"/"not_worthy" are this kind's own label vocabulary) —
@@ -513,6 +544,10 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "security_features": AnalysisKind(
         "security_features", ["repo_security_features"], family="security",
         results=AnalysisKindResults(_security_features_results, _security_features_trend, "findings_list"),
+    ),
+    "ci_quality": AnalysisKind(
+        "ci_quality", ["repo_ci_quality"],
+        results=AnalysisKindResults(_ci_quality_results, _ci_quality_trend, "findings_list"),
     ),
 }
 

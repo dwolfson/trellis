@@ -124,6 +124,51 @@ class TestRefreshProfile:
             MockGHClient.assert_not_called()
 
 
+class TestCiWorkflowsRefreshedByProfile:
+    """Assessment expansion plan B4 — _parse_ci_workflows() is called from
+    refresh_profile() (unlike _parse_dependencies, which today only runs at
+    full ingestion), so "Refresh & profile" keeps ci_quality findings
+    current too."""
+
+    def _make_local_root_with_ci(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "main.py").write_text("def f(): pass\n")
+        wf_dir = root / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text("jobs:\n  t:\n    steps:\n      - run: pytest\n")
+        return root
+
+    def test_refresh_profile_populates_ci_quality_findings(self, registry, tmp_path):
+        pipeline = _make_pipeline(registry)
+        local_root = self._make_local_root_with_ci(tmp_path)
+        client = MagicMock()
+        client.download_zipball.return_value = local_root
+
+        pipeline.refresh_profile(
+            "myproj", "https://github.com/test/myproj", [],
+            include_symbols=False, client=client, repo=MagicMock(),
+        )
+
+        findings = registry.query_findings("myproj", "ci_quality")
+        by_check = {f["check_name"]: f for f in findings}
+        assert by_check["ci_runs_tests"]["label"] == "pass"
+        assert by_check["ci_runs_lint"]["label"] == "gap"
+
+    def test_refresh_profile_no_workflows_writes_no_findings(self, registry, tmp_path):
+        pipeline = _make_pipeline(registry)
+        local_root = _make_local_root(tmp_path)  # no .github/workflows
+        client = MagicMock()
+        client.download_zipball.return_value = local_root
+
+        pipeline.refresh_profile(
+            "myproj", "https://github.com/test/myproj", [],
+            include_symbols=False, client=client, repo=MagicMock(),
+        )
+
+        assert registry.query_findings("myproj", "ci_quality") == []
+
+
 class TestExtractSymbolsOnlyWrapper:
     def test_extract_symbols_only_delegates_to_refresh_profile(self, registry, tmp_path):
         """extract_symbols_only() is now a thin wrapper — same -> int contract,

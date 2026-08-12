@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -144,6 +145,7 @@ class IngestionPipeline:
         self._store_file_inventory(project_slug, code_root, repo=repo)
         self._parse_dependencies(project_slug, code_root)
         self._profile_data_files(project_slug, code_root)
+        self._parse_ci_workflows(project_slug, code_root)
         return file_count, loc
 
     def _ingest_collection(
@@ -258,6 +260,7 @@ class IngestionPipeline:
 
             file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
             self._profile_data_files(project_slug, local_root)
+            self._parse_ci_workflows(project_slug, local_root)
 
             if include_symbols:
                 from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
@@ -306,6 +309,29 @@ class IngestionPipeline:
                 self.console.print(f"[dim]Dependencies: {len(deps)} entries indexed.[/dim]")
         except Exception as exc:
             self.console.print(f"[dim]Dependency parsing skipped: {exc}[/dim]")
+
+    def _parse_ci_workflows(self, project_slug: str, local_root: Path) -> None:
+        """Assessment expansion plan B4 — mirrors _parse_dependencies'
+        pattern exactly, but writes straight into the generic
+        project_analysis_findings table (kind="ci_quality") rather than a
+        dedicated table, since CiQualitySurveyor only ever reads these
+        findings back (same read-only-at-survey-time relationship
+        DependencySurveyor has with project_dependencies) — there's no
+        separate "latest state" shape to maintain beyond the findings
+        themselves. Called from both full ingestion and refresh_profile()
+        (unlike _parse_dependencies, which today only runs at full
+        ingestion) so "Refresh & profile" keeps ci_quality current too."""
+        try:
+            from resource_explorer.ingestion.ci_workflow_parser import CiWorkflowParser
+            findings = CiWorkflowParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(
+                    project_slug, "ci_quality", findings,
+                    surveyed_at=datetime.utcnow().isoformat(),
+                )
+                self.console.print(f"[dim]CI quality: {len(findings)} check(s) evaluated.[/dim]")
+        except Exception as exc:
+            self.console.print(f"[dim]CI workflow parsing skipped: {exc}[/dim]")
 
     # ── local file helpers ────────────────────────────────────────────────────
 
