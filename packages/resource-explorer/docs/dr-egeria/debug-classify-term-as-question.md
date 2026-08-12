@@ -1,5 +1,30 @@
 # Debug — Classify Term as Question validation failure
 
+> **Resolved 2026-08-12** — fixed upstream by upgrading pyegeria to
+> 6.0.17.21 (see egeria-workspaces-fs's `PyegeriaWebHandler/Dockerfile-
+> fast-api` + new `bin/update-pyegeria.sh`). Kept below for reference:
+> the repro pattern and the by-name-lookup gotcha it surfaced are still
+> useful precedent.
+>
+> **Diagnostic tip for next time a by-name lookup goes sideways**:
+> pyegeria has `ClassificationExplorer.get_element_by_guid()` — resolve
+> the element by GUID directly instead of re-guessing name variants
+> (apostrophes, punctuation, etc.) against a broken search. This would
+> have shortcut the "is the term still even there?" uncertainty during
+> the cleanup below (see `Delete Term` duplicate-cleanup note) — none of
+> the `egeria` MCP tools here expose it (`egeria_execute_command`/
+> `dr_egeria_run_block` only run Dr.Egeria markdown commands), so it
+> needs a direct pyegeria call, not this MCP path.
+>
+> **`Delete Term` works** (confirmed 2026-08-12 cleaning up two duplicate
+> "How widely adopted..." terms created while diagnosing this bug) —
+> requires both `Display Name` and `Qualified Name` (Qualified Name alone
+> fails: "Missing required attribute: 'Display Name'"). Not currently
+> exercised anywhere else in this doc set; dwolfson is adding a
+> delete-command family to the dr_egeria backlog since `Delete Glossary
+> Term` (a different, guessed name) is a recognized-but-unimplemented
+> command ("No processor registered").
+>
 > Minimal repro for a `Request body failed validation` error hit while
 > processing the Scouting questions batch (2026-08-12). Targets an
 > already-existing real GlossaryTerm ("Who maintains this repository?",

@@ -67,7 +67,12 @@ import sys
 from pathlib import Path
 
 REQUIRED_COLUMNS = ["Question", "Asked At", "Answered At"]
-OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source"]
+# "Answering Analysis" is RE-internal roadmap documentation (which
+# analysis_catalog.yaml id, if any, actually answers this question today)
+# — CSV/human-facing only, deliberately not sent to Egeria. It's excluded
+# here so the "everything after Rationale/Source is a perspective column"
+# rule in generate() doesn't try to link it as a Perspective.
+OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis"]
 
 
 def _block(command: str, **fields: str) -> str:
