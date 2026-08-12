@@ -4746,6 +4746,13 @@ function showMainView(tab) {
   const navActivity   = document.getElementById('nav-activity');
 
   [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingSubResourcesView, scoutingQuestionsView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
+  // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
+  // security set — "Scouting ignores it entirely," per its own HTML comment)
+  // visually duplicates the Questions tab's own dedicated 12-name Perspective
+  // filter, two different vocabularies stacked on screen at once. Hide it
+  // specifically here rather than resolve the vocabularies — that's the
+  // larger Unification Thread (see foundations.md), not a quick fix.
+  document.getElementById('perspective-row')?.classList.toggle('hidden', tab === 'scouting-questions');
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
