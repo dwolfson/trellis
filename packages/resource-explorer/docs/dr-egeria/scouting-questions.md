@@ -408,7 +408,7 @@ User Questions
 Are there outstanding CVEs?
 
 ### Description
-No CVE/dependency-vulnerability scan exists in RE today — real gap; candidate tools: OSV, Dependency-Track, Snyk, Trivy.
+No CVE/dependency-vulnerability scan exists in RE today — real gap; candidate tools: OSV.dev (Google/OpenSSF vulnerability API), OWASP Dependency-Track (SBOM-based CVE monitoring), Trivy/Grype (manifest+lockfile scanners).
 
 ### Summary
 Understand the risk.
@@ -2340,7 +2340,7 @@ User Questions
 Is there a current, published, security analysis?
 
 ### Description
-SecurityHygieneSurveyor covers SECURITY.md/CI/LICENSE presence (Assessment) — a real CVE/OpenSSF-Scorecard-style deep scan is Analysis-tier, real gap.
+SecurityHygieneSurveyor covers SECURITY.md/CI/LICENSE presence (Assessment) — a real deep scan is Analysis-tier, real gap; candidate tools: OpenSSF Scorecard (automated repo health/security checks), CHAOSS GrimoireLab/Augur (Linux Foundation project-health tooling) for the community-responsiveness dimension.
 
 ### Summary
 Third-party audit and security posture.
@@ -2524,7 +2524,7 @@ User Questions
 What explicit license does the repository use, and are there non-standard or copyleft terms?
 
 ### Description
-GitHub API license field gives the SPDX id cheaply (Scouting); copyleft-risk categorization needs a license-classification step — candidate tools: FOSSology, LicenseFinder, Mend, Black Duck.
+GitHub API license field gives the SPDX id cheaply (Scouting); copyleft-risk categorization needs a license-classification step — candidate tools: FOSSology (Linux Foundation compliance workspace), LicenseFinder, ClearlyDefined (crowdsourced licensing/provenance data), Mend, Black Duck. SPDX (ISO/IEC 5962) is the standard schema these results should conform to.
 
 ### Summary
 Identifies strict copyleft (GPL/AGPL), source-available shifts (BSL/SSPL), or dual-licensing risks before code integration.

@@ -385,6 +385,16 @@
            track it locally and optionally publish to Egeria. -->
       <div id="scouting-sub-resources-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
+      <!-- Questions sub-tab (repos, repo selected) — per-phase checklist of
+           the authored Question/Perspective/Intent model
+           (docs/dr-egeria/scouting-questions.csv, processed into Egeria),
+           filtered by a dedicated Perspective multi-select (the new
+           12-name Egeria-aligned set — deliberately NOT the legacy
+           activePerspectives 4-tag set used by Assessment/Analysis, which
+           predates this model; see the Unification Thread note in
+           docs/dr-egeria/foundations.md). -->
+      <div id="scouting-questions-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
       <!-- Survey report view (repos) — the deep report, reached via
            Scouting's "View full report →" link, or from Analysis/
            Assessment's "Run" cards until Phase B builds dedicated results
@@ -1356,6 +1366,7 @@ function _scoutingSubnavHtml(active) {
     { tab: 'survey',      label: '📊 Survey' },
     { tab: 'profile',     label: '📄 Coarse Profile' },  // "Coarse" to distinguish from any future deeper content-analysis pass; deliberately not "Discovery" (collides with the nav intent + the Discover sub-tab)
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
+    { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
   return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1377,6 +1388,7 @@ function _showScoutingSubTab(tab) {
   else if (tab === 'survey') showMainView('scouting-overview');
   else if (tab === 'profile') showMainView('scouting-profile');
   else if (tab === 'sub-resources') showMainView('scouting-sub-resources');
+  else if (tab === 'questions') showMainView('scouting-questions');
   else if (tab === 'disposition') showMainView('scouting-disposition');
 }
 
@@ -4718,6 +4730,7 @@ function showMainView(tab) {
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
   const scoutingProfileView = document.getElementById('scouting-profile-view');
   const scoutingSubResourcesView = document.getElementById('scouting-sub-resources-view');
+  const scoutingQuestionsView = document.getElementById('scouting-questions-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -4732,7 +4745,7 @@ function showMainView(tab) {
   const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingSubResourcesView, scoutingQuestionsView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
@@ -4763,6 +4776,9 @@ function showMainView(tab) {
   } else if (tab === 'scouting-sub-resources') {
     scoutingSubResourcesView.classList.remove('hidden');
     loadScoutingSubResourcesView();
+  } else if (tab === 'scouting-questions') {
+    scoutingQuestionsView.classList.remove('hidden');
+    loadScoutingQuestions();
   } else if (tab === 'report') {
     reportView.classList.remove('hidden');
     if (!_reportLoaded) loadSurveyReport();
@@ -4909,11 +4925,127 @@ function renderScoutingOverview(d) {
           ☁ Publish registration only
         </button>
         <button onclick="_showScoutingSubTab('profile')" class="text-xs text-slate-400 hover:text-slate-200 underline">📄 Coarse profile this repo →</button>
+        <button onclick="_showScoutingSubTab('questions')" class="text-xs text-slate-400 hover:text-slate-200 underline">❓ Questions checklist →</button>
         <button onclick="setNavIntent('analysis')" class="text-xs text-slate-400 hover:text-slate-200 underline" title="Re-embedding for chat/search isn't a Scouting-tier action — it's the 'Refresh & Re-ingest' card under Analysis, which is independently on-demand and schedulable there">🔄 Refresh chat search index (Analysis) →</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
       <div class="text-[11px] text-slate-500">${surveyedBadge} · ${publishedBadge}</div>
     </div>`;
+}
+
+// ── Questions checklist (repos) — per-phase view of the authored
+// Question/Perspective/Intent model (docs/dr-egeria/scouting-questions.csv,
+// processed into Egeria via docs/dr-egeria/foundations.md). Filtered by a
+// dedicated Perspective multi-select using the new 12-name Egeria-aligned
+// set (Governance/Financial/Steward/Data Owner/Consumer/App/AI Builder/
+// Privacy Officer/Community/Data Expert/Security/Architecture/Systems
+// Administration) — kept deliberately separate from the legacy 4-tag
+// activePerspectives (dba/data_scientist/steward/security) used by
+// Assessment/Analysis, which predates this model; see foundations.md's
+// header comment on the Unification Thread this is meant to eventually
+// join, not duplicate forever.
+let _questionsPhase = 'scouting';
+let _questionsActivePerspectives = new Set();
+let _questionsAllData = null;  // last-loaded (phase-filtered, perspective-unfiltered) response
+
+const _QUESTION_PHASES = ['scouting', 'discovery', 'assessment', 'analysis', 'enrichment', 'understanding', 'curate'];
+
+// Status vocabulary for kinds that don't depend on has_data (see
+// question_catalog_reader.py's QuestionAnswering.kind docstring for the
+// full kind list and what each means).
+const _QUESTION_KIND_STATUS = {
+  direct:   { icon: '✓', color: 'text-cyan-400',  label: 'Automatic — direct field' },
+  registry: { icon: '✓', color: 'text-cyan-400',  label: 'Automatic — RE registry query' },
+  chart:    { icon: '✓', color: 'text-cyan-400',  label: 'Automatic — Understanding trend chart' },
+  human:    { icon: '👤', color: 'text-slate-400', label: 'Needs human input via Enrichment' },
+  gap:      { icon: '○', color: 'text-slate-500', label: 'No RE surveyor exists for this yet' },
+  unknown:  { icon: '•', color: 'text-slate-500', label: 'Unclassified' },
+};
+
+function _questionStatus(q) {
+  if (q.kind in _QUESTION_KIND_STATUS) return _QUESTION_KIND_STATUS[q.kind];
+  // analysis | partial | mixed — real answer depends on has_data, computed
+  // per-resource server-side (see _question_has_data in projects.py).
+  if (q.has_data) return { icon: '✓', color: 'text-emerald-400', label: 'Answered — analysis has run' };
+  const partialNote = q.kind === 'gap' ? '' : ' (partial coverage even once run — see note)';
+  return { icon: '⚠', color: 'text-amber-400', label: `Not run yet${partialNote}` };
+}
+
+async function loadScoutingQuestions() {
+  if (!selectedProject) return;
+  const view = document.getElementById('scouting-questions-view');
+  view.innerHTML = _scoutingSubnavHtml('questions') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(selectedProject)}/scouting-questions?phase=${encodeURIComponent(_questionsPhase)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _questionsAllData = await res.json();
+    renderScoutingQuestions(_questionsAllData);
+  } catch (e) {
+    view.innerHTML = _scoutingSubnavHtml('questions') + `<div class="text-xs text-red-400">Failed to load questions: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _questionsPerspectiveList(data) {
+  const set = new Set();
+  (data.questions || []).forEach(q => (q.perspectives || []).forEach(p => set.add(p)));
+  return [...set].sort();
+}
+
+function renderScoutingQuestions(data) {
+  const view = document.getElementById('scouting-questions-view');
+  const allPerspectives = _questionsPerspectiveList(data);
+  const questions = (data.questions || []).filter(q =>
+    !_questionsActivePerspectives.size ||
+    (q.perspectives || []).some(p => _questionsActivePerspectives.has(p))
+  );
+
+  const phaseChips = _QUESTION_PHASES.map(p => `<button onclick="_setQuestionsPhase('${p}')"
+      class="text-xs px-2.5 py-1 rounded capitalize transition-colors ${p === _questionsPhase ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${p}</button>`).join('');
+
+  const perspectiveChips = allPerspectives.map(p => `<button onclick="_toggleQuestionsPerspective('${_esc(p)}')"
+      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_questionsActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
+
+  const rows = questions.map(q => {
+    const status = _questionStatus(q);
+    return `<div class="flex items-start gap-2 py-1.5 border-b border-slate-800/60 last:border-0">
+        <span class="${status.color} mt-0.5 shrink-0" title="${_esc(status.label)}">${status.icon}</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs text-slate-200">${_esc(q.question)}</div>
+          <div class="text-[10px] text-slate-500 mt-0.5">
+            ${(q.perspectives || []).map(p => _esc(p)).join(' · ')}
+            ${q.answered_at ? `<span class="text-slate-600">${(q.perspectives||[]).length ? ' · ' : ''}answered at ${_esc(q.answered_at)}</span>` : ''}
+          </div>
+          ${q.note ? `<div class="text-[10px] text-slate-600 mt-0.5">${_esc(q.note)}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('') || '<div class="text-xs text-slate-500 py-4 text-center">No questions for this phase/perspective combination.</div>';
+
+  const answeredCount = questions.filter(q => _questionStatus(q).icon === '✓').length;
+
+  view.innerHTML = _scoutingSubnavHtml('questions') + `
+    <div class="space-y-3">
+      <div>
+        <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+        <div class="flex flex-wrap gap-1.5">${phaseChips}</div>
+      </div>
+      ${allPerspectives.length ? `<div>
+        <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
+        <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
+      </div>` : ''}
+      <div class="text-[11px] text-slate-500">${answeredCount} / ${questions.length} answered or automatic</div>
+      <div class="bg-slate-950 border border-slate-800 rounded p-2">${rows}</div>
+    </div>`;
+}
+
+function _setQuestionsPhase(phase) {
+  _questionsPhase = phase;
+  loadScoutingQuestions();
+}
+
+function _toggleQuestionsPerspective(p) {
+  if (_questionsActivePerspectives.has(p)) _questionsActivePerspectives.delete(p);
+  else _questionsActivePerspectives.add(p);
+  if (_questionsAllData) renderScoutingQuestions(_questionsAllData);
 }
 
 // Disposition control shared by the Scouting overview card and (in its own,

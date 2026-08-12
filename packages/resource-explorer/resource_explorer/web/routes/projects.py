@@ -407,6 +407,103 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     return ScoutingScanResult(status="ok", slug=slug, message="Coarse scan complete.")
 
 
+class QuestionChecklistEntry(BaseModel):
+    question: str
+    asked_at: str
+    answered_at: str
+    perspectives: list[str] = []
+    kind: str  # analysis | direct | registry | human | chart | gap | partial | mixed | unknown
+    analysis_ids: list[str] = []
+    note: str = ""
+    # None = not applicable (direct/registry/human/chart/gap kinds — no RE
+    # analysis backs these, so there's nothing to check); True/False only
+    # for analysis/partial/mixed kinds, computed best-effort per resource.
+    has_data: bool | None = None
+
+
+class QuestionChecklist(BaseModel):
+    phase: str
+    perspectives: list[str] = []
+    questions: list[QuestionChecklistEntry] = []
+
+
+def _question_has_data(registry, slug: str, analysis_ids: list[str]) -> bool | None:
+    """Best-effort "has RE actually run this for this resource" check —
+    True as soon as ANY of the question's mapped analysis_ids has data,
+    False if none do, None if the question has no analysis_ids at all
+    (nothing to check). repository_health has no results_reader in
+    REPO_ANALYSIS_RESULTS_MAP (repo_survey_definition_adapter.py) — it's
+    checked via project_stats directly instead, the same signal
+    scouting-overview itself reads. Every reader call is wrapped: a
+    results_reader raising must never break the whole checklist."""
+    if not analysis_ids:
+        return None
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_RESULTS_MAP
+
+    for analysis_id in analysis_ids:
+        if analysis_id == "repository_health":
+            if registry.get_latest_project_stats(slug):
+                return True
+            continue
+        entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+        if not entry:
+            continue
+        results_reader, _ = entry
+        try:
+            data = results_reader(registry, slug)
+        except Exception:
+            continue
+        if data and (not isinstance(data, dict) or any(v for v in data.values())):
+            return True
+    return False
+
+
+@router.get("/{slug}/scouting-questions", response_model=QuestionChecklist)
+async def get_scouting_questions(
+    slug: str,
+    phase: str = "scouting",
+    perspectives: str | None = None,
+) -> QuestionChecklist:
+    """Per-phase Question checklist — which of the authored Scouting
+    questions (docs/dr-egeria/scouting-questions.csv, via
+    question_catalog_reader.py) this phase raises or can answer, filtered
+    by the active Perspective set (comma-separated query param, matching
+    the UI's activePerspectives multi-select — see index.html's
+    togglePerspective()), with a computed has_data flag for
+    analysis/partial/mixed-kind questions."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
+    entries = get_questions("repo", phase=phase, perspectives=persp_list or None)
+
+    checklist = []
+    for e in entries:
+        answering = e["answering"]
+        has_data = (
+            _question_has_data(registry, slug, answering["analysis_ids"])
+            if answering["kind"] in ("analysis", "partial", "mixed")
+            else None
+        )
+        checklist.append(QuestionChecklistEntry(
+            question=e["question"],
+            asked_at=e["asked_at"],
+            answered_at=e["answered_at"],
+            perspectives=e["perspectives"],
+            kind=answering["kind"],
+            analysis_ids=answering["analysis_ids"],
+            note=answering["note"],
+            has_data=has_data,
+        ))
+
+    return QuestionChecklist(phase=phase, perspectives=persp_list, questions=checklist)
+
+
 class ProfileScanRequest(BaseModel):
     include_symbols: bool = False
 
