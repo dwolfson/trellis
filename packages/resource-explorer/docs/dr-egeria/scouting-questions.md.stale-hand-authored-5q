@@ -1,0 +1,345 @@
+# Scouting — Questions & Perspectives (Repos)
+
+> Run `foundations.md` first (creates the shared glossaries + perspectives
+> this file references by name). This file only adds the Scouting Funnel
+> Stage term and Scouting's own questions. Run with VALIDATE first, then
+> PROCESS.
+>
+> Model: Question (Glossary Term, classified as Question) — Perspective
+> (Actor, from foundations.md) — Link Perspective to Question (question x
+> perspective) — Link Element To Scope / ScopedBy (question x intent, via
+> the Funnel Stages term below). Authored directly for now (not derived
+> from Survey/Analytic "answers" links) — this is the requirements
+> artifact that will later shape what Survey Types and Analytics get
+> built, not something computed from analytics that don't exist yet.
+>
+> Bindings here are metadata, not code — expected to evolve per-deployment
+> and over time. This is one manifestation; changing a question's
+> perspective/intent links later is a Link/Unlink command, not a schema
+> migration.
+
+---
+
+# Funnel stage term
+
+## Create Glossary Term
+
+### Glossary Name
+Funnel Stages
+
+### Display Name
+Scouting
+
+### Description
+Broad inventory across many resources, fast, summary view — is this
+resource active, roughly what is it, is it worth a closer look at all.
+Answerable from cheap, already-available metadata (e.g. the GitHub API for
+repos) — no deep content analysis needed at this stage.
+
+___
+
+# Questions
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is this repository actively maintained?
+
+### Description
+Is this repository actively maintained?
+
+### Summary
+Recency/frequency signal — last-pushed date, commit cadence — answerable
+from GitHub API metadata alone (RE's HealthSurveyor), no zipball needed.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is this repository actively maintained?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Data Expert
+
+### Question Name
+Is this repository actively maintained?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Steward
+
+### Question Name
+Is this repository actively maintained?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Consumer
+
+### Question Name
+Is this repository actively maintained?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is this repository actively maintained?
+
+### Scope Reference
+Scouting
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What does this repository do?
+
+### Description
+What does this repository do?
+
+### Summary
+Purpose/description — from the repo's own GitHub description field, no
+deeper analysis required.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What does this repository do?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Consumer
+
+### Question Name
+What does this repository do?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Data Expert
+
+### Question Name
+What does this repository do?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Architecture
+
+### Question Name
+What does this repository do?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What does this repository do?
+
+### Scope Reference
+Scouting
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Who maintains this repository?
+
+### Description
+Who maintains this repository?
+
+### Summary
+Ownership/contact signal — org, top contributors — from GitHub API
+metadata, relevant before any deeper trust assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Who maintains this repository?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Steward
+
+### Question Name
+Who maintains this repository?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Data Owner
+
+### Question Name
+Who maintains this repository?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Security
+
+### Question Name
+Who maintains this repository?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Who maintains this repository?
+
+### Scope Reference
+Scouting
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How widely adopted and active is this repository's community?
+
+### Description
+How widely adopted and active is this repository's community?
+
+### Summary
+Stars/forks/contributor-count and issue/PR responsiveness as an
+adoption/health proxy — cheap GitHub API signal, not a quality judgment on
+its own.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How widely adopted and active is this repository's community?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Community Lead
+
+### Question Name
+How widely adopted and active is this repository's community?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Consumer
+
+### Question Name
+How widely adopted and active is this repository's community?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How widely adopted and active is this repository's community?
+
+### Scope Reference
+Scouting
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Has this repository already been catalogued in Egeria?
+
+### Description
+Has this repository already been catalogued in Egeria?
+
+### Summary
+"Known inventory" check — is there already a SourceControlLibrary asset for
+this repo, independent of whether it's registered in Resource Explorer's
+own local registry. Ties to the Scouting "shop for data" search work
+(search should include what Egeria already knows, not just live GitHub
+search results).
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Has this repository already been catalogued in Egeria?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Steward
+
+### Question Name
+Has this repository already been catalogued in Egeria?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Governance Lead
+
+### Question Name
+Has this repository already been catalogued in Egeria?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Has this repository already been catalogued in Egeria?
+
+### Scope Reference
+Scouting
+
+___
