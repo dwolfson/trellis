@@ -79,7 +79,7 @@ class TestFilterByIntent:
     def test_filters_to_assessment(self):
         analyses = acr.get_analyses("repo", intent="assessment", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
-        assert ids == {"security_scan", "documentation_coverage"}
+        assert ids == {"security_scan", "documentation_coverage", "license_classification"}
 
     def test_intent_all_returns_everything(self):
         unfiltered = acr.get_analyses("repo", include_egeria_live=False)

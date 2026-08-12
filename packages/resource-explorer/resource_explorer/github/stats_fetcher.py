@@ -41,7 +41,7 @@ class StatsFetcher:
     - primary language + language breakdown (bytes)
     - lines_of_code (estimated from language bytes)
     - file_count (from git tree traversal)
-    - repo_size_kb, license, topics
+    - repo_size_kb, license (human-readable name), license_spdx_id, topics
     - repo_created_at, last_pushed_at
     - lifecycle/config flags: archived, disabled, is_fork, is_template,
       default_branch, has_issues/wiki/discussions/projects/pages,
@@ -68,6 +68,7 @@ class StatsFetcher:
         now = datetime.utcnow()
 
         releases = list(repo.get_releases())
+        license_name, license_spdx_id = self._license_info(repo)
 
         stats = {
             "project_slug": slug,
@@ -89,7 +90,8 @@ class StatsFetcher:
             "lines_of_code": self._estimate_loc(repo),
             "file_count": self._count_files(repo),
             "repo_size_kb": repo.size,
-            "license": self._license_name(repo),
+            "license": license_name,
+            "license_spdx_id": license_spdx_id,
             "topics": ",".join(repo.get_topics()),
             "repo_created_at": repo.created_at.isoformat() if repo.created_at else "",
             "last_pushed_at": repo.pushed_at.isoformat() if repo.pushed_at else "",
@@ -143,7 +145,7 @@ class StatsFetcher:
                  contributors_count, commits_30d, commits_90d, commits_365d, releases_count,
                  latest_release, latest_release_at, avg_release_interval_days,
                  primary_language, language_breakdown, lines_of_code, file_count,
-                 repo_size_kb, license, topics, repo_created_at, last_pushed_at,
+                 repo_size_kb, license, license_spdx_id, topics, repo_created_at, last_pushed_at,
                  archived, disabled, is_fork, is_template, default_branch,
                  has_issues, has_wiki, has_discussions, has_projects, has_pages,
                  network_count, subscribers_count, visibility, is_private,
@@ -156,7 +158,7 @@ class StatsFetcher:
                         :contributors_count, :commits_30d, :commits_90d, :commits_365d, :releases_count,
                         :latest_release, :latest_release_at, :avg_release_interval_days,
                         :primary_language, :language_breakdown, :lines_of_code, :file_count,
-                        :repo_size_kb, :license, :topics, :repo_created_at, :last_pushed_at,
+                        :repo_size_kb, :license, :license_spdx_id, :topics, :repo_created_at, :last_pushed_at,
                         :archived, :disabled, :is_fork, :is_template, :default_branch,
                         :has_issues, :has_wiki, :has_discussions, :has_projects, :has_pages,
                         :network_count, :subscribers_count, :visibility, :is_private,
@@ -389,12 +391,20 @@ class StatsFetcher:
                 pass
         return count
 
-    def _license_name(self, repo) -> str:
+    def _license_info(self, repo) -> tuple[str, str]:
+        """(name, spdx_id) — one repo.get_license() call feeding both the
+        existing human-readable `license` column and the new
+        `license_spdx_id` column (LicenseClassifierSurveyor, Assessment
+        expansion plan B1). PyGitHub's License object carries both on the
+        same object, so capturing spdx_id alongside the name that was
+        already being fetched is genuinely free — no second API call."""
         try:
             lic = repo.get_license()
-            return lic.license.name if lic and lic.license else ""
+            if lic and lic.license:
+                return lic.license.name or "", lic.license.spdx_id or ""
         except Exception:
-            return ""
+            pass
+        return "", ""
 
     _SECURITY_FEATURE_NAMES = (
         "advanced_security", "dependabot_security_updates", "secret_scanning",

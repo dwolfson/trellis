@@ -35,10 +35,11 @@ def test_each_step_key_delegates_to_orchestrator_with_itself_as_the_only_step():
         assert output == {"annotations": [f"ann-for-{key}"]}
 
 
-def test_all_eleven_step_keys_are_registered():
+def test_all_twelve_step_keys_are_registered():
     steps = _build_re_analysis_steps()
     assert set(steps.keys()) == {
         "repo_file_structure", "repo_file_size", "repo_language", "repo_health",
         "repo_dependency", "repo_documentation", "repo_security", "repo_api_structure",
         "repo_data_profiling", "repo_file_classification", "repo_sub_resource_survey",
+        "repo_license_classification",
     }

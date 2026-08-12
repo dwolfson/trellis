@@ -478,6 +478,14 @@ class ProjectRegistry:
                 ("avg_release_interval_days", "INTEGER DEFAULT 0"),
                 ("repo_size_kb", "INTEGER DEFAULT 0"),
                 ("license", "TEXT DEFAULT ''"),
+                # SPDX identifier (e.g. "MIT", "GPL-3.0", "Apache-2.0") — from
+                # the same repo.get_license() call `license` (the human-
+                # readable name) already comes from, so this is genuinely
+                # free (no new API call). Added for LicenseClassifierSurveyor
+                # (Assessment expansion plan B1) — a stable, well-known id is
+                # far more reliable to classify against than free-text name
+                # matching (e.g. "GNU General Public License v3.0" vs "GPL").
+                ("license_spdx_id", "TEXT DEFAULT ''"),
                 ("topics", "TEXT DEFAULT ''"),
                 ("repo_created_at", "TEXT DEFAULT ''"),
                 ("last_pushed_at", "TEXT DEFAULT ''"),

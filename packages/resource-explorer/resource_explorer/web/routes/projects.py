@@ -708,6 +708,16 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
                    "either it's scouting-tier (see Scouting instead) or an unknown id.",
         )
     _, trend_reader = entry
+    if trend_reader is None:
+        # e.g. license_classification — a single current-state classification,
+        # not a repeated-check story (license rarely changes), so it was
+        # registered with trend_reader=None rather than a reader that would
+        # always return a flat, near-meaningless one-point-per-run line.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' has no trend view — it's a current-state "
+                   "classification, not tracked over time.",
+        )
     return {"runs": trend_reader(registry, slug)}
 
 

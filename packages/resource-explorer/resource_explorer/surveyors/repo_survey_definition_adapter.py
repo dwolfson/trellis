@@ -49,6 +49,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     FileStructureSurveyor,
     HealthSurveyor,
     LanguageSurveyor,
+    LicenseClassifierSurveyor,
     SecurityHygieneSurveyor,
     SubResourceSurveyor,
 )
@@ -133,6 +134,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_security", SecurityHygieneSurveyor,
         "Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.",
         ["ClassificationAnnotation", "RequestForActionAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    "repo_license_classification": StepInfo(
+        "repo_license_classification", LicenseClassifierSurveyor,
+        "Classifies the repo's SPDX license id into a risk tier (permissive/"
+        "weak copyleft/strong copyleft/source-available/unknown).",
+        ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
     ),
     "repo_api_structure": StepInfo(
@@ -284,6 +292,21 @@ def _security_trend(registry, slug: str) -> list[dict]:
 def _documentation_results(registry, slug: str) -> dict:
     # Same uniform finding shape _security_results uses — see its comment.
     rows = registry.query_findings(slug, "documentation")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    return {"findings": findings}
+
+
+def _license_results(registry, slug: str) -> dict:
+    # Same uniform finding shape _security_results/_documentation_results
+    # use — license classification produces exactly one finding per run, so
+    # this is the smallest possible "findings_list" consumer, not a special
+    # case. No trend reader: license rarely changes, so a run-over-run chart
+    # would be a flat line with almost no analytical value (Assessment
+    # expansion plan B1).
+    rows = registry.query_findings(slug, "license_classification")
     findings = [
         {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
         for r in rows
@@ -446,6 +469,10 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "sub_resource_survey": AnalysisKind(
         "sub_resource_survey", ["repo_sub_resource_survey"],
         results=AnalysisKindResults(_sub_resource_survey_results, _sub_resource_survey_trend, "custom"),
+    ),
+    "license_classification": AnalysisKind(
+        "license_classification", ["repo_license_classification"],
+        results=AnalysisKindResults(_license_results, None, "findings_list"),
     ),
 }
 
