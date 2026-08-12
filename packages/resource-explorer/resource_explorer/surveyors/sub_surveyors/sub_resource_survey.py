@@ -314,13 +314,40 @@ class SubResourceSurveyor(BaseSurveyor):
         except Exception:
             return
 
+        # PyGitHub's PaginatedList.totalCount is computed via a per_page=1
+        # trick (see its source) — the number it returns is the total ITEM
+        # count, not a page count under this object's real per_page. Must
+        # divide by the actual configured per_page to land on the correct
+        # page index below; get_page()'s own per_page (client._gh.per_page)
+        # is what the request will actually use.
+        per_page = getattr(client._gh, "per_page", 30) or 30
+
         for finding in worthy:
             try:
                 commits = repo.get_commits(path=finding["path"])
-                if commits.totalCount == 0:
+                total = commits.totalCount
+                if total == 0:
                     continue
                 finding["last_updated_at"] = commits[0].commit.author.date.isoformat()
-                finding["first_added_at"] = commits[commits.totalCount - 1].commit.author.date.isoformat()
+                # Real, live-found performance bug: PaginatedList.__getitem__
+                # fetches sequentially from page 0 up to the requested index
+                # (there's no way to jump straight to a page via indexing),
+                # so `commits[total - 1]` forced one HTTP request per ~100
+                # commits in this path's ENTIRE history just to reach the
+                # oldest one. For an actively-developed folder (confirmed
+                # live: sqlglot's own `sqlglot/` package folder has 6,651
+                # commits touching it) that's 60+ sequential requests per
+                # worthy entry — multiplied across every worthy folder, this
+                # made a single sub-resource survey take 90+ seconds against
+                # a real repo, long enough to look like a hung/failed
+                # request from the UI. get_page() fetches one specific page
+                # directly (one request, not accumulate-from-zero), so
+                # jumping straight to the last page costs exactly the same
+                # as fetching the first — O(1) regardless of history length.
+                last_page_index = (total - 1) // per_page
+                last_page = commits.get_page(last_page_index)
+                if last_page:
+                    finding["first_added_at"] = last_page[-1].commit.author.date.isoformat()
             except Exception:
                 continue
 

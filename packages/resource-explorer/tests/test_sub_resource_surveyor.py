@@ -255,15 +255,25 @@ class TestTier2CostBoundary:
         assert paths_queried == ["README.md"]
 
     def test_last_updated_and_first_added_populated_for_worthy_entry(self, registry, project):
+        # Regression guard: first_added_at must come from get_page(), NOT
+        # from indexing (commits[total-1]) — indexing forces PaginatedList
+        # to sequentially fetch every page from 0 up to that index (one
+        # HTTP request per ~100 commits in the path's ENTIRE history),
+        # which made a real sub-resource survey take 90+ seconds against a
+        # repo with a few thousand commits touching one worthy folder.
+        # get_page(n) fetches exactly page n in one request, regardless of
+        # how many total pages exist.
         _seed_inventory(registry, "myproj", [("README.md", 10)])
         client = MagicMock()
+        client._gh.per_page = 100
         client.get_file_content.return_value = None
         first_commit = MagicMock(commit=MagicMock(author=MagicMock(
             date=MagicMock(isoformat=lambda: "2025-01-01T00:00:00"))))
         last_commit = MagicMock(commit=MagicMock(author=MagicMock(
             date=MagicMock(isoformat=lambda: "2026-01-01T00:00:00"))))
         commits = MagicMock(totalCount=2)
-        commits.__getitem__ = MagicMock(side_effect=lambda i: {0: last_commit, 1: first_commit}[i])
+        commits.__getitem__ = MagicMock(return_value=last_commit)  # commits[0]
+        commits.get_page = MagicMock(return_value=[first_commit])  # last page
         client.get_repo.return_value.get_commits.return_value = commits
         with patch("resource_explorer.github.client.GitHubClient", return_value=client):
             SubResourceSurveyor(project, registry).run()
@@ -273,6 +283,63 @@ class TestTier2CostBoundary:
         detail = json.loads(readme["detail_json"])
         assert detail["last_updated_at"] == "2026-01-01T00:00:00"
         assert detail["first_added_at"] == "2025-01-01T00:00:00"
+        # (total - 1) // per_page = (2 - 1) // 100 = 0 — page index, not
+        # totalCount itself (totalCount is an ITEM count, not a page count
+        # under the real per_page — see the source comment on this fix).
+        commits.get_page.assert_called_once_with(0)
+
+    def test_last_page_index_accounts_for_per_page_not_raw_total_count(self, registry, project):
+        # Regression guard for the exact live bug: totalCount is computed by
+        # PyGitHub via a per_page=1 trick, so it's a raw ITEM count (e.g.
+        # 6,651 for sqlglot's own package folder) — NOT a page count under
+        # the object's real per_page (100). get_page() must be called with
+        # the correctly-divided page index, not totalCount - 1 directly
+        # (which would request a wildly out-of-range page and silently
+        # return an empty list, dropping first_added_at for every entry).
+        _seed_inventory(registry, "myproj", [("README.md", 10)])
+        client = MagicMock()
+        client._gh.per_page = 100
+        client.get_file_content.return_value = None
+        last_commit = MagicMock(commit=MagicMock(author=MagicMock(
+            date=MagicMock(isoformat=lambda: "2026-01-01T00:00:00"))))
+        oldest_commit = MagicMock(commit=MagicMock(author=MagicMock(
+            date=MagicMock(isoformat=lambda: "2020-01-01T00:00:00"))))
+        commits = MagicMock(totalCount=6651)
+        commits.__getitem__ = MagicMock(return_value=last_commit)
+        commits.get_page = MagicMock(return_value=[MagicMock(), oldest_commit])
+        client.get_repo.return_value.get_commits.return_value = commits
+        with patch("resource_explorer.github.client.GitHubClient", return_value=client):
+            SubResourceSurveyor(project, registry).run()
+        findings = registry.query_findings("myproj", "repo_sub_resource_survey")
+        readme = next(f for f in findings if f["check_name"] == "README.md")
+        import json
+        detail = json.loads(readme["detail_json"])
+        assert detail["first_added_at"] == "2020-01-01T00:00:00"
+        # (6651 - 1) // 100 = 66, not 6650.
+        commits.get_page.assert_called_once_with(66)
+
+    def test_empty_last_page_does_not_set_first_added_at(self, registry, project):
+        # Defensive: get_page() returning [] (shouldn't happen when
+        # totalCount > 0, but never trust an external API's edge cases)
+        # must not raise or set a bogus first_added_at.
+        _seed_inventory(registry, "myproj", [("README.md", 10)])
+        client = MagicMock()
+        client._gh.per_page = 100
+        client.get_file_content.return_value = None
+        last_commit = MagicMock(commit=MagicMock(author=MagicMock(
+            date=MagicMock(isoformat=lambda: "2026-01-01T00:00:00"))))
+        commits = MagicMock(totalCount=1)
+        commits.__getitem__ = MagicMock(return_value=last_commit)
+        commits.get_page = MagicMock(return_value=[])
+        client.get_repo.return_value.get_commits.return_value = commits
+        with patch("resource_explorer.github.client.GitHubClient", return_value=client):
+            SubResourceSurveyor(project, registry).run()
+        findings = registry.query_findings("myproj", "repo_sub_resource_survey")
+        readme = next(f for f in findings if f["check_name"] == "README.md")
+        import json
+        detail = json.loads(readme["detail_json"])
+        assert detail["last_updated_at"] == "2026-01-01T00:00:00"
+        assert "first_added_at" not in detail
 
     def test_tier2_failure_is_best_effort_not_fatal(self, registry, project):
         _seed_inventory(registry, "myproj", [("README.md", 10)])
