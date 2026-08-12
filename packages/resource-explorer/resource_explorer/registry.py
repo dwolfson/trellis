@@ -2181,6 +2181,30 @@ class ProjectRegistry:
             ).fetchall()
         return [r["file_path"] for r in rows]
 
+    def file_exists(self, slug: str, *candidate_paths: str) -> str | None:
+        """Return the first of candidate_paths present in the file inventory
+        (in the order given), or None if none exist. Assessment expansion
+        plan B3 — an exact-filename lookup nothing in the registry offered
+        before (get_file_inventory/get_file_inventory_with_sizes both
+        return the whole per-repo list unfiltered); the table's existing
+        UNIQUE(project_slug, file_path) constraint makes this an indexed,
+        cheap point lookup rather than a full-list scan client-side."""
+        if not candidate_paths:
+            return None
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            placeholders = ",".join("?" * len(candidate_paths))
+            rows = conn.execute(
+                f"SELECT file_path FROM project_file_inventory "  # noqa: S608
+                f"WHERE project_slug = ? AND file_path IN ({placeholders})",
+                (slug, *candidate_paths),
+            ).fetchall()
+        found = {r["file_path"] for r in rows}
+        for path in candidate_paths:
+            if path in found:
+                return path
+        return None
+
     def store_data_profiles(self, slug: str, profiles: list[dict]) -> None:
         """Upsert data-file profiles produced during ingestion.
 

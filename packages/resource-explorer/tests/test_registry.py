@@ -643,6 +643,47 @@ class TestFileInventoryModes:
         assert [r["file_path"] for r in rows] == ["b.py"]
 
 
+class TestFileExists:
+    """Assessment expansion plan B3 — exact-filename lookup against
+    project_file_inventory, an indexed point-lookup rather than a full-list
+    client-side scan."""
+
+    def test_returns_first_matching_candidate(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [(".github/CODEOWNERS", 10)])
+        assert db.file_exists(
+            sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS",
+        ) == ".github/CODEOWNERS"
+
+    def test_prefers_earlier_candidate_when_multiple_present(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(
+            sample_project.slug, [("CODEOWNERS", 10), (".github/CODEOWNERS", 20)],
+        )
+        assert db.file_exists(
+            sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS",
+        ) == "CODEOWNERS"
+
+    def test_returns_none_when_no_candidate_present(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("README.md", 10)])
+        assert db.file_exists(sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS") is None
+
+    def test_returns_none_for_no_candidates_given(self, db, sample_project):
+        db.add(sample_project)
+        assert db.file_exists(sample_project.slug) is None
+
+    def test_nested_path_not_matched_by_basename(self, db, sample_project):
+        # file_exists is an exact-path lookup, not a basename-anywhere match
+        # (that's _HYGIENE_FILES' job in DocumentationSurveyor) — a
+        # non-canonical location must not match.
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("src/CODEOWNERS", 10)])
+        assert db.file_exists(
+            sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS",
+        ) is None
+
+
 class TestSubResources:
     """Repo scope-narrowing funnel plan, D2/D4 — the local "Catalog" stage,
     generic across resource types (only 'repo' is exercised in these tests,

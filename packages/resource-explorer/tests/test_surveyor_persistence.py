@@ -89,6 +89,47 @@ class TestDocumentationSurveyorPersistence:
         findings = registry.query_findings("myproj", "documentation")
         assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
 
+    def _seed_inventory(self, registry, slug, *paths):
+        with registry._conn() as conn:
+            for p in paths:
+                conn.execute(
+                    "INSERT INTO project_file_inventory (project_slug, file_path, indexed_at) "
+                    "VALUES (?, ?, ?)",
+                    (slug, p, "2026-01-01T00:00:00"),
+                )
+
+    def test_hygiene_files_detected_from_file_inventory_not_code_symbols(self, registry, project):
+        # Regression guard for the B3 bug fix — README/CHANGELOG/etc never
+        # get project_code_symbols rows (only .py/.js/.java/.go do), so this
+        # must read project_file_inventory instead.
+        self._seed_inventory(registry, "myproj", "README.md", "CHANGELOG.md")
+        annotations = DocumentationSurveyor(project, registry).run()
+        hygiene = next(
+            (a for a in annotations if "Hygiene files found" in a.summary), None,
+        )
+        assert hygiene is not None
+        assert set(hygiene.candidate_classifications) == {"README", "Changelog"}
+
+    def test_codeowners_detected_at_root(self, registry, project):
+        self._seed_inventory(registry, "myproj", "CODEOWNERS")
+        annotations = DocumentationSurveyor(project, registry).run()
+        hygiene = next(a for a in annotations if "Hygiene files found" in a.summary)
+        assert "Code owners" in hygiene.candidate_classifications
+
+    def test_codeowners_detected_in_github_dir(self, registry, project):
+        self._seed_inventory(registry, "myproj", ".github/CODEOWNERS")
+        annotations = DocumentationSurveyor(project, registry).run()
+        hygiene = next(a for a in annotations if "Hygiene files found" in a.summary)
+        assert "Code owners" in hygiene.candidate_classifications
+
+    def test_codeowners_not_recognized_outside_canonical_locations(self, registry, project):
+        # e.g. a nested "src/CODEOWNERS" isn't one of GitHub's 3 recognized
+        # locations — must not be reported as present.
+        self._seed_inventory(registry, "myproj", "src/CODEOWNERS")
+        annotations = DocumentationSurveyor(project, registry).run()
+        hygiene = next((a for a in annotations if "Hygiene files found" in a.summary), None)
+        assert hygiene is None
+
 
 class TestLicenseClassifierSurveyorPersistence:
     def _seed_stats(self, registry, slug, license_name="", spdx_id=""):
