@@ -5007,14 +5007,21 @@ function renderScoutingQuestions(data) {
 
   const rows = questions.map(q => {
     const status = _questionStatus(q);
+    // "Answered at" gets its own pinned badge, not buried in the small
+    // perspectives line — the whole point of this column is "where do I
+    // go to actually get this answered," which is easy to miss as plain
+    // inline text (per direct feedback, 2026-08-13).
+    const stageBadge = q.answered_at
+      ? `<span class="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 whitespace-nowrap" title="Answered at the ${_esc(q.answered_at)} stage">→ ${_esc(q.answered_at)}</span>`
+      : '';
     return `<div class="flex items-start gap-2 py-1.5 border-b border-slate-800/60 last:border-0">
         <span class="${status.color} mt-0.5 shrink-0" title="${_esc(status.label)}">${status.icon}</span>
         <div class="flex-1 min-w-0">
-          <div class="text-xs text-slate-200">${_esc(q.question)}</div>
-          <div class="text-[10px] text-slate-500 mt-0.5">
-            ${(q.perspectives || []).map(p => _esc(p)).join(' · ')}
-            ${q.answered_at ? `<span class="text-slate-600">${(q.perspectives||[]).length ? ' · ' : ''}answered at ${_esc(q.answered_at)}</span>` : ''}
+          <div class="flex items-start justify-between gap-2">
+            <div class="text-xs text-slate-200">${_esc(q.question)}</div>
+            ${stageBadge}
           </div>
+          <div class="text-[10px] text-slate-500 mt-0.5">${(q.perspectives || []).map(p => _esc(p)).join(' · ')}</div>
           ${q.note ? `<div class="text-[10px] text-slate-600 mt-0.5">${_esc(q.note)}</div>` : ''}
         </div>
       </div>`;

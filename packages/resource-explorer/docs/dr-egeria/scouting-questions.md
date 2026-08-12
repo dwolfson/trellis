@@ -520,7 +520,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Privacy Officer
+Privacy
 
 ### Question Name
 Is there any existing use within our organization?
@@ -570,7 +570,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Is there any existing use within our organization?
@@ -692,7 +692,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Any known feedback?
@@ -856,7 +856,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 What are similar repos/projects? How does this differ?
@@ -938,7 +938,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Are there any restrictions for use?
@@ -1030,7 +1030,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 What dependencies does this require?
@@ -1112,7 +1112,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Do we already support these dependencies?
@@ -1194,7 +1194,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 What deployment styles does this support?
@@ -1266,7 +1266,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Do we know what the cost to run it is?
@@ -1338,7 +1338,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Is there a validation / deployment test for it?
@@ -1430,7 +1430,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 What is the upgrade process?
@@ -1522,7 +1522,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Does it fit into our monitoring infrastructure?
@@ -1644,7 +1644,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Does it fit into our security infrastructure?
@@ -1726,7 +1726,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Is there any reliability or availability aspects?
@@ -1828,7 +1828,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 What kinds of integrations does it support?
@@ -1920,7 +1920,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Does this fit within or need to extend our existing infrastructure estate?
@@ -2012,7 +2012,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 How mature is it?
@@ -2094,7 +2094,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Do we have the skills to support its use?
@@ -2196,7 +2196,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 How well documented is it?
@@ -2298,7 +2298,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 How is it supported?
@@ -2390,7 +2390,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Is there a current, published, security analysis?
@@ -2482,7 +2482,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Does it fit into our governance frameworks?
@@ -2698,7 +2698,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Privacy Officer
+Privacy
 
 ### Question Name
 Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
@@ -2728,7 +2728,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
@@ -2810,7 +2810,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Privacy Officer
+Privacy
 
 ### Question Name
 For AI/ML assets, what licensing or usage constraints apply to models, weights, or datasets?
@@ -2902,7 +2902,7 @@ ___
 ## Link Perspective to Question
 
 ### Perspective Name
-Systems Administration
+Admin
 
 ### Question Name
 How does the repository handle secrets, credentials, and sensitive configurations?

@@ -97,12 +97,12 @@ repo_questions:
   perspectives:
   - Consumer
   - App/AI Builder
-  - Privacy Officer
+  - Privacy
   - Community
   - Data Expert
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: direct
     analysis_ids: []
@@ -117,7 +117,7 @@ repo_questions:
   - Data Expert
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: direct
     analysis_ids: []
@@ -139,7 +139,7 @@ repo_questions:
   perspectives:
   - Community
   - Security
-  - Systems Administration
+  - Admin
   answering:
     kind: gap
     analysis_ids: []
@@ -150,7 +150,7 @@ repo_questions:
   perspectives:
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: direct
     analysis_ids: []
@@ -162,7 +162,7 @@ repo_questions:
   - Consumer
   - Data Expert
   - Security
-  - Systems Administration
+  - Admin
   answering:
     kind: analysis
     analysis_ids:
@@ -174,7 +174,7 @@ repo_questions:
   perspectives:
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids: []
@@ -185,7 +185,7 @@ repo_questions:
   perspectives:
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: gap
     analysis_ids: []
@@ -195,7 +195,7 @@ repo_questions:
   answered_at: Enrichment
   perspectives:
   - Financial
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids: []
@@ -205,7 +205,7 @@ repo_questions:
   answered_at: Assessment
   perspectives:
   - Security
-  - Systems Administration
+  - Admin
   answering:
     kind: partial
     analysis_ids:
@@ -218,7 +218,7 @@ repo_questions:
   - Consumer
   - Data Expert
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: gap
     analysis_ids: []
@@ -230,7 +230,7 @@ repo_questions:
   - Data Owner
   - Consumer
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids: []
@@ -245,7 +245,7 @@ repo_questions:
   - App/AI Builder
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids:
@@ -257,7 +257,7 @@ repo_questions:
   perspectives:
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: chart
     analysis_ids: []
@@ -271,7 +271,7 @@ repo_questions:
   - Data Expert
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: gap
     analysis_ids: []
@@ -283,7 +283,7 @@ repo_questions:
   - Consumer
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids: []
@@ -295,7 +295,7 @@ repo_questions:
   - Community
   - Data Expert
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: chart
     analysis_ids: []
@@ -306,7 +306,7 @@ repo_questions:
   perspectives:
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids: []
@@ -319,7 +319,7 @@ repo_questions:
   - Community
   - Data Expert
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: analysis
     analysis_ids:
@@ -333,7 +333,7 @@ repo_questions:
   - Consumer
   - Data Expert
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: mixed
     analysis_ids:
@@ -348,7 +348,7 @@ repo_questions:
   - Governance
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: partial
     analysis_ids:
@@ -362,7 +362,7 @@ repo_questions:
   - Governance
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: human
     analysis_ids:
@@ -394,10 +394,10 @@ repo_questions:
   asked_at: Scouting
   answered_at: Analysis
   perspectives:
-  - Privacy Officer
+  - Privacy
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: gap
     analysis_ids: []
@@ -408,7 +408,7 @@ repo_questions:
   perspectives:
   - Governance
   - App/AI Builder
-  - Privacy Officer
+  - Privacy
   - Data Expert
   answering:
     kind: gap
@@ -420,7 +420,7 @@ repo_questions:
   perspectives:
   - Security
   - Architecture
-  - Systems Administration
+  - Admin
   answering:
     kind: gap
     analysis_ids: []

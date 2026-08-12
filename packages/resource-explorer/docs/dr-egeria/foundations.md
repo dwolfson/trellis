@@ -282,11 +282,13 @@ ___
 ## Create Perspective
 
 ### Display Name
-Privacy Officer
+Privacy
 
 ### Description
 Monitors regulatory compliance and sensitive-data exposure across
 resources — distinct from general Security (breach/vulnerability risk).
+Renamed from "Privacy Officer" — "Officer" reads as a role/title, not a
+lens, matching the Governance/Community rename rationale (2026-08-13).
 
 ___
 
@@ -344,13 +346,17 @@ ___
 ## Create Perspective
 
 ### Display Name
-Systems Administration
+Admin
 
 ### Description
 Operational/infrastructure administration of a resource — day-to-day
-upkeep, access, and reliability. Renamed from a narrower "DBA" framing
-since the concern generalizes beyond databases (renamed 2026-08-12,
-weakest cross-system precedent of this set — revisit if it doesn't earn
-its keep).
+upkeep, access, and reliability. Renamed from "Systems Administration"
+(itself renamed from a narrower "DBA" framing, 2026-08-12) — shortened
+further per direct request (2026-08-13). Note: reads identically to
+Resource Explorer's own "⚙ Admin" header nav (Annotation Types/Groups/
+Schedules system config) — different concept entirely (a lens on a
+resource vs. a system-config area of the app); flagged here since it's
+the one Perspective name that collides textually with existing RE UI
+vocabulary.
 
 ___
