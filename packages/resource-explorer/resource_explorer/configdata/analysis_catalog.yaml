@@ -177,6 +177,22 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: security_features
+    name: "Security Features"
+    description: "GitHub's native security feature toggles (Dependabot, secret scanning, advanced security) — configuration state, not artifact presence."
+    resource_types: ["repo"]
+    intent: assessment  # true scoring against criteria — same family as security_scan
+    perspectives: ["security", "steward"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: data_file_profiling
     name: "Data File Profiling"
     description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."

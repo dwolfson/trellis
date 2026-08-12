@@ -8,6 +8,7 @@ from resource_explorer.surveyors.sub_surveyors.documentation import Documentatio
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
+from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import (
     SubResourceSurveyor,
     ancestor_folder_paths,
@@ -25,5 +26,6 @@ __all__ = [
     "SecurityHygieneSurveyor",
     "DataProfilerSurveyor",
     "LicenseClassifierSurveyor",
+    "SecurityFeaturesSurveyor",
     "SubResourceSurveyor",
 ]

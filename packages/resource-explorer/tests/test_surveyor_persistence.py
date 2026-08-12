@@ -19,6 +19,7 @@ from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfiler
 from resource_explorer.surveyors.sub_surveyors.documentation import DocumentationSurveyor
 from resource_explorer.surveyors.sub_surveyors.file_size import FileSizeSurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
+from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.survey_report import (
     ClassificationAnnotation,
@@ -138,6 +139,49 @@ class TestLicenseClassifierSurveyorPersistence:
         self._seed_stats(registry, "myproj", "MIT License", "MIT")
         LicenseClassifierSurveyor(project, registry, surveyed_at="2026-01-01T00:00:00").run()
         findings = registry.query_findings("myproj", "license_classification")
+        assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
+
+
+class TestSecurityFeaturesSurveyorPersistence:
+    def _seed_stats(self, registry, slug, features_json):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_stats (project_slug, fetched_at, security_and_analysis_json) "
+                "VALUES (?, ?, ?)",
+                (slug, "2026-01-01T00:00:00", features_json),
+            )
+
+    def test_no_stats_row_yields_no_findings(self, registry, project):
+        annotations = SecurityFeaturesSurveyor(project, registry).run()
+        assert annotations == []
+        assert registry.query_findings("myproj", "security_features") == []
+
+    def test_none_status_features_are_skipped_not_gaps(self, registry, project):
+        # All 7 features unavailable (None) — GitHub never exposed the data
+        # for this repo (no admin access) — none should be reported as gaps.
+        self._seed_stats(registry, "myproj", '{"advanced_security": null, "secret_scanning": null}')
+        annotations = SecurityFeaturesSurveyor(project, registry).run()
+        assert annotations == []
+        assert registry.query_findings("myproj", "security_features") == []
+
+    def test_enabled_and_disabled_features_classified(self, registry, project):
+        self._seed_stats(
+            registry, "myproj",
+            '{"advanced_security": "enabled", "secret_scanning": "disabled", "dependabot_security_updates": null}',
+        )
+        annotations = SecurityFeaturesSurveyor(project, registry).run()
+        assert len(annotations) == 2  # the null one is skipped
+        findings = registry.query_findings("myproj", "security_features")
+        assert len(findings) == 2
+        by_check = {f["check_name"]: f["label"] for f in findings}
+        assert by_check["advanced_security"] == "pass"
+        assert by_check["secret_scanning"] == "gap"
+        assert "dependabot_security_updates" not in by_check
+
+    def test_shared_surveyed_at_threaded_through(self, registry, project):
+        self._seed_stats(registry, "myproj", '{"advanced_security": "enabled"}')
+        SecurityFeaturesSurveyor(project, registry, surveyed_at="2026-01-01T00:00:00").run()
+        findings = registry.query_findings("myproj", "security_features")
         assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
 
 

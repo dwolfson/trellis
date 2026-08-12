@@ -50,6 +50,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     HealthSurveyor,
     LanguageSurveyor,
     LicenseClassifierSurveyor,
+    SecurityFeaturesSurveyor,
     SecurityHygieneSurveyor,
     SubResourceSurveyor,
 )
@@ -140,6 +141,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_license_classification", LicenseClassifierSurveyor,
         "Classifies the repo's SPDX license id into a risk tier (permissive/"
         "weak copyleft/strong copyleft/source-available/unknown).",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    "repo_security_features": StepInfo(
+        "repo_security_features", SecurityFeaturesSurveyor,
+        "GitHub's native security feature toggles (Dependabot, secret "
+        "scanning, etc.) — configuration state, not artifact presence.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
     ),
@@ -314,6 +322,34 @@ def _license_results(registry, slug: str) -> dict:
     return {"findings": findings}
 
 
+def _security_features_results(registry, slug: str) -> dict:
+    # Same uniform finding shape _security_results/_license_results use.
+    # Unlike license_classification, this DOES get a trend reader (below) —
+    # feature toggles can genuinely change run-to-run (a repo admin flips
+    # secret scanning on), unlike a license which almost never changes.
+    rows = registry.query_findings(slug, "security_features")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    return {"findings": findings}
+
+
+def _security_features_trend(registry, slug: str) -> list[dict]:
+    # Enabled-count per run — mirrors _security_trend's gap-count-per-run
+    # shape, just counting "pass" (enabled) instead of "gap".
+    by_run: dict[str, dict] = {}
+    for r in registry.query_findings_history_raw(slug, "security_features"):
+        bucket = by_run.setdefault(r["surveyed_at"], {"enabled": 0, "total": 0})
+        bucket["total"] += 1
+        if r["label"] == "pass":
+            bucket["enabled"] += 1
+    return [
+        {"surveyed_at": ts, "value": counts["enabled"], "total_features": counts["total"]}
+        for ts, counts in sorted(by_run.items())
+    ]
+
+
 def _sub_resource_survey_results(registry, slug: str) -> dict:
     # Same uniform finding shape _security_results/_documentation_results
     # use ("worthy"/"not_worthy" are this kind's own label vocabulary) —
@@ -473,6 +509,10 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "license_classification": AnalysisKind(
         "license_classification", ["repo_license_classification"],
         results=AnalysisKindResults(_license_results, None, "findings_list"),
+    ),
+    "security_features": AnalysisKind(
+        "security_features", ["repo_security_features"], family="security",
+        results=AnalysisKindResults(_security_features_results, _security_features_trend, "findings_list"),
     ),
 }
 
