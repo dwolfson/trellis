@@ -325,8 +325,19 @@
       <!-- Placeholder pane for intents not yet wired to real content -->
       <div id="intent-placeholder-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
-      <!-- Assessment view — card list from analysis_catalog, filtered to intent=assessment -->
+      <!-- Assessment view — card list from analysis_catalog, filtered to intent=assessment
+           ("Analyses" sub-tab; see _assessmentSubnavHtml). -->
       <div id="assessment-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Sub-Resources sub-tab (repos, repo selected) — the "Select"/"Catalog"
+           stages of the repo scope-narrowing funnel (docs/repo-scope-narrowing-
+           funnel.md, D2/D3/D4): review SubResourceSurveyor's recommendation
+           list, select a subset, track it locally and optionally publish to
+           Egeria. Moved here from Scouting (2026-08-13) — its own design doc
+           (docs/assessment-sub-resource-cataloging.md) always framed this as
+           Assessment work; it only lived in Scouting's rail as a placement
+           artifact of the Scouting workflow redesign plan, not design intent. -->
+      <div id="assessment-sub-resources-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
       <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
       <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
@@ -377,13 +388,6 @@
            decisions, replacing the compact button row on the Scouting
            overview card. -->
       <div id="scouting-disposition-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
-
-      <!-- Sub-Resources sub-tab (repos, repo selected) — the "Select"/
-           "Catalog" stages of the repo scope-narrowing funnel
-           (docs/repo-scope-narrowing-funnel.md, D2/D3/D4): review
-           SubResourceSurveyor's recommendation list, select a subset,
-           track it locally and optionally publish to Egeria. -->
-      <div id="scouting-sub-resources-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
       <!-- Questions sub-tab (repos, repo selected) — per-phase checklist of
            the authored Question/Perspective/Intent model
@@ -1299,7 +1303,7 @@ function setNavIntent(intent) {
     // state, so no wrapper empty-state logic is needed here unlike Scouting.
     showMainView('survey-definitions');
   } else if (intent === 'assessment') {
-    showMainView('assessment');
+    showAssessmentPane();
   } else if (intent === 'analysis') {
     showMainView('analysis');
   } else if (intent === 'enrichment') {
@@ -1342,7 +1346,7 @@ function showIntentPlaceholder(intent) {
 // that anymore. If a real need for repo-scoped analysis inside Scouting
 // shows up later, re-add it with actual content rather than restoring the
 // redirect.
-let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'profile' | 'sub-resources' | 'disposition' — persists across selection changes
+let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'profile' | 'questions' | 'disposition' — persists across selection changes ('sub-resources' moved to Assessment, 2026-08-13)
 
 function showScoutingPane() {
   if (resourceTypeFacet === 'repo') {
@@ -1365,7 +1369,6 @@ function _scoutingSubnavHtml(active) {
     { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
     { tab: 'profile',     label: '📄 Coarse Profile' },  // "Coarse" to distinguish from any future deeper content-analysis pass; deliberately not "Discovery" (collides with the nav intent + the Discover sub-tab)
-    { tab: 'sub-resources', label: '🗂 Sub-Resources' },
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
@@ -1387,9 +1390,45 @@ function _showScoutingSubTab(tab) {
   if (tab === 'discover') showMainView('scouting-discover');
   else if (tab === 'survey') showMainView('scouting-overview');
   else if (tab === 'profile') showMainView('scouting-profile');
-  else if (tab === 'sub-resources') showMainView('scouting-sub-resources');
   else if (tab === 'questions') showMainView('scouting-questions');
   else if (tab === 'disposition') showMainView('scouting-disposition');
+}
+
+// ── Assessment sub-tabs ────────────────────────────────────────────────────
+// Mirrors Scouting's sub-tab pattern exactly. Sub-Resources moved here from
+// Scouting (2026-08-13) — its own design doc (docs/assessment-sub-resource-
+// cataloging.md) always framed it as Assessment work ("existing tables only,
+// deeper analytics — no new fetch"); it only lived in Scouting's rail because
+// that's where the Scouting workflow redesign plan needed a home for it at
+// the time, not because of any design intent.
+let _assessmentSubTab = 'analyses';  // 'analyses' | 'sub-resources' — persists across selection changes
+
+function showAssessmentPane() {
+  _showAssessmentSubTab(_assessmentSubTab);
+}
+
+function _assessmentSubnavHtml(active) {
+  const tabs = [
+    { tab: 'analyses',      label: '📋 Analyses' },
+    { tab: 'sub-resources', label: '🗂 Sub-Resources' },
+  ];
+  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_showAssessmentSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
+function _showAssessmentSubTab(tab) {
+  // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
+  // repos) — fall back to Analyses rather than show a blank/stale panel
+  // when nothing (or a db/filesystem) is selected, same spirit as
+  // Scouting's own selectedProject guard in _showScoutingSubTab.
+  if (tab === 'sub-resources' && !selectedProject) tab = 'analyses';
+  _assessmentSubTab = tab;
+  if (tab === 'analyses') showMainView('assessment-analyses');
+  else if (tab === 'sub-resources') showMainView('assessment-sub-resources');
 }
 
 function showIntentEmptyState(what, forWhatPurpose = 'Scouting summary') {
@@ -1536,7 +1575,7 @@ function _resourceTypeFacetLabel() {
 }
 
 async function loadAssessmentPanel() {
-  await _loadAnalysisCatalogPanel('assessment', 'assessment-view', 'Assessment');
+  await _loadAnalysisCatalogPanel('assessment', 'assessment-view', 'Assessment', _assessmentSubnavHtml('analyses'));
 }
 
 async function loadAnalysisPanel() {
@@ -1556,9 +1595,9 @@ function _currentSelectedSlug() {
   return null;
 }
 
-async function _loadAnalysisCatalogPanel(intent, viewId, title) {
+async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '') {
   const view = document.getElementById(viewId);
-  view.innerHTML = `<div class="text-slate-500 text-xs py-8 text-center">Loading ${_esc(title)} catalog…</div>`;
+  view.innerHTML = subnavHtml + `<div class="text-slate-500 text-xs py-8 text-center">Loading ${_esc(title)} catalog…</div>`;
   try {
     const resourceType = _facetToResourceType(resourceTypeFacet);
     const res = await fetch(`/api/analyses/${resourceType}?intent=${intent}`);
@@ -1594,9 +1633,10 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title) {
       entityType: resourceType,
       slug,
       schedules,
+      subnavHtml,
     });
   } catch(e) {
-    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
+    view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
 }
 
@@ -1620,8 +1660,9 @@ async function _fetchEgeriaMergeStatus(resourceType) {
 // intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
 // pattern already established in renderSurveyDefinitionsPanel, rather than
 // inventing a second card style.
-function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules }) {
+function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, subnavHtml }) {
   schedules = schedules || {};
+  subnavHtml = subnavHtml || '';
   // Only "unavailable" means a live-Egeria merge was actually attempted and
   // failed — "not_applicable" (no Technology Type mapped for this resource
   // type yet) and "ok" say nothing, so the panel doesn't cry wolf.
@@ -1634,7 +1675,7 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
   </div>`;
 
   if (!analyses.length) {
-    view.innerHTML = header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
+    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
     return;
   }
 
@@ -1689,7 +1730,7 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
     </div>`;
   }).join('');
 
-  view.innerHTML = header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
 }
 
 function _showScheduleForm(analysisId, entityType, slug, currentSchedule) {
@@ -4729,8 +4770,8 @@ function showMainView(tab) {
   const scoutingDiscoverView = document.getElementById('scouting-discover-view');
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
   const scoutingProfileView = document.getElementById('scouting-profile-view');
-  const scoutingSubResourcesView = document.getElementById('scouting-sub-resources-view');
   const scoutingQuestionsView = document.getElementById('scouting-questions-view');
+  const assessmentSubResourcesView = document.getElementById('assessment-sub-resources-view');
   const reportView    = document.getElementById('report-view');
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
@@ -4745,7 +4786,7 @@ function showMainView(tab) {
   const curateView    = document.getElementById('curate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingSubResourcesView, scoutingQuestionsView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -4759,9 +4800,12 @@ function showMainView(tab) {
 
   if (tab === 'intent-placeholder') {
     placeholderView.classList.remove('hidden');
-  } else if (tab === 'assessment') {
+  } else if (tab === 'assessment-analyses') {
     assessmentView.classList.remove('hidden');
     loadAssessmentPanel();
+  } else if (tab === 'assessment-sub-resources') {
+    assessmentSubResourcesView.classList.remove('hidden');
+    loadAssessmentSubResourcesView();
   } else if (tab === 'analysis') {
     analysisView.classList.remove('hidden');
     loadAnalysisPanel();
@@ -4780,9 +4824,6 @@ function showMainView(tab) {
   } else if (tab === 'scouting-profile') {
     scoutingProfileView.classList.remove('hidden');
     loadScoutingProfileView();
-  } else if (tab === 'scouting-sub-resources') {
-    scoutingSubResourcesView.classList.remove('hidden');
-    loadScoutingSubResourcesView();
   } else if (tab === 'scouting-questions') {
     scoutingQuestionsView.classList.remove('hidden');
     loadScoutingQuestions();
@@ -5392,11 +5433,11 @@ function _isShapeCompatible(targetShape, kind) {
   return false;  // whole_resource_only, or unrecognized
 }
 
-async function loadScoutingSubResourcesView() {
+async function loadAssessmentSubResourcesView() {
   if (!selectedProject) return;
   const slug = selectedProject;
-  const view = document.getElementById('scouting-sub-resources-view');
-  view.innerHTML = _scoutingSubnavHtml('sub-resources') +
+  const view = document.getElementById('assessment-sub-resources-view');
+  view.innerHTML = _assessmentSubnavHtml('sub-resources') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const [resultsRes, catalogedRes] = await Promise.all([
@@ -5408,9 +5449,9 @@ async function loadScoutingSubResourcesView() {
     const catalogedRows = catalogedRes.ok ? await catalogedRes.json() : [];
     _subResCataloged = {};
     catalogedRows.forEach(r => { _subResCataloged[r.locator] = r; });
-    _renderScoutingSubResourcesView(slug);
+    _renderAssessmentSubResourcesView(slug);
   } catch(e) {
-    view.innerHTML = _scoutingSubnavHtml('sub-resources') +
+    view.innerHTML = _assessmentSubnavHtml('sub-resources') +
       `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
 }
@@ -5424,7 +5465,7 @@ async function _runSubResourceSurvey(slug, btn) {
     const data = await res.json();
     if (data.status === 'ok') {
       showToast('success', data.message || 'Survey complete.', 4000);
-      loadScoutingSubResourcesView();
+      loadAssessmentSubResourcesView();
     } else {
       showToast('error', `Survey failed: ${_esc(data.error || 'unknown error')}`, 6000);
     }
@@ -5439,19 +5480,19 @@ async function _runSubResourceSurvey(slug, btn) {
 function _subResSort(key) {
   if (_subResSortKey === key) _subResSortDir *= -1;
   else { _subResSortKey = key; _subResSortDir = 1; }
-  _renderScoutingSubResourcesView(selectedProject);
+  _renderAssessmentSubResourcesView(selectedProject);
 }
 
 function _subResApplyFilter(text) {
   _subResFilterText = text;
-  _renderScoutingSubResourcesView(selectedProject);
+  _renderAssessmentSubResourcesView(selectedProject);
 }
 
-function _renderScoutingSubResourcesView(slug) {
-  const view = document.getElementById('scouting-sub-resources-view');
+function _renderAssessmentSubResourcesView(slug) {
+  const view = document.getElementById('assessment-sub-resources-view');
   const catalogedSectionHtml = _renderCatalogedSubResourcesSection(slug);
   if (!_subResFindings.length) {
-    view.innerHTML = _scoutingSubnavHtml('sub-resources') + `
+    view.innerHTML = _assessmentSubnavHtml('sub-resources') + `
       <div class="max-w-2xl space-y-4">
         <div>
           <h2 class="text-sm font-semibold text-slate-200 mb-2">Sub-Resources: ${_esc(slug)}</h2>
@@ -5517,7 +5558,7 @@ function _renderScoutingSubResourcesView(slug) {
     </tr>`;
   }).join('');
 
-  view.innerHTML = _scoutingSubnavHtml('sub-resources') + `
+  view.innerHTML = _assessmentSubnavHtml('sub-resources') + `
     <div class="space-y-3">
       <div>
         <h2 class="text-sm font-semibold text-slate-200">Sub-Resources: ${_esc(slug)}</h2>
@@ -5694,14 +5735,14 @@ async function _loadScopedAnalysisResults(slug, locator, analysisId, resultsDiv)
 }
 
 function _subResSelectAll(checked) {
-  document.querySelectorAll('#scouting-sub-resources-view input[type=checkbox][data-locator]').forEach(cb => {
+  document.querySelectorAll('#assessment-sub-resources-view input[type=checkbox][data-locator]').forEach(cb => {
     cb.checked = checked;
   });
 }
 
 async function _submitSubResourceCatalog(slug, btn) {
   const boxes = Array.from(
-    document.querySelectorAll('#scouting-sub-resources-view input[type=checkbox][data-locator]:checked')
+    document.querySelectorAll('#assessment-sub-resources-view input[type=checkbox][data-locator]:checked')
   );
   const fb = document.getElementById('subres-catalog-feedback');
   if (!boxes.length) {
@@ -5727,7 +5768,7 @@ async function _submitSubResourceCatalog(slug, btn) {
       : `Catalogued ${data.cataloged.length} sub-resource(s) locally.`;
     showToast('success', msg, 5000);
     if (fb) fb.innerHTML = `<span class="text-emerald-400">✓ ${_esc(msg)}</span>`;
-    loadScoutingSubResourcesView();
+    loadAssessmentSubResourcesView();
   } catch(e) {
     showToast('error', `Catalog failed: ${_esc(e.message)}`, 6000);
     if (fb) fb.innerHTML = `<span class="text-amber-400">✗ ${_esc(e.message)}</span>`;
