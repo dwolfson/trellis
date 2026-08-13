@@ -451,9 +451,9 @@
       <!-- Groups view (Admin) -->
       <div id="admin-groups-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
-      <!-- Schedules view (Admin) -->
-      <div id="admin-schedules-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
-
+      <!-- Schedules view (Admin) moved into 🔔 Automate (2026-08-13) — see
+           #automate-view / _automateSubnavHtml() below; nothing renders here
+           anymore. -->
       <!-- Discovery Sources view (Admin) — named, reusable "where do we
            scout" searches/lists, picked from Scouting's Discover sub-tab. -->
       <div id="admin-discovery-sources-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
@@ -4743,17 +4743,43 @@ async function saveContextForm(slug, entityType) {
 
 let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each load
 
-// ── Automate (8th intent, Part 4) — local-first notification subscriptions.
-// Global by default (mirrors Admin's Schedules overview) so "what am I
-// watching across everything" works with nothing selected; a checkbox
-// narrows to the currently-selected repo when one is active. See
-// notification_subscriptions' table docstring (registry.py) for why this
-// is local-only for now, not real Egeria NotificationType elements.
+// ── Automate (8th intent, Part 4) — local-first notification subscriptions
+// + (moved here 2026-08-13 from Admin) the global Schedules monitoring
+// overview. Two sub-tabs: 🔔 Subscriptions (what's being watched for
+// change) and ⏱ Schedules (what's actually running on a cadence — a
+// subscription needs a schedule to ever fire, so these two views living
+// together is the point, not incidental). Setting/changing a cadence
+// itself still happens per-card (the ⏱ Schedule action on Assessment/
+// Analysis/Discovery cards) — this tab, like Admin's old one, is
+// monitoring, not an editor (unchanged division of responsibility, see
+// CLAUDE.md's "Scheduling vs. monitoring schedules" note).
+let _automateSubTab = 'subscriptions';  // 'subscriptions' | 'schedules'
 let _automateFilterToSelected = false;
 
-async function loadAutomatePanel() {
+function _automateSubnavHtml(active) {
+  const tabs = [
+    { tab: 'subscriptions', label: '🔔 Subscriptions' },
+    { tab: 'schedules',     label: '⏱ Schedules' },
+  ];
+  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_setAutomateSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${t.label}</button>`).join('')}
+  </div>`;
+}
+
+function _setAutomateSubTab(tab) {
+  _automateSubTab = tab;
+  loadAutomatePanel();
+}
+
+function loadAutomatePanel() {
+  if (_automateSubTab === 'schedules') loadAutomateSchedulesPanel();
+  else loadAutomateSubscriptionsPanel();
+}
+
+async function loadAutomateSubscriptionsPanel() {
   const view = document.getElementById('automate-view');
-  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  view.innerHTML = _automateSubnavHtml('subscriptions') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const params = new URLSearchParams();
     if (_automateFilterToSelected && selectedProject) {
@@ -4763,13 +4789,13 @@ async function loadAutomatePanel() {
     const res = await fetch(`/api/automate/subscriptions?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const subs = await res.json();
-    renderAutomatePanel(subs);
+    renderAutomateSubscriptionsPanel(subs);
   } catch(e) {
-    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+    view.innerHTML = _automateSubnavHtml('subscriptions') + `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
 }
 
-function renderAutomatePanel(subs) {
+function renderAutomateSubscriptionsPanel(subs) {
   const view = document.getElementById('automate-view');
   const filterToggle = selectedProject
     ? `<label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
@@ -4802,15 +4828,15 @@ function renderAutomatePanel(subs) {
     </tr>`;
   }).join('');
 
-  view.innerHTML = `
+  view.innerHTML = _automateSubnavHtml('subscriptions') + `
     <div class="flex items-center justify-between mb-3">
-      <h1 class="text-lg font-bold text-slate-100 flex items-center gap-2">🔔 Automate</h1>
+      <h1 class="text-lg font-bold text-slate-100 flex items-center gap-2">🔔 Automate — subscriptions</h1>
       ${filterToggle}
     </div>
     <p class="text-xs text-slate-500 mb-3">
-      Subscriptions watch an analysis for change on its <em>scheduled</em> runs (set ⏱ Schedule too, or a
-      subscription never fires) and deliver via RFA when something changes. Create one from the 🔔 Notify me
-      button on any Assessment/Analysis card. Local-only for now — see
+      Subscriptions watch an analysis for change on its <em>scheduled</em> runs (see the ⏱ Schedules tab —
+      a subscription with no active schedule for its analysis never fires) and deliver via RFA when something
+      changes. Create one from the 🔔 Notify me button on any Assessment/Analysis card. Local-only for now — see
       docs/automate-notification-manager-pyegeria-spec.md for what would make this a real Egeria Notification Type.
     </p>
     <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">
@@ -4828,9 +4854,102 @@ async function _toggleSubscription(id, action) {
   try {
     const res = await fetch(`/api/automate/subscriptions/${id}/${action}`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    loadAutomatePanel();
+    loadAutomateSubscriptionsPanel();
   } catch(e) {
     showToast('error', `Failed to update subscription: ${_esc(e.message)}`, 5000);
+  }
+}
+
+// ⏱ Schedules sub-tab — moved verbatim from Admin (2026-08-13). Global,
+// read-mostly overview across every resource; to add or change a cadence,
+// use the ⏱ Schedule action on the analysis card itself
+// (Assessment/Analysis/Discovery) — this stays monitoring-only, same
+// division of responsibility Admin's version always had.
+async function loadAutomateSchedulesPanel() {
+  const view = document.getElementById('automate-view');
+  view.innerHTML = _automateSubnavHtml('schedules') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading schedules…</div>';
+  try {
+    const [schedules, repoCatalog, dbCatalog, fsCatalog] = await Promise.all([
+      fetch('/api/schedules/').then(r => r.json()),
+      fetch('/api/analyses/repo').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/analyses/database').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/analyses/filesystem').then(r => r.ok ? r.json() : []).catch(() => []),
+    ]);
+    const nameById = {};
+    for (const a of [...repoCatalog, ...dbCatalog, ...fsCatalog]) nameById[a.id] = a.name;
+    renderAutomateSchedulesPanel(schedules, nameById);
+  } catch(e) {
+    view.innerHTML = _automateSubnavHtml('schedules') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAutomateSchedulesPanel(schedules, nameById) {
+  const view = document.getElementById('automate-view');
+  const icon = { repo: '📁', database: '🗄', filesystem: '💾' };
+
+  const rows = schedules.map(s => {
+    const analysisName = nameById[s.analysis_id] || s.analysis_id;
+    const statusBadge = !s.last_run_status
+      ? '<span class="text-slate-600 text-xs">— not run yet</span>'
+      : s.last_run_status === 'error'
+        ? `<button onclick="_showScheduleErrorDetail('${_esc(s.last_run_activity_id)}')" class="text-xs text-red-400 hover:text-red-300 underline decoration-dotted transition-colors">⚠ error</button>`
+        : '<span class="text-emerald-400 text-xs">✓ ok</span>';
+    const cadenceLabel = s.enabled ? s.schedule : `${s.schedule} (disabled)`;
+    return `<tr class="hover:bg-slate-800/40 border-b border-slate-800">
+      <td class="px-3 py-2 text-xs text-slate-300 whitespace-nowrap">${icon[s.entity_type] || '•'} ${_esc(s.entity_slug)}</td>
+      <td class="px-3 py-2 text-xs text-slate-300">${_esc(analysisName)}</td>
+      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${_esc(cadenceLabel)}</td>
+      <td class="px-3 py-2">${statusBadge}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.last_run || '—').replace('T', ' ').substring(0, 16)}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.next_run || '—').replace('T', ' ').substring(0, 16)}</td>
+      <td class="px-3 py-2 text-right">
+        <button onclick="_deleteAutomateSchedule('${s.entity_type}','${_esc(s.entity_slug)}','${_esc(s.analysis_id)}')"
+          class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors" title="Remove this schedule">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _automateSubnavHtml('schedules') + `
+    <div class="space-y-4">
+      <div>
+        <h1 class="text-lg font-bold text-slate-100 flex items-center gap-2">⏱ Automate — schedules overview</h1>
+        <p class="text-xs text-slate-400 mt-1">Every scheduled analysis across every resource — what a
+          🔔 subscription actually needs to fire. To add or change a schedule, use the ⏱ Schedule action on the
+          analysis card itself (Assessment / Analysis / Discovery) — this page is for monitoring, not editing
+          individual cadences.</p>
+        <div class="text-xs text-amber-500/80 mt-1">⚠ Some listed analyses may not be fully implemented yet — cross-check
+          against 🔎 Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.</div>
+      </div>
+      <div id="sched-error-detail" class="hidden text-xs bg-red-950/40 border border-red-900 rounded p-3 text-red-300"></div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-900 text-slate-300 text-xs uppercase font-semibold border-b border-slate-800">
+              <th class="px-3 py-2">Resource</th>
+              <th class="px-3 py-2">Analysis</th>
+              <th class="px-3 py-2">Cadence</th>
+              <th class="px-3 py-2">Last run</th>
+              <th class="px-3 py-2">When</th>
+              <th class="px-3 py-2">Next run</th>
+              <th class="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-xs">No schedules configured yet — set one from an analysis card\'s ⏱ Schedule action.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function _deleteAutomateSchedule(entityType, slug, analysisId) {
+  try {
+    const res = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Schedule removed.', 3000);
+    loadAutomateSchedulesPanel();
+  } catch(e) {
+    showToast('error', `Failed to remove schedule: ${_esc(e.message)}`, 5000);
   }
 }
 
@@ -5089,13 +5208,12 @@ function showMainView(tab) {
   const surveyDefsView = document.getElementById('survey-definitions-view');
   const annotationTypesView = document.getElementById('annotation-types-view');
   const adminGroupsView = document.getElementById('admin-groups-view');
-  const adminSchedulesView = document.getElementById('admin-schedules-view');
   const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -5171,10 +5289,6 @@ function showMainView(tab) {
     adminGroupsView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminGroupsPanel();
-  } else if (tab === 'admin-schedules') {
-    adminSchedulesView.classList.remove('hidden');
-    document.getElementById('nav-admin-hdr')?.classList.add('active');
-    loadAdminSchedulesPanel();
   } else if (tab === 'admin-discovery-sources') {
     adminDiscoverySourcesView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
@@ -7892,7 +8006,6 @@ function _adminSubnavHtml(active) {
   const tabs = [
     { tab: 'annotations',       label: '📝 Annotation Types' },
     { tab: 'admin-groups',     label: '🗂 Groups' },
-    { tab: 'admin-schedules',  label: '⏱ Schedules' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
@@ -8924,99 +9037,10 @@ async function deleteAdminDiscoverySource(slug) {
   }
 }
 
-// ── Admin — Schedules: a global monitoring overview, not an editor. Setting
-// or changing a cadence happens per-analysis via the ⏱ Schedule action on
-// Assessment/Analysis/Discovery cards — this page's job is watching
-// everything that's scheduled at once: has it run, did it succeed, what
-// needs follow-up. Reuses the exact same backend as the per-card action
-// (resource_schedules / schedules.py) via the new GET /api/schedules/ — same
-// data, just queried/rendered globally instead of per-resource. Superseded
-// the old per-resource editor (loadSchedulesSection/loadSchedulesEditor
-// above, left in place but now genuinely unused) after direct user
-// feedback: scheduling itself belongs wherever you found the analysis, but
-// an admin overview for monitoring is still real, separate value.
-// Honesty note carried forward from the original per-resource version: not
-// every listed analysis is fully implemented (e.g. some database entries
-// predate Survey Definitions' real live steps) — cross-check against
-// Discovery before trusting a scheduled run does what its name suggests. ──
-async function loadAdminSchedulesPanel() {
-  const view = document.getElementById('admin-schedules-view');
-  view.innerHTML = _adminSubnavHtml('admin-schedules') +
-    '<div class="text-slate-500 text-xs py-8 text-center">Loading schedules…</div>';
-  try {
-    const [schedules, repoCatalog, dbCatalog, fsCatalog] = await Promise.all([
-      fetch('/api/schedules/').then(r => r.json()),
-      fetch('/api/analyses/repo').then(r => r.ok ? r.json() : []).catch(() => []),
-      fetch('/api/analyses/database').then(r => r.ok ? r.json() : []).catch(() => []),
-      fetch('/api/analyses/filesystem').then(r => r.ok ? r.json() : []).catch(() => []),
-    ]);
-    const nameById = {};
-    for (const a of [...repoCatalog, ...dbCatalog, ...fsCatalog]) nameById[a.id] = a.name;
-    renderAdminSchedulesPanel(schedules, nameById);
-  } catch(e) {
-    view.innerHTML = _adminSubnavHtml('admin-schedules') +
-      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
-  }
-}
-
-function renderAdminSchedulesPanel(schedules, nameById) {
-  const view = document.getElementById('admin-schedules-view');
-  const icon = { repo: '📁', database: '🗄', filesystem: '💾' };
-
-  const rows = schedules.map(s => {
-    const analysisName = nameById[s.analysis_id] || s.analysis_id;
-    const statusBadge = !s.last_run_status
-      ? '<span class="text-slate-600 text-xs">— not run yet</span>'
-      : s.last_run_status === 'error'
-        ? `<button onclick="_showScheduleErrorDetail('${_esc(s.last_run_activity_id)}')" class="text-xs text-red-400 hover:text-red-300 underline decoration-dotted transition-colors">⚠ error</button>`
-        : '<span class="text-emerald-400 text-xs">✓ ok</span>';
-    const cadenceLabel = s.enabled ? s.schedule : `${s.schedule} (disabled)`;
-    return `<tr class="hover:bg-slate-800/40 border-b border-slate-800">
-      <td class="px-3 py-2 text-xs text-slate-300 whitespace-nowrap">${icon[s.entity_type] || '•'} ${_esc(s.entity_slug)}</td>
-      <td class="px-3 py-2 text-xs text-slate-300">${_esc(analysisName)}</td>
-      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${_esc(cadenceLabel)}</td>
-      <td class="px-3 py-2">${statusBadge}</td>
-      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.last_run || '—').replace('T', ' ').substring(0, 16)}</td>
-      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${(s.next_run || '—').replace('T', ' ').substring(0, 16)}</td>
-      <td class="px-3 py-2 text-right">
-        <button onclick="_deleteAdminSchedule('${s.entity_type}','${_esc(s.entity_slug)}','${_esc(s.analysis_id)}')"
-          class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors" title="Remove this schedule">🗑️</button>
-      </td>
-    </tr>`;
-  }).join('');
-
-  view.innerHTML = _adminSubnavHtml('admin-schedules') + `
-    <div class="p-6 space-y-4">
-      <div>
-        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⏱ Schedules — overview</h1>
-        <p class="text-xs text-slate-400 mt-1">Every scheduled analysis across every resource. To add or change a
-          schedule, use the ⏱ Schedule action on the analysis card itself (Assessment / Analysis / Discovery) —
-          this page is for monitoring, not editing individual cadences.</p>
-        <div class="text-xs text-amber-500/80 mt-1">⚠ Some listed analyses may not be fully implemented yet — cross-check
-          against 🔎 Discovery's Survey Definitions before assuming a scheduled run does what its name suggests.</div>
-      </div>
-      <div id="sched-error-detail" class="hidden text-xs bg-red-950/40 border border-red-900 rounded p-3 text-red-300"></div>
-      <div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
-        <table class="w-full text-left border-collapse">
-          <thead>
-            <tr class="bg-slate-800 text-slate-300 text-xs uppercase font-semibold border-b border-slate-700">
-              <th class="px-3 py-2">Resource</th>
-              <th class="px-3 py-2">Analysis</th>
-              <th class="px-3 py-2">Cadence</th>
-              <th class="px-3 py-2">Last run</th>
-              <th class="px-3 py-2">When</th>
-              <th class="px-3 py-2">Next run</th>
-              <th class="px-3 py-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows || '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-xs">No schedules configured yet — set one from an analysis card\'s ⏱ Schedule action.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
-}
-
+// _showScheduleErrorDetail() is shared by the Automate ⏱ Schedules sub-tab
+// above (loadAutomateSchedulesPanel/renderAutomateSchedulesPanel) — the
+// panel itself moved there from Admin (2026-08-13); this helper stayed
+// since #sched-error-detail is rendered identically in both places' markup.
 async function _showScheduleErrorDetail(activityId) {
   const el = document.getElementById('sched-error-detail');
   if (!el) return;
@@ -9030,17 +9054,6 @@ async function _showScheduleErrorDetail(activityId) {
     el.innerHTML = `<div class="font-semibold mb-1">${_esc(entry.summary)}</div><div>${_esc(entry.detail || 'No further detail recorded.')}</div>`;
   } catch(e) {
     el.textContent = `Failed to load error detail: ${e.message}`;
-  }
-}
-
-async function _deleteAdminSchedule(entityType, slug, analysisId) {
-  try {
-    const res = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    showToast('success', 'Schedule removed.', 3000);
-    loadAdminSchedulesPanel();
-  } catch(e) {
-    showToast('error', `Failed to remove schedule: ${_esc(e.message)}`, 5000);
   }
 }
 
