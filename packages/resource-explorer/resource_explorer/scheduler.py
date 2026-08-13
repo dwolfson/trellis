@@ -138,7 +138,57 @@ def _run_due() -> None:
         except Exception:
             log.exception("Scheduler: failed to update schedule bookkeeping for %s/%s/%s", entity_type, entity_slug, analysis_id)
 
+        if status == "ok":
+            try:
+                _check_subscriptions(entity_type, entity_slug, analysis_id, entity_name, registry)
+            except Exception:
+                log.exception("Scheduler: subscription check failed for %s/%s/%s", entity_type, entity_slug, analysis_id)
+
         log.info("Scheduler: %s %s/%s/%s", status, entity_type, entity_slug, analysis_id)
+
+
+def _check_subscriptions(entity_type: str, entity_slug: str, analysis_id: str, entity_name: str, registry) -> None:
+    """Automate (Part 4) — after a scheduled run completes cleanly, check
+    every active subscription watching this exact (entity, analysis_id)
+    for a change since the previous run, and deliver via RFA if so.
+    Detection only ever runs off scheduled runs (not manual "Run" clicks)
+    — a subscription with no active schedule for its analysis_id never
+    fires, since there's nothing recurring to compare against; this is
+    surfaced to the user in the Automate UI, not silently true."""
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.notification_detector import detect_change
+
+    subs = registry.list_subscriptions(
+        entity_type=entity_type, entity_slug=entity_slug, analysis_id=analysis_id, active_only=True,
+    )
+    if not subs:
+        return
+
+    now = _now_iso()
+    result = detect_change(registry, entity_slug, analysis_id)
+    for sub in subs:
+        registry.record_subscription_checked(sub["id"], now)
+        if not result.changed:
+            continue
+        label = sub["label"] or _analysis_display_name(entity_type, analysis_id)
+        try:
+            log_rfa(
+                registry=registry,
+                entity_type=entity_type,
+                entity_slug=entity_slug,
+                entity_name=entity_name,
+                status="pending",
+                summary=f"{label} changed",
+                detail=result.summary,
+            )
+            registry.record_subscription_notified(sub["id"], now)
+        except Exception:
+            log.exception("Scheduler: failed to deliver notification for subscription %s", sub["id"])
+
+
+def _now_iso() -> str:
+    from datetime import datetime
+    return datetime.utcnow().isoformat()
 
 
 def _analysis_display_name(entity_type: str, analysis_id: str) -> str:

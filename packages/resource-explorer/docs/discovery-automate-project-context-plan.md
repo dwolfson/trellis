@@ -1,6 +1,12 @@
 # Discovery re-scoping, Questions-per-phase, Automate phase, and Project Context — plan
 
-**Status: planned, grounded in research, decisions made (see "Decisions" below), not yet built.**
+**Status: all 5 parts built and live-verified (2026-08-13). Part 1 (Discovery
+re-scoping), Part 2 (new Discovery-tier analyses), Part 3 (Questions-per-phase
+reorg), Part 5 (Egeria Project context), Part 4 (Automate — local-first,
+per the 2026-08-13 decision below) all shipped. Kept below for reference —
+see each part's own section for what actually got built vs. what's still
+spec-only (Part 4's real-Egeria-NotificationType piece, see
+`docs/automate-notification-manager-pyegeria-spec.md`).**
 
 ## Context
 
@@ -188,6 +194,21 @@ split as `executes_at: resource-explorer` steps in the Survey Definition work):
 - **Decided**: Automate is a new 8th canonical intent (Decisions §1 above) — philosophically
   parallel to Curate (sustained *human* attention vs. sustained *machine* attention). Likely
   absorbs Admin's existing Schedules monitoring pane rather than duplicating it.
+
+**Built (2026-08-13), local-first per an explicit follow-up decision**: when it came time to
+implement, "Create Notification Type" turned out to have no dedicated pyegeria method — Dr.Egeria's
+own command wraps the same generic, untested-for-this-type `create_governance_definition()` body
+construction CLAUDE.md rule 12 warns against reimplementing, and RE's backend has never executed
+Dr.Egeria markdown live at runtime (only ever an out-of-band, assistant-driven authoring step, e.g.
+Survey Definitions). Decided: ship the detection/delivery architecture above exactly as designed —
+`notification_subscriptions` (registry.py), `notification_detector.py` (generic latest-two-runs
+comparison), `scheduler.py`'s `_check_subscriptions()` (RFA delivery) — fully locally, with
+`egeria_notification_type_guid`/`_qualified_name` columns present but empty until a safe pyegeria
+convenience API exists. That API is specified, not built, in
+`docs/automate-notification-manager-pyegeria-spec.md`. Admin's Schedules pane was **not** absorbed
+in this pass — Automate ships as a fully additive, separate view; absorption stays a live option,
+not attempted here. `web/routes/automate.py` + a "🔔 Notify me" action on every Assessment/Analysis
+card + a global Automate tab (`loadAutomatePanel()`) are all live and tested.
 
 ## Part 5 — Project Context ("uber intent")
 

@@ -1462,6 +1462,43 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Automate — Part 4 of docs/discovery-automate-project-context-plan.md,
+            # the 8th canonical intent (sustained *machine* attention,
+            # parallel to Curate's sustained *human* attention). Local-first
+            # by design decision (2026-08-13): Egeria's own real Notification
+            # Manager (NotificationType + Link Monitored Resource + Link
+            # Notification Subscriber) is the eventual catalog of record for
+            # this, but its "Create Notification Type" command wraps the same
+            # generic create_governance_definition() body-construction call
+            # CLAUDE.md rule 12 warns against reimplementing untested — see
+            # docs/automate-notification-manager-pyegeria-spec.md for what a
+            # safe pyegeria convenience API would need to look like. Until
+            # that lands, a subscription lives here, fully locally — RE's own
+            # scheduler.py does the detection (comparing this analysis_id's
+            # latest two findings/metrics batches), RFA does the delivery.
+            # egeria_notification_type_guid/qualified_name are NULL/empty
+            # until an Egeria-side element exists for this subscription —
+            # every field below works without one.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS notification_subscriptions (
+                    id                                        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type                                TEXT NOT NULL,
+                    entity_slug                                TEXT NOT NULL,
+                    analysis_id                                TEXT NOT NULL,
+                    label                                       TEXT DEFAULT '',
+                    active                                      INTEGER NOT NULL DEFAULT 1,
+                    created_at                                  TEXT NOT NULL,
+                    last_checked_at                             TEXT DEFAULT '',
+                    last_notified_at                            TEXT DEFAULT '',
+                    notification_count                          INTEGER NOT NULL DEFAULT 0,
+                    egeria_notification_type_guid               TEXT DEFAULT '',
+                    egeria_notification_type_qualified_name     TEXT DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_entity "
+                "ON notification_subscriptions(entity_type, entity_slug, analysis_id)"
+            )
 
     def get_survey_definition_guid(
         self, entity_type: str, entity_slug: str, technology_type: str
@@ -3135,6 +3172,73 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchone()
         return dict(row) if row else None
+
+    # Automate (Part 4) — notification_subscriptions. See that table's own
+    # docstring above for the local-first rationale. No hard delete —
+    # deactivate/activate, matching the disposition/working-set convention
+    # of never permanently destroying state elsewhere in this codebase.
+
+    def create_subscription(self, entity_type: str, entity_slug: str, analysis_id: str, label: str = "") -> dict:
+        entity_slug = self._normalize_slug(entity_slug)
+        created_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                """INSERT INTO notification_subscriptions
+                       (entity_type, entity_slug, analysis_id, label, active, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?) RETURNING id""",
+                (entity_type, entity_slug, analysis_id, label, created_at),
+            ).fetchone()
+            sub_id = row["id"]
+        return self.get_subscription(sub_id)
+
+    def get_subscription(self, subscription_id: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM notification_subscriptions WHERE id = ?", (subscription_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_subscriptions(
+        self, entity_type: str | None = None, entity_slug: str | None = None,
+        analysis_id: str | None = None, active_only: bool = False,
+    ) -> list[dict]:
+        clauses, params = [], []
+        if entity_type is not None:
+            clauses.append("entity_type = ?"); params.append(entity_type)
+        if entity_slug is not None:
+            clauses.append("entity_slug = ?"); params.append(self._normalize_slug(entity_slug))
+        if analysis_id is not None:
+            clauses.append("analysis_id = ?"); params.append(analysis_id)
+        if active_only:
+            clauses.append("active = 1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM notification_subscriptions {where} ORDER BY created_at DESC", params
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_subscription_active(self, subscription_id: int, active: bool) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_subscriptions SET active = ? WHERE id = ?",
+                (int(active), subscription_id),
+            )
+
+    def record_subscription_checked(self, subscription_id: int, checked_at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_subscriptions SET last_checked_at = ? WHERE id = ?",
+                (checked_at, subscription_id),
+            )
+
+    def record_subscription_notified(self, subscription_id: int, notified_at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_subscriptions SET last_notified_at = ?, "
+                "notification_count = notification_count + 1 WHERE id = ?",
+                (notified_at, subscription_id),
+            )
 
     def exists(self, slug: str) -> bool:
         return self.get(slug) is not None

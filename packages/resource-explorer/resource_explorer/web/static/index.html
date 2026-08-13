@@ -240,6 +240,12 @@
   <button onclick="setNavIntent('enrichment')"    data-nav-intent="enrichment"    class="nav-intent-btn">✍️ Enrichment</button>
   <button onclick="setNavIntent('understanding')" data-nav-intent="understanding" class="nav-intent-btn">📊 Understanding</button>
   <button onclick="setNavIntent('curate')"        data-nav-intent="curate"        class="nav-intent-btn">🗂 Curate</button>
+  <!-- 8th canonical intent (Discovery-tier Part 4, 2026-08-13) — sustained
+       *machine* attention (recurring watch-for-changes), parallel to
+       Curate's sustained *human* attention. Local-first: see
+       notification_subscriptions' table docstring in registry.py for why
+       this doesn't create real Egeria NotificationType elements yet. -->
+  <button onclick="setNavIntent('automate')"      data-nav-intent="automate"      class="nav-intent-btn">🔔 Automate</button>
   <span class="flex-1"></span>
   <button onclick="toggleRfaDrawer()" id="rfa-drawer-toggle" class="nav-intent-btn">📝 RFAs<span id="rfa-drawer-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
   <button onclick="toggleChatPanel()" id="chat-toggle-btn" class="nav-intent-btn">💬 Chat</button>
@@ -455,6 +461,12 @@
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
       <div id="curate-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
+      <!-- Automate view (8th intent) — local-first notification
+           subscriptions (see loadAutomatePanel()). Global by default, like
+           Admin's Schedules overview; filters to the selected repo when one
+           is active. -->
+      <div id="automate-view" class="flex-1 overflow-y-auto hidden flex flex-col p-4"></div>
     </div>
 
     <!-- Chat panel resize handle -->
@@ -1329,6 +1341,11 @@ function setNavIntent(intent) {
     // admin-flavored content that used to live here (Annotation Types /
     // Groups / Schedules, now under the header's ⚙ Admin button instead).
     showCuratePane();
+  } else if (intent === 'automate') {
+    // Global by default (like Admin's Schedules overview) — filters to the
+    // selected repo when one is active, but doesn't require one, since
+    // "what am I watching across everything" is a legitimate view too.
+    showMainView('automate');
   } else {
     showIntentPlaceholder(intent);
   }
@@ -1855,6 +1872,17 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
            📊 Results
          </button>`
       : '';
+    // Automate (Part 4) — "notify me" creates a local subscription watching
+    // this analysis_id for this resource. Only fires on *scheduled* runs
+    // (scheduler.py does the detection) — the button's title says so, since
+    // a subscription with no schedule set is a real, easy-to-hit dead end.
+    const notifyButton = slug
+      ? `<button onclick='_createSubscriptionFromCard(${JSON.stringify(a.id)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(a.name)})'
+           class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap"
+           title="Notify me (via RFA) when this analysis changes on a future scheduled run — also set ⏱ Schedule, or this never fires">
+           🔔 Notify me
+         </button>`
+      : '';
 
     return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
       <div class="flex-1 min-w-0">
@@ -1869,6 +1897,7 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
         </button>
         ${resultsButton}
         ${scheduleButton}
+        ${notifyButton}
       </div>
       <div id="sched-form-${safeId}" class="hidden mt-1"></div>
       <div id="results-${safeId}" class="hidden mt-2"></div>
@@ -1876,6 +1905,30 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
   }).join('');
 
   view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+}
+
+// Automate (Part 4) — "🔔 Notify me" on an analysis card. Creates a local
+// subscription; delivery happens as an RFA the next time a *scheduled* run
+// of this analysis_id detects a change (see scheduler.py's
+// _check_subscriptions). Duplicate-subscription is allowed (not checked) —
+// harmless (each just checks/increments independently), simpler than a
+// dedup pass, and the Automate tab's own list makes an accidental double
+// subscription obvious to clean up.
+async function _createSubscriptionFromCard(analysisId, entityType, slug, analysisName) {
+  try {
+    const res = await fetch('/api/automate/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entity_type: entityType, entity_slug: slug, analysis_id: analysisId,
+        label: `${analysisName} changed`,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', `Watching "${_esc(analysisName)}" for ${_esc(slug)} — remember to also set ⏱ Schedule, or this never fires.`, 6000);
+  } catch(e) {
+    showToast('error', `Failed to create subscription: ${_esc(e.message)}`, 5000);
+  }
 }
 
 function _showScheduleForm(analysisId, entityType, slug, currentSchedule) {
@@ -4690,6 +4743,97 @@ async function saveContextForm(slug, entityType) {
 
 let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each load
 
+// ── Automate (8th intent, Part 4) — local-first notification subscriptions.
+// Global by default (mirrors Admin's Schedules overview) so "what am I
+// watching across everything" works with nothing selected; a checkbox
+// narrows to the currently-selected repo when one is active. See
+// notification_subscriptions' table docstring (registry.py) for why this
+// is local-only for now, not real Egeria NotificationType elements.
+let _automateFilterToSelected = false;
+
+async function loadAutomatePanel() {
+  const view = document.getElementById('automate-view');
+  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  try {
+    const params = new URLSearchParams();
+    if (_automateFilterToSelected && selectedProject) {
+      params.set('entity_type', 'repo');
+      params.set('entity_slug', selectedProject);
+    }
+    const res = await fetch(`/api/automate/subscriptions?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const subs = await res.json();
+    renderAutomatePanel(subs);
+  } catch(e) {
+    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAutomatePanel(subs) {
+  const view = document.getElementById('automate-view');
+  const filterToggle = selectedProject
+    ? `<label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+         <input type="checkbox" ${_automateFilterToSelected ? 'checked' : ''} onchange="_automateFilterToSelected=this.checked; loadAutomatePanel();">
+         Just ${_esc(selectedProject)}
+       </label>`
+    : '';
+
+  const rows = subs.map(s => {
+    const statusBadge = s.active
+      ? '<span class="text-emerald-400">● active</span>'
+      : '<span class="text-slate-600">○ inactive</span>';
+    const checkedInfo = s.last_checked_at ? `checked ${_relTime(s.last_checked_at)}` : 'never checked yet';
+    const notifiedInfo = s.notification_count > 0
+      ? `<span class="text-cyan-400">🔔 notified ${s.notification_count}×</span>${s.last_notified_at ? ` (last ${_relTime(s.last_notified_at)})` : ''}`
+      : '<span class="text-slate-600">never notified</span>';
+    const toggleLabel = s.active ? 'Deactivate' : 'Activate';
+    const toggleAction = s.active ? 'deactivate' : 'activate';
+    return `<tr class="border-b border-slate-800">
+      <td class="px-3 py-2 text-xs text-slate-200">${_esc(s.label || s.analysis_id)}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${_esc(s.entity_type)}/${_esc(s.entity_slug)}</td>
+      <td class="px-3 py-2 text-xs text-slate-500">${_esc(s.analysis_id)}</td>
+      <td class="px-3 py-2 text-xs">${statusBadge}</td>
+      <td class="px-3 py-2 text-xs text-slate-500" title="${_esc(checkedInfo)}">${_esc(checkedInfo)}</td>
+      <td class="px-3 py-2 text-xs">${notifiedInfo}</td>
+      <td class="px-3 py-2 text-xs">
+        <button onclick="_toggleSubscription(${s.id}, '${toggleAction}')"
+          class="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">${toggleLabel}</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = `
+    <div class="flex items-center justify-between mb-3">
+      <h1 class="text-lg font-bold text-slate-100 flex items-center gap-2">🔔 Automate</h1>
+      ${filterToggle}
+    </div>
+    <p class="text-xs text-slate-500 mb-3">
+      Subscriptions watch an analysis for change on its <em>scheduled</em> runs (set ⏱ Schedule too, or a
+      subscription never fires) and deliver via RFA when something changes. Create one from the 🔔 Notify me
+      button on any Assessment/Analysis card. Local-only for now — see
+      docs/automate-notification-manager-pyegeria-spec.md for what would make this a real Egeria Notification Type.
+    </p>
+    <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">
+      <table class="w-full text-left">
+        <thead><tr class="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
+          <th class="px-3 py-2">Watching</th><th class="px-3 py-2">Resource</th><th class="px-3 py-2">Analysis</th>
+          <th class="px-3 py-2">Status</th><th class="px-3 py-2">Last checked</th><th class="px-3 py-2">Notifications</th><th class="px-3 py-2"></th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-500 text-xs">No subscriptions yet — use 🔔 Notify me on an Assessment/Analysis card.</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+async function _toggleSubscription(id, action) {
+  try {
+    const res = await fetch(`/api/automate/subscriptions/${id}/${action}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadAutomatePanel();
+  } catch(e) {
+    showToast('error', `Failed to update subscription: ${_esc(e.message)}`, 5000);
+  }
+}
+
 async function loadCuratePanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
   const view = document.getElementById('curate-view');
@@ -4948,9 +5092,10 @@ function showMainView(tab) {
   const adminSchedulesView = document.getElementById('admin-schedules-view');
   const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
   const curateView    = document.getElementById('curate-view');
+  const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminSchedulesView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -5037,6 +5182,9 @@ function showMainView(tab) {
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
+  } else if (tab === 'automate') {
+    automateView.classList.remove('hidden');
+    loadAutomatePanel();
   } else {
     placeholderView.classList.remove('hidden');
   }

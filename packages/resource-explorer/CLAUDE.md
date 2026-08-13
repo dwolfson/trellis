@@ -63,11 +63,11 @@ External services:
 - **MLflow** (optional) — `mlflow server --port 5025` → `localhost:5025`
 - **Kroki** (optional) at `KROKI_URL`, default `http://localhost:8000` — renders mermaid diagrams server-side (`POST /api/diagrams/mermaid`, see `web/routes/diagrams.py`); only used for the database ER-diagram view, nothing else depends on it. Same shared `egeria-shared-kroki` container as the rest of an egeria-v6 checkout (`egeria-workspaces-fs`'s `compose-configs/shared-infra/shared-infra.yaml`), reached via its published host port — **not** the container-name URL (`http://egeria-shared-kroki:8000`) other, containerized Egeria services use, since resource-explorer runs as a bare host process and isn't on the `egeria_network` docker network. If Egeria/Kroki run on a different host than resource-explorer (a remote/production deployment, not a single-box dev checkout), point `KROKI_URL` at that host's published Kroki port instead — Kroki has no built-in auth, so a remote deployment should sit behind a firewall/VPN/reverse-proxy, not be exposed directly to the internet. See `docs/kroki-diagram-rendering.md` for the full picture (network topology, failure behavior, troubleshooting).
 
-## Seven User Intents
+## Eight User Intents
 
 These are the canonical intent labels used throughout the codebase for routing, filtering, and analysis tagging. They appear in the UI's `#intent-nav` primary navigation, the activity log schema, the analysis catalog (`configdata/analysis_catalog.yaml`), and the query router.
 
-Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the intent-based web UI rewrite — Analysis, Understanding, and Curate were added to give structural/quantitative work, data visualization, and discoverability/reuse-readiness work their own homes instead of being folded into Assessment or a sidebar.
+Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the intent-based web UI rewrite — Analysis, Understanding, and Curate were added to give structural/quantitative work, data visualization, and discoverability/reuse-readiness work their own homes instead of being folded into Assessment or a sidebar. Automate (8th, 2026-08-13) was added for sustained *machine* attention — recurring, subscription-driven watching for change — parallel to Curate's sustained *human* attention; see `docs/discovery-automate-project-context-plan.md` Part 4.
 
 | Intent | What the user is doing | Speed | Output |
 |--------|----------------------|-------|--------|
@@ -78,14 +78,17 @@ Superseded the original four (Scouting/Assessment/Discovery/Enrichment) in the i
 | **Enrichment** | Provide human context (Context form) — facts about the resource: environment, ownership, sensitivity | Human-paced | Egeria asset properties |
 | **Understanding** | Visualize trends over time — charts (stars, commits, schema, etc.) | Fast | Charts |
 | **Curate** | Make a resource easier to find and more trustworthy to reuse — search tags, resource-level feedback, curator notes | Human-paced | `resource_tags`/`resource_feedback`/`resource_curator_notes` |
+| **Automate** | Subscribe to an analysis; get notified (via RFA) when it changes on a future scheduled run | Recurring/async | `notification_subscriptions` + RFA |
 
 **Enrichment vs. Curate** — easy to conflate, deliberately distinct: Enrichment records *facts about* the resource (a one-time/periodic form); Curate is *ongoing curatorial work* to make the resource discoverable and reusable (tags, feedback, running commentary). Digital-product evaluation, sample-dataset creation, and a dedicated quality-remediation workflow were named as Curate capabilities but are NOT built — each needs its own design pass; see `docs/curate-followups.md`.
 
-**System/catalog configuration is not an intent.** Annotation Types registry, resource Groups, and the Schedules overview are reachable from the header's **⚙ Admin** button (same pattern as 📋 Activity — decoupled from `#intent-nav`/`currentNavIntent`), not from one of the seven intents — they configure how the system behaves, not something a user does to curate a specific resource.
+**Automate is local-first by explicit decision (2026-08-13).** Egeria's own Notification Manager (`NotificationType` + `Link Monitored Resource` + `Link Notification Subscriber`) is the eventual catalog of record, but "Create Notification Type" has no dedicated pyegeria method — it wraps the same generic, untested-for-this-type `create_governance_definition()` body construction rule 12 warns against. `resource_explorer/notification_detector.py` (change detection) and `scheduler.py`'s `_check_subscriptions()` (delivery via RFA) are real and local; `notification_subscriptions.egeria_notification_type_guid`/`_qualified_name` stay empty until `docs/automate-notification-manager-pyegeria-spec.md`'s proposed convenience API exists.
 
-**Scheduling vs. monitoring schedules are two different surfaces on purpose.** Setting/changing a cadence for a specific analysis is per-resource and lives as a "⏱ Schedule" action directly on each analysis card in Assessment/Analysis/Discovery. Admin's Schedules pane is a *global, read-mostly overview* (`GET /api/schedules/`) across every resource — what's scheduled, whether the last run succeeded, drill into errors, remove stale schedules — not a duplicate editor. Both hit the same `schedules.py`/`resource_schedules` backend. The scheduler (`scheduler.py`) writes a real `ActivityEntry` for every run it executes, success or failure, and records the outcome on the schedule row itself (`last_run_status`/`last_run_activity_id`) — this was a real gap before (only logged to Python's own logger, invisible from the UI, violating rule 16 below), not a deliberate omission.
+**System/catalog configuration is not an intent.** Annotation Types registry, resource Groups, and the Schedules overview are reachable from the header's **⚙ Admin** button (same pattern as 📋 Activity — decoupled from `#intent-nav`/`currentNavIntent`), not from one of the eight intents — they configure how the system behaves, not something a user does to curate a specific resource.
 
-RFA (RequestForAction) is **not** one of the seven intents either — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself, and `docs/rfa-egeria-todo-followup.md` for the confirmed (not assumed) design of what that integration would take.
+**Scheduling vs. monitoring schedules are two different surfaces on purpose.** Setting/changing a cadence for a specific analysis is per-resource and lives as a "⏱ Schedule" action directly on each analysis card in Assessment/Analysis/Discovery. Admin's Schedules pane is a *global, read-mostly overview* (`GET /api/schedules/`) across every resource — what's scheduled, whether the last run succeeded, drill into errors, remove stale schedules — not a duplicate editor. Both hit the same `schedules.py`/`resource_schedules` backend. The scheduler (`scheduler.py`) writes a real `ActivityEntry` for every run it executes, success or failure, and records the outcome on the schedule row itself (`last_run_status`/`last_run_activity_id`) — this was a real gap before (only logged to Python's own logger, invisible from the UI, violating rule 16 below), not a deliberate omission. Automate's subscriptions ride on top of this same scheduler — a subscription with no active schedule for its `analysis_id` never fires, since detection only runs off scheduled completions (see rule 17).
+
+RFA (RequestForAction) is **not** one of the eight intents either — it's a persistent drawer (`#rfa-drawer`, reachable from `#intent-nav` alongside Chat) with local-only defer/reassign/complete response actions, independent of whichever intent tab is active. See `resource_explorer/registry.py`'s `rfa_actions` table docstring for why this is a stepping stone toward real Egeria ToDo actions, not that integration itself, and `docs/rfa-egeria-todo-followup.md` for the confirmed (not assumed) design of what that integration would take. Automate's own notifications are delivered as RFAs (a new `rfa_operation`-less `log_rfa()` call from `scheduler.py`), reusing this same drawer rather than inventing a separate notification UI.
 
 ## Architecture
 
@@ -143,12 +146,12 @@ The activity log lives in `activity_log` SQLite table. It is the NEW replacement
 ### Web UI
 
 `resource_explorer/web/static/index.html` — single-page app, intent-based shell:
-- `#intent-nav`: the 7-intent tab strip (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate) — the primary navigation axis, replacing the old resource-type-first sidebar tabs
+- `#intent-nav`: the 8-intent tab strip (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate / Automate) — the primary navigation axis, replacing the old resource-type-first sidebar tabs
 - Left sidebar: a resource-type **facet** (Repos / Databases / File Systems) that filters within whichever intent is active — `resourceTypeFacet` + `setResourceTypeFacet()`, not the primary nav
 - Perspective row: concurrent, multi-select persona filter (`dba` / `data_scientist` / `steward` / `security`, data-driven from the analysis catalog) — cross-cutting, not exclusive like intent/facet
 - Main panel: content depends on the active intent (survey report, analysis catalog cards, Survey Definitions, context form, charts, or the Curate tags/feedback/notes pane)
 - Persistent side surfaces, independent of the intent panel: `#chat-panel` (RAG-backed Q&A, scope-aware) and `#rfa-drawer` (RequestForAction response actions — defer/reassign/complete), both toggleable from `#intent-nav`, both stay open across intent switches
-- Header-level, also decoupled from `#intent-nav`: 📋 Activity (persistent log) and ⚙ Admin (Annotation Types / Groups / Schedules — system config, not one of the 7 intents; see the Enrichment-vs-Curate note above)
+- Header-level, also decoupled from `#intent-nav`: 📋 Activity (persistent log) and ⚙ Admin (Annotation Types / Groups / Schedules — system config, not one of the 8 intents; see the Enrichment-vs-Curate note above)
 
 ### Egeria Integration
 
@@ -191,10 +194,10 @@ resource_explorer/
 │   └── main.py            # Typer CLI
 ├── configdata/
 │   ├── technology_type_processes.yaml  # Egeria Technology Type -> native process table
-│   └── analysis_catalog.yaml           # Analysis menu, tagged by the 7 intents (see analysis_catalog_reader.py)
+│   └── analysis_catalog.yaml           # Analysis menu, tagged by the 8 intents (see analysis_catalog_reader.py)
 ├── web/
 │   ├── app.py             # FastAPI application
-│   ├── static/index.html  # Single-page UI — intent-based shell (#intent-nav, 7 intents; see "Seven User Intents" above)
+│   ├── static/index.html  # Single-page UI — intent-based shell (#intent-nav, 8 intents; see "Eight User Intents" above)
 │   └── routes/
 │       ├── query.py               # POST /api/query/
 │       ├── projects.py            # GET/POST /api/projects/, groups CRUD
@@ -207,7 +210,10 @@ resource_explorer/
 │       ├── context.py              # GET/POST /api/context/{type}/{slug} — backs Enrichment
 │       ├── curate.py               # Tags/feedback/curator-notes CRUD — backs Curate
 │       ├── schedules.py            # Analysis schedule CRUD + GET /api/schedules/ (global) — backs the per-card ⏱ Schedule action and Admin's Schedules monitoring overview
-│       └── survey_definitions.py   # Egeria Survey Definition candidates/run — backs Discovery
+│       ├── survey_definitions.py   # Egeria Survey Definition candidates/run — backs Discovery
+│       ├── project_context.py      # GET/POST /api/project-context/{type}/{slug} + search/candidates — backs the Egeria Project context picker (Part 5)
+│       └── automate.py             # notification_subscriptions CRUD — backs Automate (Part 4)
+├── notification_detector.py  # Generic latest-two-runs change detection for Automate subscriptions
 ├── tui/app.py             # Textual TUI
 ├── dashboard/graphs.py    # Plotly figure builders
 ├── surveyors/             # Survey framework
@@ -269,7 +275,7 @@ resource_explorer/
 14. `server_connection()` in `connection.py` connects to the `postgres` system DB for listing databases
 15. `HybridDatabaseSurveyor` must run the local scan immediately after triggering the Egeria native survey — Egeria surveys are async and produce no immediate schema data
 16. Activity log entries must be written for ALL operations — scouting, survey, catalog, publish, RFA — not just for Egeria publishes
-17. The seven intent labels are canonical: `scouting`, `discovery`, `assessment`, `analysis`, `enrichment`, `understanding`, `curate` — use these exact strings in the activity log schema, UI filters, and analysis catalog tags. `discovery` and `enrichment` intentionally have zero entries in the analysis catalog (Discovery is served by `survey_definitions.py`, Enrichment by `context.py`) — that's by design, not a gap.
+17. The eight intent labels are canonical (2026-08-13, was seven): `scouting`, `discovery`, `assessment`, `analysis`, `enrichment`, `understanding`, `curate`, `automate` — use these exact strings in the activity log schema, UI filters, and analysis catalog tags. `discovery`, `enrichment`, and `automate` intentionally have zero entries in the analysis catalog (Discovery is served by `survey_definitions.py`, Enrichment by `context.py`, Automate by `automate.py`'s own `notification_subscriptions` table) — that's by design, not a gap. `automate` is sustained *machine* attention (recurring watch-for-changes via local subscriptions, `scheduler.py`-driven detection, RFA delivery), parallel to `curate`'s sustained *human* attention — see `docs/discovery-automate-project-context-plan.md` Part 4 and `docs/automate-notification-manager-pyegeria-spec.md` for the real-Egeria-NotificationType follow-up this doesn't attempt yet.
 
 ## Testing
 
