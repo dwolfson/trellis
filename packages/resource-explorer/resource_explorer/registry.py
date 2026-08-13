@@ -1435,6 +1435,33 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Egeria Project context — the "uber intent" from
+            # docs/discovery-automate-project-context-plan.md Part 5. Always
+            # say "Egeria Project" in code/UI — RE's own Project class above
+            # (a registered repo/resource) is an unrelated concept that
+            # happens to share the word. `status`: unset (default, nothing
+            # decided yet) | personal (explicit "just exploring," local-only
+            # — no Egeria PersonalProject element created for this alone) |
+            # linked (associated with a real, already-existing Egeria
+            # Project — egeria_project_guid/qualified_name populated) |
+            # deferred (a free-text project name typed now, correlation to
+            # a real Egeria Project GUID resolved later, e.g. at Curate) |
+            # declined (explicit "no association," a deliberate choice, not
+            # the same as never having answered). One row per resource —
+            # upsert, not append-only, since there's only ever one *current*
+            # context (mirrors resource_working_set's exact shape above).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entity_egeria_project_context (
+                    entity_type                   TEXT NOT NULL,
+                    entity_slug                   TEXT NOT NULL,
+                    status                         TEXT NOT NULL DEFAULT 'unset',
+                    egeria_project_guid            TEXT DEFAULT '',
+                    egeria_project_qualified_name  TEXT DEFAULT '',
+                    free_text_name                 TEXT DEFAULT '',
+                    decided_at                     TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
 
     def get_survey_definition_guid(
         self, entity_type: str, entity_slug: str, technology_type: str
@@ -3060,6 +3087,54 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchone()
         return bool(row["hidden"]) if row else False
+
+    # Egeria Project context (Part 5) — see entity_egeria_project_context's
+    # own docstring above for the status vocabulary. get_project_context()
+    # returns None (not a default-shaped dict) when nothing has ever been
+    # decided, so callers can distinguish "no row yet" from a row whose
+    # status happens to be "unset" — both should be treated the same by the
+    # publish gate (web/routes/egeria.py), but the distinction matters for
+    # anything inspecting the row directly later.
+
+    def set_project_context(
+        self,
+        entity_type: str,
+        entity_slug: str,
+        status: str,
+        *,
+        egeria_project_guid: str = "",
+        egeria_project_qualified_name: str = "",
+        free_text_name: str = "",
+    ) -> dict:
+        entity_slug = self._normalize_slug(entity_slug)
+        decided_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO entity_egeria_project_context
+                       (entity_type, entity_slug, status, egeria_project_guid,
+                        egeria_project_qualified_name, free_text_name, decided_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                       status = excluded.status,
+                       egeria_project_guid = excluded.egeria_project_guid,
+                       egeria_project_qualified_name = excluded.egeria_project_qualified_name,
+                       free_text_name = excluded.free_text_name,
+                       decided_at = excluded.decided_at""",
+                (
+                    entity_type, entity_slug, status, egeria_project_guid,
+                    egeria_project_qualified_name, free_text_name, decided_at,
+                ),
+            )
+        return self.get_project_context(entity_type, entity_slug)
+
+    def get_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+        entity_slug = self._normalize_slug(entity_slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM entity_egeria_project_context WHERE entity_type = ? AND entity_slug = ?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return dict(row) if row else None
 
     def exists(self, slug: str) -> bool:
         return self.get(slug) is not None

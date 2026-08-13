@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, projects, query, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, analyses, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
 @asynccontextmanager
@@ -40,6 +40,7 @@ app.include_router(webhook.router, prefix="/api", tags=["webhook"])
 app.include_router(activity.router, prefix="/api/activity", tags=["activity"])
 app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
 app.include_router(context.router, prefix="/api/context", tags=["context"])
+app.include_router(project_context.router, prefix="/api/project-context", tags=["project-context"])
 app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
