@@ -81,7 +81,7 @@ repo_questions:
     note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
       Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
 - question: Are there outstanding CVEs?
-  asked_at: Scouting
+  asked_at: Analysis
   answered_at: Analysis
   perspectives:
   - Governance
@@ -134,7 +134,7 @@ repo_questions:
     analysis_ids: []
     note: N/A — RE registry query (already-registered repos/groups)
 - question: What are similar repos/projects? How does this differ?
-  asked_at: Scouting
+  asked_at: Analysis
   answered_at: Analysis
   perspectives:
   - Community
@@ -187,9 +187,11 @@ repo_questions:
   - Architecture
   - Admin
   answering:
-    kind: gap
-    analysis_ids: []
-    note: 'GAP: RAG content read (Dockerfile/deployment docs) — no structured surveyor'
+    kind: mixed
+    analysis_ids:
+    - repo_conventions
+    note: 'MIXED: repo_conventions (deployment_docker presence signal); GAP: RAG content read for deployment
+      instructions'
 - question: Do we know what the cost to run it is?
   asked_at: Scouting
   answered_at: Enrichment
@@ -207,10 +209,12 @@ repo_questions:
   - Security
   - Admin
   answering:
-    kind: partial
+    kind: mixed
     analysis_ids:
-    - security_scan
-    note: 'PARTIAL: security_scan (CI config presence); GAP: real deployment-test check'
+    - ci_quality
+    - repo_conventions
+    note: 'MIXED: ci_quality (CI actually runs tests) + repo_conventions (deployment_docker evidence);
+      GAP: real deployment-validation test'
 - question: What is the upgrade process?
   asked_at: Scouting
   answered_at: Analysis
@@ -290,16 +294,18 @@ repo_questions:
     note: N/A — human-supplied via Enrichment Context form
 - question: How mature is it?
   asked_at: Scouting
-  answered_at: Understanding
+  answered_at: Assessment
   perspectives:
   - Community
   - Data Expert
   - Architecture
   - Admin
   answering:
-    kind: chart
-    analysis_ids: []
-    note: N/A — Understanding trend chart (stats.py, project_stats history)
+    kind: mixed
+    analysis_ids:
+    - maturity
+    note: 'MIXED: maturity (direct classification) + Understanding trend chart (stats.py, project_stats
+      history)'
 - question: Do we have the skills to support its use?
   asked_at: Scouting
   answered_at: Enrichment
@@ -321,10 +327,11 @@ repo_questions:
   - Architecture
   - Admin
   answering:
-    kind: analysis
+    kind: mixed
     analysis_ids:
     - documentation_coverage
-    note: documentation_coverage
+    - repo_conventions
+    note: 'MIXED: documentation_coverage + repo_conventions (doc_breadth)'
 - question: How is it supported?
   asked_at: Scouting
   answered_at: Analysis
@@ -350,11 +357,13 @@ repo_questions:
   - Architecture
   - Admin
   answering:
-    kind: partial
+    kind: mixed
     analysis_ids:
     - security_scan
-    note: 'PARTIAL: security_scan (hygiene presence); GAP: real deep scan (candidate: OpenSSF Scorecard,
-      CHAOSS GrimoireLab/Augur)'
+    - security_features
+    - repo_conventions
+    note: 'MIXED: security_scan + security_features + repo_conventions (security_policy_content); GAP:
+      real deep scan (candidate: OpenSSF Scorecard, CHAOSS GrimoireLab/Augur)'
 - question: Does it fit into our governance frameworks?
   asked_at: Scouting
   answered_at: Enrichment
@@ -377,12 +386,12 @@ repo_questions:
   - App/AI Builder
   - Security
   answering:
-    kind: gap
-    analysis_ids: []
-    note: 'GAP: license-classification/copyleft-risk step (candidate: FOSSology, LicenseFinder, ClearlyDefined,
-      Mend, Black Duck; schema: SPDX); SPDX id itself is N/A — direct field'
+    kind: analysis
+    analysis_ids:
+    - license_classification
+    note: license_classification
 - question: Is intellectual property (IP) provenance managed via CLA or DCO?
-  asked_at: Scouting
+  asked_at: Analysis
   answered_at: Analysis
   perspectives:
   - Security
@@ -391,7 +400,7 @@ repo_questions:
     analysis_ids: []
     note: 'GAP: RAG content read (CONTRIBUTING.md/CLA-bot config detection)'
 - question: Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
-  asked_at: Scouting
+  asked_at: Analysis
   answered_at: Analysis
   perspectives:
   - Privacy
@@ -403,7 +412,7 @@ repo_questions:
     analysis_ids: []
     note: 'GAP: code-content telemetry/phone-home scan'
 - question: For AI/ML assets, what licensing or usage constraints apply to models, weights, or datasets?
-  asked_at: Scouting
+  asked_at: Analysis
   answered_at: Analysis
   perspectives:
   - Governance
@@ -415,7 +424,7 @@ repo_questions:
     analysis_ids: []
     note: 'GAP: model-card/dataset-file detection (AI Governance tooling category)'
 - question: How does the repository handle secrets, credentials, and sensitive configurations?
-  asked_at: Scouting
+  asked_at: Analysis
   answered_at: Analysis
   perspectives:
   - Security
@@ -425,3 +434,37 @@ repo_questions:
     kind: gap
     analysis_ids: []
     note: 'GAP: secret-scanning (OSPO/DevSecOps tool category)'
+- question: Does the repository publish a clear process for reporting security vulnerabilities?
+  asked_at: Scouting
+  answered_at: Assessment
+  perspectives:
+  - Governance
+  - Security
+  answering:
+    kind: analysis
+    analysis_ids:
+    - repo_conventions
+    note: repo_conventions
+- question: Does the repository have automated build tooling in place?
+  asked_at: Scouting
+  answered_at: Assessment
+  perspectives:
+  - App/AI Builder
+  - Architecture
+  answering:
+    kind: analysis
+    analysis_ids:
+    - repo_conventions
+    note: repo_conventions
+- question: Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
+  asked_at: Scouting
+  answered_at: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Architecture
+  answering:
+    kind: analysis
+    analysis_ids:
+    - repo_conventions
+    note: repo_conventions
