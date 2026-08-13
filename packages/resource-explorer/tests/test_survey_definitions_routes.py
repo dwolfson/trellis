@@ -88,6 +88,29 @@ class TestListCandidates:
         assert step_out["executes_at"] == "resource-explorer"
         assert "SchemaAnalysisAnnotation" in step_out["annotation_types"]
 
+    def test_survey_kind_query_param_threaded_to_reader(self, client):
+        with patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
+            return_value=[],
+        ) as mock_find:
+            resp = client.get("/api/survey-definitions/database/mydb/candidates?survey_kind=discovery")
+
+        assert resp.status_code == 200
+        mock_find.assert_called_once()
+        assert mock_find.call_args.kwargs.get("survey_kind") == "discovery"
+
+    def test_no_survey_kind_query_param_defaults_to_none(self, client):
+        # Backward compatibility — omitting the param must behave exactly as
+        # before this feature (every candidate for the technology type).
+        with patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
+            return_value=[],
+        ) as mock_find:
+            resp = client.get("/api/survey-definitions/database/mydb/candidates")
+
+        assert resp.status_code == 200
+        assert mock_find.call_args.kwargs.get("survey_kind") is None
+
     def test_egeria_step_enriched_with_produced_annotation_types(self, client):
         step = _fake_step(
             "GovActionProcessStep::Test::RowCountSnapshot", "egeria", description="",

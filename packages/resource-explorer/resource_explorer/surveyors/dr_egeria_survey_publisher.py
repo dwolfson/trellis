@@ -85,10 +85,22 @@ def render_step_block(survey_group: str, survey_display_name: str, step: Publish
 
 def render_process_block(
     survey_group: str, survey_display_name: str, technology_type: str, description: str,
+    survey_kind: str | None = None,
 ) -> str:
     """The "Create Governance Action Process" command block — the survey
-    container all steps get linked into."""
-    return (
+    container all steps get linked into.
+
+    survey_kind (Additional Properties, generic-dictionary convention — same
+    mechanism as executes_at/supported_technology_type, no schema change)
+    distinguishes which UI surface a Survey Definition is meant for, e.g.
+    "scouting" | "discovery" | "automate_full" — see
+    docs/discovery-automate-project-context-plan.md Part 1. Without this,
+    every Survey Definition matching a Technology Type shows up in every
+    surface's candidate list regardless of which phase it was actually
+    authored for (the bug this field exists to close). Optional/omitted for
+    backward compatibility with Survey Definitions authored before this
+    convention existed."""
+    lines = [
         "## Create Governance Action Process\n"
         f"### Display Name\n{survey_display_name}\n\n"
         f"### Qualified Name\n{_process_qualified_name(survey_group)}\n\n"
@@ -97,7 +109,10 @@ def render_process_block(
         "| Parameter Name | Parameter Value |\n"
         "|---|---|\n"
         f"| supported_technology_type | {technology_type} |\n"
-    )
+    ]
+    if survey_kind:
+        lines.append(f"| survey_kind | {survey_kind} |\n")
+    return "".join(lines)
 
 
 def render_link_first_block(survey_group: str, first_step_key: str) -> str:
@@ -129,6 +144,7 @@ def generate_survey_definition_markdown(
     technology_type: str,
     description: str,
     steps: list[PublishableStep],
+    survey_kind: str | None = None,
 ) -> str:
     """Full Dr.Egeria markdown document: one 'Create Governance Action
     Process Step' per step (in the given order), one 'Create Governance
@@ -144,7 +160,7 @@ def generate_survey_definition_markdown(
         raise ValueError("generate_survey_definition_markdown() needs at least one step")
 
     blocks = [render_step_block(survey_group, survey_display_name, s) for s in steps]
-    blocks.append(render_process_block(survey_group, survey_display_name, technology_type, description))
+    blocks.append(render_process_block(survey_group, survey_display_name, technology_type, description, survey_kind))
     blocks.append(render_link_first_block(survey_group, steps[0].step_key))
     for prev, nxt in zip(steps, steps[1:]):
         blocks.append(render_link_next_block(survey_group, prev.step_key, nxt.step_key))

@@ -4010,7 +4010,10 @@ async function loadSurveyDefinitionsPanel() {
   }
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Definitions from Egeria…</div>';
   try {
-    const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates`);
+    // survey_kind=discovery — Discovery's own leaner Survey Definitions only,
+    // not the Automate-tier "run everything" bundle or Scouting's coarse
+    // scan (see docs/discovery-automate-project-context-plan.md Part 1).
+    const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates?survey_kind=discovery`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     // Per-candidate Schedule action (see renderSurveyDefinitionsPanel) needs
     // to know each candidate's current schedule, if any — same schedules

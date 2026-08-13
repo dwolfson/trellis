@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -37,7 +37,16 @@ def _map_reader_executor_errors(exc: Exception) -> HTTPException:
 
 
 @router.get("/{entity_type}/{slug}/candidates")
-async def list_candidates(entity_type: str, slug: str) -> dict:
+async def list_candidates(
+    entity_type: str, slug: str,
+    survey_kind: str | None = Query(
+        None,
+        description="Filter to Survey Definitions tagged with this survey_kind "
+                    "(e.g. 'discovery') — omit to see every Survey Definition for "
+                    "the resource's Technology Type regardless of kind, matching "
+                    "the pre-survey_kind behavior.",
+    ),
+) -> dict:
     """List Survey Definitions Egeria has for this resource's Technology Type,
     each with full step detail (not just a name) so a human can judge scope
     before running one."""
@@ -49,7 +58,7 @@ async def list_candidates(entity_type: str, slug: str) -> dict:
 
         adapter = get_adapter(entity_type)
         reader = SurveyDefinitionReader()
-        thin_candidates = reader.find_candidate_process_guids(adapter.technology_type)
+        thin_candidates = reader.find_candidate_process_guids(adapter.technology_type, survey_kind=survey_kind)
 
         # Real Egeria-documented "what does a native step actually produce" info,
         # keyed by Egeria's own Technology Type name (deliberately not the same
@@ -99,7 +108,10 @@ async def list_candidates(entity_type: str, slug: str) -> dict:
                     step_info["egeria_produced_annotation_types"] = produced_annotation_types
                 steps.append(step_info)
 
-            detailed.append({**c, "description": survey_def.description, "error": None, "steps": steps})
+            detailed.append({
+                **c, "description": survey_def.description, "error": None, "steps": steps,
+                "survey_kind": survey_def.survey_kind,
+            })
 
         # Native Egeria processes for this Technology Type (config/technology_
         # type_processes.yaml), shown as informational only — NOT merged into

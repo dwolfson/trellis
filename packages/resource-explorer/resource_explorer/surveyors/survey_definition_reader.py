@@ -97,6 +97,12 @@ class SurveyDefinition:
     supported_technology_type: str | None
     steps: list = field(default_factory=list)  # list[SurveyStep], in execution order
     description: str = ""  # author-provided, from Egeria's own Description attribute
+    # Which UI surface this Survey Definition is meant for — "scouting" |
+    # "discovery" | "automate_full" | ... — Additional Properties convention,
+    # see dr_egeria_survey_publisher.render_process_block's docstring and
+    # docs/discovery-automate-project-context-plan.md Part 1. None for
+    # Survey Definitions authored before this convention existed.
+    survey_kind: str | None = None
 
 
 class SurveyDefinitionReader:
@@ -149,9 +155,20 @@ class SurveyDefinitionReader:
 
     # ── discovery: find candidate Survey Definitions by Technology Type ────────
 
-    def find_candidate_process_guids(self, technology_type: str) -> list:
+    def find_candidate_process_guids(self, technology_type: str, survey_kind: str | None = None) -> list:
         """Return every GovernanceActionProcess whose additionalProperties declare
         supported_technology_type == technology_type.
+
+        survey_kind, when given, additionally filters to Survey Definitions
+        whose Additional Properties declare that exact survey_kind — e.g. a
+        Discovery-tier caller passes survey_kind="discovery" so an
+        Automate-tier "run everything" bundle (survey_kind="automate_full")
+        or a Scouting-tier coarse scan doesn't show up as a Discovery
+        candidate. None (default) keeps the old behavior — every Survey
+        Definition for the technology type, regardless of kind — for
+        backward compatibility with callers that don't care (and with
+        Survey Definitions authored before this convention existed, which
+        have no survey_kind at all).
 
         Confirmed live (2026-07-08) that `AutomatedCuration.get_tech_type_detail`
         — the mechanism this originally used, copied from `EgeriaDatabaseSurveyor.
@@ -195,6 +212,8 @@ class SurveyDefinitionReader:
                 props = el.get("properties", {}) or {}
                 additional = props.get("additionalProperties", {}) or {}
                 if additional.get("supported_technology_type") != technology_type:
+                    continue
+                if survey_kind is not None and additional.get("survey_kind") != survey_kind:
                     continue
                 qn = props.get("qualifiedName")
                 if not qn:
@@ -340,6 +359,7 @@ class SurveyDefinitionReader:
             supported_technology_type=process_additional.get("supported_technology_type"),
             steps=steps,
             description=process_props.get("description", ""),
+            survey_kind=process_additional.get("survey_kind"),
         )
 
     def _parse_step(self, element: dict) -> SurveyStep:

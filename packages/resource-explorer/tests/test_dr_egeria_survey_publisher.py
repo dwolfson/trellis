@@ -54,6 +54,16 @@ class TestRenderProcessBlock:
         assert "GovActionProcess::RepoFullSurvey" in block
         assert "supported_technology_type | Git Repository" in block
 
+    def test_survey_kind_omitted_by_default(self):
+        block = render_process_block("RepoFullSurvey", "Repo Full Survey", "Git Repository", "desc")
+        assert "survey_kind" not in block
+
+    def test_survey_kind_included_when_given(self):
+        block = render_process_block(
+            "RepoDiscoverySurvey", "Repo Discovery Survey", "Git Repository", "desc", survey_kind="discovery",
+        )
+        assert "survey_kind | discovery" in block
+
 
 class TestLinkBlocks:
     def test_link_first_references_process_and_first_step(self):
@@ -128,3 +138,10 @@ class TestGenerateSurveyDefinitionMarkdown:
             "RepoFullSurvey", "Repo Full Survey", "Git Repository", "desc", steps,
         )
         assert "___" in md
+
+    def test_survey_kind_threaded_into_process_block(self, steps):
+        md = generate_survey_definition_markdown(
+            "RepoDiscoverySurvey", "Repo Discovery Survey", "Git Repository", "desc", steps,
+            survey_kind="discovery",
+        )
+        assert "survey_kind | discovery" in md

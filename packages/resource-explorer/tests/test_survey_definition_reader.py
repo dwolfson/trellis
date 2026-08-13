@@ -83,6 +83,23 @@ def test_parse_single_step_graph():
     assert survey_def.steps[0].guid == "step-1"
     assert survey_def.steps[0].executes_at == "resource-explorer"
     assert survey_def.steps[0].re_analysis_step == "postgres_schema_and_stats"
+    assert survey_def.survey_kind is None  # not present in additional_properties above
+
+
+def test_parse_survey_kind_when_present():
+    step = _step_element(
+        "step-1", "GovActionProcessStep::Survey::Step",
+        additional_properties={"executes_at": "resource-explorer"},
+    )
+    graph = _graph(
+        "proc-1", "GovActionProcess::Survey",
+        additional_properties={"supported_technology_type": "Git Repository", "survey_kind": "discovery"},
+        first_step=step,
+    )
+
+    survey_def = _reader()._parse_graph(graph)
+
+    assert survey_def.survey_kind == "discovery"
 
 
 def test_parse_linear_two_step_graph():
@@ -163,6 +180,63 @@ def test_cycle_is_rejected():
 
     with pytest.raises(UnsupportedSurveyDefinitionError):
         _reader()._parse_graph(graph)
+
+
+class _FakeGovernanceOfficer:
+    def __init__(self, results):
+        self._results = results
+
+    def find_governance_definitions(self, **_kwargs):
+        return self._results
+
+
+def _reader_with_fake_results(results) -> SurveyDefinitionReader:
+    reader = _reader()
+    reader._governance_officer = _FakeGovernanceOfficer(results)  # short-circuits connect()
+    return reader
+
+
+def _governance_process_result(qualified_name, technology_type, survey_kind=None, guid="g"):
+    additional = {"supported_technology_type": technology_type}
+    if survey_kind is not None:
+        additional["survey_kind"] = survey_kind
+    return {
+        "properties": {"qualifiedName": qualified_name, "displayName": qualified_name, "additionalProperties": additional},
+        "elementHeader": {"guid": guid},
+    }
+
+
+class TestFindCandidateProcessGuidsSurveyKindFilter:
+    """Analysis-step Egeria registration plan D1 (survey_kind filtering) —
+    docs/discovery-automate-project-context-plan.md Part 1."""
+
+    def test_no_survey_kind_filter_returns_everything_matching_technology_type(self):
+        results = [
+            _governance_process_result("GovActionProcess::A", "Git Repository", survey_kind="discovery"),
+            _governance_process_result("GovActionProcess::B", "Git Repository", survey_kind="automate_full"),
+            _governance_process_result("GovActionProcess::C", "PostgreSQL Database", survey_kind="discovery"),
+        ]
+        reader = _reader_with_fake_results(results)
+        candidates = reader.find_candidate_process_guids("Git Repository")
+        assert {c["qualified_name"] for c in candidates} == {"GovActionProcess::A", "GovActionProcess::B"}
+
+    def test_survey_kind_filter_narrows_to_exact_match(self):
+        results = [
+            _governance_process_result("GovActionProcess::A", "Git Repository", survey_kind="discovery"),
+            _governance_process_result("GovActionProcess::B", "Git Repository", survey_kind="automate_full"),
+        ]
+        reader = _reader_with_fake_results(results)
+        candidates = reader.find_candidate_process_guids("Git Repository", survey_kind="discovery")
+        assert [c["qualified_name"] for c in candidates] == ["GovActionProcess::A"]
+
+    def test_survey_kind_filter_excludes_definitions_with_no_survey_kind_at_all(self):
+        # A Survey Definition authored before this convention existed (no
+        # survey_kind key at all) must not leak into a kind-filtered list.
+        results = [_governance_process_result("GovActionProcess::Legacy", "Git Repository", survey_kind=None)]
+        reader = _reader_with_fake_results(results)
+        assert reader.find_candidate_process_guids("Git Repository", survey_kind="discovery") == []
+        # ...but shows up fine when no filter is applied (backward compatibility).
+        assert len(reader.find_candidate_process_guids("Git Repository")) == 1
 
 
 def test_missing_node_for_linked_guid_is_rejected():
