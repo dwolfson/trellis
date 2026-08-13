@@ -146,6 +146,7 @@ class IngestionPipeline:
         self._parse_dependencies(project_slug, code_root)
         self._profile_data_files(project_slug, code_root)
         self._parse_ci_workflows(project_slug, code_root)
+        self._parse_repo_conventions(project_slug, code_root)
         return file_count, loc
 
     def _ingest_collection(
@@ -261,6 +262,7 @@ class IngestionPipeline:
             file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
             self._profile_data_files(project_slug, local_root)
             self._parse_ci_workflows(project_slug, local_root)
+            self._parse_repo_conventions(project_slug, local_root)
 
             if include_symbols:
                 from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
@@ -332,6 +334,25 @@ class IngestionPipeline:
                 self.console.print(f"[dim]CI quality: {len(findings)} check(s) evaluated.[/dim]")
         except Exception as exc:
             self.console.print(f"[dim]CI workflow parsing skipped: {exc}[/dim]")
+
+    def _parse_repo_conventions(self, project_slug: str, local_root: Path) -> None:
+        """Discovery-tier convention signals (Part 2, security_policy_content/
+        automated_build/deployment_docker/catalog_info/doc_breadth) — same
+        pattern as _parse_ci_workflows: parsed once here (already-downloaded
+        zipball), written to the generic findings table, read back read-only
+        at survey time by RepoConventionsSurveyor. Called from both full
+        ingestion and refresh_profile()."""
+        try:
+            from resource_explorer.ingestion.repo_conventions_parser import RepoConventionsParser
+            findings = RepoConventionsParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(
+                    project_slug, "repo_conventions", findings,
+                    surveyed_at=datetime.utcnow().isoformat(),
+                )
+                self.console.print(f"[dim]Repo conventions: {len(findings)} check(s) evaluated.[/dim]")
+        except Exception as exc:
+            self.console.print(f"[dim]Repo conventions parsing skipped: {exc}[/dim]")
 
     # ── local file helpers ────────────────────────────────────────────────────
 

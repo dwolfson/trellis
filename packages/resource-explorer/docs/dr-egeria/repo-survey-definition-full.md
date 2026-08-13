@@ -190,6 +190,44 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Repo Full Survey — Repo Maturity
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_maturity
+
+### Description
+Project age/lifecycle stage (nascent/emerging/established/mature), from repo_created_at — a CHAOSS-informed Discovery-tier signal.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_maturity |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Repo Full Survey — Repo Conventions
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_conventions
+
+### Description
+Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style), documentation breadth.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_conventions |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Repo Full Survey — Repo Api Structure
 
 ### Qualified Name
@@ -402,6 +440,30 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_ci_quality
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_maturity
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_maturity
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_conventions
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_conventions
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_api_structure

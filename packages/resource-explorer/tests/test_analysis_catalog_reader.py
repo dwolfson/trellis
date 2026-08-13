@@ -81,7 +81,7 @@ class TestFilterByIntent:
         ids = {a["id"] for a in analyses}
         assert ids == {
             "security_scan", "documentation_coverage", "license_classification",
-            "security_features", "ci_quality",
+            "security_features", "ci_quality", "maturity", "repo_conventions",
         }
 
     def test_intent_all_returns_everything(self):

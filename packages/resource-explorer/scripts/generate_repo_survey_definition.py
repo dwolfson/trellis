@@ -84,10 +84,12 @@ SPECS = [
         description=(
             "Early-headlights signals for deciding whether to pursue this repo further "
             "— from data already collected by Scouting/Profile, zero new fetch. "
-            "Deliberately minimal today; grows as new Discovery-tier analyses are built "
-            "(see docs/discovery-automate-project-context-plan.md Part 2)."
+            "Grown by Part 2 (docs/discovery-automate-project-context-plan.md) with "
+            "maturity/lifecycle-stage and repo-convention signals (security policy, "
+            "build automation, deployment/Docker evidence, catalog self-description, "
+            "documentation breadth)."
         ),
-        step_keys=["repo_license_classification"],
+        step_keys=["repo_license_classification", "repo_maturity", "repo_conventions"],
         output_filename="repo-survey-definition-discovery.md",
     ),
     SurveyDefSpec(

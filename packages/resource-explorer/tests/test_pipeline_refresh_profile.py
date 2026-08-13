@@ -169,6 +169,48 @@ class TestCiWorkflowsRefreshedByProfile:
         assert registry.query_findings("myproj", "ci_quality") == []
 
 
+class TestRepoConventionsRefreshedByProfile:
+    """Assessment expansion Part 2 — _parse_repo_conventions() is called
+    from refresh_profile() (same pattern as _parse_ci_workflows, B4), so
+    "Refresh & profile" keeps repo_conventions findings current too."""
+
+    def test_refresh_profile_populates_repo_conventions_findings(self, registry, tmp_path):
+        pipeline = _make_pipeline(registry)
+        local_root = tmp_path / "repo"
+        local_root.mkdir()
+        (local_root / "main.py").write_text("def f(): pass\n")
+        (local_root / "Dockerfile").write_text("FROM python:3.13\n")
+        client = MagicMock()
+        client.download_zipball.return_value = local_root
+
+        pipeline.refresh_profile(
+            "myproj", "https://github.com/test/myproj", [],
+            include_symbols=False, client=client, repo=MagicMock(),
+        )
+
+        findings = registry.query_findings("myproj", "repo_conventions")
+        by_check = {f["check_name"]: f for f in findings}
+        assert by_check["deployment_docker"]["label"] == "pass"
+        assert by_check["catalog_info"]["label"] == "absent"
+
+    def test_refresh_profile_always_writes_five_checks(self, registry, tmp_path):
+        # Unlike ci_quality (no findings if no .github/workflows dir at
+        # all), repo_conventions always produces its 5 checks — an empty
+        # repo still has a real "no evidence found" answer for each.
+        pipeline = _make_pipeline(registry)
+        local_root = _make_local_root(tmp_path)
+        client = MagicMock()
+        client.download_zipball.return_value = local_root
+
+        pipeline.refresh_profile(
+            "myproj", "https://github.com/test/myproj", [],
+            include_symbols=False, client=client, repo=MagicMock(),
+        )
+
+        findings = registry.query_findings("myproj", "repo_conventions")
+        assert len(findings) == 5
+
+
 class TestExtractSymbolsOnlyWrapper:
     def test_extract_symbols_only_delegates_to_refresh_profile(self, registry, tmp_path):
         """extract_symbols_only() is now a thin wrapper — same -> int contract,

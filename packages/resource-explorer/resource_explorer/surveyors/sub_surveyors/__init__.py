@@ -10,6 +10,8 @@ from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfiler
 from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
+from resource_explorer.surveyors.sub_surveyors.maturity import MaturitySurveyor
+from resource_explorer.surveyors.sub_surveyors.repo_conventions import RepoConventionsSurveyor
 from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import (
     SubResourceSurveyor,
     ancestor_folder_paths,
@@ -29,5 +31,7 @@ __all__ = [
     "CiQualitySurveyor",
     "LicenseClassifierSurveyor",
     "SecurityFeaturesSurveyor",
+    "MaturitySurveyor",
+    "RepoConventionsSurveyor",
     "SubResourceSurveyor",
 ]

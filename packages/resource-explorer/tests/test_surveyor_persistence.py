@@ -20,6 +20,8 @@ from resource_explorer.surveyors.sub_surveyors.documentation import Documentatio
 from resource_explorer.surveyors.sub_surveyors.file_size import FileSizeSurveyor
 from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
+from resource_explorer.surveyors.sub_surveyors.maturity import MaturitySurveyor
+from resource_explorer.surveyors.sub_surveyors.repo_conventions import RepoConventionsSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.survey_report import (
@@ -261,6 +263,84 @@ class TestCiQualitySurveyorPersistence:
         findings = registry.query_findings("myproj", "ci_quality")
         assert len(findings) == 1
         assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
+
+
+class TestRepoConventionsSurveyorPersistence:
+    """RepoConventionsSurveyor is read-only at survey time, same relationship
+    CiQualitySurveyor has with IngestionPipeline._parse_repo_conventions()."""
+
+    def test_no_findings_yields_no_annotations(self, registry, project):
+        assert RepoConventionsSurveyor(project, registry).run() == []
+
+    def test_reemits_persisted_findings_as_annotations(self, registry, project):
+        registry.upsert_finding(
+            "myproj", "repo_conventions",
+            [
+                {"check_name": "deployment_docker", "label": "pass", "summary": "Dockerfile found", "confidence": 75},
+                {"check_name": "catalog_info", "label": "absent", "summary": "no catalog-info.yaml", "confidence": 90},
+            ],
+            surveyed_at="2026-01-01T00:00:00",
+        )
+        annotations = RepoConventionsSurveyor(project, registry).run()
+        assert len(annotations) == 2
+        labels = {a.json_properties["check_name"]: a.candidate_classifications[0] for a in annotations}
+        assert labels == {"deployment_docker": "pass", "catalog_info": "absent"}
+
+    def test_does_not_write_new_findings(self, registry, project):
+        registry.upsert_finding(
+            "myproj", "repo_conventions",
+            [{"check_name": "doc_breadth", "label": "pass", "summary": "x", "confidence": 85}],
+            surveyed_at="2026-01-01T00:00:00",
+        )
+        RepoConventionsSurveyor(project, registry).run()
+        findings = registry.query_findings("myproj", "repo_conventions")
+        assert len(findings) == 1
+        assert all(f["surveyed_at"] == "2026-01-01T00:00:00" for f in findings)
+
+
+class TestMaturitySurveyorPersistence:
+    def _seed_stats(self, registry, slug, repo_created_at=""):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_stats (project_slug, fetched_at, repo_created_at) VALUES (?, ?, ?)",
+                (slug, "2026-01-01T00:00:00", repo_created_at),
+            )
+
+    def test_no_created_at_is_unknown(self, registry, project):
+        annotations = MaturitySurveyor(project, registry).run()
+        assert len(annotations) == 1
+        assert annotations[0].candidate_classifications == ["unknown"]
+        findings = registry.query_findings("myproj", "maturity")
+        assert findings[0]["label"] == "unknown"
+
+    def test_very_recent_repo_is_nascent(self, registry, project):
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        self._seed_stats(registry, "myproj", created)
+        annotations = MaturitySurveyor(project, registry).run()
+        assert annotations[0].candidate_classifications == ["nascent"]
+
+    def test_old_repo_is_mature(self, registry, project):
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=365 * 7)).isoformat()
+        self._seed_stats(registry, "myproj", created)
+        annotations = MaturitySurveyor(project, registry).run()
+        assert annotations[0].candidate_classifications == ["mature"]
+
+    def test_mid_range_repo_is_established(self, registry, project):
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=365 * 3)).isoformat()
+        self._seed_stats(registry, "myproj", created)
+        annotations = MaturitySurveyor(project, registry).run()
+        assert annotations[0].candidate_classifications == ["established"]
+
+    def test_persists_a_fresh_nonempty_timestamp(self, registry, project):
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        self._seed_stats(registry, "myproj", created)
+        MaturitySurveyor(project, registry).run()
+        findings = registry.query_findings("myproj", "maturity")
+        assert all(f["surveyed_at"] for f in findings)
 
 
 class TestApiStructureSurveyorPersistence:

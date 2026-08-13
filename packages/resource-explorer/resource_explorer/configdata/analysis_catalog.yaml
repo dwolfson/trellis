@@ -209,6 +209,38 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: maturity
+    name: "Maturity"
+    description: "Project age/lifecycle stage (nascent/emerging/established/mature) from repo creation date — a CHAOSS-informed early-headlights signal, distinct from Repository Health's activity/community/release scoring."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["steward", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: repo_conventions
+    name: "Repo Conventions"
+    description: "Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style catalog-info.yaml), documentation breadth."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["steward", "security", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: data_file_profiling
     name: "Data File Profiling"
     description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."
