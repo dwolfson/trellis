@@ -178,8 +178,13 @@ class KrokiConfig(BaseSettings):
     Kroki directly, and what happens when Kroki is unreachable (a real
     concern once it's on a different host — network hiccups become more
     likely, not just "container isn't running").
+
+    Published host port is 6002, not Kroki's own default 8000 — shared-infra.yaml
+    moved off 8000 because it collided with common local dev servers (e.g.
+    `mkdocs serve`) on the same host. Container-internal port is still 8000
+    (unaffected; that's what the container-to-container URL above uses).
     """
-    url: str = Field(default="http://localhost:8000", alias="KROKI_URL")
+    url: str = Field(default="http://localhost:6002", alias="KROKI_URL")
     # Higher than diagrams.py's old flat 15s default — a remote Kroki adds
     # real network latency on top of render time, which local-only testing
     # can't surface. Tune down for a known-fast local setup if 30s ever

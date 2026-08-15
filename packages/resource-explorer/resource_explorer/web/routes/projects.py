@@ -409,12 +409,12 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
 
 class QuestionChecklistEntry(BaseModel):
     question: str
-    asked_at: str
-    answered_at: str
+    stage: str  # single Funnel Stage, may be slash-combined (e.g. "Analysis/Enrichment")
     perspectives: list[str] = []
     kind: str  # analysis | direct | registry | human | chart | gap | partial | mixed | unknown
     analysis_ids: list[str] = []
     note: str = ""
+    answering_mechanism: str = ""
     # None = not applicable (direct/registry/human/chart/gap kinds — no RE
     # analysis backs these, so there's nothing to check); True/False only
     # for analysis/partial/mixed kinds, computed best-effort per resource.
@@ -465,7 +465,7 @@ async def get_scouting_questions(
     perspectives: str | None = None,
 ) -> QuestionChecklist:
     """Per-phase Question checklist — which of the authored Scouting
-    questions (docs/dr-egeria/scouting-questions.csv, via
+    questions (docs/dr-egeria/resource_questions.csv, via
     question_catalog_reader.py) this phase raises or can answer, filtered
     by the active Perspective set (comma-separated query param, matching
     the UI's activePerspectives multi-select — see index.html's
@@ -492,12 +492,12 @@ async def get_scouting_questions(
         )
         checklist.append(QuestionChecklistEntry(
             question=e["question"],
-            asked_at=e["asked_at"],
-            answered_at=e["answered_at"],
+            stage=e["stage"],
             perspectives=e["perspectives"],
             kind=answering["kind"],
             analysis_ids=answering["analysis_ids"],
             note=answering["note"],
+            answering_mechanism=e.get("answering_mechanism", ""),
             has_data=has_data,
         ))
 

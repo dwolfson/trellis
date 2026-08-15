@@ -28,37 +28,45 @@ def _write_fixture(tmp_path: Path) -> Path:
     path.write_text(textwrap.dedent("""
         repo_questions:
           - question: "Is this repo alive?"
-            asked_at: Scouting
-            answered_at: Scouting
+            stage: Scouting
             perspectives: [Steward, Consumer]
             answering:
               kind: analysis
               analysis_ids: [repository_health]
               note: repository_health
+            answering_mechanism: Git Statistics
           - question: "What license risk tier applies?"
-            asked_at: Scouting
-            answered_at: Assessment
+            stage: Assessment
             perspectives: [Governance, Security]
             answering:
               kind: analysis
               analysis_ids: [license_classification]
               note: license_classification
+            answering_mechanism: Code Analysis
           - question: "How mature is it?"
-            asked_at: Scouting
-            answered_at: Assessment
+            stage: Assessment
             perspectives: [Architecture]
             answering:
               kind: mixed
               analysis_ids: [maturity]
               note: "MIXED: maturity + Understanding trend chart"
+            answering_mechanism: Code Analysis
           - question: "Are there outstanding CVEs?"
-            asked_at: Analysis
-            answered_at: Analysis
+            stage: Analysis
             perspectives: [Security, Governance]
             answering:
               kind: gap
               analysis_ids: []
               note: "GAP: CVE scan"
+            answering_mechanism: Gap
+          - question: "Should we validate the license text if non-standard?"
+            stage: Analysis/Enrichment
+            perspectives: [Governance]
+            answering:
+              kind: mixed
+              analysis_ids: [license_classification]
+              note: "MIXED: license_classification + human validation"
+            answering_mechanism: Code Analysis+Human-Supplied
     """))
     return path
 
@@ -78,20 +86,37 @@ class TestLoadAndGetQuestions:
         data = qcr._load(missing)
         assert data == {"repo": []}
 
-    def test_phase_filter_matches_asked_or_answered(self, tmp_path):
+    def test_phase_filter_matches_single_stage(self, tmp_path):
         path = _write_fixture(tmp_path)
         data = qcr._load(path)
-        assert len(data["repo"]) == 4
+        assert len(data["repo"]) == 5
 
         entries = [e.to_dict() for e in data["repo"]]
-        scouting = [e for e in entries if e["asked_at"] == "Scouting" or e["answered_at"] == "Scouting"]
-        assert {e["question"] for e in scouting} == {
-            "Is this repo alive?", "What license risk tier applies?", "How mature is it?",
-        }
-        assessment = [e for e in entries if e["asked_at"] == "Assessment" or e["answered_at"] == "Assessment"]
+        scouting = [e for e in entries if e["stage"] == "Scouting"]
+        assert {e["question"] for e in scouting} == {"Is this repo alive?"}
+        assessment = [e for e in entries if e["stage"] == "Assessment"]
         assert {e["question"] for e in assessment} == {
             "What license risk tier applies?", "How mature is it?",
         }
+
+    def test_phase_filter_matches_slash_combined_stage(self, tmp_path):
+        # A slash-combined stage (e.g. "Analysis/Enrichment") should show up
+        # under both of its component phases — see get_questions()'s docstring.
+        # get_questions() always reads the module-default path — exercise the
+        # slash-combined matching directly against _load()'s raw entries instead.
+        path = _write_fixture(tmp_path)
+        data = qcr._load(path)
+        entries = [e.to_dict() for e in data["repo"]]
+
+        def _matches(entry, phase):
+            return phase.lower() in {p.strip().lower() for p in entry["stage"].split("/")}
+
+        analysis_matches = {e["question"] for e in entries if _matches(e, "analysis")}
+        assert analysis_matches == {
+            "Are there outstanding CVEs?", "Should we validate the license text if non-standard?",
+        }
+        enrichment_matches = {e["question"] for e in entries if _matches(e, "enrichment")}
+        assert enrichment_matches == {"Should we validate the license text if non-standard?"}
 
     def test_perspective_filter_is_or_matched(self, tmp_path):
         path = _write_fixture(tmp_path)
@@ -104,11 +129,11 @@ class TestLoadAndGetQuestions:
 
     def test_case_insensitive_phase_match(self):
         # get_questions() lowercases both sides — verify against the real
-        # packaged catalog (asked_at is always "Scouting" title-case there).
+        # packaged catalog (stage is always title-case there).
         entries = qcr.get_questions("repo", phase="SCOUTING")
         assert entries  # the real catalog has scouting-tier questions
         assert all(
-            e["asked_at"].lower() == "scouting" or e["answered_at"].lower() == "scouting"
+            "scouting" in {part.strip().lower() for part in e["stage"].split("/")}
             for e in entries
         )
 
@@ -119,7 +144,7 @@ class TestLoadAndGetQuestions:
 class TestRealPackagedCatalog:
     """Regression guard against the CSV reorg — spot-checks specific
     entries that were deliberately changed (docs/dr-egeria/
-    scouting-questions.csv -> question_catalog.yaml regeneration)."""
+    resource_questions.csv -> question_catalog.yaml regeneration)."""
 
     def test_license_question_is_now_a_closed_analysis_not_a_gap(self):
         entries = qcr.get_questions("repo")
@@ -127,10 +152,10 @@ class TestRealPackagedCatalog:
         assert license_q["answering"]["kind"] == "analysis"
         assert "license_classification" in license_q["answering"]["analysis_ids"]
 
-    def test_maturity_question_answered_at_assessment_not_understanding(self):
+    def test_maturity_question_stage_is_assessment_not_understanding(self):
         entries = qcr.get_questions("repo")
         maturity_q = next(e for e in entries if e["question"] == "How mature is it?")
-        assert maturity_q["answered_at"] == "Assessment"
+        assert maturity_q["stage"] == "Assessment"
         assert "maturity" in maturity_q["answering"]["analysis_ids"]
 
     def test_new_repo_conventions_questions_present(self):
@@ -146,8 +171,7 @@ class TestRealPackagedCatalog:
         # Scouting was noise, not actionable there.
         entries = qcr.get_questions("repo")
         cve_q = next(e for e in entries if e["question"] == "Are there outstanding CVEs?")
-        assert cve_q["asked_at"] == "Analysis"
-        assert cve_q["answered_at"] == "Analysis"
+        assert cve_q["stage"] == "Analysis"
 
         scouting_entries = qcr.get_questions("repo", phase="scouting")
         scouting_questions = {e["question"] for e in scouting_entries}

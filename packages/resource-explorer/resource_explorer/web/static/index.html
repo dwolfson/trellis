@@ -1323,15 +1323,19 @@ function setNavIntent(intent) {
     // Survey Definitions panel is reused verbatim — it already resolves the
     // selected resource itself and shows its own "select a resource" empty
     // state, so no wrapper empty-state logic is needed here unlike Scouting.
-    showMainView('survey-definitions');
+    // Now routed through showDiscoveryPane() (D6) so its own sub-tab state
+    // (Survey Definitions / Questions / Disposition) persists across
+    // switches, same pattern as Assessment/Scouting.
+    showDiscoveryPane();
   } else if (intent === 'assessment') {
     showAssessmentPane();
   } else if (intent === 'analysis') {
-    showMainView('analysis');
+    showAnalysisPane();
   } else if (intent === 'enrichment') {
     // RFA is no longer part of Enrichment — it moved to the persistent
-    // drawer in Step 5. This is now just the Context form.
-    showMainView('context');
+    // drawer in Step 5. This is now just the Context form (+ Questions/
+    // Disposition sub-tabs, D6).
+    showEnrichmentPane();
   } else if (intent === 'understanding') {
     showUnderstandingPane();
   } else if (intent === 'curate') {
@@ -1417,8 +1421,51 @@ function _showScoutingSubTab(tab) {
   if (tab === 'discover') showMainView('scouting-discover');
   else if (tab === 'survey') showMainView('scouting-overview');
   else if (tab === 'profile') showMainView('scouting-profile');
-  else if (tab === 'questions') showMainView('scouting-questions');
-  else if (tab === 'disposition') showMainView('scouting-disposition');
+  else if (tab === 'questions') { _questionsDispositionHost = 'scouting'; _questionsPhase = 'scouting'; showMainView('scouting-questions'); }
+  else if (tab === 'disposition') { _questionsDispositionHost = 'scouting'; showMainView('scouting-disposition'); }
+}
+
+// ── D6 (docs/survey-question-context-plan.md): Questions + Disposition are
+// shared sub-tabs reused across Scouting/Discovery/Assessment/Analysis/
+// Enrichment — both are repo-only (keyed by github_url; question_catalog.yaml
+// only has "repo" entries today), so each host's own subnav only offers them
+// when resourceTypeFacet==='repo' && selectedProject. They still render into
+// the original #scouting-questions-view/#scouting-disposition-view DOM nodes
+// (ids kept as-is — these are now generic containers, renaming every
+// reference wasn't worth the churn) — _questionsDispositionHost tracks which
+// host's subnav should be prepended to them.
+let _questionsDispositionHost = 'scouting';  // 'scouting' | 'discovery' | 'assessment' | 'analysis' | 'enrichment'
+
+function _qdSubnavHtml(active) {
+  const fn = {
+    scouting: _scoutingSubnavHtml,
+    discovery: _discoverySubnavHtml,
+    assessment: _assessmentSubnavHtml,
+    analysis: _analysisSubnavHtml,
+    enrichment: _enrichmentSubnavHtml,
+  }[_questionsDispositionHost];
+  return (fn || _scoutingSubnavHtml)(active);
+}
+
+// Repo-only gate every non-Scouting host's Questions/Disposition tabs share
+// — Scouting's own guard (in _showScoutingSubTab above) predates this and
+// stays as its existing !selectedProject-only check, since Scouting is
+// repo-only already by design (D6, Scouting workflow redesign plan).
+function _qdTabsApply() {
+  return resourceTypeFacet === 'repo' && !!selectedProject;
+}
+
+// Whichever host currently owns the shared Questions/Disposition views —
+// used by _setProjectDisposition to know which host's Disposition tab (if
+// any) needs a reload after a disposition change.
+function _currentHostSubTab() {
+  return {
+    scouting: _scoutingSubTab,
+    discovery: _discoverySubTab,
+    assessment: _assessmentSubTab,
+    analysis: _analysisSubTab,
+    enrichment: _enrichmentSubTab,
+  }[_questionsDispositionHost];
 }
 
 // ── Assessment sub-tabs ────────────────────────────────────────────────────
@@ -1428,7 +1475,7 @@ function _showScoutingSubTab(tab) {
 // deeper analytics — no new fetch"); it only lived in Scouting's rail because
 // that's where the Scouting workflow redesign plan needed a home for it at
 // the time, not because of any design intent.
-let _assessmentSubTab = 'analyses';  // 'analyses' | 'sub-resources' — persists across selection changes
+let _assessmentSubTab = 'analyses';  // 'analyses' | 'sub-resources' | 'questions' | 'disposition' — persists across selection changes
 
 function showAssessmentPane() {
   _showAssessmentSubTab(_assessmentSubTab);
@@ -1439,6 +1486,10 @@ function _assessmentSubnavHtml(active) {
     { tab: 'analyses',      label: '📋 Analyses' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
+  // Questions/Disposition (D6, docs/survey-question-context-plan.md) — repo-only.
+  if (_qdTabsApply()) {
+    tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
+  }
   return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAssessmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -1451,11 +1502,105 @@ function _showAssessmentSubTab(tab) {
   // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
   // repos) — fall back to Analyses rather than show a blank/stale panel
   // when nothing (or a db/filesystem) is selected, same spirit as
-  // Scouting's own selectedProject guard in _showScoutingSubTab.
+  // Scouting's own selectedProject guard in _showScoutingSubTab. Questions/
+  // Disposition share that same repo-only gate (_qdTabsApply, D6).
   if (tab === 'sub-resources' && !selectedProject) tab = 'analyses';
+  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'analyses';
   _assessmentSubTab = tab;
   if (tab === 'analyses') showMainView('assessment-analyses');
   else if (tab === 'sub-resources') showMainView('assessment-sub-resources');
+  else if (tab === 'questions') { _questionsDispositionHost = 'assessment'; _questionsPhase = 'assessment'; showMainView('scouting-questions'); }
+  else if (tab === 'disposition') { _questionsDispositionHost = 'assessment'; showMainView('scouting-disposition'); }
+}
+
+// ── Analysis sub-tabs (D6) — Analysis's own catalog previously had no
+// sub-tab rail at all (a flat panel); gains one only to host Questions/
+// Disposition, same pattern as Assessment/Scouting. ────────────────────────
+let _analysisSubTab = 'catalog';  // 'catalog' | 'questions' | 'disposition'
+
+function showAnalysisPane() {
+  _showAnalysisSubTab(_analysisSubTab);
+}
+
+function _analysisSubnavHtml(active) {
+  const tabs = [{ tab: 'catalog', label: '📋 Catalog' }];
+  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
+  if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
+  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_showAnalysisSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
+function _showAnalysisSubTab(tab) {
+  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'catalog';
+  _analysisSubTab = tab;
+  if (tab === 'catalog') showMainView('analysis');
+  else if (tab === 'questions') { _questionsDispositionHost = 'analysis'; _questionsPhase = 'analysis'; showMainView('scouting-questions'); }
+  else if (tab === 'disposition') { _questionsDispositionHost = 'analysis'; showMainView('scouting-disposition'); }
+}
+
+// ── Discovery sub-tabs (D6) — Discovery's Survey Definitions panel serves
+// db/repo/fs uniformly; Questions/Disposition only ever apply to the repo
+// case (confirmed: Discovery still operates over a particular cataloged
+// asset even though it adds no new data of its own, so it has the same
+// per-entity context Scouting/Assessment/Analysis do). ─────────────────────
+let _discoverySubTab = 'survey-definitions';  // 'survey-definitions' | 'questions' | 'disposition'
+
+function showDiscoveryPane() {
+  _showDiscoverySubTab(_discoverySubTab);
+}
+
+function _discoverySubnavHtml(active) {
+  const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
+  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
+  if (tabs.length === 1) return '';
+  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_showDiscoverySubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
+function _showDiscoverySubTab(tab) {
+  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'survey-definitions';
+  _discoverySubTab = tab;
+  if (tab === 'survey-definitions') showMainView('survey-definitions');
+  else if (tab === 'questions') { _questionsDispositionHost = 'discovery'; _questionsPhase = 'discovery'; showMainView('scouting-questions'); }
+  else if (tab === 'disposition') { _questionsDispositionHost = 'discovery'; showMainView('scouting-disposition'); }
+}
+
+// ── Enrichment sub-tabs (D6) — the Context form stays the default; Questions/
+// Disposition fit naturally here too (per direct confirmation: Enrichment is
+// exactly where a human might revisit and change a disposition after adding
+// context — no different treatment than the other three needed). ──────────
+let _enrichmentSubTab = 'context';  // 'context' | 'questions' | 'disposition'
+
+function showEnrichmentPane() {
+  _showEnrichmentSubTab(_enrichmentSubTab);
+}
+
+function _enrichmentSubnavHtml(active) {
+  const tabs = [{ tab: 'context', label: '📝 Context' }];
+  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
+  if (tabs.length === 1) return '';
+  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_showEnrichmentSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
+function _showEnrichmentSubTab(tab) {
+  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'context';
+  _enrichmentSubTab = tab;
+  if (tab === 'context') showMainView('context');
+  else if (tab === 'questions') { _questionsDispositionHost = 'enrichment'; _questionsPhase = 'enrichment'; showMainView('scouting-questions'); }
+  else if (tab === 'disposition') { _questionsDispositionHost = 'enrichment'; showMainView('scouting-disposition'); }
 }
 
 function showIntentEmptyState(what, forWhatPurpose = 'Scouting summary') {
@@ -1741,7 +1886,7 @@ async function loadAssessmentPanel() {
 }
 
 async function loadAnalysisPanel() {
-  await _loadAnalysisCatalogPanel('analysis', 'analysis-view', 'Analysis');
+  await _loadAnalysisCatalogPanel('analysis', 'analysis-view', 'Analysis', _analysisSubnavHtml('catalog'));
 }
 
 // Shared by Assessment and Analysis — same fetch/filter/render pipeline,
@@ -1797,6 +1942,14 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
       schedules,
       subnavHtml,
     });
+    // D7a — the generalized Survey panel, scoped to this intent's own phase
+    // (assessment/analysis map directly onto the same funnel-stage vocabulary
+    // Questions/Scouting use), into the placeholder renderAnalysisCatalogCards()
+    // just rendered. Only when a resource is actually selected — nothing to
+    // scope Survey Definition candidates to otherwise.
+    if (slug) {
+      await _loadSurveyPanel(resourceType, slug, intent, `${viewId}-survey-panel`, '');
+    }
   } catch(e) {
     view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -1820,7 +1973,7 @@ async function _fetchEgeriaMergeStatus(resourceType) {
 
 // Shared by Assessment and (Step 4) Analysis — same card shape, different
 // intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
-// pattern already established in renderSurveyDefinitionsPanel, rather than
+// pattern already established in renderSurveyPanel, rather than
 // inventing a second card style.
 function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, subnavHtml }) {
   schedules = schedules || {};
@@ -1836,8 +1989,17 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
     ${unavailableNote}
   </div>`;
 
+  // D7/D7a (docs/unified-survey-execution-model-plan.md): the generalized,
+  // phase-scoped Survey panel (Egeria Survey Definition candidates) sits
+  // below the local AnalysisKind cards here — "two data sources, one shared
+  // render," not a merge (real future work, not attempted). Populated by
+  // _loadSurveyPanel() right after this render (see _loadAnalysisCatalogPanel),
+  // only when a resource is actually selected — an empty AnalysisKind list
+  // for this intent doesn't mean there's nothing to survey via Egeria.
+  const surveyPanelPlaceholder = `<div id="${_esc(view.id)}-survey-panel" class="pt-2"></div>`;
+
   if (!analyses.length) {
-    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
+    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>` + surveyPanelPlaceholder;
     return;
   }
 
@@ -1904,7 +2066,7 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
     </div>`;
   }).join('');
 
-  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
+  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>` + surveyPanelPlaceholder;
 }
 
 // Automate (Part 4) — "🔔 Notify me" on an analysis card. Creates a local
@@ -4210,23 +4372,59 @@ function _surveyDefEntityAndSlug() {
   return [null, null];
 }
 
-async function loadSurveyDefinitionsPanel() {
-  const [entityType, slug] = _surveyDefEntityAndSlug();
-  const view = document.getElementById('survey-definitions-view');
-  if (!entityType || !slug) {
-    view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to see its Survey Definitions.</div>';
-    return;
-  }
-  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Definitions from Egeria…</div>';
+// D7/D7a (docs/unified-survey-execution-model-plan.md): one reusable Survey
+// panel — fetch by phase (the ScopedBy-driven /candidates route, D2 in
+// docs/survey-question-context-plan.md) + an optional Perspective filter
+// using the same 12-name Egeria-aligned vocabulary Questions uses — rather
+// than each stage hand-rolling its own "which Surveys can I run here" view.
+// Replaces survey_kind as the scoping mechanism (D7): Discovery, which has
+// no funnel-stage identity of its own (CLAUDE.md — it's the general launch
+// surface), passes phase='' (unscoped — every candidate, narrowed only by
+// Perspective) instead of the old hardcoded survey_kind="discovery". A
+// phase-scoped host (e.g. Scouting's Survey sub-tab) passes its own stage.
+let _surveyPanelKey = '';                    // entityType:slug:phase — perspective filter resets when this changes
+let _surveyPanelActivePerspectives = new Set();
+let _surveyPanelAvailablePerspectives = [];  // this phase's Question-derived vocabulary (repo-only — see below)
+// Kept in module state rather than threaded through each perspective chip's
+// inline onclick (like _surveyDefCandidatesCache below) — subnavHtml is a
+// full rendered HTML fragment with its own nested quotes/newlines, which
+// broke a single-quoted onclick='...' attribute when embedded via
+// JSON.stringify directly (real bug, caught live: single quotes inside
+// subnavHtml's own onclick="..." tab buttons terminated the outer attribute
+// early, spilling raw markup onto the page).
+let _surveyPanelArgs = { entityType: '', slug: '', phase: '', viewElId: '', subnavHtml: '' };
+
+async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
+  _surveyPanelArgs = { entityType, slug, phase, viewElId, subnavHtml };
+  const view = document.getElementById(viewElId);
+  const key = `${entityType}:${slug}:${phase || ''}`;
+  if (key !== _surveyPanelKey) { _surveyPanelKey = key; _surveyPanelActivePerspectives = new Set(); }
+  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Definitions from Egeria…</div>';
   try {
-    // survey_kind=discovery — Discovery's own leaner Survey Definitions only,
-    // not the Automate-tier "run everything" bundle or Scouting's coarse
-    // scan (see docs/discovery-automate-project-context-plan.md Part 1).
-    const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates?survey_kind=discovery`);
+    // Perspective vocabulary comes from the same Question catalog Questions
+    // itself reads — question_catalog_reader.py only has "repo" entries
+    // today, so db/filesystem hosts get no perspective filter (nothing to
+    // derive it from), not an error. phase='' (Discovery, unscoped) asks
+    // scouting-questions for every phase's questions at once (get_questions'
+    // own phase='' -> no filter semantics), so Discovery's vocabulary is the
+    // full union, not just Scouting's.
+    if (entityType === 'repo') {
+      try {
+        const qRes = await fetch(`/api/projects/${encodeURIComponent(slug)}/scouting-questions?phase=${encodeURIComponent(phase || '')}`);
+        _surveyPanelAvailablePerspectives = qRes.ok ? _questionsPerspectiveList(await qRes.json()) : [];
+      } catch { _surveyPanelAvailablePerspectives = []; }
+    } else {
+      _surveyPanelAvailablePerspectives = [];
+    }
+
+    const params = new URLSearchParams();
+    if (phase) params.set('phase', phase);
+    for (const p of _surveyPanelActivePerspectives) params.append('perspectives', p);
+    const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates?${params}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // Per-candidate Schedule action (see renderSurveyDefinitionsPanel) needs
-    // to know each candidate's current schedule, if any — same schedules
-    // backend the analysis-catalog cards use, keyed here by qualified_name.
+    // Per-candidate Schedule action (see renderSurveyPanel) needs to know
+    // each candidate's current schedule, if any — same schedules backend
+    // the analysis-catalog cards use, keyed here by qualified_name.
     let schedules = {};
     try {
       const schedRes = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}`);
@@ -4234,10 +4432,30 @@ async function loadSurveyDefinitionsPanel() {
         for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
       }
     } catch { /* non-fatal — cards just show the unscheduled state */ }
-    renderSurveyDefinitionsPanel(await res.json(), entityType, slug, schedules);
+    renderSurveyPanel(await res.json(), entityType, slug, schedules, phase, viewElId, subnavHtml);
   } catch(e) {
-    view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
+    view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
+}
+
+function _toggleSurveyPanelPerspective(p) {
+  if (_surveyPanelActivePerspectives.has(p)) _surveyPanelActivePerspectives.delete(p);
+  else _surveyPanelActivePerspectives.add(p);
+  const { entityType, slug, phase, viewElId, subnavHtml } = _surveyPanelArgs;
+  _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml);
+}
+
+async function loadSurveyDefinitionsPanel() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  const view = document.getElementById('survey-definitions-view');
+  const subnav = _discoverySubnavHtml('survey-definitions');
+  if (!entityType || !slug) {
+    view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to see its Survey Definitions.</div>';
+    return;
+  }
+  // Discovery has no funnel-stage identity of its own — phase='' means
+  // unscoped (every candidate), narrowed only by the Perspective filter.
+  await _loadSurveyPanel(entityType, slug, '', 'survey-definitions-view', subnav);
 }
 
 function _surveyDefEngineBadge(executesAt) {
@@ -4280,9 +4498,9 @@ function _surveyDefEgeriaProducedTypesHtml(step) {
   </div>`;
 }
 
-function renderSurveyDefinitionsPanel(data, entityType, slug, schedules) {
+function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, subnavHtml) {
   schedules = schedules || {};
-  const view = document.getElementById('survey-definitions-view');
+  const view = document.getElementById(viewElId);
   const candidates = data.candidates || [];
   // Candidate objects (author-written descriptions, Egeria-sourced annotation
   // text) can contain apostrophes/quotes that break inline onclick='...'
@@ -4365,6 +4583,19 @@ function renderSurveyDefinitionsPanel(data, entityType, slug, schedules) {
         </div>`).join('')}
     </div>` : '';
 
+  // Perspective filter row — same 12-name Egeria-aligned vocabulary and
+  // toggle pattern as the Questions tab (D7a), scoped to this phase's
+  // candidates. Absent entirely when there's no vocabulary to filter by
+  // (db/filesystem hosts, or a repo phase with no cataloged questions).
+  const perspectiveChips = _surveyPanelAvailablePerspectives.map(p => `<button
+      onclick="_toggleSurveyPanelPerspective(${JSON.stringify(p)})"
+      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_surveyPanelActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
+  const perspectiveRowHtml = _surveyPanelAvailablePerspectives.length ? `
+    <div class="px-4 pt-2">
+      <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
+      <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
+    </div>` : '';
+
   // Schedules editor: hidden for now (2026-07-09) — it still schedules the old
   // static analysis_catalog.py entries, which don't match Survey Definitions'
   // real, live steps (some entries, e.g. database's "Index Health"/"Privilege
@@ -4372,11 +4603,12 @@ function renderSurveyDefinitionsPanel(data, entityType, slug, schedules) {
   // redesigned to target Survey Definition runs directly. loadSchedulesSection/
   // loadSchedulesEditor/saveSchedule/toggleScheduleEnabled are left in place,
   // just not called, so that redesign can reuse what still applies.
-  view.innerHTML = `
+  view.innerHTML = subnavHtml + `
     <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
-      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Survey Definitions — ${_esc(slug)}</span>
+      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Surveys — ${_esc(slug)}${phase ? ` (${_esc(phase)})` : ''}</span>
       <span class="text-xs text-slate-600">Technology Type: ${_esc(data.technology_type || '')}</span>
     </div>
+    ${perspectiveRowHtml}
     ${nativeProcessesHtml}
     <div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cardsHtml}</div>`;
 }
@@ -4615,16 +4847,17 @@ const _CTX_FIELDS = [
 async function loadContextPanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
   const view = document.getElementById('context-view');
+  const subnav = _enrichmentSubnavHtml('context');
   if (!slug) {
     // Pre-existing gap, fixed here since Step 6 wires this panel directly to
     // the Enrichment intent tab: previously this just returned silently,
     // leaving whatever was in #context-view before (blank on first load,
     // stale on a facet switch with nothing selected) instead of a real
     // empty state like Discovery/Survey Definitions already have.
-    view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to record its context.</div>';
+    view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to record its context.</div>';
     return;
   }
-  view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading context…</div>';
+  view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Loading context…</div>';
   try {
     const res = await fetch(`/api/context/${entityType}/${encodeURIComponent(slug)}`);
     const saved = res.ok ? await res.json() : {};
@@ -4676,7 +4909,7 @@ function renderContextForm(slug, entityType, saved) {
     </div>`;
   }
 
-  view.innerHTML = `
+  view.innerHTML = _enrichmentSubnavHtml('context') + `
     <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
       <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">
         Resource Context — ${entityType === 'database' ? '🗄' : entityType === 'filesystem' ? '💾' : '📁'} ${_esc(slug)}
@@ -5316,6 +5549,9 @@ async function loadScoutingOverview() {
     const res = await fetch(`/api/projects/${selectedProject}/scouting-overview`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderScoutingOverview(await res.json());
+    // D7a — the generalized Survey panel, scoped to phase='scouting', into
+    // the placeholder renderScoutingOverview() just rendered.
+    _loadSurveyPanel('repo', selectedProject, 'scouting', 'scouting-survey-panel-view', '');
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load overview: ${_esc(e.message)}</div>`;
   }
@@ -5404,6 +5640,16 @@ function renderScoutingOverview(d) {
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
       <div class="text-[11px] text-slate-500">${surveyedBadge} · ${publishedBadge}</div>
+
+      <!-- D7/D7a (docs/unified-survey-execution-model-plan.md): the generalized,
+           phase-scoped Survey panel — same component Discovery uses, scoped
+           here to phase='scouting' instead of Discovery's unscoped view.
+           Populated by _loadSurveyPanel() right after this render (see
+           loadScoutingOverview()); superseded "Run Scouting Scan" is kept
+           above as-is for now (same underlying Survey Definition would also
+           appear as a candidate here — a real near-term duplication, not
+           resolved in this pass). -->
+      <div id="scouting-survey-panel-view" class="pt-2"></div>
     </div>`;
 }
 
@@ -5448,14 +5694,14 @@ function _questionStatus(q) {
 async function loadScoutingQuestions() {
   if (!selectedProject) return;
   const view = document.getElementById('scouting-questions-view');
-  view.innerHTML = _scoutingSubnavHtml('questions') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
+  view.innerHTML = _qdSubnavHtml('questions') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(selectedProject)}/scouting-questions?phase=${encodeURIComponent(_questionsPhase)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _questionsAllData = await res.json();
     renderScoutingQuestions(_questionsAllData);
   } catch (e) {
-    view.innerHTML = _scoutingSubnavHtml('questions') + `<div class="text-xs text-red-400">Failed to load questions: ${_esc(e.message)}</div>`;
+    view.innerHTML = _qdSubnavHtml('questions') + `<div class="text-xs text-red-400">Failed to load questions: ${_esc(e.message)}</div>`;
   }
 }
 
@@ -5481,12 +5727,15 @@ function renderScoutingQuestions(data) {
 
   const rows = questions.map(q => {
     const status = _questionStatus(q);
-    // "Answered at" gets its own pinned badge, not buried in the small
-    // perspectives line — the whole point of this column is "where do I
-    // go to actually get this answered," which is easy to miss as plain
-    // inline text (per direct feedback, 2026-08-13).
-    const stageBadge = q.answered_at
-      ? `<span class="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 whitespace-nowrap" title="Answered at the ${_esc(q.answered_at)} stage">→ ${_esc(q.answered_at)}</span>`
+    // Stage gets its own pinned badge, not buried in the small
+    // perspectives line (per direct feedback, 2026-08-13). Asked At/
+    // Answered At collapsed into one "stage" field 2026-08-14 (see
+    // docs/survey-question-context-plan.md) — a slash-combined value
+    // (e.g. "Analysis/Enrichment") is shown verbatim, not split, since
+    // that combination is itself meaningful (Analysis-first, Enrichment-
+    // fallback — docs/confidence-gated-validation-plan.md).
+    const stageBadge = q.stage
+      ? `<span class="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 whitespace-nowrap" title="Funnel Stage: ${_esc(q.stage)}">${_esc(q.stage)}</span>`
       : '';
     return `<div class="flex items-start gap-2 py-1.5 border-b border-slate-800/60 last:border-0">
         <span class="${status.color} mt-0.5 shrink-0" title="${_esc(status.label)}">${status.icon}</span>
@@ -5503,7 +5752,7 @@ function renderScoutingQuestions(data) {
 
   const answeredCount = questions.filter(q => _questionStatus(q).icon === '✓').length;
 
-  view.innerHTML = _scoutingSubnavHtml('questions') + `
+  view.innerHTML = _qdSubnavHtml('questions') + `
     <div class="space-y-3">
       <div>
         <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
@@ -5565,8 +5814,12 @@ async function _setProjectDisposition(githubUrl, disposition) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     showToast('success', `Marked ${disposition}.`, 3000);
-    if (_scoutingSubTab === 'disposition') loadScoutingDispositionView();
-    else if (selectedProject) loadScoutingOverview();
+    // D6: disposition can now be set from any of 5 hosts' own Disposition
+    // sub-tab — reload whichever one is currently showing. Scouting alone
+    // also refreshes its overview card (the one place disposition shows up
+    // outside its own dedicated tab) — unchanged from before D6.
+    if (_currentHostSubTab() === 'disposition') loadScoutingDispositionView();
+    else if (_questionsDispositionHost === 'scouting' && selectedProject) loadScoutingOverview();
     loadProjects();
   } catch(e) {
     showToast('error', `Failed to set disposition: ${_esc(e.message)}`, 5000);
@@ -5580,7 +5833,7 @@ async function _setProjectDisposition(githubUrl, disposition) {
 async function loadScoutingDispositionView() {
   if (!selectedProject) return;
   const view = document.getElementById('scouting-disposition-view');
-  view.innerHTML = _scoutingSubnavHtml('disposition') +
+  view.innerHTML = _qdSubnavHtml('disposition') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const overviewRes = await fetch(`/api/projects/${selectedProject}/scouting-overview`);
@@ -5590,7 +5843,7 @@ async function loadScoutingDispositionView() {
     const history = historyRes.ok ? await historyRes.json() : [];
     _renderScoutingDispositionView(d, history);
   } catch(e) {
-    view.innerHTML = _scoutingSubnavHtml('disposition') +
+    view.innerHTML = _qdSubnavHtml('disposition') +
       `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
   }
 }
@@ -5604,7 +5857,7 @@ function _renderScoutingDispositionView(d, history) {
     </div>
   `).join('') : '<div class="text-xs text-slate-500">No disposition set yet — this repo is undecided.</div>';
 
-  view.innerHTML = _scoutingSubnavHtml('disposition') + `
+  view.innerHTML = _qdSubnavHtml('disposition') + `
     <div class="max-w-2xl space-y-4">
       <div>
         <h1 class="text-xl font-bold text-slate-100">${_esc(d.display_name)}</h1>

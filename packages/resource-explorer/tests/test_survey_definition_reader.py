@@ -185,12 +185,17 @@ def test_cycle_is_rejected():
 class _FakeGovernanceOfficer:
     def __init__(self, results):
         self._results = results
+        self.find_governance_definitions_calls = 0
 
     def find_governance_definitions(self, **_kwargs):
+        self.find_governance_definitions_calls += 1
         return self._results
 
 
 def _reader_with_fake_results(results) -> SurveyDefinitionReader:
+    from resource_explorer.surveyors import survey_definition_reader as sdr
+
+    sdr.clear_caches()  # D3's module-level cache would otherwise leak stale results across tests
     reader = _reader()
     reader._governance_officer = _FakeGovernanceOfficer(results)  # short-circuits connect()
     return reader
@@ -239,6 +244,174 @@ class TestFindCandidateProcessGuidsSurveyKindFilter:
         assert len(reader.find_candidate_process_guids("Git Repository")) == 1
 
 
+class TestFindCandidateProcessGuidsCaching:
+    """D3 (docs/survey-question-context-plan.md) — the full search_string="*"
+    scan is cached short-TTL, same as D2's scoped path."""
+
+    def test_second_call_with_same_args_does_not_hit_egeria_again(self):
+        results = [_governance_process_result("GovActionProcess::A", "Git Repository")]
+        reader = _reader_with_fake_results(results)
+        reader.find_candidate_process_guids("Git Repository")
+        reader.find_candidate_process_guids("Git Repository")
+        assert reader._governance_officer.find_governance_definitions_calls == 1
+
+    def test_different_technology_type_is_not_cache_polluted(self):
+        results = [
+            _governance_process_result("GovActionProcess::A", "Git Repository"),
+            _governance_process_result("GovActionProcess::B", "PostgreSQL Database"),
+        ]
+        reader = _reader_with_fake_results(results)
+        repo_candidates = reader.find_candidate_process_guids("Git Repository")
+        db_candidates = reader.find_candidate_process_guids("PostgreSQL Database")
+        assert [c["qualified_name"] for c in repo_candidates] == ["GovActionProcess::A"]
+        assert [c["qualified_name"] for c in db_candidates] == ["GovActionProcess::B"]
+        assert reader._governance_officer.find_governance_definitions_calls == 2
+
+
+class _FakeClassificationExplorer:
+    """Fake for ClassificationExplorer — records call counts so tests can
+    assert D3's caching actually avoids a second live call."""
+
+    def __init__(self, guid_by_name=None, scoped_elements_by_guid=None):
+        self._guid_by_name = guid_by_name or {}
+        self._scoped_elements_by_guid = scoped_elements_by_guid or {}
+        self.get_guid_for_name_calls = 0
+        self.get_scoped_elements_calls = 0
+
+    def create_egeria_bearer_token(self, *_a, **_kw):
+        pass
+
+    def get_guid_for_name(self, name, **_kw):
+        self.get_guid_for_name_calls += 1
+        return self._guid_by_name.get(name)
+
+    def get_scoped_elements(self, scope_guid, **_kw):
+        self.get_scoped_elements_calls += 1
+        return self._scoped_elements_by_guid.get(scope_guid, [])
+
+
+def _reader_with_fake_classification_explorer(fake) -> SurveyDefinitionReader:
+    from resource_explorer.surveyors import survey_definition_reader as sdr
+
+    sdr.clear_caches()
+    reader = _reader()
+    reader._classification_explorer = fake  # short-circuits _connect_classification_explorer()
+    return reader
+
+
+class TestResolveQuestionGuid:
+    """D2 (docs/survey-question-context-plan.md) — Question name -> GUID
+    resolution via ClassificationExplorer.get_guid_for_name, long-TTL cached."""
+
+    def test_resolves_known_question(self):
+        fake = _FakeClassificationExplorer(guid_by_name={"Is this repository actively maintained?": "q-guid-1"})
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.resolve_question_guid("Is this repository actively maintained?") == "q-guid-1"
+
+    def test_unknown_question_returns_none_not_raises(self):
+        fake = _FakeClassificationExplorer()
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.resolve_question_guid("Some question never authored in Egeria") is None
+
+    def test_result_is_cached_across_calls(self):
+        fake = _FakeClassificationExplorer(guid_by_name={"Q": "guid-1"})
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.resolve_question_guid("Q") == "guid-1"
+        assert reader.resolve_question_guid("Q") == "guid-1"
+        assert fake.get_guid_for_name_calls == 1
+
+    def test_lookup_error_returns_none_not_raises(self):
+        class _Raising(_FakeClassificationExplorer):
+            def get_guid_for_name(self, name, **_kw):
+                raise RuntimeError("boom")
+
+        reader = _reader_with_fake_classification_explorer(_Raising())
+        assert reader.resolve_question_guid("Q") is None
+
+
+class TestFindCandidateProcessGuidsByQuestions:
+    """D2 — scoped candidate lookup via ClassificationExplorer.get_scoped_elements,
+    replacing the search_string="*" full scan for a phase/perspective-narrowed
+    query. D3 — short-TTL cached."""
+
+    def _survey_definition_element(self, qualified_name, technology_type, survey_kind=None, guid="sd-guid"):
+        additional = {"supported_technology_type": technology_type}
+        if survey_kind is not None:
+            additional["survey_kind"] = survey_kind
+        return {
+            "properties": {"qualifiedName": qualified_name, "displayName": qualified_name, "additionalProperties": additional},
+            "elementHeader": {"guid": guid},
+        }
+
+    def test_no_resolvable_question_returns_empty(self):
+        fake = _FakeClassificationExplorer()
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.find_candidate_process_guids_by_questions(["Unknown question"], "Git Repository") == []
+        # Never even attempts a scoped-elements call with no resolvable guid.
+        assert fake.get_scoped_elements_calls == 0
+
+    def test_returns_scoped_survey_definitions_matching_technology_type(self):
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid"},
+            scoped_elements_by_guid={
+                "q1-guid": [
+                    self._survey_definition_element("GovActionProcess::A", "Git Repository"),
+                    self._survey_definition_element("GovActionProcess::B", "PostgreSQL Database", guid="sd-guid-2"),
+                ]
+            },
+        )
+        reader = _reader_with_fake_classification_explorer(fake)
+        candidates = reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        assert [c["qualified_name"] for c in candidates] == ["GovActionProcess::A"]
+
+    def test_survey_kind_filter_applied(self):
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid"},
+            scoped_elements_by_guid={
+                "q1-guid": [
+                    self._survey_definition_element("GovActionProcess::A", "Git Repository", survey_kind="discovery"),
+                    self._survey_definition_element("GovActionProcess::B", "Git Repository", survey_kind="automate_full", guid="g2"),
+                ]
+            },
+        )
+        reader = _reader_with_fake_classification_explorer(fake)
+        candidates = reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository", survey_kind="discovery")
+        assert [c["qualified_name"] for c in candidates] == ["GovActionProcess::A"]
+
+    def test_dedupes_survey_definition_scoped_by_multiple_questions(self):
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid", "Q2": "q2-guid"},
+            scoped_elements_by_guid={
+                "q1-guid": [self._survey_definition_element("GovActionProcess::A", "Git Repository")],
+                "q2-guid": [self._survey_definition_element("GovActionProcess::A", "Git Repository")],
+            },
+        )
+        reader = _reader_with_fake_classification_explorer(fake)
+        candidates = reader.find_candidate_process_guids_by_questions(["Q1", "Q2"], "Git Repository")
+        assert len(candidates) == 1
+
+    def test_result_is_cached_across_calls(self):
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid"},
+            scoped_elements_by_guid={"q1-guid": [self._survey_definition_element("GovActionProcess::A", "Git Repository")]},
+        )
+        reader = _reader_with_fake_classification_explorer(fake)
+        reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository")
+        assert fake.get_scoped_elements_calls == 1
+
+    def test_string_response_treated_as_no_elements_found(self):
+        # pyegeria returns a bare string (e.g. "No elements found") instead
+        # of a list when a query has no results — must not crash iterating it.
+        fake = _FakeClassificationExplorer(
+            guid_by_name={"Q1": "q1-guid"},
+            scoped_elements_by_guid={},
+        )
+        fake.get_scoped_elements = lambda scope_guid, **_kw: "No elements found"
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.find_candidate_process_guids_by_questions(["Q1"], "Git Repository") == []
+
+
 def test_missing_node_for_linked_guid_is_rejected():
     """A link pointing at a guid with no corresponding node (malformed/partial
     graph) should fail loudly, not silently stop the chain early."""
@@ -252,3 +425,119 @@ def test_missing_node_for_linked_guid_is_rejected():
 
     with pytest.raises(SurveyDefinitionReaderError):
         _reader()._parse_graph(graph)
+
+
+class _FakeGovernanceOfficerGraph:
+    """Fake returning a raw graph (for reconcile_step_links, which reads
+    processStepLinks directly rather than going through _parse_graph)."""
+
+    def __init__(self, links):
+        self._links = links
+        self.get_governance_process_graph_calls = 0
+
+    def get_governance_process_graph(self, **_kwargs):
+        self.get_governance_process_graph_calls += 1
+        return {"elementGraph": {"processStepLinks": self._links}}
+
+
+class _FakeMetadataExpert:
+    def __init__(self):
+        self.deleted_guids = []
+
+    def delete_related_elements(self, relationship_guid, body=None):
+        self.deleted_guids.append(relationship_guid)
+
+
+def _unique_name_link(prev_qn, next_qn, link_guid):
+    return {
+        "previousProcessStep": {"uniqueName": prev_qn},
+        "nextProcessStep": {"uniqueName": next_qn},
+        "nextProcessStepLinkGUID": link_guid,
+    }
+
+
+class TestReconcileStepLinks:
+    """D1 follow-up (docs/survey-question-context-plan.md) — the live
+    incident where Dr.Egeria's non-idempotent Link Next Process Step
+    duplicated every edge on re-run, plus one genuinely stale edge."""
+
+    def _reader_with_fakes(self, links):
+        from resource_explorer.surveyors import survey_definition_reader as sdr
+
+        reader = _reader()
+        gov = _FakeGovernanceOfficerGraph(links)
+        reader._governance_officer = gov
+        meta = _FakeMetadataExpert()
+        reader._metadata_expert = meta
+        sdr._fetch_cache.clear()
+        return reader, gov, meta
+
+    def test_clean_chain_deletes_nothing(self):
+        links = [
+            _unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l1"),
+        ]
+        reader, gov, meta = self._reader_with_fakes(links)
+        result = reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
+        assert result.kept == 1
+        assert result.removed_total == 0
+        assert meta.deleted_guids == []
+
+    def test_duplicate_edge_deletes_the_extra_one(self):
+        links = [
+            _unique_name_link("GovActionProcessStep::RepoCoarseScout::repo_health", "GovActionProcessStep::RepoCoarseScout::repo_language", "l1"),
+            _unique_name_link("GovActionProcessStep::RepoCoarseScout::repo_health", "GovActionProcessStep::RepoCoarseScout::repo_language", "l2"),
+        ]
+        reader, gov, meta = self._reader_with_fakes(links)
+        result = reader.reconcile_step_links("proc-guid", "RepoCoarseScout", ["repo_health", "repo_language"])
+        assert result.removed_duplicate == 1
+        assert meta.deleted_guids == ["l2"]
+
+    def test_dry_run_reports_but_does_not_delete(self):
+        links = [
+            _unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l1"),
+            _unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l2"),
+        ]
+        reader, gov, meta = self._reader_with_fakes(links)
+        result = reader.reconcile_step_links("proc-guid", "X", ["a", "b"], dry_run=True)
+        assert result.removed_duplicate == 1
+        assert meta.deleted_guids == []
+
+    def test_busts_fetch_cache_after_deleting(self):
+        from resource_explorer.surveyors import survey_definition_reader as sdr
+
+        links = [
+            _unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l1"),
+            _unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l2"),
+        ]
+        reader, gov, meta = self._reader_with_fakes(links)
+        sdr._fetch_cache["proc-guid"] = (0.0, "stale-cached-survey-def")
+        reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
+        assert "proc-guid" not in sdr._fetch_cache
+
+    def test_no_changes_does_not_touch_fetch_cache(self):
+        from resource_explorer.surveyors import survey_definition_reader as sdr
+
+        links = [_unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l1")]
+        reader, gov, meta = self._reader_with_fakes(links)
+        sdr._fetch_cache["proc-guid"] = (1e18, "still-fresh")  # far-future timestamp, not stale
+        reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
+        assert sdr._fetch_cache.get("proc-guid") == (1e18, "still-fresh")
+
+    def test_fetch_error_returns_error_result_not_raises(self):
+        reader = _reader()
+
+        class _Raising:
+            def get_governance_process_graph(self, **_kwargs):
+                raise RuntimeError("boom")
+
+        reader._governance_officer = _Raising()
+        result = reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
+        assert result.error
+        assert "boom" in result.error
+
+    def test_idempotent_second_call_is_a_no_op(self):
+        links = [_unique_name_link("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "l1")]
+        reader, gov, meta = self._reader_with_fakes(links)
+        reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
+        reader.reconcile_step_links("proc-guid", "X", ["a", "b"])
+        assert meta.deleted_guids == []

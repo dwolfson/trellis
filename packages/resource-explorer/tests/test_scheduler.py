@@ -330,7 +330,12 @@ class TestRunDueRepoDispatch:
     sub-surveyors) regardless of which analysis_id was actually scheduled.
     Now resolves to the specific step(s) via
     repo_survey_definition_adapter.REPO_ANALYSIS_STEP_MAP, mirroring the
-    database path's dispatch-by-analysis_id pattern."""
+    database path's dispatch-by-analysis_id pattern. Also covers repo's own
+    (d) — dispatching an analysis_id not in the local catalog to
+    run_survey_definition() as a Survey Definition qualified_name, closing
+    the gap where the D7a Survey panel's per-candidate Schedule action wrote
+    a schedule row the scheduler had no dispatch path for (previously
+    misreported as "not found ... schedule may be stale")."""
 
     def test_mapped_analysis_id_dispatches_with_only_its_steps(self, registry, registered_project):
         _make_due(registry, "repo", registered_project, analysis_id="repository_health")
@@ -366,16 +371,60 @@ class TestRunDueRepoDispatch:
         assert entries[0]["status"] == "error"
         assert "excluded from scheduled runs by design" in entries[0]["detail"]
 
-    def test_unrecognized_analysis_id_is_a_stale_schedule_error_not_a_full_survey(self, registry, registered_project):
-        _make_due(registry, "repo", registered_project, analysis_id="removed_catalog_entry")
+    def test_unmapped_analysis_id_dispatches_to_run_survey_definition_not_a_full_survey(self, registry, registered_project):
+        # An analysis_id not in the local catalog is now (d) — a Survey
+        # Definition qualified_name (the D7a Survey panel's own Schedule
+        # action writes exactly this) — dispatched via
+        # _run_repo_survey_definition(), not silently run as a full survey
+        # and not immediately treated as stale (that was the pre-D7a-
+        # scheduling behavior; a real gap this closes).
+        qualified_name = "GovActionProcess::CustomRepoSurvey"
+        _make_due(registry, "repo", registered_project, analysis_id=qualified_name)
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
-             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.return_value = {"errors": []}
             scheduler._run_due()
 
         MockOrch.assert_not_called()  # must NOT silently fall back to a full survey
+        mock_run_def.assert_called_once()
+        _, kwargs = mock_run_def.call_args
+        assert kwargs["survey_definition_ref"] == qualified_name
+        assert "db_user" not in kwargs and "db_pwd" not in kwargs  # repo has no credentials to thread through
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "ok"
+
+    def test_stale_survey_definition_reference_is_recorded_as_an_error(self, registry, registered_project):
+        # The Survey Definition itself was since deleted/renamed in Egeria —
+        # run_survey_definition() raises SurveyDefinitionExecutorError, which
+        # must be recorded as a clean activity-log error, not propagate and
+        # crash the whole scheduler iteration.
+        qualified_name = "GovActionProcess::DeletedRepoSurvey"
+        _make_due(registry, "repo", registered_project, analysis_id=qualified_name)
+        from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
+
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.side_effect = SurveyDefinitionExecutorError(
+                f"No Survey Definition found matching '{qualified_name}'"
+            )
+            scheduler._run_due()  # must not raise
+
         entries = registry.list_activity(entity_slug=registered_project)
         assert entries[0]["status"] == "error"
-        assert "not found in the current analysis catalog" in entries[0]["detail"]
+        assert "No Survey Definition found matching" in entries[0]["detail"]
+
+    def test_survey_definition_dispatch_errors_are_recorded(self, registry, registered_project):
+        qualified_name = "GovActionProcess::CustomRepoSurvey"
+        _make_due(registry, "repo", registered_project, analysis_id=qualified_name)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.return_value = {"errors": ["step 2 failed"]}
+            scheduler._run_due()
+
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "step 2 failed" in entries[0]["detail"]
 
 
 class TestRunDueRepoIngestDispatch:

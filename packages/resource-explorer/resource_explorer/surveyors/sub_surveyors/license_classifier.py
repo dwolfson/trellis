@@ -2,7 +2,7 @@
 
 Assessment expansion plan B1 (docs/assessment-expansion-plan.md). Closes a
 real gap flagged while authoring the Scouting Question/Perspective model
-(docs/dr-egeria/scouting-questions.csv): the GitHub API's license field is
+(docs/dr-egeria/resource_questions.csv): the GitHub API's license field is
 already fetched at Scouting-tier for free, but nothing classifies it —
 "Are there any restrictions for use?" and the explicit copyleft-terms
 question were both GAP-tagged there.

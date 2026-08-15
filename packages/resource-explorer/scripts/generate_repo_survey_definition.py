@@ -30,7 +30,24 @@ Automate-tier "run everything" bundle (and vice versa):
 
 Run this whenever STEP_REGISTRY changes (a step added/removed/re-described),
 then execute the regenerated doc(s) against Egeria to keep Discovery/
-Scouting/Automate's candidate lists in sync.
+Scouting/Automate's candidate lists in sync. IMPORTANT: after executing a
+regenerated doc against an *already-linked* process (i.e. every time except
+the very first authoring), run
+`uv run python scripts/reconcile_survey_definition_links.py` afterward —
+Dr.Egeria's "Link First/Next Process Step" commands are not idempotent and
+will duplicate or leave stale the step-to-step links, which makes
+SurveyDefinitionReader see "branching" and refuse to run the Survey
+Definition at all (a real live incident, 2026-08-13 — see that script's and
+survey_definition_reconciler.py's docstrings for the full story).
+
+Also emits one "Link Element To Scope" ScopedBy block per Question each
+generated Survey Definition answers (docs/survey-question-context-plan.md
+D1) — the join is: each step_key's containing analysis_catalog id (via
+REPO_ANALYSIS_STEP_MAP) cross-referenced against question_catalog.yaml's
+per-question answering.analysis_ids. Run docs/dr-egeria/foundations.md and
+docs/dr-egeria/scouting-questions.md (or their generated equivalents)
+first — the Question terms these blocks reference by name must already
+exist in Egeria before this doc is executed.
 
 This is the one resource-type-specific piece of the mechanism — everything
 it calls (resource_explorer.surveyors.dr_egeria_survey_publisher) is
@@ -48,7 +65,11 @@ from resource_explorer.surveyors.dr_egeria_survey_publisher import (
     PublishableStep,
     generate_survey_definition_markdown,
 )
-from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+from resource_explorer.surveyors.question_catalog_reader import get_questions
+from resource_explorer.surveyors.repo_survey_definition_adapter import (
+    REPO_ANALYSIS_STEP_MAP,
+    STEP_REGISTRY,
+)
 
 TECHNOLOGY_TYPE = "Git Repository"
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria"
@@ -119,10 +140,43 @@ def build_steps(step_keys: list[str]) -> list[PublishableStep]:
     ]
 
 
+def _build_step_key_to_questions() -> dict[str, list[str]]:
+    """Invert question_catalog.yaml's answering.analysis_ids (analysis_catalog
+    id, e.g. "security_scan") through REPO_ANALYSIS_STEP_MAP (analysis id ->
+    STEP_REGISTRY step_key(s)) to get step_key -> [question display names] —
+    the join docs/survey-question-context-plan.md's D1 depends on. A
+    question with no analysis_ids (kind="human"/"gap"/etc.) contributes
+    nothing here; that's expected, not every question is answered by a
+    survey step at all."""
+    mapping: dict[str, list[str]] = {}
+    for entry in get_questions(resource_type="repo"):
+        for analysis_id in entry["answering"]["analysis_ids"]:
+            for step_key in REPO_ANALYSIS_STEP_MAP.get(analysis_id, []):
+                mapping.setdefault(step_key, [])
+                if entry["question"] not in mapping[step_key]:
+                    mapping[step_key].append(entry["question"])
+    return mapping
+
+
+def _answered_questions(step_keys: list[str], step_key_to_questions: dict[str, list[str]]) -> list[str]:
+    """Union of questions answered by any step in this Survey Definition,
+    order-stable and de-duplicated (a question spanning multiple steps in
+    the same spec, e.g. language_file_classification's three-step bundle,
+    gets exactly one ScopedBy link, not one per contributing step)."""
+    seen: list[str] = []
+    for key in step_keys:
+        for question in step_key_to_questions.get(key, []):
+            if question not in seen:
+                seen.append(question)
+    return seen
+
+
 def main() -> None:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    step_key_to_questions = _build_step_key_to_questions()
     for spec in SPECS:
         steps = build_steps(spec.step_keys)
+        answers_questions = _answered_questions(spec.step_keys, step_key_to_questions)
         markdown = generate_survey_definition_markdown(
             survey_group=spec.survey_group,
             survey_display_name=spec.survey_display_name,
@@ -130,10 +184,14 @@ def main() -> None:
             description=spec.description,
             steps=steps,
             survey_kind=spec.survey_kind,
+            answers_questions=answers_questions,
         )
         output_path = DOCS_DIR / spec.output_filename
         output_path.write_text(markdown)
-        print(f"[{spec.survey_kind}] wrote {len(steps)} step(s) to {output_path}")
+        print(
+            f"[{spec.survey_kind}] wrote {len(steps)} step(s), "
+            f"{len(answers_questions)} question link(s) to {output_path}"
+        )
 
 
 if __name__ == "__main__":

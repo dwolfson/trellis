@@ -11,35 +11,53 @@ script encodes the field-name mapping once (discovered empirically against
 a real Dr.Egeria instance, not guessed) so every future stage's questions
 file is generated, not hand-typed.
 
-CSV schema (columns, in order):
+CSV schema (columns, in order) — updated 2026-08-14 when Asked At/Answered
+At collapsed into a single Funnel Stage column (see docs/survey-question-
+context-plan.md); this generator was not kept in sync with that change
+until this pass (2026-08-15, restoring live Egeria state lost to a
+container restart — see that same doc's "ScopedBy link" follow-up):
     Question           - required; becomes the Question's Display Name
-    Asked At            - required; Funnel Stage term this question is
-                          naturally raised at (usually "Scouting")
-    Answered At          - required; Funnel Stage term whose data can
-                          actually answer it (may differ from Asked At —
-                          e.g. asked at Scouting, answered at Assessment)
+    Funnel Stage        - required; the funnel-stage(s) this question
+                          belongs to. May be a single stage ("Scouting")
+                          or a slash-combined value ("Analysis/Enrichment",
+                          signaling an Analysis-first/Enrichment-fallback
+                          pattern — see docs/confidence-gated-validation-
+                          plan.md) — one Link Element To Scope is emitted
+                          per slash-separated stage token, all using Scope
+                          Category "Asked At" uniformly (the Asked-At/
+                          Answered-At distinction itself is retired at the
+                          CSV level, but the Scope Category attribute still
+                          needs *some* value — "Asked At" is reused rather
+                          than inventing a new foundational term for what
+                          is, in practice today, a single funnel-stage tag).
     Why is this important? - optional; becomes the term's Summary
     Rationale/Source    - optional; becomes the term's Description (falls
                           back to the question text itself if blank)
+    Answering Analysis  - optional, RE-internal roadmap note; excluded
+                          from the perspective-column scan (see
+                          OPTIONAL_LEAD_COLUMNS)
+    Answering Mechanism - optional, RE-internal roadmap note (which
+                          engine answers this — Git Statistics/Code
+                          Analysis/RAG/etc.); also excluded from the
+                          perspective-column scan
     <perspective columns...> - one column per Perspective (must match a
                           Display Name already created in foundations.md,
                           e.g. "App/AI Builder"), any non-empty cell
                           (conventionally "X") links that perspective to
                           the question via Link Perspective to Question.
-                          Every column after Rationale/Source is treated
-                          as a perspective column — order doesn't matter.
+                          Every column after the optional lead columns is
+                          treated as a perspective column — order doesn't
+                          matter.
 
 Model generated per row (matches foundations.md's documented pattern):
     Create Glossary Term (Glossary Name=<--questions-glossary>, Display
       Name=<question>, Description=<Rationale/Source>, Summary=<Why is
-      this important?>, Usage=<derived Asked At / Answered At sentence>,
-      classified as Question) -> Classify Term as Question
+      this important?>, Usage=<derived from Funnel Stage>, classified as
+      Question) -> Classify Term as Question
       -> Link Perspective to Question (one per marked perspective column)
-      -> Link Element To Scope / ScopedBy, twice: once with
-         Scope Category "Asked At" (Scope Reference=<Asked At>), once with
-         Scope Category "Answered At" (Scope Reference=<Answered At>) —
-         emitted even when Asked At == Answered At, so every question has
-         the same two-relationship shape regardless (uniform, queryable).
+      -> Link Element To Scope / ScopedBy, one per Funnel Stage token
+         (Scope Category "Asked At" for all of them — see CSV schema note
+         above).
 
 Output is a plain Dr.Egeria markdown file — run `foundations.md` first
 (creates the shared glossaries/perspectives/stage-terms this file
@@ -54,7 +72,7 @@ whatever CLI/agent has that capability) — never process blind.
 Usage:
     uv run --package resource-explorer \\
         python packages/resource-explorer/scripts/csv_to_dr_egeria_questions.py \\
-        docs/dr-egeria/scouting-questions.csv \\
+        docs/dr-egeria/resource_questions.csv \\
         [--output docs/dr-egeria/scouting-questions.md] \\
         [--questions-glossary "User Questions"] \\
         [--stage-glossary "Funnel Stages"]
@@ -66,13 +84,14 @@ import csv
 import sys
 from pathlib import Path
 
-REQUIRED_COLUMNS = ["Question", "Asked At", "Answered At"]
-# "Answering Analysis" is RE-internal roadmap documentation (which
-# analysis_catalog.yaml id, if any, actually answers this question today)
-# — CSV/human-facing only, deliberately not sent to Egeria. It's excluded
-# here so the "everything after Rationale/Source is a perspective column"
-# rule in generate() doesn't try to link it as a Perspective.
-OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis"]
+REQUIRED_COLUMNS = ["Question", "Funnel Stage"]
+# "Answering Analysis"/"Answering Mechanism" are RE-internal roadmap
+# documentation (which analysis_catalog.yaml id, if any, and which kind of
+# engine answers this question today) — CSV/human-facing only, deliberately
+# not sent to Egeria. Excluded here so the "everything after these is a
+# perspective column" rule in generate() doesn't try to link them as a
+# Perspective.
+OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism"]
 
 
 def _block(command: str, **fields: str) -> str:
@@ -114,23 +133,20 @@ def _question_description(question: str, rationale: str) -> str:
     return rationale if rationale else question
 
 
-def _question_usage(asked_at: str, answered_at: str) -> str:
+def _question_usage(stage_tokens: list[str]) -> str:
     """Confirmed live (2026-08-12 probe) that Create Glossary Term
     recognizes a real 'Usage' attribute — put to use here as a
-    human-readable restatement of the two ScopedBy relationships this
-    question gets (Asked At / Answered At), so someone browsing the term
-    directly in Egeria's glossary doesn't have to traverse relationships
-    to see when it's raised vs. when it's actually answerable."""
-    asked_at = (asked_at or "").strip()
-    answered_at = (answered_at or "").strip()
-    if not asked_at:
+    human-readable restatement of the question's funnel-stage ScopedBy
+    relationship(s), so someone browsing the term directly in Egeria's
+    glossary doesn't have to traverse relationships to see when it
+    applies. Post-2026-08-14 single-Funnel-Stage-column model — see module
+    docstring; a slash-combined value produces one sentence naming all its
+    stages, not the old two-sentence Asked-At/Answered-At phrasing."""
+    if not stage_tokens:
         return ""
-    if answered_at and answered_at != asked_at:
-        return (
-            f"Typically asked during {asked_at}; best answered using data "
-            f"available by the {answered_at} stage."
-        )
-    return f"Typically asked and answerable during {asked_at}."
+    if len(stage_tokens) == 1:
+        return f"Typically asked and answerable during {stage_tokens[0]}."
+    return f"Typically relevant during {' and '.join(stage_tokens)}."
 
 
 def generate(
@@ -163,16 +179,16 @@ def generate(
         question = (row.get("Question") or "").strip()
         if not question:
             continue
-        asked_at = (row.get("Asked At") or "").strip()
-        answered_at = (row.get("Answered At") or "").strip()
-        if not asked_at:
-            skipped.append(f"{question!r} — missing 'Asked At', skipped")
+        funnel_stage = (row.get("Funnel Stage") or "").strip()
+        if not funnel_stage:
+            skipped.append(f"{question!r} — missing 'Funnel Stage', skipped")
             continue
+        stage_tokens = [t.strip() for t in funnel_stage.split("/") if t.strip()]
 
         rationale = row.get("Rationale/Source", "")
         summary = _question_summary(row.get("Why is this important?", ""), rationale)
         description = _question_description(question, rationale)
-        usage = _question_usage(asked_at, answered_at)
+        usage = _question_usage(stage_tokens)
 
         out.append(_block(
             "Create Glossary Term",
@@ -191,28 +207,31 @@ def generate(
             if marked:
                 out.append(_block(
                     "Link Perspective to Question",
-                    **{"Perspective Name": persp_col, "Question Name": question},
+                    # Qualified name, not bare display name (2026-08-15): 5 of
+                    # the 12 Perspective display names collide with unrelated
+                    # pre-existing elements in this Egeria instance (the stock
+                    # Coco Pharmaceuticals demo data), which made Dr.Egeria's
+                    # by-display-name resolver fail "Multiple elements found"
+                    # for those 5 every time. foundations.md now gives every
+                    # Perspective an explicit, unique "Perspective::<Name>"
+                    # qualified name for exactly this reason — see its own
+                    # Perspectives-section note and docs/survey-question-
+                    # context-plan.md for the full incident writeup. Every
+                    # perspective column here follows that same convention,
+                    # not just the 5 that happened to collide, so this
+                    # generator never has to special-case which ones are safe.
+                    **{"Perspective Name": f"Perspective::{persp_col}", "Question Name": question},
                 ))
 
-        out.append(_block(
-            "Link Element To Scope",
-            **{
-                "Target Element": question,
-                "Scope Reference": asked_at,
-                "Scope Category": "Asked At",
-            },
-        ))
-        if answered_at:
+        for stage_token in stage_tokens:
             out.append(_block(
                 "Link Element To Scope",
                 **{
                     "Target Element": question,
-                    "Scope Reference": answered_at,
-                    "Scope Category": "Answered At",
+                    "Scope Reference": stage_token,
+                    "Scope Category": "Asked At",
                 },
             ))
-        else:
-            skipped.append(f"{question!r} — no 'Answered At', only Asked-At ScopedBy emitted")
 
     if skipped:
         print("Warnings:", file=sys.stderr)

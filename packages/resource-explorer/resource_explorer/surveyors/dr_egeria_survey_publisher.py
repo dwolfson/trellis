@@ -123,6 +123,26 @@ def render_link_first_block(survey_group: str, first_step_key: str) -> str:
     )
 
 
+def render_scope_link_block(target_element: str, scope_reference: str) -> str:
+    """One "Link Element To Scope" command block, creating a ScopedBy
+    relationship — same mechanism docs/dr-egeria/foundations.md already
+    uses for Question -> Perspective/Funnel-Stage links (compact command
+    spec: `commands_curation_compact.json`'s "Scoped By Link Base" bundle
+    needs only Target Element + Scope Reference; no Scope Category here —
+    that field only distinguishes the asked-at/answered-at duality
+    Question->Stage links need, which doesn't apply to a Survey Definition
+    answering a Question). Reused for docs/survey-question-context-plan.md's
+    D1 (Survey Definition -> Question ScopedBy links) — target_element is
+    the Survey Definition's display name, scope_reference is the Question's
+    display name (both resolved by name, matching every other Link command
+    in this file's sibling docs)."""
+    return (
+        "## Link Element To Scope\n"
+        f"### Target Element\n{target_element}\n\n"
+        f"### Scope Reference\n{scope_reference}\n"
+    )
+
+
 def render_link_next_block(survey_group: str, prev_step_key: str, next_step_key: str, guard: str = "Any") -> str:
     """Unconditional linear chaining (guard="Any") — matches the proven,
     live-verified convention in docs/egeria-database-survey-definition.md.
@@ -145,14 +165,21 @@ def generate_survey_definition_markdown(
     description: str,
     steps: list[PublishableStep],
     survey_kind: str | None = None,
+    answers_questions: list[str] | None = None,
 ) -> str:
     """Full Dr.Egeria markdown document: one 'Create Governance Action
     Process Step' per step (in the given order), one 'Create Governance
     Action Process', 'Link First Process Step', then 'Link Next Process
-    Step' for every consecutive pair. Command order in the file matches
-    the block ordering `dr_egeria`'s dispatcher expects (steps created
-    before they're referenced by the process/links) — the exact structure
-    proven live in docs/egeria-database-survey-definition.md, generalized.
+    Step' for every consecutive pair, then (D1,
+    docs/survey-question-context-plan.md) one 'Link Element To Scope' per
+    entry in answers_questions — the ScopedBy link from this Survey
+    Definition to each Question (by display name) it answers, run after the
+    process itself has been created since the link needs both elements to
+    already exist as resolvable references. Command order in the file
+    matches the block ordering `dr_egeria`'s dispatcher expects (steps
+    created before they're referenced by the process/links) — the exact
+    structure proven live in docs/egeria-database-survey-definition.md,
+    generalized.
 
     Raises ValueError on an empty steps list — a Survey Definition with no
     steps isn't a meaningful thing to author."""
@@ -164,5 +191,7 @@ def generate_survey_definition_markdown(
     blocks.append(render_link_first_block(survey_group, steps[0].step_key))
     for prev, nxt in zip(steps, steps[1:]):
         blocks.append(render_link_next_block(survey_group, prev.step_key, nxt.step_key))
+    for question in answers_questions or []:
+        blocks.append(render_scope_link_block(survey_display_name, question))
 
     return "\n___\n\n".join(blocks) + "\n"

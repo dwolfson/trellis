@@ -11,6 +11,7 @@ from resource_explorer.surveyors.dr_egeria_survey_publisher import (
     render_link_first_block,
     render_link_next_block,
     render_process_block,
+    render_scope_link_block,
     render_step_block,
 )
 
@@ -83,6 +84,21 @@ class TestLinkBlocks:
         assert "### Guard\na-complete" in block
 
 
+class TestRenderScopeLinkBlock:
+    def test_includes_required_headers(self):
+        block = render_scope_link_block("Repo Coarse Scout", "Is this repository actively maintained?")
+        assert "## Link Element To Scope" in block
+        assert "### Target Element\nRepo Coarse Scout" in block
+        assert "### Scope Reference\nIs this repository actively maintained?" in block
+
+    def test_no_scope_category(self):
+        # D1: unlike Question -> Funnel-Stage links, a Survey Definition ->
+        # Question link has no asked-at/answered-at duality, so no Scope
+        # Category field is emitted.
+        block = render_scope_link_block("Repo Coarse Scout", "Who maintains this repository?")
+        assert "Scope Category" not in block
+
+
 class TestGenerateSurveyDefinitionMarkdown:
     def test_raises_on_empty_steps(self):
         with pytest.raises(ValueError):
@@ -145,3 +161,28 @@ class TestGenerateSurveyDefinitionMarkdown:
             survey_kind="discovery",
         )
         assert "survey_kind | discovery" in md
+
+    def test_answers_questions_appends_scope_links_after_everything_else(self, steps):
+        md = generate_survey_definition_markdown(
+            "RepoFullSurvey", "Repo Full Survey", "Git Repository", "desc", steps,
+            answers_questions=["Is this repository actively maintained?", "Who maintains this repository?"],
+        )
+        assert md.count("## Link Element To Scope") == 2
+        last_link_next_idx = md.rindex("## Link Next Process Step")
+        first_scope_link_idx = md.index("## Link Element To Scope")
+        assert last_link_next_idx < first_scope_link_idx
+        assert "Repo Full Survey" in md[first_scope_link_idx:]
+        assert "Is this repository actively maintained?" in md
+        assert "Who maintains this repository?" in md
+
+    def test_answers_questions_omitted_by_default(self, steps):
+        md = generate_survey_definition_markdown(
+            "RepoFullSurvey", "Repo Full Survey", "Git Repository", "desc", steps,
+        )
+        assert "## Link Element To Scope" not in md
+
+    def test_answers_questions_empty_list_same_as_omitted(self, steps):
+        md = generate_survey_definition_markdown(
+            "RepoFullSurvey", "Repo Full Survey", "Git Repository", "desc", steps, answers_questions=[],
+        )
+        assert "## Link Element To Scope" not in md

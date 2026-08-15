@@ -507,3 +507,138 @@ GovActionProcessStep::RepoFullSurvey::repo_sub_resource_survey
 ### Guard
 Any
 
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Is this repository actively maintained?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Who maintains this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+How widely adopted and active is the community around this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+How is it supported?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+What dependencies does this require?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+How well documented is it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Does it fit into our security infrastructure?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Is there a current, published, security analysis?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+What explicit license does the repository use, and are there non-standard or copyleft terms?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Is there a validation / deployment test for it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+How mature is it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+What deployment styles does this support?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Does the repository publish a clear process for reporting security vulnerabilities?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Does the repository have automated build tooling in place?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Full Survey
+
+### Scope Reference
+Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
+

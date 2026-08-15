@@ -51,6 +51,14 @@ dependencies = [
     "openpyxl>=3.1.5",
     "pyarrow>=23.0.1",
     # Egeria integration
+    # scripts/create_measure_definitions.py's ValidValueMember linking needs
+    # pyegeria>=6.0.18.1 (egeria-python PYEGERIA_ISSUES.md ISSUE-56) — not
+    # hard-pinned as a lower bound here: doing so made `uv lock` fail on an
+    # unrelated hypothetical win32/python>=3.15 marker split (pyegeria's own
+    # metadata is a universal py3-none-any wheel, requires-python>=3.12, so
+    # this reads as a uv resolver quirk with a just-published version, not a
+    # real incompatibility) — `uv lock --upgrade-package pyegeria` already
+    # resolves 6.0.18.1 today without a hard constraint.
     "pyegeria>=6.0.16.17",
     "mcp>=0.1.0",
     "nest-asyncio>=1.6.0",

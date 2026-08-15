@@ -185,6 +185,89 @@ class TestListCandidates:
         assert resp.status_code == 200
         assert resp.json()["candidates"] == []
 
+    def test_phase_param_uses_scoped_lookup_when_questions_resolve(self, client):
+        # D2 (docs/survey-question-context-plan.md): phase given, question
+        # catalog returns entries -> scoped lookup used, full scan skipped.
+        with patch(
+            "resource_explorer.surveyors.question_catalog_reader.get_questions",
+            return_value=[{"question": "Is this repository actively maintained?", "answering": {}}],
+        ), patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
+            return_value=[{"qualified_name": "GovActionProcess::Scoped", "display_name": "Scoped", "guid": "g1"}],
+        ) as mock_scoped, patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
+        ) as mock_full_scan:
+            resp = client.get("/api/survey-definitions/database/mydb/candidates?phase=scouting")
+
+        assert resp.status_code == 200
+        mock_scoped.assert_called_once()
+        mock_full_scan.assert_not_called()
+        assert resp.json()["candidates"][0]["qualified_name"] == "GovActionProcess::Scoped"
+
+    def test_phase_param_falls_back_to_full_scan_when_scoped_lookup_empty(self, client):
+        # No Question resolved to a real GUID yet (or none scoped to a
+        # matching Survey Definition) -> falls back to the full scan rather
+        # than showing an empty list, per D2's own decision.
+        with patch(
+            "resource_explorer.surveyors.question_catalog_reader.get_questions",
+            return_value=[{"question": "Some question", "answering": {}}],
+        ), patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
+            return_value=[],
+        ), patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
+            return_value=[{"qualified_name": "GovActionProcess::FullScan", "display_name": "FullScan", "guid": "g2"}],
+        ) as mock_full_scan:
+            resp = client.get("/api/survey-definitions/database/mydb/candidates?phase=scouting")
+
+        assert resp.status_code == 200
+        mock_full_scan.assert_called_once()
+        assert resp.json()["candidates"][0]["qualified_name"] == "GovActionProcess::FullScan"
+
+    def test_no_phase_param_falls_back_to_full_scan_when_no_cataloged_questions(self, client):
+        # entity_type=database has zero cataloged questions today
+        # (question_catalog.yaml only has "repo" entries) — falls back to
+        # the full scan, but because get_questions() genuinely returns
+        # nothing for this entity type, not because phase was omitted.
+        with patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
+        ) as mock_scoped, patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
+            return_value=[],
+        ) as mock_full_scan:
+            resp = client.get("/api/survey-definitions/database/mydb/candidates")
+
+        assert resp.status_code == 200
+        mock_scoped.assert_not_called()
+        mock_full_scan.assert_called_once()
+
+    def test_no_phase_param_still_uses_scoped_lookup_by_default(self, client):
+        # Real live bug, fixed 2026-08-13: the UI never sends phase= at all
+        # (see loadSurveyDefinitionsPanel() in index.html), and even when it
+        # did, Discovery's own Survey Definitions are ScopedBy Questions
+        # tagged asked_at=Scouting — never phase='discovery' — so gating the
+        # scoped lookup behind an explicit phase param meant it silently
+        # never engaged for the real Discovery UI. Confirmed here: omitting
+        # phase entirely (matching exactly what the UI sends) still tries
+        # the scoped lookup first, using every cataloged question for the
+        # resource type.
+        with patch(
+            "resource_explorer.surveyors.question_catalog_reader.get_questions",
+            return_value=[{"question": "Is this repository actively maintained?", "answering": {}}],
+        ) as mock_get_questions, patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids_by_questions",
+            return_value=[{"qualified_name": "GovActionProcess::Scoped", "display_name": "Scoped", "guid": "g1"}],
+        ) as mock_scoped, patch(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_candidate_process_guids",
+        ) as mock_full_scan:
+            resp = client.get("/api/survey-definitions/repo/myproj/candidates?survey_kind=discovery")
+
+        assert resp.status_code == 200
+        mock_get_questions.assert_called_once_with(resource_type="repo", phase=None, perspectives=None)
+        mock_scoped.assert_called_once()
+        mock_full_scan.assert_not_called()
+        assert resp.json()["candidates"][0]["qualified_name"] == "GovActionProcess::Scoped"
+
     def test_egeria_native_processes_excludes_delete_kind(self, client):
         # Uses the real config/technology_type_processes.yaml (seeded for
         # "PostgreSQL Relational Database") rather than mocking — this is the

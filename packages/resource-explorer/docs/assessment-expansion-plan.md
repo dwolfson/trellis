@@ -16,7 +16,7 @@ Two threads converged in conversation (2026-08-13):
    the feature's own design intent.
 
 2. **Four real Assessment-tier gaps** surfaced while building the Scouting
-   Question/Perspective/Intent model (`docs/dr-egeria/scouting-questions.csv`): license/
+   Question/Perspective/Intent model (`docs/dr-egeria/resource_questions.csv`): license/
    copyleft classification, an unused-but-already-fetched `security_and_analysis` GitHub
    field, CODEOWNERS presence, and CI-quality (today's `security_scan` only checks "does a
    CI config file exist," not whether it runs anything meaningful).

@@ -44,7 +44,7 @@ class TestScoutingQuestionsRoute:
         assert data["phase"] == "scouting"
         assert data["questions"]
         assert all(
-            q["asked_at"].lower() == "scouting" or q["answered_at"].lower() == "scouting"
+            "scouting" in {part.strip().lower() for part in q["stage"].split("/")}
             for q in data["questions"]
         )
 
@@ -57,7 +57,7 @@ class TestScoutingQuestionsRoute:
         assert data["phase"] == "assessment"
         assert data["questions"]
         assert all(
-            q["asked_at"].lower() == "assessment" or q["answered_at"].lower() == "assessment"
+            "assessment" in {part.strip().lower() for part in q["stage"].split("/")}
             for q in data["questions"]
         )
         questions = {q["question"] for q in data["questions"]}

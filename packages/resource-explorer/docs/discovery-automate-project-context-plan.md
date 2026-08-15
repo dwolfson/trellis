@@ -19,7 +19,7 @@ in standards and best practices and say so.
 
 ## Standards & prior art grounding this plan
 
-Direct input, cross-checked against what's already cited in `docs/dr-egeria/scouting-questions.csv`
+Direct input, cross-checked against what's already cited in `docs/dr-egeria/resource_questions.csv`
 (where several of these already appear as candidate deep-scan tools for later phases). Named here
 explicitly so the UI/docs can say "this check is modeled on X," not present a bespoke heuristic as
 if invented from nothing.
@@ -139,7 +139,7 @@ Scouting having a built UI tab today. `QuestionCatalogEntry` (`question_catalog_
 carries independent `asked_at`/`answered_at` Funnel Stage fields, and `docs/dr-egeria/foundations.md`
 already defines 9 Funnel Stage terms, not just one. So this is not a schema change — it's:
 
-1. **Reorganize `docs/dr-egeria/scouting-questions.csv`** — move questions whose `Asked At`/
+1. **Reorganize `docs/dr-egeria/resource_questions.csv`** — move questions whose `Asked At`/
    `Answered At` more honestly belong to Assessment/Analysis/Understanding/etc. (per your note),
    and fold in whatever new questions Part 2's new analyses answer. Likely renamed from
    `scouting-questions.csv` to something phase-neutral (e.g. `funnel-questions.csv`) once it's not

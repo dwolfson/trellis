@@ -26,10 +26,11 @@ owns the precise timing; (c) a local analysis_catalog entry that's neither of
 the above (currently repo's 'egeria_publish' and database's equivalent) —
 writes NEW things into Egeria (registers + publishes), deliberately excluded
 from scheduling, which needs explicit operator intent, not a cadence; or (d)
-not in the local catalog at all — a Discovery Survey Definition's
-qualified_name, dispatched through the same run_survey_definition() executor
-the manual Discovery "Run" button uses (database only — see _run_repo_survey
-below for why repo has no equivalent case). Previously (b)/(c)/(d) were never
+not in the local catalog at all — a Survey Definition qualified_name (from
+any intent's D7a Survey panel, docs/unified-survey-execution-model-plan.md —
+its per-candidate ⏱ Schedule action writes exactly this shape of schedule
+row), dispatched through the same run_survey_definition() executor the
+panel's own manual "Run →" button uses. Previously (b)/(c)/(d) were never
 distinguished from (a) — every scheduled database analysis silently ran the
 generic local scan regardless of which one was actually selected, a real gap
 found while wiring this up, not by design.
@@ -42,11 +43,19 @@ analysis_id to the specific SurveyOrchestrator step key(s) to run via
 SurveyOrchestrator.run(steps=...) — public there, not scheduler-private,
 since web/routes/projects.py's per-card "Run just this one analysis" is a
 second real consumer of the same mapping.
-Repo has no (b)/(d) equivalent — no repo analysis_catalog entry is flagged
-for native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
-merge only ever applies to 'database' — so a repo analysis_id is always
-either a local catalog entry (dispatch by step map) or 'egeria_publish' /
-unrecognized (excluded/error, matching (c) above).
+Repo has no (b) equivalent — no repo analysis_catalog entry is flagged for
+native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
+merge only ever applies to 'database'. Repo DOES have (d)
+(_run_repo_survey_definition(), mirroring database's _run_survey_definition()
+minus db_user/db_pwd — repo Survey Definition steps run entirely locally via
+repo_survey_definition_adapter's runner(project, registry, **_) signature,
+nothing to authenticate) — closes a real gap: the D7a Survey panel could
+display and let a user set a schedule against a Survey Definition candidate,
+but the scheduler had no dispatch path for it, so it would silently never
+fire. So a repo analysis_id today is: a local catalog entry (dispatch by
+step map), 'egeria_publish' (excluded, matching (c)), or a Survey Definition
+qualified_name (dispatch via (d)) — no "unrecognized → error" bucket left
+for that last case.
 
 One more repo-only case: action:"ingest" (currently just 'rag_ingestion' —
 "Refresh & Re-ingest," pgvector re-embedding via IncrementalIndexer). Unlike
@@ -243,15 +252,15 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
 
     entry = _catalog_entry("repo", analysis_id)
     if entry is None:
-        # Repo scheduling has no live-Egeria-merge equivalent to database's
-        # case (d) — every valid repo analysis_id comes from the local
-        # catalog, so "not found" means the catalog entry was since removed,
-        # not a Discovery Survey Definition reference. Report it as stale
-        # rather than silently falling back to a full survey, which would
-        # hide exactly the kind of staleness this dispatch exists to surface.
-        return (project.display_name, project.github_url, [
-            f"Analysis '{analysis_id}' not found in the current analysis catalog — schedule may be stale."
-        ])
+        # (d) Not in the local catalog at all — a Survey Definition
+        # qualified_name (from the D7a Survey panel's Schedule action,
+        # docs/unified-survey-execution-model-plan.md — previously a real,
+        # named gap: a schedule set against a candidate silently never
+        # fired). Repo now has this case too, matching database's
+        # long-standing _run_survey_definition() dispatch (see below) — the
+        # module docstring's old claim that "repo has no (b)/(d) equivalent"
+        # is now only true of (b) (no native-re-survey concept for repos).
+        return _run_repo_survey_definition(project, analysis_id, registry)
 
     if entry.get("action") == "publish":
         return (project.display_name, project.github_url, [
@@ -322,6 +331,27 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
     orch = SurveyOrchestrator(registry)
     result = orch.run(slug, steps=steps)
     errors = list(result.errors) if result.errors else []
+    return (project.display_name, project.github_url, errors)
+
+
+def _run_repo_survey_definition(project, analysis_id: str, registry) -> tuple[str, str, list[str]]:
+    """Repo's own (d) — mirrors _run_survey_definition() (database) exactly,
+    minus db_user/db_pwd (repo Survey Definition steps run entirely locally
+    via repo_survey_definition_adapter.re_analysis_steps' `runner(project,
+    registry, **_)` signature — no credentials to thread through)."""
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        run_survey_definition,
+    )
+    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
+
+    try:
+        result = run_survey_definition(
+            "repo", project.slug, registry=registry, survey_definition_ref=analysis_id,
+        )
+    except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
+        return (project.display_name, project.github_url, [str(exc)])
+    errors = list(result.get("errors") or [])
     return (project.display_name, project.github_url, errors)
 
 

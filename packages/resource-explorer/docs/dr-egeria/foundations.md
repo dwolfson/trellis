@@ -167,6 +167,25 @@ to reuse.
 
 ___
 
+## Create Glossary Term
+
+### Glossary Name
+Funnel Stages
+
+### Display Name
+Automate
+
+### Description
+Funnel-stage intent: subscribe to an analysis; get notified (via RFA) when
+it changes on a future scheduled run. Added 2026-08-15 — this term was
+missed when the original 7-intent set was authored and only caught when
+the Questions restoration (see docs/survey-question-context-plan.md) tried
+to ScopedBy a Question against it and got "Referenced element 'Automate'
+... not found." Automate itself became the 8th canonical intent on
+2026-08-13 (CLAUDE.md rule 17); this term should have existed since then.
+
+___
+
 # Scope Category Terms
 
 ## Create Glossary Term
@@ -202,11 +221,29 @@ ___
 > Created here, once, shared by every stage's questions file. Merge Update
 > (Dr.Egeria's default) makes re-running this file safe if a perspective
 > already exists from another app's rollout (e.g. EA/Overview Dashboard).
+>
+> Every Perspective gets an explicit `### Qualified Name` (`Perspective::
+> <Name>`) rather than letting Dr.Egeria auto-generate one — added
+> 2026-08-15 after several Perspective *display* names (Governance,
+> Steward, Privacy, Community, Security) turned out to collide with
+> pre-existing elements' display names elsewhere in this Egeria instance
+> (the stock Coco Pharmaceuticals demo data), which made every by-display-
+> name `Link Perspective to Question` command against those 5 fail
+> "Multiple elements found for supplied name!" A qualified name is
+> guaranteed unique, so referencing Perspectives by qualified name in
+> `Link` commands sidesteps the collision entirely — confirmed live. The
+> `Perspective::` prefix (not the auto-generated `Coco Pharmaceuticals::
+> Perspective::...`) keeps this portable across Egeria instances rather
+> than baking in this instance's default local qualifier/org name. See
+> `docs/survey-question-context-plan.md` for the full incident writeup.
 
 ## Create Perspective
 
 ### Display Name
 Governance
+
+### Qualified Name
+Perspective::Governance
 
 ### Description
 Executive/policy-level oversight of data-driven strategy and compliance —
@@ -220,6 +257,9 @@ ___
 
 ### Display Name
 Financial
+
+### Qualified Name
+Perspective::Financial
 
 ### Description
 Cares about cost — cost to acquire/run/support a resource, cost of
@@ -235,6 +275,9 @@ ___
 ### Display Name
 Steward
 
+### Qualified Name
+Perspective::Steward
+
 ### Description
 Owns day-to-day responsibility for a specific domain's data quality and
 correctness — recurring across many different domains (clinical trial
@@ -248,6 +291,9 @@ ___
 ### Display Name
 Data Owner
 
+### Qualified Name
+Perspective::Data Owner
+
 ### Description
 Accountable for a resource's existence and disposition — distinct from
 Steward (who tends day-to-day quality); Owner decides whether a resource
@@ -259,6 +305,9 @@ ___
 
 ### Display Name
 Consumer
+
+### Qualified Name
+Perspective::Consumer
 
 ### Description
 Evaluating whether a resource is suitable to use for their own purpose —
@@ -272,6 +321,9 @@ ___
 ### Display Name
 App/AI Builder
 
+### Qualified Name
+Perspective::App/AI Builder
+
 ### Description
 Building an application or AI capability (including fine-tuning/prompting)
 against a resource — distinct from general engineering: cares about
@@ -283,6 +335,9 @@ ___
 
 ### Display Name
 Privacy
+
+### Qualified Name
+Perspective::Privacy
 
 ### Description
 Monitors regulatory compliance and sensitive-data exposure across
@@ -297,6 +352,9 @@ ___
 ### Display Name
 Community
 
+### Qualified Name
+Perspective::Community
+
 ### Description
 Cares about the health of the community around a resource — contributor
 activity, responsiveness to issues, adoption — relevant mainly to
@@ -309,6 +367,9 @@ ___
 
 ### Display Name
 Data Expert
+
+### Qualified Name
+Perspective::Data Expert
 
 ### Description
 Works with, moves, and shapes data — consolidates what would otherwise be
@@ -324,6 +385,9 @@ ___
 ### Display Name
 Security
 
+### Qualified Name
+Perspective::Security
+
 ### Description
 Cares about risk signals — contextual per resource type; for a repo this
 means CVEs, dependency vulnerabilities, and community responsiveness to
@@ -336,6 +400,9 @@ ___
 ### Display Name
 Architecture
 
+### Qualified Name
+Perspective::Architecture
+
 ### Description
 Broadest view of the metadata landscape — how a resource fits into the
 overall information architecture and supply chain. Natural starting point
@@ -347,6 +414,9 @@ ___
 
 ### Display Name
 Admin
+
+### Qualified Name
+Perspective::Admin
 
 ### Description
 Operational/infrastructure administration of a resource — day-to-day

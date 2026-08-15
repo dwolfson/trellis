@@ -73,3 +73,39 @@ GovActionProcessStep::RepoCoarseScout::repo_language
 ### Guard
 Any
 
+___
+
+## Link Element To Scope
+### Target Element
+Repo Coarse Scout
+
+### Scope Reference
+Is this repository actively maintained?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Coarse Scout
+
+### Scope Reference
+Who maintains this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Coarse Scout
+
+### Scope Reference
+How widely adopted and active is the community around this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Coarse Scout
+
+### Scope Reference
+How is it supported?
+

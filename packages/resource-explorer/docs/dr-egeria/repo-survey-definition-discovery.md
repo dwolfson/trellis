@@ -104,3 +104,84 @@ GovActionProcessStep::RepoDiscoverySurvey::repo_conventions
 ### Guard
 Any
 
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+What explicit license does the repository use, and are there non-standard or copyleft terms?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+How mature is it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+What deployment styles does this support?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Is there a validation / deployment test for it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+How well documented is it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Is there a current, published, security analysis?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Does the repository publish a clear process for reporting security vulnerabilities?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Does the repository have automated build tooling in place?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
+
