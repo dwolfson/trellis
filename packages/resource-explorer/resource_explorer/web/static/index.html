@@ -445,6 +445,11 @@
       <!-- Context gathering form view -->
       <div id="context-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
+      <!-- Enrichment's Survey sub-tab — D7a phase→stage mapping named this as
+           a candidate host (docs/unified-survey-execution-model-plan.md);
+           mirrors Scouting/Assessment/Analysis's own survey-panel wiring. -->
+      <div id="enrichment-survey-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+
       <!-- Annotation Types view (Admin, reachable from the header ⚙ Admin button) -->
       <div id="annotation-types-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
@@ -1577,14 +1582,14 @@ function _showDiscoverySubTab(tab) {
 // Disposition fit naturally here too (per direct confirmation: Enrichment is
 // exactly where a human might revisit and change a disposition after adding
 // context — no different treatment than the other three needed). ──────────
-let _enrichmentSubTab = 'context';  // 'context' | 'questions' | 'disposition'
+let _enrichmentSubTab = 'context';  // 'context' | 'survey' | 'questions' | 'disposition'
 
 function showEnrichmentPane() {
   _showEnrichmentSubTab(_enrichmentSubTab);
 }
 
 function _enrichmentSubnavHtml(active) {
-  const tabs = [{ tab: 'context', label: '📝 Context' }];
+  const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '🔬 Survey' }];
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1599,8 +1604,27 @@ function _showEnrichmentSubTab(tab) {
   if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'context';
   _enrichmentSubTab = tab;
   if (tab === 'context') showMainView('context');
+  else if (tab === 'survey') showMainView('enrichment-survey');
   else if (tab === 'questions') { _questionsDispositionHost = 'enrichment'; _questionsPhase = 'enrichment'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'enrichment'; showMainView('scouting-disposition'); }
+}
+
+// Enrichment's Survey sub-tab (D7a phase→stage mapping named Enrichment as
+// a candidate host, docs/unified-survey-execution-model-plan.md) — same
+// shared _loadSurveyPanel() component every other phase host uses, no
+// AnalysisKind catalog cards of its own (Enrichment has none), so this is
+// just the panel plus its own empty-state, mirroring Scouting's Survey
+// sub-tab's no-repo-selected handling.
+async function loadEnrichmentSurveyPanel() {
+  const [entityType, slug] = _surveyDefEntityAndSlug();
+  const view = document.getElementById('enrichment-survey-view');
+  const subnav = _enrichmentSubnavHtml('survey');
+  if (!slug) {
+    view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to see Surveys scoped to Enrichment.</div>';
+    return;
+  }
+  view.innerHTML = subnav + '<div id="enrichment-survey-panel-view" class="pt-2"></div>';
+  await _loadSurveyPanel(entityType, slug, 'enrichment', 'enrichment-survey-panel-view', '');
 }
 
 function showIntentEmptyState(what, forWhatPurpose = 'Scouting summary') {
@@ -5438,6 +5462,7 @@ function showMainView(tab) {
   const activityView  = document.getElementById('activity-view');
   const rfaView       = document.getElementById('rfa-view');
   const contextView   = document.getElementById('context-view');
+  const enrichmentSurveyView = document.getElementById('enrichment-survey-view');
   const surveyDefsView = document.getElementById('survey-definitions-view');
   const annotationTypesView = document.getElementById('annotation-types-view');
   const adminGroupsView = document.getElementById('admin-groups-view');
@@ -5446,7 +5471,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -5511,6 +5536,9 @@ function showMainView(tab) {
   } else if (tab === 'context') {
     contextView.classList.remove('hidden');
     loadContextPanel();
+  } else if (tab === 'enrichment-survey') {
+    enrichmentSurveyView.classList.remove('hidden');
+    loadEnrichmentSurveyPanel();
   } else if (tab === 'survey-definitions') {
     surveyDefsView.classList.remove('hidden');
     loadSurveyDefinitionsPanel();

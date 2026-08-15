@@ -1,6 +1,13 @@
 # Assessment expansion: Sub-Resources relocation + 4 new analyses
 
-**Status: planned, not yet built.**
+**Status: built.** Corrected 2026-08-15 — this header was stale; direct
+code inspection confirms both Part A (`_assessmentSubnavHtml`/
+`_assessmentSubTab`/`_showAssessmentSubTab`, `_loadAnalysisCatalogPanel`'s
+`subnavHtml` param) and all 4 of Part B's analyses
+(`license_classification`, `security_features`, `codeowners_presence` —
+folded into `DocumentationSurveyor` per this doc's own suggestion —
+and `ci_quality`) are implemented, registered in `ANALYSIS_KINDS`/
+`analysis_catalog.yaml`, and live-verified. Kept below for reference.
 
 ## Context
 

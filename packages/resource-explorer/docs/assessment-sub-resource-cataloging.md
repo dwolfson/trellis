@@ -1,6 +1,13 @@
 # Assessment sub-resource cataloging — design pass
 
-**Status: design only, not built.** Flagged as roadmap-only in `docs/repo-phase-visibility-model.md`'s
+**Status: built.** Corrected 2026-08-15 — this header was stale; the
+`sub_resources` registry table/CRUD, `EgeriaPublisher.publish_sub_resources()`,
+`web/routes/projects.py`'s sub-resources routes, and the frontend
+selection UI (relocated into Assessment's own sub-nav per
+`assessment-expansion-plan.md` Part A) are all implemented and
+live-verified. Kept below for reference.
+
+Originally: flagged as roadmap-only in `docs/repo-phase-visibility-model.md`'s
 visibility-source matrix ("optionally catalog specific sub-resources (folders/files) as child assets —
 not built, roadmap only"). This is that design pass, grounded in a direct read of `EgeriaPublisher`,
 the three Assessment sub-surveyors, `project_file_inventory`'s schema, and pyegeria's actual asset-
