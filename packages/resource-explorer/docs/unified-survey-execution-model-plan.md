@@ -1,7 +1,12 @@
 # Unified Survey execution model — one mechanism, choreographed by locus
 
 **Status: planned, not yet built, except D7a's first slice (shipped
-2026-08-14, live-verified — see D7a below for exactly what's covered).**
+2026-08-14, live-verified — see D7a below for exactly what's covered)
+and Enrichment's survey-panel host (shipped 2026-08-15, one of D7a's
+named-but-undone items). D6 (dependency/sequencing mechanism) is now
+fully designed (2026-08-15, see D6 below) — not yet implemented; D6.5
+flags one real behavior-change question needing confirmation before it
+is.**
 Synthesizes a design discussion
 (2026-08-14) that started from `docs/dr-egeria/resource_questions.csv`'s
 "Answering Mechanism" review and grew into a real architecture proposal.
@@ -132,18 +137,207 @@ model means migrating those steps into `STEP_REGISTRY`-compatible form
 while preserving that single-download efficiency — not discarding the
 optimization, relocating it (see D6).
 
-**D6 — Dependency/sequencing between Steps or Surveys needs a real
-mechanism; none exists today beyond one hand-crafted case.** "I need a
-local copy of the zip file and maybe the file tree info for an analysis
-of X" is a real, general pattern (`refresh_profile()`'s combined-download
-trick is the *only* place anything like it is implemented, and it's
-specific to that one pipeline, not expressed as a declared dependency).
-`STEP_REGISTRY`'s `StepInfo` has no `depends_on` concept today. Scope for
-this doc: name the gap precisely, don't design the resolution mechanism
-yet — a real dependency graph (steps declaring prerequisites, the
-orchestrator resolving/ordering/deduping shared downloads across them) is
-its own follow-up design pass once D1/D5 are further along and there's
-more than one real multi-dependency case to design against.
+**D6 — Dependency/sequencing between Steps or Surveys.** Designed
+2026-08-15 (was previously scoped to "name the gap, don't design the
+resolution" — this supersedes that placeholder).
+
+**Grounding: the same underlying need already exists in 3
+non-composable forms**, confirmed via direct code read rather than
+assumed:
+1. `SurveyOrchestrator.run()` hardcodes two `if step_key == "X":`
+   branches to build special constructor kwargs
+   (`repo_file_classification` → `pyegeria_client`/`force_refresh`;
+   `repo_data_profiling` → `local_path`) — not declared on `StepInfo`,
+   doesn't scale past 2 cases.
+2. `refresh_profile()` downloads one zipball into a tempdir and threads
+   the local root through 4–5 hand-written calls
+   (`_store_file_inventory`, `_profile_data_files`,
+   `_parse_ci_workflows`, `_parse_repo_conventions`, optional symbol
+   extraction) — real, valuable sharing, entirely bespoke to that one
+   function, invisible to `STEP_REGISTRY`.
+3. Any *new* step wanting zipball content has no declarative way to ask
+   for it — the established workaround (`CiQualitySurveyor`'s own
+   docstring names it explicitly) is "parse it once inside
+   `refresh_profile()` at ingest/profile-refresh time, and read the
+   already-persisted row read-only at survey time" — which works, but
+   means every new zipball-dependent step requires hand-editing
+   `refresh_profile()`, not just registering itself.
+
+**A real, separate finding that reframes the concrete need**: grepping
+every `SurveyOrchestrator(` call site shows `data_path` is never
+actually supplied by any real caller today — `DataProfilerSurveyor`'s
+"Tier 2" local-clone deep-profiling code path
+(`local_path`-gated) is dead in practice; only Tier 1 (reading
+already-materialized `project_file_inventory` rows) ever runs. So the
+zipball-sharing case named in this doc's original D6 text doesn't
+actually occur inside `SurveyOrchestrator` today at all — it only
+occurs in `refresh_profile()`. This changes what "solving D6" buys:
+activating `DataProfilerSurveyor`'s Tier 2 for the first time is a real
+side effect of this design, not a hypothetical (see D6.5, flagged
+explicitly since it adds real network cost).
+
+### Decisions
+
+**D6.1 — Model shared *resources*, not step-to-step data dependencies.**
+The concrete, motivating need in every case above is "N steps want the
+same expensive external thing" (a zipball download, a live pyegeria
+client) — not "step B consumes step A's `Annotation` output." No case of
+the latter exists anywhere in `STEP_REGISTRY` today (confirmed: no
+surveyor reads another surveyor's returned annotations). Scoping this
+design to resource-sharing keeps it small and grounded in what's
+actually needed; a real step-to-step data-dependency graph is a
+different, larger problem (would need annotation-passing, topological
+ordering, cycle detection) and isn't motivated by any real case —
+explicitly deferred, named so it isn't silently assumed solved by this
+pass.
+
+**D6.2 — `ResourceProvider` + `RESOURCE_PROVIDERS` registry**, colocated
+with `STEP_REGISTRY` in `repo_survey_definition_adapter.py` (same file
+already owns step-key semantics):
+```python
+@dataclass
+class ResourceProvider:
+    name: str                                    # e.g. "zipball_root"
+    acquire: Callable[[Project, ProjectRegistry], AbstractContextManager]
+    # acquire(project, registry) returns a context manager whose __enter__
+    # yields the resource value (a Path, a client instance, …) and whose
+    # __exit__ does cleanup (tempdir removal). Reuses Python's own
+    # contextlib idiom rather than inventing a bespoke acquire/release
+    # pair or a separate teardown-registration mechanism.
+
+RESOURCE_PROVIDERS: dict[str, ResourceProvider] = {
+    "zipball_root": ResourceProvider("zipball_root", _acquire_zipball_root),
+}
+```
+`_acquire_zipball_root(project, registry)` is a `@contextmanager`
+wrapping exactly what `refresh_profile()` already does
+(`GitHubClient().download_zipball(repo, Path(tmp))` inside a
+`tempfile.TemporaryDirectory()`) — a straight extraction of existing,
+proven logic, not a new algorithm.
+
+**D6.3 — `StepInfo` gains `requires_resources: dict[str, str] = {}`**
+(resource name → constructor kwarg name — a dict, not a list, since
+different surveyors may each name their own kwarg differently; e.g.
+`DataProfilerSurveyor` calls it `local_path`, not `zipball_root`).
+Replaces the `repo_data_profiling` special case in
+`SurveyOrchestrator.run()` outright:
+```python
+"repo_data_profiling": StepInfo(
+    "repo_data_profiling", DataProfilerSurveyor, ...,
+    requires_resources={"zipball_root": "local_path"},
+),
+```
+
+**D6.4 — `SurveyOrchestrator.run()` resolves resources once, before
+constructing any surveyor, deduped by the actual set of steps
+selected** (this is the literal "resolving/ordering/deduping" this
+doc's original D6 text asked for):
+```python
+needed = {r for key in step_keys_to_run for r in STEP_REGISTRY[key].requires_resources}
+with ExitStack() as stack:
+    resources = {
+        name: stack.enter_context(RESOURCE_PROVIDERS[name].acquire(project, self._registry))
+        for name in needed
+    }
+    for step_key, info in ...:
+        kwargs = {...}  # existing per-step kwargs, unchanged
+        for resource_name, kwarg_name in info.requires_resources.items():
+            kwargs[kwarg_name] = resources[resource_name]
+        all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
+    for surveyor in surveyors:
+        ...  # existing run loop, unchanged, still inside the `with` block
+```
+`ExitStack` guarantees any resource needing cleanup (the zipball
+tempdir) is released exactly once, after every step that used it has
+run — the `with` block spans the *entire* `run()` call, not just
+construction, so nothing is torn down between two steps that both need
+it. Steps with an empty `requires_resources` are completely unaffected
+(`needed` stays empty for a run that touches none of them, `ExitStack`
+is a no-op) — this is the regression guard: every existing zero-resource
+step must produce byte-identical behavior before and after this change.
+
+**D6.5 — Activating `DataProfilerSurveyor` Tier 2 is a real, flagged
+behavior change, not incidental.** Once `repo_data_profiling` declares
+`requires_resources={"zipball_root": "local_path"}`, selecting that step
+makes `SurveyOrchestrator.run()` *actually* download a zipball and
+supply a real local path — something that never happens today (D6's own
+grounding finding above). This is the point of the mechanism working,
+but it has a real cost (one more GitHub API call + zipball transfer per
+`repo_data_profiling` run) that today's callers have never paid.
+**Confirm this is wanted before implementing** — the alternative is
+leaving `repo_data_profiling` as Tier-1-only (no `requires_resources`
+entry) and treating D6.2–D6.4's mechanism as proven-but-unused until a
+step that actually needs it is ready (the next real candidate: any
+future zipball-content step migrating off the `CiQualitySurveyor`
+read-persisted-row workaround, see D6.7).
+
+**D6.6 — Plain scalar flags (e.g. `force_refresh`) stay ordinary
+orchestrator-constructor parameters, not resources.** Only genuinely
+*acquired* (fetched/computed/opened, needing dedup and possibly cleanup)
+values belong in `RESOURCE_PROVIDERS` — forcing a boolean straight
+through `SurveyOrchestrator.__init__` into this mechanism would be
+over-generalizing for no real gain. `repo_file_classification`'s
+existing `pyegeria_client`/`force_refresh` special case is left as-is by
+this design (implementer's call whether to also register
+`pyegeria_client` as a resource for symmetry — it's already a cheap,
+pre-opened client with no acquire/release cost, so there's no strong
+reason to move it, but doing so isn't wrong either).
+
+**D6.7 — `refresh_profile()` itself is explicitly NOT migrated onto this
+mechanism here.** That migration is this doc's own D5 ("migrating
+`refresh_profile()`'s steps into `STEP_REGISTRY`... real, nontrivial
+refactor, not scoped in detail here") — D6 exists to define the shared
+primitive D5 will need, not to perform D5's refactor. `refresh_profile()`
+keeps its own hand-written tempdir/download logic unchanged for now.
+Once D5 lands, `refresh_profile()`'s steps become real `StepInfo`
+entries using `requires_resources={"zipball_root": ...}` the same way
+`repo_data_profiling` does here — at that point `_acquire_zipball_root`
+has exactly one real implementation shared by both call paths, not two
+copies of the same download logic.
+
+### Implementation
+
+- `repo_survey_definition_adapter.py`: `ResourceProvider` dataclass,
+  `RESOURCE_PROVIDERS` dict, `_acquire_zipball_root()` (`@contextmanager`,
+  extracted from `refresh_profile()`'s existing download+tempdir logic —
+  `refresh_profile()` itself is untouched per D6.7, this is a new
+  standalone function, not a refactor of the old one).
+  `StepInfo.requires_resources: dict[str, str] = field(default_factory=dict)`.
+  `repo_data_profiling`'s `StepInfo` entry gains
+  `requires_resources={"zipball_root": "local_path"}` (pending the D6.5
+  confirmation).
+- `survey_orchestrator.py`: `run()`'s surveyor-construction section moves
+  inside `with ExitStack() as stack:`; computes `needed` from the
+  selected step keys; resolves each via
+  `RESOURCE_PROVIDERS[name].acquire(project, self._registry)` entered
+  into the stack; injects into each surveyor's kwargs per
+  `StepInfo.requires_resources`. Removes the
+  `elif step_key == "repo_data_profiling": kwargs = {"local_path": self._data_path}`
+  branch (superseded by the generic path). `SurveyOrchestrator.__init__`'s
+  `data_path` param can be dropped entirely — confirmed no real caller
+  ever passes it (D6's own grounding finding) — a clean removal, not a
+  deprecation.
+
+### Verification
+
+- Unit test: a `run()` call touching only zero-`requires_resources`
+  steps never consults `RESOURCE_PROVIDERS` at all (mock it, assert zero
+  calls) — the core regression guard.
+- Unit test: two steps in the same `run()` call both requiring
+  `"zipball_root"` → `_acquire_zipball_root` is entered exactly once
+  (mock it, assert call count) — the actual "dedup" guarantee this
+  design exists to provide.
+- Unit test: `repo_data_profiling` run in isolation, `_acquire_zipball_root`
+  mocked to yield a fixture directory → `DataProfilerSurveyor` receives
+  a real `local_path` and its Tier 2 code path activates — untestable in
+  practice before this change, since nothing ever supplied `local_path`.
+- Live (only after D6.5's confirmation): run `repo_data_profiling` alone
+  against a real small repo, confirm a zipball download actually happens
+  (log/network check) and Tier 2 profiling numbers differ meaningfully
+  from a Tier-1-only run (richer per-file stats) — the concrete proof
+  this mechanism does something real, not a refactor of dead code into
+  differently-dead code.
+- Full RE test suite green.
 
 **D7 — Stage/perspective visibility should be *driven by* the Question/
 Perspective `ScopedBy` graph already built (D1/D2 in
@@ -336,13 +530,13 @@ doc's D7a section in full before continuing. State as of the pause:
      extended to Survey Definition candidates, keyed by their steps' step
      keys rather than a single `analysis_id` — real design work, not
      started.
-  2. Enrichment currently has no Survey panel instance at all (not named
-     as urgent by the user, but listed in D7a's phase→stage mapping as a
-     candidate host).
+  2. Enrichment's Survey panel instance — **shipped 2026-08-15**, wired
+     the same shared `_loadSurveyPanel()` component in, live-verified.
   3. `run_survey_definition()`'s own real gaps this thread surfaced but
-     didn't touch: D1 case 3's `executes_at="egeria"` stub, D6's
-     dependency/sequencing gap — both pre-existing, named earlier in this
-     doc, unrelated to D7a specifically.
+     didn't touch: D1 case 3's `executes_at="egeria"` stub — pre-existing,
+     named earlier in this doc, unrelated to D7a specifically, still
+     open. D6's dependency/sequencing gap is now designed (2026-08-15,
+     see D6 above) though not yet implemented.
 - **Known duplication, not resolved**: Scouting's "Run Scouting Scan"
   button and the Survey panel below it can both trigger the same
   "Repo Coarse Scout" Survey Definition — named in D7a's own bullet list,
@@ -354,7 +548,8 @@ doc's D7a section in full before continuing. State as of the pause:
   (a toggle? two buttons, like Scouting's current "Run Scouting Scan"/
   "Publish registration only" split, generalized?) — simplified to two
   states per direct confirmation ("we only do publish/sniff test").
-- D6's actual dependency-declaration design (deferred, see above).
+- ~~D6's actual dependency-declaration design~~ — designed 2026-08-15,
+  see D6 above; not yet implemented, D6.5 flags an open confirmation.
 - Migrating `refresh_profile()`'s steps into `STEP_REGISTRY` (D5) —
   real, nontrivial refactor, not scoped in detail here.
 - Closing the `survey_definition_executor.py` Egeria-trigger stub (D1
