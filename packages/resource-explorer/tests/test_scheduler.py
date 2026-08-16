@@ -564,3 +564,40 @@ class TestRunDueMisc:
         entries = registry.list_activity(entity_slug="some-fs")
         assert entries[0]["status"] == "error"
         assert "Unknown entity_type" in entries[0]["detail"]
+
+
+class TestRfaReconciliation:
+    """docs/rfa-egeria-todo-followup.md's "Sync mechanics" — reconciliation
+    reuses this scheduler's background loop rather than a second one."""
+
+    def test_reconcile_rfa_actions_delegates_to_rfa_egeria_sync(self, registry):
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.rfa_egeria_sync.reconcile_rfa_actions") as mock_reconcile:
+            scheduler._reconcile_rfa_actions()
+        mock_reconcile.assert_called_once_with(registry)
+
+    def test_scheduler_loop_runs_both_run_due_and_reconciliation_each_iteration(self, registry):
+        # _scheduler_loop() is an infinite loop — exercise one iteration's
+        # worth of work by calling time.sleep once then raising to break out,
+        # confirming both steps run and a failure in one doesn't skip the
+        # other (each already wrapped in its own try/except).
+        calls = []
+        with patch("resource_explorer.scheduler.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+             patch("resource_explorer.scheduler._run_due", side_effect=lambda: calls.append("run_due")), \
+             patch("resource_explorer.scheduler._reconcile_rfa_actions", side_effect=lambda: calls.append("reconcile")):
+            try:
+                scheduler._scheduler_loop()
+            except KeyboardInterrupt:
+                pass
+        assert calls == ["run_due", "reconcile"]
+
+    def test_run_due_failure_does_not_prevent_reconciliation(self):
+        calls = []
+        with patch("resource_explorer.scheduler.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+             patch("resource_explorer.scheduler._run_due", side_effect=RuntimeError("boom")), \
+             patch("resource_explorer.scheduler._reconcile_rfa_actions", side_effect=lambda: calls.append("reconcile")):
+            try:
+                scheduler._scheduler_loop()
+            except KeyboardInterrupt:
+                pass
+        assert calls == ["reconcile"]

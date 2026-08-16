@@ -100,6 +100,22 @@ def _scheduler_loop() -> None:
             _run_due()
         except Exception:
             log.exception("Scheduler iteration failed")
+        try:
+            _reconcile_rfa_actions()
+        except Exception:
+            log.exception("RFA reconciliation iteration failed")
+
+
+def _reconcile_rfa_actions() -> None:
+    """docs/rfa-egeria-todo-followup.md's "Sync mechanics" — reuses this
+    same background loop rather than starting a second one, runs every
+    iteration regardless of whether any analysis is due (RFA/ToDo sync is
+    independent of scheduled-analysis dispatch)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.rfa_egeria_sync import reconcile_rfa_actions
+
+    registry = ProjectRegistry()
+    reconcile_rfa_actions(registry)
 
 
 def _run_due() -> None:

@@ -405,6 +405,18 @@ class TestSchedulesRouter:
 
 
 class TestRfaRouter:
+    @pytest.fixture(autouse=True)
+    def _mock_egeria_sync(self):
+        # PATCH /rfas/{id} attempts a real Egeria ToDo sync after its local
+        # write (docs/rfa-egeria-todo-followup.md) — mocked here so these
+        # ordinary route tests never depend on (or write real ToDo elements
+        # into) a live Egeria platform, matching the established
+        # EgeriaPublisher-mocking precedent (test_sub_resources_routes.py).
+        # rfa_egeria_sync itself is exercised directly, with its own mocked
+        # pyegeria clients, in test_rfa_egeria_sync.py.
+        with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action") as mock_sync:
+            yield mock_sync
+
     def test_list_rfas_defaults_to_open(self, client, registry):
         _write_rfa_activity_entry(registry)
         resp = client.get("/api/activity/rfas")

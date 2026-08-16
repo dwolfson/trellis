@@ -1292,6 +1292,29 @@ class ProjectRegistry:
                     updated_at        TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # Migration: docs/rfa-egeria-todo-followup.md's "one model, not
+            # one location" decision — rfa_actions mirrors ToDoProperties
+            # directly (activity_status/due_time/start_time/priority, using
+            # Egeria's own ACTIVITY_STATUS vocabulary) rather than a second,
+            # bespoke vocabulary requiring translation. rfa_status/
+            # defer_until (above) are kept, unused by new code, rather than
+            # dropped — SQLite ALTER TABLE can't drop columns cheaply, and
+            # nothing reads them once activity_status/due_time exist.
+            existing_rfa = self._get_table_columns(conn, "rfa_actions")
+            if "activity_status" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN activity_status TEXT NOT NULL DEFAULT 'REQUESTED'")
+            if "due_time" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN due_time TEXT DEFAULT ''")
+            if "start_time" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN start_time TEXT DEFAULT ''")
+            if "priority" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN priority INTEGER DEFAULT 0")
+            if "egeria_todo_guid" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN egeria_todo_guid TEXT DEFAULT ''")
+            if "synced_at" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN synced_at TEXT DEFAULT ''")
+            if "sync_error" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN sync_error TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -3724,13 +3747,22 @@ class ProjectRegistry:
     # annotations_json at read time. This table is keyed on the same
     # synthetic id that flatten step mints positionally
     # (f"{entry_id}::{annotation_index}"), and overlays a real, updatable
-    # status/assignee/defer/resolution onto each flattened RFA. This is a
-    # stepping stone toward real Egeria ToDo/governance actions, not that
-    # integration itself — full alignment with Egeria's native action model
-    # is deliberately out of scope for this slice. See
-    # docs/rfa-egeria-todo-followup.md for what that integration would
-    # actually require, confirmed against pyegeria's real ToDo/PersonAction
-    # API (assign_action/reassign_action/add_action_target) — not built yet.
+    # status/assignee/defer/resolution onto each flattened RFA.
+    #
+    # Egeria ToDo sync (docs/rfa-egeria-todo-followup.md, decided
+    # 2026-08-15/implemented 2026-08-16): activity_status/due_time/
+    # start_time/priority mirror ToDoProperties directly (Egeria's own
+    # ACTIVITY_STATUS vocabulary — REQUESTED/WAITING/IN_PROGRESS/COMPLETED/
+    # etc.) alongside rfa_status/defer_until (RE's own friendly verbs —
+    # open/deferred/reassigned/completed — still the API/frontend's wire
+    # contract, unchanged this pass). One translation seam, in
+    # web/routes/activity.py, maps friendly verb -> activity_status exactly
+    # once; rfa_egeria_sync.py (the module that actually talks to Egeria)
+    # reads activity_status/due_time straight through, no re-translation.
+    # egeria_todo_guid/synced_at/sync_error track the real Egeria ToDo this
+    # row is synced with, per the "local write is authoritative, Egeria
+    # call attempted non-blocking, both-direction reconciliation" sync
+    # design in that doc.
 
     def upsert_rfa_action(
         self,
@@ -3738,23 +3770,51 @@ class ProjectRegistry:
         entry_id: str,
         annotation_index: int,
         status: str,
+        activity_status: str,
         assignee: str = "",
         defer_until: str = "",
+        start_time: str = "",
+        priority: int = 0,
         resolution_note: str = "",
     ) -> None:
+        """Local write — authoritative for the API response regardless of
+        Egeria's reachability (sync mechanics point 1). Callers attempt the
+        matching Egeria sync (rfa_egeria_sync.sync_rfa_action) separately,
+        after this write succeeds.
+
+        `status` (RE's friendly verb — open/deferred/reassigned/completed,
+        the drawer's own wire contract, unchanged) and `activity_status`
+        (Egeria's real ToDoProperties.activityStatus value the route maps
+        it to — see activity.py's _STATUS_TO_ACTIVITY_STATUS) are stored
+        separately, not derived from one another here — the translation
+        happens exactly once, at the route layer, not duplicated into the
+        registry. `defer_until` is stored verbatim under both its original
+        column and `due_time` (same value/semantics, no translation
+        needed — due_time is just the ToDoProperties-named read path
+        rfa_egeria_sync.py uses)."""
         updated_at = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO rfa_actions
-                   (id, entry_id, annotation_index, rfa_status, assignee, defer_until, resolution_note, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   (id, entry_id, annotation_index, rfa_status, activity_status,
+                    assignee, defer_until, due_time, start_time, priority,
+                    resolution_note, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      rfa_status=excluded.rfa_status,
+                     activity_status=excluded.activity_status,
                      assignee=excluded.assignee,
                      defer_until=excluded.defer_until,
+                     due_time=excluded.due_time,
+                     start_time=excluded.start_time,
+                     priority=excluded.priority,
                      resolution_note=excluded.resolution_note,
                      updated_at=excluded.updated_at""",
-                (rfa_id, entry_id, annotation_index, status, assignee, defer_until, resolution_note, updated_at),
+                (
+                    rfa_id, entry_id, annotation_index, status, activity_status,
+                    assignee, defer_until, defer_until, start_time, priority,
+                    resolution_note, updated_at,
+                ),
             )
 
     def get_rfa_action(self, rfa_id: str) -> dict | None:
@@ -3770,6 +3830,60 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM rfa_actions").fetchall()
         return {r["id"]: dict(r) for r in rows}
+
+    def mark_rfa_synced(self, rfa_id: str, egeria_todo_guid: str) -> None:
+        """Record a successful Egeria ToDo sync — clears any prior
+        sync_error (a retry that finally succeeds shouldn't keep showing
+        stale failure state)."""
+        synced_at = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET egeria_todo_guid = ?, synced_at = ?, sync_error = '' WHERE id = ?",
+                (egeria_todo_guid, synced_at, rfa_id),
+            )
+
+    def mark_rfa_sync_error(self, rfa_id: str, error: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET sync_error = ? WHERE id = ?",
+                (error, rfa_id),
+            )
+
+    def list_unsynced_rfa_actions(self) -> list[dict]:
+        """Rows needing a write-direction sync retry (reconciliation pass,
+        write direction) — never synced yet, or synced but a later local
+        write failed to propagate."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rfa_actions WHERE egeria_todo_guid = '' OR sync_error != ''"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_synced_rfa_actions(self) -> list[dict]:
+        """Rows with a real Egeria ToDo behind them — read-direction
+        reconciliation pulls each one's current remote state and reconciles
+        it against these local rows."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rfa_actions WHERE egeria_todo_guid != '' AND sync_error = ''"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_rfa_from_remote(
+        self, rfa_id: str, activity_status: str, due_time: str = "", start_time: str = "", priority: int = 0,
+    ) -> None:
+        """Read-direction reconciliation write — a change made by another
+        Egeria client (not through RE's own drawer) is pulled in here.
+        Doesn't touch egeria_todo_guid/sync_error (those are write-direction
+        bookkeeping); does bump updated_at/synced_at since this is a real,
+        confirmed-current state refresh."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET activity_status = ?, due_time = ?, start_time = ?, "
+                "priority = ?, updated_at = ?, synced_at = ? WHERE id = ?",
+                (activity_status, due_time, start_time, priority, now, now, rfa_id),
+            )
 
     def update_governance_state(self, entity_type: str, slug: str, state: str) -> None:
         """Update the governance state of a registered resource."""

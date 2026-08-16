@@ -1,11 +1,17 @@
 # RFA response actions — backing them with a real Egeria ToDo
 
-The RFA drawer's defer/reassign/complete/reopen actions are currently local-only
+**Status (2026-08-16): implemented and unit-tested (29 new tests, full RE
+suite green — 1149 passed, 9 skipped). Not yet live-verified against a real
+Egeria platform** — see "Implementation notes / what still needs live
+verification" at the end of this doc before treating any of the below as
+proven against a real server, not just against mocked pyegeria clients.
+
+The RFA drawer's defer/reassign/complete/reopen actions used to be local-only
 (`rfa_actions` SQLite table — see its docstring in `registry.py`). That table's
 docstring already named this as "a stepping stone toward real Egeria ToDo/
 governance actions, not that integration itself." This doc names what that
 integration actually looks like, confirmed against pyegeria's real API surface
-(not assumed) — not built yet.
+(not assumed).
 
 **Decided (2026-08-15):** the real problem with `rfa_actions` today isn't that
 it's *local* — it's that it's a second, independently-invented vocabulary
@@ -151,6 +157,74 @@ per change, never an edit of a past one). This is a separate mechanism from
 the RFA/`ToDo` sync above, not a replacement for any part of it — captured
 here so it isn't lost before its own scoped design pass.
 
-None of this is scoped for implementation yet — this is the "what would it
-take" writeup, so the next design conversation starts from confirmed facts
-instead of assumptions.
+The RFA/`ToDo` sync above is now implemented; this related idea (Asset-level
+`ActivityEntry` logging) is still just the "what would it take" writeup —
+not scoped for implementation, no code written.
+
+## Implementation notes (2026-08-16)
+
+What shipped, matching this doc's decisions exactly:
+
+- **Registry**: `rfa_actions` gained `activity_status`/`due_time`/
+  `start_time`/`priority` (mirroring `ToDoProperties` directly, Egeria's
+  real `ACTIVITY_STATUS` vocabulary — confirmed via
+  `pyegeria/core/_globals.py`) plus `egeria_todo_guid`/`synced_at`/
+  `sync_error` (sync bookkeeping). `rfa_status`/`defer_until` (RE's
+  friendly verbs — open/deferred/reassigned/completed) are kept, not
+  dropped — they're still the API/frontend's wire contract, unchanged, so
+  the drawer UI (`index.html`) needed zero changes. One translation seam,
+  in `web/routes/activity.py`'s `_STATUS_TO_ACTIVITY_STATUS`, maps friendly
+  verb → real `activityStatus` exactly once; the sync module reads
+  `activity_status`/`due_time` straight through, no second translation —
+  this is the "one model, not one location" decision's practical shape:
+  one internal representation, one seam at the API boundary, not a
+  bespoke vocabulary re-derived at multiple points.
+- **New `resource_explorer/rfa_egeria_sync.py`**: `sync_rfa_action()` (the
+  per-row create-or-update call, same non-blocking try/except/log shape as
+  `egeria_publisher.py`'s activity-log write) and `reconcile_rfa_actions()`
+  (both-direction reconciliation pass).
+- **`web/routes/activity.py`**: `PATCH /rfas/{rfa_id}` now attempts
+  `sync_rfa_action()` synchronously, same request, after the local write —
+  never fails the response.
+- **`scheduler.py`**: `_scheduler_loop()` now calls
+  `_reconcile_rfa_actions()` every iteration (own try/except, independent
+  of `_run_due()` — a failure in one never blocks the other), reusing the
+  existing background thread rather than starting a second one.
+
+**Scoping decisions made during implementation, not previously nailed down
+in this doc:**
+- **`add_action_target` linking is NOT implemented.** Today's local RFAs
+  are flattened from `activity_log` rows at read time and don't reliably
+  carry a real Egeria annotation GUID to link a `ToDo` against — the
+  created `ToDo` stands alone (real, visible to any Egeria client, correct
+  lifecycle) but isn't relationship-linked to the specific
+  `RequestForAction` it's about. Revisit once/if local RFAs carry a real
+  annotation GUID.
+- **`reassign_action` is NOT called.** Open question #1 (per-user identity)
+  is still unresolved — `assignee` stays a local free-text field; the sync
+  module never calls Egeria's actor-assignment API since there's no real
+  actor GUID to pass it.
+- **Read-direction reconciliation is scoped to already-linked rows.** It
+  pulls the caller's open `ToDo`s (`get_my_to_dos`) and reconciles any
+  local row whose `egeria_todo_guid` matches one already returned — it
+  does NOT discover and create new local rows for `ToDo`s that originated
+  entirely outside RE (there's no way to map an arbitrary Egeria `ToDo`
+  back to a specific local RFA/annotation without the linking above).
+
+**What still needs live verification, not yet done:** every pyegeria call
+in `rfa_egeria_sync.py` is exercised only against mocked clients in this
+pass's test suite — real, but not proof the wire calls succeed against an
+actual Egeria platform. Specifically unconfirmed:
+1. `MyProfile.create_my_todo()`'s exact keyword names/behavior when called
+   with `activity_status`/`priority` as used here.
+2. `MetadataExpert.update_metadata_element_properties()`'s real response
+   when passed a `ToDoProperties` body with `activityStatus`/`dueTime`/
+   `startTime`/`priority`.
+3. `get_my_to_dos()`'s actual JSON response shape —
+   `_extract_todo_fields()` was written defensively (tries
+   `elementHeader.guid`-or-`guid`, `properties.activityStatus`-or-
+   top-level) specifically because this shape wasn't confirmed against a
+   real response; a live smoke test (defer one real RFA, confirm a real
+   `ToDo` appears in Egeria Explorer / via `get_my_to_dos()`, complete it,
+   confirm `activityStatus` flips to `COMPLETED`) is the next real step
+   before trusting this beyond "the local-only logic is correct."
