@@ -6,10 +6,14 @@ and Enrichment's survey-panel host (shipped 2026-08-15, one of D7a's
 named-but-undone items). D6 (dependency/sequencing mechanism) and D8
 (the Egeria-side A2A Governance Engine, closing D1's new case 4) are now
 fully designed (both 2026-08-15) — neither is implemented. D6.5 flags a
-real behavior-change question needing confirmation; D8 needs an actual
-A2A message schema and RE's own listener/dispatcher (deliberately not
-designed yet — the Egeria-side shape had to settle first) before case 4
-is real.**
+real behavior-change question needing confirmation.**
+
+**D1 case 4 / D8 (A2A) deliberately deferred (2026-08-15).** Not a
+priority call on RE's side — Egeria itself is heading toward cutting
+release 6.1 imminently (bug-fix + a couple features first), with A2A
+work planned for 6.2. RE's own listener/dispatcher was never designed in
+the first place (see D8's own note); no further work on either half of
+case 4 until that's actually landing on the Egeria side.
 Synthesizes a design discussion
 (2026-08-14) that started from `docs/dr-egeria/resource_questions.csv`'s
 "Answering Mechanism" review and grew into a real architecture proposal.
@@ -156,6 +160,58 @@ existing, per the earlier Profile-tab plan). Folding it into the unified
 model means migrating those steps into `STEP_REGISTRY`-compatible form
 while preserving that single-download efficiency — not discarding the
 optimization, relocating it (see D6).
+
+**D5, concrete design — decided 2026-08-15, superseding the earlier
+"5 write-side refresh steps, keep the read side separate" proposal.**
+Read and write don't stay separate — per direct correction: "every read
+needs a save." A microflow is self-contained: acquire its shared
+resource (D6), do whatever write(s)/refresh(es) it needs via small,
+reusable write-utility functions (not shared steps), read what it just
+ensured, emit `Annotation`s — one `StepInfo`, one Egeria-visible step.
+This isn't just a style preference — it structurally eliminates a real,
+previously-named bug class: `SecurityHygieneSurveyor`/
+`DocumentationSurveyor`/`ApiStructureSurveyor` depending on
+`project_code_symbols`, populated only by original full ingestion and
+never refreshed by anything else (the "Repo Profile phase" plan's
+original finding). A microflow that ensures its own data before reporting
+can't have this failure mode by construction. **No backwards-compatibility
+constraint** (explicit direction) — `refresh_profile()`,
+`IncrementalIndexer.refresh()`, and the existing
+`FileStructureSurveyor`/`FileSizeSurveyor`/`FileClassifierSurveyor`/
+`DataProfilerSurveyor` classes get restructured, not preserved as thin
+wrappers.
+
+Default to more, separate microflows rather than bundling, per direct
+confirmation — D6 already removes the one real efficiency argument for
+combining (the expensive part, the zipball download, is shared regardless
+of how many separate microflows request it in one run). A little
+redundant *local* work (re-running a cheap upsert in two microflows
+selected together) is acceptable — not worth building the step-to-step
+data-dependency graph D6.1 explicitly deferred, since nothing motivates
+it for cheap writes. Resulting microflow list (`file_structure`/
+`file_size`/`file_classification` collapse into one — they all read the
+same single write, `project_file_inventory`, so splitting them the way
+the old separate `StepInfo` entries did bought nothing):
+- **File Analysis** — inventory refresh + structure/size/classification, one step
+- **Data Analysis** — data-file profiling
+- **CI Workflow Analysis** — folds in today's `CiQualitySurveyor` logic
+- **Repo Conventions Analysis**
+- **Symbol Extraction** — **the one real exception to "lean toward more
+  microflows," flagged rather than resolved by default.** Unlike a cheap
+  DB upsert, re-parsing source with tree-sitter is real cost — if a
+  "Symbol Extraction" microflow and a separate "API Structure Analysis"
+  microflow were both selected in one run, redundant extraction wouldn't
+  be free noise the way a duplicate inventory upsert is. Two live options,
+  not yet chosen: fold API-structure reporting *into* the Symbol
+  Extraction microflow itself (matching "every read needs a save"
+  exactly — extraction is the save, API-surface reporting is the read,
+  same step), or keep them separate and accept the redundancy as rare
+  enough not to matter.
+
+D6's resource-sharing mechanism stays essential under this model, not
+superseded by it — confirmed directly, and confirmed to generalize past
+this specific case ("will be needed when we move to other surveys/
+microflows," e.g. a shared DB connection for database-type microflows).
 
 **D6 — Dependency/sequencing between Steps or Surveys.** Designed
 2026-08-15 (was previously scoped to "name the gap, don't design the
