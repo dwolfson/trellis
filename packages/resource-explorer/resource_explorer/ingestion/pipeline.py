@@ -255,10 +255,11 @@ class IngestionPipeline:
         symbol_count = 0
         file_count = 0
 
-        with tempfile.TemporaryDirectory() as tmp:
-            self.console.print("[cyan]Downloading repository for profiling...[/cyan]")
-            local_root = client.download_zipball(repo, Path(tmp), subproject_path)
-
+        self.console.print("[cyan]Downloading repository for profiling...[/cyan]")
+        # D6.7 (docs/unified-survey-execution-model-plan.md) — shared with
+        # repo_survey_definition_adapter.py's _acquire_zipball_root; one real
+        # implementation of "download a zipball into a tempdir", not two.
+        with client.zipball_root(repo, subproject_path) as local_root:
             file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
             self._profile_data_files(project_slug, local_root)
             self._parse_ci_workflows(project_slug, local_root)

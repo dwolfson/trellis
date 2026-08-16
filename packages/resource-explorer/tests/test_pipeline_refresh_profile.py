@@ -2,9 +2,16 @@
 zipball-download replacement for what used to be two independently-
 downloading paths (IncrementalIndexer._run_profile_only + the old
 extract_symbols_only body). See the "Repo Profile phase" plan.
+
+D6.7 (docs/unified-survey-execution-model-plan.md) — refresh_profile()
+delegates its download+tempdir logic to GitHubClient.zipball_root() (the
+one implementation _acquire_zipball_root also wraps) rather than calling
+client.download_zipball() itself — tests mock zipball_root() as a context
+manager, not download_zipball() directly.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,12 +57,26 @@ def _make_local_root(tmp_path):
     return root
 
 
+def _mock_client(local_root):
+    """A MagicMock GitHubClient whose zipball_root() is a real context
+    manager yielding local_root — mirrors what the real
+    GitHubClient.zipball_root() contract looks like from a caller's side,
+    without exercising the real download/tempdir logic."""
+    client = MagicMock()
+
+    @contextmanager
+    def _zipball_root(repo, subproject_path=None):
+        yield local_root
+
+    client.zipball_root.side_effect = _zipball_root
+    return client
+
+
 class TestRefreshProfile:
     def test_downloads_zipball_exactly_once_regardless_of_include_symbols(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
         repo = MagicMock()
 
         pipeline.refresh_profile(
@@ -63,14 +84,13 @@ class TestRefreshProfile:
             include_symbols=True, client=client, repo=repo,
         )
 
-        assert client.download_zipball.call_count == 1
+        assert client.zipball_root.call_count == 1
         client.get_repo.assert_not_called()  # repo was passed in — no redundant fetch
 
     def test_include_symbols_false_never_touches_code_symbols(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", ["myproj_python_code"],
@@ -82,8 +102,7 @@ class TestRefreshProfile:
     def test_include_symbols_true_populates_code_symbols(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         result = pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", ["myproj_python_code"],
@@ -97,8 +116,7 @@ class TestRefreshProfile:
     def test_file_inventory_always_refreshed(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         result = pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", ["myproj_python_code"],
@@ -112,8 +130,7 @@ class TestRefreshProfile:
     def test_reuses_passed_in_client_and_repo_no_new_githubclient(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
         repo = MagicMock()
 
         with patch("resource_explorer.github.client.GitHubClient") as MockGHClient:
@@ -122,6 +139,19 @@ class TestRefreshProfile:
                 client=client, repo=repo,
             )
             MockGHClient.assert_not_called()
+
+    def test_subproject_path_forwarded_to_zipball_root(self, registry, tmp_path):
+        pipeline = _make_pipeline(registry)
+        local_root = _make_local_root(tmp_path)
+        client = _mock_client(local_root)
+        repo = MagicMock()
+
+        pipeline.refresh_profile(
+            "myproj", "https://github.com/test/myproj", [],
+            subproject_path="sub/dir", client=client, repo=repo,
+        )
+
+        client.zipball_root.assert_called_once_with(repo, "sub/dir")
 
 
 class TestCiWorkflowsRefreshedByProfile:
@@ -142,8 +172,7 @@ class TestCiWorkflowsRefreshedByProfile:
     def test_refresh_profile_populates_ci_quality_findings(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = self._make_local_root_with_ci(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", [],
@@ -158,8 +187,7 @@ class TestCiWorkflowsRefreshedByProfile:
     def test_refresh_profile_no_workflows_writes_no_findings(self, registry, tmp_path):
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)  # no .github/workflows
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", [],
@@ -180,8 +208,7 @@ class TestRepoConventionsRefreshedByProfile:
         local_root.mkdir()
         (local_root / "main.py").write_text("def f(): pass\n")
         (local_root / "Dockerfile").write_text("FROM python:3.13\n")
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", [],
@@ -199,8 +226,7 @@ class TestRepoConventionsRefreshedByProfile:
         # repo still has a real "no evidence found" answer for each.
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
 
         pipeline.refresh_profile(
             "myproj", "https://github.com/test/myproj", [],
@@ -217,8 +243,7 @@ class TestExtractSymbolsOnlyWrapper:
         same symbol rows as before the refactor (regression guard)."""
         pipeline = _make_pipeline(registry)
         local_root = _make_local_root(tmp_path)
-        client = MagicMock()
-        client.download_zipball.return_value = local_root
+        client = _mock_client(local_root)
         client.get_repo.return_value = MagicMock()
 
         with patch("resource_explorer.github.client.GitHubClient", return_value=client):

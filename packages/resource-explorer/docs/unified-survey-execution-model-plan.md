@@ -252,9 +252,11 @@ rather than through forced coupling. Remaining, explicitly not attempted
 this pass: consolidating `FileStructureSurveyor`/`FileSizeSurveyor`/
 `FileClassifierSurveyor` into one literal microflow class (today's
 separate-StepInfo-but-bundled-AnalysisKind shape already satisfies the user-facing
-need without the class-merge risk); `refresh_profile()` itself staying on
-its own hand-written tempdir/download logic (D6.7 — a distinct, still-open
-migration, not this pass's job).
+need without the class-merge risk); `refresh_profile()`'s write-utility
+functions staying outside `STEP_REGISTRY` (D6.7, done in its narrower,
+literal form the same day — see D6.7's own status note below — but the
+full StepInfo-ification stays a distinct, deliberately un-attempted, and
+separately-risky migration, not this pass's job).
 
 **D6 — Dependency/sequencing between Steps or Surveys.** Designed
 2026-08-15 (was previously scoped to "name the gap, don't design the
@@ -413,6 +415,40 @@ entries using `requires_resources={"zipball_root": ...}` the same way
 `repo_data_profiling` does here — at that point `_acquire_zipball_root`
 has exactly one real implementation shared by both call paths, not two
 copies of the same download logic.
+
+**D6.7 status (2026-08-16) — done, narrower than originally sketched.**
+The full "`refresh_profile()`'s steps become real `StepInfo` entries"
+migration described above is explicitly NOT what shipped — it would mean
+converting `_store_file_inventory`/`_profile_data_files`/
+`_parse_ci_workflows`/`_parse_repo_conventions` into real
+`BaseSurveyor`/`Annotation`-producing classes, high-blast-radius work
+touching full ingestion, incremental refresh, and the profile-scan route
+all at once, exactly the "real, nontrivial refactor, not scoped in detail
+here" this doc always flagged as separate. It would also have fought a
+second, deliberate and already-documented design decision:
+`CiQualitySurveyor`/`RepoConventionsSurveyor` are intentionally read-only
+at survey time (their own docstrings cite `DependencySurveyor` as
+precedent — "that's the one place the zipball is already being
+downloaded; re-downloading it again here just to re-derive the same
+findings would be wasteful") — folding their writers into `STEP_REGISTRY`
+as independently-selectable steps would silently invite exactly that
+redundant re-download the precedent exists to avoid.
+
+What shipped instead, matching D6.7's actual literal ask ("`_acquire_zipball_root`
+has exactly one real implementation... not two copies of the same download
+logic"): the download+tempdir primitive itself moved to
+`GitHubClient.zipball_root()` (a context manager, `github/client.py`) —
+`_acquire_zipball_root` and `refresh_profile()` both now call it instead of
+each keeping a separate `tempfile.TemporaryDirectory()` +
+`download_zipball()` copy. `refresh_profile()`'s own write-utility call
+sequence, `client`/`repo`/`subproject_path` passthrough contract, and
+`IncrementalIndexer.refresh()`'s own separate (and more entangled — it
+branches on `extra_docs_paths` to decide whole-repo vs. subproject root)
+inline download are all otherwise untouched. This closes the literal code
+duplication D6.7 named without attempting the larger, riskier
+StepInfo-ification — that migration, if ever wanted, stays a distinct,
+separately-scoped piece of work, not something this pass silently
+half-did.
 
 ### Implementation
 

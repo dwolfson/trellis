@@ -36,10 +36,8 @@ narrow (no native-survey side effect).
 from __future__ import annotations
 
 import json
-import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 from trellis_microflow import ResourceProvider
@@ -127,17 +125,17 @@ def _acquire_zipball_root(project, registry):
     invoked once per SurveyOrchestrator.run() call no matter how many
     selected steps declare `requires_resources={"zipball_root": ...}`.
 
-    A plain function, not a StepInfo/surveyor — this is the same download
-    `IngestionPipeline.refresh_profile()` already does today (D5's
-    restructuring points refresh_profile() at this same mechanism rather
-    than keeping a second, independent copy of the download+tempdir logic).
+    A plain function, not a StepInfo/surveyor. The actual download+tempdir
+    logic lives in GitHubClient.zipball_root() (D6.7) — the one
+    implementation IngestionPipeline.refresh_profile() also wraps, instead
+    of each maintaining its own copy.
     """
     from resource_explorer.github.client import GitHubClient
 
     client = GitHubClient()
     repo = client.get_repo(project.github_url)
-    with tempfile.TemporaryDirectory() as tmp:
-        yield client.download_zipball(repo, Path(tmp))
+    with client.zipball_root(repo) as root:
+        yield root
 
 
 def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:

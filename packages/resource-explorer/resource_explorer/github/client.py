@@ -152,6 +152,32 @@ class GitHubClient:
 
         return repo_root
 
+    def zipball_root(self, repo: Repository, subproject_path: str | None = None):
+        """Context manager: download `repo`'s zipball into a fresh tempdir
+        and yield the extracted root (or subproject_path subdir).
+
+        D6.7 (docs/unified-survey-execution-model-plan.md) — the one shared
+        implementation of "download a zipball into a tempdir" that both
+        repo_survey_definition_adapter.py's _acquire_zipball_root (D6's
+        resolve_resources mechanism) and IngestionPipeline.refresh_profile()
+        wrap, instead of each maintaining its own copy of this
+        tempfile.TemporaryDirectory()+download_zipball() pattern. Deliberately
+        NOT extended to cover IncrementalIndexer.refresh()'s own inline
+        download — that one's entangled with a genuinely different decision
+        (whole-repo vs. subproject root, driven by extra_docs_paths) that
+        doesn't reduce to this same simple shape.
+        """
+        import tempfile
+        from contextlib import contextmanager
+        from pathlib import Path
+
+        @contextmanager
+        def _cm():
+            with tempfile.TemporaryDirectory() as tmp:
+                yield self.download_zipball(repo, Path(tmp), subproject_path)
+
+        return _cm()
+
     def list_files(self, repo: Repository, path: str = "", recursive: bool = True) -> list[str]:
         """Return all file paths via git tree. Handles large repos where the recursive tree is truncated."""
         try:
