@@ -61,6 +61,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     SecurityFeaturesSurveyor,
     SecurityHygieneSurveyor,
     SubResourceSurveyor,
+    SymbolExtractionSurveyor,
 )
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
@@ -256,6 +257,17 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ClassificationAnnotation", "ResourceMeasureAnnotation"],
         static_kwargs={"pyegeria_client": None, "force_refresh": False},
         accepts_scope_locator=True,
+    ),
+    "repo_symbol_extraction": StepInfo(
+        "repo_symbol_extraction", SymbolExtractionSurveyor,
+        "Extracts class/function/method symbols (tree-sitter/ast) for every "
+        "supported language, refreshing project_code_symbols/"
+        "project_code_relationships — D5's self-contained microflow closing "
+        "the bug where those tables were only ever populated by RAG "
+        "ingestion, never by a survey step.",
+        ["ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
     ),
     "repo_sub_resource_survey": StepInfo(
         "repo_sub_resource_survey", SubResourceSurveyor,
@@ -578,6 +590,27 @@ def _api_structure_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _symbol_extraction_results(registry, slug: str) -> dict:
+    # D5's own worked example — separate "symbol_extraction" metric kind
+    # (SymbolExtractionSurveyor writes it) from ApiStructureSurveyor's
+    # "api_structure" kind, so this step's independent run history stays
+    # its own trend, not conflated with the reporting step it feeds.
+    m = registry.query_metrics(slug, "symbol_extraction")
+    return {
+        "symbol_count": m.get("symbol_count", 0),
+        "relationship_count": m.get("relationship_count", 0),
+        "by_language": (m.get("detail") or {}).get("by_language", {}),
+        "surveyed_at": m.get("surveyed_at", ""),
+    }
+
+
+def _symbol_extraction_trend(registry, slug: str) -> list[dict]:
+    return [
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "symbol_extraction", "symbol_count")
+    ]
+
+
 @dataclass
 class AnalysisKindResults:
     results_reader: Callable    # (registry, slug) -> dict
@@ -643,6 +676,17 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         "data_file_profiling", ["repo_data_profiling"],
         results=AnalysisKindResults(_data_profile_results, _data_profile_trend, "custom"),
     ),
+    # D5 note: deliberately NOT bundled with repo_symbol_extraction the way
+    # language_file_classification bundles its three step_keys — this kind
+    # is also selectable *scoped* (target_shape: corpus,
+    # sub-resource-narrowed runs, see the repo scope-narrowing funnel plan),
+    # and repo_symbol_extraction can't honor scope_locator (extraction reads
+    # the whole zipball, there's no sub-resource-only extraction) — bundling
+    # would silently force a full, unscoped, real zipball-download
+    # extraction into every scoped "API Structure" request. Symbol
+    # Extraction stays its own AnalysisKind (below) instead — independently
+    # run/scheduled, and included automatically in any full (steps=None)
+    # survey since it's a plain STEP_REGISTRY member either way.
     "api_structure": AnalysisKind(
         "api_structure", ["repo_api_structure"],
         results=AnalysisKindResults(_api_structure_results, _api_structure_trend, "custom"),
@@ -670,6 +714,14 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "repo_conventions": AnalysisKind(
         "repo_conventions", ["repo_conventions"],
         results=AnalysisKindResults(_repo_conventions_results, _repo_conventions_trend, "findings_list"),
+    ),
+    # D5 — independently runnable/schedulable refresh of project_code_symbols
+    # (see repo_symbol_extraction's StepInfo docstring for the bug this
+    # closes). Kept separate from "api_structure" rather than bundled into
+    # it — see that AnalysisKind's own comment for why.
+    "code_symbol_extraction": AnalysisKind(
+        "code_symbol_extraction", ["repo_symbol_extraction"],
+        results=AnalysisKindResults(_symbol_extraction_results, _symbol_extraction_trend, "custom"),
     ),
 }
 

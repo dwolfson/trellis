@@ -273,6 +273,22 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: code_symbol_extraction
+    name: "Refresh Code Symbols"
+    description: "Extract class/function/method symbols (tree-sitter/AST) for every supported language and refresh the code-symbol index — the self-contained refresh 'API & Symbol Extraction' and any future consumer read from. Independently runnable/schedulable so symbols stay current even for repos that skip RAG ingestion."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["data_scientist", "all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: repo_profile_refresh
     name: "Refresh Coarse Profile"
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."

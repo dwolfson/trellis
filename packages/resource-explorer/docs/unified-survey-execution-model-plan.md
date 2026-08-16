@@ -213,6 +213,49 @@ superseded by it — confirmed directly, and confirmed to generalize past
 this specific case ("will be needed when we move to other surveys/
 microflows," e.g. a shared DB connection for database-type microflows).
 
+**D5 implementation status (2026-08-16).** Started against the actual
+current `STEP_REGISTRY`, which had already evolved well past the 5-item
+list sketched above via separate, incremental work in the interim
+(license classification, security features, maturity, repo conventions,
+sub-resource survey all shipped as their own fine-grained steps since
+this section was written) — most of D5's original "collapse into coarser
+microflows" motivation had already been organically satisfied by that
+work, and `file_structure`/`file_size`/`file_classification` staying
+separate `StepInfo` entries (while already bundled at the `AnalysisKind`
+level under `language_file_classification`) turned out not to be worth
+re-litigating. The one real, still-open gap D5 named and this pass closed:
+**Symbol Extraction as its own self-contained microflow.**
+`project_code_symbols`/`project_code_relationships` were populated only by
+RAG ingestion's inline `_ingest_code()` — never by anything in
+`SurveyOrchestrator`'s own step list — so a repo registered without RAG
+ingestion (the org-import/discovery path deliberately skips it) or one
+whose language wasn't selected as a collection at ingest time could never
+get symbols any other way, leaving `ApiStructureSurveyor`
+(`repo_api_structure`) permanently empty with no self-healing path. New
+`SymbolExtractionSurveyor` (`repo_symbol_extraction` step_key) is the
+textbook D5 shape: acquires `zipball_root` (D6), writes (extract +
+clear/re-upsert per language), reads back what it wrote, emits one
+`ResourceMeasureAnnotation` — plus its own `symbol_extraction`-kind metric
+row for trending. Deliberately **not** bundled into the `api_structure`
+`AnalysisKind` the way `language_file_classification` bundles three
+step_keys — `api_structure` is scoped/corpus-shaped (sub-resource-narrowed
+runs) and extraction can't honor `scope_locator`, so bundling would
+silently force a full, unscoped, real zipball download into every scoped
+"API Structure" request. Kept as its own `AnalysisKind`
+(`code_symbol_extraction`, new `analysis_catalog.yaml` entry) instead —
+independently run/scheduled, and included automatically in any full
+(`steps=None`) survey since it's a plain `STEP_REGISTRY` member either
+way. The Symbol-Extraction-vs-ApiStructure fold-in-or-separate question
+this doc originally flagged as unresolved is resolved by this: kept
+separate, closing the staleness gap through independent schedulability
+rather than through forced coupling. Remaining, explicitly not attempted
+this pass: consolidating `FileStructureSurveyor`/`FileSizeSurveyor`/
+`FileClassifierSurveyor` into one literal microflow class (today's
+separate-StepInfo-but-bundled-AnalysisKind shape already satisfies the user-facing
+need without the class-merge risk); `refresh_profile()` itself staying on
+its own hand-written tempdir/download logic (D6.7 — a distinct, still-open
+migration, not this pass's job).
+
 **D6 — Dependency/sequencing between Steps or Surveys.** Designed
 2026-08-15 (was previously scoped to "name the gap, don't design the
 resolution" — this supersedes that placeholder).

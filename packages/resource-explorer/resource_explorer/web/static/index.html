@@ -2306,6 +2306,16 @@ function _renderCustomAnalysisResults(analysisId, data) {
           ${Object.entries(kinds).map(([k, c]) => `${c} ${_esc(k)}${c === 1 ? '' : 's'}`).join(', ')}
         </div>`).join('');
   }
+  if (analysisId === 'code_symbol_extraction') {
+    const langs = Object.entries(data.by_language || {});
+    if (!data.symbol_count) return `<div class="text-xs text-slate-500">No symbols extracted yet.</div>`;
+    return `<div class="text-xs text-slate-400 mb-1">${data.symbol_count} symbol(s)${data.surveyed_at ? ` · extracted ${_relTime(data.surveyed_at)}` : ''}, ${data.relationship_count} inheritance relationship(s)</div>` +
+      langs.map(([lang, count]) => `
+        <div class="text-xs text-slate-300 flex justify-between gap-2">
+          <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
+          <span class="text-slate-500">${count}</span>
+        </div>`).join('');
+  }
   return '<div class="text-xs text-slate-500">No results view for this analysis.</div>';
 }
 
