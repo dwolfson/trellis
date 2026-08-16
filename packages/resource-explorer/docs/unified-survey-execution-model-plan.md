@@ -3,10 +3,13 @@
 **Status: planned, not yet built, except D7a's first slice (shipped
 2026-08-14, live-verified — see D7a below for exactly what's covered)
 and Enrichment's survey-panel host (shipped 2026-08-15, one of D7a's
-named-but-undone items). D6 (dependency/sequencing mechanism) is now
-fully designed (2026-08-15, see D6 below) — not yet implemented; D6.5
-flags one real behavior-change question needing confirmation before it
-is.**
+named-but-undone items). D6 (dependency/sequencing mechanism) and D8
+(the Egeria-side A2A Governance Engine, closing D1's new case 4) are now
+fully designed (both 2026-08-15) — neither is implemented. D6.5 flags a
+real behavior-change question needing confirmation; D8 needs an actual
+A2A message schema and RE's own listener/dispatcher (deliberately not
+designed yet — the Egeria-side shape had to settle first) before case 4
+is real.**
 Synthesizes a design discussion
 (2026-08-14) that started from `docs/dr-egeria/resource_questions.csv`'s
 "Answering Mechanism" review and grew into a real architecture proposal.
@@ -55,7 +58,7 @@ run, not by which UI surface asked for it.** Three execution cases:
    `HybridDatabaseSurveyor`'s existing pattern: trigger the native async
    survey, then read/reconcile). Egeria doesn't need RE to sequence its
    own steps, but RE isn't uninvolved either.
-3. **Mixed, or a third platform involved** → RE choreographs. The skeleton
+3. **Mixed, or a third platform involved, RE choreographs** → the skeleton
    for this already exists in `survey_definition_executor.py`'s dispatch
    loop (`executes_at` branches to `resource-explorer` /
    `other_engine_handlers` / `egeria`), **but the `egeria` branch is
@@ -64,6 +67,23 @@ run, not by which UI surface asked for it.** Three execution cases:
    Egeria-native step in it silently drops that step today. Closing this
    gap (real trigger-and-wait for an Egeria-native step from within a
    mixed choreographed run) is the concrete implementation work D1 needs.
+4. **Egeria choreographs, one or more steps execute in RE via A2A**
+   (added 2026-08-15, discussed against `egeria-project.org`'s
+   active-governance model) — the reverse of case 3. Egeria's own MAS
+   creates a real Engine Action for the step and dispatches it to a new
+   Engine type designed specifically to bridge to RE (see D8). **A real,
+   honest gap this surfaces**: cases 1 and 4 both require Egeria's MAS
+   to actually create Engine Actions as a `GovernanceActionProcess` runs
+   — confirmed that path doesn't exist anywhere in RE today, for *any*
+   step type. What RE calls "running a Survey Definition"
+   (`run_survey_definition()`/`survey_definition_executor.py`) reads the
+   `GovernanceActionProcessStep` chain via `SurveyDefinitionReader` and
+   walks it as a client-side Python loop — it never registers a real
+   Engine Action with Egeria, for `executes_at="resource-explorer"` steps
+   or any other. That's fine for (and is exactly) case 3, but it means
+   case 4 (and case 1, in its "hands-off" reading) needs Egeria's MAS to
+   be the one driving the process for real — a materially different
+   trigger path than anything built today, not just a new step type.
 
 **D2 — Two separable kinds of "publish," with a real precondition between
 them.**
@@ -503,6 +523,103 @@ work, explicitly not attempted here). What actually shipped:
   the panel itself; needs the `AnalysisKindResults`-style results/trend
   wiring extended to Survey Definition candidates (keyed by their steps'
   step keys, not a single `analysis_id`) as its own follow-up.
+
+**D8 — A2A Governance Engine (Egeria side), for D1 case 4.** Designed
+2026-08-15. Starting assumption, per direct confirmation: this uses *the
+same interface Egeria already uses to invoke a governance action from a
+governance action process* — nothing new in Egeria's core type system,
+one new connector plus its configuration.
+
+**The existing invocation chain, unchanged** (per the active-governance
+model reviewed this session):
+```
+GovernanceActionProcessStep (names a Governance Request Type)
+  → Engine Action created by the MAS when the process reaches this step
+  → claimed by an Engine Host whose configured Governance Engine
+    supports that request type
+  → Governance Engine resolves request type → GovernanceServiceDefinition
+    (via its GovernanceEngineDefinition's registered mappings)
+  → instantiates the GovernanceService connector (via Connection/ConnectorType)
+  → connector runs, optionally creates a To Do (Engine Action → WAITING)
+  → connector completes, sets Guard(s) on the Engine Action
+  → MAS reads the guard(s), navigates to the next process step
+```
+
+**What's genuinely new — one connector, one engine, config, not new core
+types:**
+
+- **A new Engine type** (working name `A2AEngine`), parallel to Egeria's
+  existing governance-engine family (Governance Action / Survey Action /
+  Watchdog Action / Repository Governance engines — one per governance
+  service category). To the MAS/process-step mechanism, a step
+  dispatched to this engine looks exactly like a step dispatched to any
+  other — same Engine Action lifecycle, same guard-based navigation. No
+  special-casing needed in `GovernanceActionProcess`/
+  `GovernanceActionProcessStep` at all.
+- **One generic connector implementation** — working name
+  `A2AGovernanceActionService` — registered via an ordinary
+  `GovernanceServiceDefinition`/`Connection`/`ConnectorType`, same as any
+  other governance service. Its `Connection` properties name the target
+  A2A endpoint (an RE agent's base URL/skill) — likely **one
+  `GovernanceServiceDefinition` per distinct A2A target** (e.g. one for
+  "RE/Trellis step executor"), not one per request type, since a single
+  generic bridging connector forwards the request type name straight
+  through as a parameter rather than needing a bespoke Java class per RE
+  step. This mirrors `agentstack_server.py`'s own rule (A2A `Server`
+  supports exactly one agent per instance) — RE-side, each distinct
+  target is genuinely a separate agent/port already, matching this
+  1-`GovernanceServiceDefinition`-per-target shape naturally.
+- **Request-type vocabulary reuses RE's own, unchanged.** The Engine
+  Action's request type name and request parameters map directly onto
+  RE's existing `STEP_REGISTRY` step-key vocabulary (or an `AnalysisKind`
+  id) — no new naming scheme invented on either side. Action targets (the
+  metadata elements the step concerns, e.g. the repo Asset GUID) map onto
+  whatever RE needs to resolve `project_slug` — same shape any other
+  governance service already receives.
+
+**Human-in-the-loop is the one genuinely elegant unification, not a new
+mechanism.** RE's own A2A server (`agentstack_server.py`) already
+implements `input_required` — pausing and resuming on a human reply — for
+a different purpose (RAG query scoping) today. If a dispatched RE step
+hits its own `input_required` state mid-run, `A2AGovernanceActionService`
+creates an Egeria To Do and puts the Engine Action into native `WAITING`
+— Egeria's real human-loop mechanism, reused verbatim, not a second
+parallel one. Completing the To Do resumes the Engine Action, which
+relays the human's answer back to RE via a follow-up A2A message. This
+means RE's `input_required` pattern and Egeria's To Do/WAITING pattern
+are the *same* mechanism wearing two names, once this connector exists —
+worth stating plainly since it's the strongest validation this design is
+right, not just plausible.
+
+**What this design does NOT solve by itself** (see D1 case 4's own
+callout above): it defines how Egeria *would* dispatch a step to RE once
+its MAS is driving a `GovernanceActionProcess` for real. It does not, on
+its own, make Egeria's MAS start doing that — RE's own Survey Definition
+execution today is entirely the client-side-walk model (case 3), which
+this doesn't touch or require changing. Case 4 becoming real needs both
+halves: this Engine/connector (Egeria side) **and** RE listening for and
+dispatching A2A requests (explicitly deferred last turn — the Egeria-side
+shape needed settling first, which this is).
+
+**Open, not yet decided:**
+- Exact A2A message/task schema for the request (request type + params +
+  action-target references) and the response (guard string(s), or a
+  completion-status enum the connector maps to guards) — needs an actual
+  schema, not just "reuse STEP_REGISTRY vocabulary."
+- Whether `A2AEngine`/`A2AGovernanceActionService` need real new
+  open-metadata type definitions (a numbered type file, like 0215) or can
+  be expressed entirely as configured instances of Egeria's existing
+  `GovernanceEngine`/`GovernanceService` supertypes — the "new Engine
+  type" framing suggests the former, not yet confirmed against Egeria's
+  actual type model.
+- Failure/timeout mapping — what happens to the Engine Action if RE never
+  responds, or the A2A call itself fails before RE's step logic runs at
+  all (distinct from the step logic itself failing, which maps to a
+  normal FAILED guard).
+- Where request-type-to-STEP_REGISTRY-key mapping is declared — on the
+  `GovernanceServiceDefinition`'s own config, or left as a pure pass-
+  through the RE-side dispatcher interprets — affects how much is
+  Egeria-side config vs. RE-side code.
 
 ## Where D7a is paused (resume point, 2026-08-14)
 
