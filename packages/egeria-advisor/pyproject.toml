@@ -13,6 +13,7 @@ dependencies = [
     "pyegeria>=6.0.17.5",  # matches the Portal's (PyegeriaWebHandler) floor -- avoid client-version drift within the same demo stack
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.3.0",
+    "trellis-vectorstore",
     "docling>=1.0.0",
     "click>=8.1.0",
     "rich>=13.7.0",

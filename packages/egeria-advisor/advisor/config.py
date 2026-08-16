@@ -62,7 +62,19 @@ class VectorStoreConfig(BaseModel):
 
 
 class PgVectorConfig(BaseModel):
-    """pgvector (PostgreSQL) backend configuration."""
+    """pgvector (PostgreSQL) backend configuration.
+
+    NOT the actual runtime source of truth for pgvector connections — kept
+    only because it's a public export (__all__) some external code may
+    still import, and only ever parsed inside get_full_config(), which
+    itself has no callers anywhere in this codebase (confirmed via the
+    trellis-vectorstore extraction's Phase 0 audit). The real source of
+    truth is AdvisorSettings.pgvector_* (flat fields below, env-driven) and
+    advisor/configdata/advisor.yaml's `pgvector:` block, both read directly
+    by advisor/vector_store_pg.py's PgVectorStore adapter — see
+    trellis_vectorstore.PgVectorStoreConfig for the dataclass that's
+    actually constructed at connection time.
+    """
     host: str = "localhost"
     port: int = 5442
     dbname: str = "egeria_advisor"
