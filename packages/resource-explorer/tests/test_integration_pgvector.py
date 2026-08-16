@@ -48,7 +48,7 @@ class TestVectorStoreIntegration:
         assert deleted == 2
         stats = pg_store.get_collection_stats(col)
         assert stats["num_entities"] == 1
-        remaining = pg_store.query_by_filter(col, "file_path", limit=10)
+        remaining = pg_store.query_by_filter(col, limit=10)
         assert [r["id"] for r in remaining] == ["2"]
 
     def test_collection_exists_and_drop_collection(self, pg_store):
