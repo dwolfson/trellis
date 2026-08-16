@@ -1295,11 +1295,10 @@ class ProjectRegistry:
             # Migration: docs/rfa-egeria-todo-followup.md's "one model, not
             # one location" decision — rfa_actions mirrors ToDoProperties
             # directly (activity_status/due_time/start_time/priority, using
-            # Egeria's own ACTIVITY_STATUS vocabulary) rather than a second,
-            # bespoke vocabulary requiring translation. rfa_status/
-            # defer_until (above) are kept, unused by new code, rather than
-            # dropped — SQLite ALTER TABLE can't drop columns cheaply, and
-            # nothing reads them once activity_status/due_time exist.
+            # Egeria's own ACTIVITY_STATUS vocabulary) alongside rfa_status/
+            # defer_until (RE's own friendly verbs — still the API/frontend's
+            # wire contract, unchanged; see activity.py's
+            # _STATUS_TO_ACTIVITY_STATUS for the one translation seam).
             existing_rfa = self._get_table_columns(conn, "rfa_actions")
             if "activity_status" not in existing_rfa:
                 conn.execute("ALTER TABLE rfa_actions ADD COLUMN activity_status TEXT NOT NULL DEFAULT 'REQUESTED'")
@@ -1315,6 +1314,15 @@ class ProjectRegistry:
                 conn.execute("ALTER TABLE rfa_actions ADD COLUMN synced_at TEXT DEFAULT ''")
             if "sync_error" not in existing_rfa:
                 conn.execute("ALTER TABLE rfa_actions ADD COLUMN sync_error TEXT DEFAULT ''")
+            # Real bug found during a live smoke test (2026-08-16): the
+            # drawer's "Record answer" button never persisted anything — it
+            # only called a purely client-side, in-memory logOp() (capped at
+            # 200 entries, lost on reload), never a backend call. `notes` is
+            # a real, persisted free-text field, addable independent of any
+            # status change (unlike resolution_note, which is specifically
+            # the note recorded when completing an RFA).
+            if "notes" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -3815,6 +3823,25 @@ class ProjectRegistry:
                     assignee, defer_until, defer_until, start_time, priority,
                     resolution_note, updated_at,
                 ),
+            )
+
+    def upsert_rfa_note(self, rfa_id: str, entry_id: str, annotation_index: int, notes: str) -> None:
+        """Real, persisted free-text notes on an RFA — addable independent
+        of any status change (unlike resolution_note, recorded only when
+        completing). Real bug fixed 2026-08-16: the drawer's "Record answer"
+        button previously called a purely client-side, in-memory logOp() —
+        never a backend call, so nothing survived a page reload. Upserts a
+        fresh row (status defaults to 'open'/'REQUESTED') when this RFA has
+        no prior response-action row yet — a note can be the first
+        interaction with an RFA, not just something added after Defer/
+        Reassign/Complete."""
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO rfa_actions (id, entry_id, annotation_index, notes, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET notes=excluded.notes, updated_at=excluded.updated_at""",
+                (rfa_id, entry_id, annotation_index, notes, updated_at),
             )
 
     def get_rfa_action(self, rfa_id: str) -> dict | None:

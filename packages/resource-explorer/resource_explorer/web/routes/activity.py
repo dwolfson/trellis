@@ -34,6 +34,10 @@ class RfaActionUpdateRequest(BaseModel):
     resolution_note: str = ""
 
 
+class RfaNoteRequest(BaseModel):
+    notes: str
+
+
 def _registry() -> ProjectRegistry:
     return ProjectRegistry()
 
@@ -99,6 +103,7 @@ def list_rfas(
                     "assignee": override["assignee"] if override else "",
                     "defer_until": override["defer_until"] if override else "",
                     "resolution_note": override["resolution_note"] if override else "",
+                    "notes": (override.get("notes") if override else "") or "",
                     "action_updated_at": override["updated_at"] if override else "",
                     # Egeria ToDo sync state (docs/rfa-egeria-todo-followup.md)
                     # — "" guid means never synced yet (or no response action
@@ -157,6 +162,27 @@ def update_rfa_action(rfa_id: str, body: RfaActionUpdateRequest) -> dict:
         log.warning("RFA Egeria sync skipped for %s: %s", rfa_id, exc)
 
     return {"status": "success", "id": rfa_id, "rfa_status": body.status}
+
+
+@router.patch("/rfas/{rfa_id}/notes")
+def update_rfa_note(rfa_id: str, body: RfaNoteRequest) -> dict:
+    """Record free-text notes against an RFA, independent of any
+    Defer/Reassign/Complete action. Real bug fixed 2026-08-16: the drawer's
+    "Record answer" button previously never called this (or any) backend
+    endpoint — it only wrote to a purely client-side, in-memory log, so
+    nothing survived a page reload."""
+    try:
+        entry_id, idx_str = rfa_id.rsplit("::", 1)
+        annotation_index = int(idx_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}'")
+
+    registry = _registry()
+    if registry.get_activity(entry_id) is None:
+        raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
+
+    registry.upsert_rfa_note(rfa_id=rfa_id, entry_id=entry_id, annotation_index=annotation_index, notes=body.notes)
+    return {"status": "success", "id": rfa_id, "notes": body.notes}
 
 
 @router.get("/{entry_id}")

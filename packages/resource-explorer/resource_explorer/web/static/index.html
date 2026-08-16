@@ -436,8 +436,6 @@
         </div>
       </div>
 
-      <!-- RFA panel view (legacy full-page render target — superseded by the RFA drawer, kept until Step 5) -->
-      <div id="rfa-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
       <!-- Survey Definitions view (Egeria-authored) -->
       <div id="survey-definitions-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
@@ -1282,7 +1280,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadFilesystems();
   loadAnnotationTypes();
   loadActivityLog();
-  loadRfaPanel();  // populates the header RFA-drawer badge count without opening the drawer
+  refreshRfaBadgeCount();  // header RFA-drawer badge count, without rendering/opening the drawer
   loadPerspectiveChips();
   loadWhoami();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
@@ -4065,7 +4063,23 @@ function toggleOpRow(id, toggleEl) {
 
 // ── RFA panel ──────────────────────────────────────────────────────────────────
 
-async function loadRfaPanel(containerId = 'rfa-view') {
+// Real bug found during a live smoke test (2026-08-16): loadRfaPanel() used
+// to default to containerId='rfa-view' — the legacy main-view container
+// (see showMainView's own comment: "kept only so nothing else silently
+// breaks mid-rewrite," nothing in the current nav shows it). The page-load
+// call at startup (loadRfaPanel(), no args, purely to prime the header
+// badge count) rendered a FULL, hidden copy of every RFA row into that
+// dead container — including rfa-action-form-*/rfa-ans-* elements sharing
+// the exact same ids the real, visible #rfa-drawer-list copy uses once the
+// drawer is actually opened. document.getElementById() always returns the
+// first matching id in document order, which was the hidden #rfa-view
+// copy (it renders earlier, at page load) — so every Defer/Reassign/
+// Complete/Record-answer click was silently updating an invisible,
+// never-shown duplicate. containerId is now required (no default) and
+// only ever the real, visible drawer container — refreshRfaBadgeCount()
+// below is the lightweight, non-rendering path the startup call actually
+// needs.
+async function loadRfaPanel(containerId) {
   const view = document.getElementById(containerId);
   view.innerHTML = '<div class="text-slate-500 text-xs py-8 text-center">Loading RequestForAction annotations…</div>';
   try {
@@ -4081,6 +4095,20 @@ async function loadRfaPanel(containerId = 'rfa-view') {
   }
 }
 
+async function refreshRfaBadgeCount() {
+  // Header badge count only — never renders rows into any container, so it
+  // can never create the duplicate-id situation loadRfaPanel('rfa-view')
+  // used to (see that function's own comment).
+  try {
+    const res = await fetch('/api/activity/rfas');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rfas = await res.json();
+    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open').length);
+  } catch(e) {
+    console.debug('RFA badge count fetch failed:', e.message);
+  }
+}
+
 function _updateRfaDrawerBadge(count) {
   const badge = document.getElementById('rfa-drawer-badge');
   if (!badge) return;
@@ -4088,7 +4116,7 @@ function _updateRfaDrawerBadge(count) {
   badge.classList.toggle('hidden', count === 0);
 }
 
-function renderRfaPanel(rfas, containerId = 'rfa-view') {
+function renderRfaPanel(rfas, containerId) {
   const view = document.getElementById(containerId);
   const showResolved = localStorage.getItem('pe_rfa_show_resolved') === '1';
   const header = `<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
@@ -4173,18 +4201,20 @@ function renderRfaPanel(rfas, containerId = 'rfa-view') {
 
         <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
 
+        ${rfa.notes ? `<div class="text-xs text-slate-400 mt-1 italic">📝 ${_esc(rfa.notes)}</div>` : ''}
+
         <div class="flex gap-3 flex-wrap items-center mt-1.5">
           ${actionButtons}
           <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
             class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
-            ✏ Record answer
+            📝 ${rfa.notes ? 'Edit note' : 'Add note'}
           </button>
         </div>
         <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
           <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
-            rows="2" placeholder="Enter answer or context…"></textarea>
+            rows="2" placeholder="Add a note or context…">${_esc(rfa.notes || '')}</textarea>
           <div class="flex gap-2 mt-1.5">
-            <button onclick="saveRfaAnswer('rfa-ans-${safeId}')"
+            <button onclick="saveRfaNote('${_esc(rfa.id)}', 'rfa-ans-${safeId}', '${containerId}')"
               class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
               Save →
             </button>
@@ -4281,19 +4311,33 @@ async function submitRfaAction(rfaId, status, extra, containerId) {
   }
 }
 
-function saveRfaAnswer(rfaId) {
-  const container = document.getElementById(rfaId);
+// Real bug fixed 2026-08-16 (found during a live smoke test): this used to
+// be saveRfaAnswer(rfaId) where "rfaId" was actually the DOM container id
+// (e.g. "rfa-ans-abc123"), not the real RFA id — and it never called any
+// backend endpoint at all, just a purely client-side, in-memory logOp()
+// (capped at 200 entries, lost on reload). "Recorded" answers vanished on
+// the next page load with no error to explain why. Now a real PATCH to
+// /api/activity/rfas/{rfaId}/notes, persisted in rfa_actions.notes.
+async function saveRfaNote(rfaId, containerId, drawerContainerId) {
+  const container = document.getElementById(containerId);
   if (!container) return;
-  const ta  = container.querySelector('textarea');
-  const answer = ta?.value.trim();
-  if (!answer) { ta?.focus(); return; }
+  const ta = container.querySelector('textarea');
+  const note = ta?.value.trim() || '';
   const saveBtn = container.querySelector('button');
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
-  // Phase 3: record as an enrichment entry in the activity log
-  logOp({ type:'rfa', slug: rfaId, status:'ok',
-    summary: `Answer recorded: ${answer.substring(0,120)}` });
-  showToast('success', 'Answer recorded in activity log', 4000);
-  setTimeout(() => container.classList.add('hidden'), 1200);
+  try {
+    const res = await fetch(`/api/activity/rfas/${encodeURIComponent(rfaId)}/notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: note }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('success', 'Note saved.', 3000);
+    loadRfaPanel(drawerContainerId);
+  } catch(e) {
+    showToast('error', `Failed to save note: ${_esc(e.message)}`, 6000);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save →'; }
+  }
 }
 
 // ── Schedules editor (relocated from the retired Analyses tab; the analysis_
@@ -5452,10 +5496,14 @@ async function deleteCurateNote(noteId, entityType, slug) {
 function showMainView(tab) {
   // NOTE: chat is no longer one of these panes — it's a persistent side panel
   // (#chat-panel) toggled independently via toggleChatPanel(), decoupled from
-  // this router entirely. Likewise RFA's primary surface is now the drawer
-  // (#rfa-drawer, toggleRfaDrawer()) — 'rfa' as a tab argument here still
-  // works (renders into the legacy #rfa-view) but nothing in the new nav
-  // calls it; kept only so nothing else silently breaks mid-rewrite.
+  // this router entirely. RFA is likewise a persistent side panel (#rfa-drawer,
+  // toggleRfaDrawer()) — its legacy 'rfa' main-view tab (and the #rfa-view
+  // container it rendered into) were removed 2026-08-16: they were dead code
+  // that also caused a real bug — a duplicate copy of every RFA row's
+  // ids (rfa-action-form-*, rfa-ans-*) sitting hidden in the DOM, which
+  // document.getElementById() would match before the real, visible
+  // #rfa-drawer-list copy, silently swallowing every Defer/Reassign/
+  // Complete/Record-answer click.
   const placeholderView = document.getElementById('intent-placeholder-view');
   const assessmentView = document.getElementById('assessment-view');
   const analysisView   = document.getElementById('analysis-view');
@@ -5470,7 +5518,6 @@ function showMainView(tab) {
   const dbSurveyView  = document.getElementById('db-survey-view');
   const fsSurveyView  = document.getElementById('filesystem-survey-view');
   const activityView  = document.getElementById('activity-view');
-  const rfaView       = document.getElementById('rfa-view');
   const contextView   = document.getElementById('context-view');
   const enrichmentSurveyView = document.getElementById('enrichment-survey-view');
   const surveyDefsView = document.getElementById('survey-definitions-view');
@@ -5481,7 +5528,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, rfaView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -5540,9 +5587,6 @@ function showMainView(tab) {
       document.getElementById(id)?.classList.add('hidden')
     );
     loadActivityLog();
-  } else if (tab === 'rfa') {
-    rfaView.classList.remove('hidden');
-    loadRfaPanel();
   } else if (tab === 'context') {
     contextView.classList.remove('hidden');
     loadContextPanel();

@@ -52,6 +52,27 @@ class TestUpsertRfaAction:
         assert row["priority"] == 5
 
 
+class TestUpsertRfaNote:
+    def test_note_creates_a_row_when_none_exists(self, registry):
+        registry.upsert_rfa_note("e1::0", "e1", 0, "first interaction is a note")
+        row = registry.get_rfa_action("e1::0")
+        assert row["notes"] == "first interaction is a note"
+        assert row["rfa_status"] == "open"
+
+    def test_note_does_not_disturb_existing_status_fields(self, registry):
+        registry.upsert_rfa_action("e1::0", "e1", 0, status="deferred", activity_status="WAITING", defer_until="2026-09-01")
+        registry.upsert_rfa_note("e1::0", "e1", 0, "a note on a deferred item")
+        row = registry.get_rfa_action("e1::0")
+        assert row["notes"] == "a note on a deferred item"
+        assert row["rfa_status"] == "deferred"
+        assert row["defer_until"] == "2026-09-01"
+
+    def test_note_overwrites_on_repeat_calls(self, registry):
+        registry.upsert_rfa_note("e1::0", "e1", 0, "first note")
+        registry.upsert_rfa_note("e1::0", "e1", 0, "second note")
+        assert registry.get_rfa_action("e1::0")["notes"] == "second note"
+
+
 class TestSyncBookkeeping:
     def test_mark_rfa_synced_sets_guid_and_clears_error(self, registry):
         registry.upsert_rfa_action("e1::0", "e1", 0, status="open", activity_status="REQUESTED")
