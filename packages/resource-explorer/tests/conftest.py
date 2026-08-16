@@ -39,21 +39,46 @@ def _pgvector_reachable() -> bool:
 _PGVECTOR_AVAILABLE = _pgvector_reachable()
 
 
+def _egeria_reachable() -> bool:
+    """Same posture as _pgvector_reachable() — a real Egeria platform is an
+    external dependency this test suite must run without. Only checks basic
+    HTTP reachability (a 401/403 is still "reachable"); the actual
+    requires_egeria-marked tests do their own bearer-token auth."""
+    try:
+        import httpx
+        from resource_explorer.config import get_config
+
+        cfg = get_config().egeria
+        resp = httpx.get(f"{cfg.platform_url}/servers", timeout=2, verify=False)
+        return resp.status_code < 500
+    except Exception:
+        return False
+
+
+_EGERIA_AVAILABLE = _egeria_reachable()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "requires_pgvector: needs a live reachable Postgres/pgvector instance "
         "(auto-skipped when one isn't available)",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_egeria: needs a live reachable Egeria platform "
+        "(auto-skipped when one isn't available)",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if _PGVECTOR_AVAILABLE:
-        return
-    skip = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
+    skip_pgvector = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
+    skip_egeria = pytest.mark.skip(reason="Egeria platform not reachable at the configured platform_url")
     for item in items:
-        if "requires_pgvector" in item.keywords:
-            item.add_marker(skip)
+        if not _PGVECTOR_AVAILABLE and "requires_pgvector" in item.keywords:
+            item.add_marker(skip_pgvector)
+        if not _EGERIA_AVAILABLE and "requires_egeria" in item.keywords:
+            item.add_marker(skip_egeria)
 
 
 @pytest.fixture(scope="session")

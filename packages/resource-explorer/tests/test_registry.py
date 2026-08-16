@@ -1,6 +1,7 @@
 """Tests for ProjectRegistry — SQLite CRUD, schema migration, stats."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -140,6 +141,12 @@ class TestStatusUpdates:
         assert db.get("test-project").last_surveyed_at == ""
         db.update_project_surveyed_at("test-project")
         assert db.get("test-project").last_surveyed_at != ""
+
+    def test_update_project_profiled_at(self, db, sample_project):
+        db.add(sample_project)
+        assert db.get("test-project").last_profiled_at == ""
+        db.update_project_profiled_at("test-project")
+        assert db.get("test-project").last_profiled_at != ""
 
 
 class TestSchemaMigration:
@@ -596,3 +603,199 @@ class TestRepoDispositions:
         db.set_disposition(sample_project.github_url, "investigating", project_slug=sample_project.slug)
         disp = db.get_disposition(sample_project.github_url)
         assert disp["project_slug"] == "test-project"
+
+
+class TestFileInventoryModes:
+    """Assessment sub-resource cataloging plan, D9 Tier 1 — file_mode is
+    optional/additive on top of the existing path+size inventory."""
+
+    def test_modes_by_path_threaded_through(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(
+            sample_project.slug,
+            [("README.md", 100), ("run.sh", 200), ("no_mode.txt", 50)],
+            modes_by_path={"README.md": "100644", "run.sh": "100755"},
+        )
+        rows = {r["file_path"]: r for r in db.get_file_inventory_with_sizes(sample_project.slug)}
+        assert rows["README.md"]["file_mode"] == "100644"
+        assert rows["run.sh"]["file_mode"] == "100755"
+        assert rows["no_mode.txt"]["file_mode"] == ""  # not in modes_by_path — empty, not an error
+
+    def test_modes_by_path_omitted_defaults_to_empty_string(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("a.py", 10)])
+        rows = db.get_file_inventory_with_sizes(sample_project.slug)
+        assert rows[0]["file_mode"] == ""
+
+    def test_get_file_inventory_with_sizes_includes_size_and_mode(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(
+            sample_project.slug, [("a.py", 123)], modes_by_path={"a.py": "100644"},
+        )
+        rows = db.get_file_inventory_with_sizes(sample_project.slug)
+        assert rows == [{"file_path": "a.py", "file_size_bytes": 123, "file_mode": "100644"}]
+
+    def test_repeated_upsert_replaces_not_appends(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("a.py", 1)], modes_by_path={"a.py": "100644"})
+        db.upsert_file_inventory(sample_project.slug, [("b.py", 2)], modes_by_path={"b.py": "100755"})
+        rows = db.get_file_inventory_with_sizes(sample_project.slug)
+        assert [r["file_path"] for r in rows] == ["b.py"]
+
+
+class TestFileExists:
+    """Assessment expansion plan B3 — exact-filename lookup against
+    project_file_inventory, an indexed point-lookup rather than a full-list
+    client-side scan."""
+
+    def test_returns_first_matching_candidate(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [(".github/CODEOWNERS", 10)])
+        assert db.file_exists(
+            sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS",
+        ) == ".github/CODEOWNERS"
+
+    def test_prefers_earlier_candidate_when_multiple_present(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(
+            sample_project.slug, [("CODEOWNERS", 10), (".github/CODEOWNERS", 20)],
+        )
+        assert db.file_exists(
+            sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS",
+        ) == "CODEOWNERS"
+
+    def test_returns_none_when_no_candidate_present(self, db, sample_project):
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("README.md", 10)])
+        assert db.file_exists(sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS") is None
+
+    def test_returns_none_for_no_candidates_given(self, db, sample_project):
+        db.add(sample_project)
+        assert db.file_exists(sample_project.slug) is None
+
+    def test_nested_path_not_matched_by_basename(self, db, sample_project):
+        # file_exists is an exact-path lookup, not a basename-anywhere match
+        # (that's _HYGIENE_FILES' job in DocumentationSurveyor) — a
+        # non-canonical location must not match.
+        db.add(sample_project)
+        db.upsert_file_inventory(sample_project.slug, [("src/CODEOWNERS", 10)])
+        assert db.file_exists(
+            sample_project.slug, "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS",
+        ) is None
+
+
+class TestSubResources:
+    """Repo scope-narrowing funnel plan, D2/D4 — the local "Catalog" stage,
+    generic across resource types (only 'repo' is exercised in these tests,
+    matching Phase 1's scope) and deliberately repeatable/idempotent."""
+
+    def test_catalog_and_list_round_trip(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert len(rows) == 1
+        assert rows[0]["locator"] == "docs"
+        assert rows[0]["kind"] == "folder"
+        assert rows[0]["egeria_guid"] == ""
+
+    def test_root_locator_is_representable(self, db):
+        db.catalog_sub_resource("repo", "myproj", "", "folder")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert rows[0]["locator"] == ""
+
+    def test_recataloging_is_a_no_op_not_a_duplicate(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder", source_finding="run-1")
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder", source_finding="run-2")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert len(rows) == 1
+        assert rows[0]["source_finding"] == "run-1"  # first write wins, not overwritten
+
+    def test_recataloging_never_clobbers_an_existing_egeria_guid(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.set_sub_resource_egeria_guid("repo", "myproj", "docs", "real-guid-123")
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")  # re-select, e.g. from the UI again
+        rows = db.list_sub_resources("repo", "myproj")
+        assert rows[0]["egeria_guid"] == "real-guid-123"
+
+    def test_detail_is_stored_as_denormalized_json(self, db):
+        db.catalog_sub_resource(
+            "repo", "myproj", "docs/SECURITY.md", "file",
+            detail={"owners": ["@team"], "last_updated_at": "2026-01-01"},
+        )
+        rows = db.list_sub_resources("repo", "myproj")
+        detail = json.loads(rows[0]["detail_json"])
+        assert detail == {"owners": ["@team"], "last_updated_at": "2026-01-01"}
+
+    def test_uncatalog_removes_the_row(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.uncatalog_sub_resource("repo", "myproj", "docs")
+        assert db.list_sub_resources("repo", "myproj") == []
+
+    def test_uncatalog_of_untracked_locator_does_not_raise(self, db):
+        db.uncatalog_sub_resource("repo", "myproj", "never-cataloged")  # just shouldn't blow up
+
+    def test_list_is_scoped_to_resource_type_and_slug(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.catalog_sub_resource("repo", "other-proj", "docs", "folder")
+        db.catalog_sub_resource("database", "myproj", "public", "schema")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert len(rows) == 1
+        assert rows[0]["resource_type"] == "repo"
+        assert rows[0]["resource_slug"] == "myproj"
+
+    def test_set_egeria_guid_updates_the_row(self, db):
+        db.catalog_sub_resource("repo", "myproj", "docs", "folder")
+        db.set_sub_resource_egeria_guid("repo", "myproj", "docs", "guid-abc")
+        rows = db.list_sub_resources("repo", "myproj")
+        assert rows[0]["egeria_guid"] == "guid-abc"
+
+
+class TestScopeLocatorOnFindingsAndMetrics:
+    """Repo scope-narrowing funnel plan, D5/D6 — scope_locator keeps a
+    scoped analysis run's findings/metrics distinct from whole-resource
+    runs under the same `kind`, without disturbing any pre-scope-aware
+    caller (default '' everywhere)."""
+
+    def test_default_scope_locator_is_whole_resource(self, db):
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "a.py", "label": "ok", "summary": ""},
+        ])
+        rows = db.query_findings("myproj", "api_structure")
+        assert len(rows) == 1
+        assert rows[0]["scope_locator"] == ""
+
+    def test_scoped_and_whole_resource_findings_stay_distinct(self, db):
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "whole", "label": "ok", "summary": ""},
+        ])
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "scoped", "label": "ok", "summary": ""},
+        ], scope_locator="src")
+        whole = db.query_findings("myproj", "api_structure")
+        scoped = db.query_findings("myproj", "api_structure", scope_locator="src")
+        assert [r["check_name"] for r in whole] == ["whole"]
+        assert [r["check_name"] for r in scoped] == ["scoped"]
+
+    def test_scoped_and_whole_resource_metrics_stay_distinct(self, db):
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 100})
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 7}, scope_locator="src")
+        assert db.query_metrics("myproj", "api_structure")["symbol_count"] == 100
+        assert db.query_metrics("myproj", "api_structure", scope_locator="src")["symbol_count"] == 7
+
+    def test_metrics_history_is_scope_aware(self, db):
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 1}, surveyed_at="2026-01-01")
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 2}, surveyed_at="2026-01-02")
+        db.upsert_metric("myproj", "api_structure", {"symbol_count": 99}, scope_locator="src", surveyed_at="2026-01-01")
+        whole_history = db.query_metrics_history("myproj", "api_structure", "symbol_count")
+        scoped_history = db.query_metrics_history("myproj", "api_structure", "symbol_count", scope_locator="src")
+        assert [r["metric_value"] for r in whole_history] == [1, 2]
+        assert [r["metric_value"] for r in scoped_history] == [99]
+
+    def test_different_scopes_are_also_kept_distinct_from_each_other(self, db):
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "a", "label": "ok", "summary": ""},
+        ], scope_locator="src")
+        db.upsert_finding("myproj", "api_structure", [
+            {"check_name": "b", "label": "ok", "summary": ""},
+        ], scope_locator="tests")
+        assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "src")] == ["a"]
+        assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "tests")] == ["b"]

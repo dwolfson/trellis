@@ -160,7 +160,7 @@ class IncrementalIndexer:
             if local_root is not None:
                 file_count, loc = pipeline._count_repo_stats(local_root)
                 self.registry.update_ingestion_stats(project.slug, file_count, loc)
-                pipeline._store_file_inventory(project.slug, local_root)
+                pipeline._store_file_inventory(project.slug, local_root, repo=repo)
                 pipeline._parse_dependencies(project.slug, local_root)
                 pipeline._profile_data_files(project.slug, local_root)
 

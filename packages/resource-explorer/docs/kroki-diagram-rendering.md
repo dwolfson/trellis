@@ -43,7 +43,7 @@ the way `egeria-freshstart`/`egeria-quickstart` are. Those services reach
 Kroki via its container name (`http://egeria-shared-kroki:8000`), which only
 resolves *inside* that docker network. resource-explorer can't use that URL
 at all; it has to reach Kroki via a published host port instead
-(`http://localhost:8000` locally — see "Making Kroki reachable" below).
+(`http://localhost:6002` locally — see "Making Kroki reachable" below).
 
 Given that, the browser calling Kroki directly would mean either:
 - baking a specific host:port into client-side JS (breaks the moment the
@@ -66,7 +66,7 @@ One setting, `KrokiConfig` in `config.py`:
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `KROKI_URL` | `http://localhost:8000` | Base URL of the Kroki instance to render against |
+| `KROKI_URL` | `http://localhost:6002` | Base URL of the Kroki instance to render against |
 | `KROKI_TIMEOUT_SECONDS` | `30.0` | How long to wait for a render before giving up |
 
 Both are read once at request time (`get_config().kroki`), not cached at
@@ -79,30 +79,32 @@ no code changes.
 
 This is the common case in a Trellis checkout — `egeria-shared-kroki` is
 part of the same `shared-infra.yaml` compose stack as the shared Postgres
-instance. By default it published **no host port** (only reachable from
-other containers on `egeria_network`), which is fine for the containerized
-Egeria services that talk to it by container name, but not for
-resource-explorer. Fixed by adding a `ports: ["8000:8000"]` mapping to the
-`kroki` service (mirroring the same fix `egeria-shared-postgres` already
-needed for exactly this reason, publishing `5442`):
+instance. It publishes a host port (mirroring the same fix
+`egeria-shared-postgres` already needed for exactly this reason, publishing
+`5442`) so resource-explorer can reach it without being on `egeria_network`:
 
 ```yaml
   kroki:
     ports:
-      - "8000:8000"
+      - "6002:8000"
     # ...
 ```
 
-Apply with (from `egeria-workspaces-fs/compose-configs/shared-infra/`):
+That's `6002` on the host, not Kroki's own default `8000` — `8000` collides
+with common local dev servers (`mkdocs serve`, etc.) that a Trellis checkout
+is likely to also have running. Container-internal port stays `8000`
+(unaffected — that's what the container-name URL above uses). If this
+mapping is ever missing (e.g. an older shared-infra checkout), add it and
+apply with (from `egeria-workspaces-fs/compose-configs/shared-infra/`):
 
 ```bash
 docker compose -p egeria-shared-infra -f shared-infra.yaml up -d kroki
 ```
 
-Then the default `KROKI_URL=http://localhost:8000` just works. Verify with:
+Then the default `KROKI_URL=http://localhost:6002` just works. Verify with:
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:6002/health
 ```
 
 ### Remote (Kroki runs where Egeria runs, on a different host)
@@ -114,10 +116,10 @@ sidecar) running on a server, with resource-explorer running elsewhere
 that case:
 
 1. Make sure the remote host's Kroki container has a **published** port
-   (same `ports:` fix as above) reachable from wherever resource-explorer
-   runs — not just from that host's own docker network.
+   (same `ports:` mapping as above, `6002:8000`) reachable from wherever
+   resource-explorer runs — not just from that host's own docker network.
 2. Set `KROKI_URL` to that host's address, e.g.
-   `KROKI_URL=http://egeria-host.internal:8000`.
+   `KROKI_URL=http://egeria-host.internal:6002`.
 3. **Kroki has no built-in authentication.** Exposing it to a wider network
    than "the same machine" means it's reachable by anyone who can reach that
    host:port. Put it behind a firewall, VPN, or reverse proxy that adds

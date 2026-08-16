@@ -89,6 +89,80 @@ class TestScoutingOverview:
         latest_by_surveyed_at = max(first, key=lambda s: s["surveyed_at"])
         assert data["last_published_at"] == latest_by_surveyed_at["published_at"]
 
+    def test_last_profiled_at_empty_when_never_profiled(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_profiled_at"] == ""
+
+    def test_last_profiled_at_reflects_a_profile_refresh(self, client, registry):
+        registry.update_project_profiled_at("myproj")
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_profiled_at"] != ""
+
+
+class TestScoutingOverviewExtendedGitHubAttributes:
+    """'display lifecycle state, homepage, security_and_analysis and
+    get_deployments' — the four newly-surfaced Scouting-tier fields."""
+
+    def test_defaults_with_no_stats_row(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        data = resp.json()
+        assert data["lifecycle_state"] == "active"
+        assert data["homepage"] == ""
+        assert data["security_and_analysis"] == {}
+        assert data["deployments_count"] == 0
+
+    def _seed(self, registry, **overrides):
+        cols = {
+            "archived": 0, "disabled": 0, "is_fork": 0, "is_template": 0,
+            "homepage": "", "security_and_analysis_json": "{}",
+            "deployments_count": 0, "latest_deployment_at": "",
+            "latest_deployment_environment": "", "latest_deployment_ref": "",
+        }
+        cols.update(overrides)
+        with registry._conn() as conn:
+            cols_sql = ", ".join(cols.keys())
+            placeholders = ", ".join(["?"] * len(cols))
+            conn.execute(
+                f"INSERT INTO project_stats (project_slug, fetched_at, {cols_sql}) "
+                f"VALUES (?, ?, {placeholders})",
+                ("myproj", "2026-08-01T00:00:00", *cols.values()),
+            )
+
+    def test_archived_wins_lifecycle_state(self, client, registry):
+        self._seed(registry, archived=1, is_fork=1)
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["lifecycle_state"] == "archived"
+
+    def test_fork_lifecycle_state(self, client, registry):
+        self._seed(registry, is_fork=1)
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["lifecycle_state"] == "fork"
+
+    def test_homepage_and_security_and_analysis_surfaced(self, client, registry):
+        self._seed(
+            registry,
+            homepage="https://example.com",
+            security_and_analysis_json='{"secret_scanning": "enabled"}',
+        )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["homepage"] == "https://example.com"
+        assert data["security_and_analysis"] == {"secret_scanning": "enabled"}
+
+    def test_malformed_security_and_analysis_json_degrades_to_empty_dict(self, client, registry):
+        self._seed(registry, security_and_analysis_json="not-json")
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["security_and_analysis"] == {}
+
+    def test_deployments_surfaced(self, client, registry):
+        self._seed(
+            registry, deployments_count=3, latest_deployment_at="2026-08-01T00:00:00",
+            latest_deployment_environment="prod", latest_deployment_ref="main",
+        )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["deployments_count"] == 3
+        assert data["latest_deployment_environment"] == "prod"
+        assert data["latest_deployment_ref"] == "main"
+
     def test_defaults_to_undecided_disposition(self, client):
         resp = client.get("/api/projects/myproj/scouting-overview")
         data = resp.json()
@@ -134,7 +208,74 @@ class TestScoutingScan:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "error"
-        assert "step failed" in data["error"]
+
+
+class TestScoutingScanMissingSurveyDefinitionFallback:
+    """A dev Egeria database reset wipes out the 'Repo Coarse Scout' Survey
+    Definition — a real, recurring event, not a one-off mistake. Without a
+    fallback this hard-blocks Scouting Scan entirely, including the
+    git-stats refresh HealthSurveyor does at scan time."""
+
+    def test_falls_back_to_local_steps_when_survey_definition_missing(self, client):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+
+        fake_survey_result = MagicMock(errors=[])
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("No Survey Definition found matching '...'"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.return_value = fake_survey_result
+            resp = client.post("/api/projects/myproj/scouting-scan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "ran locally" in data["message"]
+        MockOrch.return_value.run.assert_called_once_with("myproj", steps=["repo_health", "repo_language"])
+
+    def test_fallback_step_errors_are_surfaced(self, client):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+
+        fake_survey_result = MagicMock(errors=["repo_health failed: rate limited"])
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("not found"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.return_value = fake_survey_result
+            resp = client.post("/api/projects/myproj/scouting-scan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "rate limited" in data["error"]
+
+    def test_fallback_itself_failing_reports_both_errors(self, client):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("not found"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.side_effect = RuntimeError("clone missing")
+            resp = client.post("/api/projects/myproj/scouting-scan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "not found" in data["error"]
+        assert "clone missing" in data["error"]
 
 
 class TestRunSingleAnalysis:

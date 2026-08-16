@@ -92,6 +92,16 @@ class TestProjectsRouter:
         resp = client.get("/api/projects/")
         assert len(resp.json()) == 1
 
+    def test_list_projects_does_not_exclude_recommended(self, client, registry):
+        """recommended is the positive terminal state — stays visible, same
+        as tracking/investigating; only the negative terminal states
+        (abandoned/ignored) hide from the default sidebar list."""
+        registry.set_disposition("https://github.com/test/myproj", "recommended")
+        resp = client.get("/api/projects/")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["disposition"] == "recommended"
+
     def test_list_projects_excludes_abandoned_by_default(self, client, registry):
         registry.set_disposition("https://github.com/test/myproj", "abandoned", reason="no longer maintained")
         resp = client.get("/api/projects/")
@@ -395,6 +405,18 @@ class TestSchedulesRouter:
 
 
 class TestRfaRouter:
+    @pytest.fixture(autouse=True)
+    def _mock_egeria_sync(self):
+        # PATCH /rfas/{id} attempts a real Egeria ToDo sync after its local
+        # write (docs/rfa-egeria-todo-followup.md) — mocked here so these
+        # ordinary route tests never depend on (or write real ToDo elements
+        # into) a live Egeria platform, matching the established
+        # EgeriaPublisher-mocking precedent (test_sub_resources_routes.py).
+        # rfa_egeria_sync itself is exercised directly, with its own mocked
+        # pyegeria clients, in test_rfa_egeria_sync.py.
+        with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action") as mock_sync:
+            yield mock_sync
+
     def test_list_rfas_defaults_to_open(self, client, registry):
         _write_rfa_activity_entry(registry)
         resp = client.get("/api/activity/rfas")
@@ -470,6 +492,68 @@ class TestRfaRouter:
         rfas = {r["id"]: r for r in client.get("/api/activity/rfas").json()}
         assert rfas["entry-1::0"]["rfa_status"] == "completed"
         assert rfas["entry-1::1"]["rfa_status"] == "open"
+
+
+class TestRfaNotesRouter:
+    """Real bug fixed 2026-08-16 (found during a live smoke test): the RFA
+    drawer's 'Record answer' button never called any backend endpoint at
+    all — purely client-side, in-memory, lost on reload. This is the real,
+    persisted replacement."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_egeria_sync(self):
+        # test_note_and_status_action_coexist below also hits the status
+        # PATCH route, which attempts a real Egeria sync — see TestRfaRouter's
+        # identical fixture for why this is mocked here too.
+        with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action"):
+            yield
+
+    def test_defaults_to_empty(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["notes"] == ""
+
+    def test_patch_persists_note_and_overlays_on_relist(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        resp = client.patch("/api/activity/rfas/entry-1::0/notes", json={"notes": "Talked to the maintainer, waiting on their reply."})
+        assert resp.status_code == 200
+        assert resp.json()["notes"] == "Talked to the maintainer, waiting on their reply."
+
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["notes"] == "Talked to the maintainer, waiting on their reply."
+
+    def test_note_survives_independent_of_any_status_action(self, client, registry):
+        # A note can be the FIRST interaction with an RFA — no prior
+        # Defer/Reassign/Complete required.
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0/notes", json={"notes": "Just a note, no action taken yet."})
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "open"
+        assert rfas[0]["notes"] == "Just a note, no action taken yet."
+
+    def test_note_and_status_action_coexist(self, client, registry):
+        _write_rfa_activity_entry(registry)
+        client.patch("/api/activity/rfas/entry-1::0", json={"status": "deferred", "defer_until": "2026-09-01"})
+        client.patch("/api/activity/rfas/entry-1::0/notes", json={"notes": "Deferred until the next release."})
+        rfas = client.get("/api/activity/rfas").json()
+        assert rfas[0]["rfa_status"] == "deferred"
+        assert rfas[0]["defer_until"] == "2026-09-01"
+        assert rfas[0]["notes"] == "Deferred until the next release."
+
+    def test_patch_rejects_malformed_id(self, client, registry):
+        resp = client.patch("/api/activity/rfas/not-a-valid-id/notes", json={"notes": "x"})
+        assert resp.status_code == 400
+
+    def test_patch_404s_for_unknown_entry(self, client, registry):
+        resp = client.patch("/api/activity/rfas/nonexistent-entry::0/notes", json={"notes": "x"})
+        assert resp.status_code == 404
+
+    def test_other_rfas_in_same_entry_unaffected(self, client, registry):
+        _write_rfa_activity_entry(registry, num_rfas=2)
+        client.patch("/api/activity/rfas/entry-1::0/notes", json={"notes": "note on 0"})
+        rfas = {r["id"]: r for r in client.get("/api/activity/rfas").json()}
+        assert rfas["entry-1::0"]["notes"] == "note on 0"
+        assert rfas["entry-1::1"]["notes"] == ""
 
 
 # ── /api/analyses/{resource_type} + /perspectives + /egeria-status ─────────────

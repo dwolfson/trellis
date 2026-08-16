@@ -1,0 +1,155 @@
+"""Sub-surveyor: Symbol Extraction → ResourceMeasureAnnotation.
+
+D5 (docs/unified-survey-execution-model-plan.md) — the one real, previously-
+named bug this microflow structurally eliminates: project_code_symbols was
+populated only by RAG ingestion's inline _ingest_code() step (full add, or
+incremental refresh of a project that already has code collections
+ingested) — never by anything in SurveyOrchestrator's own step list. A repo
+registered without RAG ingestion (e.g. the org-import/discovery path, which
+deliberately skips ingestion — see org_importer.py) or one whose language
+was never selected as a collection at ingest time could never get symbols
+any other way, leaving ApiStructureSurveyor (repo_api_structure) and any
+future consumer permanently empty with no self-healing path.
+
+A self-contained microflow per D5's model: acquire the shared zipball_root
+resource (D6), extract + upsert project_code_symbols (write), then report
+what it just wrote (read) — same "every read needs a save" shape as every
+other D5 microflow, just with extraction itself as the write instead of a
+pre-existing pipeline step. Deliberately kept as its own StepInfo rather
+than folded into ApiStructureSurveyor's reporting (the D5 doc's flagged,
+unresolved choice) — see repo_survey_definition_adapter.py's ANALYSIS_KINDS
+"api_structure" entry, which bundles this step ahead of repo_api_structure
+so requesting API-structure analysis is now self-refreshing by construction,
+while this step also stays independently runnable/schedulable on its own.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from resource_explorer.configdata.collection_config import COLLECTION_TYPES
+from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
+
+log = logging.getLogger(__name__)
+
+STEP = "SymbolExtraction"
+
+# Same ctype -> language mapping as IngestionPipeline._CTYPE_LANGUAGE, kept
+# in sync manually (small, stable list) rather than importing a private
+# pipeline attribute across module boundaries.
+_LANGUAGE_CTYPES: dict[str, str] = {
+    "python_code": "python",
+    "javascript_code": "javascript",
+    "java_code": "java",
+    "go_code": "go",
+}
+
+
+def _local_files(local_root: Path, extensions: list[str]) -> list[tuple[str, str]]:
+    """Walk local_root and return (relative_path, content) for matching
+    files — same logic as IngestionPipeline._local_files, duplicated rather
+    than imported since that method is instance-bound to IngestionPipeline's
+    console/store and this surveyor has neither."""
+    results = []
+    for p in local_root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in extensions:
+            continue
+        try:
+            content = p.read_text(encoding="utf-8", errors="ignore")
+            results.append((str(p.relative_to(local_root)), content))
+        except Exception:
+            pass
+    return results
+
+
+class SymbolExtractionSurveyor(BaseSurveyor):
+    """
+    Extracts class/function/method symbols (tree-sitter/ast, via
+    CodeSymbolExtractor) for every supported language found under
+    `local_path`, clearing and re-upserting project_code_symbols (and, via
+    upsert_code_symbols's own inherits_from derivation,
+    project_code_relationships) per language — then reports what it wrote.
+
+    local_path is injected by SurveyOrchestrator via D6's requires_resources
+    mechanism (StepInfo.requires_resources={"zipball_root": "local_path"}) —
+    a fresh zipball extraction root, not a persistent clone.
+    """
+
+    def __init__(
+        self, project: Project, registry: ProjectRegistry, local_path: str,
+        surveyed_at: str | None = None,
+    ) -> None:
+        super().__init__(project, registry)
+        self._local_path = local_path
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+
+    @property
+    def step_name(self) -> str:
+        return STEP
+
+    def run(self) -> list[Annotation]:
+        results: list[Annotation] = []
+        try:
+            from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
+
+            slug = self.project.slug
+            local_root = Path(self._local_path)
+            extractor = CodeSymbolExtractor()
+            counts_by_language: dict[str, int] = {}
+
+            for ctype_name, language in _LANGUAGE_CTYPES.items():
+                ctype = COLLECTION_TYPES.get(ctype_name)
+                if ctype is None:
+                    continue
+                # Clear-then-conditionally-upsert (matches refresh_profile's
+                # existing pattern) — a language with zero matching files
+                # this run correctly ends up with zero symbols, not stale
+                # ones from a file that was since deleted/renamed.
+                self.registry.clear_code_symbols(slug, language)
+                symbols = []
+                for path, content in _local_files(local_root, ctype.file_extensions):
+                    symbols.extend(extractor.extract(path, content, slug, language))
+                if symbols:
+                    self.registry.upsert_code_symbols(slug, symbols)
+                    counts_by_language[language] = len(symbols)
+
+            total = sum(counts_by_language.values())
+            relationships = self.registry.get_code_relationships(slug)
+            results.append(
+                ResourceMeasureAnnotation(
+                    summary=(
+                        f"Extracted {total} symbol(s) across {len(counts_by_language)} "
+                        f"language(s), {len(relationships)} inheritance relationship(s)"
+                    ),
+                    analysis_step=STEP,
+                    resource_properties={
+                        "symbol_counts_by_language": counts_by_language,
+                        "relationship_count": len(relationships),
+                    },
+                )
+            )
+
+            try:
+                # Generic project_analysis_metrics table (analysis-kind
+                # extensibility redesign) — same pattern ApiStructureSurveyor
+                # uses for its own "api_structure" kind, kept as a separate
+                # "symbol_extraction" kind so this step's own run history
+                # (independently schedulable, see ANALYSIS_KINDS) is
+                # trendable on its own.
+                self.registry.upsert_metric(
+                    slug, "symbol_extraction",
+                    {"symbol_count": total, "relationship_count": len(relationships)},
+                    detail={"by_language": counts_by_language},
+                    surveyed_at=self._surveyed_at,
+                )
+            except Exception as exc:
+                log.warning("Could not persist symbol extraction snapshot for %s: %s", slug, exc)
+
+        except Exception as exc:
+            log.exception("SymbolExtractionSurveyor failed for %s", self.project.slug)
+            self._warn(results, str(exc))
+
+        return results

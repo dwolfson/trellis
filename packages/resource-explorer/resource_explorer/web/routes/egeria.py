@@ -5,6 +5,7 @@ import asyncio
 import os
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from resource_explorer.registry import ProjectRegistry
@@ -444,6 +445,26 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     steps are offloaded to a thread pool via asyncio.to_thread().
     """
     project, registry = _get_project_or_404(slug)
+
+    # ── Egeria Project context gate (Part 5) ──────────────────────────────────
+    # The first real Egeria write for a resource is exactly this route — every
+    # repo publish surface (Scouting's registration-only publish, Assessment/
+    # Analysis per-card publish, Profile publish, Curate's full publish) funnels
+    # through here with different `steps`. Gating here once, rather than in
+    # each frontend button handler, means a future publish surface can't
+    # forget the check. status "unset" (never decided, including no row at
+    # all) blocks; every other status (personal/linked/deferred/declined —
+    # all deliberate answers) proceeds.
+    context = registry.get_project_context("repo", slug)
+    if not context or context.get("status") == "unset":
+        return JSONResponse(
+            status_code=428,
+            content={
+                "detail": "egeria_project_context_required",
+                "entity_type": "repo",
+                "entity_slug": slug,
+            },
+        )
 
     steps = req.steps if req else None
 

@@ -207,6 +207,28 @@ class TestRunDueDatabaseSurvey:
         assert entries[0]["status"] == "error"
         assert "connection refused" in entries[0]["detail"]
 
+    def test_schema_inventory_dispatches_schema_and_views_steps_only(self, registry, registered_database_with_credentials):
+        # Database per-card dispatch fix (D6 prerequisite) — schema_inventory
+        # must not also run the statistics step.
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="schema_inventory")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_run:
+            mock_run.return_value = {}
+            scheduler._run_due()
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["steps"] == ["schema", "views"]
+
+    def test_row_count_snapshot_dispatches_schema_and_statistics_steps_only(self, registry, registered_database_with_credentials):
+        _make_due(registry, "database", registered_database_with_credentials, analysis_id="row_count_snapshot")
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.database.database_surveyor.run_database_survey") as mock_run:
+            mock_run.return_value = {}
+            scheduler._run_due()
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["steps"] == ["schema", "statistics"]
+
 
 class TestRunDueDispatch:
     """Regression coverage for the dispatch gap found while wiring up
@@ -308,7 +330,12 @@ class TestRunDueRepoDispatch:
     sub-surveyors) regardless of which analysis_id was actually scheduled.
     Now resolves to the specific step(s) via
     repo_survey_definition_adapter.REPO_ANALYSIS_STEP_MAP, mirroring the
-    database path's dispatch-by-analysis_id pattern."""
+    database path's dispatch-by-analysis_id pattern. Also covers repo's own
+    (d) — dispatching an analysis_id not in the local catalog to
+    run_survey_definition() as a Survey Definition qualified_name, closing
+    the gap where the D7a Survey panel's per-candidate Schedule action wrote
+    a schedule row the scheduler had no dispatch path for (previously
+    misreported as "not found ... schedule may be stale")."""
 
     def test_mapped_analysis_id_dispatches_with_only_its_steps(self, registry, registered_project):
         _make_due(registry, "repo", registered_project, analysis_id="repository_health")
@@ -344,16 +371,60 @@ class TestRunDueRepoDispatch:
         assert entries[0]["status"] == "error"
         assert "excluded from scheduled runs by design" in entries[0]["detail"]
 
-    def test_unrecognized_analysis_id_is_a_stale_schedule_error_not_a_full_survey(self, registry, registered_project):
-        _make_due(registry, "repo", registered_project, analysis_id="removed_catalog_entry")
+    def test_unmapped_analysis_id_dispatches_to_run_survey_definition_not_a_full_survey(self, registry, registered_project):
+        # An analysis_id not in the local catalog is now (d) — a Survey
+        # Definition qualified_name (the D7a Survey panel's own Schedule
+        # action writes exactly this) — dispatched via
+        # _run_repo_survey_definition(), not silently run as a full survey
+        # and not immediately treated as stale (that was the pre-D7a-
+        # scheduling behavior; a real gap this closes).
+        qualified_name = "GovActionProcess::CustomRepoSurvey"
+        _make_due(registry, "repo", registered_project, analysis_id=qualified_name)
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
-             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.return_value = {"errors": []}
             scheduler._run_due()
 
         MockOrch.assert_not_called()  # must NOT silently fall back to a full survey
+        mock_run_def.assert_called_once()
+        _, kwargs = mock_run_def.call_args
+        assert kwargs["survey_definition_ref"] == qualified_name
+        assert "db_user" not in kwargs and "db_pwd" not in kwargs  # repo has no credentials to thread through
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "ok"
+
+    def test_stale_survey_definition_reference_is_recorded_as_an_error(self, registry, registered_project):
+        # The Survey Definition itself was since deleted/renamed in Egeria —
+        # run_survey_definition() raises SurveyDefinitionExecutorError, which
+        # must be recorded as a clean activity-log error, not propagate and
+        # crash the whole scheduler iteration.
+        qualified_name = "GovActionProcess::DeletedRepoSurvey"
+        _make_due(registry, "repo", registered_project, analysis_id=qualified_name)
+        from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
+
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.side_effect = SurveyDefinitionExecutorError(
+                f"No Survey Definition found matching '{qualified_name}'"
+            )
+            scheduler._run_due()  # must not raise
+
         entries = registry.list_activity(entity_slug=registered_project)
         assert entries[0]["status"] == "error"
-        assert "not found in the current analysis catalog" in entries[0]["detail"]
+        assert "No Survey Definition found matching" in entries[0]["detail"]
+
+    def test_survey_definition_dispatch_errors_are_recorded(self, registry, registered_project):
+        qualified_name = "GovActionProcess::CustomRepoSurvey"
+        _make_due(registry, "repo", registered_project, analysis_id=qualified_name)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.surveyors.survey_definition_executor.run_survey_definition") as mock_run_def:
+            mock_run_def.return_value = {"errors": ["step 2 failed"]}
+            scheduler._run_due()
+
+        entries = registry.list_activity(entity_slug=registered_project)
+        assert entries[0]["status"] == "error"
+        assert "step 2 failed" in entries[0]["detail"]
 
 
 class TestRunDueRepoIngestDispatch:
@@ -420,6 +491,21 @@ class TestRunDueRepoProfileDispatch:
         entries = registry.list_activity(entity_slug=registered_project)
         assert entries[0]["status"] == "ok"
 
+    def test_scheduled_profile_refresh_updates_last_profiled_at(self, registry, registered_project):
+        assert registry.get(registered_project).last_profiled_at == ""
+        _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
+        fake_result = MagicMock(file_count=3, symbol_count=0)
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch(
+                 "resource_explorer.ingestion.pipeline.IngestionPipeline.refresh_profile",
+                 return_value=fake_result,
+             ), \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = MagicMock(errors=[])
+            scheduler._run_due()
+
+        assert registry.get(registered_project).last_profiled_at != ""
+
     def test_profile_failure_is_recorded_as_error_not_raised(self, registry, registered_project):
         _make_due(registry, "repo", registered_project, analysis_id="repo_profile_refresh")
         with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
@@ -478,3 +564,40 @@ class TestRunDueMisc:
         entries = registry.list_activity(entity_slug="some-fs")
         assert entries[0]["status"] == "error"
         assert "Unknown entity_type" in entries[0]["detail"]
+
+
+class TestRfaReconciliation:
+    """docs/rfa-egeria-todo-followup.md's "Sync mechanics" — reconciliation
+    reuses this scheduler's background loop rather than a second one."""
+
+    def test_reconcile_rfa_actions_delegates_to_rfa_egeria_sync(self, registry):
+        with patch("resource_explorer.registry.ProjectRegistry", return_value=registry), \
+             patch("resource_explorer.rfa_egeria_sync.reconcile_rfa_actions") as mock_reconcile:
+            scheduler._reconcile_rfa_actions()
+        mock_reconcile.assert_called_once_with(registry)
+
+    def test_scheduler_loop_runs_both_run_due_and_reconciliation_each_iteration(self, registry):
+        # _scheduler_loop() is an infinite loop — exercise one iteration's
+        # worth of work by calling time.sleep once then raising to break out,
+        # confirming both steps run and a failure in one doesn't skip the
+        # other (each already wrapped in its own try/except).
+        calls = []
+        with patch("resource_explorer.scheduler.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+             patch("resource_explorer.scheduler._run_due", side_effect=lambda: calls.append("run_due")), \
+             patch("resource_explorer.scheduler._reconcile_rfa_actions", side_effect=lambda: calls.append("reconcile")):
+            try:
+                scheduler._scheduler_loop()
+            except KeyboardInterrupt:
+                pass
+        assert calls == ["run_due", "reconcile"]
+
+    def test_run_due_failure_does_not_prevent_reconciliation(self):
+        calls = []
+        with patch("resource_explorer.scheduler.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+             patch("resource_explorer.scheduler._run_due", side_effect=RuntimeError("boom")), \
+             patch("resource_explorer.scheduler._reconcile_rfa_actions", side_effect=lambda: calls.append("reconcile")):
+            try:
+                scheduler._scheduler_loop()
+            except KeyboardInterrupt:
+                pass
+        assert calls == ["reconcile"]

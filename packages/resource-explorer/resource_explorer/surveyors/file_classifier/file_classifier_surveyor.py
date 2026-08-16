@@ -30,6 +30,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.file_classifier.file_classifier import FileClassifier
 from resource_explorer.surveyors.file_classifier.type_cache import get_cache
+from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
     Annotation,
     ClassificationAnnotation,
@@ -125,10 +126,23 @@ class FileClassifierSurveyor(BaseSurveyor):
         registry: ProjectRegistry,
         pyegeria_client=None,
         force_refresh: bool = False,
+        scope_locator: str = "",
     ) -> None:
         super().__init__(project, registry)
         self._pyegeria_client = pyegeria_client
         self._force_refresh = force_refresh
+        # Repo scope-narrowing funnel plan (docs/repo-scope-narrowing-funnel.md),
+        # D5/D6 — "" (default) = whole-repo, unchanged from every existing
+        # caller. This step (repo_file_classification) is mechanically
+        # corpus-shaped — classify_file_paths() is already path-agnostic —
+        # but the catalog id it's bundled under (language_file_classification)
+        # takes the most-restrictive shape of its 3 bundled steps
+        # (repo_file_structure's aggregate output can't be scoped), so this
+        # is never invoked scoped via the UI today (D6 gate). Filtering is
+        # applied anyway for mechanical consistency/future-proofing; the
+        # persisted file-type-count trend is intentionally skipped for a
+        # scoped run (below) rather than polluting the whole-repo trend.
+        self._scope_locator = scope_locator
 
     @property
     def step_name(self) -> str:
@@ -138,6 +152,8 @@ class FileClassifierSurveyor(BaseSurveyor):
         results: list[Annotation] = []
         try:
             file_paths = self._collect_file_paths()
+            if self._scope_locator:
+                file_paths = [p for p in file_paths if path_matches_scope(p, self._scope_locator)]
             if not file_paths:
                 self._warn(results, "No file paths found in registry for this project.")
                 return results
@@ -201,12 +217,13 @@ class FileClassifierSurveyor(BaseSurveyor):
             details: dict[str, dict] = {}
             if other_ext_counter:
                 details["Other"] = dict(other_ext_counter.most_common())
-            try:
-                self.registry.upsert_file_type_counts(
-                    self.project.slug, type_counts, source=source, details=details
-                )
-            except Exception as exc:
-                log.warning("FileClassifierSurveyor: could not persist type counts: %s", exc)
+            if not self._scope_locator:
+                try:
+                    self.registry.upsert_file_type_counts(
+                        self.project.slug, type_counts, source=source, details=details
+                    )
+                except Exception as exc:
+                    log.warning("FileClassifierSurveyor: could not persist type counts: %s", exc)
 
         except Exception as exc:
             log.exception("FileClassifierSurveyor failed for %s", self.project.slug)

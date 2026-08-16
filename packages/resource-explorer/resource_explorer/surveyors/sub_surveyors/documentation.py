@@ -22,7 +22,13 @@ _DOC_COLLECTIONS = {
     "release_notes": "Release notes / changelog",
 }
 
-# File names that indicate good project hygiene
+# File names that indicate good project hygiene. Matched against
+# project_file_inventory (every file in the repo — see _store_file_inventory's
+# own docstring), not project_code_symbols (only .py/.js/.java/.go files ever
+# get symbol rows, so a plain-text/no-symbol file like these can never
+# appear there — this whole check was silently a no-op before Assessment
+# expansion plan B3 found it while reconciling CODEOWNERS specifically;
+# fixed for the whole dict, not just that one entry, since it's the same bug).
 _HYGIENE_FILES = {
     "README.md": "README",
     "README.rst": "README",
@@ -32,16 +38,21 @@ _HYGIENE_FILES = {
     "CONTRIBUTING.md": "Contributing guide",
     "CONTRIBUTING.rst": "Contributing guide",
     "CODE_OF_CONDUCT.md": "Code of conduct",
-    "CODEOWNERS": "Code owners",
     "AUTHORS": "Authors list",
     "AUTHORS.md": "Authors list",
 }
+
+# CODEOWNERS is handled separately (not via _HYGIENE_FILES' basename-anywhere
+# matching) because GitHub only recognizes it at 3 specific locations —
+# registry.file_exists() checks those exact paths via an indexed lookup
+# against project_file_inventory's UNIQUE(project_slug, file_path).
+_CODEOWNERS_PATHS = ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS")
 
 
 class DocumentationSurveyor(BaseSurveyor):
     """
     Inspects which documentation collections were indexed and which
-    hygiene files appear in the symbol file paths.
+    hygiene files appear in the file inventory.
 
     Produces ClassificationAnnotations describing:
       - Which doc collection types are present
@@ -86,21 +97,26 @@ class DocumentationSurveyor(BaseSurveyor):
                         "confidence": 100, "detail": {"display_label": label},
                     })
 
-            # ── hygiene files from code symbol paths ──────────────────────────
-            with self.registry._conn() as conn:
-                path_rows = conn.execute(
-                    "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
-                    (slug,),
-                ).fetchall()
-
-            indexed_filenames = {
-                r["file_path"].replace("\\", "/").rsplit("/", 1)[-1]
-                for r in path_rows
+            # ── hygiene files from the file inventory ─────────────────────────
+            # project_file_inventory (every file in the repo), not
+            # project_code_symbols (only .py/.js/.java/.go files ever get
+            # rows there — see _HYGIENE_FILES' comment).
+            inventory_filenames = {
+                p.replace("\\", "/").rsplit("/", 1)[-1]
+                for p in self.registry.get_file_inventory(slug)
             }
             found_hygiene: list[str] = []
             for fname, label in _HYGIENE_FILES.items():
-                if fname in indexed_filenames and label not in found_hygiene:
+                if fname in inventory_filenames and label not in found_hygiene:
                     found_hygiene.append(label)
+
+            # CODEOWNERS folds into the same found_hygiene list/combined
+            # annotation as the rest — same shape as the README/CHANGELOG/
+            # CONTRIBUTING checks above, just sourced via the exact-path
+            # lookup rather than inventory_filenames' basename-anywhere match.
+            codeowners_path = self.registry.file_exists(slug, *_CODEOWNERS_PATHS)
+            if codeowners_path:
+                found_hygiene.append("Code owners")
 
             if found_hygiene:
                 results.append(

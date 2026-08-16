@@ -46,6 +46,7 @@ class Project:
     last_stats_fetched_at: str = ""
     last_commit_sha: str = ""
     last_surveyed_at: str = ""  # mirrors DatabaseEntity/FileSystemEntity — "" = never surveyed
+    last_profiled_at: str = ""  # last successful Coarse Profile refresh (IngestionPipeline.refresh_profile()) — "" = never profiled
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     error_message: str = ""
     subproject_path: str = ""   # relative subdir to index, e.g. "commands" — "" means full repo
@@ -409,6 +410,7 @@ class ProjectRegistry:
                     last_stats_fetched_at TEXT DEFAULT '',
                     last_commit_sha TEXT DEFAULT '',
                     last_surveyed_at TEXT DEFAULT '',
+                    last_profiled_at TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     error_message TEXT DEFAULT '',
                     subproject_path TEXT DEFAULT '',
@@ -424,6 +426,7 @@ class ProjectRegistry:
             for col, defn in [
                 ("last_commit_sha", "TEXT DEFAULT ''"),
                 ("last_surveyed_at", "TEXT DEFAULT ''"),
+                ("last_profiled_at", "TEXT DEFAULT ''"),
                 ("subproject_path", "TEXT DEFAULT ''"),
                 ("parent_slug", "TEXT DEFAULT ''"),
                 ("extra_docs_paths", "TEXT DEFAULT '[]'"),
@@ -475,12 +478,69 @@ class ProjectRegistry:
                 ("avg_release_interval_days", "INTEGER DEFAULT 0"),
                 ("repo_size_kb", "INTEGER DEFAULT 0"),
                 ("license", "TEXT DEFAULT ''"),
+                # SPDX identifier (e.g. "MIT", "GPL-3.0", "Apache-2.0") — from
+                # the same repo.get_license() call `license` (the human-
+                # readable name) already comes from, so this is genuinely
+                # free (no new API call). Added for LicenseClassifierSurveyor
+                # (Assessment expansion plan B1) — a stable, well-known id is
+                # far more reliable to classify against than free-text name
+                # matching (e.g. "GNU General Public License v3.0" vs "GPL").
+                ("license_spdx_id", "TEXT DEFAULT ''"),
                 ("topics", "TEXT DEFAULT ''"),
                 ("repo_created_at", "TEXT DEFAULT ''"),
                 ("last_pushed_at", "TEXT DEFAULT ''"),
                 ("ingestion_file_count", "INTEGER DEFAULT NULL"),
                 ("ingestion_lines_of_code", "INTEGER DEFAULT NULL"),
                 ("commits_365d", "INTEGER DEFAULT NULL"),
+                # Lifecycle/repo-config flags — all free (already on the same
+                # `repo` object StatsFetcher already has, zero extra API
+                # calls), previously fetched but never persisted. Not all
+                # are surfaced in Scouting's UI today, but kept for future
+                # calculated attributes (per 2026-08-10 decision) — e.g. an
+                # "actually still maintained" score could weight archived/
+                # disabled/is_fork without a schema change later.
+                ("archived", "INTEGER DEFAULT 0"),
+                ("disabled", "INTEGER DEFAULT 0"),
+                ("is_fork", "INTEGER DEFAULT 0"),
+                ("is_template", "INTEGER DEFAULT 0"),
+                ("default_branch", "TEXT DEFAULT ''"),
+                ("has_issues", "INTEGER DEFAULT 1"),
+                ("has_wiki", "INTEGER DEFAULT 1"),
+                ("has_discussions", "INTEGER DEFAULT 0"),
+                ("has_projects", "INTEGER DEFAULT 1"),
+                ("has_pages", "INTEGER DEFAULT 0"),
+                ("network_count", "INTEGER DEFAULT 0"),
+                ("subscribers_count", "INTEGER DEFAULT 0"),
+                ("visibility", "TEXT DEFAULT 'public'"),
+                ("is_private", "INTEGER DEFAULT 0"),
+                ("homepage", "TEXT DEFAULT ''"),
+                ("mirror_url", "TEXT DEFAULT ''"),
+                ("parent_full_name", "TEXT DEFAULT ''"),  # fork source, e.g. "torvalds/linux" — "" if not a fork
+                ("allow_merge_commit", "INTEGER DEFAULT 1"),
+                ("allow_squash_merge", "INTEGER DEFAULT 1"),
+                ("allow_rebase_merge", "INTEGER DEFAULT 1"),
+                ("allow_auto_merge", "INTEGER DEFAULT 0"),
+                ("allow_update_branch", "INTEGER DEFAULT 0"),
+                ("delete_branch_on_merge", "INTEGER DEFAULT 0"),
+                # security_and_analysis: 7 boolean-ish feature toggles
+                # (secret scanning, push protection, Dependabot updates,
+                # etc.) — GitHub's own reported *configuration* state, not
+                # findings. Stored as one JSON blob (mirrors
+                # language_breakdown's existing convention) rather than 7
+                # more columns, since it's always read/written as a unit.
+                ("security_and_analysis_json", "TEXT DEFAULT '{}'"),
+                # Deployments/environments — each its own extra API call
+                # (get_environments()/get_deployments()), unlike everything
+                # above. environments_json is a JSON list of environment
+                # names; the rest describe only the single most recent
+                # deployment, not full history (that's what the *_json
+                # trend tables are for elsewhere in this codebase, and
+                # deployment history isn't needed for a scouting-tier read).
+                ("environments_json", "TEXT DEFAULT '[]'"),
+                ("deployments_count", "INTEGER DEFAULT 0"),
+                ("latest_deployment_at", "TEXT DEFAULT ''"),
+                ("latest_deployment_environment", "TEXT DEFAULT ''"),
+                ("latest_deployment_ref", "TEXT DEFAULT ''"),
             ]:
                 if col not in existing_stats:
                     conn.execute(f"ALTER TABLE project_stats ADD COLUMN {col} {defn}")
@@ -673,6 +733,17 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_file_inventory_slug "
                 "ON project_file_inventory(project_slug)"
             )
+            # file_mode: the git tree entry's mode bits ("100644" regular,
+            # "100755" executable, "120000" symlink) — free data already in
+            # the get_git_tree() response this table's writer already calls,
+            # just never captured before (Assessment sub-resource cataloging
+            # plan, D9 Tier 1). Default '' (unknown/never refreshed since
+            # this column existed), not a fabricated mode.
+            existing_fi = self._get_table_columns(conn, "project_file_inventory")
+            if "file_mode" not in existing_fi:
+                conn.execute(
+                    "ALTER TABLE project_file_inventory ADD COLUMN file_mode TEXT DEFAULT ''"
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_egeria_surveys (
                     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -802,12 +873,26 @@ class ProjectRegistry:
                     summary      TEXT DEFAULT '',
                     confidence   INTEGER DEFAULT 100,
                     detail_json  TEXT DEFAULT NULL,
+                    scope_locator TEXT DEFAULT '',
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            # Migration: add scope_locator to project_analysis_findings for
+            # DBs created before the repo scope-narrowing funnel plan
+            # (docs/repo-scope-narrowing-funnel.md), D5/D6 — '' = whole-
+            # resource, matching every pre-existing row unchanged.
+            existing_findings_cols = self._get_table_columns(conn, "project_analysis_findings")
+            if "scope_locator" not in existing_findings_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_findings ADD COLUMN scope_locator TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_findings_slug_kind "
                 "ON project_analysis_findings(project_slug, kind)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_findings_scope "
+                "ON project_analysis_findings(project_slug, kind, scope_locator)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_analysis_metrics (
@@ -818,12 +903,22 @@ class ProjectRegistry:
                     metric_name  TEXT NOT NULL,
                     metric_value REAL NOT NULL,
                     detail_json  TEXT DEFAULT NULL,
+                    scope_locator TEXT DEFAULT '',
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            existing_metrics_cols = self._get_table_columns(conn, "project_analysis_metrics")
+            if "scope_locator" not in existing_metrics_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_metrics ADD COLUMN scope_locator TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_slug_kind "
                 "ON project_analysis_metrics(project_slug, kind, metric_name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_scope "
+                "ON project_analysis_metrics(project_slug, kind, metric_name, scope_locator)"
             )
             # One-time forward migration, guarded on "the new table is still
             # empty" rather than a per-row check — correct because after the
@@ -1197,6 +1292,37 @@ class ProjectRegistry:
                     updated_at        TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # Migration: docs/rfa-egeria-todo-followup.md's "one model, not
+            # one location" decision — rfa_actions mirrors ToDoProperties
+            # directly (activity_status/due_time/start_time/priority, using
+            # Egeria's own ACTIVITY_STATUS vocabulary) alongside rfa_status/
+            # defer_until (RE's own friendly verbs — still the API/frontend's
+            # wire contract, unchanged; see activity.py's
+            # _STATUS_TO_ACTIVITY_STATUS for the one translation seam).
+            existing_rfa = self._get_table_columns(conn, "rfa_actions")
+            if "activity_status" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN activity_status TEXT NOT NULL DEFAULT 'REQUESTED'")
+            if "due_time" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN due_time TEXT DEFAULT ''")
+            if "start_time" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN start_time TEXT DEFAULT ''")
+            if "priority" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN priority INTEGER DEFAULT 0")
+            if "egeria_todo_guid" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN egeria_todo_guid TEXT DEFAULT ''")
+            if "synced_at" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN synced_at TEXT DEFAULT ''")
+            if "sync_error" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN sync_error TEXT DEFAULT ''")
+            # Real bug found during a live smoke test (2026-08-16): the
+            # drawer's "Record answer" button never persisted anything — it
+            # only called a purely client-side, in-memory logOp() (capped at
+            # 200 entries, lost on reload), never a backend call. `notes` is
+            # a real, persisted free-text field, addable independent of any
+            # status change (unlike resolution_note, which is specifically
+            # the note recorded when completing an RFA).
+            if "notes" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -1236,7 +1362,11 @@ class ProjectRegistry:
                 )
             """)
             # Repo triage disposition — undecided (default) / tracking /
-            # investigating / ignored. Keyed by github_url (not project_slug)
+            # investigating / recommended / abandoned / ignored. `recommended`
+            # is the positive terminal state, sitting alongside the negative
+            # terminal states abandoned/ignored — added once real use showed
+            # the original four-state vocabulary had no "decided for it"
+            # counterpart to "decided against it." Keyed by github_url (not project_slug)
             # so it covers both a never-imported discovery-search candidate
             # and an already-registered repo with the same row ("Discover
             # repos to scout" plan, D10). One row per github_url — upsert,
@@ -1272,6 +1402,40 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_disposition_history_url "
                 "ON repo_disposition_history(github_url, decided_at)"
             )
+            # Locally-tracked sub-resources — the "Catalog" stage of the
+            # repo scope-narrowing funnel (docs/repo-scope-narrowing-funnel.md,
+            # D2). Built generically across resource types from the start,
+            # even though only 'repo' has a UI/route wired up in Phase 1.
+            # `locator`'s meaning is resource-type-specific: a relative path
+            # for repo/filesystem, a 'schema' or 'schema.table' reference for
+            # database. '' = the resource root itself. This table only
+            # records THAT something is a tracked target — "what's been
+            # surveyed against it" lives on project_analysis_findings/
+            # _metrics via their own scope_locator column, not here.
+            # `detail_json` is a denormalized snapshot of the source
+            # finding's detail at catalog time (owners/dates/etc) so
+            # publish_sub_resources() doesn't need to re-join back to
+            # findings that might have been superseded by a later survey.
+            # Idempotent catalog (D4 — repeatable, never clobbers
+            # egeria_guid on re-catalog of an already-tracked locator).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sub_resources (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    resource_type  TEXT NOT NULL,
+                    resource_slug  TEXT NOT NULL,
+                    locator        TEXT NOT NULL,
+                    kind           TEXT NOT NULL,
+                    cataloged_at   TEXT NOT NULL,
+                    source_finding TEXT DEFAULT '',
+                    detail_json    TEXT DEFAULT '',
+                    egeria_guid    TEXT DEFAULT '',
+                    UNIQUE(resource_type, resource_slug, locator)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sub_resources_resource "
+                "ON sub_resources(resource_type, resource_slug)"
+            )
             # Named, reusable discovery sources — a saved search (org/
             # language/license/... filters) or a manually-curated list of
             # github_urls (for foundations like Eclipse that spread projects
@@ -1302,6 +1466,70 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Egeria Project context — the "uber intent" from
+            # docs/discovery-automate-project-context-plan.md Part 5. Always
+            # say "Egeria Project" in code/UI — RE's own Project class above
+            # (a registered repo/resource) is an unrelated concept that
+            # happens to share the word. `status`: unset (default, nothing
+            # decided yet) | personal (explicit "just exploring," local-only
+            # — no Egeria PersonalProject element created for this alone) |
+            # linked (associated with a real, already-existing Egeria
+            # Project — egeria_project_guid/qualified_name populated) |
+            # deferred (a free-text project name typed now, correlation to
+            # a real Egeria Project GUID resolved later, e.g. at Curate) |
+            # declined (explicit "no association," a deliberate choice, not
+            # the same as never having answered). One row per resource —
+            # upsert, not append-only, since there's only ever one *current*
+            # context (mirrors resource_working_set's exact shape above).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entity_egeria_project_context (
+                    entity_type                   TEXT NOT NULL,
+                    entity_slug                   TEXT NOT NULL,
+                    status                         TEXT NOT NULL DEFAULT 'unset',
+                    egeria_project_guid            TEXT DEFAULT '',
+                    egeria_project_qualified_name  TEXT DEFAULT '',
+                    free_text_name                 TEXT DEFAULT '',
+                    decided_at                     TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
+            # Automate — Part 4 of docs/discovery-automate-project-context-plan.md,
+            # the 8th canonical intent (sustained *machine* attention,
+            # parallel to Curate's sustained *human* attention). Local-first
+            # by design decision (2026-08-13): Egeria's own real Notification
+            # Manager (NotificationType + Link Monitored Resource + Link
+            # Notification Subscriber) is the eventual catalog of record for
+            # this, but its "Create Notification Type" command wraps the same
+            # generic create_governance_definition() body-construction call
+            # CLAUDE.md rule 12 warns against reimplementing untested — see
+            # docs/automate-notification-manager-pyegeria-spec.md for what a
+            # safe pyegeria convenience API would need to look like. Until
+            # that lands, a subscription lives here, fully locally — RE's own
+            # scheduler.py does the detection (comparing this analysis_id's
+            # latest two findings/metrics batches), RFA does the delivery.
+            # egeria_notification_type_guid/qualified_name are NULL/empty
+            # until an Egeria-side element exists for this subscription —
+            # every field below works without one.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS notification_subscriptions (
+                    id                                        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type                                TEXT NOT NULL,
+                    entity_slug                                TEXT NOT NULL,
+                    analysis_id                                TEXT NOT NULL,
+                    label                                       TEXT DEFAULT '',
+                    active                                      INTEGER NOT NULL DEFAULT 1,
+                    created_at                                  TEXT NOT NULL,
+                    last_checked_at                             TEXT DEFAULT '',
+                    last_notified_at                            TEXT DEFAULT '',
+                    notification_count                          INTEGER NOT NULL DEFAULT 0,
+                    egeria_notification_type_guid               TEXT DEFAULT '',
+                    egeria_notification_type_qualified_name     TEXT DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_entity "
+                "ON notification_subscriptions(entity_type, entity_slug, analysis_id)"
+            )
 
     def get_survey_definition_guid(
         self, entity_type: str, entity_slug: str, technology_type: str
@@ -1621,14 +1849,14 @@ class ProjectRegistry:
                     slug, display_name, github_url, description, homepage_url,
                     docs_url, github_token_encrypted, collections, status,
                     last_indexed_at, last_stats_fetched_at, last_commit_sha,
-                    last_surveyed_at, created_at, error_message, subproject_path,
+                    last_surveyed_at, last_profiled_at, created_at, error_message, subproject_path,
                     parent_slug, extra_docs_paths, egeria_asset_guid,
                     governance_state, group_slug
                 ) VALUES (
                     :slug, :display_name, :github_url, :description, :homepage_url,
                     :docs_url, :github_token_encrypted, :collections, :status,
                     :last_indexed_at, :last_stats_fetched_at, :last_commit_sha,
-                    :last_surveyed_at, :created_at, :error_message, :subproject_path,
+                    :last_surveyed_at, :last_profiled_at, :created_at, :error_message, :subproject_path,
                     :parent_slug, :extra_docs_paths, :egeria_asset_guid,
                     :governance_state, :group_slug
                 )""",
@@ -1696,6 +1924,18 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE projects SET last_surveyed_at = ? WHERE slug = ?",
+                (datetime.utcnow().isoformat(), slug),
+            )
+
+    def update_project_profiled_at(self, slug: str) -> None:
+        """Update the last_profiled_at timestamp — set by a successful
+        Coarse Profile refresh (IngestionPipeline.refresh_profile()), the
+        one Scouting-tier action with no staleness signal at all before
+        this existed. Mirrors update_project_surveyed_at()'s pattern."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET last_profiled_at = ? WHERE slug = ?",
                 (datetime.utcnow().isoformat(), slug),
             )
 
@@ -1998,19 +2238,32 @@ class ProjectRegistry:
     # ── full file inventory ───────────────────────────────────────────────────
 
     def upsert_file_inventory(
-        self, slug: str, paths_with_sizes: list[tuple[str, int]]
+        self,
+        slug: str,
+        paths_with_sizes: list[tuple[str, int]],
+        modes_by_path: dict[str, str] | None = None,
     ) -> None:
-        """Replace the file inventory for a project (called during add/refresh)."""
+        """Replace the file inventory for a project (called during add/refresh).
+
+        modes_by_path is optional and additive — a caller with no git-tree
+        mode data (e.g. a purely local filesystem walk) simply omits it and
+        every row gets file_mode='' (Assessment sub-resource cataloging
+        plan, D9 Tier 1)."""
         slug = self._normalize_slug(slug)
         indexed_at = datetime.utcnow().isoformat()
+        modes_by_path = modes_by_path or {}
         with self._conn() as conn:
             conn.execute(
                 "DELETE FROM project_file_inventory WHERE project_slug = ?", (slug,)
             )
             conn.executemany(
                 "INSERT INTO project_file_inventory "
-                "(project_slug, file_path, file_size_bytes, indexed_at) VALUES (?, ?, ?, ?)",
-                [(slug, path, size, indexed_at) for path, size in paths_with_sizes],
+                "(project_slug, file_path, file_size_bytes, indexed_at, file_mode) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (slug, path, size, indexed_at, modes_by_path.get(path, ""))
+                    for path, size in paths_with_sizes
+                ],
             )
 
     def get_file_inventory(self, slug: str) -> list[str]:
@@ -2022,6 +2275,30 @@ class ProjectRegistry:
                 (slug,),
             ).fetchall()
         return [r["file_path"] for r in rows]
+
+    def file_exists(self, slug: str, *candidate_paths: str) -> str | None:
+        """Return the first of candidate_paths present in the file inventory
+        (in the order given), or None if none exist. Assessment expansion
+        plan B3 — an exact-filename lookup nothing in the registry offered
+        before (get_file_inventory/get_file_inventory_with_sizes both
+        return the whole per-repo list unfiltered); the table's existing
+        UNIQUE(project_slug, file_path) constraint makes this an indexed,
+        cheap point lookup rather than a full-list scan client-side."""
+        if not candidate_paths:
+            return None
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            placeholders = ",".join("?" * len(candidate_paths))
+            rows = conn.execute(
+                f"SELECT file_path FROM project_file_inventory "  # noqa: S608
+                f"WHERE project_slug = ? AND file_path IN ({placeholders})",
+                (slug, *candidate_paths),
+            ).fetchall()
+        found = {r["file_path"] for r in rows}
+        for path in candidate_paths:
+            if path in found:
+                return path
+        return None
 
     def store_data_profiles(self, slug: str, profiles: list[dict]) -> None:
         """Upsert data-file profiles produced during ingestion.
@@ -2275,13 +2552,21 @@ class ProjectRegistry:
     # batch) — only the "one table per kind" part changes, not the pattern
     # itself.
 
-    def upsert_finding(self, slug: str, kind: str, findings: list[dict], surveyed_at: str | None = None) -> None:
+    def upsert_finding(
+        self, slug: str, kind: str, findings: list[dict], surveyed_at: str | None = None,
+        scope_locator: str = "",
+    ) -> None:
         """Append one survey run's findings for one analysis kind.
         findings: list of {check_name, label, summary="", confidence=100, detail: dict|None}.
         `check_name` is "what kind of check" (e.g. a security check name, a
         documentation finding_type); `label` is its value/classification
         (e.g. "pass"/"gap", or a quality label) — callers translate these
-        back to whatever field names their own /results API response uses."""
+        back to whatever field names their own /results API response uses.
+        scope_locator (repo scope-narrowing funnel plan, D5/D6): '' (default)
+        = whole-resource, matching every pre-scope-aware caller unchanged;
+        a non-empty value scopes this run's findings to one cataloged
+        sub-resource, kept distinct from whole-resource findings under the
+        same `kind` rather than mixed together."""
         if not findings:
             return
         slug = self._normalize_slug(slug)
@@ -2289,34 +2574,39 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_analysis_findings "
-                "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
-                "VALUES (:project_slug, :kind, :surveyed_at, :check_name, :label, :summary, :confidence, :detail_json)",
+                "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json, scope_locator) "
+                "VALUES (:project_slug, :kind, :surveyed_at, :check_name, :label, :summary, :confidence, :detail_json, :scope_locator)",
                 [
                     {
                         "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
                         "check_name": f["check_name"], "label": f["label"],
                         "summary": f.get("summary", ""), "confidence": f.get("confidence", 100),
                         "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
+                        "scope_locator": scope_locator,
                     }
                     for f in findings
                 ],
             )
 
-    def query_findings(self, slug: str, kind: str) -> list[dict]:
-        """Latest run's findings for one analysis kind."""
+    def query_findings(self, slug: str, kind: str, scope_locator: str = "") -> list[dict]:
+        """Latest run's findings for one analysis kind, scoped to
+        scope_locator (default '' = whole-resource, matching every
+        pre-scope-aware caller unchanged)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_analysis_findings WHERE project_slug = ? AND kind = ?",
-                (slug, kind),
+                "SELECT MAX(surveyed_at) FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ?",
+                (slug, kind, scope_locator),
             ).fetchone()[0]
             if not latest_ts:
                 return []
             rows = conn.execute(
-                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
-                "FROM project_analysis_findings WHERE project_slug = ? AND kind = ? AND surveyed_at = ? "
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at, scope_locator "
+                "FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ? AND surveyed_at = ? "
                 "ORDER BY check_name",
-                (slug, kind, latest_ts),
+                (slug, kind, scope_locator, latest_ts),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -2340,6 +2630,7 @@ class ProjectRegistry:
     def upsert_metric(
         self, slug: str, kind: str, metrics: dict[str, float],
         detail: dict | None = None, surveyed_at: str | None = None,
+        scope_locator: str = "",
     ) -> None:
         """Append one survey run's metric(s) for one analysis kind.
         metrics: {metric_name: value} — one row per metric, sharing one
@@ -2347,7 +2638,9 @@ class ProjectRegistry:
         project_file_type_counts and project_dependencies already use).
         detail (optional) attaches to only the first metric row, to avoid
         duplicating a potentially large JSON blob across every metric from
-        the same run."""
+        the same run. scope_locator: see upsert_finding's docstring —
+        '' (default) = whole-resource, unchanged for every pre-scope-aware
+        caller."""
         if not metrics:
             return
         slug = self._normalize_slug(slug)
@@ -2357,32 +2650,35 @@ class ProjectRegistry:
                 "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
                 "metric_name": name, "metric_value": value,
                 "detail_json": json.dumps(detail) if detail and i == 0 else None,
+                "scope_locator": scope_locator,
             }
             for i, (name, value) in enumerate(metrics.items())
         ]
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_analysis_metrics "
-                "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                "VALUES (:project_slug, :kind, :surveyed_at, :metric_name, :metric_value, :detail_json)",
+                "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json, scope_locator) "
+                "VALUES (:project_slug, :kind, :surveyed_at, :metric_name, :metric_value, :detail_json, :scope_locator)",
                 rows,
             )
 
-    def query_metrics(self, slug: str, kind: str) -> dict:
+    def query_metrics(self, slug: str, kind: str, scope_locator: str = "") -> dict:
         """Latest run's metrics for one analysis kind, as
-        {metric_name: value, ..., "surveyed_at": ..., "detail": {...}?}."""
+        {metric_name: value, ..., "surveyed_at": ..., "detail": {...}?},
+        scoped to scope_locator (default '' = whole-resource)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_analysis_metrics WHERE project_slug = ? AND kind = ?",
-                (slug, kind),
+                "SELECT MAX(surveyed_at) FROM project_analysis_metrics "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ?",
+                (slug, kind, scope_locator),
             ).fetchone()[0]
             if not latest_ts:
                 return {}
             rows = conn.execute(
                 "SELECT metric_name, metric_value, detail_json FROM project_analysis_metrics "
-                "WHERE project_slug = ? AND kind = ? AND surveyed_at = ?",
-                (slug, kind, latest_ts),
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ? AND surveyed_at = ?",
+                (slug, kind, scope_locator, latest_ts),
             ).fetchall()
         out: dict = {"surveyed_at": latest_ts}
         for r in rows:
@@ -2391,31 +2687,42 @@ class ProjectRegistry:
                 out["detail"] = json.loads(r["detail_json"])
         return out
 
-    def query_metrics_history(self, slug: str, kind: str, metric_name: str) -> list[dict]:
+    def query_metrics_history(self, slug: str, kind: str, metric_name: str, scope_locator: str = "") -> list[dict]:
         """One row per run for one specific named metric, for trending —
-        e.g. query_metrics_history(slug, "api_structure", "symbol_count")."""
+        e.g. query_metrics_history(slug, "api_structure", "symbol_count").
+        Scoped to scope_locator (default '' = whole-resource)."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT surveyed_at, metric_value FROM project_analysis_metrics "
-                "WHERE project_slug = ? AND kind = ? AND metric_name = ? "
+                "WHERE project_slug = ? AND kind = ? AND metric_name = ? AND scope_locator = ? "
                 "ORDER BY surveyed_at ASC",
-                (slug, kind, metric_name),
+                (slug, kind, metric_name, scope_locator),
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
-        """Return file paths and sizes from the inventory for a project.
+        """Return file paths, sizes, and git mode bits from the inventory for a project.
 
-        Each dict has keys: ``file_path`` (str) and ``file_size_bytes`` (int).
+        Each dict has keys: ``file_path`` (str), ``file_size_bytes`` (int),
+        and ``file_mode`` (str, '' if never captured — see D9 Tier 1 of the
+        Assessment sub-resource cataloging plan).
         """
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT file_path, file_size_bytes FROM project_file_inventory WHERE project_slug = ?",
+                "SELECT file_path, file_size_bytes, file_mode FROM project_file_inventory "
+                "WHERE project_slug = ?",
                 (slug,),
             ).fetchall()
-        return [{"file_path": r["file_path"], "file_size_bytes": r["file_size_bytes"] or 0} for r in rows]
+        return [
+            {
+                "file_path": r["file_path"],
+                "file_size_bytes": r["file_size_bytes"] or 0,
+                "file_mode": r["file_mode"] or "",
+            }
+            for r in rows
+        ]
 
     # ── Egeria integration ────────────────────────────────────────────────────
 
@@ -2710,6 +3017,68 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── sub-resources — the local "Catalog" stage of the repo scope-
+    # narrowing funnel (docs/repo-scope-narrowing-funnel.md, D2/D4) ────────────
+
+    def catalog_sub_resource(
+        self, resource_type: str, resource_slug: str, locator: str, kind: str,
+        source_finding: str = "", detail: dict | None = None,
+    ) -> None:
+        """Track a sub-resource locally — idempotent: re-cataloging an
+        already-tracked locator is a no-op and never clobbers a previously
+        set egeria_guid (D4 — catalog is a repeatable action, not a
+        one-time gate; a user coming back later with more information
+        should be able to add to the selection without disturbing what's
+        already there)."""
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM sub_resources WHERE resource_type=? AND resource_slug=? AND locator=?",
+                (resource_type, resource_slug, locator),
+            ).fetchone()
+            if existing:
+                return
+            conn.execute(
+                """INSERT INTO sub_resources
+                       (resource_type, resource_slug, locator, kind, cataloged_at, source_finding, detail_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    resource_type, resource_slug, locator, kind,
+                    datetime.utcnow().isoformat(), source_finding,
+                    json.dumps(detail) if detail else "",
+                ),
+            )
+
+    def uncatalog_sub_resource(self, resource_type: str, resource_slug: str, locator: str) -> None:
+        """Remove a sub-resource from local tracking — reversible, does not
+        touch anything already published to Egeria (that asset stays put;
+        only RE's own local record of "we're tracking this" goes away)."""
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM sub_resources WHERE resource_type=? AND resource_slug=? AND locator=?",
+                (resource_type, resource_slug, locator),
+            )
+
+    def list_sub_resources(self, resource_type: str, resource_slug: str) -> list[dict]:
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sub_resources WHERE resource_type=? AND resource_slug=? ORDER BY locator",
+                (resource_type, resource_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_sub_resource_egeria_guid(
+        self, resource_type: str, resource_slug: str, locator: str, guid: str,
+    ) -> None:
+        resource_slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE sub_resources SET egeria_guid=? WHERE resource_type=? AND resource_slug=? AND locator=?",
+                (guid, resource_type, resource_slug, locator),
+            )
+
     # ── discovery sources ("Scouting workflow redesign" plan, D1/D2) ───────────
 
     def create_discovery_source(
@@ -2786,6 +3155,121 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchone()
         return bool(row["hidden"]) if row else False
+
+    # Egeria Project context (Part 5) — see entity_egeria_project_context's
+    # own docstring above for the status vocabulary. get_project_context()
+    # returns None (not a default-shaped dict) when nothing has ever been
+    # decided, so callers can distinguish "no row yet" from a row whose
+    # status happens to be "unset" — both should be treated the same by the
+    # publish gate (web/routes/egeria.py), but the distinction matters for
+    # anything inspecting the row directly later.
+
+    def set_project_context(
+        self,
+        entity_type: str,
+        entity_slug: str,
+        status: str,
+        *,
+        egeria_project_guid: str = "",
+        egeria_project_qualified_name: str = "",
+        free_text_name: str = "",
+    ) -> dict:
+        entity_slug = self._normalize_slug(entity_slug)
+        decided_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO entity_egeria_project_context
+                       (entity_type, entity_slug, status, egeria_project_guid,
+                        egeria_project_qualified_name, free_text_name, decided_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entity_type, entity_slug) DO UPDATE SET
+                       status = excluded.status,
+                       egeria_project_guid = excluded.egeria_project_guid,
+                       egeria_project_qualified_name = excluded.egeria_project_qualified_name,
+                       free_text_name = excluded.free_text_name,
+                       decided_at = excluded.decided_at""",
+                (
+                    entity_type, entity_slug, status, egeria_project_guid,
+                    egeria_project_qualified_name, free_text_name, decided_at,
+                ),
+            )
+        return self.get_project_context(entity_type, entity_slug)
+
+    def get_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+        entity_slug = self._normalize_slug(entity_slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM entity_egeria_project_context WHERE entity_type = ? AND entity_slug = ?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return dict(row) if row else None
+
+    # Automate (Part 4) — notification_subscriptions. See that table's own
+    # docstring above for the local-first rationale. No hard delete —
+    # deactivate/activate, matching the disposition/working-set convention
+    # of never permanently destroying state elsewhere in this codebase.
+
+    def create_subscription(self, entity_type: str, entity_slug: str, analysis_id: str, label: str = "") -> dict:
+        entity_slug = self._normalize_slug(entity_slug)
+        created_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                """INSERT INTO notification_subscriptions
+                       (entity_type, entity_slug, analysis_id, label, active, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?) RETURNING id""",
+                (entity_type, entity_slug, analysis_id, label, created_at),
+            ).fetchone()
+            sub_id = row["id"]
+        return self.get_subscription(sub_id)
+
+    def get_subscription(self, subscription_id: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM notification_subscriptions WHERE id = ?", (subscription_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_subscriptions(
+        self, entity_type: str | None = None, entity_slug: str | None = None,
+        analysis_id: str | None = None, active_only: bool = False,
+    ) -> list[dict]:
+        clauses, params = [], []
+        if entity_type is not None:
+            clauses.append("entity_type = ?"); params.append(entity_type)
+        if entity_slug is not None:
+            clauses.append("entity_slug = ?"); params.append(self._normalize_slug(entity_slug))
+        if analysis_id is not None:
+            clauses.append("analysis_id = ?"); params.append(analysis_id)
+        if active_only:
+            clauses.append("active = 1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM notification_subscriptions {where} ORDER BY created_at DESC", params
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_subscription_active(self, subscription_id: int, active: bool) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_subscriptions SET active = ? WHERE id = ?",
+                (int(active), subscription_id),
+            )
+
+    def record_subscription_checked(self, subscription_id: int, checked_at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_subscriptions SET last_checked_at = ? WHERE id = ?",
+                (checked_at, subscription_id),
+            )
+
+    def record_subscription_notified(self, subscription_id: int, notified_at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_subscriptions SET last_notified_at = ?, "
+                "notification_count = notification_count + 1 WHERE id = ?",
+                (notified_at, subscription_id),
+            )
 
     def exists(self, slug: str) -> bool:
         return self.get(slug) is not None
@@ -3271,13 +3755,22 @@ class ProjectRegistry:
     # annotations_json at read time. This table is keyed on the same
     # synthetic id that flatten step mints positionally
     # (f"{entry_id}::{annotation_index}"), and overlays a real, updatable
-    # status/assignee/defer/resolution onto each flattened RFA. This is a
-    # stepping stone toward real Egeria ToDo/governance actions, not that
-    # integration itself — full alignment with Egeria's native action model
-    # is deliberately out of scope for this slice. See
-    # docs/rfa-egeria-todo-followup.md for what that integration would
-    # actually require, confirmed against pyegeria's real ToDo/PersonAction
-    # API (assign_action/reassign_action/add_action_target) — not built yet.
+    # status/assignee/defer/resolution onto each flattened RFA.
+    #
+    # Egeria ToDo sync (docs/rfa-egeria-todo-followup.md, decided
+    # 2026-08-15/implemented 2026-08-16): activity_status/due_time/
+    # start_time/priority mirror ToDoProperties directly (Egeria's own
+    # ACTIVITY_STATUS vocabulary — REQUESTED/WAITING/IN_PROGRESS/COMPLETED/
+    # etc.) alongside rfa_status/defer_until (RE's own friendly verbs —
+    # open/deferred/reassigned/completed — still the API/frontend's wire
+    # contract, unchanged this pass). One translation seam, in
+    # web/routes/activity.py, maps friendly verb -> activity_status exactly
+    # once; rfa_egeria_sync.py (the module that actually talks to Egeria)
+    # reads activity_status/due_time straight through, no re-translation.
+    # egeria_todo_guid/synced_at/sync_error track the real Egeria ToDo this
+    # row is synced with, per the "local write is authoritative, Egeria
+    # call attempted non-blocking, both-direction reconciliation" sync
+    # design in that doc.
 
     def upsert_rfa_action(
         self,
@@ -3285,23 +3778,70 @@ class ProjectRegistry:
         entry_id: str,
         annotation_index: int,
         status: str,
+        activity_status: str,
         assignee: str = "",
         defer_until: str = "",
+        start_time: str = "",
+        priority: int = 0,
         resolution_note: str = "",
     ) -> None:
+        """Local write — authoritative for the API response regardless of
+        Egeria's reachability (sync mechanics point 1). Callers attempt the
+        matching Egeria sync (rfa_egeria_sync.sync_rfa_action) separately,
+        after this write succeeds.
+
+        `status` (RE's friendly verb — open/deferred/reassigned/completed,
+        the drawer's own wire contract, unchanged) and `activity_status`
+        (Egeria's real ToDoProperties.activityStatus value the route maps
+        it to — see activity.py's _STATUS_TO_ACTIVITY_STATUS) are stored
+        separately, not derived from one another here — the translation
+        happens exactly once, at the route layer, not duplicated into the
+        registry. `defer_until` is stored verbatim under both its original
+        column and `due_time` (same value/semantics, no translation
+        needed — due_time is just the ToDoProperties-named read path
+        rfa_egeria_sync.py uses)."""
         updated_at = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO rfa_actions
-                   (id, entry_id, annotation_index, rfa_status, assignee, defer_until, resolution_note, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   (id, entry_id, annotation_index, rfa_status, activity_status,
+                    assignee, defer_until, due_time, start_time, priority,
+                    resolution_note, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      rfa_status=excluded.rfa_status,
+                     activity_status=excluded.activity_status,
                      assignee=excluded.assignee,
                      defer_until=excluded.defer_until,
+                     due_time=excluded.due_time,
+                     start_time=excluded.start_time,
+                     priority=excluded.priority,
                      resolution_note=excluded.resolution_note,
                      updated_at=excluded.updated_at""",
-                (rfa_id, entry_id, annotation_index, status, assignee, defer_until, resolution_note, updated_at),
+                (
+                    rfa_id, entry_id, annotation_index, status, activity_status,
+                    assignee, defer_until, defer_until, start_time, priority,
+                    resolution_note, updated_at,
+                ),
+            )
+
+    def upsert_rfa_note(self, rfa_id: str, entry_id: str, annotation_index: int, notes: str) -> None:
+        """Real, persisted free-text notes on an RFA — addable independent
+        of any status change (unlike resolution_note, recorded only when
+        completing). Real bug fixed 2026-08-16: the drawer's "Record answer"
+        button previously called a purely client-side, in-memory logOp() —
+        never a backend call, so nothing survived a page reload. Upserts a
+        fresh row (status defaults to 'open'/'REQUESTED') when this RFA has
+        no prior response-action row yet — a note can be the first
+        interaction with an RFA, not just something added after Defer/
+        Reassign/Complete."""
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO rfa_actions (id, entry_id, annotation_index, notes, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET notes=excluded.notes, updated_at=excluded.updated_at""",
+                (rfa_id, entry_id, annotation_index, notes, updated_at),
             )
 
     def get_rfa_action(self, rfa_id: str) -> dict | None:
@@ -3317,6 +3857,60 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM rfa_actions").fetchall()
         return {r["id"]: dict(r) for r in rows}
+
+    def mark_rfa_synced(self, rfa_id: str, egeria_todo_guid: str) -> None:
+        """Record a successful Egeria ToDo sync — clears any prior
+        sync_error (a retry that finally succeeds shouldn't keep showing
+        stale failure state)."""
+        synced_at = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET egeria_todo_guid = ?, synced_at = ?, sync_error = '' WHERE id = ?",
+                (egeria_todo_guid, synced_at, rfa_id),
+            )
+
+    def mark_rfa_sync_error(self, rfa_id: str, error: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET sync_error = ? WHERE id = ?",
+                (error, rfa_id),
+            )
+
+    def list_unsynced_rfa_actions(self) -> list[dict]:
+        """Rows needing a write-direction sync retry (reconciliation pass,
+        write direction) — never synced yet, or synced but a later local
+        write failed to propagate."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rfa_actions WHERE egeria_todo_guid = '' OR sync_error != ''"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_synced_rfa_actions(self) -> list[dict]:
+        """Rows with a real Egeria ToDo behind them — read-direction
+        reconciliation pulls each one's current remote state and reconciles
+        it against these local rows."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rfa_actions WHERE egeria_todo_guid != '' AND sync_error = ''"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_rfa_from_remote(
+        self, rfa_id: str, activity_status: str, due_time: str = "", start_time: str = "", priority: int = 0,
+    ) -> None:
+        """Read-direction reconciliation write — a change made by another
+        Egeria client (not through RE's own drawer) is pulled in here.
+        Doesn't touch egeria_todo_guid/sync_error (those are write-direction
+        bookkeeping); does bump updated_at/synced_at since this is a real,
+        confirmed-current state refresh."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET activity_status = ?, due_time = ?, start_time = ?, "
+                "priority = ?, updated_at = ?, synced_at = ? WHERE id = ?",
+                (activity_status, due_time, start_time, priority, now, now, rfa_id),
+            )
 
     def update_governance_state(self, entity_type: str, slug: str, state: str) -> None:
         """Update the governance state of a registered resource."""

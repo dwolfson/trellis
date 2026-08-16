@@ -26,10 +26,11 @@ owns the precise timing; (c) a local analysis_catalog entry that's neither of
 the above (currently repo's 'egeria_publish' and database's equivalent) —
 writes NEW things into Egeria (registers + publishes), deliberately excluded
 from scheduling, which needs explicit operator intent, not a cadence; or (d)
-not in the local catalog at all — a Discovery Survey Definition's
-qualified_name, dispatched through the same run_survey_definition() executor
-the manual Discovery "Run" button uses (database only — see _run_repo_survey
-below for why repo has no equivalent case). Previously (b)/(c)/(d) were never
+not in the local catalog at all — a Survey Definition qualified_name (from
+any intent's D7a Survey panel, docs/unified-survey-execution-model-plan.md —
+its per-candidate ⏱ Schedule action writes exactly this shape of schedule
+row), dispatched through the same run_survey_definition() executor the
+panel's own manual "Run →" button uses. Previously (b)/(c)/(d) were never
 distinguished from (a) — every scheduled database analysis silently ran the
 generic local scan regardless of which one was actually selected, a real gap
 found while wiring this up, not by design.
@@ -42,11 +43,19 @@ analysis_id to the specific SurveyOrchestrator step key(s) to run via
 SurveyOrchestrator.run(steps=...) — public there, not scheduler-private,
 since web/routes/projects.py's per-card "Run just this one analysis" is a
 second real consumer of the same mapping.
-Repo has no (b)/(d) equivalent — no repo analysis_catalog entry is flagged
-for native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
-merge only ever applies to 'database' — so a repo analysis_id is always
-either a local catalog entry (dispatch by step map) or 'egeria_publish' /
-unrecognized (excluded/error, matching (c) above).
+Repo has no (b) equivalent — no repo analysis_catalog entry is flagged for
+native re-survey dispatch, and analysis_catalog_reader.py's live-Egeria
+merge only ever applies to 'database'. Repo DOES have (d)
+(_run_repo_survey_definition(), mirroring database's _run_survey_definition()
+minus db_user/db_pwd — repo Survey Definition steps run entirely locally via
+repo_survey_definition_adapter's runner(project, registry, **_) signature,
+nothing to authenticate) — closes a real gap: the D7a Survey panel could
+display and let a user set a schedule against a Survey Definition candidate,
+but the scheduler had no dispatch path for it, so it would silently never
+fire. So a repo analysis_id today is: a local catalog entry (dispatch by
+step map), 'egeria_publish' (excluded, matching (c)), or a Survey Definition
+qualified_name (dispatch via (d)) — no "unrecognized → error" bucket left
+for that last case.
 
 One more repo-only case: action:"ingest" (currently just 'rag_ingestion' —
 "Refresh & Re-ingest," pgvector re-embedding via IncrementalIndexer). Unlike
@@ -91,6 +100,22 @@ def _scheduler_loop() -> None:
             _run_due()
         except Exception:
             log.exception("Scheduler iteration failed")
+        try:
+            _reconcile_rfa_actions()
+        except Exception:
+            log.exception("RFA reconciliation iteration failed")
+
+
+def _reconcile_rfa_actions() -> None:
+    """docs/rfa-egeria-todo-followup.md's "Sync mechanics" — reuses this
+    same background loop rather than starting a second one, runs every
+    iteration regardless of whether any analysis is due (RFA/ToDo sync is
+    independent of scheduled-analysis dispatch)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.rfa_egeria_sync import reconcile_rfa_actions
+
+    registry = ProjectRegistry()
+    reconcile_rfa_actions(registry)
 
 
 def _run_due() -> None:
@@ -138,7 +163,57 @@ def _run_due() -> None:
         except Exception:
             log.exception("Scheduler: failed to update schedule bookkeeping for %s/%s/%s", entity_type, entity_slug, analysis_id)
 
+        if status == "ok":
+            try:
+                _check_subscriptions(entity_type, entity_slug, analysis_id, entity_name, registry)
+            except Exception:
+                log.exception("Scheduler: subscription check failed for %s/%s/%s", entity_type, entity_slug, analysis_id)
+
         log.info("Scheduler: %s %s/%s/%s", status, entity_type, entity_slug, analysis_id)
+
+
+def _check_subscriptions(entity_type: str, entity_slug: str, analysis_id: str, entity_name: str, registry) -> None:
+    """Automate (Part 4) — after a scheduled run completes cleanly, check
+    every active subscription watching this exact (entity, analysis_id)
+    for a change since the previous run, and deliver via RFA if so.
+    Detection only ever runs off scheduled runs (not manual "Run" clicks)
+    — a subscription with no active schedule for its analysis_id never
+    fires, since there's nothing recurring to compare against; this is
+    surfaced to the user in the Automate UI, not silently true."""
+    from resource_explorer.activity_logger import log_rfa
+    from resource_explorer.notification_detector import detect_change
+
+    subs = registry.list_subscriptions(
+        entity_type=entity_type, entity_slug=entity_slug, analysis_id=analysis_id, active_only=True,
+    )
+    if not subs:
+        return
+
+    now = _now_iso()
+    result = detect_change(registry, entity_slug, analysis_id)
+    for sub in subs:
+        registry.record_subscription_checked(sub["id"], now)
+        if not result.changed:
+            continue
+        label = sub["label"] or _analysis_display_name(entity_type, analysis_id)
+        try:
+            log_rfa(
+                registry=registry,
+                entity_type=entity_type,
+                entity_slug=entity_slug,
+                entity_name=entity_name,
+                status="pending",
+                summary=f"{label} changed",
+                detail=result.summary,
+            )
+            registry.record_subscription_notified(sub["id"], now)
+        except Exception:
+            log.exception("Scheduler: failed to deliver notification for subscription %s", sub["id"])
+
+
+def _now_iso() -> str:
+    from datetime import datetime
+    return datetime.utcnow().isoformat()
 
 
 def _analysis_display_name(entity_type: str, analysis_id: str) -> str:
@@ -193,15 +268,15 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
 
     entry = _catalog_entry("repo", analysis_id)
     if entry is None:
-        # Repo scheduling has no live-Egeria-merge equivalent to database's
-        # case (d) — every valid repo analysis_id comes from the local
-        # catalog, so "not found" means the catalog entry was since removed,
-        # not a Discovery Survey Definition reference. Report it as stale
-        # rather than silently falling back to a full survey, which would
-        # hide exactly the kind of staleness this dispatch exists to surface.
-        return (project.display_name, project.github_url, [
-            f"Analysis '{analysis_id}' not found in the current analysis catalog — schedule may be stale."
-        ])
+        # (d) Not in the local catalog at all — a Survey Definition
+        # qualified_name (from the D7a Survey panel's Schedule action,
+        # docs/unified-survey-execution-model-plan.md — previously a real,
+        # named gap: a schedule set against a candidate silently never
+        # fired). Repo now has this case too, matching database's
+        # long-standing _run_survey_definition() dispatch (see below) — the
+        # module docstring's old claim that "repo has no (b)/(d) equivalent"
+        # is now only true of (b) (no native-re-survey concept for repos).
+        return _run_repo_survey_definition(project, analysis_id, registry)
 
     if entry.get("action") == "publish":
         return (project.display_name, project.github_url, [
@@ -247,6 +322,8 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
         except Exception as exc:
             return (project.display_name, project.github_url, [str(exc)])
 
+        registry.update_project_profiled_at(slug)
+
         errors = []
         try:
             classify_result = SurveyOrchestrator(registry).run(
@@ -273,6 +350,27 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
     return (project.display_name, project.github_url, errors)
 
 
+def _run_repo_survey_definition(project, analysis_id: str, registry) -> tuple[str, str, list[str]]:
+    """Repo's own (d) — mirrors _run_survey_definition() (database) exactly,
+    minus db_user/db_pwd (repo Survey Definition steps run entirely locally
+    via repo_survey_definition_adapter.re_analysis_steps' `runner(project,
+    registry, **_)` signature — no credentials to thread through)."""
+    from resource_explorer.surveyors.survey_definition_executor import (
+        SurveyDefinitionExecutorError,
+        run_survey_definition,
+    )
+    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
+
+    try:
+        result = run_survey_definition(
+            "repo", project.slug, registry=registry, survey_definition_ref=analysis_id,
+        )
+    except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
+        return (project.display_name, project.github_url, [str(exc)])
+    errors = list(result.get("errors") or [])
+    return (project.display_name, project.github_url, errors)
+
+
 def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") -> tuple[str, str, list[str]]:
     db = registry.get_database(slug)
     if not db:
@@ -291,7 +389,7 @@ def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") ->
                 f"'{entry['name']}' writes new data into Egeria (action: publish) — excluded from "
                 "scheduled runs by design. Run it manually when you intend that write."
             ])
-        return _run_local_db_survey(db, registry)
+        return _run_local_db_survey(db, registry, analysis_id)
 
     if entry is not None and egeria_reg.get("native_process_ref"):
         # (b) Egeria-native re-survey of an already-cataloged database.
@@ -304,7 +402,7 @@ def _run_db_survey(slug: str, analysis_id: str, registry, next_run: str = "") ->
     return _run_survey_definition(db, analysis_id, registry)
 
 
-def _run_local_db_survey(db, registry) -> tuple[str, str, list[str]]:
+def _run_local_db_survey(db, registry, analysis_id: str = "") -> tuple[str, str, list[str]]:
     # Same credential resolution as the manual survey route
     # (web/routes/databases.py) — stored db_user/db_password at registration,
     # nothing else. There is no separate env-var/config fallback inside
@@ -319,12 +417,23 @@ def _run_local_db_survey(db, registry) -> tuple[str, str, list[str]]:
             "with credentials, before scheduling it."
         ])
 
-    from resource_explorer.surveyors.database.database_surveyor import run_database_survey
+    from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_ANALYSIS_STEP_MAP,
+        run_database_survey,
+    )
+
+    # Database per-card dispatch fix (D6 prerequisite) — only run the
+    # step(s) this specific analysis_id needs, not every local check every
+    # time. analysis_id="" (or an unmapped id) falls back to steps=None
+    # (the full survey), matching this function's exact prior behavior for
+    # any caller that doesn't have an analysis_id in hand.
+    steps = DATABASE_ANALYSIS_STEP_MAP.get(analysis_id)
 
     errors: list[str] = []
     try:
         run_database_survey(
-            db.slug, credentials={"user": db.db_user, "password": db.db_password}, registry=registry
+            db.slug, credentials={"user": db.db_user, "password": db.db_password},
+            registry=registry, steps=steps,
         )
     except Exception as exc:
         errors.append(str(exc))

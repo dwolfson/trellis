@@ -327,6 +327,73 @@ async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
         return SurveyResult(status="error", slug=slug, error=err_str)
 
 
+class AnalysisRunResult(BaseModel):
+    status: str  # "ok" | "error"
+    slug: str
+    analysis_id: str
+    message: str = ""
+    error: str | None = None
+
+
+@router.post("/{slug}/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
+async def run_single_database_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
+    """Runs only the DatabaseSurveyor step(s) one named local database
+    analysis needs, not the whole schema+statistics+views survey every
+    time — the per-card "Run" action in Analysis/Assessment (database
+    per-card dispatch fix, D6 prerequisite, repo-scope-narrowing-funnel
+    plan). Egeria-native entries (egeria_db_survey) and Discovery Survey
+    Definitions are not handled here — those already have their own
+    dedicated dispatch paths (trigger_survey_by_guid / run_survey_definition
+    via scheduler.py's _run_db_survey); this route is local-survey-only,
+    mirroring scheduler.py's _run_local_db_survey."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_ANALYSIS_STEP_MAP,
+        run_database_survey,
+    )
+
+    registry = ProjectRegistry()
+    db = registry.get_database(slug)
+    if not db:
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+
+    if analysis_id not in DATABASE_ANALYSIS_STEP_MAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped — "
+                   "either it's Egeria-native/publish (use the appropriate dedicated "
+                   "action instead) or an unknown id.",
+        )
+
+    if not db.db_user or not db.db_password:
+        raise HTTPException(
+            status_code=400,
+            detail="No stored database credentials — register the database with "
+                   "db_user/db_password, or run a full survey with credentials, first.",
+        )
+
+    steps = DATABASE_ANALYSIS_STEP_MAP[analysis_id]
+
+    def _run():
+        return run_database_survey(
+            slug, credentials={"user": db.db_user, "password": db.db_password},
+            registry=registry, steps=steps,
+        )
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+
+    non_fatal = result.get("errors") or []
+    return AnalysisRunResult(
+        status="ok", slug=slug, analysis_id=analysis_id,
+        message=f"{len(result.get('annotations', []))} annotation(s)." + (
+            f" ({len(non_fatal)} non-fatal error(s))" if non_fatal else ""
+        ),
+    )
+
+
 @router.delete("/{slug}")
 async def remove_database(slug: str) -> dict:
     """Remove a database from the registry."""

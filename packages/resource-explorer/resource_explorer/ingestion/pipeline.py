@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -141,9 +142,11 @@ class IngestionPipeline:
                 progress.advance(task)
 
         file_count, loc = self._count_repo_stats(code_root)
-        self._store_file_inventory(project_slug, code_root)
+        self._store_file_inventory(project_slug, code_root, repo=repo)
         self._parse_dependencies(project_slug, code_root)
         self._profile_data_files(project_slug, code_root)
+        self._parse_ci_workflows(project_slug, code_root)
+        self._parse_repo_conventions(project_slug, code_root)
         return file_count, loc
 
     def _ingest_collection(
@@ -252,12 +255,15 @@ class IngestionPipeline:
         symbol_count = 0
         file_count = 0
 
-        with tempfile.TemporaryDirectory() as tmp:
-            self.console.print("[cyan]Downloading repository for profiling...[/cyan]")
-            local_root = client.download_zipball(repo, Path(tmp), subproject_path)
-
-            file_count = self._store_file_inventory(project_slug, local_root)
+        self.console.print("[cyan]Downloading repository for profiling...[/cyan]")
+        # D6.7 (docs/unified-survey-execution-model-plan.md) — shared with
+        # repo_survey_definition_adapter.py's _acquire_zipball_root; one real
+        # implementation of "download a zipball into a tempdir", not two.
+        with client.zipball_root(repo, subproject_path) as local_root:
+            file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
             self._profile_data_files(project_slug, local_root)
+            self._parse_ci_workflows(project_slug, local_root)
+            self._parse_repo_conventions(project_slug, local_root)
 
             if include_symbols:
                 from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
@@ -307,6 +313,48 @@ class IngestionPipeline:
         except Exception as exc:
             self.console.print(f"[dim]Dependency parsing skipped: {exc}[/dim]")
 
+    def _parse_ci_workflows(self, project_slug: str, local_root: Path) -> None:
+        """Assessment expansion plan B4 — mirrors _parse_dependencies'
+        pattern exactly, but writes straight into the generic
+        project_analysis_findings table (kind="ci_quality") rather than a
+        dedicated table, since CiQualitySurveyor only ever reads these
+        findings back (same read-only-at-survey-time relationship
+        DependencySurveyor has with project_dependencies) — there's no
+        separate "latest state" shape to maintain beyond the findings
+        themselves. Called from both full ingestion and refresh_profile()
+        (unlike _parse_dependencies, which today only runs at full
+        ingestion) so "Refresh & profile" keeps ci_quality current too."""
+        try:
+            from resource_explorer.ingestion.ci_workflow_parser import CiWorkflowParser
+            findings = CiWorkflowParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(
+                    project_slug, "ci_quality", findings,
+                    surveyed_at=datetime.utcnow().isoformat(),
+                )
+                self.console.print(f"[dim]CI quality: {len(findings)} check(s) evaluated.[/dim]")
+        except Exception as exc:
+            self.console.print(f"[dim]CI workflow parsing skipped: {exc}[/dim]")
+
+    def _parse_repo_conventions(self, project_slug: str, local_root: Path) -> None:
+        """Discovery-tier convention signals (Part 2, security_policy_content/
+        automated_build/deployment_docker/catalog_info/doc_breadth) — same
+        pattern as _parse_ci_workflows: parsed once here (already-downloaded
+        zipball), written to the generic findings table, read back read-only
+        at survey time by RepoConventionsSurveyor. Called from both full
+        ingestion and refresh_profile()."""
+        try:
+            from resource_explorer.ingestion.repo_conventions_parser import RepoConventionsParser
+            findings = RepoConventionsParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(
+                    project_slug, "repo_conventions", findings,
+                    surveyed_at=datetime.utcnow().isoformat(),
+                )
+                self.console.print(f"[dim]Repo conventions: {len(findings)} check(s) evaluated.[/dim]")
+        except Exception as exc:
+            self.console.print(f"[dim]Repo conventions parsing skipped: {exc}[/dim]")
+
     # ── local file helpers ────────────────────────────────────────────────────
 
     _TEXT_SUFFIXES: frozenset[str] = frozenset({
@@ -331,8 +379,22 @@ class IngestionPipeline:
                     pass
         return file_count, line_count
 
-    def _store_file_inventory(self, project_slug: str, local_root: Path) -> int:
+    def _store_file_inventory(
+        self, project_slug: str, local_root: Path, repo=None, client=None,
+    ) -> int:
         """Persist every file path (relative to local_root) and its size to SQLite.
+
+        repo is an optional PyGithub Repository — when given, this also
+        fetches real git mode bits (100644/100755/120000) via
+        GitHubClient.list_file_modes() and stores them alongside each path
+        (Assessment sub-resource cataloging plan, D9 Tier 1). Best-effort:
+        a failed/omitted mode fetch just leaves file_mode='' for every row,
+        never fails the inventory write itself. `client` reuses an
+        already-constructed GitHubClient when the caller has one (matching
+        refresh_profile()'s existing "don't pay for a second client" contract
+        — see test_reuses_passed_in_client_and_repo_no_new_githubclient);
+        only constructed fresh here if no repo/client relationship already
+        exists to reuse.
 
         Returns the number of paths stored (0 on skip/failure). The return
         value was unused by every existing caller prior to refresh_profile()
@@ -347,8 +409,21 @@ class IngestionPipeline:
             except Exception:
                 size = 0
             paths_with_sizes.append((str(p.relative_to(local_root)), size))
+
+        modes_by_path: dict[str, str] = {}
+        if repo is not None:
+            try:
+                if client is None:
+                    from resource_explorer.github.client import GitHubClient
+                    client = GitHubClient()
+                result = client.list_file_modes(repo)
+                if isinstance(result, dict):
+                    modes_by_path = result
+            except Exception:
+                pass
+
         try:
-            self.registry.upsert_file_inventory(project_slug, paths_with_sizes)
+            self.registry.upsert_file_inventory(project_slug, paths_with_sizes, modes_by_path)
             self.console.print(
                 f"[dim]File inventory: {len(paths_with_sizes)} paths stored.[/dim]"
             )
