@@ -502,10 +502,14 @@ class TestRfaNotesRouter:
 
     @pytest.fixture(autouse=True)
     def _mock_egeria_sync(self):
-        # test_note_and_status_action_coexist below also hits the status
-        # PATCH route, which attempts a real Egeria sync — see TestRfaRouter's
-        # identical fixture for why this is mocked here too.
-        with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action"):
+        # Every notes PATCH attempts sync_rfa_note (a no-op here in
+        # practice, since these test RFAs never have egeria_todo_guid set —
+        # but mocked anyway, matching the established precedent, rather
+        # than relying on that early-return). test_note_and_status_action_
+        # coexist also hits the status PATCH route, which attempts
+        # sync_rfa_action — see TestRfaRouter's identical fixture.
+        with patch("resource_explorer.rfa_egeria_sync.sync_rfa_action"), \
+             patch("resource_explorer.rfa_egeria_sync.sync_rfa_note"):
             yield
 
     def test_defaults_to_empty(self, client, registry):

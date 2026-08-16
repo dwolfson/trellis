@@ -73,6 +73,47 @@ class TestUpsertRfaNote:
         assert registry.get_rfa_action("e1::0")["notes"] == "second note"
 
 
+class TestNoteSyncBookkeeping:
+    def test_mark_rfa_notelog_stores_guid(self, registry):
+        registry.upsert_rfa_note("e1::0", "e1", 0, "a note")
+        registry.mark_rfa_notelog("e1::0", "notelog-guid-1")
+        assert registry.get_rfa_action("e1::0")["egeria_notelog_guid"] == "notelog-guid-1"
+
+    def test_mark_rfa_note_synced_sets_value_and_clears_error(self, registry):
+        registry.upsert_rfa_note("e1::0", "e1", 0, "a note")
+        registry.mark_rfa_note_sync_error("e1::0", "boom")
+        registry.mark_rfa_note_synced("e1::0", "a note")
+        row = registry.get_rfa_action("e1::0")
+        assert row["notes_synced_value"] == "a note"
+        assert row["notes_sync_error"] == ""
+
+    def test_mark_rfa_note_sync_error_records_message(self, registry):
+        registry.upsert_rfa_note("e1::0", "e1", 0, "a note")
+        registry.mark_rfa_note_sync_error("e1::0", "connection refused")
+        assert registry.get_rfa_action("e1::0")["notes_sync_error"] == "connection refused"
+
+    def test_list_unsynced_rfa_notes_requires_a_todo(self, registry):
+        registry.upsert_rfa_note("e1::0", "e1", 0, "note with no todo")
+        assert registry.list_unsynced_rfa_notes() == []
+
+    def test_list_unsynced_rfa_notes_excludes_already_synced_text(self, registry):
+        registry.upsert_rfa_action("e1::0", "e1", 0, status="open", activity_status="REQUESTED")
+        registry.mark_rfa_synced("e1::0", "todo-guid")
+        registry.upsert_rfa_note("e1::0", "e1", 0, "same text")
+        registry.mark_rfa_note_synced("e1::0", "same text")
+        assert registry.list_unsynced_rfa_notes() == []
+
+    def test_list_unsynced_rfa_notes_includes_changed_text(self, registry):
+        registry.upsert_rfa_action("e1::0", "e1", 0, status="open", activity_status="REQUESTED")
+        registry.mark_rfa_synced("e1::0", "todo-guid")
+        registry.upsert_rfa_note("e1::0", "e1", 0, "old text")
+        registry.mark_rfa_note_synced("e1::0", "old text")
+        registry.upsert_rfa_note("e1::0", "e1", 0, "new text")
+        pending = registry.list_unsynced_rfa_notes()
+        assert len(pending) == 1
+        assert pending[0]["id"] == "e1::0"
+
+
 class TestSyncBookkeeping:
     def test_mark_rfa_synced_sets_guid_and_clears_error(self, registry):
         registry.upsert_rfa_action("e1::0", "e1", 0, status="open", activity_status="REQUESTED")

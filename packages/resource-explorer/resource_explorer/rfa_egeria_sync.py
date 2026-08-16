@@ -106,6 +106,58 @@ def sync_rfa_action(registry, rfa_row: dict) -> None:
             log.exception("Could not even record RFA sync error for %s", rfa_id)
 
 
+def sync_rfa_note(registry, rfa_row: dict) -> None:
+    """Push this RFA's current notes text to Egeria as an ActivityEntry,
+    linked to the RFA's own ToDo — per direct decision (2026-08-16), only
+    attempted once the ToDo already exists (egeria_todo_guid set); a note
+    added before any status action has nothing to link against yet, and
+    picks up automatically on the next reconciliation pass once one exists.
+    Never raises — same non-blocking try/except/log shape as
+    sync_rfa_action.
+
+    One ActivityEntry per distinct note text (never edited in place) —
+    matches docs/rfa-egeria-todo-followup.md's "Related, broader idea"
+    section: status-change-style logging is naturally append-only, and
+    sidesteps update_note's known-broken server-side behavior (egeria-python
+    PYEGERIA_ISSUES.md ISSUE-30) entirely rather than working around it.
+    notes_synced_value is the dedup key — an unchanged note is never
+    re-pushed as a duplicate entry.
+    """
+    rfa_id = rfa_row.get("id", "")
+    todo_guid = rfa_row.get("egeria_todo_guid") or ""
+    notes = rfa_row.get("notes") or ""
+    if not todo_guid or not notes or notes == (rfa_row.get("notes_synced_value") or ""):
+        return
+    try:
+        my_profile, _ = _get_clients()
+        notelog_guid = rfa_row.get("egeria_notelog_guid") or ""
+        if not notelog_guid:
+            notelog_guid = my_profile.create_note_log(
+                element_guid=todo_guid,
+                display_name=f"RFA notes: {rfa_id}",
+                description="Notes recorded against this RFA from Resource Explorer.",
+            )
+            registry.mark_rfa_notelog(rfa_id, notelog_guid)
+
+        my_profile.create_note(
+            notelog_guid,
+            associated_element=todo_guid,
+            body={
+                "class": "NoteProperties",
+                "typeName": "ActivityEntry",
+                "qualifiedName": my_profile.make_feedback_qn("ActivityEntry", todo_guid),
+                "description": notes,
+            },
+        )
+        registry.mark_rfa_note_synced(rfa_id, notes)
+    except Exception as exc:
+        log.warning("Could not sync RFA note %s to Egeria: %s", rfa_id, exc)
+        try:
+            registry.mark_rfa_note_sync_error(rfa_id, str(exc))
+        except Exception:
+            log.exception("Could not even record RFA note sync error for %s", rfa_id)
+
+
 # ToDos in one of these states are still "open" from RE's point of view —
 # used to bound the read-direction reconciliation pull below. Deliberately
 # excludes ABANDONED/CANCELLED/INVALID/OTHER (Egeria's own ACTIVITY_STATUS
@@ -162,6 +214,12 @@ def reconcile_rfa_actions(registry) -> None:
             sync_rfa_action(registry, row)
     except Exception:
         log.exception("RFA reconciliation: write-direction retry pass failed")
+
+    try:
+        for row in registry.list_unsynced_rfa_notes():
+            sync_rfa_note(registry, row)
+    except Exception:
+        log.exception("RFA reconciliation: note write-direction retry pass failed")
 
     try:
         synced = registry.list_synced_rfa_actions()

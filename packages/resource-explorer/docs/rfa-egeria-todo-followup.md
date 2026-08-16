@@ -224,7 +224,49 @@ actual Egeria platform. Specifically unconfirmed:
    `_extract_todo_fields()` was written defensively (tries
    `elementHeader.guid`-or-`guid`, `properties.activityStatus`-or-
    top-level) specifically because this shape wasn't confirmed against a
-   real response; a live smoke test (defer one real RFA, confirm a real
-   `ToDo` appears in Egeria Explorer / via `get_my_to_dos()`, complete it,
-   confirm `activityStatus` flips to `COMPLETED`) is the next real step
-   before trusting this beyond "the local-only logic is correct."
+   real response.
+4. `create_note_log()`/`create_note()` with a `typeName: "ActivityEntry"`
+   properties override (see "Notes sync to Egeria" below) — the doc's
+   earlier "Related, broader idea" section already confirmed the mechanism
+   works for Asset-level activity logging, but the specific
+   NoteLog-anchored-on-a-ToDo shape used here hasn't been exercised live.
+
+A live smoke test (defer one real RFA, confirm a real `ToDo` appears in
+Egeria Explorer / via `get_my_to_dos()`, complete it, confirm
+`activityStatus` flips to `COMPLETED`, add a note and confirm a NoteLog +
+ActivityEntry Note appear attached to that `ToDo`) is the next real step
+before trusting any of this beyond "the local-only logic is correct."
+
+## Notes sync to Egeria (2026-08-16)
+
+Per direct decision, the drawer's real, persisted `notes` field (see
+"Implementation notes" above — the fix for "Record answer never
+persisted") also syncs to Egeria, as an `ActivityEntry`-typed `Note`
+attached to a `NoteLog` anchored on the RFA's own `ToDo` — reusing the
+"Related, broader idea" section's already-confirmed `create_note_log`/
+`create_note` mechanism, just anchored on the `ToDo` rather than an Asset.
+
+**Only synced once the `ToDo` already exists** (`egeria_todo_guid` set) —
+a note is never forced to create a `ToDo` just to have something to link
+against; it stays purely local until a later Defer/Reassign/Complete
+creates one, at which point the next `reconcile_rfa_actions()` pass picks
+it up automatically (`list_unsynced_rfa_notes()` requires a `ToDo`).
+
+**One `ActivityEntry` per distinct note text, never edited in place** —
+matches the append-only framing the "Related, broader idea" section
+already established for Asset-level status-change logging, and sidesteps
+`update_note`'s known-broken server-side behavior (`egeria-python`
+`PYEGERIA_ISSUES.md` ISSUE-30) entirely rather than working around it.
+`notes_synced_value` is the dedup key on the local side — an unchanged
+note is never re-pushed as a duplicate entry. `egeria_notelog_guid` caches
+the `NoteLog` GUID (created once per RFA, reused across edits — a fresh
+`NoteLog` isn't created for every note revision, only the `Note`
+underneath it).
+
+`rfa_egeria_sync.sync_rfa_note()` is the implementation, called from
+`PATCH /rfas/{rfa_id}/notes` (non-blocking, same guarantee as the status
+route) and retried from `reconcile_rfa_actions()`'s write-direction pass.
+No read-direction reconciliation for notes — Egeria-side `ActivityEntry`
+notes created by another client aren't pulled back into RE's local
+`notes` field; that field stays "the current local note," not a mirror of
+the full Egeria-side history.

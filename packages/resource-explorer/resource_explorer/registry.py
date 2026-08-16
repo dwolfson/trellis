@@ -1323,6 +1323,21 @@ class ProjectRegistry:
             # the note recorded when completing an RFA).
             if "notes" not in existing_rfa:
                 conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes TEXT DEFAULT ''")
+            # Notes -> Egeria ActivityEntry sync (2026-08-16, per direct
+            # decision): a note is only pushed to Egeria once the RFA
+            # already has a real ToDo (egeria_todo_guid) — a note with
+            # nothing to link against isn't synced yet, and picks up on the
+            # next reconciliation pass once a status action creates one.
+            # egeria_notelog_guid caches the NoteLog created on the ToDo
+            # (reused across edits, not recreated); notes_synced_value is
+            # the last note text actually pushed, so an unchanged note
+            # doesn't get re-synced as a duplicate ActivityEntry.
+            if "egeria_notelog_guid" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN egeria_notelog_guid TEXT DEFAULT ''")
+            if "notes_synced_value" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes_synced_value TEXT DEFAULT ''")
+            if "notes_sync_error" not in existing_rfa:
+                conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes_sync_error TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -3911,6 +3926,49 @@ class ProjectRegistry:
                 "priority = ?, updated_at = ?, synced_at = ? WHERE id = ?",
                 (activity_status, due_time, start_time, priority, now, now, rfa_id),
             )
+
+    def mark_rfa_notelog(self, rfa_id: str, notelog_guid: str) -> None:
+        """Cache the Egeria NoteLog GUID created on this RFA's ToDo, so
+        later note edits reuse it instead of creating a new NoteLog every
+        time (rfa_egeria_sync.sync_rfa_note)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET egeria_notelog_guid = ? WHERE id = ?",
+                (notelog_guid, rfa_id),
+            )
+
+    def mark_rfa_note_synced(self, rfa_id: str, notes_value: str) -> None:
+        """Record that `notes_value` was successfully pushed to Egeria as
+        an ActivityEntry — the comparison point for "has this note text
+        already been synced" (sync_rfa_note skips re-pushing an unchanged
+        note as a duplicate ActivityEntry)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET notes_synced_value = ?, notes_sync_error = '' WHERE id = ?",
+                (notes_value, rfa_id),
+            )
+
+    def mark_rfa_note_sync_error(self, rfa_id: str, error: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE rfa_actions SET notes_sync_error = ? WHERE id = ?",
+                (error, rfa_id),
+            )
+
+    def list_unsynced_rfa_notes(self) -> list[dict]:
+        """Rows with a real ToDo, real note text, and that note text not
+        yet (successfully) pushed to Egeria — write-direction retry target
+        for sync_rfa_note, mirroring list_unsynced_rfa_actions' shape for
+        the status/ToDo sync. A note added before any status action ever
+        ran (no egeria_todo_guid yet) is correctly excluded here — it picks
+        up automatically once a later Defer/Reassign/Complete creates the
+        ToDo and the next reconciliation pass runs."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rfa_actions WHERE egeria_todo_guid != '' AND notes != '' "
+                "AND notes != notes_synced_value"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def update_governance_state(self, entity_type: str, slug: str, state: str) -> None:
         """Update the governance state of a registered resource."""
