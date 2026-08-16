@@ -62,16 +62,21 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
   })
   ```
   Nothing to file in `egeria-python`'s `PYEGERIA_ISSUES.md` for this — fully
-  covered today.
+  covered today. **Superseded by live verification (see "Live verification
+  results" below): the shipped code actually uses `MyProfile.update_asset()`
+  instead** — also generic-enough-in-practice (any `Asset`, and `ToDo` is
+  one), and confirmed simpler/more correct (plain values, real partial
+  updates) than the `update_metadata_element_properties()` shape shown
+  above, which was found to silently no-op against this exact body.
 
 ## What this would change
 
 | RE concept today | Would become |
 |---|---|
 | `rfa_actions` table with its own vocabulary (`rfa_status`, `assignee`, `defer_until`, `resolution_note`) | `rfa_actions` mirrors `ToDoProperties` directly (`activity_status`, `due_time`, `start_time`, `priority`), synced with a real `ToDo` per open RFA, linked via `add_action_target` to the RFA's `Annotation` GUID |
-| Defer (local `defer_until` field) | `ToDo.dueTime`/`startTime`, set via `update_metadata_element_properties` (generic — confirmed above, no gap) |
+| Defer (local `defer_until` field) | `ToDo.dueTime`/`startTime`, set via `update_asset` (shipped — see "Live verification results" below) |
 | Reassign (local `assignee` field) | `reassign_action(todo_guid, new_actor_guid)` (dedicated method — enforces single-assignee) |
-| Complete (local `rfa_status = "completed"`) | `activityStatus = "COMPLETE"` via `update_metadata_element_properties` (generic — confirmed above, no gap) |
+| Complete (local `rfa_status = "completed"`) | `activityStatus = "COMPLETE"` via `update_asset` (shipped — see "Live verification results" below) |
 | `GET /api/activity/rfas` overlay | Reads the local mirror (fast, same shape as today's UI) — kept in sync via write-through + periodic two-direction reconciliation, see "Sync mechanics" below |
 
 ## Open questions before building
@@ -228,21 +233,36 @@ round-trip against the live server:
    a real `ToDo` with `activityStatus`/`description`/`priority` set exactly
    as passed.
 2. `MetadataExpert.update_metadata_element_properties()` — **found broken,
-   then fixed.** The original body shape
-   (`{"class": "ToDoProperties", "activityStatus": "WAITING", ...}`) was
-   silently accepted by the server (HTTP success, no error) and changed
-   *nothing* — a live GET immediately after showed the `ToDo` unchanged.
-   Root cause: this is the fully generic metadata-element endpoint, not a
-   `ToDo`-aware convenience method like `create_my_todo()` — its real wire
-   contract (confirmed via `_async_update_metadata_element_properties()`'s
-   own docstring) is `properties: {"class": "ElementProperties",
-   "propertyValueMap": {...}}`, with each value individually typed
-   (`EnumTypePropertyValue` for `activityStatus`, `PrimitiveTypePropertyValue`
-   for scalars, and — a second real finding — date properties as
-   **epoch-millisecond integers**, not ISO date strings). Fixed in
-   `rfa_egeria_sync.py`; re-verified live afterward: a real `defer` PATCH
-   now correctly flips the `ToDo`'s `activityStatus` to `WAITING` and sets
-   a real `dueTime`.
+   fixed once, then replaced with a simpler working method.** The original
+   body shape (`{"class": "ToDoProperties", "activityStatus": "WAITING",
+   ...}`) was silently accepted by the server (HTTP success, no error) and
+   changed *nothing* — a live GET immediately after showed the `ToDo`
+   unchanged. Root cause: this is the fully generic metadata-element
+   endpoint, not a `ToDo`-aware convenience method like `create_my_todo()`
+   — its real wire contract (confirmed via
+   `_async_update_metadata_element_properties()`'s own docstring) is
+   `properties: {"class": "ElementProperties", "propertyValueMap": {...}}`,
+   with each value individually typed (`EnumTypePropertyValue` for
+   `activityStatus`, `PrimitiveTypePropertyValue` for scalars, and — a
+   second real finding — date properties as **epoch-millisecond
+   integers**, not ISO date strings). That fix worked (re-verified live: a
+   real `defer` PATCH correctly flipped `activityStatus` to `WAITING` and
+   set a real `dueTime`) but was then superseded, same day, per direct
+   guidance: **`MyProfile.update_asset()`** — a `ToDo` is an `Asset`
+   subtype, so the Asset-specific update endpoint applies — was tried
+   instead and confirmed live to be simpler and equally correct: it
+   accepts the same plain, `typeName`-tagged properties shape
+   `create_my_todo()` already uses (`{"class": "ToDoProperties",
+   "typeName": "ToDo", "activityStatus": "WAITING", "dueTime":
+   "2026-10-01", ...}`), with the server converting the human-readable
+   date string to epoch millis itself (no client-side
+   `EnumTypePropertyValue`/`PrimitiveTypePropertyValue`/epoch-conversion
+   helpers needed), and does a genuine partial update — a live before/after
+   GUID round-trip confirmed fields left out of the call (`dueTime`,
+   `displayName`, `qualifiedName`) survive untouched. `rfa_egeria_sync.py`
+   ships the `update_asset()` version; the `update_metadata_element_
+   properties()` fix above is kept here only as the record of what was
+   tried and found working first.
 3. `get_my_to_dos()`'s actual JSON response shape — **confirmed matches
    `_extract_todo_fields()`'s defensive parsing exactly**, with one
    real, useful asymmetry worth knowing: this list/report endpoint returns
