@@ -15,6 +15,9 @@ dependencies = [
     # Shared microflow resource-sharing primitives (D6, docs/unified-
     # survey-execution-model-plan.md) — packages/trellis-microflow
     "trellis-microflow",
+    # Shared vector-store implementation (BaseVectorStore/PgVectorStore),
+    # extracted alongside Egeria Advisor's equivalent — packages/trellis-vectorstore
+    "trellis-vectorstore",
     # Embeddings & LLM
     "sentence-transformers>=3.3.0",
     "ollama>=0.4.0",
