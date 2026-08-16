@@ -1,10 +1,8 @@
 # RFA response actions — backing them with a real Egeria ToDo
 
-**Status (2026-08-16): implemented and unit-tested (29 new tests, full RE
-suite green — 1149 passed, 9 skipped). Not yet live-verified against a real
-Egeria platform** — see "Implementation notes / what still needs live
-verification" at the end of this doc before treating any of the below as
-proven against a real server, not just against mocked pyegeria clients.
+**Status (2026-08-16): implemented, unit-tested (44 tests), AND live-verified
+against a real Egeria platform.** Live verification found and fixed one real
+bug — see "Live verification results" near the end of this doc.
 
 The RFA drawer's defer/reassign/complete/reopen actions used to be local-only
 (`rfa_actions` SQLite table — see its docstring in `registry.py`). That table's
@@ -218,31 +216,48 @@ in this doc:**
   entirely outside RE (there's no way to map an arbitrary Egeria `ToDo`
   back to a specific local RFA/annotation without the linking above).
 
-**What still needs live verification, not yet done:** every pyegeria call
-in `rfa_egeria_sync.py` is exercised only against mocked clients in this
-pass's test suite — real, but not proof the wire calls succeed against an
-actual Egeria platform. Specifically unconfirmed:
-1. `MyProfile.create_my_todo()`'s exact keyword names/behavior when called
-   with `activity_status`/`priority` as used here.
-2. `MetadataExpert.update_metadata_element_properties()`'s real response
-   when passed a `ToDoProperties` body with `activityStatus`/`dueTime`/
-   `startTime`/`priority`.
-3. `get_my_to_dos()`'s actual JSON response shape —
-   `_extract_todo_fields()` was written defensively (tries
-   `elementHeader.guid`-or-`guid`, `properties.activityStatus`-or-
-   top-level) specifically because this shape wasn't confirmed against a
-   real response.
-4. `create_note_log()`/`create_note()` with a `typeName: "ActivityEntry"`
-   properties override (see "Notes sync to Egeria" below) — the doc's
-   earlier "Related, broader idea" section already confirmed the mechanism
-   works for Asset-level activity logging, but the specific
-   NoteLog-anchored-on-a-ToDo shape used here hasn't been exercised live.
+## Live verification results (2026-08-16)
 
-A live smoke test (defer one real RFA, confirm a real `ToDo` appears in
-Egeria Explorer / via `get_my_to_dos()`, complete it, confirm
-`activityStatus` flips to `COMPLETED`, add a note and confirm a NoteLog +
-ActivityEntry Note appear attached to that `ToDo`) is the next real step
-before trusting any of this beyond "the local-only logic is correct."
+Every pyegeria call in `rfa_egeria_sync.py` was exercised against a real,
+running Egeria platform (not just mocked clients) — creating/updating a
+real `ToDo`, reading it back two different ways, and creating a real
+`NoteLog`/`ActivityEntry` `Note` anchored to it. Confirmed, by GUID
+round-trip against the live server:
+
+1. `MyProfile.create_my_todo()` — **confirmed working as called.** Created
+   a real `ToDo` with `activityStatus`/`description`/`priority` set exactly
+   as passed.
+2. `MetadataExpert.update_metadata_element_properties()` — **found broken,
+   then fixed.** The original body shape
+   (`{"class": "ToDoProperties", "activityStatus": "WAITING", ...}`) was
+   silently accepted by the server (HTTP success, no error) and changed
+   *nothing* — a live GET immediately after showed the `ToDo` unchanged.
+   Root cause: this is the fully generic metadata-element endpoint, not a
+   `ToDo`-aware convenience method like `create_my_todo()` — its real wire
+   contract (confirmed via `_async_update_metadata_element_properties()`'s
+   own docstring) is `properties: {"class": "ElementProperties",
+   "propertyValueMap": {...}}`, with each value individually typed
+   (`EnumTypePropertyValue` for `activityStatus`, `PrimitiveTypePropertyValue`
+   for scalars, and — a second real finding — date properties as
+   **epoch-millisecond integers**, not ISO date strings). Fixed in
+   `rfa_egeria_sync.py`; re-verified live afterward: a real `defer` PATCH
+   now correctly flips the `ToDo`'s `activityStatus` to `WAITING` and sets
+   a real `dueTime`.
+3. `get_my_to_dos()`'s actual JSON response shape — **confirmed matches
+   `_extract_todo_fields()`'s defensive parsing exactly**, with one
+   real, useful asymmetry worth knowing: this list/report endpoint returns
+   already-flattened `properties` (`activityStatus` as a plain string,
+   dates as ISO strings), unlike `get_metadata_element_by_guid()`'s raw
+   `elementProperties.propertyValueMap` shape (typed values, dates as
+   epoch millis) used in point #2 above — the same field is represented
+   two different ways depending which endpoint returns it. A full
+   `reconcile_rfa_actions()` pass (write-direction retry + read-direction
+   pull) ran live end-to-end with no errors.
+4. `create_note_log()` / `create_note()` with a `typeName: "ActivityEntry"`
+   properties override — **confirmed working exactly as designed.** A real
+   `NoteLog` was created anchored to the `ToDo`; a real `Note` of type
+   `ActivityEntry` was created under it, anchored to the same `ToDo` via
+   `associated_element` — verified by reading both back by GUID.
 
 ## Notes sync to Egeria (2026-08-16)
 

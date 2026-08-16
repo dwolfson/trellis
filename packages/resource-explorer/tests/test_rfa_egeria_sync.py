@@ -49,6 +49,14 @@ class TestSyncRfaAction:
         assert updated["sync_error"] == ""
 
     def test_updates_todo_when_already_synced(self, registry):
+        # Real bug fixed 2026-08-16 (live verification): update_metadata_
+        # element_properties() is the generic metadata-element endpoint —
+        # its real wire contract is properties.propertyValueMap with each
+        # value individually typed (EnumTypePropertyValue for
+        # activityStatus), not a ToDoProperties-shaped dict. The previous
+        # (wrong) shape was silently accepted by the mock in these tests
+        # too — these assertions are what actually caught the bug once
+        # checked against a live Egeria response.
         row = _row(registry, activity_status="COMPLETED")
         registry.mark_rfa_synced("e1::0", "existing-guid")
         row = registry.get_rfa_action("e1::0")
@@ -62,7 +70,12 @@ class TestSyncRfaAction:
         metadata_expert.update_metadata_element_properties.assert_called_once()
         args, _ = metadata_expert.update_metadata_element_properties.call_args
         assert args[0] == "existing-guid"
-        assert args[1]["properties"]["activityStatus"] == "COMPLETED"
+        prop_map = args[1]["properties"]["propertyValueMap"]
+        assert args[1]["properties"]["class"] == "ElementProperties"
+        assert prop_map["activityStatus"] == {
+            "class": "EnumTypePropertyValue", "typeName": "ActivityStatus", "symbolicName": "COMPLETED",
+        }
+        assert prop_map["priority"] == {"class": "PrimitiveTypePropertyValue", "typeName": "int", "primitiveValue": 0}
 
     def test_due_time_only_included_when_set(self, registry):
         row = _row(registry, defer_until="2026-09-01")
@@ -74,7 +87,10 @@ class TestSyncRfaAction:
             sync_rfa_action(registry, row)
 
         _, body = metadata_expert.update_metadata_element_properties.call_args[0]
-        assert body["properties"]["dueTime"] == "2026-09-01"
+        due_time = body["properties"]["propertyValueMap"]["dueTime"]
+        assert due_time["class"] == "PrimitiveTypePropertyValue"
+        assert due_time["typeName"] == "date"
+        assert isinstance(due_time["primitiveValue"], int)  # epoch millis, not an ISO string
 
     def test_due_time_omitted_when_empty(self, registry):
         row = _row(registry)
@@ -86,7 +102,19 @@ class TestSyncRfaAction:
             sync_rfa_action(registry, row)
 
         _, body = metadata_expert.update_metadata_element_properties.call_args[0]
-        assert "dueTime" not in body["properties"]
+        assert "dueTime" not in body["properties"]["propertyValueMap"]
+
+    def test_due_time_omitted_when_unparseable(self, registry):
+        row = _row(registry, defer_until="not-a-date")
+        registry.mark_rfa_synced("e1::0", "guid")
+        row = registry.get_rfa_action("e1::0")
+        metadata_expert = MagicMock()
+
+        with patch("resource_explorer.rfa_egeria_sync._get_clients", return_value=(MagicMock(), metadata_expert)):
+            sync_rfa_action(registry, row)  # must not raise
+
+        _, body = metadata_expert.update_metadata_element_properties.call_args[0]
+        assert "dueTime" not in body["properties"]["propertyValueMap"]
 
     def test_failure_never_raises_and_records_sync_error(self, registry):
         row = _row(registry)

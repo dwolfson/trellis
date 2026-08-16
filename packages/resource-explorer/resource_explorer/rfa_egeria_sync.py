@@ -62,11 +62,56 @@ def _get_clients():
     return my_profile, metadata_expert
 
 
+def _primitive_value(type_name: str, value) -> dict:
+    return {"class": "PrimitiveTypePropertyValue", "typeName": type_name, "primitiveValue": value}
+
+
+def _enum_value(type_name: str, symbolic_name: str) -> dict:
+    return {"class": "EnumTypePropertyValue", "typeName": type_name, "symbolicName": symbolic_name}
+
+
+def _date_to_epoch_millis(date_str: str) -> int | None:
+    """Egeria date-typed properties (dueTime/startTime/requestedTime) are
+    epoch-millisecond integers on the wire — confirmed live 2026-08-16 via
+    a real GET (requestedTime came back as e.g. 1786905548706), NOT ISO
+    date strings. Accepts a bare date (YYYY-MM-DD, what the drawer's
+    <input type="date"> sends) or a full ISO datetime; returns None on
+    anything unparseable rather than raising, so a malformed date degrades
+    to "field omitted," not a whole sync failure."""
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(date_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        return None
+
+
 def sync_rfa_action(registry, rfa_row: dict) -> None:
     """Attempt to create (first time) or update (subsequent) the Egeria
     ToDo behind one rfa_actions row. Never raises — every failure is caught,
     logged, and recorded via registry.mark_rfa_sync_error so the write-
-    direction reconciliation pass can retry it later."""
+    direction reconciliation pass can retry it later.
+
+    Real bug found and fixed during live verification (2026-08-16): the
+    update path previously sent a `{"class": "ToDoProperties",
+    "activityStatus": "WAITING", ...}` body — that shape only works for
+    create_my_todo()'s own convenience wrapper (which does its own
+    server-side property construction from those exact kwargs).
+    update_metadata_element_properties() is the fully generic
+    metadata-element endpoint — its real wire contract (confirmed via
+    _async_update_metadata_element_properties()'s own docstring, and via a
+    live round-trip that silently no-opped against the wrong shape) is
+    `properties: {"class": "ElementProperties", "propertyValueMap": {...}}`
+    with each value individually typed (EnumTypePropertyValue for
+    activityStatus, PrimitiveTypePropertyValue for priority, date-typed
+    PrimitiveTypePropertyValue — an epoch-millis int, not an ISO string —
+    for dueTime/startTime). The previous shape was accepted (no HTTP
+    error) and silently changed nothing — worth remembering: a 200 from
+    this endpoint is not proof the update actually landed.
+    """
     rfa_id = rfa_row.get("id", "")
     try:
         my_profile, metadata_expert = _get_clients()
@@ -80,21 +125,31 @@ def sync_rfa_action(registry, rfa_row: dict) -> None:
                 priority=rfa_row.get("priority") or 0,
             )
         else:
+            property_value_map = {
+                "activityStatus": _enum_value("ActivityStatus", rfa_row.get("activity_status") or "REQUESTED"),
+                "priority": _primitive_value("int", rfa_row.get("priority") or 0),
+            }
+            # dueTime/startTime only meaningful when actually set (omitting
+            # them, not sending an empty/zero value, avoids clearing a real
+            # due date on the Egeria side that this sync didn't intend to
+            # touch) — skipped entirely (not sent as null) when unparseable.
+            if rfa_row.get("due_time"):
+                millis = _date_to_epoch_millis(rfa_row["due_time"])
+                if millis is not None:
+                    property_value_map["dueTime"] = _primitive_value("date", millis)
+            if rfa_row.get("start_time"):
+                millis = _date_to_epoch_millis(rfa_row["start_time"])
+                if millis is not None:
+                    property_value_map["startTime"] = _primitive_value("date", millis)
+
             body = {
                 "class": "UpdatePropertiesRequestBody",
                 "properties": {
-                    "class": "ToDoProperties",
-                    "activityStatus": rfa_row.get("activity_status") or "REQUESTED",
-                    "priority": rfa_row.get("priority") or 0,
+                    "class": "ElementProperties",
+                    "propertyValueMap": property_value_map,
                 },
+                "replaceProperties": False,
             }
-            # dueTime/startTime are real ToDoProperties fields but only
-            # meaningful when actually set (a "" here would clear a real
-            # due date on the Egeria side) — only include when present.
-            if rfa_row.get("due_time"):
-                body["properties"]["dueTime"] = rfa_row["due_time"]
-            if rfa_row.get("start_time"):
-                body["properties"]["startTime"] = rfa_row["start_time"]
             metadata_expert.update_metadata_element_properties(todo_guid, body)
 
         registry.mark_rfa_synced(rfa_id, todo_guid)
