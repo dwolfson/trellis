@@ -82,7 +82,14 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
    (`whoami` is a single shared service account — see `egeria.py`). Real
    per-user assignment needs that solved — **confirmed still needed, standing
    requirement, not deferred indefinitely** (2026-08-15) — until then the
-   initial assignee is "unassigned"/the service account.
+   initial assignee is "unassigned"/the service account. **UI implication,
+   noted 2026-08-16**: today's Reassign form is a free-text "name or email"
+   input (`assignee`, local-only string, never resolved to a real actor) —
+   once real per-user identity exists, this should become a searchable
+   dropdown of actual known users/actors, not free text, so `reassign_action`
+   (currently never called — see rfa_egeria_sync.py's module docstring) has
+   a real actor GUID to pass. Blocked on the same identity gap, not a
+   separate piece of work.
 2. **Migration**: does an existing local `rfa_actions` row get backfilled into
    a real `ToDo` on first load, or does this only apply going forward? Backfill
    means creating N `ToDo`s retroactively; going-forward-only is simpler but
