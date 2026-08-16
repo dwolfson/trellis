@@ -68,7 +68,7 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
 | Defer (local `defer_until` field) | `ToDo.dueTime`/`startTime`, set via `update_metadata_element_properties` (generic — confirmed above, no gap) |
 | Reassign (local `assignee` field) | `reassign_action(todo_guid, new_actor_guid)` (dedicated method — enforces single-assignee) |
 | Complete (local `rfa_status = "completed"`) | `activityStatus = "COMPLETE"` via `update_metadata_element_properties` (generic — confirmed above, no gap) |
-| `GET /api/activity/rfas` overlay | Reads the local mirror (fast, same shape as today's UI) kept in sync with the `ToDo`'s real state — exact sync mechanism (poll vs. write-through vs. event) still open |
+| `GET /api/activity/rfas` overlay | Reads the local mirror (fast, same shape as today's UI) — kept in sync via write-through + periodic two-direction reconciliation, see "Sync mechanics" below |
 
 ## Open questions before building
 
@@ -85,13 +85,71 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
    Egeria client, not just RE — likely desirable (the whole point), but worth
    confirming that's actually wanted before every "defer this" click becomes a
    durable, catalog-wide-visible action instead of a quiet local note.
-4. **Sync mechanics**: given the model is now settled (mirror `ToDoProperties`,
-   keep both in sync), the actual sync mechanism is still undecided —
-   write-through on every local action (RE writes local + calls Egeria
-   synchronously), a background reconciliation pass, or something
-   event-driven. Each has different failure-mode implications (what happens
-   if the Egeria write fails after the local write succeeds, or vice versa)
-   that need their own pass before implementation.
+4. ~~**Sync mechanics**~~ — **decided 2026-08-15**, see "Sync mechanics" below.
+
+## Sync mechanics (decided 2026-08-15)
+
+Grounded in the one directly-analogous precedent already in this codebase —
+`egeria_publisher.py`'s activity-log write faces the identical shape of
+problem (a secondary Egeria-side write that must not fail the primary
+operation): `except Exception as exc: log.warning("Could not write activity
+log entry: %s", exc)`. No outbox/queue table exists anywhere in this repo
+today; build on the established pattern, not a new one.
+
+1. **Local write is authoritative for the response.** A drawer action
+   (defer/reassign/complete) writes the local `rfa_actions` row first (now
+   `ToDoProperties`-shaped) — that write alone defines what the API response
+   returns. The user's action never blocks on Egeria's reachability.
+2. **Egeria `ToDo` call attempted synchronously, same request, non-blocking
+   of the outer result** — same shape as the activity-log precedent: try the
+   matching pyegeria call (`reassign_action`, `update_metadata_element_
+   properties`, …), catch and log on failure, never fail the user's action
+   because Egeria was unreachable. Success: store `egeria_todo_guid` +
+   `synced_at`. Failure: set a `sync_error` field, log a warning.
+3. **Reconciliation, both directions, one pass, reusing `scheduler.py`'s
+   existing background loop** (the same one already running
+   `_check_subscriptions()` — not a new subsystem):
+   - **Write direction** (closes the gap #2 above leaves): rows with no
+     `egeria_todo_guid` or a set `sync_error` get their write retried.
+   - **Read direction** (per direct confirmation, closes what was
+     previously named explicitly out of scope): periodically pull `ToDo`s
+     via `get_my_assigned_actions`/`get_my_to_dos` and reconcile against the
+     local mirror, so a change made by *another* Egeria client (not through
+     RE's own drawer) still shows up locally. Symmetric to the write-side
+     retry, same pass, same cadence.
+   - The activity log can afford pure "log and forget" because it's an
+     audit trail; RFA/ToDo state is live workflow truth both systems must
+     agree on, so unlike the activity-log precedent, silent permanent drift
+     here would be a real bug, not a cosmetic gap — this reconciliation
+     pass is the one genuinely new piece beyond what the precedent alone
+     would give.
+
+## Related, broader idea — not scoped to RFA, noted here so it isn't lost
+
+Per direct discussion: significant changes to an **Asset's** status
+(disposition changes, survey outcomes, anything worth a durable note beyond
+what a property update alone conveys) can be logged as a real Egeria
+`ActivityEntry` attached to the asset — **confirmed fully supported today,
+no pyegeria gap**, verified directly against `pyegeria/core/_server_client.py`
+(the shared base every OMVS client inherits, not a dedicated
+`feedback_manager.py` module — an earlier check in this same conversation
+wrongly assumed one was missing and needed correcting):
+```python
+note_log_guid = client.create_note_log(element_guid=asset_guid, display_name="Status changes")
+client.create_note(note_log_guid, body={
+    "class": "NewElementRequestBody",
+    "properties": {"class": "ActivityEntryProperties", "typeName": "ActivityEntry",
+                   "description": "Disposition changed to abandoned — see linked ToDo for reason"},
+})
+```
+Both `create_note_log`/`create_note` are generic (any `element_guid`, not
+"my profile"-scoped). One pre-existing, already-filed, unrelated wrinkle:
+`update_note` 404s server-side (`egeria-python` `PYEGERIA_ISSUES.md`
+ISSUE-30, Egeria-Server layer, not pyegeria's to fix) — irrelevant here
+since status-change logging is naturally append-only (a new `ActivityEntry`
+per change, never an edit of a past one). This is a separate mechanism from
+the RFA/`ToDo` sync above, not a replacement for any part of it — captured
+here so it isn't lost before its own scoped design pass.
 
 None of this is scoped for implementation yet — this is the "what would it
 take" writeup, so the next design conversation starts from confirmed facts
