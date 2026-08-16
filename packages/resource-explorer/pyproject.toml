@@ -12,6 +12,9 @@ dependencies = [
     "openinference-instrumentation-beeai>=0.1.15",
     # Vector store (pgvector, shared with Egeria Advisor's egeria_advisor Postgres db)
     "pgvector>=0.3.0",
+    # Shared microflow resource-sharing primitives (D6, docs/unified-
+    # survey-execution-model-plan.md) — packages/trellis-microflow
+    "trellis-microflow",
     # Embeddings & LLM
     "sentence-transformers>=3.3.0",
     "ollama>=0.4.0",

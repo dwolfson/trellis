@@ -9,6 +9,7 @@ self-logging too would double it.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,14 @@ import pytest
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+
+@contextmanager
+def _fake_zipball_root(*_args, **_kwargs):
+    """Stand-in for _acquire_zipball_root (D6) — no real network call.
+    Any full-run (steps=None) test now resolves this resource because
+    repo_data_profiling declares requires_resources={"zipball_root": ...}."""
+    yield "/fake/zipball/root"
 
 
 @pytest.fixture
@@ -56,6 +65,15 @@ def _patch_all_surveyors():
         p.start()
         patchers.append(p)
         mocks[step_key] = mock_cls
+    # D6: repo_data_profiling now declares requires_resources -- patch the
+    # actual zipball-download primitive so a full run doesn't hit the real
+    # GitHub API in a unit test.
+    zip_patcher = patch(
+        "resource_explorer.surveyors.repo_survey_definition_adapter._acquire_zipball_root",
+        _fake_zipball_root,
+    )
+    zip_patcher.start()
+    patchers.append(zip_patcher)
     return mocks, patchers
 
 

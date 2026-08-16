@@ -36,8 +36,13 @@ narrow (no native-survey side effect).
 from __future__ import annotations
 
 import json
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
+
+from trellis_microflow import ResourceProvider
 
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
@@ -99,6 +104,52 @@ class StepInfo:
     # path-prefix filter; SurveyOrchestrator.run() only forwards
     # scope_locator to steps flagged True here.
     accepts_scope_locator: bool = False
+    # D6 (docs/unified-survey-execution-model-plan.md) — shared resources
+    # this step needs, as {resource_name: constructor_kwarg_name}. Resolved
+    # once per SurveyOrchestrator.run() call, deduped across every step
+    # selected in that run, via trellis_microflow.resolve_resources — see
+    # RESOURCE_PROVIDERS below for what "zipball_root" actually does.
+    requires_resources: dict[str, str] = field(default_factory=dict)
+
+
+# ── D6: shared-resource providers ────────────────────────────────────────
+# The generic acquire/dedup/cleanup mechanism lives in trellis_microflow
+# (packages/trellis-microflow) — this module only supplies the
+# repo-specific *instance*: what "zipball_root" actually means and how to
+# get one. See that package's README for why the split exists.
+
+@contextmanager
+def _acquire_zipball_root(project, registry):
+    """Download `project`'s repo zipball into a fresh tempdir and yield the
+    extracted root. One real network call + one extraction per invocation —
+    trellis_microflow.resolve_resources is what guarantees this only gets
+    invoked once per SurveyOrchestrator.run() call no matter how many
+    selected steps declare `requires_resources={"zipball_root": ...}`.
+
+    A plain function, not a StepInfo/surveyor — this is the same download
+    `IngestionPipeline.refresh_profile()` already does today (D5's
+    restructuring points refresh_profile() at this same mechanism rather
+    than keeping a second, independent copy of the download+tempdir logic).
+    """
+    from resource_explorer.github.client import GitHubClient
+
+    client = GitHubClient()
+    repo = client.get_repo(project.github_url)
+    with tempfile.TemporaryDirectory() as tmp:
+        yield client.download_zipball(repo, Path(tmp))
+
+
+def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
+    """Builds this run's RESOURCE_PROVIDERS, binding `project`/`registry`
+    into each provider's zero-argument `acquire` via a closure — see
+    ResourceProvider's own docstring for why the binding happens here,
+    not by threading project/registry through trellis_microflow itself."""
+    return {
+        "zipball_root": ResourceProvider(
+            name="zipball_root",
+            acquire=lambda: _acquire_zipball_root(project, registry),
+        ),
+    }
 
 
 STEP_REGISTRY: dict[str, StepInfo] = {
@@ -187,6 +238,17 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         static_kwargs={"data_path": None},
         accepts_surveyed_at=True,
         accepts_scope_locator=True,
+        # D6's own worked example (docs/unified-survey-execution-model-
+        # plan.md) — activates DataProfilerSurveyor's Tier 2 (real
+        # per-file column profiling from a real local clone) for the
+        # first time via any orchestrator-driven path: previously
+        # `local_path` was only ever supplied by an explicit caller
+        # override (SurveyOrchestrator(data_path=...), the CLI's
+        # `--data-path` flag) and never by anything automatic. A real,
+        # flagged behavior change (a real zipball download + real network
+        # cost this step didn't previously pay through this path) — not
+        # silent.
+        requires_resources={"zipball_root": "local_path"},
     ),
     "repo_file_classification": StepInfo(
         "repo_file_classification", FileClassifierSurveyor,
