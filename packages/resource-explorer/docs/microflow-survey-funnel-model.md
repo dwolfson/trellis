@@ -83,6 +83,61 @@ governing principle), partly genuinely open. Not a build plan; see
   catalog... by design") stops being a permanent exception and becomes
   "not yet migrated."
 
+## `AnalysisKind`'s results contract, `FormatSet`, and the Egeria-native View Spec/Annotation Spec — captured 2026-08-15
+
+**Not two independent solutions — one lineage.** `FormatSet`'s
+`question_spec` (`perspectives` + example `questions`) predates RE's real
+`ScopedBy` Question/Perspective graph; the latter is the Egeria-native
+elaboration of the former, not a coincidence. This reframes the whole
+`AnalysisKindResults`/`FormatSet` comparison from "which one is right" to
+"RE independently reinvented, in local Python, exactly what the
+Egeria-native successor to `FormatSet` will eventually formalize" — the
+same prototype-then-promote pattern already playing out for Dashboard
+Sheet (see below), not something new to invent here.
+
+- **Naming**: the Egeria-native successor to `FormatSet`/Report Spec is
+  likely to be called a **View Spec** — "executing and displaying
+  analyses is only one use case" (direct wording), so it isn't scoped to
+  reports specifically.
+- **A real, currently-unresolved gap surfaced along the way: master/detail
+  and drill-down.** `Column.detail_spec: Optional[str]` (a report spec
+  reference for a column's detail view) is `FormatSet`'s existing but
+  loose answer — a bare string reference, no real drill-down semantics
+  declared. RE independently built a *different*, uncoordinated answer to
+  the same need: `AnalysisKindResults.trend_reader` is a wholly separate
+  function alongside the main `results_reader`, not a `detail_spec`-style
+  reference off the summary. Two ad hoc answers to "how do I get from
+  summary to detail," not reconciled — named as a real gap the eventual
+  View Spec/Annotation Spec should resolve properly, not something RE
+  should also patch locally in the meantime.
+- **`Generate Dashboard` as a real step type within a Survey** — not
+  speculative, confirmed against the actual, already-working mechanism:
+  `LOCAL_DASHBOARDS_TUTORIAL.md`/`local_dashboards_handler.py`
+  (`egeria-workspaces-fs`) — a **Dashboard Sheet** (named ordered list of
+  **Placements**), each Placement resolving to a **Report** (a real
+  Egeria `Asset` subtype carrying a `FormatSet` reference + execution
+  params), a nested sheet, or literal markdown text, rendered by the
+  Local Dashboards portal app (`/local-dashboards`). A Generate-Dashboard
+  microflow would: gather the report specs relevant to the survey's own
+  produced annotation types, author (or update from a user-provided
+  template) a Dr.Egeria markdown block (`Create Report`/`Create Dashboard
+  Sheet`/`Link Report to Dashboard Sheet`/`Add Text on Dashboard Sheet`),
+  execute it via the same `dr_egeria_run_block` round-trip used all
+  session for foundations/questions/Survey Definitions. Real, buildable —
+  and closes the "reuse the Local Dashboard work for presentation" thread
+  from earlier in this same conversation, arriving on its own rather than
+  forced.
+  - **Real prerequisite, not yet met**: RE has zero `FormatSet`/report
+    specs of its own today for anything `AnalysisKind` produces — nothing
+    for a Generate-Dashboard step to assemble from until that exists.
+  - **Explicit mutual-prototype status** (direct wording): "the annotation
+    spec concept may come into play here — perhaps replacing some of this
+    — but we can view this as a first prototype." Provisional on both
+    sides right now — Dashboard Sheet is itself still local JSON, planned
+    to migrate to a real Egeria `Collection` subtype (same
+    `LOCAL_DASHBOARDS_TUTORIAL.md`), same lineage pattern as `FormatSet` →
+    View Spec.
+
 ## Explicitly open — named, not resolved here
 
 - **Cross-resource-type generalization.** Database and filesystem
@@ -97,11 +152,17 @@ governing principle), partly genuinely open. Not a build plan; see
 - **Enrichment-as-Survey** — floated, explicitly "if it makes sense," not
   decided either way.
 - **`analysis_catalog.yaml`'s `AnalysisKind` registry's relationship to
-  "Survey"** — not addressed directly in this session's discussion. Under
-  this model, is an `AnalysisKind` entry just another (single-microflow)
-  Survey type, or does it stay a parallel, YAML-driven concept alongside
-  real `GovernanceActionProcess`-backed Surveys? Real question, not yet
-  asked directly, let alone answered.
+  "Survey"** — partially clarified 2026-08-15: real examples showed 12 of
+  13 `ANALYSIS_KINDS` entries are already single-microflow, so most are
+  trivially "just a Survey type" under this model. What's still genuinely
+  open is narrower than originally framed — not "is `AnalysisKind` a
+  Survey" but **"does `AnalysisKindResults` (the results/trend/render-mode
+  contract) move onto a real Egeria View Spec/Annotation Spec once one
+  exists, or stay RE-local"** — see the section above.
+- **View Spec/Annotation Spec's actual shape** — inferred by analogy to
+  `FormatSet` (the closest existing model), not confirmed against a real
+  type definition, which doesn't exist yet on the Egeria side. Treat the
+  section above as a hypothesis to validate later, not settled fact.
 
 ## Relationship to other docs
 
