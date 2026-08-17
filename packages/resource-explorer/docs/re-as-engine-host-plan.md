@@ -74,7 +74,11 @@ The Java `GovernanceContextClientBase` is a pure URL-template wrapper over exact
 
 ## Case 4 — delegate a step from RE's local orchestration to Egeria
 
-Cheapest real slice, and the right one to build first: a new step-runner in RE's step registry that wraps the already-existing `initiate_engine_action()` + a completion poll (`get_engine_action(guid)` until terminal status), folding the result into RE's existing `AnalysisKindResults` shape. Composes directly with `SurveyOrchestrator.run(steps=[...])` — one step in a local sequence becomes "call out to Egeria and wait" instead of "call a local sub-surveyor." No new pyegeria client work; the missing half is entirely RE-side wiring. Good candidate to prove the pattern live before committing to case 2's bigger investment.
+**Built 2026-08-17**: `resource_explorer/surveyors/egeria_delegated_step.py` — `initiate_and_wait()` (the generic trigger-and-block primitive, wrapping `AutomatedCuration.initiate_engine_action()` + a poll loop against `MetadataExpert.get_metadata_element_by_guid()`) and `EgeriaDelegatedStepSurveyor` (a `BaseSurveyor`-shaped wrapper, parameterized entirely by constructor kwargs so a delegated step needs no new surveyor subclass — just a `STEP_REGISTRY` entry naming the target `request_type`). Composes directly with `SurveyOrchestrator.run(steps=[...])` as designed. Fully unit-tested (9 tests, mocked pyegeria clients).
+
+**Live verification found a real, blocking pyegeria bug, not an RE bug**: `AutomatedCuration.initiate_engine_action()` always 404s — confirmed against the real Java route (`OpenGovernanceResource.java`) that the URL is missing the governance engine's *name* as a required path segment, and the method has no parameter to supply one. Filed as `PYEGERIA_ISSUES.md` ISSUE-50 (egeria-python repo), not fixed directly per standing policy. This module is otherwise complete and ready — live end-to-end verification (trigger a real delegated action, confirm it completes, confirm the resulting annotation) is blocked until ISSUE-50 lands.
+
+**Not yet done**: wiring a real `STEP_REGISTRY` entry using this (no concrete target `request_type` chosen yet — needs a real Egeria-native governance/survey service to delegate to, decided once ISSUE-50 unblocks live testing).
 
 ## Case 1 — trigger a fully-native Egeria survey from RE
 
