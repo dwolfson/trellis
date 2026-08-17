@@ -398,12 +398,6 @@
            Tier 2), reused as a sub-tab wherever "Survey" already lives. -->
       <div id="scouting-results-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
-      <!-- Coarse Profile sub-tab (repos, repo selected) — on-demand file/language
-           zipball refresh, decoupled from pgvector re-ingestion. Owns
-           project_file_inventory/project_data_profiles (+ optionally
-           project_code_symbols) independent of any full survey. -->
-      <div id="scouting-profile-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
-
       <!-- Disposition sub-tab (repos, repo selected) — dedicated view of
            the current disposition + full history/timeline of past
            decisions, replacing the compact button row on the Scouting
@@ -1385,7 +1379,7 @@ function showIntentPlaceholder(intent) {
 // that anymore. If a real need for repo-scoped analysis inside Scouting
 // shows up later, re-add it with actual content rather than restoring the
 // redirect.
-let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'results' | 'profile' | 'questions' | 'disposition' — persists across selection changes ('sub-resources' moved to Assessment, 2026-08-13; 'results' added for the Survey Results dashboard)
+let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'results' | 'questions' | 'disposition' — persists across selection changes ('sub-resources' moved to Assessment, 2026-08-13; 'results' added for the Survey Results dashboard; 'profile' folded into 'survey' — its action moved onto the Survey tab, its results now live in Results, per direct request)
 
 function showScoutingPane() {
   if (resourceTypeFacet === 'repo') {
@@ -1408,7 +1402,6 @@ function _scoutingSubnavHtml(active) {
     { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
     { tab: 'results',     label: '📈 Results' },  // Survey Results dashboard (docs/survey-results-dashboard-plan.md) — repo-wide, cross-stage, next to Survey since that's where a run's results naturally get looked for
-    { tab: 'profile',     label: '📄 Coarse Profile' },  // "Coarse" to distinguish from any future deeper content-analysis pass; deliberately not "Discovery" (collides with the nav intent + the Discover sub-tab)
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
@@ -1430,7 +1423,6 @@ function _showScoutingSubTab(tab) {
   if (tab === 'discover') showMainView('scouting-discover');
   else if (tab === 'survey') showMainView('scouting-overview');
   else if (tab === 'results') showMainView('scouting-results');
-  else if (tab === 'profile') showMainView('scouting-profile');
   else if (tab === 'questions') { _questionsDispositionHost = 'scouting'; _questionsPhase = 'scouting'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'scouting'; showMainView('scouting-disposition'); }
 }
@@ -2298,7 +2290,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
         </div>`).join('');
   }
   if (analysisId === 'language_file_classification') {
-    if (!data.by_type || !data.by_type.length) return `<div class="text-xs text-slate-500">No classification yet — click Refresh coarse profile.</div>`;
+    if (!data.by_type || !data.by_type.length) return `<div class="text-xs text-slate-500">No classification yet — run "Refresh coarse profile" from the Survey tab.</div>`;
     return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
       data.by_type.map(t => `
         <div class="text-xs text-slate-300 flex justify-between gap-2">
@@ -4688,7 +4680,7 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
   // candidates. Absent entirely when there's no vocabulary to filter by
   // (db/filesystem hosts, or a repo phase with no cataloged questions).
   const perspectiveChips = _surveyPanelAvailablePerspectives.map(p => `<button
-      onclick="_toggleSurveyPanelPerspective(${JSON.stringify(p)})"
+      onclick='_toggleSurveyPanelPerspective(${JSON.stringify(p)})'
       class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_surveyPanelActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
   const perspectiveRowHtml = _surveyPanelAvailablePerspectives.length ? `
     <div class="px-4 pt-2">
@@ -5751,7 +5743,6 @@ function showMainView(tab) {
   const scoutingResultsView = document.getElementById('scouting-results-view');
   const scoutingDiscoverView = document.getElementById('scouting-discover-view');
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
-  const scoutingProfileView = document.getElementById('scouting-profile-view');
   const scoutingQuestionsView = document.getElementById('scouting-questions-view');
   const assessmentSubResourcesView = document.getElementById('assessment-sub-resources-view');
   const reportView    = document.getElementById('report-view');
@@ -5768,7 +5759,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -5806,9 +5797,6 @@ function showMainView(tab) {
   } else if (tab === 'scouting-disposition') {
     scoutingDispositionView.classList.remove('hidden');
     loadScoutingDispositionView();
-  } else if (tab === 'scouting-profile') {
-    scoutingProfileView.classList.remove('hidden');
-    loadScoutingProfileView();
   } else if (tab === 'scouting-questions') {
     scoutingQuestionsView.classList.remove('hidden');
     loadScoutingQuestions();
@@ -5894,6 +5882,13 @@ function renderScoutingOverview(d) {
   const publishedBadge = d.is_published
     ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published to Egeria${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
     : `<span class="text-slate-500">Not published</span>`;
+  // Coarse Profile's own badge — folded into the Survey tab (its dedicated
+  // sub-tab was removed per direct request: the action belongs with every
+  // other "run" action here, its results belong in the Results tab, not a
+  // third home for either).
+  const profiledBadge = d.last_profiled_at
+    ? `<span class="text-emerald-400" title="Profiled ${_esc(d.last_profiled_at)}">📄 Profiled ${_relTime(d.last_profiled_at)}</span>`
+    : `<span class="text-slate-500">📄 Not yet profiled</span>`;
   const _LIFECYCLE_LABELS = {
     active: '', archived: '📦 Archived', disabled: '🚫 Disabled',
     fork: '🍴 Fork', template: '📋 Template',
@@ -5963,12 +5958,36 @@ function renderScoutingOverview(d) {
           title="Registers/finds the SourceControlLibrary asset in Egeria and publishes just the repository_health annotation — the minimal 'this repo exists' catalog entry">
           ☁ Publish registration only
         </button>
-        <button onclick="_showScoutingSubTab('profile')" class="text-xs text-slate-400 hover:text-slate-200 underline">📄 Coarse profile this repo →</button>
         <button onclick="_showScoutingSubTab('questions')" class="text-xs text-slate-400 hover:text-slate-200 underline">❓ Questions checklist →</button>
         <button onclick="setNavIntent('analysis')" class="text-xs text-slate-400 hover:text-slate-200 underline" title="Re-embedding for chat/search isn't a Scouting-tier action — it's the 'Refresh & Re-ingest' card under Analysis, which is independently on-demand and schedulable there">🔄 Refresh chat search index (Analysis) →</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
       <div class="text-[11px] text-slate-500">${surveyedBadge} · ${publishedBadge}</div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 space-y-2">
+        <div class="text-xs font-semibold text-slate-300">Coarse Profile</div>
+        <p class="text-[11px] text-slate-500">Download the repo's zipball once and refresh what's actually in it —
+          file types, sizes, and language shape. Assessment's security/documentation checks and Analysis's API
+          structure both read from code symbols, which only the checkbox below refreshes.</p>
+        <label class="flex items-center gap-2 text-xs text-slate-300">
+          <input type="checkbox" id="profile-include-symbols" class="rounded bg-slate-800 border-slate-600">
+          Also refresh code symbols (needed for Assessment's security/documentation checks and Analysis's API structure)
+        </label>
+        <div class="flex flex-wrap gap-2 items-center pt-1">
+          <button onclick="runProfileScan('${_esc(d.slug)}', this)"
+            class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">
+            📄 Refresh coarse profile
+          </button>
+          <button onclick="publishProfileFindings('${_esc(d.slug)}', this)"
+            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
+            title="Publishes this phase's file/language-classification and data-profiling findings as their own SurveyReport">
+            ☁ Publish this phase's findings
+          </button>
+          <button onclick="_showScoutingSubTab('results')" class="text-xs text-slate-400 hover:text-slate-200 underline">View results →</button>
+        </div>
+        <div id="profile-refresh-badges" class="text-[11px] text-slate-500">${profiledBadge}</div>
+        <div id="profile-scan-feedback" class="text-xs"></div>
+      </div>
 
       <div>
         <div class="flex items-center justify-between mb-1">
@@ -6273,14 +6292,9 @@ async function _publishScopedSteps(slug, steps, btn, label) {
     if (data.status === 'ok') {
       showToast('success', `${label}: published ${data.annotation_count} annotation(s).`, 4000);
       loadActivityLog();
-      // Refresh whichever Scouting sub-tab is actually visible — this can
-      // be called from either Survey or Coarse Profile, and each has its
-      // own "Published X ago" badge; always reloading the Survey tab's view
-      // left Coarse Profile's badge silently stale until a manual tab switch.
-      if (selectedProject === slug) {
-        if (_scoutingSubTab === 'profile') loadScoutingProfileView();
-        else loadScoutingOverview();
-      }
+      // The Survey tab is the only publish surface now (Coarse Profile
+      // folded into it) — always safe to just reload it.
+      if (selectedProject === slug) loadScoutingOverview();
     } else {
       const stage = data.stage ? ` (failed at ${data.stage} step)` : '';
       showToast('error', `${label} failed: ${_esc(data.error || 'unknown error')}${stage}`, 6000);
@@ -6301,76 +6315,11 @@ function publishScoutingRegistration(slug, btn) {
   return _publishScopedSteps(slug, ['repo_health'], btn, 'Registration');
 }
 
-// ── Profile sub-tab — on-demand file/language zipball refresh ─────────────────
-async function loadScoutingProfileView() {
-  if (!selectedProject) return;
-  const view = document.getElementById('scouting-profile-view');
-  view.innerHTML = _scoutingSubnavHtml('profile') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
-  try {
-    const res = await fetch(`/api/projects/${selectedProject}/scouting-overview`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderScoutingProfileView(await res.json());
-  } catch(e) {
-    view.innerHTML = _scoutingSubnavHtml('profile') +
-      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
-  }
-}
-
-function renderScoutingProfileView(d) {
-  const view = document.getElementById('scouting-profile-view');
-  const profiledBadge = d.last_profiled_at
-    ? `<span class="text-emerald-400" title="Refreshed ${_esc(d.last_profiled_at)}">📄 Refreshed ${_relTime(d.last_profiled_at)}</span>`
-    : `<span class="text-slate-500">🆕 Never refreshed</span>`;
-  const publishedBadge = d.is_published
-    ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
-    : `<span class="text-slate-500">Not published</span>`;
-  view.innerHTML = _scoutingSubnavHtml('profile') + `
-    <div class="max-w-2xl space-y-4">
-      <div>
-        <h2 class="text-sm font-semibold text-slate-200">Coarse Profile: ${_esc(d.display_name)}</h2>
-        <p class="text-xs text-slate-500 mt-1">Download the repo's zipball once and refresh what's actually in it —
-          file types, sizes, and language shape — independent of pgvector re-ingestion (see the "Refresh &amp;
-          Re-ingest" card under Analysis for that). Assessment's security/documentation checks and Analysis's API
-          structure both read from code symbols, which only the checkbox below refreshes.</p>
-      </div>
-
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 space-y-2">
-        <label class="flex items-center gap-2 text-xs text-slate-300">
-          <input type="checkbox" id="profile-include-symbols" class="rounded bg-slate-800 border-slate-600">
-          Also refresh code symbols (needed for Assessment's security/documentation checks and Analysis's API structure)
-        </label>
-        <div class="flex flex-wrap gap-2 items-center pt-1">
-          <button onclick="runProfileScan('${_esc(d.slug)}', this)"
-            class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">
-            📄 Refresh coarse profile
-          </button>
-          <button onclick="publishScoutingRegistration('${_esc(d.slug)}', this)"
-            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
-            title="Registers/finds the catalog asset and publishes just the repository_health annotation — not this tab's file/language findings">
-            ☁ Publish registration only
-          </button>
-          <button onclick="publishProfileFindings('${_esc(d.slug)}', this)"
-            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
-            title="Publishes this phase's file/language-classification and data-profiling findings as their own SurveyReport">
-            ☁ Publish this phase's findings
-          </button>
-        </div>
-        <div id="profile-refresh-badges" class="text-[11px] text-slate-500">${profiledBadge} · ${publishedBadge}</div>
-        <div id="profile-scan-feedback" class="text-xs"></div>
-      </div>
-
-      <div>
-        <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">File/language breakdown</h3>
-        <div id="results-language_file_classification" class="bg-slate-950 border border-slate-800 rounded p-2 space-y-1">
-          <div class="text-xs text-slate-500">Refresh the profile to classify this repo's files.</div>
-        </div>
-      </div>
-    </div>`;
-  // Show whatever's already there from a prior refresh, if any — the empty
-  // placeholder above only shows until this resolves.
-  loadAnalysisResults('language_file_classification', d.slug);
-}
-
+// ── Coarse Profile action — on-demand file/language zipball refresh,
+// folded into the Survey tab (renderScoutingOverview) per direct request:
+// its own dedicated sub-tab was removed since the action belongs alongside
+// every other "run" action there, and its results belong in the Results
+// tab (Code Structure dashboard), not a third home for either. ─────────────
 async function runProfileScan(slug, btn) {
   const orig = btn.textContent;
   const includeSymbols = document.getElementById('profile-include-symbols')?.checked || false;
@@ -6388,22 +6337,13 @@ async function runProfileScan(slug, btn) {
     if (data.status === 'ok') {
       showToast('success', data.message || 'Profile refreshed.', 4000);
       if (fb) fb.innerHTML = `<span class="text-emerald-400">✓ ${_esc(data.message)}</span>`;
-      if (data.classified) {
-        // Auto-chained language_file_classification survey succeeded —
-        // refresh the breakdown shown below so the tab reflects it without
-        // a second click.
-        loadAnalysisResults('language_file_classification', slug);
-      } else if (data.classification_error) {
-        if (fb) fb.innerHTML += `<div class="text-amber-400 mt-1">⚠ Classification failed: ${_esc(data.classification_error)}</div>`;
+      if (data.classification_error) {
+        fb.innerHTML += `<div class="text-amber-400 mt-1">⚠ Classification failed: ${_esc(data.classification_error)}</div>`;
       }
-      // Update the "Refreshed X ago" badge in place — a full loadScoutingProfileView()
-      // re-render would blow away the feedback message above and re-fetch
-      // results redundantly; the published badge doesn't need to change here.
+      // Update the "Profiled X ago" badge in place — a full loadScoutingOverview()
+      // re-render would blow away the feedback message above.
       const badges = document.getElementById('profile-refresh-badges');
-      if (badges) {
-        const publishedSpan = badges.querySelector('span:last-child');
-        badges.innerHTML = `<span class="text-emerald-400" title="Refreshed just now">📄 Refreshed just now</span> · ${publishedSpan ? publishedSpan.outerHTML : ''}`;
-      }
+      if (badges) badges.innerHTML = `<span class="text-emerald-400" title="Profiled just now">📄 Profiled just now</span>`;
       loadProjects();  // refresh sidebar
     } else {
       showToast('error', `Refresh failed: ${_esc(data.error || 'unknown error')}`, 6000);
