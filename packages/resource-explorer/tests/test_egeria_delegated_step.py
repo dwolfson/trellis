@@ -39,7 +39,7 @@ def _mock_element(status: str, completion_message: str = "") -> dict:
     return {
         "elementProperties": {
             "propertyValueMap": {
-                "actionStatus": {"class": "EnumTypePropertyValue", "symbolicName": status},
+                "activityStatus": {"class": "EnumTypePropertyValue", "symbolicName": status},
                 "completionMessage": {"class": "PrimitiveTypePropertyValue", "primitiveValue": completion_message},
             }
         }

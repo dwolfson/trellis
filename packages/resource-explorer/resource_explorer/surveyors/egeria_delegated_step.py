@@ -21,17 +21,35 @@ segment (confirmed against the real Java route, OpenGovernanceResource.
 java's /governance-engines/{governanceEngineName}/engine-actions/
 initiate), and the method has no parameter to supply one.
 
-**Workaround, also live-verifiable once the platform's back**:
-AutomatedCuration.initiate_gov_action_type() hits POST .../governance-
-action-types/initiate -- the same flat URL shape as initiate_gov_action_
-process (no engine-name path segment at all), since a GovernanceActionType
-already carries its own GovernanceActionExecutor link to a specific
-engine + requestType, resolved server-side from the metadata rather than
-passed by the caller. This sidesteps ISSUE-50 entirely.
-initiate_action_type_and_wait() below is the primary, currently-viable
-trigger path; initiate_and_wait() (the direct initiate_engine_action()
-path) is kept for when ISSUE-50 is fixed, since it needs no pre-authored
-GovernanceActionType per delegated step.
+**Workaround, live-verified end to end 2026-08-17** against a real
+platform: AutomatedCuration.initiate_gov_action_type() hits POST .../
+governance-action-types/initiate -- the same flat URL shape as
+initiate_gov_action_process (no engine-name path segment at all), since a
+GovernanceActionType already carries its own GovernanceActionExecutor
+link to a specific engine + requestType, resolved server-side from the
+metadata rather than passed by the caller. This sidesteps ISSUE-50
+entirely. Confirmed via docs/dr-egeria/re-delegated-step-probe.md
+(authored a GovernanceActionType + Link Action to Action Executor to the
+real Stewardship engine's write-to-audit-log service, confirming Link
+Action to Action Executor's own executor GUID matched the real Stewardship
+engine's GUID from the Java source) followed by a real
+EgeriaDelegatedStepSurveyor.run() call reaching actionStatus COMPLETED
+with a real completion message. initiate_action_type_and_wait() below is
+the primary, currently-viable trigger path; initiate_and_wait() (the
+direct initiate_engine_action() path) is kept for when ISSUE-50 is fixed,
+since it needs no pre-authored GovernanceActionType per delegated step.
+
+**A second, real bug was found and fixed during that same live pass --
+this one RE's own, not pyegeria's**: _poll_action_status() originally read
+the wrong wire property key ("actionStatus", derived from
+EngineActionElement.java's getActionStatus() bean getter) instead of the
+real key, "activityStatus" (confirmed by inspecting a live EngineAction's
+raw elementProperties.propertyValueMap -- same key ToDo uses for the same
+ActivityStatus enum type). The wrong key always read back "UNKNOWN", which
+isn't in _ACTIVE_STATUSES, so polling stopped after exactly one iteration
+and reported a false-terminal result even while the action was still
+genuinely in flight. Fixed here directly (not filed as a PYEGERIA_ISSUES.md
+entry -- this was never pyegeria's bug).
 
 Two triggering primitives, one polling helper, one surveyor wrapper:
   initiate_and_wait()             -- direct engine-action trigger. Blocked
@@ -69,7 +87,9 @@ from resource_explorer.surveyors.survey_report import (
 
 log = logging.getLogger(__name__)
 
-# ActivityStatus symbolic names (Egeria's EngineActionElement.actionStatus)
+# ActivityStatus symbolic names (Egeria's EngineActionElement "activityStatus"
+# wire property -- see _poll_action_status's docstring for the real vs.
+# Java-bean-getter-name confusion this key had during development)
 # that mean "still running" -- anything else is terminal. Confirmed against
 # GovernanceActionStatus.java's enum table (docs/re-as-engine-host-plan.md's
 # research): REQUESTED/APPROVED/WAITING/ACTIVATING/IN_PROGRESS precede a
@@ -120,6 +140,18 @@ def _poll_action_status(
     flattened report-spec read -- get_metadata_element_by_guid is a single-
     element point lookup with no pagination concerns, the simplest correct
     tool for polling one known GUID.
+
+    Live-verified 2026-08-17 against a real EngineAction element: the wire
+    property key is "activityStatus" (same key ToDo uses for the same
+    ActivityStatus enum type) -- NOT "actionStatus", despite that being the
+    Java bean's field/getter name on EngineActionElement.java
+    (getActionStatus()). A first version of this function used the wrong
+    key, read back "UNKNOWN" on every poll (a key that doesn't exist in
+    _ACTIVE_STATUSES, so it was misread as an immediate terminal state),
+    and returned after one iteration on a request that was, per
+    completionGuards/completionTime in the raw response, still genuinely
+    in flight at that moment. Fixed here, not filed as a pyegeria issue --
+    this was RE's own property-key mistake, not pyegeria's.
     """
     deadline = time.monotonic() + timeout
     status = "UNKNOWN"
@@ -128,7 +160,7 @@ def _poll_action_status(
         prop_map: dict[str, Any] = {}
         if isinstance(element, dict):
             prop_map = (element.get("elementProperties") or {}).get("propertyValueMap") or {}
-        status = (prop_map.get("actionStatus") or {}).get("symbolicName", "UNKNOWN")
+        status = (prop_map.get("activityStatus") or {}).get("symbolicName", "UNKNOWN")
 
         if status not in _ACTIVE_STATUSES:
             completion_message = (prop_map.get("completionMessage") or {}).get("primitiveValue", "")
