@@ -4791,6 +4791,7 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) 
       <div class="text-xs font-semibold text-slate-200">${_esc(d.title)}</div>
       <div class="text-xs text-slate-400 mt-0.5 mb-2">${_esc(d.description)}</div>
       ${body}
+      ${_renderDashboardTrendPlaceholder(d)}
     </div>`;
   }).join('');
 
@@ -4801,6 +4802,71 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) 
     ${perspectiveRowHtml}
     <div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cardsHtml ||
       '<div class="text-slate-600 text-xs text-center py-8 col-span-2">No dashboards match the active Perspective filter.</div>'}</div>`;
+  _loadDashboardTrendCharts(visible, slug);
+}
+
+// Per-dashboard trend charts — deliberately opt-in per dashboard.id (not
+// "every analysis_id with a trend_reader gets one automatically") since not
+// every dashboard's underlying data tells a meaningful over-time story
+// (e.g. license classification rarely changes — see _license_results' own
+// no-trend-reader docstring). health_maturity has no usable per-analysis_id
+// trend at all today (maturity is a deliberately trend-less current-state
+// classification; repository_health has no results view) — its real "is
+// this healthy over time" signal is community growth, so it reuses the
+// existing stars-over-time chart (Understanding's own /charts/stars route)
+// rather than inventing a new backend reader for it.
+const _DASHBOARD_TREND_CONFIG = {
+  documentation_conventions: { kind: 'analysis_trends', analysis_ids: ['documentation_coverage', 'repo_conventions'] },
+  health_maturity: { kind: 'stars_chart' },
+};
+
+function _renderDashboardTrendPlaceholder(dashboard) {
+  const cfg = _DASHBOARD_TREND_CONFIG[dashboard.id];
+  if (!cfg) return '';
+  if (cfg.kind === 'stars_chart') {
+    return `<div class="mt-2 pt-2 border-t border-slate-800">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">Star growth over time</div>
+      <div id="dashtrend-${dashboard.id}-stars" style="height:130px"></div>
+    </div>`;
+  }
+  return `<div class="mt-2 pt-2 border-t border-slate-800 space-y-2">
+    ${cfg.analysis_ids.map(id => `
+      <div id="dashtrend-wrap-${dashboard.id}-${id}" class="hidden">
+        <div class="text-[10px] text-slate-500 uppercase tracking-wide">${_esc(_REPO_TREND_LABEL[id] || id)} over time</div>
+        <div id="dashtrend-${dashboard.id}-${id}" style="height:100px"></div>
+      </div>`).join('')}
+  </div>`;
+}
+
+async function _loadDashboardTrendCharts(dashboards, slug) {
+  for (const d of dashboards) {
+    const cfg = _DASHBOARD_TREND_CONFIG[d.id];
+    if (!cfg) continue;
+    if (cfg.kind === 'stars_chart') {
+      try {
+        const res = await fetch(`/api/stats/${encodeURIComponent(slug)}/charts/stars`);
+        if (!res.ok) continue;
+        const fig = await res.json();
+        const el = document.getElementById(`dashtrend-${d.id}-stars`);
+        if (el && typeof Plotly !== 'undefined' && fig.data && fig.data.length) {
+          Plotly.newPlot(el, fig.data, { ...(fig.layout || {}), height: 130, margin: { l: 32, r: 8, t: 8, b: 30 } },
+            { displayModeBar: false, responsive: true });
+        }
+      } catch(e) { /* best-effort — chart just stays empty */ }
+    } else if (cfg.kind === 'analysis_trends') {
+      for (const analysisId of cfg.analysis_ids) {
+        try {
+          const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/${analysisId}/trend`);
+          if (!res.ok) continue;
+          const { runs } = await res.json();
+          if (runs && runs.length > 1) {
+            document.getElementById(`dashtrend-wrap-${d.id}-${analysisId}`)?.classList.remove('hidden');
+            _renderAnalysisTrendChart(`dashtrend-${d.id}-${analysisId}`, runs, analysisId);
+          }
+        } catch(e) { /* best-effort */ }
+      }
+    }
+  }
 }
 
 // The default render mode — stack each analysis_id's own existing results
