@@ -103,6 +103,13 @@ class StepInfo:
     # path-prefix filter; SurveyOrchestrator.run() only forwards
     # scope_locator to steps flagged True here.
     accepts_scope_locator: bool = False
+    # Whether this surveyor's constructor accepts fast (the Scouting-tier
+    # "skip anything N+1/expensive" flag) — only repo_health today
+    # (StatsFetcher's per-commit diff-stats calls, a confirmed real
+    # slowness bug for the Coarse Scout survey definition — see
+    # HealthSurveyor.__init__'s own docstring). SurveyOrchestrator.run()
+    # only forwards fast to steps flagged True here.
+    accepts_fast: bool = False
     # D6 (docs/unified-survey-execution-model-plan.md) — shared resources
     # this step needs, as {resource_name: constructor_kwarg_name}. Resolved
     # once per SurveyOrchestrator.run() call, deduped across every step
@@ -172,6 +179,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_health", HealthSurveyor,
         "Activity, community, release-cadence, and freshness scoring from GitHub stats.",
         ["QualityScoreAnnotation"],
+        accepts_fast=True,
     ),
     "repo_dependency": StepInfo(
         "repo_dependency", DependencySurveyor,
@@ -279,11 +287,15 @@ STEP_REGISTRY: dict[str, StepInfo] = {
 
 
 def _run_step(step_key: str, **orchestrator_kwargs):
-    def runner(project, registry, **_) -> dict:
+    def runner(project, registry, fast: bool = False, **_) -> dict:
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
         orch = SurveyOrchestrator(registry, **orchestrator_kwargs)
-        result = orch.run(project.slug, steps=[step_key])
+        # fast only actually applies to steps whose StepInfo.accepts_fast is
+        # True (repo_health today) — SurveyOrchestrator.run() ignores it for
+        # every other step, so forwarding it unconditionally here is safe
+        # for any step_key, not just the ones that care.
+        result = orch.run(project.slug, steps=[step_key], fast=fast)
         return {"annotations": result.annotations}
 
     return runner

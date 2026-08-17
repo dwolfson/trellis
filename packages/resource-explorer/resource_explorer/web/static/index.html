@@ -6249,26 +6249,57 @@ function _renderScoutingDispositionView(d, history) {
     </div>`;
 }
 
+// Fire-and-forget + poll — the route used to run synchronously in the HTTP
+// request itself, which for an active repo's first scan could take 10+
+// minutes with zero visibility (a real, confirmed slowness bug — see
+// _run_scouting_scan_sync's fast=True comment on the backend). The route
+// now returns an activity_id immediately; this polls the same Activity Log
+// entry every other background operation in this codebase already writes
+// to (org_importer.py's batch-import precedent) until it reaches a
+// terminal status.
 async function runScoutingScan(slug, btn) {
   const orig = btn.textContent;
-  btn.textContent = '⟳ Scanning…';
+  btn.textContent = '⟳ Starting…';
   btn.disabled = true;
   try {
     const res = await fetch(`/api/projects/${slug}/scouting-scan`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (data.status === 'ok') {
-      showToast('success', 'Scouting scan complete.', 3000);
-      loadScoutingOverview();
-      loadProjects();  // refresh sidebar lifecycle badge
+    btn.textContent = '⟳ Running…';
+    showToast('running', `Running Scouting Scan for <strong>${_esc(slug)}</strong>… (can take a while for very active repos — check 📋 Activity if you navigate away)`, 0);
+    const runningToastId = `toast-${_toastSeq}`;
+    const final = await _pollActivityUntilDone(data.activity_id);
+    document.getElementById(runningToastId)?.remove();
+    if (final.status === 'ok') {
+      showToast('success', final.summary || 'Scouting scan complete.', 4000);
     } else {
-      showToast('error', `Scan failed: ${_esc(data.error || 'unknown error')}`, 5000);
+      showToast('error', `Scan failed: ${_esc(final.summary || 'unknown error')}`, 6000);
     }
+    loadScoutingOverview();
+    loadProjects();  // refresh sidebar lifecycle badge
   } catch(e) {
     showToast('error', `Scan failed: ${_esc(e.message)}`, 5000);
   } finally {
     btn.textContent = orig;
     btn.disabled = false;
   }
+}
+
+// Generic activity-entry poll — GET /api/activity/{id} until status isn't
+// "running" anymore. 3s interval, ~20min cap (well beyond even a slow
+// unfast-pathed scan) so a genuinely stuck entry doesn't poll forever.
+async function _pollActivityUntilDone(activityId, { intervalMs = 3000, maxAttempts = 400 } = {}) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, intervalMs));
+    try {
+      const res = await fetch(`/api/activity/${activityId}`);
+      if (res.ok) {
+        const entry = await res.json();
+        if (entry.status !== 'running') return entry;
+      }
+    } catch(e) { /* transient — keep polling */ }
+  }
+  return { status: 'error', summary: 'Timed out waiting for the scan to finish — check 📋 Activity for its actual outcome.' };
 }
 
 // Phase-scoped Egeria publish — reuses the same POST /api/egeria/{slug}/publish

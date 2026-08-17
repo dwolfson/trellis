@@ -31,7 +31,11 @@ def test_each_step_key_delegates_to_orchestrator_with_itself_as_the_only_step():
             MockOrch.return_value.run.return_value = fake_result
             output = runner(project, registry)
 
-        MockOrch.return_value.run.assert_called_once_with(project.slug, steps=[key])
+        # fast=False is the runner's own default when its caller (e.g. the
+        # Survey Definition executor) doesn't pass one — forwarded
+        # unconditionally to SurveyOrchestrator.run(), which itself only
+        # actually applies it to steps whose StepInfo.accepts_fast is True.
+        MockOrch.return_value.run.assert_called_once_with(project.slug, steps=[key], fast=False)
         assert output == {"annotations": [f"ann-for-{key}"]}
 
 

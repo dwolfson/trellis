@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -339,14 +341,17 @@ class ScoutingScanResult(BaseModel):
     error: str | None = None
 
 
-@router.post("/{slug}/scouting-scan", response_model=ScoutingScanResult)
-async def run_scouting_scan(slug: str) -> ScoutingScanResult:
-    """Fast, API-only coarse scan (repo stats + language classification) —
-    runs the "Repo Coarse Scout" Survey Definition via the same executor
-    Discovery's manual "Run" button uses. Local-only by default, no
-    auto-publish, matching the existing convention that publish is always
-    a separate, deliberate action."""
-    from resource_explorer.registry import ProjectRegistry
+class ScoutingScanStarted(BaseModel):
+    status: str = "started"
+    slug: str
+    activity_id: str
+
+
+def _run_scouting_scan_sync(slug: str, registry) -> ScoutingScanResult:
+    """The actual scan work, shared by the background-thread path below and
+    kept as a plain sync function (no FastAPI/asyncio coupling) so it's
+    trivially callable from a daemon thread with its own fresh registry
+    connection — same convention as org_importer.py's _run_import_batch."""
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
         REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
     )
@@ -356,19 +361,17 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     )
     from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
 
-    registry = ProjectRegistry()
-    project = registry.get(slug)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-
-    def _run():
-        return run_survey_definition(
+    try:
+        # fast=True — Coarse Scout's whole premise is being the cheap, fast
+        # tier; without this, HealthSurveyor's stats refresh makes one
+        # GitHub API call per commit in the last 90 days (a confirmed real
+        # slowness bug for active repos, easily several minutes). See
+        # StepInfo.accepts_fast / HealthSurveyor.__init__'s own docstrings.
+        result = run_survey_definition(
             "repo", slug, registry=registry,
             survey_definition_ref=REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
+            fast=True,
         )
-
-    try:
-        result = await asyncio.to_thread(_run)
     except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
         # Egeria-side Survey Definitions don't survive an Egeria database
         # reset — a real, recurring event in development, not a one-off
@@ -379,12 +382,11 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
         # and manually re-authors the definition in Egeria. Scouting Scan
         # never actually needed Egeria to know *what* the two steps are,
         # only to name/bundle them — so fall back to running them directly.
-        def _run_fallback():
-            from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
-            return SurveyOrchestrator(registry).run(slug, steps=["repo_health", "repo_language"])
-
         try:
-            survey_result = await asyncio.to_thread(_run_fallback)
+            from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+            survey_result = SurveyOrchestrator(registry).run(
+                slug, steps=["repo_health", "repo_language"], fast=True,
+            )
         except Exception as fallback_exc:
             return ScoutingScanResult(
                 status="error", slug=slug,
@@ -405,6 +407,70 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     if errors:
         return ScoutingScanResult(status="error", slug=slug, error="; ".join(errors))
     return ScoutingScanResult(status="ok", slug=slug, message="Coarse scan complete.")
+
+
+def _run_scouting_scan_background(slug: str, activity_id: str) -> None:
+    """Runs in a daemon thread — nothing here returns to an HTTP response.
+    Mirrors org_importer.py's _run_import_batch background-thread pattern:
+    its own fresh ProjectRegistry() (SQLite connections aren't shared
+    across threads), terminal status written back onto the same activity_id
+    the route created up front via registry.update_activity_status()."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        result = _run_scouting_scan_sync(slug, registry)
+    except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
+        log.exception("Scouting Scan background thread crashed for %s", slug)
+        registry.update_activity_status(activity_id, "error", summary=f"Scouting Scan crashed: {exc}")
+        return
+    registry.update_activity_status(
+        activity_id, result.status, summary=result.message or result.error or "",
+    )
+
+
+@router.post("/{slug}/scouting-scan", response_model=ScoutingScanStarted)
+async def run_scouting_scan(slug: str) -> ScoutingScanStarted:
+    """Fast, API-only coarse scan (repo stats + language classification) —
+    runs the "Repo Coarse Scout" Survey Definition via the same executor
+    Discovery's manual "Run" button uses. Local-only by default, no
+    auto-publish, matching the existing convention that publish is always
+    a separate, deliberate action.
+
+    Fire-and-forget (background thread), not synchronous — a real, observed
+    problem: for an active repo, the pre-fast-flag version of this route
+    could block for 10+ minutes with zero visibility (see
+    _run_scouting_scan_sync's own fast=True comment for the actual root
+    cause). The route now returns immediately once the scan is queued; the
+    frontend polls GET /api/activity/{activity_id} for status, same
+    Activity Log every other operation in this codebase already writes to —
+    matches org_importer.py's _run_import_batch precedent exactly, just for
+    a single-repo scan instead of a batch."""
+    import threading
+
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="scouting", status="running",
+        summary=f"Scouting Scan running for {project.display_name}…",
+    )
+
+    t = threading.Thread(
+        target=_run_scouting_scan_background,
+        args=(slug, activity_id),
+        daemon=True, name="resource-explorer-scouting-scan",
+    )
+    t.start()
+
+    return ScoutingScanStarted(slug=slug, activity_id=activity_id)
 
 
 class QuestionChecklistEntry(BaseModel):

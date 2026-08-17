@@ -45,10 +45,13 @@ def _seed_stats(registry, slug, stars=10):
 class TestHealthSurveyorRefreshesStats:
     def test_calls_stats_fetcher_before_reading(self, registry, project):
         with patch("resource_explorer.github.stats_fetcher.StatsFetcher.fetch") as mock_fetch:
-            mock_fetch.side_effect = lambda slug: _seed_stats(registry, slug, stars=99)
+            mock_fetch.side_effect = lambda slug, **_kwargs: _seed_stats(registry, slug, stars=99)
             results = HealthSurveyor(project, registry).run()
 
-        mock_fetch.assert_called_once_with("myproj")
+        # fast=False (default) -> fetch_diff_stats=True, unchanged prior
+        # behavior — see TestFastFlag below for the fast=True (Coarse
+        # Scout) case, which is the actual slowness fix.
+        mock_fetch.assert_called_once_with("myproj", fetch_diff_stats=True)
         assert len(results) == 1
         assert isinstance(results[0], QualityScoreAnnotation)
         assert results[0].json_properties["stars"] == 99
@@ -64,6 +67,28 @@ class TestHealthSurveyorRefreshesStats:
         assert len(results) == 1
         assert isinstance(results[0], QualityScoreAnnotation)
         assert results[0].json_properties["stars"] == 5
+
+
+class TestFastFlag:
+    """The actual Coarse Scout slowness fix: fast=True skips StatsFetcher's
+    per-commit diff-stats calls entirely (see StatsFetcher._fetch_commits'
+    own docstring for the confirmed root cause — several hundred sequential
+    API calls for an active repo's 90-day history, no cap on count or
+    elapsed time)."""
+
+    def test_fast_true_requests_no_diff_stats(self, registry, project):
+        with patch("resource_explorer.github.stats_fetcher.StatsFetcher.fetch") as mock_fetch:
+            mock_fetch.side_effect = lambda slug, **_kwargs: _seed_stats(registry, slug, stars=1)
+            HealthSurveyor(project, registry, fast=True).run()
+
+        mock_fetch.assert_called_once_with("myproj", fetch_diff_stats=False)
+
+    def test_fast_false_is_the_default(self, registry, project):
+        with patch("resource_explorer.github.stats_fetcher.StatsFetcher.fetch") as mock_fetch:
+            mock_fetch.side_effect = lambda slug, **_kwargs: _seed_stats(registry, slug, stars=1)
+            HealthSurveyor(project, registry).run()
+
+        mock_fetch.assert_called_once_with("myproj", fetch_diff_stats=True)
 
     def test_no_stats_ever_and_fetch_fails_warns(self, registry, project):
         with patch(

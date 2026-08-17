@@ -194,3 +194,43 @@ class TestScopeLocator:
     def test_all_four_corpus_shaped_steps_accept_scope_locator(self):
         for key in ("repo_file_size", "repo_api_structure", "repo_data_profiling", "repo_file_classification"):
             assert STEP_REGISTRY[key].accepts_scope_locator is True
+
+
+class TestFastFlag:
+    """A real, confirmed slowness fix: Coarse Scout could block 10+ minutes
+    because HealthSurveyor's stats refresh made one GitHub API call per
+    commit in the lookback window. fast=True is forwarded only to steps
+    whose StepInfo.accepts_fast is True (repo_health today) — every other
+    step is constructed exactly as before, no fast kwarg at all."""
+
+    def test_forwarded_only_to_accepting_step(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(
+                    project, steps=["repo_health", "repo_language"], fast=True,
+                )
+                _, kwargs = mocks["repo_health"].call_args
+                assert kwargs["fast"] is True
+                # repo_language does not declare accepts_fast — must never
+                # receive the kwarg (its constructor doesn't accept it).
+                _, kwargs = mocks["repo_language"].call_args
+                assert "fast" not in kwargs
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_default_fast_is_false(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project, steps=["repo_health"])
+                _, kwargs = mocks["repo_health"].call_args
+                assert kwargs["fast"] is False
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_only_repo_health_accepts_fast(self):
+        accepting = {k for k, info in STEP_REGISTRY.items() if info.accepts_fast}
+        assert accepting == {"repo_health"}

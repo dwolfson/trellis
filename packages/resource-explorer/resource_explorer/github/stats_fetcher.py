@@ -57,7 +57,10 @@ class StatsFetcher:
         self.client = GitHubClient()
         self.registry = ProjectRegistry()
 
-    def fetch(self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> dict:
+    def fetch(
+        self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
+        fetch_diff_stats: bool = True,
+    ) -> dict:
         project = self.registry.get(project_slug)
         if not project:
             raise ValueError(f"Project '{project_slug}' not found")
@@ -169,17 +172,33 @@ class StatsFetcher:
                         :latest_deployment_at, :latest_deployment_environment, :latest_deployment_ref)
             """, stats)
         try:
-            count = self._fetch_commits(slug, repo, lookback_days=lookback_days)
+            count = self._fetch_commits(
+                slug, repo, lookback_days=lookback_days, fetch_diff_stats=fetch_diff_stats,
+            )
             stats["commits_fetched"] = count
         except Exception as exc:
             stats["commits_fetch_error"] = str(exc)
         return stats
 
-    def _fetch_commits(self, project_slug: str, repo, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> int:
+    def _fetch_commits(
+        self, project_slug: str, repo, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
+        fetch_diff_stats: bool = True,
+    ) -> int:
         """
         Fetch recent commits, store per-commit additions/deletions, and compute contributor stats.
         Returns row count processed. additions/deletions require one extra API call per new commit;
         stops fetching them gracefully if the rate limit is hit or quota is low.
+
+        fetch_diff_stats=False (the Scouting-tier "fast" path — see
+        HealthSurveyor.fast) skips the per-commit diff-stats calls entirely,
+        regardless of quota — this was a real, confirmed slowness bug: for an
+        active repo, "fetch additions/deletions for every commit in the last
+        90 days" is easily several hundred sequential API calls with no cap
+        on count or elapsed time (only an optimistic "skip if <100 calls
+        remain" quota gate), directly contradicting Coarse Scout's whole
+        premise of being the fast, cheap tier. Commit SHAs/messages/dates
+        (needed for commit counts and contributor tiers) are still fetched —
+        those come free from the same paginated commit list, no extra calls.
         """
         since = datetime.utcnow() - timedelta(days=lookback_days)
         commits = repo.get_commits(since=since)  # raises on API failure — caller handles
@@ -195,13 +214,13 @@ class StatsFetcher:
 
         # Pre-check quota: skip diff stats entirely if fewer than 100 calls remain.
         # Each new commit needs one extra REST call; for long histories this depletes the limit fast.
-        fetch_diff_stats = True
-        try:
-            rl = self.client.check_rate_limit()
-            if rl["remaining"] < 100:
-                fetch_diff_stats = False
-        except Exception:
-            pass  # optimistic if rate-limit check itself fails
+        if fetch_diff_stats:
+            try:
+                rl = self.client.check_rate_limit()
+                if rl["remaining"] < 100:
+                    fetch_diff_stats = False
+            except Exception:
+                pass  # optimistic if rate-limit check itself fails
 
         rows = []
         diff_calls = 0
@@ -300,7 +319,20 @@ class StatsFetcher:
             p25 = _percentile(commit_counts, 25)
 
             stat_rows = []
-            for email, name, commits, additions, deletions in raw:
+            # registry.py's RowWrapper.__iter__ yields column *names* (dict-
+            # like iteration convention, `for key in row`) — unpacking a row
+            # directly (`for a, b, c in raw`) silently binds the 5 column
+            # name strings instead of values, not the values themselves.
+            # Real, pre-existing, previously-undetected bug: this method was
+            # never exercised by any test with real iterable commit data
+            # (StatsFetcher's own test suite always hit a non-iterable
+            # MagicMock for repo.get_commits(), silently swallowed by
+            # fetch()'s broad except) — in production this has been raising
+            # a TypeError on every real commit-stats fetch, caught by that
+            # same broad except and surfaced only as an opaque
+            # "commits_fetch_error" string, contributor tiers never actually
+            # computed. .values() is the actual fix.
+            for email, name, commits, additions, deletions in (r.values() for r in raw):
                 if commits >= p75:
                     tier = "core"
                 elif commits >= p25:

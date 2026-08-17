@@ -26,6 +26,15 @@ class HealthSurveyor(BaseSurveyor):
       freshness_score  — days since last push / last commit
     """
 
+    def __init__(self, project: Project, registry: ProjectRegistry, fast: bool = False) -> None:
+        super().__init__(project, registry)
+        # fast=True is Coarse Scout's own flag (StepInfo.accepts_fast,
+        # repo_survey_definition_adapter.py) — skips StatsFetcher's N+1
+        # per-commit diff-stats calls below. A confirmed real slowness bug,
+        # not a hypothetical: several hundred sequential GitHub API calls
+        # for an active repo's 90-day commit history, every single scan.
+        self.fast = fast
+
     @property
     def step_name(self) -> str:
         return STEP
@@ -54,7 +63,7 @@ class HealthSurveyor(BaseSurveyor):
             # already in project_stats, same as before this fix.
             try:
                 from resource_explorer.github.stats_fetcher import StatsFetcher
-                StatsFetcher().fetch(slug)
+                StatsFetcher().fetch(slug, fetch_diff_stats=not self.fast)
             except Exception:
                 log.warning("HealthSurveyor: stats refresh failed for %s, using existing data", slug)
 

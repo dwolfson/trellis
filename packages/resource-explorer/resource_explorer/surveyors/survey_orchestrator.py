@@ -40,7 +40,7 @@ class SurveyOrchestrator:
 
     def run(
         self, project_slug: str, steps: list[str] | None = None,
-        scope_locator: str = "",
+        scope_locator: str = "", fast: bool = False,
     ) -> SurveyResult:
         """Survey a single project and return the assembled SurveyResult.
 
@@ -58,6 +58,10 @@ class SurveyOrchestrator:
             full survey isn't a supported combination and callers should
             gate on D6 target-shape compatibility before calling this with
             both set.
+        fast : Scouting-tier "skip anything N+1/expensive" flag — forwarded
+            only to steps whose StepInfo.accepts_fast is True (repo_health
+            today, see HealthSurveyor.__init__). False (default) is every
+            existing caller's exact prior behavior, unchanged.
         """
         project = self._registry.get(project_slug)
         if project is None:
@@ -141,6 +145,8 @@ class SurveyOrchestrator:
                     kwargs["surveyed_at"] = surveyed_at
                 if info.accepts_scope_locator:
                     kwargs["scope_locator"] = scope_locator
+                if info.accepts_fast:
+                    kwargs["fast"] = fast
                 for resource_name, kwarg_name in info.requires_resources.items():
                     if kwarg_name == "local_path" and self._data_path is not None:
                         kwargs[kwarg_name] = self._data_path
