@@ -14,6 +14,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.egeria_delegated_step import (
     EgeriaDelegatedStepSurveyor,
     EgeriaEngineActionTimeoutError,
+    initiate_action_type_and_wait,
     initiate_and_wait,
 )
 from resource_explorer.surveyors.survey_report import (
@@ -142,6 +143,7 @@ class TestEgeriaDelegatedStepSurveyor:
         assert results[0].source == "egeria"
         assert results[0].resource_properties["engine_action_guid"] == "action-guid-4"
         assert results[0].resource_properties["final_status"] == "COMPLETED"
+        assert results[0].resource_properties["delegated_to"] == "SomeRequestType"
 
     def test_failure_status_produces_request_for_action(self, registry, project):
         automated_curation = MagicMock()
@@ -200,3 +202,84 @@ class TestEgeriaDelegatedStepSurveyor:
     def test_step_name_includes_request_type(self, registry, project):
         surveyor = EgeriaDelegatedStepSurveyor(project, registry, request_type="SomeRequestType")
         assert surveyor.step_name == "EgeriaDelegatedStep[SomeRequestType]"
+
+    def test_requires_exactly_one_of_request_type_or_action_type(self, registry, project):
+        with pytest.raises(ValueError, match="exactly one"):
+            EgeriaDelegatedStepSurveyor(project, registry)
+        with pytest.raises(ValueError, match="exactly one"):
+            EgeriaDelegatedStepSurveyor(
+                project, registry,
+                request_type="SomeRequestType",
+                action_type_qualified_name="GovActionType::Probe",
+            )
+
+
+class TestInitiateActionTypeAndWait:
+    """The ISSUE-50 workaround path -- AutomatedCuration.
+    initiate_gov_action_type(), unaffected by the direct
+    initiate_engine_action() URL bug (see module docstring)."""
+
+    def test_returns_guid_status_and_message_on_immediate_completion(self):
+        automated_curation = MagicMock()
+        automated_curation.initiate_gov_action_type.return_value = "action-guid-10"
+        metadata_expert = MagicMock()
+        metadata_expert.get_metadata_element_by_guid.return_value = _mock_element("COMPLETED", "all good")
+
+        with patch(
+            "resource_explorer.surveyors.egeria_delegated_step._get_clients",
+            return_value=(automated_curation, metadata_expert),
+        ):
+            guid, status, message = initiate_action_type_and_wait(
+                action_type_qualified_name="GovActionType::Probe",
+            )
+
+        assert guid == "action-guid-10"
+        assert status == "COMPLETED"
+        assert message == "all good"
+        automated_curation.initiate_gov_action_type.assert_called_once()
+        kwargs = automated_curation.initiate_gov_action_type.call_args.kwargs
+        assert kwargs["action_type_qualified_name"] == "GovActionType::Probe"
+        # No governance-engine-name argument anywhere in this call -- the
+        # whole point of this path is that the engine is resolved from the
+        # GovernanceActionType's own metadata, not passed by the caller.
+        automated_curation.initiate_engine_action.assert_not_called()
+
+    def test_raises_when_action_not_initiated(self):
+        automated_curation = MagicMock()
+        automated_curation.initiate_gov_action_type.return_value = "Action not initiated"
+        metadata_expert = MagicMock()
+
+        with patch(
+            "resource_explorer.surveyors.egeria_delegated_step._get_clients",
+            return_value=(automated_curation, metadata_expert),
+        ):
+            with pytest.raises(RuntimeError, match="did not initiate"):
+                initiate_action_type_and_wait(action_type_qualified_name="GovActionType::Probe")
+
+
+class TestEgeriaDelegatedStepSurveyorActionTypePath:
+    def test_success_via_action_type_qualified_name(self, registry, project):
+        automated_curation = MagicMock()
+        automated_curation.initiate_gov_action_type.return_value = "action-guid-11"
+        metadata_expert = MagicMock()
+        metadata_expert.get_metadata_element_by_guid.return_value = _mock_element("COMPLETED")
+
+        with patch(
+            "resource_explorer.surveyors.egeria_delegated_step._get_clients",
+            return_value=(automated_curation, metadata_expert),
+        ):
+            results = EgeriaDelegatedStepSurveyor(
+                project, registry, action_type_qualified_name="GovActionType::Probe",
+            ).run()
+
+        assert len(results) == 1
+        assert isinstance(results[0], ResourceMeasureAnnotation)
+        assert results[0].resource_properties["delegated_to"] == "GovActionType::Probe"
+        automated_curation.initiate_gov_action_type.assert_called_once()
+        automated_curation.initiate_engine_action.assert_not_called()
+
+    def test_step_name_includes_action_type_qualified_name(self, registry, project):
+        surveyor = EgeriaDelegatedStepSurveyor(
+            project, registry, action_type_qualified_name="GovActionType::Probe",
+        )
+        assert surveyor.step_name == "EgeriaDelegatedStep[GovActionType::Probe]"
