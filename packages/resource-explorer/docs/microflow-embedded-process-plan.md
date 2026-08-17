@@ -44,7 +44,11 @@ Follow-on from the RFA/Egeria-ToDo-sync work (`docs/rfa-egeria-todo-followup.md`
 
 **Not built now:** the specific new `action_function`s — this is implementation work to do as each report spec that needs survey-annotation data is actually authored, not a batch to build speculatively ahead of demand.
 
-## 4. Step-implementation mapping: `EmbeddedProcess` (design-time) vs. `Link Action to Action Executor` (Egeria-engine-only)
+## 4. Step-implementation mapping — SUPERSEDED, see `re-as-engine-host-plan.md`
+
+**This section is superseded (2026-08-17).** The `EmbeddedProcess`/`Link Action to Action Executor` split described below was overtaken by a better architecture: modeling RE itself as a registered Egeria Governance Engine that claims `GovernanceActionExecutor`-wired steps like any other engine. Under that model, RE-hosted steps use the exact same native mechanism as Egeria-engine steps — no `EmbeddedProcess` authoring gap to fill at all. See `docs/re-as-engine-host-plan.md` for the full design (execution-permutation matrix, the reachability dimension, and the concrete pyegeria/Egeria gaps — filed as `PYEGERIA_ISSUES.md` ISSUE-49, which downgrades ISSUE-48 below to a lower-priority, independent design-time-authoring gap rather than a blocker).
+
+Original text kept for reference:
 
 **Decision:** a Survey Definition step's implementation is declared via one of two Egeria-native mechanisms, chosen by where the step actually executes — not a single universal mechanism:
 
