@@ -2048,6 +2048,21 @@ class ProjectRegistry:
                     "DELETE FROM project_code_relationships WHERE project_slug = ?", (slug,)
                 )
 
+    def get_code_symbol_file_paths(self, project_slug: str) -> list[str]:
+        """Distinct file paths with at least one indexed code symbol —
+        D2(c) (docs/repo-survey-catalog-completion-plan.md): a confirmed
+        duplicate, hand-rolled independently by both
+        sub_surveyors/file_structure.py (top-level directory breakdown) and
+        sub_surveyors/security_hygiene.py (security-file presence check)
+        before this method existed."""
+        slug = self._normalize_slug(project_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
+                (slug,),
+            ).fetchall()
+        return [r["file_path"] for r in rows]
+
     def get_code_relationships(
         self, project_slug: str, relationship_type: str = "inherits_from"
     ) -> list[dict]:

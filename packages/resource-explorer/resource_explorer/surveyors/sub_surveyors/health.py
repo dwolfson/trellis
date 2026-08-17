@@ -58,33 +58,25 @@ class HealthSurveyor(BaseSurveyor):
             except Exception:
                 log.warning("HealthSurveyor: stats refresh failed for %s, using existing data", slug)
 
-            with self.registry._conn() as conn:
-                stats_row = conn.execute(
-                    "SELECT stars, forks, contributors_count, commits_30d, commits_90d, "
-                    "commits_365d, releases_count, avg_release_interval_days, last_pushed_at, "
-                    "repo_created_at, archived, disabled, is_fork, is_template, default_branch, "
-                    "has_issues, has_wiki, has_discussions, has_projects, has_pages, "
-                    "network_count, subscribers_count, visibility, is_private, homepage, "
-                    "mirror_url, parent_full_name, allow_merge_commit, allow_squash_merge, "
-                    "allow_rebase_merge, allow_auto_merge, allow_update_branch, "
-                    "delete_branch_on_merge, security_and_analysis_json, environments_json, "
-                    "deployments_count, latest_deployment_at, latest_deployment_environment, "
-                    "latest_deployment_ref "
-                    "FROM project_stats WHERE project_slug = ? ORDER BY id DESC LIMIT 1",
-                    (slug,),
-                ).fetchone()
+            # D2(c) (docs/repo-survey-catalog-completion-plan.md): use the
+            # named registry accessor instead of hand-rolling this query —
+            # was a confirmed duplicate of the same "latest project_stats
+            # row" pattern security_hygiene.py's license check also wrote
+            # independently. get_latest_project_stats() already does
+            # SELECT * on the same table, a strict superset of the columns
+            # this surveyor actually reads.
+            s = self.registry.get_latest_project_stats(slug)
 
+            with self.registry._conn() as conn:
                 last_commit_row = conn.execute(
                     "SELECT committed_at FROM project_commits "
                     "WHERE project_slug = ? ORDER BY committed_at DESC LIMIT 1",
                     (slug,),
                 ).fetchone()
 
-            if not stats_row:
+            if not s:
                 self._warn(results, "No stats row found — run 'refresh' to populate stats.")
                 return results
-
-            s = dict(stats_row)
             stars = s.get("stars") or 0
             forks = s.get("forks") or 0
             contributors = s.get("contributors_count") or 0
