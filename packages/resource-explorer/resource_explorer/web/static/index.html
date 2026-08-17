@@ -393,6 +393,11 @@
            search for candidates, upstream of Scouting itself. -->
       <div id="scouting-discover-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
+      <!-- Survey Results sub-tab (repos, repo selected) — repo-wide,
+           cross-stage dashboard view (docs/survey-results-dashboard-plan.md
+           Tier 2), reused as a sub-tab wherever "Survey" already lives. -->
+      <div id="scouting-results-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+
       <!-- Coarse Profile sub-tab (repos, repo selected) — on-demand file/language
            zipball refresh, decoupled from pgvector re-ingestion. Owns
            project_file_inventory/project_data_profiles (+ optionally
@@ -1380,7 +1385,7 @@ function showIntentPlaceholder(intent) {
 // that anymore. If a real need for repo-scoped analysis inside Scouting
 // shows up later, re-add it with actual content rather than restoring the
 // redirect.
-let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'profile' | 'questions' | 'disposition' — persists across selection changes ('sub-resources' moved to Assessment, 2026-08-13)
+let _scoutingSubTab = 'discover';  // 'discover' | 'survey' | 'results' | 'profile' | 'questions' | 'disposition' — persists across selection changes ('sub-resources' moved to Assessment, 2026-08-13; 'results' added for the Survey Results dashboard)
 
 function showScoutingPane() {
   if (resourceTypeFacet === 'repo') {
@@ -1402,6 +1407,7 @@ function _scoutingSubnavHtml(active) {
   const tabs = [
     { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
+    { tab: 'results',     label: '📈 Results' },  // Survey Results dashboard (docs/survey-results-dashboard-plan.md) — repo-wide, cross-stage, next to Survey since that's where a run's results naturally get looked for
     { tab: 'profile',     label: '📄 Coarse Profile' },  // "Coarse" to distinguish from any future deeper content-analysis pass; deliberately not "Discovery" (collides with the nav intent + the Discover sub-tab)
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
@@ -1423,6 +1429,7 @@ function _showScoutingSubTab(tab) {
   _scoutingSubTab = tab;
   if (tab === 'discover') showMainView('scouting-discover');
   else if (tab === 'survey') showMainView('scouting-overview');
+  else if (tab === 'results') showMainView('scouting-results');
   else if (tab === 'profile') showMainView('scouting-profile');
   else if (tab === 'questions') { _questionsDispositionHost = 'scouting'; _questionsPhase = 'scouting'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'scouting'; showMainView('scouting-disposition'); }
@@ -2162,6 +2169,11 @@ const _REPO_RESULTS_RENDER_MODE = {
   repo_conventions: 'findings_list',
   api_structure: 'custom',
   language_file_classification: 'custom',
+  // sub_resource_survey has no analysis_catalog.yaml entry of its own (see
+  // its AnalysisKind's docstring) so it never gets a card here directly —
+  // only reached via the Survey Results dashboard's "Data Profile" grouping,
+  // which still needs this render-mode entry to dispatch correctly.
+  sub_resource_survey: 'custom',
 };
 
 // What the trend chart's Y axis actually is, per analysis kind — the chart
@@ -2312,6 +2324,16 @@ function _renderCustomAnalysisResults(analysisId, data) {
         <div class="text-xs text-slate-300 flex justify-between gap-2">
           <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
           <span class="text-slate-500">${count}</span>
+        </div>`).join('');
+  }
+  if (analysisId === 'sub_resource_survey') {
+    if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No sub-resource survey run yet.</div>`;
+    const worthy = data.findings.filter(f => f.label === 'worthy');
+    return `<div class="text-xs text-slate-400 mb-1">${worthy.length} of ${data.findings.length} sub-resource(s) worth cataloging</div>` +
+      worthy.slice(0, 8).map(f => `
+        <div class="text-xs text-slate-300 flex justify-between gap-2">
+          <span class="truncate" title="${_esc(f.path)}">${_esc(f.path || f.check_name)}</span>
+          <span class="text-slate-500 shrink-0">${_esc(f.kind || '')}</span>
         </div>`).join('');
   }
   return '<div class="text-xs text-slate-500">No results view for this analysis.</div>';
@@ -4691,6 +4713,157 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
     <div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cardsHtml}</div>`;
 }
 
+// ── Survey Results dashboard (docs/survey-results-dashboard-plan.md, Tier 2) ──
+// One shared repo-wide view, reused as a sub-tab wherever "Survey" already
+// lives (mirrors _loadSurveyPanel's precedent) — groups related analysis_ids
+// into real dashboards instead of one card per id, filterable by the same
+// Perspective vocabulary the Survey panel/Questions tab already use. No new
+// persistence — GET /api/projects/{slug}/survey-results is a pure
+// read/aggregation layer over the existing per-analysis_id results readers.
+let _surveyResultsPanelArgs = { entityType: '', slug: '', viewElId: '', subnavHtml: '' };
+let _surveyResultsActivePerspectives = new Set();
+
+async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml) {
+  _surveyResultsPanelArgs = { entityType, slug, viewElId, subnavHtml };
+  const view = document.getElementById(viewElId);
+  if (entityType !== 'repo') {
+    // repo-only for now — question_catalog_reader (the Perspective-derivation
+    // join) has no db/filesystem entries today, same graceful degrade as the
+    // Survey panel's own Perspective row (D4).
+    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Survey Results dashboards are repo-only for now.</div>';
+    return;
+  }
+  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Results…</div>';
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/survey-results`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderSurveyResultsPanel(await res.json(), entityType, slug, viewElId, subnavHtml);
+  } catch (e) {
+    view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs text-center py-12">Failed to load Survey Results: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _toggleSurveyResultsPerspective(p) {
+  if (_surveyResultsActivePerspectives.has(p)) _surveyResultsActivePerspectives.delete(p);
+  else _surveyResultsActivePerspectives.add(p);
+  const { entityType, slug, viewElId, subnavHtml } = _surveyResultsPanelArgs;
+  _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml);
+}
+
+function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) {
+  const view = document.getElementById(viewElId);
+  const dashboards = data.dashboards || [];
+
+  // Perspective vocabulary is whatever the returned dashboards actually
+  // carry (derived server-side, D4) — no separate fetch needed, unlike the
+  // Survey panel which has to ask question_catalog for a phase's vocabulary
+  // before it has any candidates to filter.
+  const allPerspectives = [];
+  dashboards.forEach(d => (d.perspectives || []).forEach(p => { if (!allPerspectives.includes(p)) allPerspectives.push(p); }));
+  // Single-quoted onclick, not double — JSON.stringify(p) itself emits
+  // double quotes, which would terminate a double-quoted onclick="..."
+  // attribute at the first embedded quote (a real bug, caught live: found
+  // via direct browser testing that the exact same pattern with
+  // double-quoted onclick truncates to "_toggleSurveyResultsPerspective("
+  // with no argument at all).
+  const perspectiveChips = allPerspectives.map(p => `<button
+      onclick='_toggleSurveyResultsPerspective(${JSON.stringify(p)})'
+      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_surveyResultsActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
+  const perspectiveRowHtml = allPerspectives.length ? `
+    <div class="px-4 pt-2">
+      <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
+      <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
+    </div>` : '';
+
+  // A dashboard with no derived Perspectives at all (nothing to filter by —
+  // e.g. Code Structure/Data Profile today, whose analysis_ids happen not to
+  // be answered by any authored Question yet) always shows, same as an
+  // unfiltered state — it's never hidden by a filter it has no tags for.
+  const visible = _surveyResultsActivePerspectives.size
+    ? dashboards.filter(d => !d.perspectives.length || d.perspectives.some(p => _surveyResultsActivePerspectives.has(p)))
+    : dashboards;
+
+  const cardsHtml = visible.map(d => {
+    const body = d.render === 'custom' && typeof window[d.custom_renderer] === 'function'
+      ? window[d.custom_renderer](d)
+      : _renderGroupedCardsDashboard(d);
+    return `<div class="analysis-card">
+      <div class="text-xs font-semibold text-slate-200">${_esc(d.title)}</div>
+      <div class="text-xs text-slate-400 mt-0.5 mb-2">${_esc(d.description)}</div>
+      ${body}
+    </div>`;
+  }).join('');
+
+  view.innerHTML = subnavHtml + `
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-2 flex-wrap">
+      <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Survey Results — ${_esc(slug)}</span>
+    </div>
+    ${perspectiveRowHtml}
+    <div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cardsHtml ||
+      '<div class="text-slate-600 text-xs text-center py-8 col-span-2">No dashboards match the active Perspective filter.</div>'}</div>`;
+}
+
+// The default render mode — stack each analysis_id's own existing results
+// renderer (the exact same _renderAnalysisResultsContent() every Analysis/
+// Assessment card already uses) under one dashboard heading. Zero new
+// per-kind rendering code for a "grouped_cards" dashboard.
+function _renderGroupedCardsDashboard(dashboard) {
+  return (dashboard.analyses || []).map(a => {
+    const name = a.analysis_id.replace(/_/g, ' ');
+    const content = a.results
+      ? _renderAnalysisResultsContent(a.analysis_id, a.results)
+      : '<div class="text-xs text-slate-500">No results yet — run this analysis to populate it.</div>';
+    return `<div class="pl-2 border-l border-slate-800 mb-2">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-0.5">${_esc(name)}</div>
+      ${content}
+    </div>`;
+  }).join('') || '<div class="text-xs text-slate-500">Nothing to show yet.</div>';
+}
+
+// The one genuinely composite widget this pass ships (docs/survey-results-
+// dashboard-plan.md D3) — a single pass/gap/risk-tier scorecard derived from
+// >1 analysis_id at once, with the full grouped detail underneath so nothing
+// is lost relative to viewing each card individually.
+function renderSecurityOverviewDashboard(dashboard) {
+  const byId = {};
+  (dashboard.analyses || []).forEach(a => { byId[a.analysis_id] = a.results; });
+
+  const countLabels = (results, labels) => (results?.findings || []).filter(f => labels.includes(f.label)).length;
+  const totalFindings = (results) => (results?.findings || []).length;
+
+  const securityGaps = countLabels(byId.security_scan, ['gap']);
+  const securityTotal = totalFindings(byId.security_scan);
+  const featuresOn = countLabels(byId.security_features, ['pass']);
+  const featuresTotal = totalFindings(byId.security_features);
+  const ciPassing = countLabels(byId.ci_quality, ['pass']);
+  const ciTotal = totalFindings(byId.ci_quality);
+  const licenseFinding = (byId.license_classification?.findings || [])[0];
+  const policyFinding = (byId.repo_conventions?.findings || []).find(f => f.check_name === 'security_policy_content');
+
+  const anyData = securityTotal || featuresTotal || ciTotal || licenseFinding || policyFinding;
+  if (!anyData) {
+    return '<div class="text-xs text-slate-500">No security-related surveys run yet — run Security/Security Features/CI Quality/License Classification/Repo Conventions to populate this scorecard.</div>';
+  }
+
+  const tile = (label, value, status) => {
+    const color = status === 'ok' ? 'text-emerald-400' : status === 'warn' ? 'text-amber-400' : status === 'gap' ? 'text-red-400' : 'text-slate-300';
+    return `<div class="bg-slate-950 border border-slate-800 rounded px-2 py-1.5">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide">${_esc(label)}</div>
+      <div class="text-xs font-semibold ${color}">${_esc(value)}</div>
+    </div>`;
+  };
+
+  const scorecard = `<div class="grid grid-cols-2 gap-1.5 mb-2">
+    ${securityTotal ? tile('Security hygiene', `${securityTotal - securityGaps}/${securityTotal} passing`, securityGaps ? 'warn' : 'ok') : ''}
+    ${featuresTotal ? tile('Security features', `${featuresOn}/${featuresTotal} enabled`, featuresOn < featuresTotal ? 'warn' : 'ok') : ''}
+    ${ciTotal ? tile('CI quality', `${ciPassing}/${ciTotal} passing`, ciPassing < ciTotal ? 'warn' : 'ok') : ''}
+    ${licenseFinding ? tile('License', licenseFinding.summary || licenseFinding.check_name, 'info') : ''}
+    ${policyFinding ? tile('Disclosure policy', policyFinding.label === 'pass' || policyFinding.label === 'present' ? 'Present' : 'Missing', policyFinding.label === 'pass' || policyFinding.label === 'present' ? 'ok' : 'warn') : ''}
+  </div>`;
+
+  return scorecard + _renderGroupedCardsDashboard(dashboard);
+}
+
 function showSurveyDefinitionRunModal(entityType, slug, candidateIndex) {
   const candidate = _surveyDefCandidatesCache[candidateIndex];
   if (!candidate) return;
@@ -5509,6 +5682,7 @@ function showMainView(tab) {
   const analysisView   = document.getElementById('analysis-view');
   const understandingView = document.getElementById('understanding-view');
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
+  const scoutingResultsView = document.getElementById('scouting-results-view');
   const scoutingDiscoverView = document.getElementById('scouting-discover-view');
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
   const scoutingProfileView = document.getElementById('scouting-profile-view');
@@ -5528,7 +5702,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingProfileView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -5557,6 +5731,9 @@ function showMainView(tab) {
   } else if (tab === 'scouting-overview') {
     scoutingOverviewView.classList.remove('hidden');
     loadScoutingOverview();
+  } else if (tab === 'scouting-results') {
+    scoutingResultsView.classList.remove('hidden');
+    _loadSurveyResultsPanel('repo', selectedProject, 'scouting-results-view', _scoutingSubnavHtml('results'));
   } else if (tab === 'scouting-discover') {
     scoutingDiscoverView.classList.remove('hidden');
     renderScoutingDiscoverView();
@@ -5634,6 +5811,10 @@ async function loadScoutingOverview() {
     // D7a — the generalized Survey panel, scoped to phase='scouting', into
     // the placeholder renderScoutingOverview() just rendered.
     _loadSurveyPanel('repo', selectedProject, 'scouting', 'scouting-survey-panel-view', '');
+    // Survey Results Tier 1 (docs/survey-results-dashboard-plan.md D5) — a
+    // small "is it worth proceeding" stat row, separate fetch so a slow/failed
+    // summary never blocks the overview itself from rendering.
+    _loadScoutingOverviewStats(selectedProject);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load overview: ${_esc(e.message)}</div>`;
   }
@@ -5723,6 +5904,14 @@ function renderScoutingOverview(d) {
       </div>
       <div class="text-[11px] text-slate-500">${surveyedBadge} · ${publishedBadge}</div>
 
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <div class="text-[10px] text-slate-500 uppercase tracking-wide">Scouting signal</div>
+          <button onclick="_showScoutingSubTab('results')" class="text-[11px] text-cyan-400 hover:text-cyan-300 underline">Full Survey Results →</button>
+        </div>
+        <div id="scouting-overview-stats" class="flex flex-wrap gap-1.5"></div>
+      </div>
+
       <!-- D7/D7a (docs/unified-survey-execution-model-plan.md): the generalized,
            phase-scoped Survey panel — same component Discovery uses, scoped
            here to phase='scouting' instead of Discovery's unscoped view.
@@ -5733,6 +5922,28 @@ function renderScoutingOverview(d) {
            resolved in this pass). -->
       <div id="scouting-survey-panel-view" class="pt-2"></div>
     </div>`;
+}
+
+// Survey Results Tier 1 (docs/survey-results-dashboard-plan.md D5) — a
+// small "is it worth proceeding" stat row for whichever scouting-tagged
+// analysis_ids have data. Separate call from loadScoutingOverview() so a
+// slow/failed summary fetch never blocks the overview render itself.
+async function _loadScoutingOverviewStats(slug) {
+  const el = document.getElementById('scouting-overview-stats');
+  if (!el) return;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/survey-results/summary?phase=scouting`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { tiles } = await res.json();
+    el.innerHTML = tiles.length ? tiles.map(t => {
+      const color = t.status === 'ok' ? 'text-emerald-400 border-emerald-900' :
+        t.status === 'warn' ? 'text-amber-400 border-amber-900' :
+        t.status === 'gap' ? 'text-red-400 border-red-900' : 'text-slate-300 border-slate-800';
+      return `<span class="text-[11px] px-2 py-0.5 rounded-full border bg-slate-950 ${color}" title="${_esc(t.analysis_name)}">${_esc(t.label)}</span>`;
+    }).join('') : '<span class="text-[11px] text-slate-600">No scouting-tier results yet — run a Scouting Scan.</span>';
+  } catch(e) {
+    el.innerHTML = `<span class="text-[11px] text-slate-600">Signal unavailable.</span>`;
+  }
 }
 
 // ── Questions checklist (repos) — per-phase view of the authored

@@ -721,6 +721,85 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
     return {"runs": trend_reader(registry, slug)}
 
 
+@router.get("/{slug}/survey-results")
+async def get_survey_results(slug: str) -> dict:
+    """Tier 2 — the repo-wide Survey Results dashboard
+    (docs/survey-results-dashboard-plan.md). Every SURVEY_RESULT_DASHBOARDS
+    entry, with its resolved analysis_ids' latest results attached (reusing
+    the exact same results_reader()s the per-analysis_id Analysis/Assessment
+    cards already call — no new persistence, this is a pure aggregation
+    layer) and its derived Perspective tags. A dashboard entry whose reader
+    raises (e.g. a step that's never been run for this repo) degrades to
+    results=None for that one analysis_id rather than failing the whole
+    dashboard list."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_RESULTS_MAP,
+        SURVEY_RESULT_DASHBOARDS,
+        get_dashboard_perspectives,
+    )
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    dashboards = []
+    for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+        analyses = []
+        for analysis_id in dashboard.analysis_ids:
+            entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+            results = None
+            if entry:
+                results_reader, _ = entry
+                try:
+                    results = results_reader(registry, slug)
+                except Exception:
+                    results = None
+            analyses.append({"analysis_id": analysis_id, "results": results})
+        dashboards.append({
+            "id": dashboard.id,
+            "title": dashboard.title,
+            "description": dashboard.description,
+            "render": dashboard.render,
+            "custom_renderer": dashboard.custom_renderer,
+            "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
+            "analyses": analyses,
+        })
+    return {"slug": slug, "dashboards": dashboards}
+
+
+@router.get("/{slug}/survey-results/summary")
+async def get_survey_results_summary(slug: str, phase: str = "") -> dict:
+    """Tier 1 — a phase-scoped 'is it worth proceeding' stat row
+    (docs/survey-results-dashboard-plan.md D5). One stat tile per
+    ANALYSIS_KINDS entry whose analysis_catalog.yaml intent matches `phase`
+    and has a headline_reader — empty phase returns every tile with a
+    headline_reader across all intents."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_HEADLINE_MAP
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    analyses = get_analyses(resource_type="repo", intent=phase or None)
+    tiles = []
+    for a in analyses:
+        headline_reader = REPO_ANALYSIS_HEADLINE_MAP.get(a["id"])
+        if not headline_reader:
+            continue
+        try:
+            headline = headline_reader(registry, slug)
+        except Exception:
+            headline = None
+        if headline:
+            tiles.append({"analysis_id": a["id"], "analysis_name": a.get("name", a["id"]), **headline})
+    return {"slug": slug, "phase": phase, "tiles": tiles}
+
+
 class RefreshResult(BaseModel):
     status: str          # "ok" | "error"
     slug: str
