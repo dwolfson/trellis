@@ -212,12 +212,35 @@ def _answered_questions(step_keys: list[str], step_key_to_questions: dict[str, l
     return seen
 
 
+# D2 (docs/survey-tab-unification-plan.md): a Survey Definition with zero
+# ScopedBy links never appears in ANY phase-scoped candidate panel
+# (find_candidate_process_guids_by_questions requires at least one) — and
+# the automatic cross-reference above is a genuine dead end for
+# RepoCoarseProfile: no authored Question's answering.analysis_ids
+# currently names language_file_classification or data_file_profiling
+# (confirmed by grep against question_catalog.yaml before adding this).
+# Rather than hand-editing the Question catalog just to manufacture a
+# cross-reference, this is an explicit, small manual override — extra
+# Question display names to scope a survey_group to, on top of whatever
+# the automatic join already finds. Empty/absent for every spec whose own
+# steps' analysis_ids already produce real links.
+MANUAL_EXTRA_SCOPE_QUESTIONS: dict[str, list[str]] = {
+    "RepoCoarseProfile": [
+        "Is this repository actively maintained?",
+        "What does this repository do?",
+    ],
+}
+
+
 def main() -> None:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     step_key_to_questions = _build_step_key_to_questions()
     for spec in SPECS:
         steps = build_steps(spec.step_keys)
         answers_questions = _answered_questions(spec.step_keys, step_key_to_questions)
+        for extra in MANUAL_EXTRA_SCOPE_QUESTIONS.get(spec.survey_group, []):
+            if extra not in answers_questions:
+                answers_questions.append(extra)
         markdown = generate_survey_definition_markdown(
             survey_group=spec.survey_group,
             survey_display_name=spec.survey_display_name,

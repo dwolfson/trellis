@@ -499,12 +499,37 @@ class SurveyDefinitionReader:
 
         if not dry_run and result.to_remove:
             metadata_expert = self._connect_metadata_expert()
-            delete_body = {"class": "OpenMetadataDeleteRequestBody"}
+            # NOT `metadata_expert.delete_related_elements(guid, body=delete_body)`
+            # — confirmed live, real pyegeria bug that CANNOT be worked around
+            # by just supplying an explicit deleteMethod in the body dict:
+            # pyegeria.models.models.OpenMetadataDeleteRequestBody declares no
+            # deleteMethod field at all, and every PyegeriaModel is configured
+            # `extra='ignore'`, so a `{"deleteMethod": "SOFT_DELETE"}` key is
+            # silently dropped during pydantic validation before the request
+            # ever reaches the server — confirmed by reading
+            # _async_open_metadata_delete_body_request's `model_dump()` call
+            # and reproducing the exact same OMAG-COMMON-400-032 error
+            # (`LookForLineage` — the server's own hardcoded, invalid default)
+            # even with deleteMethod set. Logged as a pyegeria bug (see
+            # egeria-python's PYEGERIA_ISSUES.md) rather than fixed there per
+            # this repo's convention of not editing egeria-python directly.
+            # Workaround: bypass pyegeria's model validation for this one call
+            # and hit the same endpoint via its own private transport method
+            # with a raw dict — the same request delete_related_elements()
+            # would send if its model weren't missing the field.
+            import asyncio
+
+            delete_url = f"{metadata_expert.command_root}/related-elements/{{guid}}/delete"
+            delete_body = {"class": "OpenMetadataDeleteRequestBody", "deleteMethod": "SOFT_DELETE"}
             for entry in result.to_remove:
                 if not entry.link_guid:
                     continue
                 try:
-                    metadata_expert.delete_related_elements(entry.link_guid, body=delete_body)
+                    asyncio.run(
+                        metadata_expert._async_make_request(
+                            "POST", delete_url.format(guid=entry.link_guid), delete_body
+                        )
+                    )
                 except Exception as exc:
                     log.warning(
                         "reconcile_step_links: failed to delete %s link %s -> %s (guid=%s): %s",

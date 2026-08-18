@@ -286,55 +286,176 @@ class TestListCandidates:
 
 
 class TestRunSurveyDefinition:
-    def test_run_returns_executor_result(self, client):
+    """The route is fire-and-forget (live-reported gap — it used to block the
+    whole HTTP request for the entire survey duration with no progress
+    indicator, mirroring the exact same fix already applied to
+    projects.py's run_scouting_scan). It now only has to: log a 'running'
+    activity entry and start a background thread, returning the activity_id
+    immediately. The actual run logic (_execute_survey_definition_sync /
+    _run_survey_definition_background) is unit-tested directly below,
+    decoupled from HTTP/threading — same coverage the old synchronous route
+    test had, plus the new background-completion behavior."""
+
+    def test_starts_a_background_run_and_returns_immediately(self, client, registry):
+        with patch("resource_explorer.web.routes.survey_definitions._run_survey_definition_background"):
+            resp = client.post(
+                "/api/survey-definitions/database/mydb/run",
+                json={"survey_definition_ref": "GovActionProcess::Test", "db_user": "u", "db_pwd": "p"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+        assert "activity_id" in data
+        entry = registry.get_activity(data["activity_id"])
+        assert entry is not None
+        assert entry["status"] == "running"
+        assert entry["entity_slug"] == "mydb"
+
+
+class TestExecuteSurveyDefinitionSync:
+    """_execute_survey_definition_sync() is the plain, HTTP/threading-free
+    function the background thread (and, transitively, the route) actually
+    calls — same decoupled-unit-test shape as _run_scouting_scan_sync's own
+    test class in test_scouting_overview_routes.py."""
+
+    def test_returns_executor_result_with_portal_link(self, client):
+        from resource_explorer.web.routes.survey_definitions import (
+            SurveyDefinitionRunRequest,
+            _execute_survey_definition_sync,
+        )
+
         fake_result = {
             "source": "survey-definition", "entity_type": "database", "slug": "mydb",
             "process_qualified_name": "GovActionProcess::Test",
             "steps": [{"step": "SchemaAndStats", "status": "ok"}],
             "errors": [], "egeria_report_guid": "report-guid-123",
         }
+        body = SurveyDefinitionRunRequest(survey_definition_ref="GovActionProcess::Test", db_user="u", db_pwd="p")
         with patch(
             "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
             return_value=fake_result,
         ) as mock_run:
-            resp = client.post(
-                "/api/survey-definitions/database/mydb/run",
-                json={"survey_definition_ref": "GovActionProcess::Test", "db_user": "u", "db_pwd": "p"},
-            )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["egeria_report_guid"] == "report-guid-123"
-        assert body["egeria_portal_report_url"].endswith("/tech-catalog?guid=report-guid-123")
+            result = _execute_survey_definition_sync("database", "mydb", body)
+        assert result["egeria_report_guid"] == "report-guid-123"
+        assert result["egeria_portal_report_url"].endswith("/tech-catalog?guid=report-guid-123")
         mock_run.assert_called_once()
         _, kwargs = mock_run.call_args
         assert kwargs["survey_definition_ref"] == "GovActionProcess::Test"
         assert kwargs["db_user"] == "u"
 
-    def test_run_without_report_guid_has_no_portal_link(self, client):
+    def test_without_report_guid_has_no_portal_link(self, client):
+        from resource_explorer.web.routes.survey_definitions import (
+            SurveyDefinitionRunRequest,
+            _execute_survey_definition_sync,
+        )
+
         fake_result = {
             "source": "survey-definition", "entity_type": "database", "slug": "mydb",
             "process_qualified_name": "GovActionProcess::Test",
             "steps": [], "errors": ["something went wrong"], "egeria_report_guid": "",
         }
+        body = SurveyDefinitionRunRequest(survey_definition_ref="GovActionProcess::Test")
         with patch(
             "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
             return_value=fake_result,
         ):
-            resp = client.post(
-                "/api/survey-definitions/database/mydb/run",
-                json={"survey_definition_ref": "GovActionProcess::Test"},
-            )
-        assert resp.status_code == 200
-        assert "egeria_portal_report_url" not in resp.json()
+            result = _execute_survey_definition_sync("database", "mydb", body)
+        assert "egeria_portal_report_url" not in result
 
-    def test_run_maps_executor_error_to_400(self, client):
+
+class TestRunSurveyDefinitionBackground:
+    """The background thread's own completion behavior — writes the
+    terminal status/summary/detail back onto the SAME activity entry the
+    route created up front, so a poller sees the full structured result via
+    `detail` (JSON-encoded) once status stops being 'running'."""
+
+    def _activity_id(self, registry, slug="mydb", entity_type="database"):
+        from resource_explorer.activity_logger import log_survey
+        return log_survey(
+            registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
+            entity_location="", intent="assessment", status="running", summary="Running…",
+        )
+
+    def test_success_writes_ok_status_and_detail_json(self, client, registry):
+        import json
+
+        from resource_explorer.web.routes.survey_definitions import (
+            SurveyDefinitionRunRequest,
+            _run_survey_definition_background,
+        )
+
+        activity_id = self._activity_id(registry)
+        fake_result = {
+            "process_qualified_name": "GovActionProcess::Test",
+            "steps": [{"step": "SchemaAndStats", "status": "ok"}],
+            "errors": [], "egeria_report_guid": "",
+        }
+        body = SurveyDefinitionRunRequest(survey_definition_ref="GovActionProcess::Test")
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            return_value=fake_result,
+        ):
+            _run_survey_definition_background("database", "mydb", body, activity_id)
+
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "ok"
+        detail = json.loads(entry["detail"])
+        assert detail["process_qualified_name"] == "GovActionProcess::Test"
+
+    def test_errors_in_result_write_error_status(self, client, registry):
+        import json
+
+        from resource_explorer.web.routes.survey_definitions import (
+            SurveyDefinitionRunRequest,
+            _run_survey_definition_background,
+        )
+
+        activity_id = self._activity_id(registry)
+        fake_result = {"process_qualified_name": "GovActionProcess::Test", "steps": [], "errors": ["boom"]}
+        body = SurveyDefinitionRunRequest(survey_definition_ref="GovActionProcess::Test")
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            return_value=fake_result,
+        ):
+            _run_survey_definition_background("database", "mydb", body, activity_id)
+
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "error"
+        assert json.loads(entry["detail"])["errors"] == ["boom"]
+
+    def test_executor_error_writes_error_status_without_crashing(self, client, registry):
         from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
+        from resource_explorer.web.routes.survey_definitions import (
+            SurveyDefinitionRunRequest,
+            _run_survey_definition_background,
+        )
+
+        activity_id = self._activity_id(registry)
+        body = SurveyDefinitionRunRequest(survey_definition_ref="GovActionProcess::Test")
         with patch(
             "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
             side_effect=SurveyDefinitionExecutorError("no candidates found"),
         ):
-            resp = client.post(
-                "/api/survey-definitions/database/mydb/run",
-                json={"survey_definition_ref": "GovActionProcess::Test"},
-            )
-        assert resp.status_code == 400
+            _run_survey_definition_background("database", "mydb", body, activity_id)
+
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "error"
+        assert "no candidates found" in entry["summary"]
+
+    def test_unexpected_exception_writes_error_status_without_crashing(self, client, registry):
+        from resource_explorer.web.routes.survey_definitions import (
+            SurveyDefinitionRunRequest,
+            _run_survey_definition_background,
+        )
+
+        activity_id = self._activity_id(registry)
+        body = SurveyDefinitionRunRequest(survey_definition_ref="GovActionProcess::Test")
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=RuntimeError("totally unexpected"),
+        ):
+            _run_survey_definition_background("database", "mydb", body, activity_id)
+
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "error"
+        assert "crashed" in entry["summary"]

@@ -61,6 +61,18 @@ class ResourceTypeAdapter:
     # real Technology Type catalog (EgeriaTechTypeCatalog) for what a native
     # survey step actually produces. Optional: leave blank if unknown.
     egeria_technology_type_name: str = ""
+    # Optional: (entity, registry, re_analysis_step_keys: list[str], **kwargs) ->
+    # {"annotations": [...], "errors": [...]}. When set, the dispatch loop below
+    # groups consecutive "resource-explorer" steps into ONE call here instead of
+    # calling re_analysis_steps[key] once per step — real fix, not a
+    # micro-optimization: per-step dispatch means any step declaring a shared
+    # D6 resource (e.g. repo's zipball_root) re-acquires it independently every
+    # time, since trellis_microflow.resolve_resources only dedupes *within* a
+    # single SurveyOrchestrator.run() call. A Survey Definition whose steps all
+    # need the same zipball (e.g. a "Coarse Profile" survey) would otherwise
+    # download it once per step. None (default, every adapter before this
+    # existed) keeps the exact prior one-call-per-step behavior.
+    run_batch: Callable | None = None
 
 
 _ADAPTERS: dict = {}
@@ -144,20 +156,84 @@ class SurveyDefinitionExecutor:
         step_outputs: list = []
         errors: list = []
 
-        for step in survey_def.steps:
-            from resource_explorer.config import get_config
-            from resource_explorer.surveyors.prefect_adapter import run_prefect_step
+        from resource_explorer.config import get_config
+        from resource_explorer.surveyors.prefect_adapter import run_prefect_step
 
-            use_prefect = False
+        def _use_prefect(step) -> bool:
             if step.executes_at == "prefect" or step.re_analysis_step in ("soda_data_quality", "great_expectations_validation"):
-                use_prefect = True
-            elif step.executes_at == "resource-explorer":
+                return True
+            if step.executes_at == "resource-explorer":
                 try:
-                    config = get_config()
-                    if config.prefect.enabled:
-                        use_prefect = True
+                    return bool(get_config().prefect.enabled)
                 except Exception:
-                    pass
+                    return False
+            return False
+
+        i = 0
+        n = len(survey_def.steps)
+        while i < n:
+            step = survey_def.steps[i]
+            use_prefect = _use_prefect(step)
+
+            # D1 (docs/survey-tab-unification-plan.md) — batch a run of consecutive
+            # plain "resource-explorer" steps into one adapter.run_batch()
+            # call instead of dispatching each individually, when the
+            # adapter supports it (repo does; database/filesystem don't yet
+            # — run_batch=None there keeps their exact prior per-step path).
+            # Only steps this adapter actually recognizes are eligible; an
+            # unknown step_key breaks the group so it still gets the normal
+            # "unknown_step" report below, not silently absorbed.
+            if (
+                not use_prefect
+                and step.executes_at == "resource-explorer"
+                and adapter.run_batch is not None
+                and step.re_analysis_step in adapter.re_analysis_steps
+            ):
+                group = [step]
+                j = i + 1
+                while j < n:
+                    nxt = survey_def.steps[j]
+                    if (
+                        _use_prefect(nxt)
+                        or nxt.executes_at != "resource-explorer"
+                        or nxt.re_analysis_step not in adapter.re_analysis_steps
+                    ):
+                        break
+                    group.append(nxt)
+                    j += 1
+
+                if len(group) > 1:
+                    step_keys = [s.re_analysis_step for s in group]
+                    try:
+                        output = adapter.run_batch(entity, self.registry, step_keys, **runner_kwargs)
+                        step_outputs.append(output)
+                        batch_errors = output.get("errors") or []
+                        # Batched steps share one status — real, minor cost
+                        # of the fix: a partial failure within the group
+                        # can't be pinpointed to the exact step_key without
+                        # instantiating each surveyor just to read its
+                        # step_name, which the batch call deliberately
+                        # avoids. The combined error text is still fully
+                        # visible in `errors` below and in each step's own
+                        # "detail" here — not silently swallowed, just not
+                        # individually attributed.
+                        status = "error" if batch_errors else "ok"
+                        for s in group:
+                            entry = {"step": s.qualified_name, "status": status}
+                            if batch_errors:
+                                entry["detail"] = "; ".join(batch_errors)
+                            steps_report.append(entry)
+                        errors.extend(batch_errors)
+                    except Exception as exc:
+                        msg = f"RE batch steps {step_keys} failed: {exc}"
+                        log.exception(msg)
+                        errors.append(msg)
+                        for s in group:
+                            steps_report.append({"step": s.qualified_name, "status": "error", "detail": str(exc)})
+                    i = j
+                    continue
+                # group of exactly 1 — fall through to the identical
+                # single-step path below, unchanged from before batching.
 
             if use_prefect:
                 try:
@@ -180,6 +256,7 @@ class SurveyDefinitionExecutor:
                     log.error(msg)
                     errors.append(msg)
                     steps_report.append({"step": step.qualified_name, "status": "unknown_step"})
+                    i += 1
                     continue
                 try:
                     output = runner(entity, self.registry, **runner_kwargs)
@@ -220,6 +297,8 @@ class SurveyDefinitionExecutor:
                 log.warning(msg)
                 errors.append(msg)
                 steps_report.append({"step": step.qualified_name, "status": "unrecognized_engine"})
+
+            i += 1
 
         report_guid = ""
         if step_outputs:

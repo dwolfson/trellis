@@ -200,29 +200,27 @@ async def list_candidates(
         raise _map_reader_executor_errors(exc)
 
 
-@router.post("/{entity_type}/{slug}/run")
-async def run_survey_definition_route(entity_type: str, slug: str, body: SurveyDefinitionRunRequest) -> dict:
-    """Execute a Survey Definition against a registered resource."""
+def _execute_survey_definition_sync(entity_type: str, slug: str, body: SurveyDefinitionRunRequest) -> dict:
+    """The actual run — plain sync function (no FastAPI/asyncio coupling) so
+    it's trivially callable from a daemon thread with its own fresh registry
+    connection, matching projects.py's _run_scouting_scan_sync precedent.
+    Raises SurveyDefinitionExecutorError/SurveyDefinitionReaderError on a
+    reader/executor-level failure — the caller decides how to surface that
+    (an HTTPException for the old synchronous path; an errored activity
+    entry for the background path below)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.survey_definition_executor import run_survey_definition
 
-    def _do() -> dict:
-        from resource_explorer.registry import ProjectRegistry
-        from resource_explorer.surveyors.survey_definition_executor import run_survey_definition
-
-        registry = ProjectRegistry()
-        return run_survey_definition(
-            entity_type,
-            slug,
-            registry=registry,
-            survey_definition_ref=body.survey_definition_ref,
-            refresh_definition=body.refresh_definition,
-            db_user=body.db_user,
-            db_pwd=body.db_pwd,
-        )
-
-    try:
-        result = await asyncio.to_thread(_do)
-    except Exception as exc:
-        raise _map_reader_executor_errors(exc)
+    registry = ProjectRegistry()
+    result = run_survey_definition(
+        entity_type,
+        slug,
+        registry=registry,
+        survey_definition_ref=body.survey_definition_ref,
+        refresh_definition=body.refresh_definition,
+        db_user=body.db_user,
+        db_pwd=body.db_pwd,
+    )
 
     report_guid = result.get("egeria_report_guid", "")
     if report_guid:
@@ -230,38 +228,76 @@ async def run_survey_definition_route(entity_type: str, slug: str, body: SurveyD
         portal_url = get_config().egeria.portal_url.rstrip("/")
         result["egeria_portal_report_url"] = f"{portal_url}/tech-catalog?guid={report_guid}"
 
-    try:
-        from resource_explorer.activity_logger import log_survey
-        from resource_explorer.registry import ProjectRegistry
-
-        registry = ProjectRegistry()
-        errors = result.get("errors", [])
-        report_guid = result.get("egeria_report_guid", "")
-        steps_summary = "; ".join(f"{s['step']}: {s['status']}" for s in result.get("steps", []))
-
-        items = []
-        if report_guid:
-            items.append({
-                "kind": "SurveyReport",
-                "display_name": f"Survey Definition run ({result.get('process_qualified_name', '')})",
-                "qualified_name": "",
-                "guid": report_guid,
-                "location": "",
-            })
-
-        log_survey(
-            registry,
-            entity_type=entity_type,
-            entity_slug=slug,
-            entity_name=slug,
-            entity_location="",
-            intent="assessment",
-            status="error" if errors else "ok",
-            summary=f"Survey Definition run ({result.get('process_qualified_name', '')})",
-            detail="\n".join(filter(None, [steps_summary, "; ".join(errors)])),
-            items=items,
-        )
-    except Exception:
-        pass
-
     return result
+
+
+def _run_survey_definition_background(
+    entity_type: str, slug: str, body: SurveyDefinitionRunRequest, activity_id: str,
+) -> None:
+    """Runs in a daemon thread — nothing here returns to an HTTP response.
+    Mirrors projects.py's _run_scouting_scan_background precedent, generalized
+    to any Survey Definition: the ONE activity entry the route created up
+    front (status='running') gets its terminal status/summary written back
+    via registry.update_activity_status(), with the full structured result
+    (steps report, egeria_report_guid, portal URL, errors — everything the
+    run modal renders) JSON-encoded into that same entry's `detail` field.
+    No separate result-store needed, and — unlike an in-memory dict — this
+    survives a server restart same as any other activity entry; the frontend
+    just needs to json.parse() `detail` once the poll sees a terminal status."""
+    import json
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
+    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
+
+    registry = ProjectRegistry()
+    try:
+        result = _execute_survey_definition_sync(entity_type, slug, body)
+    except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
+        registry.update_activity_status(activity_id, "error", summary=str(exc), detail=json.dumps({"errors": [str(exc)]}))
+        return
+    except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
+        log.exception("Survey Definition run background thread crashed for %s/%s", entity_type, slug)
+        registry.update_activity_status(
+            activity_id, "error", summary=f"Survey Definition run crashed: {exc}",
+            detail=json.dumps({"errors": [str(exc)]}),
+        )
+        return
+
+    errors = result.get("errors") or []
+    summary = f"Completed with {len(errors)} error(s)" if errors else "Survey Definition run complete"
+    registry.update_activity_status(activity_id, "error" if errors else "ok", summary=summary, detail=json.dumps(result))
+
+
+@router.post("/{entity_type}/{slug}/run")
+async def run_survey_definition_route(entity_type: str, slug: str, body: SurveyDefinitionRunRequest) -> dict:
+    """Fire-and-forget (background thread), not synchronous — a real,
+    live-reported gap: this used to block the whole HTTP request for the
+    entire survey duration, with only a spinner and no way to tell whether a
+    multi-step/multi-minute survey (e.g. Coarse Profile Survey's zipball
+    download+profile, or a 17-step Repo Full Survey) was still running or
+    had hung. Mirrors projects.py's run_scouting_scan precedent exactly,
+    generalized to any Survey Definition/resource type: returns an
+    activity_id immediately; the frontend polls GET /api/activity/{id}
+    until it's terminal, then reads the full run result back out of that
+    entry's own `detail` field (see _run_survey_definition_background)."""
+    import threading
+
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    activity_id = log_survey(
+        registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
+        entity_location="", intent="assessment", status="running",
+        summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
+    )
+
+    t = threading.Thread(
+        target=_run_survey_definition_background,
+        args=(entity_type, slug, body, activity_id),
+        daemon=True, name="resource-explorer-survey-def-run",
+    )
+    t.start()
+
+    return {"status": "started", "activity_id": activity_id}

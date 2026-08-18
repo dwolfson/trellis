@@ -954,7 +954,7 @@
           class="flex-1 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium transition-colors">
           Run
         </button>
-        <button onclick="hideSurveyDefinitionRunModal()"
+        <button id="survey-def-run-cancel-btn" onclick="hideSurveyDefinitionRunModal()"
           class="px-4 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition-colors">
           Cancel
         </button>
@@ -4451,7 +4451,19 @@ async function toggleScheduleEnabled(entityType, slug, analysisId, btn) {
 // ── Survey Definitions panel (Egeria-authored GovernanceActionProcess) ─────────
 
 let _surveyDefRun = null; // { entityType, slug, candidate } for the open run modal
-let _surveyDefCandidatesCache = []; // last-rendered candidates list, indexed by Run button clicks
+// Real bug, live-reported: this used to be one flat array shared by EVERY
+// _loadSurveyPanel() call site (Scouting's scoped panel, Discovery's unscoped
+// panel, Enrichment's panel, the generic resourceType panel), with Run
+// buttons capturing a positional index at render time. Any one of those
+// panels re-rendering — including one not currently visible, e.g. a stale
+// background fetch resolving late — clobbered the single shared array,
+// so a click on a still-displayed card could resolve to a DIFFERENT
+// survey than the one shown (confirmed: clicking "Git Statistics Survey"'s
+// Run button executed "Coarse Profile Survey"). Fixed by keying the cache
+// per-viewElId (so panels never clobber each other) and looking candidates
+// up by their own stable qualified_name instead of a positional index (so
+// even a same-panel reorder/refetch can't silently point at the wrong one).
+let _surveyDefCandidatesCache = {}; // viewElId -> last-rendered candidates list for that panel
 // In-memory only (never persisted to disk/localStorage) — cleared on page reload.
 // slug -> { dbUser, dbPwd }, so re-running a Survey Definition against the same
 // database later in this session doesn't require retyping credentials.
@@ -4485,14 +4497,43 @@ let _surveyPanelAvailablePerspectives = [];  // this phase's Question-derived vo
 // subnavHtml's own onclick="..." tab buttons terminated the outer attribute
 // early, spilling raw markup onto the page).
 let _surveyPanelArgs = { entityType: '', slug: '', phase: '', viewElId: '', subnavHtml: '' };
+// D3 (docs/survey-tab-unification-plan.md follow-up, live-reported slowness)
+// — short client-side cache on top of the candidates/questions endpoints'
+// own server-side caches (both already keyed by Technology Type + survey_kind/
+// phase, NOT per-repo, so they're shared across every repo of the same type
+// server-side — confirmed live: ~1s cold, ~15ms warm). This closes the
+// remaining gap: every repo *selection* still paid a fresh network round
+// trip even on a warm server-side cache. 60s TTL — long enough to make
+// repeatedly flipping between a few repos feel instant, short enough that a
+// schedule/publish change elsewhere is never stale for long. Keyed on
+// exactly what changes the response: entityType/slug/phase/perspectives.
+const _surveyPanelCache = {};
+const _SURVEY_PANEL_CACHE_TTL_MS = 60_000;
 
 async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
   _surveyPanelArgs = { entityType, slug, phase, viewElId, subnavHtml };
   const view = document.getElementById(viewElId);
   const key = `${entityType}:${slug}:${phase || ''}`;
   if (key !== _surveyPanelKey) { _surveyPanelKey = key; _surveyPanelActivePerspectives = new Set(); }
+
+  const cacheKey = `${key}:${[..._surveyPanelActivePerspectives].sort().join(',')}`;
+  const cached = _surveyPanelCache[cacheKey];
+  const now = Date.now();
+  if (cached && now - cached.at < _SURVEY_PANEL_CACHE_TTL_MS) {
+    _surveyPanelAvailablePerspectives = cached.perspectives;
+    renderSurveyPanel(cached.data, entityType, slug, cached.schedules, phase, viewElId, subnavHtml);
+    return;
+  }
+
   view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Definitions from Egeria…</div>';
   try {
+    // The 3 legs below don't depend on each other's *results* — only on the
+    // user's already-toggled perspective selection (state, not a fetch
+    // result) — so they run concurrently via Promise.all instead of 3
+    // sequential awaits. Real latency win on a cold cache: each leg can be
+    // ~1s cold, and sequential awaits stack those into 2-3s+ before anything
+    // renders; concurrent, the wait is just the slowest single leg.
+    //
     // Perspective vocabulary comes from the same Question catalog Questions
     // itself reads — question_catalog_reader.py only has "repo" entries
     // today, so db/filesystem hosts get no perspective filter (nothing to
@@ -4500,31 +4541,33 @@ async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
     // scouting-questions for every phase's questions at once (get_questions'
     // own phase='' -> no filter semantics), so Discovery's vocabulary is the
     // full union, not just Scouting's.
-    if (entityType === 'repo') {
-      try {
-        const qRes = await fetch(`/api/projects/${encodeURIComponent(slug)}/scouting-questions?phase=${encodeURIComponent(phase || '')}`);
-        _surveyPanelAvailablePerspectives = qRes.ok ? _questionsPerspectiveList(await qRes.json()) : [];
-      } catch { _surveyPanelAvailablePerspectives = []; }
-    } else {
-      _surveyPanelAvailablePerspectives = [];
-    }
+    const perspectivesPromise = entityType === 'repo'
+      ? fetch(`/api/projects/${encodeURIComponent(slug)}/scouting-questions?phase=${encodeURIComponent(phase || '')}`)
+          .then(r => r.ok ? r.json() : [])
+          .then(_questionsPerspectiveList)
+          .catch(() => [])
+      : Promise.resolve([]);
 
     const params = new URLSearchParams();
     if (phase) params.set('phase', phase);
     for (const p of _surveyPanelActivePerspectives) params.append('perspectives', p);
-    const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/candidates?${params}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const candidatesPromise = fetch(`/api/survey-definitions/${entityType}/${slug}/candidates?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+
     // Per-candidate Schedule action (see renderSurveyPanel) needs to know
     // each candidate's current schedule, if any — same schedules backend
     // the analysis-catalog cards use, keyed here by qualified_name.
-    let schedules = {};
-    try {
-      const schedRes = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}`);
-      if (schedRes.ok) {
-        for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
-      }
-    } catch { /* non-fatal — cards just show the unscheduled state */ }
-    renderSurveyPanel(await res.json(), entityType, slug, schedules, phase, viewElId, subnavHtml);
+    const schedulesPromise = fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}`)
+      .then(r => r.ok ? r.json() : [])
+      .catch(() => []);
+
+    const [perspectives, data, scheduleRows] = await Promise.all([perspectivesPromise, candidatesPromise, schedulesPromise]);
+    _surveyPanelAvailablePerspectives = perspectives;
+    const schedules = {};
+    for (const r of scheduleRows) schedules[r.analysis_id] = r;
+
+    _surveyPanelCache[cacheKey] = { at: now, data, schedules, perspectives };
+    renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, subnavHtml);
   } catch(e) {
     view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -4596,9 +4639,11 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
   const candidates = data.candidates || [];
   // Candidate objects (author-written descriptions, Egeria-sourced annotation
   // text) can contain apostrophes/quotes that break inline onclick='...'
-  // attribute embedding via JSON.stringify — keep them in memory and reference
-  // by index instead of serializing the whole object into HTML.
-  _surveyDefCandidatesCache = candidates;
+  // attribute embedding via JSON.stringify — keep them in memory rather than
+  // serializing the whole object into HTML. Keyed by viewElId (not a single
+  // shared array) so this panel's render can never clobber a different
+  // panel's — see _surveyDefCandidatesCache's own declaration comment.
+  _surveyDefCandidatesCache[viewElId] = candidates;
 
   let cardsHtml = candidates.map((c, i) => {
     if (c.error) {
@@ -4625,6 +4670,13 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
       </div>`;
     }).join('');
 
+    // D2 (docs/survey-tab-unification-plan.md follow-up) — collapsed by
+    // default so a repo with several survey types (Git Statistics, Coarse
+    // Profile, Repo Full Survey, ...) fits without a wall of scrolling;
+    // title/description/actions stay visible either way, only the step
+    // list is behind the toggle. Plain <summary>/<details> — no JS state
+    // to track, survives a re-render collapsed (matching how a freshly
+    // loaded panel should look) without extra bookkeeping.
     return `<div class="analysis-card">
       <div class="flex items-start justify-between gap-2">
         <div class="flex-1 min-w-0">
@@ -4633,10 +4685,12 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
           ${c.description ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(c.description)}</div>` : ''}
         </div>
       </div>
-      <div class="text-xs text-slate-500 mt-1.5">${(c.steps || []).length} step(s), in order:</div>
-      <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
-      <div class="mt-auto pt-2 flex flex-wrap gap-1.5 items-center">
-        <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${i})'
+      <details class="mt-1.5">
+        <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">${(c.steps || []).length} step(s), in order (click to expand)</summary>
+        <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
+      </details>
+      <div class="mt-auto pt-2 flex flex-wrap gap-3 items-center justify-center">
+        <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(viewElId)}, ${JSON.stringify(c.qualified_name)})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
           Run →
         </button>
@@ -4650,10 +4704,32 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
           const sched = schedules[c.qualified_name];
           const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
           return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
-              class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>
-            <div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+              class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
+        })()}
+        ${(() => {
+          // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
+          // action per candidate, replacing the old per-survey-type hardcoded
+          // buttons ("Publish registration only", "Publish this phase's
+          // findings"). Scoped to exactly this candidate's own steps, not a
+          // hand-picked list — so a new Survey Definition gets a working
+          // Publish button for free, no frontend change needed. Only repo
+          // (resource-explorer-executed) steps carry a re_analysis_step —
+          // native/prefect-routed steps have nothing local to publish from
+          // here, and _publishScopedSteps' route is repo-only today, so the
+          // button is omitted rather than shown disabled/broken for those.
+          const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
+          if (entityType !== 'repo' || !stepKeys.length) return '';
+          return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)})'
+              class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
+              title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
+              ☁ Publish
+            </button>`;
         })()}
       </div>
+      ${(() => {
+        const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+        return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+      })()}
     </div>`;
   }).join('');
 
@@ -4922,8 +4998,11 @@ function renderSecurityOverviewDashboard(dashboard) {
   return scorecard + _renderGroupedCardsDashboard(dashboard);
 }
 
-function showSurveyDefinitionRunModal(entityType, slug, candidateIndex) {
-  const candidate = _surveyDefCandidatesCache[candidateIndex];
+function showSurveyDefinitionRunModal(entityType, slug, viewElId, qualifiedName) {
+  // Looked up by (viewElId, qualified_name), not a positional index into a
+  // shared array — see _surveyDefCandidatesCache's declaration comment for
+  // the real bug this fixes (Run on one survey silently executing another).
+  const candidate = (_surveyDefCandidatesCache[viewElId] || []).find(c => c.qualified_name === qualifiedName);
   if (!candidate) return;
   _surveyDefRun = { entityType, slug, candidate };
   document.getElementById('survey-def-run-name').textContent = candidate.display_name || candidate.qualified_name;
@@ -4936,6 +5015,9 @@ function showSurveyDefinitionRunModal(entityType, slug, candidateIndex) {
   submitBtn.disabled = false;
   submitBtn.textContent = 'Run';
   submitBtn.onclick = submitSurveyDefinitionRun; // reset in case a previous run set this to hideSurveyDefinitionRunModal
+  const cancelBtn = document.getElementById('survey-def-run-cancel-btn');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.classList.remove('hidden');
   document.getElementById('survey-def-run-creds').classList.toggle('hidden', entityType !== 'database');
   const saved = _surveyDefSavedCreds[slug];
   document.getElementById('survey-def-run-user').value = saved?.dbUser || '';
@@ -4946,6 +5028,29 @@ function showSurveyDefinitionRunModal(entityType, slug, candidateIndex) {
 function hideSurveyDefinitionRunModal() {
   document.getElementById('survey-def-run-modal').classList.add('hidden');
   _surveyDefRun = null;
+}
+
+// Generic activity-entry poll — GET /api/activity/{id} until status isn't
+// "running" anymore. 3s interval, ~20min cap (well beyond any real survey)
+// so a genuinely stuck entry doesn't poll forever. onTick(elapsedSeconds),
+// when given, lets the caller show a real live progress indicator instead
+// of a static "please wait" for the whole run — the thing users kept
+// losing every time a route like this one went from synchronous-blocking
+// to fire-and-forget without a replacement indicator (a real, live-reported
+// regression once already — see the run route's own docstring).
+async function _pollActivityUntilDone(activityId, { intervalMs = 3000, maxAttempts = 400, onTick = null } = {}) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, intervalMs));
+    if (onTick) onTick(Math.round((i + 1) * intervalMs / 1000));
+    try {
+      const res = await fetch(`/api/activity/${activityId}`);
+      if (res.ok) {
+        const entry = await res.json();
+        if (entry.status !== 'running') return entry;
+      }
+    } catch(e) { /* transient — keep polling */ }
+  }
+  return { status: 'error', summary: 'Timed out waiting for the run to finish — check 📋 Activity for its actual outcome.' };
 }
 
 async function submitSurveyDefinitionRun() {
@@ -4966,16 +5071,22 @@ async function submitSurveyDefinitionRun() {
   errEl.classList.add('hidden');
   resultEl.classList.add('hidden');
   progress.classList.remove('hidden');
+  progress.textContent = 'Starting…';
   submitBtn.disabled = true;
-  submitBtn.textContent = 'Running…';
+  submitBtn.textContent = 'Starting…';
 
   const opId = logOp({ type:'survey', slug, status:'running',
     summary:`Running Survey Definition '${candidate.display_name}' on ${slug}…` });
-  showToast('running', `Running <strong>${_esc(candidate.display_name)}</strong> on <strong>${_esc(slug)}</strong>…`, 0);
-  const runningToastId = `toast-${_toastSeq}`;
 
   try {
-    const res = await fetch(`/api/survey-definitions/${entityType}/${slug}/run`, {
+    // Fire-and-forget: the route logs a 'running' activity entry and starts
+    // a background thread, returning activity_id immediately — it does NOT
+    // block until the survey finishes (a real gap this closes: a slow,
+    // multi-step survey like Coarse Profile's zipball download+profile, or
+    // a 17-step Repo Full Survey, used to leave this exact spinner sitting
+    // for however long the whole thing took, with zero feedback that
+    // anything was actually progressing).
+    const startRes = await fetch(`/api/survey-definitions/${entityType}/${slug}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4983,18 +5094,45 @@ async function submitSurveyDefinitionRun() {
         db_user: dbUser, db_pwd: dbPwd,
       }),
     });
-    const data = await res.json();
+    const started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+
+    submitBtn.textContent = 'Running…';
+    // Real, live-reported UX bug: once the run is genuinely backgrounded
+    // (activity_id obtained), the modal itself must stop implying the run
+    // is tied to it staying open — a "Cancel" label here is actively
+    // misleading (it doesn't cancel the run, just stops watching it), and
+    // sitting behind this full-screen overlay for the run's whole duration
+    // reads as "still blocking" even though the underlying operation moved
+    // to a background thread the moment the POST above returned.
+    document.getElementById('survey-def-run-cancel-btn').textContent = 'Close — keeps running in background →';
+    showToast('running', `Running <strong>${_esc(candidate.display_name)}</strong> on <strong>${_esc(slug)}</strong>… (can take a while — check 📋 Activity if you navigate away)`, 0);
+    const runningToastId = `toast-${_toastSeq}`;
+
+    const final = await _pollActivityUntilDone(started.activity_id, {
+      onTick: (elapsedSec) => { progress.textContent = `Running… (${elapsedSec}s elapsed — this may take a while)`; },
+    });
     document.getElementById(runningToastId)?.remove();
     progress.classList.add('hidden');
 
-    if (!res.ok) {
-      const msg = data.detail || 'Run failed';
+    // The full structured result (steps, egeria_report_guid, errors, ...) is
+    // JSON-encoded into the completed activity entry's own `detail` field —
+    // see survey_definitions.py's _run_survey_definition_background.
+    let data = {};
+    try { data = final.detail ? JSON.parse(final.detail) : {}; } catch { data = {}; }
+
+    if (final.status === 'error' && !data.steps) {
+      // A reader/executor-level error (or a genuine background-thread
+      // crash, or a poll timeout) never produced a step-by-step result at
+      // all — show the plain message rather than an empty steps panel.
+      const msg = (data.errors && data.errors[0]) || final.summary || 'Run failed';
       updateOp(opId, 'error', `Survey Definition run failed: ${msg}`, msg);
       showToast('error', `Run failed for <strong>${_esc(slug)}</strong>: ${_esc(msg)}`, 10000);
       errEl.textContent = msg;
       errEl.classList.remove('hidden');
       submitBtn.disabled = false;
       submitBtn.textContent = 'Retry';
+      document.getElementById('survey-def-run-cancel-btn').textContent = 'Cancel';
       return;
     }
 
@@ -5050,11 +5188,17 @@ async function submitSurveyDefinitionRun() {
     showToast(hasErrors ? 'error' : 'success', `${summary} for <strong>${_esc(slug)}</strong>`, 8000);
     // A completed run (even with errors) isn't something you'd immediately
     // re-run — offer "Done" (close the modal) instead of resubmitting.
+    // "Cancel" is meaningless once the run is already finished — hide it so
+    // "Done" is the one, unambiguous close action.
     submitBtn.disabled = false;
     submitBtn.textContent = 'Done';
     submitBtn.onclick = hideSurveyDefinitionRunModal;
+    document.getElementById('survey-def-run-cancel-btn').classList.add('hidden');
   } catch(e) {
-    document.getElementById(runningToastId)?.remove();
+    // Only reachable if starting the run itself failed (POST /run rejected,
+    // network error) — once polling begins, _pollActivityUntilDone always
+    // resolves to a terminal entry rather than throwing, so a mid-run
+    // failure is handled above via final.status, not here.
     progress.classList.add('hidden');
     updateOp(opId, 'error', `Survey Definition run failed: ${e.message}`, e.message);
     showToast('error', `Run failed for <strong>${_esc(slug)}</strong>: ${_esc(e.message)}`, 10000);
@@ -5882,13 +6026,6 @@ function renderScoutingOverview(d) {
   const publishedBadge = d.is_published
     ? `<span class="text-cyan-400" title="${d.last_published_at ? `Published ${_esc(d.last_published_at)}` : ''}">☁ Published to Egeria${d.last_published_at ? ` ${_relTime(d.last_published_at)}` : ''}</span>`
     : `<span class="text-slate-500">Not published</span>`;
-  // Coarse Profile's own badge — folded into the Survey tab (its dedicated
-  // sub-tab was removed per direct request: the action belongs with every
-  // other "run" action here, its results belong in the Results tab, not a
-  // third home for either).
-  const profiledBadge = d.last_profiled_at
-    ? `<span class="text-emerald-400" title="Profiled ${_esc(d.last_profiled_at)}">📄 Profiled ${_relTime(d.last_profiled_at)}</span>`
-    : `<span class="text-slate-500">📄 Not yet profiled</span>`;
   const _LIFECYCLE_LABELS = {
     active: '', archived: '📦 Archived', disabled: '🚫 Disabled',
     fork: '🍴 Fork', template: '📋 Template',
@@ -5952,42 +6089,11 @@ function renderScoutingOverview(d) {
       </div>
 
       <div class="flex flex-wrap gap-2 items-center pt-2">
-        <button onclick="runScoutingScan('${_esc(d.slug)}', this)" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">📊 Run Scouting Scan</button>
-        <button onclick="publishScoutingRegistration('${_esc(d.slug)}', this)"
-          class="text-xs px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
-          title="Registers/finds the SourceControlLibrary asset in Egeria and publishes just the repository_health annotation — the minimal 'this repo exists' catalog entry">
-          ☁ Publish registration only
-        </button>
         <button onclick="_showScoutingSubTab('questions')" class="text-xs text-slate-400 hover:text-slate-200 underline">❓ Questions checklist →</button>
         <button onclick="setNavIntent('analysis')" class="text-xs text-slate-400 hover:text-slate-200 underline" title="Re-embedding for chat/search isn't a Scouting-tier action — it's the 'Refresh & Re-ingest' card under Analysis, which is independently on-demand and schedulable there">🔄 Refresh chat search index (Analysis) →</button>
         <button onclick="showMainView('report')" class="text-xs text-slate-400 hover:text-slate-200 underline">View full report →</button>
       </div>
       <div class="text-[11px] text-slate-500">${surveyedBadge} · ${publishedBadge}</div>
-
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 space-y-2">
-        <div class="text-xs font-semibold text-slate-300">Coarse Profile</div>
-        <p class="text-[11px] text-slate-500">Download the repo's zipball once and refresh what's actually in it —
-          file types, sizes, and language shape. Assessment's security/documentation checks and Analysis's API
-          structure both read from code symbols, which only the checkbox below refreshes.</p>
-        <label class="flex items-center gap-2 text-xs text-slate-300">
-          <input type="checkbox" id="profile-include-symbols" class="rounded bg-slate-800 border-slate-600">
-          Also refresh code symbols (needed for Assessment's security/documentation checks and Analysis's API structure)
-        </label>
-        <div class="flex flex-wrap gap-2 items-center pt-1">
-          <button onclick="runProfileScan('${_esc(d.slug)}', this)"
-            class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">
-            📄 Refresh coarse profile
-          </button>
-          <button onclick="publishProfileFindings('${_esc(d.slug)}', this)"
-            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors"
-            title="Publishes this phase's file/language-classification and data-profiling findings as their own SurveyReport">
-            ☁ Publish this phase's findings
-          </button>
-          <button onclick="_showScoutingSubTab('results')" class="text-xs text-slate-400 hover:text-slate-200 underline">View results →</button>
-        </div>
-        <div id="profile-refresh-badges" class="text-[11px] text-slate-500">${profiledBadge}</div>
-        <div id="profile-scan-feedback" class="text-xs"></div>
-      </div>
 
       <div>
         <div class="flex items-center justify-between mb-1">
@@ -5997,14 +6103,18 @@ function renderScoutingOverview(d) {
         <div id="scouting-overview-stats" class="flex flex-wrap gap-1.5"></div>
       </div>
 
-      <!-- D7/D7a (docs/unified-survey-execution-model-plan.md): the generalized,
+      <!-- D7/D7a (docs/unified-survey-execution-model-plan.md), D3
+           (docs/survey-tab-unification-plan.md): the generalized,
            phase-scoped Survey panel — same component Discovery uses, scoped
-           here to phase='scouting' instead of Discovery's unscoped view.
-           Populated by _loadSurveyPanel() right after this render (see
-           loadScoutingOverview()); superseded "Run Scouting Scan" is kept
-           above as-is for now (same underlying Survey Definition would also
-           appear as a candidate here — a real near-term duplication, not
-           resolved in this pass). -->
+           here to phase='scouting' instead of Discovery's unscoped view —
+           is now the ONLY way to run a scouting-tier survey from this tab.
+           The hardcoded "Run Scouting Scan"/"Refresh coarse profile"
+           buttons that used to duplicate two of these candidates
+           (Git Statistics Survey, Coarse Profile Survey) are retired;
+           every scouting-tagged Survey Definition, including Repo Full
+           Survey, shows up here as an ordinary candidate card. Populated
+           by _loadSurveyPanel() right after this render (see
+           loadScoutingOverview()). -->
       <div id="scouting-survey-panel-view" class="pt-2"></div>
     </div>`;
 }
@@ -6249,65 +6359,17 @@ function _renderScoutingDispositionView(d, history) {
     </div>`;
 }
 
-// Fire-and-forget + poll — the route used to run synchronously in the HTTP
-// request itself, which for an active repo's first scan could take 10+
-// minutes with zero visibility (a real, confirmed slowness bug — see
-// _run_scouting_scan_sync's fast=True comment on the backend). The route
-// now returns an activity_id immediately; this polls the same Activity Log
-// entry every other background operation in this codebase already writes
-// to (org_importer.py's batch-import precedent) until it reaches a
-// terminal status.
-async function runScoutingScan(slug, btn) {
-  const orig = btn.textContent;
-  btn.textContent = '⟳ Starting…';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/projects/${slug}/scouting-scan`, { method: 'POST' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    btn.textContent = '⟳ Running…';
-    showToast('running', `Running Scouting Scan for <strong>${_esc(slug)}</strong>… (can take a while for very active repos — check 📋 Activity if you navigate away)`, 0);
-    const runningToastId = `toast-${_toastSeq}`;
-    const final = await _pollActivityUntilDone(data.activity_id);
-    document.getElementById(runningToastId)?.remove();
-    if (final.status === 'ok') {
-      showToast('success', final.summary || 'Scouting scan complete.', 4000);
-    } else {
-      showToast('error', `Scan failed: ${_esc(final.summary || 'unknown error')}`, 6000);
-    }
-    loadScoutingOverview();
-    loadProjects();  // refresh sidebar lifecycle badge
-  } catch(e) {
-    showToast('error', `Scan failed: ${_esc(e.message)}`, 5000);
-  } finally {
-    btn.textContent = orig;
-    btn.disabled = false;
-  }
-}
-
-// Generic activity-entry poll — GET /api/activity/{id} until status isn't
-// "running" anymore. 3s interval, ~20min cap (well beyond even a slow
-// unfast-pathed scan) so a genuinely stuck entry doesn't poll forever.
-async function _pollActivityUntilDone(activityId, { intervalMs = 3000, maxAttempts = 400 } = {}) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, intervalMs));
-    try {
-      const res = await fetch(`/api/activity/${activityId}`);
-      if (res.ok) {
-        const entry = await res.json();
-        if (entry.status !== 'running') return entry;
-      }
-    } catch(e) { /* transient — keep polling */ }
-  }
-  return { status: 'error', summary: 'Timed out waiting for the scan to finish — check 📋 Activity for its actual outcome.' };
-}
-
 // Phase-scoped Egeria publish — reuses the same POST /api/egeria/{slug}/publish
 // route the deep report's full "Publish survey →" button uses, just with an
-// explicit `steps` list so only that phase's findings become their own
+// explicit `steps` list so only that survey's findings become their own
 // SurveyReport (linked to the same asset) instead of re-running everything.
 // steps=[] (or omitted) there means "full survey" — never pass an empty list
 // here expecting a no-op; callers always pass a real, non-empty step list.
+// D4 (docs/survey-tab-unification-plan.md): the ONE publish action for every
+// survey type — called from renderSurveyPanel()'s generic "☁ Publish" button,
+// scoped to whichever candidate's own steps the user just ran. Replaces the
+// old per-survey-type hardcoded buttons ("Publish registration only",
+// "Publish this phase's findings") that used to live in renderScoutingOverview.
 async function _publishScopedSteps(slug, steps, btn, label) {
   const orig = btn.textContent;
   btn.textContent = '⟳ Publishing…';
@@ -6336,68 +6398,6 @@ async function _publishScopedSteps(slug, steps, btn, label) {
     btn.textContent = orig;
     btn.disabled = false;
   }
-}
-
-function publishScoutingRegistration(slug, btn) {
-  // Scouting-tier publish: just registers/finds the SourceControlLibrary
-  // asset + a small repository_health annotation — no file/language or
-  // deeper survey data. steps=["repo_health"] is all that's needed; the
-  // asset-registration itself happens unconditionally inside publish().
-  return _publishScopedSteps(slug, ['repo_health'], btn, 'Registration');
-}
-
-// ── Coarse Profile action — on-demand file/language zipball refresh,
-// folded into the Survey tab (renderScoutingOverview) per direct request:
-// its own dedicated sub-tab was removed since the action belongs alongside
-// every other "run" action there, and its results belong in the Results
-// tab (Code Structure dashboard), not a third home for either. ─────────────
-async function runProfileScan(slug, btn) {
-  const orig = btn.textContent;
-  const includeSymbols = document.getElementById('profile-include-symbols')?.checked || false;
-  const fb = document.getElementById('profile-scan-feedback');
-  btn.textContent = '⟳ Downloading & profiling…';
-  btn.disabled = true;
-  if (fb) fb.innerHTML = '<span class="text-slate-400">This downloads the zipball — may take a moment on large repos.</span>';
-  try {
-    const res = await fetch(`/api/projects/${slug}/profile-scan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ include_symbols: includeSymbols }),
-    });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      showToast('success', data.message || 'Profile refreshed.', 4000);
-      if (fb) fb.innerHTML = `<span class="text-emerald-400">✓ ${_esc(data.message)}</span>`;
-      if (data.classification_error) {
-        fb.innerHTML += `<div class="text-amber-400 mt-1">⚠ Classification failed: ${_esc(data.classification_error)}</div>`;
-      }
-      // Update the "Profiled X ago" badge in place — a full loadScoutingOverview()
-      // re-render would blow away the feedback message above.
-      const badges = document.getElementById('profile-refresh-badges');
-      if (badges) badges.innerHTML = `<span class="text-emerald-400" title="Profiled just now">📄 Profiled just now</span>`;
-      loadProjects();  // refresh sidebar
-    } else {
-      showToast('error', `Refresh failed: ${_esc(data.error || 'unknown error')}`, 6000);
-      if (fb) fb.innerHTML = `<span class="text-amber-400">✗ ${_esc(data.error || 'Unknown error')}</span>`;
-    }
-  } catch(e) {
-    showToast('error', `Refresh failed: ${_esc(e.message)}`, 6000);
-  } finally {
-    btn.textContent = orig;
-    btn.disabled = false;
-  }
-}
-
-function publishProfileFindings(slug, btn) {
-  // Profile-tab publish: the file-classification + data-profiling step
-  // keys (language_file_classification's 3 steps + data_file_profiling's 1),
-  // matching what this tab actually refreshes — not repo_health, not
-  // security/docs/api structure/dependency findings.
-  return _publishScopedSteps(
-    slug,
-    ['repo_language', 'repo_file_classification', 'repo_file_structure', 'repo_data_profiling'],
-    btn, "Profile phase",
-  );
 }
 
 // ── Sub-Resources sub-tab — the "Select"/"Catalog" stages of the repo

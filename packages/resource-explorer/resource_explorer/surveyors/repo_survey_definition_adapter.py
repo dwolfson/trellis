@@ -301,6 +301,22 @@ def _run_step(step_key: str, **orchestrator_kwargs):
     return runner
 
 
+def _run_batch(project, registry, step_keys: list[str], fast: bool = False, **_) -> dict:
+    """D1 (docs/survey-tab-unification-plan.md) — repo's ResourceTypeAdapter.run_batch:
+    one SurveyOrchestrator.run() call for a whole group of step_keys instead
+    of one call per key. This is what actually lets D6's shared-resource
+    dedup (trellis_microflow.resolve_resources) do its job for a multi-step
+    Survey Definition — e.g. a 'Coarse Profile' survey whose steps all
+    declare requires_resources={"zipball_root": ...} downloads the zipball
+    once for the whole group, not once per step, since resolve_resources
+    only dedupes *within* a single .run() call."""
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    orch = SurveyOrchestrator(registry)
+    result = orch.run(project.slug, steps=step_keys, fast=fast)
+    return {"annotations": result.annotations, "errors": result.errors}
+
+
 def _build_re_analysis_steps() -> dict:
     """Derived from STEP_REGISTRY — each step key delegates to
     SurveyOrchestrator.run(steps=[key]) rather than instantiating its own
@@ -988,6 +1004,7 @@ _ADAPTER = ResourceTypeAdapter(
     get_entity=_get_project_entity,
     publish=_publish,
     re_analysis_step_info=_RE_ANALYSIS_STEP_INFO,
+    run_batch=_run_batch,
 )
 
 register_adapter(_ADAPTER)
