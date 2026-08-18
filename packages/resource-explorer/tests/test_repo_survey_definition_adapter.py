@@ -48,3 +48,55 @@ def test_all_seventeen_step_keys_are_registered():
         "repo_license_classification", "repo_security_features", "repo_ci_quality",
         "repo_maturity", "repo_conventions", "repo_symbol_extraction",
     }
+
+
+class TestRunBatch:
+    """D1 (docs/survey-tab-unification-plan.md) — repo's own
+    ResourceTypeAdapter.run_batch: one SurveyOrchestrator.run(steps=[...])
+    call for a whole step_key list, so the executor's grouping (see
+    test_survey_definition_executor.py::TestRunBatch) actually gets the
+    single-zipball-download win it exists for."""
+
+    def test_calls_orchestrator_once_with_all_step_keys(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch
+
+        project = _project()
+        registry = MagicMock()
+        fake_result = MagicMock(annotations=["a1", "a2"], errors=[])
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = fake_result
+            output = _run_batch(project, registry, ["repo_language", "repo_file_classification"])
+
+        MockOrch.return_value.run.assert_called_once_with(
+            project.slug, steps=["repo_language", "repo_file_classification"], fast=False,
+        )
+        assert output == {"annotations": ["a1", "a2"], "errors": []}
+
+    def test_forwards_fast_flag(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch
+
+        project = _project()
+        registry = MagicMock()
+        fake_result = MagicMock(annotations=[], errors=[])
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = fake_result
+            _run_batch(project, registry, ["repo_health", "repo_language"], fast=True)
+
+        _, kwargs = MockOrch.return_value.run.call_args
+        assert kwargs["fast"] is True
+
+    def test_surfaces_orchestrator_errors(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch
+
+        project = _project()
+        registry = MagicMock()
+        fake_result = MagicMock(annotations=[], errors=["repo_data_profiling raised unexpectedly: boom"])
+        with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = fake_result
+            output = _run_batch(project, registry, ["repo_language", "repo_data_profiling"])
+
+        assert output["errors"] == ["repo_data_profiling raised unexpectedly: boom"]
+
+    def test_registered_on_the_real_adapter(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import _ADAPTER, _run_batch
+        assert _ADAPTER.run_batch is _run_batch

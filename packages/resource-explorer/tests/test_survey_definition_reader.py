@@ -6,7 +6,8 @@ from resource_explorer.surveyors.survey_definition_reader import (
     UnsupportedSurveyDefinitionError,
 )
 
-# Fixtures below match the real GovernanceOfficer.get_governance_process_graph
+# Fixtures below match the real GovernanceOfficer.get_governance_action_process_graph
+# (renamed from get_governance_process_graph in an upcoming pyegeria release)
 # response shape, confirmed against a live qs-view-server for both a single-step
 # and a two-step chained Survey Definition (2026-07-07/08): a flat node list
 # ("firstProcessStep" + "nextProcessSteps") plus a separate flat edge list
@@ -433,19 +434,26 @@ class _FakeGovernanceOfficerGraph:
 
     def __init__(self, links):
         self._links = links
-        self.get_governance_process_graph_calls = 0
+        self.get_governance_action_process_graph_calls = 0
 
-    def get_governance_process_graph(self, **_kwargs):
-        self.get_governance_process_graph_calls += 1
+    def get_governance_action_process_graph(self, **_kwargs):
+        self.get_governance_action_process_graph_calls += 1
         return {"elementGraph": {"processStepLinks": self._links}}
 
 
 class _FakeMetadataExpert:
+    """delete_related_elements() is called directly again (pyegeria's
+    ISSUE-63 fixed upstream — the method now routes through
+    DeleteRelationshipRequestBody, which does declare deleteMethod, instead
+    of the old OpenMetadataDeleteRequestBody that silently dropped it)."""
+
     def __init__(self):
         self.deleted_guids = []
+        self.delete_bodies = []
 
     def delete_related_elements(self, relationship_guid, body=None):
         self.deleted_guids.append(relationship_guid)
+        self.delete_bodies.append(body)
 
 
 def _unique_name_link(prev_qn, next_qn, link_guid):
@@ -527,7 +535,7 @@ class TestReconcileStepLinks:
         reader = _reader()
 
         class _Raising:
-            def get_governance_process_graph(self, **_kwargs):
+            def get_governance_action_process_graph(self, **_kwargs):
                 raise RuntimeError("boom")
 
         reader._governance_officer = _Raising()

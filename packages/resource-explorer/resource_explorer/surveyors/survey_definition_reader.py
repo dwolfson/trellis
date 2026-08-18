@@ -54,10 +54,11 @@ def clear_caches() -> None:
     _candidates_cache.clear()
     _fetch_cache.clear()
 
-# Real response shape from GovernanceOfficer.get_governance_process_graph, confirmed
-# against a live qs-view-server for both a single-step and a two-step chained
-# Survey Definition (2026-07-07/08). This is a genuine graph representation —
-# a flat node list plus a separate flat edge list — not a nested tree:
+# Real response shape from GovernanceOfficer.get_governance_action_process_graph
+# (renamed from get_governance_process_graph in an upcoming pyegeria release),
+# confirmed against a live qs-view-server for both a single-step and a two-step
+# chained Survey Definition (2026-07-07/08). This is a genuine graph
+# representation — a flat node list plus a separate flat edge list — not a nested tree:
 #
 #   {
 #     "governanceActionProcess": {"elementHeader": {...}, "properties": {...}},
@@ -449,7 +450,7 @@ class SurveyDefinitionReader:
             return cached[1]
 
         self.connect()
-        raw = self._governance_officer.get_governance_process_graph(
+        raw = self._governance_officer.get_governance_action_process_graph(
             guid=process_guid, output_format="JSON"
         )
         if isinstance(raw, str):
@@ -485,7 +486,7 @@ class SurveyDefinitionReader:
         expected_edges = compute_expected_edges(survey_group, step_keys)
 
         try:
-            raw = self._governance_officer.get_governance_process_graph(guid=process_guid, output_format="JSON")
+            raw = self._governance_officer.get_governance_action_process_graph(guid=process_guid, output_format="JSON")
             if isinstance(raw, str):
                 import json as _json
                 raw = _json.loads(raw)
@@ -499,7 +500,24 @@ class SurveyDefinitionReader:
 
         if not dry_run and result.to_remove:
             metadata_expert = self._connect_metadata_expert()
-            delete_body = {"class": "OpenMetadataDeleteRequestBody"}
+            # deleteMethod explicit and required — real pyegeria bug, tracked
+            # as egeria-python's PYEGERIA_ISSUES.md ISSUE-63: unfixed,
+            # metadata_expert.delete_related_elements() routed through
+            # OpenMetadataDeleteRequestBody, which declared no deleteMethod
+            # field at all, so a {"deleteMethod": "SOFT_DELETE"} key was
+            # silently dropped by pydantic validation (PyegeriaModel's
+            # extra='ignore') before the request ever reached the server —
+            # every relationship this method deletes is a plain step-to-step
+            # link with no lineage semantics, so the server's own default
+            # (LookForLineage) was always rejected outright
+            # (OMAG-COMMON-400-032) with no way to override it. Fixed
+            # upstream (pyegeria >=6.0.18.x, confirmed live): the method now
+            # routes through DeleteRelationshipRequestBody, which does
+            # declare delete_method, so an explicit value here actually
+            # reaches the server. The previous workaround here bypassed
+            # pyegeria's model validation entirely via a raw
+            # _async_make_request() call — no longer needed, removed.
+            delete_body = {"class": "DeleteRelationshipRequestBody", "deleteMethod": "SOFT_DELETE"}
             for entry in result.to_remove:
                 if not entry.link_guid:
                     continue

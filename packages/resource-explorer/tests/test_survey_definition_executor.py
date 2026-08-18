@@ -153,6 +153,166 @@ def test_other_engine_handler_failure_reported_as_error():
     assert "database not cataloged" in result["errors"][0]
 
 
+class TestRunBatch:
+    """D1 (docs/survey-tab-unification-plan.md) — consecutive plain
+    'resource-explorer' steps batch into one adapter.run_batch() call when
+    the adapter provides one, instead of one call per step. Real fix, not a
+    micro-optimization: per-step dispatch meant any step declaring a shared
+    D6 resource (e.g. repo's zipball_root) re-acquired it independently
+    every time."""
+
+    def _survey_def(self, *step_keys, guid="proc-batch"):
+        return SurveyDefinition(
+            process_guid=guid,
+            display_name="Batchable Survey",
+            qualified_name="GovActionProcess::Batchable",
+            supported_technology_type="Fake Tech",
+            steps=[
+                SurveyStep(
+                    guid=f"s{i}", display_name=key, qualified_name=f"Step::{key}",
+                    executes_at="resource-explorer", re_analysis_step=key,
+                )
+                for i, key in enumerate(step_keys)
+            ],
+        )
+
+    def test_consecutive_steps_call_run_batch_once_not_per_step(self):
+        run_batch = MagicMock(return_value={"annotations": ["a1", "a2"], "errors": []})
+        per_step_runner = MagicMock()  # must NOT be called — proves batching, not per-step dispatch
+        adapter = ResourceTypeAdapter(
+            entity_type="batchable",
+            technology_type="Fake Tech",
+            re_analysis_steps={"step_a": per_step_runner, "step_b": per_step_runner},
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(return_value="report-guid-batch"),
+            run_batch=run_batch,
+        )
+        register_adapter(adapter)
+
+        survey_def = self._survey_def("step_a", "step_b")
+        registry = _fake_registry()
+        reader = _fake_reader(survey_def, candidates=[{"guid": "proc-batch", "qualified_name": "GovActionProcess::Batchable", "display_name": "Batchable"}])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        result = executor.run(entity_type="batchable", slug="my-repo")
+
+        run_batch.assert_called_once()
+        args, _ = run_batch.call_args
+        assert args[2] == ["step_a", "step_b"]
+        per_step_runner.assert_not_called()
+        statuses = {s["step"]: s["status"] for s in result["steps"]}
+        assert statuses == {"Step::step_a": "ok", "Step::step_b": "ok"}
+        assert result["errors"] == []
+        adapter.publish.assert_called_once()
+
+    def test_a_single_batchable_step_still_uses_the_per_step_path(self):
+        """A group of exactly one falls through to the original per-step
+        runner unchanged — batching only kicks in for 2+ consecutive steps,
+        so single-step Survey Definitions (or single-step remainders) don't
+        pay any behavior-change cost at all."""
+        run_batch = MagicMock()
+        per_step_runner = MagicMock(return_value={"annotations": ["a1"]})
+        adapter = ResourceTypeAdapter(
+            entity_type="batchable2",
+            technology_type="Fake Tech",
+            re_analysis_steps={"step_a": per_step_runner},
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(return_value="report-guid"),
+            run_batch=run_batch,
+        )
+        register_adapter(adapter)
+
+        survey_def = self._survey_def("step_a", guid="proc-batch2")
+        registry = _fake_registry()
+        reader = _fake_reader(survey_def, candidates=[{"guid": "proc-batch2", "qualified_name": "GovActionProcess::Batchable", "display_name": "Batchable"}])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        executor.run(entity_type="batchable2", slug="my-repo")
+
+        run_batch.assert_not_called()
+        per_step_runner.assert_called_once()
+
+    def test_run_batch_errors_are_surfaced_and_shared_across_the_group(self):
+        run_batch = MagicMock(return_value={"annotations": [], "errors": ["repo_health failed: rate limited"]})
+        adapter = ResourceTypeAdapter(
+            entity_type="batchable3",
+            technology_type="Fake Tech",
+            re_analysis_steps={"step_a": MagicMock(), "step_b": MagicMock()},
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(),
+            run_batch=run_batch,
+        )
+        register_adapter(adapter)
+
+        survey_def = self._survey_def("step_a", "step_b", guid="proc-batch3")
+        registry = _fake_registry()
+        reader = _fake_reader(survey_def, candidates=[{"guid": "proc-batch3", "qualified_name": "GovActionProcess::Batchable", "display_name": "Batchable"}])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        result = executor.run(entity_type="batchable3", slug="my-repo")
+
+        assert "rate limited" in result["errors"][0]
+        statuses = {s["step"]: s["status"] for s in result["steps"]}
+        assert statuses == {"Step::step_a": "error", "Step::step_b": "error"}
+
+    def test_run_batch_exception_is_caught_not_raised(self):
+        adapter = ResourceTypeAdapter(
+            entity_type="batchable4",
+            technology_type="Fake Tech",
+            re_analysis_steps={"step_a": MagicMock(), "step_b": MagicMock()},
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(),
+            run_batch=MagicMock(side_effect=RuntimeError("zipball download failed")),
+        )
+        register_adapter(adapter)
+
+        survey_def = self._survey_def("step_a", "step_b", guid="proc-batch4")
+        registry = _fake_registry()
+        reader = _fake_reader(survey_def, candidates=[{"guid": "proc-batch4", "qualified_name": "GovActionProcess::Batchable", "display_name": "Batchable"}])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        result = executor.run(entity_type="batchable4", slug="my-repo")
+
+        assert "zipball download failed" in result["errors"][0]
+        statuses = {s["step"]: s["status"] for s in result["steps"]}
+        assert statuses == {"Step::step_a": "error", "Step::step_b": "error"}
+
+    def test_an_unknown_step_key_breaks_the_group_but_doesnt_block_the_rest(self):
+        """A step this adapter doesn't recognize must never be silently
+        absorbed into a batch — it still gets reported as 'unknown_step',
+        same as the non-batched path always did."""
+        run_batch = MagicMock(return_value={"annotations": [], "errors": []})
+        adapter = ResourceTypeAdapter(
+            entity_type="batchable5",
+            technology_type="Fake Tech",
+            re_analysis_steps={"step_a": MagicMock(), "step_c": MagicMock()},
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(return_value="report-guid"),
+            run_batch=run_batch,
+        )
+        register_adapter(adapter)
+
+        survey_def = self._survey_def("step_a", "step_unknown", "step_c", guid="proc-batch5")
+        registry = _fake_registry()
+        reader = _fake_reader(survey_def, candidates=[{"guid": "proc-batch5", "qualified_name": "GovActionProcess::Batchable", "display_name": "Batchable"}])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        result = executor.run(entity_type="batchable5", slug="my-repo")
+
+        statuses = {s["step"]: s["status"] for s in result["steps"]}
+        assert statuses["Step::step_unknown"] == "unknown_step"
+        # step_a and step_c are each isolated singletons (the unknown step
+        # breaks any run of 2+) — run_batch should never be called at all.
+        run_batch.assert_not_called()
+
+    def test_database_adapter_has_no_run_batch_default_none(self):
+        """Every adapter registered before D1 existed must keep run_batch=None
+        (the exact prior one-call-per-step behavior) unless explicitly opted in."""
+        from resource_explorer.surveyors.survey_definition_executor import get_adapter
+        import resource_explorer.surveyors.database.survey_definition_adapter  # noqa: F401
+        assert get_adapter("database").run_batch is None
+
+
 def test_unknown_entity_type_raises():
     registry = _fake_registry()
     executor = SurveyDefinitionExecutor(registry, reader=_fake_reader(None))

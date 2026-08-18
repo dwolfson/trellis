@@ -65,6 +65,29 @@ cp packages/egeria-advisor/advisor/configdata/mcp_servers.json.example \
    packages/egeria-advisor/advisor/configdata/mcp_servers.json
 ```
 
+### Databases
+
+Both apps share one Postgres/pgvector instance (`egeria_advisor` database, default port `5442`).
+In a Trellis monorepo checkout this is normally already running, managed by
+egeria-workspaces-fs's `compose-configs/shared-infra/shared-infra.yaml`. For a from-scratch
+environment without it:
+
+```bash
+docker run -p 5442:5432 -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_advisor \
+  -e POSTGRES_PASSWORD=advisor pgvector/pgvector:pg17
+```
+
+Table creation is otherwise automatic and needs no separate migration step, but the two apps
+provision differently:
+
+- **Egeria Advisor** has a fixed set of 9 vector collections plus its metrics/symbol-store
+  tables. Starting its web server provisions all of them (`PgVectorStore.provision_schema()` runs
+  on FastAPI startup); a metrics-only table set also self-provisions on first use from the CLI.
+- **Resource Explorer**'s vector collections are per-project (`{project_slug}_{collection_type}`),
+  so there's no fixed set to pre-create — each table is created lazily the first time that
+  project's data is inserted (`auto_provision_on_insert=True`). Its own registry tables (projects,
+  stats, etc.) self-provision on first use the same way.
+
 ### Running Resource Explorer
 
 ```bash

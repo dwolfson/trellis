@@ -35,6 +35,14 @@ Requires Python 3.12+. External services must be running locally:
 - **Ollama** at `localhost:11434` (LLM inference — pull `llama3.1:8b` and `qwen2.5-coder:32b`)
 - **MLflow** at `localhost:5025` (optional, for experiment tracking)
 
+### First-time database initialization
+
+There is no setup script that creates the Postgres role/database or provisions tables — a new user must do both manually:
+
+1. **Create the Postgres role and database** (not automated anywhere in this repo): `createuser egeria_advisor` / `createdb -O egeria_advisor egeria_advisor` against the Postgres instance listening on `localhost:5442`, matching `pgvector_host`/`pgvector_port`/`pgvector_dbname`/`pgvector_user` in `advisor/config.py` (overridable via `.env`).
+2. **Metrics/symbol-store tables** (`query_metrics`, `code_symbols`, `code_relationships`, `indexed_files`, `index_metadata`, `collection_health`, `system_metrics`, `error_log`, `plan_events`, `ingest_log`) self-provision — `ConsolidatedDBManager.connect()` (`advisor/db_consolidated.py`) runs its `CREATE TABLE IF NOT EXISTS` DDL the first time anything touches it (e.g. starting the web app, or any script that constructs `MetricsCollector`/`CodeSymbolStore`). Nothing extra to run for these.
+3. **Vector collection tables** — `PgVectorStore.provision_schema()` (`advisor/vector_store_pg.py`) creates `CREATE EXTENSION IF NOT EXISTS vector` plus each collection's table + HNSW index. `advisor/web/app.py`'s startup handler calls it automatically, so starting the web UI is enough to provision empty tables for all 9 collections (`auto_provision_on_insert` is still `False` for inserts themselves — provisioning is startup-only, not per-write). CLI-only usage (no web server) or the `scripts/ingest_*.py` pipeline should still call `PgVectorStore().provision_schema()` explicitly before first use, since it's idempotent (`IF NOT EXISTS`) and safe to call repeatedly.
+
 ## Commands
 
 ```bash
@@ -272,7 +280,7 @@ The **Literate Governance with Context Intelligence (LGCI)** feature allows user
 
 ### Observability
 
-- **SQLite** (`metrics_collector.py`) — query latency, collection health, system resources; always active
+- **PostgreSQL** (`metrics_collector.py` via `ConsolidatedDBManager`, `advisor/db_consolidated.py`) — query latency, collection health, system resources; always active. Not SQLite — it's a separate connection pool into the same `egeria_advisor` Postgres database/instance pgvector uses, holding its own tables (`query_metrics`, `system_metrics`, `collection_health`, `error_log`, etc.) alongside the vector collection tables.
 - **MLflow** (`mlflow_tracking.py`) — experiment tracking; non-blocking background thread
 - **FeedbackCollector** — user thumbs up/down tracking from interactive mode
 - **Analytics** (`analytics.py`) — aggregated reporting for quantitative queries
