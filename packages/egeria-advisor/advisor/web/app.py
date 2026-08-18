@@ -74,9 +74,16 @@ def _get_rag():
 
 @app.on_event("startup")
 async def _startup():
-    """Pre-warm the MCP agent in the background so the first report click is fast."""
+    """Ensure pgvector collection tables exist, then pre-warm the MCP agent
+    in the background so the first report click is fast."""
     import asyncio
     import threading
+
+    try:
+        from advisor.vector_store_pg import PgVectorStore
+        PgVectorStore().provision_schema()
+    except Exception as exc:
+        logger.warning(f"pgvector schema provisioning failed (queries needing missing collections will error): {exc}")
 
     def _warm():
         try:
