@@ -29,6 +29,11 @@ docker run -p 5442:5432 -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_ad
 ollama pull llama3.1:8b && ollama serve
 ```
 
+No separate migration step is needed beyond creating the database above — Resource Explorer's
+vector tables are per-project (`{project_slug}_{collection_type}`) and provision themselves
+lazily the first time a project is scouted/surveyed (`auto_provision_on_insert=True`), same as
+its registry tables (projects, stats, etc.), which self-create on first use.
+
 ---
 
 ## What it does
