@@ -103,6 +103,13 @@ class StepInfo:
     # path-prefix filter; SurveyOrchestrator.run() only forwards
     # scope_locator to steps flagged True here.
     accepts_scope_locator: bool = False
+    # Whether this surveyor's constructor accepts fast (the Scouting-tier
+    # "skip anything N+1/expensive" flag) — only repo_health today
+    # (StatsFetcher's per-commit diff-stats calls, a confirmed real
+    # slowness bug for the Coarse Scout survey definition — see
+    # HealthSurveyor.__init__'s own docstring). SurveyOrchestrator.run()
+    # only forwards fast to steps flagged True here.
+    accepts_fast: bool = False
     # D6 (docs/unified-survey-execution-model-plan.md) — shared resources
     # this step needs, as {resource_name: constructor_kwarg_name}. Resolved
     # once per SurveyOrchestrator.run() call, deduped across every step
@@ -172,6 +179,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_health", HealthSurveyor,
         "Activity, community, release-cadence, and freshness scoring from GitHub stats.",
         ["QualityScoreAnnotation"],
+        accepts_fast=True,
     ),
     "repo_dependency": StepInfo(
         "repo_dependency", DependencySurveyor,
@@ -279,11 +287,15 @@ STEP_REGISTRY: dict[str, StepInfo] = {
 
 
 def _run_step(step_key: str, **orchestrator_kwargs):
-    def runner(project, registry, **_) -> dict:
+    def runner(project, registry, fast: bool = False, **_) -> dict:
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
         orch = SurveyOrchestrator(registry, **orchestrator_kwargs)
-        result = orch.run(project.slug, steps=[step_key])
+        # fast only actually applies to steps whose StepInfo.accepts_fast is
+        # True (repo_health today) — SurveyOrchestrator.run() ignores it for
+        # every other step, so forwarding it unconditionally here is safe
+        # for any step_key, not just the ones that care.
+        result = orch.run(project.slug, steps=[step_key], fast=fast)
         return {"annotations": result.annotations}
 
     return runner
@@ -609,6 +621,108 @@ def _symbol_extraction_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _generic_findings_headline(results: dict, *, noun: str = "check") -> dict | None:
+    """Survey Results dashboard, Tier 1 (docs/survey-results-dashboard-plan.md
+    D5) — generic headline compression for any findings_list-shaped results
+    dict (the uniform {check_name, label, summary, confidence} shape most
+    kinds already use). Not a new data source, just a summary of the same
+    list already shown in full on the kind's own Analysis/Assessment card.
+    Returns None when there's no data yet (survey never run for this repo)."""
+    findings = results.get("findings")
+    if not findings:
+        return None
+    negatives = [f for f in findings if f.get("label") in ("gap", "absent", "fail")]
+    if not negatives:
+        return {"label": f"{len(findings)} {noun}(s) passing", "status": "ok"}
+    if len(negatives) < len(findings):
+        return {"label": f"{len(negatives)} of {len(findings)} {noun}(s) gap", "status": "warn"}
+    return {"label": f"{len(negatives)} {noun}(s) gap", "status": "gap"}
+
+
+def _security_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_security_results(registry, slug))
+
+
+def _documentation_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_documentation_results(registry, slug), noun="doc signal")
+
+
+def _security_features_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_security_features_results(registry, slug), noun="feature")
+
+
+def _ci_quality_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_ci_quality_results(registry, slug), noun="CI check")
+
+
+def _repo_conventions_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_repo_conventions_results(registry, slug), noun="convention")
+
+
+def _license_headline(registry, slug: str) -> dict | None:
+    # Single current-state classification, not a pass/gap checklist — surface
+    # its own summary text directly rather than forcing it through the
+    # generic gap-counter (see _license_results' own docstring).
+    findings = _license_results(registry, slug).get("findings") or []
+    if not findings:
+        return None
+    f = findings[0]
+    return {"label": f.get("summary") or f.get("check_name", "License classified"), "status": "info"}
+
+
+def _maturity_headline(registry, slug: str) -> dict | None:
+    findings = _maturity_results(registry, slug).get("findings") or []
+    if not findings:
+        return None
+    f = findings[0]
+    return {"label": f.get("summary") or f.get("check_name", "Maturity classified"), "status": "info"}
+
+
+def _dependency_headline(registry, slug: str) -> dict | None:
+    result = _dependency_results(registry, slug)
+    if not result.get("total"):
+        return None
+    return {"label": f"{result['total']} dependenc{'y' if result['total'] == 1 else 'ies'}", "status": "info"}
+
+
+def _data_profile_headline(registry, slug: str) -> dict | None:
+    result = _data_profile_results(registry, slug)
+    if not result.get("total"):
+        return None
+    return {"label": f"{result['total']} data file(s) profiled", "status": "info"}
+
+
+def _api_structure_headline(registry, slug: str) -> dict | None:
+    result = _api_structure_results(registry, slug)
+    symbol_count = sum(sum(kinds.values()) for kinds in result.get("by_language", {}).values())
+    if not symbol_count:
+        return None
+    return {"label": f"{symbol_count} symbol(s) across {len(result.get('by_language', {}))} language(s)", "status": "info"}
+
+
+def _symbol_extraction_headline(registry, slug: str) -> dict | None:
+    result = _symbol_extraction_results(registry, slug)
+    if not result.get("symbol_count"):
+        return None
+    return {"label": f"{result['symbol_count']} symbol(s) extracted", "status": "info"}
+
+
+def _file_classification_headline(registry, slug: str) -> dict | None:
+    result = _file_classification_results(registry, slug)
+    if not result.get("total_files"):
+        return None
+    return {"label": f"{result['total_files']} file(s) classified", "status": "info"}
+
+
+def _sub_resource_survey_headline(registry, slug: str) -> dict | None:
+    result = _sub_resource_survey_results(registry, slug)
+    findings = result.get("findings") or []
+    if not findings:
+        return None
+    worthy = sum(1 for f in findings if f.get("label") == "worthy")
+    return {"label": f"{worthy} of {len(findings)} sub-resource(s) worth cataloging", "status": "info"}
+
+
 @dataclass
 class AnalysisKindResults:
     results_reader: Callable    # (registry, slug) -> dict
@@ -618,6 +732,10 @@ class AnalysisKindResults:
     # kind; "custom" is the escape hatch for shapes that don't fit either
     # (dependency-by-ecosystem, data-profile summary, API structure).
     render: str
+    # Survey Results dashboard Tier 1 (D5) — compressed {label, status} stat
+    # tile for a phase's "is it worth proceeding" summary row. Optional:
+    # None for kinds with no results view at all (repository_health).
+    headline_reader: Callable | None = None
 
 
 @dataclass
@@ -655,24 +773,36 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "language_file_classification": AnalysisKind(
         "language_file_classification",
         ["repo_language", "repo_file_classification", "repo_file_structure"],
-        results=AnalysisKindResults(_file_classification_results, _file_classification_trend, "custom"),
+        results=AnalysisKindResults(
+            _file_classification_results, _file_classification_trend, "custom",
+            headline_reader=_file_classification_headline,
+        ),
     ),
     "repository_health": AnalysisKind("repository_health", ["repo_health"]),
     "dependency_analysis": AnalysisKind(
         "dependency_analysis", ["repo_dependency"],
-        results=AnalysisKindResults(_dependency_results, _dependency_trend, "custom"),
+        results=AnalysisKindResults(
+            _dependency_results, _dependency_trend, "custom", headline_reader=_dependency_headline,
+        ),
     ),
     "security_scan": AnalysisKind(
         "security_scan", ["repo_security"], family="security",
-        results=AnalysisKindResults(_security_results, _security_trend, "findings_list"),
+        results=AnalysisKindResults(
+            _security_results, _security_trend, "findings_list", headline_reader=_security_headline,
+        ),
     ),
     "documentation_coverage": AnalysisKind(
         "documentation_coverage", ["repo_documentation"],
-        results=AnalysisKindResults(_documentation_results, _documentation_trend, "findings_list"),
+        results=AnalysisKindResults(
+            _documentation_results, _documentation_trend, "findings_list",
+            headline_reader=_documentation_headline,
+        ),
     ),
     "data_file_profiling": AnalysisKind(
         "data_file_profiling", ["repo_data_profiling"],
-        results=AnalysisKindResults(_data_profile_results, _data_profile_trend, "custom"),
+        results=AnalysisKindResults(
+            _data_profile_results, _data_profile_trend, "custom", headline_reader=_data_profile_headline,
+        ),
     ),
     # D5 note: deliberately NOT bundled with repo_symbol_extraction the way
     # language_file_classification bundles its three step_keys — this kind
@@ -687,31 +817,44 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # survey since it's a plain STEP_REGISTRY member either way.
     "api_structure": AnalysisKind(
         "api_structure", ["repo_api_structure"],
-        results=AnalysisKindResults(_api_structure_results, _api_structure_trend, "custom"),
+        results=AnalysisKindResults(
+            _api_structure_results, _api_structure_trend, "custom", headline_reader=_api_structure_headline,
+        ),
     ),
     "sub_resource_survey": AnalysisKind(
         "sub_resource_survey", ["repo_sub_resource_survey"],
-        results=AnalysisKindResults(_sub_resource_survey_results, _sub_resource_survey_trend, "custom"),
+        results=AnalysisKindResults(
+            _sub_resource_survey_results, _sub_resource_survey_trend, "custom",
+            headline_reader=_sub_resource_survey_headline,
+        ),
     ),
     "license_classification": AnalysisKind(
         "license_classification", ["repo_license_classification"],
-        results=AnalysisKindResults(_license_results, None, "findings_list"),
+        results=AnalysisKindResults(_license_results, None, "findings_list", headline_reader=_license_headline),
     ),
     "security_features": AnalysisKind(
         "security_features", ["repo_security_features"], family="security",
-        results=AnalysisKindResults(_security_features_results, _security_features_trend, "findings_list"),
+        results=AnalysisKindResults(
+            _security_features_results, _security_features_trend, "findings_list",
+            headline_reader=_security_features_headline,
+        ),
     ),
     "ci_quality": AnalysisKind(
         "ci_quality", ["repo_ci_quality"],
-        results=AnalysisKindResults(_ci_quality_results, _ci_quality_trend, "findings_list"),
+        results=AnalysisKindResults(
+            _ci_quality_results, _ci_quality_trend, "findings_list", headline_reader=_ci_quality_headline,
+        ),
     ),
     "maturity": AnalysisKind(
         "maturity", ["repo_maturity"],
-        results=AnalysisKindResults(_maturity_results, None, "findings_list"),
+        results=AnalysisKindResults(_maturity_results, None, "findings_list", headline_reader=_maturity_headline),
     ),
     "repo_conventions": AnalysisKind(
         "repo_conventions", ["repo_conventions"],
-        results=AnalysisKindResults(_repo_conventions_results, _repo_conventions_trend, "findings_list"),
+        results=AnalysisKindResults(
+            _repo_conventions_results, _repo_conventions_trend, "findings_list",
+            headline_reader=_repo_conventions_headline,
+        ),
     ),
     # D5 — independently runnable/schedulable refresh of project_code_symbols
     # (see repo_symbol_extraction's StepInfo docstring for the bug this
@@ -719,7 +862,10 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # it — see that AnalysisKind's own comment for why.
     "code_symbol_extraction": AnalysisKind(
         "code_symbol_extraction", ["repo_symbol_extraction"],
-        results=AnalysisKindResults(_symbol_extraction_results, _symbol_extraction_trend, "custom"),
+        results=AnalysisKindResults(
+            _symbol_extraction_results, _symbol_extraction_trend, "custom",
+            headline_reader=_symbol_extraction_headline,
+        ),
     ),
 }
 
@@ -731,6 +877,87 @@ REPO_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     k: (v.results.results_reader, v.results.trend_reader)
     for k, v in ANALYSIS_KINDS.items() if v.results
 }
+REPO_ANALYSIS_HEADLINE_MAP: dict[str, Callable] = {
+    k: v.results.headline_reader
+    for k, v in ANALYSIS_KINDS.items() if v.results and v.results.headline_reader
+}
+
+
+# ── Survey Results dashboard registry (docs/survey-results-dashboard-plan.md) ──
+# Tier 2 — repo-wide, cross-stage dashboards. Each groups one or more
+# ANALYSIS_KINDS ids into one view composition; no new persistence, this is
+# purely a read/aggregation layer over the existing results_reader machinery.
+
+@dataclass
+class SurveyResultDashboard:
+    id: str
+    title: str
+    description: str
+    analysis_ids: list[str]        # which ANALYSIS_KINDS entries this pulls from
+    render: str = "grouped_cards"  # "grouped_cards" (stack each id's existing
+                                    # findings_list/metrics/custom renderer under
+                                    # one heading) | "custom" (a genuinely
+                                    # composite widget spanning >1 analysis_id)
+    custom_renderer: str | None = None   # JS function name, when render="custom"
+
+
+SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
+    "security_overview": SurveyResultDashboard(
+        "security_overview", "Security Overview",
+        "Artifact presence (SECURITY.md/CI/LICENSE), GitHub's native security feature "
+        "toggles, CI quality, license risk tier, and security-policy content — the full "
+        "security picture in one place, not five separate cards.",
+        ["security_scan", "security_features", "ci_quality", "license_classification", "repo_conventions"],
+        render="custom", custom_renderer="renderSecurityOverviewDashboard",
+    ),
+    "health_maturity": SurveyResultDashboard(
+        "health_maturity", "Health & Maturity",
+        "Activity/community signal from GitHub stats, alongside lifecycle-stage classification.",
+        ["repository_health", "maturity"],
+    ),
+    "documentation_conventions": SurveyResultDashboard(
+        "documentation_conventions", "Documentation & Conventions",
+        "README/CHANGELOG/CONTRIBUTING coverage and doc-quality, plus repo-convention "
+        "signals (build automation, deployment evidence, catalog self-description).",
+        ["documentation_coverage", "repo_conventions"],
+    ),
+    "dependencies": SurveyResultDashboard(
+        "dependencies", "Dependencies",
+        "Package dependencies per ecosystem.",
+        ["dependency_analysis"],
+    ),
+    "code_structure": SurveyResultDashboard(
+        "code_structure", "Code Structure",
+        "File/language classification, public API surface, and extracted code symbols.",
+        ["language_file_classification", "api_structure", "code_symbol_extraction"],
+    ),
+    "data_profile": SurveyResultDashboard(
+        "data_profile", "Data Profile",
+        "Data-file inventory/schema profiling and sub-resource cataloging candidates.",
+        ["data_file_profiling", "sub_resource_survey"],
+    ),
+}
+
+
+def get_dashboard_perspectives(analysis_ids: list[str]) -> list[str]:
+    """D4 — a dashboard's Perspective tags are derived, not hand-authored:
+    the union of Perspectives linked to any Question whose
+    answering.analysis_ids intersects this dashboard's analysis_ids.
+    question_catalog.yaml's analysis_ids already use the same vocabulary as
+    ANALYSIS_KINDS' keys (both trace back to analysis_catalog.yaml ids), so
+    this is a direct intersection — no REPO_ANALYSIS_STEP_MAP indirection
+    needed. repo-only (question_catalog_reader has no db/filesystem entries
+    today — same graceful-degrade as the Survey panel's own Perspective row)."""
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    wanted = set(analysis_ids)
+    perspectives: list[str] = []
+    for entry in get_questions(resource_type="repo"):
+        if wanted.intersection(entry["answering"]["analysis_ids"]):
+            for p in entry["perspectives"]:
+                if p not in perspectives:
+                    perspectives.append(p)
+    return perspectives
 
 
 def _get_project_entity(registry, slug: str):

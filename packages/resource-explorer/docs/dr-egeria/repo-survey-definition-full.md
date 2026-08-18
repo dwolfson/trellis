@@ -285,6 +285,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Repo Full Survey — Repo Symbol Extraction
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
+
+### Description
+Extracts class/function/method symbols (tree-sitter/ast) for every supported language, refreshing project_code_symbols/project_code_relationships — D5's self-contained microflow closing the bug where those tables were only ever populated by RAG ingestion, never by a survey step.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_symbol_extraction |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Repo Full Survey — Repo Sub Resource Survey
 
 ### Qualified Name
@@ -500,6 +519,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_file_classification
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_sub_resource_survey

@@ -97,3 +97,100 @@ class TestAnsweredQuestions:
     def test_order_is_stable_by_first_appearance(self, script):
         step_key_to_questions = {"repo_a": ["Q2", "Q1"]}
         assert script._answered_questions(["repo_a"], step_key_to_questions) == ["Q2", "Q1"]
+
+
+def _write_csv(path, rows):
+    import csv as _csv
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(
+            f,
+            fieldnames=[
+                "survey_kind", "survey_group", "survey_display_name",
+                "description", "output_filename", "step_key", "step_order",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+class TestLoadSpecsFromCsv:
+    """D3 (docs/repo-survey-catalog-completion-plan.md) — the CSV-driven
+    SPECS loader, and its two validation guards."""
+
+    def test_groups_rows_by_survey_ordered_by_step_order(self, script, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            script, "STEP_REGISTRY", {"repo_a": object(), "repo_b": object()},
+        )
+        csv_path = tmp_path / "specs.csv"
+        _write_csv(csv_path, [
+            {"survey_kind": "k", "survey_group": "G", "survey_display_name": "G Name",
+             "description": "desc", "output_filename": "g.md", "step_key": "repo_b", "step_order": "2"},
+            {"survey_kind": "k", "survey_group": "G", "survey_display_name": "G Name",
+             "description": "desc", "output_filename": "g.md", "step_key": "repo_a", "step_order": "1"},
+        ])
+        specs = script.load_specs_from_csv(csv_path)
+        assert len(specs) == 1
+        assert specs[0].step_keys == ["repo_a", "repo_b"]  # sorted by step_order, not file order
+        assert specs[0].survey_display_name == "G Name"
+        assert specs[0].output_filename == "g.md"
+
+    def test_preserves_first_appearance_order_across_multiple_surveys(self, script, monkeypatch, tmp_path):
+        monkeypatch.setattr(script, "STEP_REGISTRY", {"repo_a": object(), "repo_b": object()})
+        csv_path = tmp_path / "specs.csv"
+        _write_csv(csv_path, [
+            {"survey_kind": "second", "survey_group": "Second", "survey_display_name": "Second",
+             "description": "d", "output_filename": "s.md", "step_key": "repo_b", "step_order": "1"},
+            {"survey_kind": "first", "survey_group": "First", "survey_display_name": "First",
+             "description": "d", "output_filename": "f.md", "step_key": "repo_a", "step_order": "1"},
+        ])
+        specs = script.load_specs_from_csv(csv_path)
+        assert [s.survey_group for s in specs] == ["Second", "First"]
+
+    def test_star_sentinel_expands_to_all_step_registry_keys_in_order(self, script, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            script, "STEP_REGISTRY",
+            {"repo_a": object(), "repo_b": object(), "repo_c": object()},
+        )
+        csv_path = tmp_path / "specs.csv"
+        _write_csv(csv_path, [
+            {"survey_kind": "full", "survey_group": "Full", "survey_display_name": "Full",
+             "description": "d", "output_filename": "full.md", "step_key": "*", "step_order": "1"},
+        ])
+        specs = script.load_specs_from_csv(csv_path)
+        assert specs[0].step_keys == ["repo_a", "repo_b", "repo_c"]
+
+    def test_unknown_step_key_raises(self, script, monkeypatch, tmp_path):
+        monkeypatch.setattr(script, "STEP_REGISTRY", {"repo_a": object()})
+        csv_path = tmp_path / "specs.csv"
+        _write_csv(csv_path, [
+            {"survey_kind": "k", "survey_group": "G", "survey_display_name": "G",
+             "description": "d", "output_filename": "g.md", "step_key": "repo_typo", "step_order": "1"},
+        ])
+        with pytest.raises(script.SurveyTypesCsvError, match="repo_typo"):
+            script.load_specs_from_csv(csv_path)
+
+    def test_unreferenced_step_registry_key_warns_not_raises(self, script, monkeypatch, tmp_path, capsys):
+        # The exact gap class that let repo_symbol_extraction silently fall
+        # out of Repo Full Survey — a step in STEP_REGISTRY with zero CSV
+        # references anywhere should be visible, but must not block
+        # generation of everything else.
+        monkeypatch.setattr(
+            script, "STEP_REGISTRY", {"repo_a": object(), "repo_orphan": object()},
+        )
+        csv_path = tmp_path / "specs.csv"
+        _write_csv(csv_path, [
+            {"survey_kind": "k", "survey_group": "G", "survey_display_name": "G",
+             "description": "d", "output_filename": "g.md", "step_key": "repo_a", "step_order": "1"},
+        ])
+        specs = script.load_specs_from_csv(csv_path)  # must not raise
+        assert len(specs) == 1
+        assert "repo_orphan" in capsys.readouterr().out
+
+    def test_real_csv_matches_step_registry_with_no_unreferenced_warning(self, script, capsys):
+        """Regression guard against the real, committed
+        docs/dr-egeria/repo_survey_types.csv going stale the same way the
+        generated docs did — the real STEP_REGISTRY, the real CSV."""
+        specs = script.load_specs_from_csv()
+        assert "WARNING" not in capsys.readouterr().out
+        full = next(s for s in specs if s.survey_group == "RepoFullSurvey")
+        assert set(full.step_keys) == set(script.STEP_REGISTRY.keys())

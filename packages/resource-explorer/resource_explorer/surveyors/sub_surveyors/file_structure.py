@@ -31,14 +31,11 @@ class FileStructureSurveyor(BaseSurveyor):
             slug = self.project.slug
 
             # ── aggregate stats from project_stats ───────────────────────────
-            with self.registry._conn() as conn:
-                row = conn.execute(
-                    "SELECT file_count, repo_size_kb, ingestion_file_count, ingestion_lines_of_code "
-                    "FROM project_stats WHERE project_slug = ? ORDER BY id DESC LIMIT 1",
-                    (slug,),
-                ).fetchone()
-
-            stats = dict(row) if row else {}
+            # D2(c) (docs/repo-survey-catalog-completion-plan.md): named
+            # registry accessor instead of a hand-rolled query — a third
+            # confirmed instance of the same "latest project_stats row"
+            # duplicate found in health.py/security_hygiene.py/language.py.
+            stats = self.registry.get_latest_project_stats(slug) or {}
             file_count = stats.get("ingestion_file_count") or stats.get("file_count") or 0
             size_kb = stats.get("repo_size_kb") or 0
             loc = stats.get("ingestion_lines_of_code") or 0
@@ -76,16 +73,14 @@ class FileStructureSurveyor(BaseSurveyor):
                 )
 
             # ── top-level directory breakdown ─────────────────────────────────
-            with self.registry._conn() as conn:
-                path_rows = conn.execute(
-                    "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
-                    (slug,),
-                ).fetchall()
+            # D2(c): confirmed duplicate of security_hygiene.py's identical
+            # query, now the named registry accessor.
+            paths = self.registry.get_code_symbol_file_paths(slug)
 
-            if path_rows:
+            if paths:
                 top_dirs: Counter = Counter()
-                for r in path_rows:
-                    parts = r["file_path"].replace("\\", "/").split("/")
+                for file_path in paths:
+                    parts = file_path.replace("\\", "/").split("/")
                     top_dirs[parts[0] if len(parts) > 1 else "(root)"] += 1
 
                 results.append(

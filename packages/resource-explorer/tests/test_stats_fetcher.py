@@ -126,6 +126,115 @@ class TestStatsFetcherWritesThroughRegistryConn:
         assert stats["last_pushed_at"] == "2026-08-09T20:00:00+00:00"
 
 
+class _FakeCommitStats:
+    """Accessing .additions/.deletions is the actual expensive GitHub API
+    call PyGithub makes lazily — this fake records every access so tests
+    can assert it was (or wasn't) touched, without a real network call."""
+    def __init__(self, counter):
+        self._counter = counter
+
+    @property
+    def additions(self):
+        self._counter.append("additions")
+        return 5
+
+    @property
+    def deletions(self):
+        self._counter.append("deletions")
+        return 2
+
+
+class _FakeCommit:
+    def __init__(self, sha, date, counter):
+        self.sha = sha
+        self.commit = MagicMock()
+        self.commit.author.date = date
+        self.commit.author.name = "Author Name"
+        self.commit.author.email = "author@example.com"
+        self.commit.message = "a commit"
+        self._counter = counter
+
+    @property
+    def stats(self):
+        return _FakeCommitStats(self._counter)
+
+
+class _FakeCommitList(list):
+    """PyGithub's PaginatedList is both iterable and has .totalCount —
+    _count_commits() reads the latter, _fetch_commits() iterates the
+    former, both against the same repo.get_commits() return value."""
+    @property
+    def totalCount(self):
+        return len(self)
+
+
+class TestFetchDiffStatsFlag:
+    """docs/survey-results-dashboard-plan.md-adjacent fix: Coarse Scout was
+    taking 10+ minutes for active repos because HealthSurveyor's stats
+    refresh fetched additions/deletions for every commit in the lookback
+    window — one extra GitHub API call each, no cap on count/elapsed time.
+    fetch_diff_stats=False (the new Scouting-tier fast path) must skip
+    every one of those calls entirely."""
+
+    def test_fetch_diff_stats_false_never_touches_stats(self, registry):
+        repo = _make_fake_repo()
+        fetcher = _make_fetcher(registry, repo)
+        counter = []
+        commits = [
+            _FakeCommit(f"sha{i}", datetime(2026, 8, 1, tzinfo=timezone.utc), counter)
+            for i in range(3)
+        ]
+        repo.get_commits.return_value = commits
+
+        count = fetcher._fetch_commits("myproj", repo, fetch_diff_stats=False)
+
+        assert count == 3
+        assert counter == []  # .stats never accessed — the actual fix
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT sha, additions, deletions FROM project_commits WHERE project_slug = ?",
+                ("myproj",),
+            ).fetchall()
+        assert len(rows) == 3
+        assert all(r["additions"] is None for r in rows)
+
+    def test_fetch_diff_stats_true_fetches_stats_for_new_commits(self, registry):
+        repo = _make_fake_repo()
+        fetcher = _make_fetcher(registry, repo)
+        counter = []
+        commits = [
+            _FakeCommit(f"sha{i}", datetime(2026, 8, 1, tzinfo=timezone.utc), counter)
+            for i in range(3)
+        ]
+        repo.get_commits.return_value = commits
+
+        count = fetcher._fetch_commits("myproj", repo, fetch_diff_stats=True)
+
+        assert count == 3
+        assert counter  # .stats WAS accessed — the default, unchanged behavior
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT sha, additions, deletions FROM project_commits WHERE project_slug = ?",
+                ("myproj",),
+            ).fetchall()
+        assert len(rows) == 3
+        assert all(r["additions"] == 5 for r in rows)
+
+    def test_fetch_defaults_to_diff_stats_true_unchanged_from_before(self, registry):
+        """fetch()'s own default (no fetch_diff_stats kwarg passed) must be
+        the exact prior behavior — every existing caller besides
+        HealthSurveyor's new fast=True path is unaffected."""
+        repo = _make_fake_repo()
+        fetcher = _make_fetcher(registry, repo)
+        counter = []
+        commits = _FakeCommitList([_FakeCommit("sha0", datetime(2026, 8, 1, tzinfo=timezone.utc), counter)])
+        repo.get_commits.return_value = commits
+
+        fetcher.fetch("myproj")
+
+        assert counter  # diff stats fetched by default
+
+
 class TestExtendedAttributesPersisted:
     """'persist them all and also the get_deployments/get_environments' —
     the free GitHub-API attributes plus deployments/environments must

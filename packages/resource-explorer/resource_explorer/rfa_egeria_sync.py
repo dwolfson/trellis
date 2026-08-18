@@ -48,10 +48,12 @@ def _egeria_connection_kwargs() -> tuple[str, str, str, str]:
 def _get_clients():
     """Construct (MyProfile, MetadataExpert) clients, bearer-tokened —
     MyProfile subclasses AssetMaker (pyegeria/omvs/my_profile.py), so it
-    already has create_my_todo/get_my_to_dos AND assign_action/
-    reassign_action/add_action_target in one client; MetadataExpert is the
-    separate generic property-update surface (update_metadata_element_
-    properties) neither ToDo-specific class exposes a dedicated method for."""
+    already has create_my_todo/update_asset/get_my_to_dos AND assign_action/
+    reassign_action/add_action_target in one client; MetadataExpert is only
+    needed for the fully generic metadata-element read
+    (get_metadata_element_by_guid, used elsewhere for verification/
+    reconciliation) — kept as a second client rather than folded into
+    MyProfile since it's a genuinely different, non-Asset-specific surface."""
     from pyegeria import MetadataExpert, MyProfile
 
     view_server, platform_url, user_id, user_password = _egeria_connection_kwargs()
@@ -66,10 +68,31 @@ def sync_rfa_action(registry, rfa_row: dict) -> None:
     """Attempt to create (first time) or update (subsequent) the Egeria
     ToDo behind one rfa_actions row. Never raises — every failure is caught,
     logged, and recorded via registry.mark_rfa_sync_error so the write-
-    direction reconciliation pass can retry it later."""
+    direction reconciliation pass can retry it later.
+
+    Real bug found and fixed during live verification (2026-08-16): the
+    update path originally sent a `{"class": "ToDoProperties",
+    "activityStatus": "WAITING", ...}` body straight to
+    `MetadataExpert.update_metadata_element_properties()` (the fully
+    generic metadata-element endpoint) — that shape was silently accepted
+    (no HTTP error) and changed nothing; its real wire contract needs each
+    property individually typed (`EnumTypePropertyValue`/
+    `PrimitiveTypePropertyValue`) plus epoch-millis dates, none of which
+    that first attempt supplied.
+
+    Fixed by switching to `MyProfile.update_asset()` instead (per direct
+    guidance — a `ToDo` is an `Asset` subtype, so the Asset-specific update
+    endpoint applies) — confirmed live: it accepts the same plain,
+    `typeName`-tagged properties shape `create_my_todo()` already uses
+    (human-readable date strings included, no epoch-millis conversion
+    needed), and does a real partial update — fields not included in the
+    call (description, qualifiedName, dueTime when omitted) are left
+    untouched, not wiped. Simpler and more correct than the generic
+    endpoint's typed-property-value contract.
+    """
     rfa_id = rfa_row.get("id", "")
     try:
-        my_profile, metadata_expert = _get_clients()
+        my_profile, _ = _get_clients()
         todo_guid = rfa_row.get("egeria_todo_guid") or ""
 
         if not todo_guid:
@@ -80,22 +103,24 @@ def sync_rfa_action(registry, rfa_row: dict) -> None:
                 priority=rfa_row.get("priority") or 0,
             )
         else:
-            body = {
-                "class": "UpdatePropertiesRequestBody",
-                "properties": {
-                    "class": "ToDoProperties",
-                    "activityStatus": rfa_row.get("activity_status") or "REQUESTED",
-                    "priority": rfa_row.get("priority") or 0,
-                },
+            properties = {
+                "class": "ToDoProperties",
+                "typeName": "ToDo",
+                "activityStatus": rfa_row.get("activity_status") or "REQUESTED",
+                "priority": rfa_row.get("priority") or 0,
             }
-            # dueTime/startTime are real ToDoProperties fields but only
-            # meaningful when actually set (a "" here would clear a real
-            # due date on the Egeria side) — only include when present.
+            # dueTime/startTime only included when actually set — omitting
+            # them (not sending an empty value) avoids clearing a real due
+            # date on the Egeria side that this sync didn't intend to touch.
             if rfa_row.get("due_time"):
-                body["properties"]["dueTime"] = rfa_row["due_time"]
+                properties["dueTime"] = rfa_row["due_time"]
             if rfa_row.get("start_time"):
-                body["properties"]["startTime"] = rfa_row["start_time"]
-            metadata_expert.update_metadata_element_properties(todo_guid, body)
+                properties["startTime"] = rfa_row["start_time"]
+
+            my_profile.update_asset(todo_guid, {
+                "class": "UpdateElementRequestBody",
+                "properties": properties,
+            })
 
         registry.mark_rfa_synced(rfa_id, todo_guid)
     except Exception as exc:
@@ -104,6 +129,58 @@ def sync_rfa_action(registry, rfa_row: dict) -> None:
             registry.mark_rfa_sync_error(rfa_id, str(exc))
         except Exception:
             log.exception("Could not even record RFA sync error for %s", rfa_id)
+
+
+def sync_rfa_note(registry, rfa_row: dict) -> None:
+    """Push this RFA's current notes text to Egeria as an ActivityEntry,
+    linked to the RFA's own ToDo — per direct decision (2026-08-16), only
+    attempted once the ToDo already exists (egeria_todo_guid set); a note
+    added before any status action has nothing to link against yet, and
+    picks up automatically on the next reconciliation pass once one exists.
+    Never raises — same non-blocking try/except/log shape as
+    sync_rfa_action.
+
+    One ActivityEntry per distinct note text (never edited in place) —
+    matches docs/rfa-egeria-todo-followup.md's "Related, broader idea"
+    section: status-change-style logging is naturally append-only, and
+    sidesteps update_note's known-broken server-side behavior (egeria-python
+    PYEGERIA_ISSUES.md ISSUE-30) entirely rather than working around it.
+    notes_synced_value is the dedup key — an unchanged note is never
+    re-pushed as a duplicate entry.
+    """
+    rfa_id = rfa_row.get("id", "")
+    todo_guid = rfa_row.get("egeria_todo_guid") or ""
+    notes = rfa_row.get("notes") or ""
+    if not todo_guid or not notes or notes == (rfa_row.get("notes_synced_value") or ""):
+        return
+    try:
+        my_profile, _ = _get_clients()
+        notelog_guid = rfa_row.get("egeria_notelog_guid") or ""
+        if not notelog_guid:
+            notelog_guid = my_profile.create_note_log(
+                element_guid=todo_guid,
+                display_name=f"RFA notes: {rfa_id}",
+                description="Notes recorded against this RFA from Resource Explorer.",
+            )
+            registry.mark_rfa_notelog(rfa_id, notelog_guid)
+
+        my_profile.create_note(
+            notelog_guid,
+            associated_element=todo_guid,
+            body={
+                "class": "NoteProperties",
+                "typeName": "ActivityEntry",
+                "qualifiedName": my_profile.make_feedback_qn("ActivityEntry", todo_guid),
+                "description": notes,
+            },
+        )
+        registry.mark_rfa_note_synced(rfa_id, notes)
+    except Exception as exc:
+        log.warning("Could not sync RFA note %s to Egeria: %s", rfa_id, exc)
+        try:
+            registry.mark_rfa_note_sync_error(rfa_id, str(exc))
+        except Exception:
+            log.exception("Could not even record RFA note sync error for %s", rfa_id)
 
 
 # ToDos in one of these states are still "open" from RE's point of view —
@@ -162,6 +239,12 @@ def reconcile_rfa_actions(registry) -> None:
             sync_rfa_action(registry, row)
     except Exception:
         log.exception("RFA reconciliation: write-direction retry pass failed")
+
+    try:
+        for row in registry.list_unsynced_rfa_notes():
+            sync_rfa_note(registry, row)
+    except Exception:
+        log.exception("RFA reconciliation: note write-direction retry pass failed")
 
     try:
         synced = registry.list_synced_rfa_actions()

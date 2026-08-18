@@ -1,10 +1,8 @@
 # RFA response actions — backing them with a real Egeria ToDo
 
-**Status (2026-08-16): implemented and unit-tested (29 new tests, full RE
-suite green — 1149 passed, 9 skipped). Not yet live-verified against a real
-Egeria platform** — see "Implementation notes / what still needs live
-verification" at the end of this doc before treating any of the below as
-proven against a real server, not just against mocked pyegeria clients.
+**Status (2026-08-16): implemented, unit-tested (44 tests), AND live-verified
+against a real Egeria platform.** Live verification found and fixed one real
+bug — see "Live verification results" near the end of this doc.
 
 The RFA drawer's defer/reassign/complete/reopen actions used to be local-only
 (`rfa_actions` SQLite table — see its docstring in `registry.py`). That table's
@@ -64,16 +62,21 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
   })
   ```
   Nothing to file in `egeria-python`'s `PYEGERIA_ISSUES.md` for this — fully
-  covered today.
+  covered today. **Superseded by live verification (see "Live verification
+  results" below): the shipped code actually uses `MyProfile.update_asset()`
+  instead** — also generic-enough-in-practice (any `Asset`, and `ToDo` is
+  one), and confirmed simpler/more correct (plain values, real partial
+  updates) than the `update_metadata_element_properties()` shape shown
+  above, which was found to silently no-op against this exact body.
 
 ## What this would change
 
 | RE concept today | Would become |
 |---|---|
 | `rfa_actions` table with its own vocabulary (`rfa_status`, `assignee`, `defer_until`, `resolution_note`) | `rfa_actions` mirrors `ToDoProperties` directly (`activity_status`, `due_time`, `start_time`, `priority`), synced with a real `ToDo` per open RFA, linked via `add_action_target` to the RFA's `Annotation` GUID |
-| Defer (local `defer_until` field) | `ToDo.dueTime`/`startTime`, set via `update_metadata_element_properties` (generic — confirmed above, no gap) |
+| Defer (local `defer_until` field) | `ToDo.dueTime`/`startTime`, set via `update_asset` (shipped — see "Live verification results" below) |
 | Reassign (local `assignee` field) | `reassign_action(todo_guid, new_actor_guid)` (dedicated method — enforces single-assignee) |
-| Complete (local `rfa_status = "completed"`) | `activityStatus = "COMPLETE"` via `update_metadata_element_properties` (generic — confirmed above, no gap) |
+| Complete (local `rfa_status = "completed"`) | `activityStatus = "COMPLETE"` via `update_asset` (shipped — see "Live verification results" below) |
 | `GET /api/activity/rfas` overlay | Reads the local mirror (fast, same shape as today's UI) — kept in sync via write-through + periodic two-direction reconciliation, see "Sync mechanics" below |
 
 ## Open questions before building
@@ -82,7 +85,14 @@ ground-truth REST surface (`pyegeria/http clients/Egeria-api-asset-maker.http`):
    (`whoami` is a single shared service account — see `egeria.py`). Real
    per-user assignment needs that solved — **confirmed still needed, standing
    requirement, not deferred indefinitely** (2026-08-15) — until then the
-   initial assignee is "unassigned"/the service account.
+   initial assignee is "unassigned"/the service account. **UI implication,
+   noted 2026-08-16**: today's Reassign form is a free-text "name or email"
+   input (`assignee`, local-only string, never resolved to a real actor) —
+   once real per-user identity exists, this should become a searchable
+   dropdown of actual known users/actors, not free text, so `reassign_action`
+   (currently never called — see rfa_egeria_sync.py's module docstring) has
+   a real actor GUID to pass. Blocked on the same identity gap, not a
+   separate piece of work.
 2. **Migration**: does an existing local `rfa_actions` row get backfilled into
    a real `ToDo` on first load, or does this only apply going forward? Backfill
    means creating N `ToDo`s retroactively; going-forward-only is simpler but
@@ -211,20 +221,94 @@ in this doc:**
   entirely outside RE (there's no way to map an arbitrary Egeria `ToDo`
   back to a specific local RFA/annotation without the linking above).
 
-**What still needs live verification, not yet done:** every pyegeria call
-in `rfa_egeria_sync.py` is exercised only against mocked clients in this
-pass's test suite — real, but not proof the wire calls succeed against an
-actual Egeria platform. Specifically unconfirmed:
-1. `MyProfile.create_my_todo()`'s exact keyword names/behavior when called
-   with `activity_status`/`priority` as used here.
-2. `MetadataExpert.update_metadata_element_properties()`'s real response
-   when passed a `ToDoProperties` body with `activityStatus`/`dueTime`/
-   `startTime`/`priority`.
-3. `get_my_to_dos()`'s actual JSON response shape —
-   `_extract_todo_fields()` was written defensively (tries
-   `elementHeader.guid`-or-`guid`, `properties.activityStatus`-or-
-   top-level) specifically because this shape wasn't confirmed against a
-   real response; a live smoke test (defer one real RFA, confirm a real
-   `ToDo` appears in Egeria Explorer / via `get_my_to_dos()`, complete it,
-   confirm `activityStatus` flips to `COMPLETED`) is the next real step
-   before trusting this beyond "the local-only logic is correct."
+## Live verification results (2026-08-16)
+
+Every pyegeria call in `rfa_egeria_sync.py` was exercised against a real,
+running Egeria platform (not just mocked clients) — creating/updating a
+real `ToDo`, reading it back two different ways, and creating a real
+`NoteLog`/`ActivityEntry` `Note` anchored to it. Confirmed, by GUID
+round-trip against the live server:
+
+1. `MyProfile.create_my_todo()` — **confirmed working as called.** Created
+   a real `ToDo` with `activityStatus`/`description`/`priority` set exactly
+   as passed.
+2. `MetadataExpert.update_metadata_element_properties()` — **found broken,
+   fixed once, then replaced with a simpler working method.** The original
+   body shape (`{"class": "ToDoProperties", "activityStatus": "WAITING",
+   ...}`) was silently accepted by the server (HTTP success, no error) and
+   changed *nothing* — a live GET immediately after showed the `ToDo`
+   unchanged. Root cause: this is the fully generic metadata-element
+   endpoint, not a `ToDo`-aware convenience method like `create_my_todo()`
+   — its real wire contract (confirmed via
+   `_async_update_metadata_element_properties()`'s own docstring) is
+   `properties: {"class": "ElementProperties", "propertyValueMap": {...}}`,
+   with each value individually typed (`EnumTypePropertyValue` for
+   `activityStatus`, `PrimitiveTypePropertyValue` for scalars, and — a
+   second real finding — date properties as **epoch-millisecond
+   integers**, not ISO date strings). That fix worked (re-verified live: a
+   real `defer` PATCH correctly flipped `activityStatus` to `WAITING` and
+   set a real `dueTime`) but was then superseded, same day, per direct
+   guidance: **`MyProfile.update_asset()`** — a `ToDo` is an `Asset`
+   subtype, so the Asset-specific update endpoint applies — was tried
+   instead and confirmed live to be simpler and equally correct: it
+   accepts the same plain, `typeName`-tagged properties shape
+   `create_my_todo()` already uses (`{"class": "ToDoProperties",
+   "typeName": "ToDo", "activityStatus": "WAITING", "dueTime":
+   "2026-10-01", ...}`), with the server converting the human-readable
+   date string to epoch millis itself (no client-side
+   `EnumTypePropertyValue`/`PrimitiveTypePropertyValue`/epoch-conversion
+   helpers needed), and does a genuine partial update — a live before/after
+   GUID round-trip confirmed fields left out of the call (`dueTime`,
+   `displayName`, `qualifiedName`) survive untouched. `rfa_egeria_sync.py`
+   ships the `update_asset()` version; the `update_metadata_element_
+   properties()` fix above is kept here only as the record of what was
+   tried and found working first.
+3. `get_my_to_dos()`'s actual JSON response shape — **confirmed matches
+   `_extract_todo_fields()`'s defensive parsing exactly**, with one
+   real, useful asymmetry worth knowing: this list/report endpoint returns
+   already-flattened `properties` (`activityStatus` as a plain string,
+   dates as ISO strings), unlike `get_metadata_element_by_guid()`'s raw
+   `elementProperties.propertyValueMap` shape (typed values, dates as
+   epoch millis) used in point #2 above — the same field is represented
+   two different ways depending which endpoint returns it. A full
+   `reconcile_rfa_actions()` pass (write-direction retry + read-direction
+   pull) ran live end-to-end with no errors.
+4. `create_note_log()` / `create_note()` with a `typeName: "ActivityEntry"`
+   properties override — **confirmed working exactly as designed.** A real
+   `NoteLog` was created anchored to the `ToDo`; a real `Note` of type
+   `ActivityEntry` was created under it, anchored to the same `ToDo` via
+   `associated_element` — verified by reading both back by GUID.
+
+## Notes sync to Egeria (2026-08-16)
+
+Per direct decision, the drawer's real, persisted `notes` field (see
+"Implementation notes" above — the fix for "Record answer never
+persisted") also syncs to Egeria, as an `ActivityEntry`-typed `Note`
+attached to a `NoteLog` anchored on the RFA's own `ToDo` — reusing the
+"Related, broader idea" section's already-confirmed `create_note_log`/
+`create_note` mechanism, just anchored on the `ToDo` rather than an Asset.
+
+**Only synced once the `ToDo` already exists** (`egeria_todo_guid` set) —
+a note is never forced to create a `ToDo` just to have something to link
+against; it stays purely local until a later Defer/Reassign/Complete
+creates one, at which point the next `reconcile_rfa_actions()` pass picks
+it up automatically (`list_unsynced_rfa_notes()` requires a `ToDo`).
+
+**One `ActivityEntry` per distinct note text, never edited in place** —
+matches the append-only framing the "Related, broader idea" section
+already established for Asset-level status-change logging, and sidesteps
+`update_note`'s known-broken server-side behavior (`egeria-python`
+`PYEGERIA_ISSUES.md` ISSUE-30) entirely rather than working around it.
+`notes_synced_value` is the dedup key on the local side — an unchanged
+note is never re-pushed as a duplicate entry. `egeria_notelog_guid` caches
+the `NoteLog` GUID (created once per RFA, reused across edits — a fresh
+`NoteLog` isn't created for every note revision, only the `Note`
+underneath it).
+
+`rfa_egeria_sync.sync_rfa_note()` is the implementation, called from
+`PATCH /rfas/{rfa_id}/notes` (non-blocking, same guarantee as the status
+route) and retried from `reconcile_rfa_actions()`'s write-direction pass.
+No read-direction reconciliation for notes — Egeria-side `ActivityEntry`
+notes created by another client aren't pulled back into RE's local
+`notes` field; that field stays "the current local note," not a mirror of
+the full Egeria-side history.

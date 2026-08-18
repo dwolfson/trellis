@@ -182,6 +182,18 @@ def update_rfa_note(rfa_id: str, body: RfaNoteRequest) -> dict:
         raise HTTPException(status_code=404, detail="No activity entry backs this RFA id")
 
     registry.upsert_rfa_note(rfa_id=rfa_id, entry_id=entry_id, annotation_index=annotation_index, notes=body.notes)
+
+    try:
+        from resource_explorer.rfa_egeria_sync import sync_rfa_note
+
+        row = registry.get_rfa_action(rfa_id)
+        if row is not None:
+            sync_rfa_note(registry, row)
+    except Exception as exc:
+        # Non-blocking, same guarantee as the status route — a failed (or
+        # not-yet-possible, no ToDo yet) note sync never fails this call.
+        log.warning("RFA note Egeria sync skipped for %s: %s", rfa_id, exc)
+
     return {"status": "success", "id": rfa_id, "notes": body.notes}
 
 
