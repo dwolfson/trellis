@@ -82,6 +82,18 @@
     /* CSS tooltip for action buttons */
     .proj-action-btn[data-tip]::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%); background:#1e293b; color:#e2e8f0; font-size:.6rem; white-space:nowrap; padding:2px 6px; border-radius:3px; pointer-events:none; opacity:0; transition:opacity .1s; border:1px solid #334155; }
     .proj-action-btn[data-tip]:hover::after { opacity:1; }
+    /* Sub-tab nav bar (Search/Survey/Results/Questions/Disposition and the
+       equivalent bars for Discovery/Assessment/Analysis/Enrichment/Automate/
+       Admin) — real, live-reported bug: every one of these is rendered as
+       the first child *inside* its view's own independently-scrollable
+       content <div> (see _scoutingSubnavHtml() and its siblings), so
+       scrolling that panel's content scrolled the tab bar itself out of
+       view along with it. Sticky-positioned within that same scroll
+       container instead — pins to the top as the content scrolls beneath
+       it, "fixed heading" behavior with no DOM restructuring needed.
+       Background matches body's own slate-900 (#0f172a) so scrolled
+       content doesn't show through underneath the pinned bar. */
+    .subnav-bar { position:sticky; top:0; z-index:10; background:#0f172a; }
     /* Modal overlay */
     .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:50; display:flex; align-items:center; justify-content:center; }
     .modal-box { background:#1e293b; border:1px solid #334155; border-radius:.5rem; padding:1.25rem; width:min(480px,92vw); max-height:90vh; overflow-y:auto; }
@@ -128,7 +140,16 @@
     .rfa-pending  { color:#60a5fa; }
     .rfa-answer-form { margin-top:.5rem; }
     /* Analysis catalog */
-    .analysis-card { background:#1e293b; border-radius:.375rem; padding:.7rem .75rem; border:1px solid #334155; transition:border-color .15s; display:flex; flex-direction:column; gap:.35rem; }
+    /* min-width:0 overrides the CSS Grid default (a grid item's implicit
+       min-width is its content's intrinsic width, not 0) — real,
+       live-reported bug: a Plotly chart's SVG can report an intrinsic width
+       wider than its grid cell (e.g. Health & Maturity's "Star growth over
+       time" chart with responsive:true still sizes off its container's
+       *natural* width on first render, not the constrained grid-track
+       width), which without this stretches the whole grid track — and the
+       page — to fit it, "cutting off" the far side of the chart at the
+       viewport edge instead of the chart wrapping to the card's own width. */
+    .analysis-card { background:#1e293b; border-radius:.375rem; padding:.7rem .75rem; border:1px solid #334155; transition:border-color .15s; display:flex; flex-direction:column; gap:.35rem; min-width:0; }
     .analysis-card:hover { border-color:#0e7490; }
     .analysis-card.recommended { border-color:#0e7490; }
     .analysis-tag { font-size:.58rem; padding:.1rem .3rem; border-radius:.2rem; font-weight:500; white-space:nowrap; }
@@ -1405,7 +1426,7 @@ function _scoutingSubnavHtml(active) {
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
-  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showScoutingSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
         ${t.label}
@@ -1492,7 +1513,7 @@ function _assessmentSubnavHtml(active) {
   if (_qdTabsApply()) {
     tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   }
-  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAssessmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
         ${t.label}
@@ -1528,7 +1549,7 @@ function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📋 Catalog' }];
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
-  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAnalysisSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
         ${t.label}
@@ -1559,7 +1580,7 @@ function _discoverySubnavHtml(active) {
   const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
-  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showDiscoverySubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
         ${t.label}
@@ -1589,7 +1610,7 @@ function _enrichmentSubnavHtml(active) {
   const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '🔬 Survey' }];
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
-  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showEnrichmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
         ${t.label}
@@ -4894,7 +4915,7 @@ function _renderDashboardTrendPlaceholder(dashboard) {
   if (cfg.kind === 'stars_chart') {
     return `<div class="mt-2 pt-2 border-t border-slate-800">
       <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">Star growth over time</div>
-      <div id="dashtrend-${dashboard.id}-stars" style="height:130px"></div>
+      <div id="dashtrend-${dashboard.id}-stars" style="height:130px;width:100%"></div>
     </div>`;
   }
   return `<div class="mt-2 pt-2 border-t border-slate-800 space-y-2">
@@ -4917,7 +4938,14 @@ async function _loadDashboardTrendCharts(dashboards, slug) {
         const fig = await res.json();
         const el = document.getElementById(`dashtrend-${d.id}-stars`);
         if (el && typeof Plotly !== 'undefined' && fig.data && fig.data.length) {
-          Plotly.newPlot(el, fig.data, { ...(fig.layout || {}), height: 130, margin: { l: 32, r: 8, t: 8, b: 30 } },
+          // Real, live-reported bug: this chart's own long Plotly-generated
+          // title ("Stars over time — {slug}") isn't clipped by the SVG at
+          // this compact width — SVG text has no default overflow clipping,
+          // so it painted straight past the card's right edge instead of
+          // wrapping or truncating. The card already has its own "Star
+          // growth over time" label right above this chart, so the title
+          // is redundant here anyway — drop it rather than truncate it.
+          Plotly.newPlot(el, fig.data, { ...(fig.layout || {}), title: '', height: 130, margin: { l: 32, r: 8, t: 8, b: 30 } },
             { displayModeBar: false, responsive: true });
         }
       } catch(e) { /* best-effort — chart just stays empty */ }
@@ -5447,7 +5475,7 @@ function _automateSubnavHtml(active) {
     { tab: 'subscriptions', label: '🔔 Subscriptions' },
     { tab: 'schedules',     label: '⏱ Schedules' },
   ];
-  return `<div class="flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_setAutomateSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${t.label}</button>`).join('')}
   </div>`;
