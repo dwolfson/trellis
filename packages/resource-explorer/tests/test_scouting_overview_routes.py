@@ -89,6 +89,80 @@ class TestScoutingOverview:
         latest_by_surveyed_at = max(first, key=lambda s: s["surveyed_at"])
         assert data["last_published_at"] == latest_by_surveyed_at["published_at"]
 
+    def test_last_profiled_at_empty_when_never_profiled(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_profiled_at"] == ""
+
+    def test_last_profiled_at_reflects_a_profile_refresh(self, client, registry):
+        registry.update_project_profiled_at("myproj")
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        assert resp.json()["last_profiled_at"] != ""
+
+
+class TestScoutingOverviewExtendedGitHubAttributes:
+    """'display lifecycle state, homepage, security_and_analysis and
+    get_deployments' — the four newly-surfaced Scouting-tier fields."""
+
+    def test_defaults_with_no_stats_row(self, client):
+        resp = client.get("/api/projects/myproj/scouting-overview")
+        data = resp.json()
+        assert data["lifecycle_state"] == "active"
+        assert data["homepage"] == ""
+        assert data["security_and_analysis"] == {}
+        assert data["deployments_count"] == 0
+
+    def _seed(self, registry, **overrides):
+        cols = {
+            "archived": 0, "disabled": 0, "is_fork": 0, "is_template": 0,
+            "homepage": "", "security_and_analysis_json": "{}",
+            "deployments_count": 0, "latest_deployment_at": "",
+            "latest_deployment_environment": "", "latest_deployment_ref": "",
+        }
+        cols.update(overrides)
+        with registry._conn() as conn:
+            cols_sql = ", ".join(cols.keys())
+            placeholders = ", ".join(["?"] * len(cols))
+            conn.execute(
+                f"INSERT INTO project_stats (project_slug, fetched_at, {cols_sql}) "
+                f"VALUES (?, ?, {placeholders})",
+                ("myproj", "2026-08-01T00:00:00", *cols.values()),
+            )
+
+    def test_archived_wins_lifecycle_state(self, client, registry):
+        self._seed(registry, archived=1, is_fork=1)
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["lifecycle_state"] == "archived"
+
+    def test_fork_lifecycle_state(self, client, registry):
+        self._seed(registry, is_fork=1)
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["lifecycle_state"] == "fork"
+
+    def test_homepage_and_security_and_analysis_surfaced(self, client, registry):
+        self._seed(
+            registry,
+            homepage="https://example.com",
+            security_and_analysis_json='{"secret_scanning": "enabled"}',
+        )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["homepage"] == "https://example.com"
+        assert data["security_and_analysis"] == {"secret_scanning": "enabled"}
+
+    def test_malformed_security_and_analysis_json_degrades_to_empty_dict(self, client, registry):
+        self._seed(registry, security_and_analysis_json="not-json")
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["security_and_analysis"] == {}
+
+    def test_deployments_surfaced(self, client, registry):
+        self._seed(
+            registry, deployments_count=3, latest_deployment_at="2026-08-01T00:00:00",
+            latest_deployment_environment="prod", latest_deployment_ref="main",
+        )
+        data = client.get("/api/projects/myproj/scouting-overview").json()
+        assert data["deployments_count"] == 3
+        assert data["latest_deployment_environment"] == "prod"
+        assert data["latest_deployment_ref"] == "main"
+
     def test_defaults_to_undecided_disposition(self, client):
         resp = client.get("/api/projects/myproj/scouting-overview")
         data = resp.json()
@@ -105,36 +179,180 @@ class TestScoutingOverview:
 
 
 class TestScoutingScan:
+    """The route itself is fire-and-forget (docs/survey-results-dashboard-plan.md-
+    adjacent fix — a real, confirmed slowness bug meant Scouting Scan could
+    block the HTTP request for 10+ minutes with zero visibility). It now
+    only has to: 404 on an unknown repo, and otherwise start a background
+    thread and return an activity_id immediately. The actual scan logic
+    (_run_scouting_scan_sync) is unit-tested directly below, decoupled from
+    HTTP/threading — same coverage the old synchronous route test had."""
+
     def test_unknown_repo_returns_404(self, client):
         resp = client.post("/api/projects/not-a-real-repo/scouting-scan")
         assert resp.status_code == 404
 
-    def test_dispatches_to_run_survey_definition_with_coarse_scout_ref(self, client):
-        from resource_explorer.surveyors.repo_survey_definition_adapter import (
-            REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
-        )
-        with patch(
-            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
-            return_value={"errors": []},
-        ) as mock_run:
-            resp = client.post("/api/projects/myproj/scouting-scan")
-
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "ok"
-        _, kwargs = mock_run.call_args
-        assert kwargs["survey_definition_ref"] == REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN
-
-    def test_errors_are_surfaced_not_raised(self, client):
-        with patch(
-            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
-            return_value={"errors": ["step failed"]},
-        ):
+    def test_starts_a_background_scan_and_returns_immediately(self, client, registry):
+        with patch("resource_explorer.web.routes.projects._run_scouting_scan_background"):
             resp = client.post("/api/projects/myproj/scouting-scan")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "error"
-        assert "step failed" in data["error"]
+        assert data["status"] == "started"
+        assert data["slug"] == "myproj"
+        entry = registry.get_activity(data["activity_id"])
+        assert entry is not None
+        assert entry["status"] == "running"
+        assert entry["entity_slug"] == "myproj"
+
+
+class TestRunScoutingScanSync:
+    """Unit coverage for the actual scan logic, decoupled from the HTTP
+    route/background thread — same cases the old synchronous route test
+    covered before the fire-and-forget conversion."""
+
+    def test_dispatches_to_run_survey_definition_with_coarse_scout_ref_and_fast_flag(self, registry):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
+        )
+        from resource_explorer.web.routes.projects import _run_scouting_scan_sync
+
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            return_value={"errors": []},
+        ) as mock_run:
+            result = _run_scouting_scan_sync("myproj", registry)
+
+        assert result.status == "ok"
+        _, kwargs = mock_run.call_args
+        assert kwargs["survey_definition_ref"] == REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN
+        # fast=True is the actual slowness fix — Coarse Scout must skip
+        # StatsFetcher's N+1 per-commit diff-stats calls.
+        assert kwargs["fast"] is True
+
+    def test_errors_are_surfaced_not_raised(self, registry):
+        from resource_explorer.web.routes.projects import _run_scouting_scan_sync
+
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            return_value={"errors": ["step failed"]},
+        ):
+            result = _run_scouting_scan_sync("myproj", registry)
+
+        assert result.status == "error"
+
+
+class TestScoutingScanMissingSurveyDefinitionFallback:
+    """A dev Egeria database reset wipes out the 'Repo Coarse Scout' Survey
+    Definition — a real, recurring event, not a one-off mistake. Without a
+    fallback this hard-blocks Scouting Scan entirely, including the
+    git-stats refresh HealthSurveyor does at scan time."""
+
+    def test_falls_back_to_local_steps_when_survey_definition_missing(self, registry):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+        from resource_explorer.web.routes.projects import _run_scouting_scan_sync
+
+        fake_survey_result = MagicMock(errors=[])
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("No Survey Definition found matching '...'"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.return_value = fake_survey_result
+            result = _run_scouting_scan_sync("myproj", registry)
+
+        assert result.status == "ok"
+        assert "ran locally" in result.message
+        MockOrch.return_value.run.assert_called_once_with(
+            "myproj", steps=["repo_health", "repo_language"], fast=True,
+        )
+
+    def test_fallback_step_errors_are_surfaced(self, registry):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+        from resource_explorer.web.routes.projects import _run_scouting_scan_sync
+
+        fake_survey_result = MagicMock(errors=["repo_health failed: rate limited"])
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("not found"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.return_value = fake_survey_result
+            result = _run_scouting_scan_sync("myproj", registry)
+
+        assert result.status == "error"
+        assert "rate limited" in result.error
+
+    def test_fallback_itself_failing_reports_both_errors(self, registry):
+        from resource_explorer.surveyors.survey_definition_executor import (
+            SurveyDefinitionExecutorError,
+        )
+        from resource_explorer.web.routes.projects import _run_scouting_scan_sync
+
+        with patch(
+            "resource_explorer.surveyors.survey_definition_executor.run_survey_definition",
+            side_effect=SurveyDefinitionExecutorError("not found"),
+        ), patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch:
+            MockOrch.return_value.run.side_effect = RuntimeError("clone missing")
+            result = _run_scouting_scan_sync("myproj", registry)
+
+        assert result.status == "error"
+        assert "not found" in result.error
+        assert "clone missing" in result.error
+
+
+class TestScoutingScanBackground:
+    """The background-thread wrapper: on success, writes the sync result's
+    status/message onto the activity entry the route created; on an
+    unexpected crash (not a survey-step error — a genuine bug), still
+    resolves the entry to 'error' rather than leaving it 'running' forever."""
+
+    def test_writes_ok_status_and_summary_onto_the_activity_entry(self, registry):
+        from resource_explorer.activity_logger import log_survey
+        from resource_explorer.web.routes.projects import ScoutingScanResult, _run_scouting_scan_background
+
+        activity_id = log_survey(
+            registry, entity_type="repo", entity_slug="myproj", entity_name="My Project",
+            entity_location="https://github.com/test/myproj", intent="scouting",
+            status="running", summary="Scouting Scan running…",
+        )
+
+        with patch(
+            "resource_explorer.web.routes.projects._run_scouting_scan_sync",
+            return_value=ScoutingScanResult(status="ok", slug="myproj", message="done"),
+        ), patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            _run_scouting_scan_background("myproj", activity_id)
+
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "ok"
+        assert entry["summary"] == "done"
+
+    def test_unexpected_crash_still_resolves_the_entry_to_error(self, registry):
+        from resource_explorer.activity_logger import log_survey
+        from resource_explorer.web.routes.projects import _run_scouting_scan_background
+
+        activity_id = log_survey(
+            registry, entity_type="repo", entity_slug="myproj", entity_name="My Project",
+            entity_location="https://github.com/test/myproj", intent="scouting",
+            status="running", summary="Scouting Scan running…",
+        )
+
+        with patch(
+            "resource_explorer.web.routes.projects._run_scouting_scan_sync",
+            side_effect=RuntimeError("boom"),
+        ), patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            _run_scouting_scan_background("myproj", activity_id)
+
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "error"
+        assert "boom" in entry["summary"]
 
 
 class TestRunSingleAnalysis:

@@ -5,8 +5,13 @@ relationships — and parses them into a simple, ordered structure RE can execut
 against.
 
 Survey Definitions are authored *outside* RE entirely (as Dr.Egeria plans, see
-docs/egeria-collaboration-and-survey-model.md section 6). This module only reads
-what's already in Egeria's catalog; it never creates or modifies these elements.
+docs/egeria-collaboration-and-survey-model.md section 6). This module is
+read-only for authoring — it never creates a Survey Definition or its steps.
+One narrow exception: reconcile_step_links() (docs/survey-question-context-plan.md
+follow-up) deletes stale/duplicate step-to-step *link relationships* Dr.Egeria's
+non-idempotent "Link Next Process Step" command can leave behind on a re-run —
+cleanup of a known Dr.Egeria footgun, not new authoring. See
+survey_definition_reconciler.py for the diff logic and why this exists.
 
 Fully generic across resource types — this module has no knowledge of database,
 repo, or filesystem specifics. Each step's Additional Properties convention keys
@@ -17,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -25,6 +31,28 @@ _DEFAULT_PLATFORM_URL = "https://localhost:9443"
 _DEFAULT_VIEW_SERVER = "qs-view-server"
 _DEFAULT_USER = "erinoverview"
 _DEFAULT_PASSWORD = "secret"
+
+# ── D2/D3 (docs/survey-question-context-plan.md): short-TTL, module-level
+# caches — SurveyDefinitionReader is constructed fresh per HTTP request
+# (see web/routes/survey_definitions.py's _do()), so instance-level caching
+# would never actually persist across requests; these live at module scope
+# instead. Two different TTLs on purpose: a Question's Egeria GUID almost
+# never changes once authored (long TTL is safe and saves a real lookup
+# round-trip), while which Survey Definitions are scoped to it can change
+# as Survey Definitions are authored/re-authored (short TTL, minutes not
+# hours — matches D3's "Survey Definitions change rarely but not never").
+_QUESTION_GUID_CACHE_TTL_SECONDS = 3600
+_CANDIDATES_CACHE_TTL_SECONDS = 300
+_question_guid_cache: dict[str, tuple[float, str | None]] = {}
+_candidates_cache: dict[tuple, tuple[float, list]] = {}
+_fetch_cache: dict[str, tuple[float, object]] = {}  # process_guid -> (cached_at, SurveyDefinition)
+
+
+def clear_caches() -> None:
+    """Testing hook — all three module-level caches are otherwise process-lifetime."""
+    _question_guid_cache.clear()
+    _candidates_cache.clear()
+    _fetch_cache.clear()
 
 # Real response shape from GovernanceOfficer.get_governance_process_graph, confirmed
 # against a live qs-view-server for both a single-step and a two-step chained
@@ -97,6 +125,12 @@ class SurveyDefinition:
     supported_technology_type: str | None
     steps: list = field(default_factory=list)  # list[SurveyStep], in execution order
     description: str = ""  # author-provided, from Egeria's own Description attribute
+    # Which UI surface this Survey Definition is meant for — "scouting" |
+    # "discovery" | "automate_full" | ... — Additional Properties convention,
+    # see dr_egeria_survey_publisher.render_process_block's docstring and
+    # docs/discovery-automate-project-context-plan.md Part 1. None for
+    # Survey Definitions authored before this convention existed.
+    survey_kind: str | None = None
 
 
 class SurveyDefinitionReader:
@@ -115,6 +149,8 @@ class SurveyDefinitionReader:
         self.user_password = user_password or os.getenv("EGERIA_USER_PASSWORD", _DEFAULT_PASSWORD)
         self._governance_officer = None
         self._automated_curation = None
+        self._classification_explorer = None
+        self._metadata_expert = None
 
     # ── connection ────────────────────────────────────────────────────────────
 
@@ -147,11 +183,50 @@ class SurveyDefinitionReader:
                 f"Could not connect to Egeria at {self.platform_url}: {exc}"
             ) from exc
 
+    def _connect_classification_explorer(self):
+        """Lazy, separate from connect() — only the D2 scoped-query path
+        needs ClassificationExplorer (add_scope_to_element/get_scoped_elements/
+        get_guid_for_name), so every other reader method stays unaffected if
+        this client fails to construct for any reason."""
+        if self._classification_explorer is not None:
+            return self._classification_explorer
+        from pyegeria.omvs.classification_explorer import ClassificationExplorer
+
+        client = ClassificationExplorer(self.view_server, self.platform_url, self.user_id, self.user_password)
+        client.create_egeria_bearer_token(self.user_id, self.user_password)
+        self._classification_explorer = client
+        return client
+
+    def _connect_metadata_expert(self):
+        """Lazy, separate from connect() — only reconcile_step_links() needs
+        MetadataExpert.delete_related_elements(), the generic relationship-
+        delete method (no dedicated "unlink process step" method exists in
+        pyegeria — confirmed while building this)."""
+        if self._metadata_expert is not None:
+            return self._metadata_expert
+        from pyegeria.omvs.metadata_expert import MetadataExpert
+
+        client = MetadataExpert(self.view_server, self.platform_url, self.user_id, self.user_password)
+        client.create_egeria_bearer_token(self.user_id, self.user_password)
+        self._metadata_expert = client
+        return client
+
     # ── discovery: find candidate Survey Definitions by Technology Type ────────
 
-    def find_candidate_process_guids(self, technology_type: str) -> list:
+    def find_candidate_process_guids(self, technology_type: str, survey_kind: str | None = None) -> list:
         """Return every GovernanceActionProcess whose additionalProperties declare
         supported_technology_type == technology_type.
+
+        survey_kind, when given, additionally filters to Survey Definitions
+        whose Additional Properties declare that exact survey_kind — e.g. a
+        Discovery-tier caller passes survey_kind="discovery" so an
+        Automate-tier "run everything" bundle (survey_kind="automate_full")
+        or a Scouting-tier coarse scan doesn't show up as a Discovery
+        candidate. None (default) keeps the old behavior — every Survey
+        Definition for the technology type, regardless of kind — for
+        backward compatibility with callers that don't care (and with
+        Survey Definitions authored before this convention existed, which
+        have no survey_kind at all).
 
         Confirmed live (2026-07-08) that `AutomatedCuration.get_tech_type_detail`
         — the mechanism this originally used, copied from `EgeriaDatabaseSurveyor.
@@ -171,7 +246,19 @@ class SurveyDefinitionReader:
 
         Each item: {qualified_name, display_name, guid}. Does NOT assume there is
         exactly one — the caller decides what to do with zero/one/many.
+
+        D3-cached (docs/survey-question-context-plan.md) — this is the full
+        `search_string="*"` scan D2's scoped path exists to avoid on the hot
+        path, but it's kept as an explicit fallback (D2's own docstring), so
+        it still deserves the same short-TTL cache rather than re-scanning
+        every GovernanceActionProcess on every call.
         """
+        cache_key = ("full_scan", technology_type, survey_kind)
+        now = time.monotonic()
+        cached = _candidates_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
+            return cached[1]
+
         self.connect()
         candidates = []
         try:
@@ -196,6 +283,8 @@ class SurveyDefinitionReader:
                 additional = props.get("additionalProperties", {}) or {}
                 if additional.get("supported_technology_type") != technology_type:
                     continue
+                if survey_kind is not None and additional.get("survey_kind") != survey_kind:
+                    continue
                 qn = props.get("qualifiedName")
                 if not qn:
                     continue
@@ -209,6 +298,101 @@ class SurveyDefinitionReader:
                 )
         except Exception as exc:
             log.debug("find_candidate_process_guids failed for %s: %s", technology_type, exc)
+            return candidates  # don't cache a failure — next call should retry live
+
+        _candidates_cache[cache_key] = (now, candidates)
+        return candidates
+
+    # ── D2 (docs/survey-question-context-plan.md): scoped candidate lookup ──
+
+    def resolve_question_guid(self, question_display_name: str) -> str | None:
+        """Resolve a Question glossary term's GUID by its display name —
+        long-TTL cached (Question terms are stable once authored via
+        docs/dr-egeria/scouting-questions.md and siblings). Returns None if
+        not found or on any lookup error (best-effort; a missing Question
+        just means D2's scoped lookup contributes nothing for it, not a
+        hard failure — the caller falls back to the full scan)."""
+        now = time.monotonic()
+        cached = _question_guid_cache.get(question_display_name)
+        if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        guid: str | None = None
+        try:
+            client = self._connect_classification_explorer()
+            guid = client.get_guid_for_name(
+                question_display_name,
+                property_name=["displayName"],
+                type_name="GlossaryTerm",
+            ) or None
+        except Exception as exc:
+            log.debug("resolve_question_guid(%r) failed: %s", question_display_name, exc)
+
+        _question_guid_cache[question_display_name] = (now, guid)
+        return guid
+
+    def find_candidate_process_guids_by_questions(
+        self, questions: list[str], technology_type: str, survey_kind: str | None = None,
+    ) -> list:
+        """D2's scoped alternative to find_candidate_process_guids()'s
+        search_string="*" full-instance scan: given the Questions relevant
+        to a phase/perspective (from question_catalog_reader.get_questions()),
+        resolve each to its Egeria GUID and call
+        ClassificationExplorer.get_scoped_elements(question_guid) — which
+        returns every element linked via ScopedBy to that Question,
+        constrained server-side to GovernanceActionProcess via
+        metadataElementTypeName. Unions results across questions
+        (a Survey Definition can answer more than one), dedupes by guid,
+        then applies the same supported_technology_type/survey_kind filter
+        find_candidate_process_guids() does — Additional Properties aren't
+        part of the ScopedBy query itself, still need client-side filtering.
+
+        Returns [] (not an error) if no question resolves to a real GUID —
+        the caller decides whether to fall back to the full scan."""
+        question_guids = [g for g in (self.resolve_question_guid(q) for q in questions) if g]
+        if not question_guids:
+            return []
+
+        cache_key = (tuple(sorted(question_guids)), technology_type, survey_kind)
+        now = time.monotonic()
+        cached = _candidates_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        by_guid: dict[str, dict] = {}
+        try:
+            client = self._connect_classification_explorer()
+            for question_guid in question_guids:
+                results = client.get_scoped_elements(
+                    question_guid,
+                    page_size=1000,
+                    body={"class": "ResultsRequestBody", "metadataElementTypeName": "GovernanceActionProcess"},
+                )
+                if isinstance(results, str):
+                    continue  # pyegeria returns a string ("No elements found") when empty
+                for el in results or []:
+                    props = el.get("properties", {}) or {}
+                    additional = props.get("additionalProperties", {}) or {}
+                    if additional.get("supported_technology_type") != technology_type:
+                        continue
+                    if survey_kind is not None and additional.get("survey_kind") != survey_kind:
+                        continue
+                    qn = props.get("qualifiedName")
+                    if not qn:
+                        continue
+                    header = el.get("elementHeader", {}) or {}
+                    guid = header.get("guid", "")
+                    by_guid[guid] = {
+                        "qualified_name": qn,
+                        "display_name": props.get("displayName", qn),
+                        "guid": guid,
+                    }
+        except Exception as exc:
+            log.debug("find_candidate_process_guids_by_questions failed: %s", exc)
+            return []
+
+        candidates = list(by_guid.values())
+        _candidates_cache[cache_key] = (now, candidates)
         return candidates
 
     def find_process_guid_by_name(self, name_or_qualified_name: str) -> str | None:
@@ -253,7 +437,17 @@ class SurveyDefinitionReader:
         Raises UnsupportedSurveyDefinitionError if the graph branches (v1 only
         supports linear step sequences), or SurveyDefinitionReaderError if any
         step is missing executes_at in its Additional Properties.
+
+        D3-cached (docs/survey-question-context-plan.md) — same short TTL as
+        the candidates caches, since this is the second live call per
+        candidate the plan doc identified as part of the slow-Discovery-load
+        root cause.
         """
+        now = time.monotonic()
+        cached = _fetch_cache.get(process_guid)
+        if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
+            return cached[1]
+
         self.connect()
         raw = self._governance_officer.get_governance_process_graph(
             guid=process_guid, output_format="JSON"
@@ -266,7 +460,59 @@ class SurveyDefinitionReader:
             raise SurveyDefinitionReaderError(
                 f"Unexpected response fetching Survey Definition graph for {process_guid}"
             )
-        return self._parse_graph(graph)
+        survey_def = self._parse_graph(graph)
+        _fetch_cache[process_guid] = (now, survey_def)
+        return survey_def
+
+    # ── reconciliation: fix Dr.Egeria's non-idempotent Link commands ──────────
+
+    def reconcile_step_links(self, process_guid: str, survey_group: str, step_keys: list[str], dry_run: bool = False):
+        """Delete stale/duplicate step-to-step link relationships against
+        live Egeria — see survey_definition_reconciler.py's module docstring
+        for the full incident this exists to fix and prevent from
+        recurring. Always fetches live (bypasses the fetch cache — reconciling
+        against a stale cached graph would be pointless), and busts
+        _fetch_cache for process_guid afterward so a subsequent .fetch()
+        sees the reconciled graph rather than a pre-reconciliation cache hit.
+
+        Returns a survey_definition_reconciler.ReconcileResult. Safe to call
+        repeatedly — a fully-reconciled process is a no-op every time after
+        the first."""
+        from resource_explorer.surveyors.survey_definition_reconciler import compute_expected_edges, diff_links
+
+        self.connect()
+        process_qualified_name = f"GovActionProcess::{survey_group}"
+        expected_edges = compute_expected_edges(survey_group, step_keys)
+
+        try:
+            raw = self._governance_officer.get_governance_process_graph(guid=process_guid, output_format="JSON")
+            if isinstance(raw, str):
+                import json as _json
+                raw = _json.loads(raw)
+            graph = raw.get("elementGraph") if isinstance(raw, dict) and "elementGraph" in raw else raw
+            links = (graph or {}).get("processStepLinks") or []
+        except Exception as exc:
+            from resource_explorer.surveyors.survey_definition_reconciler import ReconcileResult
+            return ReconcileResult(process_qualified_name=process_qualified_name, error=str(exc))
+
+        result = diff_links(links, expected_edges, process_qualified_name)
+
+        if not dry_run and result.to_remove:
+            metadata_expert = self._connect_metadata_expert()
+            delete_body = {"class": "OpenMetadataDeleteRequestBody"}
+            for entry in result.to_remove:
+                if not entry.link_guid:
+                    continue
+                try:
+                    metadata_expert.delete_related_elements(entry.link_guid, body=delete_body)
+                except Exception as exc:
+                    log.warning(
+                        "reconcile_step_links: failed to delete %s link %s -> %s (guid=%s): %s",
+                        entry.reason, entry.prev_qualified_name, entry.next_qualified_name, entry.link_guid, exc,
+                    )
+            _fetch_cache.pop(process_guid, None)
+
+        return result
 
     def _parse_graph(self, graph: dict) -> SurveyDefinition:
         """Side-effect-free: turns a raw graph JSON dict into a SurveyDefinition.
@@ -340,6 +586,7 @@ class SurveyDefinitionReader:
             supported_technology_type=process_additional.get("supported_technology_type"),
             steps=steps,
             description=process_props.get("description", ""),
+            survey_kind=process_additional.get("survey_kind"),
         )
 
     def _parse_step(self, element: dict) -> SurveyStep:

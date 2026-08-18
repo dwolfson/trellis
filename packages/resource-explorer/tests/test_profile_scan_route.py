@@ -135,3 +135,24 @@ class TestProfileScanAutoChainsClassification:
         data = resp.json()
         assert data["classified"] is False
         assert "language survey failed" in data["classification_error"]
+
+
+class TestProfileScanRecordsLastProfiledAt:
+    def test_successful_refresh_updates_last_profiled_at(self, client, registry):
+        assert registry.get("myproj").last_profiled_at == ""
+        with _patch_refresh() as _, \
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
+            MockOrch.return_value.run.return_value = MagicMock(errors=[])
+            resp = client.post("/api/projects/myproj/profile-scan")
+
+        assert resp.status_code == 200
+        assert registry.get("myproj").last_profiled_at != ""
+
+    def test_failed_refresh_does_not_update_last_profiled_at(self, client, registry):
+        with patch(
+            "resource_explorer.ingestion.pipeline.IngestionPipeline.refresh_profile",
+            side_effect=RuntimeError("rate limited"),
+        ):
+            client.post("/api/projects/myproj/profile-scan")
+
+        assert registry.get("myproj").last_profiled_at == ""

@@ -1,4 +1,5 @@
 {
   "lfai_landscape": {"label": "LF AI & Data", "display_name": "LF AI & Data"},
-  "eclipse_projects": {"label": "Eclipse Foundation", "display_name": "Eclipse Foundation"}
+  "eclipse_projects": {"label": "Eclipse Foundation", "display_name": "Eclipse Foundation"},
+  "asf_projects": {"label": "Apache Software Foundation", "display_name": "Apache Software Foundation"}
 }

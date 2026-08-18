@@ -29,6 +29,7 @@ from typing import Any
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
     Annotation,
     RequestForActionAnnotation,
@@ -116,6 +117,7 @@ class DataProfilerSurveyor(BaseSurveyor):
         registry: ProjectRegistry,
         local_path: str | Path | None = None,
         surveyed_at: str | None = None,
+        scope_locator: str = "",
     ) -> None:
         super().__init__(project, registry)
         self.local_path: Path | None = Path(local_path) if local_path else None
@@ -124,6 +126,11 @@ class DataProfilerSurveyor(BaseSurveyor):
         # unused — this surveyor never persisted a snapshot at all (found
         # while wiring the generic upsert_metric call below).
         self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        # Repo scope-narrowing funnel plan (docs/repo-scope-narrowing-funnel.md),
+        # D5/D6 — "" (default) = whole-repo, unchanged from every existing
+        # caller; a non-empty locator narrows to one cataloged sub-resource
+        # (this kind is target_shape="corpus" — a path-prefix filter).
+        self._scope_locator = scope_locator
 
     @property
     def step_name(self) -> str:
@@ -152,6 +159,11 @@ class DataProfilerSurveyor(BaseSurveyor):
                 return results
 
             data_files = self._filter_data_files(rows)
+            if self._scope_locator:
+                data_files = [
+                    f for f in data_files
+                    if path_matches_scope(f["file_path"], self._scope_locator)
+                ]
             if not data_files:
                 log.debug("DataProfilerSurveyor: no data files in %s", self.project.slug)
                 return results
@@ -166,6 +178,11 @@ class DataProfilerSurveyor(BaseSurveyor):
 
             # Tier 2b: read pre-computed profiles stored during ingestion
             stored = self.registry.get_data_profiles(self.project.slug)
+            if self._scope_locator:
+                stored = [
+                    p for p in stored
+                    if path_matches_scope(p["file_path"], self._scope_locator)
+                ]
             if stored:
                 self._tier2_stored(stored, results)
             else:
@@ -262,6 +279,7 @@ class DataProfilerSurveyor(BaseSurveyor):
                 {"total_files": len(data_files), "total_size_bytes": total_bytes},
                 detail={"formats": fmt_summary},
                 surveyed_at=self._surveyed_at,
+                scope_locator=self._scope_locator,
             )
         except Exception as exc:
             log.warning("Could not persist data profile snapshot for %s: %s", self.project.slug, exc)

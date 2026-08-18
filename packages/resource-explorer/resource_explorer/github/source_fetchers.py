@@ -6,7 +6,7 @@ in discovery.py, not a background poll) — matches this codebase's existing
 convention that state changes are always a deliberate action, never a
 silent side effect (disposition, publish, etc. all work the same way).
 
-Three fetchers are implemented, chosen because all were confirmed low-risk
+Four fetchers are implemented, chosen because all were confirmed low-risk
 via direct inspection of their real, public, unauthenticated formats:
 
 - CNCF's landscape.yml — a static YAML file in github.com/cncf/landscape,
@@ -21,6 +21,22 @@ via direct inspection of their real, public, unauthenticated formats:
   correct source. Verified live: 367 repo URLs, includes odpi/egeria.
 - Eclipse's project API — projects.eclipse.org/api, no auth for reads,
   the exact "hundreds of orgs" sprawl case that motivated 'list' sources.
+- Apache Software Foundation's projects.json — projects.apache.org/json/
+  foundation/projects.json, no auth, one JSON object keyed by project id.
+  Verified live: 300+ projects, each carrying a "repository" list. Only
+  github.com entries are kept (same GitHub-only scope every other fetcher
+  here has) — a real, known gap is that many ASF projects list only their
+  canonical gitbox.apache.org URL and no github.com entry in this feed,
+  even though ASF's own infra mirrors nearly every repo to
+  github.com/apache/<name>; deriving that mirror URL was deliberately NOT
+  done here since it asserts a naming convention this fetcher hasn't
+  itself verified per-project, matching this file's existing rule (Eclipse's
+  fetcher skips non-GitHub repos the same way, rather than guessing). ASF
+  projects mostly already work fine via the existing `org:apache` search
+  prefilter (most ASF repos DO live in the `apache` GitHub org) — this
+  fetcher is for the residual set search misses (incubator/attic projects,
+  non-`apache`-org mirrors) and for avoiding GitHub search API rate limits
+  on a full-foundation sweep.
 
 Any other `landscape2`-generated site (several LF sub-foundations use the
 same tool — LF Networking, LF Energy, etc.) works with the same parser via
@@ -29,11 +45,15 @@ registered by name here since those are the two confirmed relevant to this
 codebase's own users.
 
 LFX Insights (the Linux Foundation's own cross-project analytics platform —
-a different thing from any single foundation's landscape2 site) is
-registered as a known-future slot but deliberately left unimplemented: it
-needs a confirmed API key/auth flow and its schema/rate limits aren't
-verified here — building it blind risks a silently-wrong fetcher, worse
-than not having one.
+a different thing from any single foundation's landscape2 site) was
+investigated for this pass (2026-08-10): confirmed via the platform's own
+docs page and its https://github.com/linuxfoundation/insights repo that it
+exposes no documented public REST/GraphQL API today — the repo says it's
+"currently in beta and includes mainly frontend code." Registered as a
+known-future slot but deliberately left unimplemented for the same reason
+as before: building it blind against an unconfirmed/private API risks a
+silently-wrong fetcher, worse than not having one. Revisit if/when LFX
+Insights publishes real API docs.
 """
 from __future__ import annotations
 
@@ -45,6 +65,7 @@ import yaml
 _DEFAULT_CNCF_LANDSCAPE_URL = "https://raw.githubusercontent.com/cncf/landscape/master/landscape.yml"
 _DEFAULT_LFAI_LANDSCAPE_URL = "https://raw.githubusercontent.com/lfai/lfai-landscape/main/landscape.yml"
 _DEFAULT_ECLIPSE_PROJECTS_URL = "https://projects.eclipse.org/api/projects"
+_DEFAULT_ASF_PROJECTS_URL = "https://projects.apache.org/json/foundation/projects.json"
 
 
 def _fetch_landscape2_yaml(url: str) -> list[str]:
@@ -102,6 +123,38 @@ def _fetch_eclipse_projects(fetch_url: str) -> list[str]:
     return sorted(set(urls))
 
 
+def _fetch_asf_projects(fetch_url: str) -> list[str]:
+    """ASF's projects.json is one big object keyed by project id, each
+    value carrying a "repository" list. List items are almost always plain
+    URL strings (359/361 verified live), but a rare few are dicts with a
+    "browse" key instead (e.g. datasketches' `{"browse": "https://github
+    .com/apache?q=datasketches"}`) — handled defensively rather than
+    assuming one fixed item shape, same posture as the Eclipse fetcher's
+    own "varies by project" handling. Only github.com entries are kept —
+    many ASF projects list only their canonical gitbox.apache.org URL here
+    even though ASF's infra mirrors most repos to github.com/apache/<name>;
+    that mirror URL is NOT derived/guessed, matching this file's GitHub-
+    only, no-guessing convention (see module docstring)."""
+    url = fetch_url or _DEFAULT_ASF_PROJECTS_URL
+    resp = httpx.get(url, timeout=30, follow_redirects=True)
+    resp.raise_for_status()
+    data = resp.json() or {}
+
+    urls: list[str] = []
+    for proj in data.values():
+        if not isinstance(proj, dict):
+            continue
+        repos = proj.get("repository") or []
+        if isinstance(repos, str):
+            repos = [repos]
+        for repo in repos:
+            repo_url = repo.get("browse", "") if isinstance(repo, dict) else repo
+            repo_url = (repo_url or "").strip()
+            if repo_url and "github.com" in repo_url:
+                urls.append(repo_url.rstrip("/"))
+    return sorted(set(urls))
+
+
 def _fetch_lfx_insights(fetch_url: str) -> list[str]:
     raise NotImplementedError(
         "LFX Insights fetcher not implemented — its API needs a confirmed "
@@ -119,6 +172,7 @@ FETCHERS: dict[str, Callable[[str], list[str]]] = {
     "cncf_landscape": _fetch_cncf_landscape,
     "lfai_landscape": _fetch_lfai_landscape,
     "eclipse_projects": _fetch_eclipse_projects,
+    "asf_projects": _fetch_asf_projects,
     "lfx_insights": _fetch_lfx_insights,
 }
 

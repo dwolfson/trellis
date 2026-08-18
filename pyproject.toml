@@ -15,6 +15,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 resource-explorer = { workspace = true }
 egeria-advisor = { workspace = true }
+trellis-microflow = { workspace = true }
 trellis-vectorstore = { workspace = true }
 
 [tool.uv]

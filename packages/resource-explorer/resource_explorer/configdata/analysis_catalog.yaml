@@ -39,6 +39,31 @@
 #   run_time          - fast | minutes | async — UI speed badge.
 #   action            - "survey" (read-only analysis) or "publish" (writes
 #                       to the Egeria catalog of record).
+#   target_shape      - repo scope-narrowing funnel plan (docs/repo-scope-
+#                       narrowing-funnel.md), D5/D6 — what shape of target
+#                       this analysis can mechanically operate on if scope
+#                       is narrowed below "the whole resource":
+#                         corpus             - the whole resource, or any
+#                                              container + everything
+#                                              recursively below it (a
+#                                              path-prefix filter).
+#                         single_container   - a real hierarchy exists
+#                                              (e.g. database schema->table)
+#                                              but doesn't recurse
+#                                              arbitrarily deep.
+#                         whole_resource_only - the data is inherently one
+#                                              aggregate for the whole
+#                                              resource; narrowing it is a
+#                                              different analysis, not a
+#                                              query change.
+#                       Grounded in a real code audit (see that doc's
+#                       "Target-shape inventory"), not guessed — RE's own
+#                       best judgment, not gospel; a new analysis kind
+#                       declares its own shape here, no Python change
+#                       needed elsewhere for the compatibility check to
+#                       pick it up. Mixed-output kinds take their single
+#                       most-restrictive shape (simplicity over per-output
+#                       tagging, until real friction shows up).
 #   recommended       - shown with a ★ star as a suggested starting point.
 #   egeria_registration - schema-only hook for eventual GovernanceActionType
 #                       registration of this analysis as a native Egeria
@@ -66,6 +91,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -81,6 +107,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -96,6 +123,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -111,6 +139,7 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -126,6 +155,87 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: license_classification
+    name: "License Classification"
+    description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."
+    resource_types: ["repo"]
+    intent: assessment  # is this worth pursuing, given its usage restrictions?
+    perspectives: ["steward", "security", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: security_features
+    name: "Security Features"
+    description: "GitHub's native security feature toggles (Dependabot, secret scanning, advanced security) — configuration state, not artifact presence."
+    resource_types: ["repo"]
+    intent: assessment  # true scoring against criteria — same family as security_scan
+    perspectives: ["security", "steward"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: ci_quality
+    name: "CI Quality"
+    description: "Whether CI workflows actually run tests/lint/build (keyword scan of workflow content), not just whether a CI config file exists."
+    resource_types: ["repo"]
+    intent: assessment  # true scoring against criteria — same family as security_scan
+    perspectives: ["steward", "security", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: maturity
+    name: "Maturity"
+    description: "Project age/lifecycle stage (nascent/emerging/established/mature) from repo creation date — a CHAOSS-informed early-headlights signal, distinct from Repository Health's activity/community/release scoring."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["steward", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: repo_conventions
+    name: "Repo Conventions"
+    description: "Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style catalog-info.yaml), documentation breadth."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["steward", "security", "all"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -141,6 +251,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: survey
+    target_shape: corpus
     recommended: true
     egeria_registration:
       candidate: false
@@ -156,6 +267,23 @@ repo_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: corpus
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: code_symbol_extraction
+    name: "Refresh Code Symbols"
+    description: "Extract class/function/method symbols (tree-sitter/AST) for every supported language and refresh the code-symbol index — the self-contained refresh 'API & Symbol Extraction' and any future consumer read from. Independently runnable/schedulable so symbols stay current even for repos that skip RAG ingestion."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["data_scientist", "all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -171,6 +299,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: profile
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -186,6 +315,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: ingest
+    target_shape: whole_resource_only
     recommended: false
     egeria_registration:
       candidate: false
@@ -201,6 +331,7 @@ repo_analyses:
     source: egeria
     run_time: minutes
     action: publish
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -217,6 +348,7 @@ database_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: single_container
     recommended: true
     egeria_registration:
       candidate: false
@@ -232,21 +364,7 @@ database_analyses:
     source: local
     run_time: fast
     action: survey
-    recommended: true
-    egeria_registration:
-      candidate: false
-      native_process_ref: null
-
-  - id: index_health
-    name: "Index Health"
-    description: "Identify unused indexes, missing indexes on foreign keys, and bloated indexes."
-    resource_types: ["database"]
-    intent: assessment  # scores index hygiene against best practice — unchanged
-    perspectives: ["dba"]
-    annotation_types: ["RequestForActionAnnotation", "DataClassAnnotation"]
-    source: local
-    run_time: fast
-    action: survey
+    target_shape: corpus
     recommended: true
     egeria_registration:
       candidate: false
@@ -262,6 +380,7 @@ database_analyses:
     source: local
     run_time: fast
     action: survey
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: false
@@ -277,6 +396,7 @@ database_analyses:
     source: egeria
     run_time: async
     action: publish
+    target_shape: whole_resource_only
     recommended: true
     egeria_registration:
       candidate: true
@@ -297,6 +417,7 @@ filesystem_analyses:
     source: local
     run_time: minutes
     action: survey
+    target_shape: corpus
     recommended: true
     egeria_registration:
       candidate: false

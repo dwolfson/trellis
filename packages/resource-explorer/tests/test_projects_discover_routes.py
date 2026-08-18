@@ -219,6 +219,19 @@ class TestDispositionRoute:
         })
         assert resp.status_code == 400
 
+    def test_recommended_is_a_valid_disposition(self, client, registry):
+        """The positive terminal state, added alongside abandoned/ignored
+        (the negative terminal states) — 'decided for it', not just 'decided
+        against it' or 'not decided yet'."""
+        resp = client.post("/api/discovery/disposition", json={
+            "github_url": "https://github.com/my-org/new-repo",
+            "disposition": "recommended",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["disposition"] == "recommended"
+        disp = registry.get_disposition("https://github.com/my-org/new-repo")
+        assert disp["disposition"] == "recommended"
+
     def test_records_project_slug_when_already_registered(self, client, registry):
         resp = client.post("/api/discovery/disposition", json={
             "github_url": "https://github.com/my-org/already-here",

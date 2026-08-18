@@ -152,6 +152,32 @@ class GitHubClient:
 
         return repo_root
 
+    def zipball_root(self, repo: Repository, subproject_path: str | None = None):
+        """Context manager: download `repo`'s zipball into a fresh tempdir
+        and yield the extracted root (or subproject_path subdir).
+
+        D6.7 (docs/unified-survey-execution-model-plan.md) — the one shared
+        implementation of "download a zipball into a tempdir" that both
+        repo_survey_definition_adapter.py's _acquire_zipball_root (D6's
+        resolve_resources mechanism) and IngestionPipeline.refresh_profile()
+        wrap, instead of each maintaining its own copy of this
+        tempfile.TemporaryDirectory()+download_zipball() pattern. Deliberately
+        NOT extended to cover IncrementalIndexer.refresh()'s own inline
+        download — that one's entangled with a genuinely different decision
+        (whole-repo vs. subproject root, driven by extra_docs_paths) that
+        doesn't reduce to this same simple shape.
+        """
+        import tempfile
+        from contextlib import contextmanager
+        from pathlib import Path
+
+        @contextmanager
+        def _cm():
+            with tempfile.TemporaryDirectory() as tmp:
+                yield self.download_zipball(repo, Path(tmp), subproject_path)
+
+        return _cm()
+
     def list_files(self, repo: Repository, path: str = "", recursive: bool = True) -> list[str]:
         """Return all file paths via git tree. Handles large repos where the recursive tree is truncated."""
         try:
@@ -181,6 +207,41 @@ class GitHubClient:
             except Exception:
                 pass
         return paths
+
+    def list_file_modes(self, repo: Repository) -> dict[str, str]:
+        """Return {path: mode} for every blob in the repo's git tree —
+        "100644" regular, "100755" executable, "120000" symlink. Mirrors
+        list_files()'s truncation handling (mode is free on the exact same
+        tree entries list_files() already walks, just discarded there) but
+        kept as its own method rather than folded into list_files() to
+        avoid changing that method's existing, widely-used return shape.
+        Best-effort: returns {} on any failure, matching list_files()'s own
+        fail-soft behavior — a missing mode should never fail an inventory
+        refresh (Assessment sub-resource cataloging plan, D9 Tier 1)."""
+        try:
+            tree = repo.get_git_tree(repo.default_branch, recursive=True)
+            if not tree.truncated:
+                return {e.path: e.mode for e in tree.tree if e.type == "blob"}
+            root = repo.get_git_tree(repo.default_branch, recursive=False)
+            return self._list_file_modes_walk(repo, root, "")
+        except Exception:
+            return {}
+
+    def _list_file_modes_walk(self, repo: Repository, tree, prefix: str) -> dict[str, str]:
+        modes = {e.path: e.mode for e in tree.tree if e.type == "blob"}
+        for entry in tree.tree:
+            if entry.type != "tree":
+                continue
+            entry_prefix = f"{prefix}/{entry.name}" if prefix else entry.name
+            try:
+                subtree = repo.get_git_tree(entry.sha, recursive=True)
+                if not subtree.truncated:
+                    modes.update({f"{entry_prefix}/{e.path}": e.mode for e in subtree.tree if e.type == "blob"})
+                else:
+                    modes.update(self._list_file_modes_walk(repo, subtree, entry_prefix))
+            except Exception:
+                pass
+        return modes
 
     def get_file_content(self, repo: Repository, path: str) -> str | None:
         try:

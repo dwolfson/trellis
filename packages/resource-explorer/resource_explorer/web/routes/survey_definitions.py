@@ -10,11 +10,28 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# D3 (docs/survey-question-context-plan.md): module-level singleton, not
+# constructed fresh per request — EgeriaTechTypeCatalog's own docstring
+# already says "callers should share one instance rather than refetch per
+# request" (workspace-wide catalog metadata, doesn't change often); the
+# route just wasn't following that until now, so its internal cache never
+# actually persisted across requests.
+_tech_type_catalog = None
+
+
+def _get_tech_type_catalog():
+    global _tech_type_catalog
+    if _tech_type_catalog is None:
+        from resource_explorer.surveyors.egeria_tech_type_catalog import EgeriaTechTypeCatalog
+
+        _tech_type_catalog = EgeriaTechTypeCatalog()
+    return _tech_type_catalog
 
 
 class SurveyDefinitionRunRequest(BaseModel):
@@ -37,19 +54,62 @@ def _map_reader_executor_errors(exc: Exception) -> HTTPException:
 
 
 @router.get("/{entity_type}/{slug}/candidates")
-async def list_candidates(entity_type: str, slug: str) -> dict:
+async def list_candidates(
+    entity_type: str, slug: str,
+    survey_kind: str | None = Query(
+        None,
+        description="Filter to Survey Definitions tagged with this survey_kind "
+                    "(e.g. 'discovery') — omit to see every Survey Definition for "
+                    "the resource's Technology Type regardless of kind, matching "
+                    "the pre-survey_kind behavior.",
+    ),
+    phase: str | None = Query(
+        None,
+        description="D2 (docs/survey-question-context-plan.md) + D7 "
+                    "(docs/unified-survey-execution-model-plan.md): scope the "
+                    "candidate lookup to Questions tagged with this funnel-stage "
+                    "(the CSV's single 'Funnel Stage' field, collapsed from the "
+                    "earlier separate Asked At/Answered At columns 2026-08-14). "
+                    "Per D7, each intent's own UI should pass its own stage here "
+                    "as the primary filter — omitting it falls back to using every "
+                    "cataloged repo Question regardless of stage, still scoped "
+                    "over the full scan otherwise.",
+    ),
+    perspectives: list[str] | None = Query(
+        None, description="Further narrow the Question set by perspective, same OR semantics as elsewhere.",
+    ),
+) -> dict:
     """List Survey Definitions Egeria has for this resource's Technology Type,
     each with full step detail (not just a name) so a human can judge scope
     before running one."""
 
     def _do() -> dict:
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
         from resource_explorer.surveyors.survey_definition_executor import get_adapter
         from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
-        from resource_explorer.surveyors.egeria_tech_type_catalog import EgeriaTechTypeCatalog
 
         adapter = get_adapter(entity_type)
         reader = SurveyDefinitionReader()
-        thin_candidates = reader.find_candidate_process_guids(adapter.technology_type)
+
+        # D2: try the scoped ScopedBy lookup by default — phase/perspectives
+        # only narrow which cataloged Questions get considered, they aren't
+        # required to attempt scoping at all (fixed live, see the phase=
+        # param docstring above for the incident this closes).
+        questions = [
+            q["question"] for q in get_questions(resource_type=entity_type, phase=phase, perspectives=perspectives)
+        ]
+        thin_candidates: list = []
+        if questions:
+            thin_candidates = reader.find_candidate_process_guids_by_questions(
+                questions, adapter.technology_type, survey_kind=survey_kind,
+            )
+        if not thin_candidates:
+            # No cataloged Questions for this resource type, none resolved to
+            # a real Egeria GUID yet, or none are scoped to any matching
+            # Survey Definition — fall back to the full scan rather than
+            # silently show an empty list (D2's own decision: the full-scan
+            # path stays an explicit fallback, not removed).
+            thin_candidates = reader.find_candidate_process_guids(adapter.technology_type, survey_kind=survey_kind)
 
         # Real Egeria-documented "what does a native step actually produce" info,
         # keyed by Egeria's own Technology Type name (deliberately not the same
@@ -59,7 +119,7 @@ async def list_candidates(entity_type: str, slug: str) -> dict:
         produced_annotation_types: list[dict] = []
         if adapter.egeria_technology_type_name:
             try:
-                produced_annotation_types = EgeriaTechTypeCatalog().get_produced_annotation_types(
+                produced_annotation_types = _get_tech_type_catalog().get_produced_annotation_types(
                     adapter.egeria_technology_type_name
                 )
             except Exception as exc:
@@ -99,7 +159,10 @@ async def list_candidates(entity_type: str, slug: str) -> dict:
                     step_info["egeria_produced_annotation_types"] = produced_annotation_types
                 steps.append(step_info)
 
-            detailed.append({**c, "description": survey_def.description, "error": None, "steps": steps})
+            detailed.append({
+                **c, "description": survey_def.description, "error": None, "steps": steps,
+                "survey_kind": survey_def.survey_kind,
+            })
 
         # Native Egeria processes for this Technology Type (config/technology_
         # type_processes.yaml), shown as informational only — NOT merged into

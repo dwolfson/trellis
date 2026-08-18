@@ -69,22 +69,21 @@ class SecurityHygieneSurveyor(BaseSurveyor):
         results: list[Annotation] = []
         findings: list[dict] = []
         try:
-            with self.registry._conn() as conn:
-                path_rows = conn.execute(
-                    "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
-                    (self.project.slug,),
-                ).fetchall()
+            # D2(c) (docs/repo-survey-catalog-completion-plan.md): a
+            # confirmed duplicate of file_structure.py's identical query,
+            # now the named registry accessor.
+            paths = self.registry.get_code_symbol_file_paths(self.project.slug)
 
             # Normalise paths for prefix/name matching
-            paths = [r["file_path"].replace("\\", "/") for r in path_rows]
+            paths = [p.replace("\\", "/") for p in paths]
             filenames = {p.rsplit("/", 1)[-1] for p in paths}
 
-            # Also check project_stats for license field
-            with self.registry._conn() as conn:
-                stats_row = conn.execute(
-                    "SELECT license FROM project_stats WHERE project_slug = ? ORDER BY id DESC LIMIT 1",
-                    (self.project.slug,),
-                ).fetchone()
+            # Also check project_stats for license field — via the named
+            # registry accessor (D2(c), docs/repo-survey-catalog-completion-
+            # plan.md), not a hand-rolled query — this and health.py were a
+            # confirmed duplicate of the same "latest project_stats row"
+            # pattern.
+            stats_row = self.registry.get_latest_project_stats(self.project.slug)
             license_from_stats = (stats_row["license"] if stats_row else "") or ""
 
             # ── Security policy ───────────────────────────────────────────────

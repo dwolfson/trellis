@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -115,6 +118,48 @@ class GroupAssign(BaseModel):
     group_slug: str     # "" clears the assignment
 
 
+class GroupSuggestion(BaseModel):
+    org: str
+    repo_slugs: list[str]
+    repo_count: int
+    suggested_display_name: str
+
+
+@router.get("/groups/suggestions", response_model=list[GroupSuggestion])
+async def suggest_groups() -> list[GroupSuggestion]:
+    """Suggests — never auto-applies — groupings for currently-ungrouped
+    repos that share a GitHub org. Importing multiple repos from the same
+    org-scoped search at once (e.g. unitycatalog/unitycatalog,
+    unitycatalog/unitycatalog-python, unitycatalog/unitycatalog-rs) is a
+    strong signal they're the same logical project, but nothing at import
+    time assigns a group automatically — grouping stays a deliberate,
+    explicit action (matches how `set_project_group()` is only ever called
+    from a real user click, never from `add()`/import code paths). Only
+    orgs with 2+ ungrouped repos are surfaced; already-grouped repos are
+    excluded so an accepted suggestion never gets re-suggested."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.github.client import GitHubClient
+
+    registry = ProjectRegistry()
+    by_org: dict[str, list[str]] = {}
+    for p in registry.list_all():
+        if getattr(p, "group_slug", ""):
+            continue
+        slug = GitHubClient._url_to_slug(p.github_url)
+        if "/" not in slug:
+            continue
+        org = slug.split("/")[0]
+        by_org.setdefault(org, []).append(p.slug)
+
+    suggestions = [
+        GroupSuggestion(org=org, repo_slugs=slugs, repo_count=len(slugs), suggested_display_name=org)
+        for org, slugs in by_org.items()
+        if len(slugs) >= 2
+    ]
+    suggestions.sort(key=lambda s: -s.repo_count)
+    return suggestions
+
+
 @router.get("/groups", response_model=list[GroupSummary])
 async def list_groups() -> list[GroupSummary]:
     from resource_explorer.registry import ProjectRegistry
@@ -211,6 +256,10 @@ class ScoutingOverview(BaseModel):
     last_pushed_at: str = ""
     repo_size_kb: int = 0
     last_surveyed_at: str = ""
+    # Last successful Coarse Profile refresh (IngestionPipeline.refresh_profile())
+    # — the one Scouting-tier action that had no staleness signal at all
+    # before this existed.
+    last_profiled_at: str = ""
     is_published: bool = False
     # When egeria_publish last actually wrote to the catalog — distinct from
     # is_published (a point-in-time boolean derived from whether a GUID is
@@ -220,6 +269,15 @@ class ScoutingOverview(BaseModel):
     last_published_at: str = ""
     disposition: str = "undecided"
     disposition_reason: str = ""
+    # Computed from archived/disabled/is_fork/is_template — "archived" >
+    # "disabled" > "fork" > "template" > "active", first match wins.
+    lifecycle_state: str = "active"
+    homepage: str = ""
+    security_and_analysis: dict = {}
+    deployments_count: int = 0
+    latest_deployment_at: str = ""
+    latest_deployment_environment: str = ""
+    latest_deployment_ref: str = ""
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -233,6 +291,22 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
     stats = registry.get_latest_project_stats(project.slug) or {}
     disp = registry.get_disposition(project.github_url) or {}
     latest_survey = registry.get_latest_egeria_survey(project.slug)
+
+    lifecycle_state = "active"
+    if stats.get("archived"):
+        lifecycle_state = "archived"
+    elif stats.get("disabled"):
+        lifecycle_state = "disabled"
+    elif stats.get("is_fork"):
+        lifecycle_state = "fork"
+    elif stats.get("is_template"):
+        lifecycle_state = "template"
+
+    try:
+        security_and_analysis = json.loads(stats.get("security_and_analysis_json") or "{}")
+    except (TypeError, ValueError):
+        security_and_analysis = {}
+
     return ScoutingOverview(
         slug=project.slug,
         display_name=project.display_name,
@@ -245,10 +319,18 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         last_pushed_at=stats.get("last_pushed_at") or "",
         repo_size_kb=stats.get("repo_size_kb") or 0,
         last_surveyed_at=project.last_surveyed_at,
+        last_profiled_at=project.last_profiled_at,
         is_published=bool(project.egeria_asset_guid),
         last_published_at=(latest_survey or {}).get("published_at") or "",
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
+        lifecycle_state=lifecycle_state,
+        homepage=stats.get("homepage") or "",
+        security_and_analysis=security_and_analysis,
+        deployments_count=stats.get("deployments_count") or 0,
+        latest_deployment_at=stats.get("latest_deployment_at") or "",
+        latest_deployment_environment=stats.get("latest_deployment_environment") or "",
+        latest_deployment_ref=stats.get("latest_deployment_ref") or "",
     )
 
 
@@ -259,14 +341,17 @@ class ScoutingScanResult(BaseModel):
     error: str | None = None
 
 
-@router.post("/{slug}/scouting-scan", response_model=ScoutingScanResult)
-async def run_scouting_scan(slug: str) -> ScoutingScanResult:
-    """Fast, API-only coarse scan (repo stats + language classification) —
-    runs the "Repo Coarse Scout" Survey Definition via the same executor
-    Discovery's manual "Run" button uses. Local-only by default, no
-    auto-publish, matching the existing convention that publish is always
-    a separate, deliberate action."""
-    from resource_explorer.registry import ProjectRegistry
+class ScoutingScanStarted(BaseModel):
+    status: str = "started"
+    slug: str
+    activity_id: str
+
+
+def _run_scouting_scan_sync(slug: str, registry) -> ScoutingScanResult:
+    """The actual scan work, shared by the background-thread path below and
+    kept as a plain sync function (no FastAPI/asyncio coupling) so it's
+    trivially callable from a daemon thread with its own fresh registry
+    connection — same convention as org_importer.py's _run_import_batch."""
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
         REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
     )
@@ -276,26 +361,213 @@ async def run_scouting_scan(slug: str) -> ScoutingScanResult:
     )
     from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
 
-    registry = ProjectRegistry()
-    project = registry.get(slug)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-
-    def _run():
-        return run_survey_definition(
+    try:
+        # fast=True — Coarse Scout's whole premise is being the cheap, fast
+        # tier; without this, HealthSurveyor's stats refresh makes one
+        # GitHub API call per commit in the last 90 days (a confirmed real
+        # slowness bug for active repos, easily several minutes). See
+        # StepInfo.accepts_fast / HealthSurveyor.__init__'s own docstrings.
+        result = run_survey_definition(
             "repo", slug, registry=registry,
             survey_definition_ref=REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN,
+            fast=True,
         )
-
-    try:
-        result = await asyncio.to_thread(_run)
     except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
-        return ScoutingScanResult(status="error", slug=slug, error=str(exc))
+        # Egeria-side Survey Definitions don't survive an Egeria database
+        # reset — a real, recurring event in development, not a one-off
+        # mistake. Without a fallback, that silently breaks Scouting Scan
+        # entirely (including the git-stats refresh HealthSurveyor does at
+        # scan time — the reason stale stats and a failed scan are usually
+        # the same underlying problem, not two bugs) until someone notices
+        # and manually re-authors the definition in Egeria. Scouting Scan
+        # never actually needed Egeria to know *what* the two steps are,
+        # only to name/bundle them — so fall back to running them directly.
+        try:
+            from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+            survey_result = SurveyOrchestrator(registry).run(
+                slug, steps=["repo_health", "repo_language"], fast=True,
+            )
+        except Exception as fallback_exc:
+            return ScoutingScanResult(
+                status="error", slug=slug,
+                error=f"{exc} (local fallback also failed: {fallback_exc})",
+            )
+        if survey_result.errors:
+            return ScoutingScanResult(status="error", slug=slug, error="; ".join(survey_result.errors))
+        return ScoutingScanResult(
+            status="ok", slug=slug,
+            message=(
+                "Coarse scan complete — ran locally. Egeria's 'Repo Coarse Scout' "
+                "Survey Definition wasn't found (likely an Egeria database reset); "
+                "re-author it if you want scans to route through Egeria again."
+            ),
+        )
 
     errors = result.get("errors") or []
     if errors:
         return ScoutingScanResult(status="error", slug=slug, error="; ".join(errors))
     return ScoutingScanResult(status="ok", slug=slug, message="Coarse scan complete.")
+
+
+def _run_scouting_scan_background(slug: str, activity_id: str) -> None:
+    """Runs in a daemon thread — nothing here returns to an HTTP response.
+    Mirrors org_importer.py's _run_import_batch background-thread pattern:
+    its own fresh ProjectRegistry() (SQLite connections aren't shared
+    across threads), terminal status written back onto the same activity_id
+    the route created up front via registry.update_activity_status()."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        result = _run_scouting_scan_sync(slug, registry)
+    except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
+        log.exception("Scouting Scan background thread crashed for %s", slug)
+        registry.update_activity_status(activity_id, "error", summary=f"Scouting Scan crashed: {exc}")
+        return
+    registry.update_activity_status(
+        activity_id, result.status, summary=result.message or result.error or "",
+    )
+
+
+@router.post("/{slug}/scouting-scan", response_model=ScoutingScanStarted)
+async def run_scouting_scan(slug: str) -> ScoutingScanStarted:
+    """Fast, API-only coarse scan (repo stats + language classification) —
+    runs the "Repo Coarse Scout" Survey Definition via the same executor
+    Discovery's manual "Run" button uses. Local-only by default, no
+    auto-publish, matching the existing convention that publish is always
+    a separate, deliberate action.
+
+    Fire-and-forget (background thread), not synchronous — a real, observed
+    problem: for an active repo, the pre-fast-flag version of this route
+    could block for 10+ minutes with zero visibility (see
+    _run_scouting_scan_sync's own fast=True comment for the actual root
+    cause). The route now returns immediately once the scan is queued; the
+    frontend polls GET /api/activity/{activity_id} for status, same
+    Activity Log every other operation in this codebase already writes to —
+    matches org_importer.py's _run_import_batch precedent exactly, just for
+    a single-repo scan instead of a batch."""
+    import threading
+
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    activity_id = log_survey(
+        registry, entity_type="repo", entity_slug=slug,
+        entity_name=project.display_name, entity_location=project.github_url,
+        intent="scouting", status="running",
+        summary=f"Scouting Scan running for {project.display_name}…",
+    )
+
+    t = threading.Thread(
+        target=_run_scouting_scan_background,
+        args=(slug, activity_id),
+        daemon=True, name="resource-explorer-scouting-scan",
+    )
+    t.start()
+
+    return ScoutingScanStarted(slug=slug, activity_id=activity_id)
+
+
+class QuestionChecklistEntry(BaseModel):
+    question: str
+    stage: str  # single Funnel Stage, may be slash-combined (e.g. "Analysis/Enrichment")
+    perspectives: list[str] = []
+    kind: str  # analysis | direct | registry | human | chart | gap | partial | mixed | unknown
+    analysis_ids: list[str] = []
+    note: str = ""
+    answering_mechanism: str = ""
+    # None = not applicable (direct/registry/human/chart/gap kinds — no RE
+    # analysis backs these, so there's nothing to check); True/False only
+    # for analysis/partial/mixed kinds, computed best-effort per resource.
+    has_data: bool | None = None
+
+
+class QuestionChecklist(BaseModel):
+    phase: str
+    perspectives: list[str] = []
+    questions: list[QuestionChecklistEntry] = []
+
+
+def _question_has_data(registry, slug: str, analysis_ids: list[str]) -> bool | None:
+    """Best-effort "has RE actually run this for this resource" check —
+    True as soon as ANY of the question's mapped analysis_ids has data,
+    False if none do, None if the question has no analysis_ids at all
+    (nothing to check). repository_health has no results_reader in
+    REPO_ANALYSIS_RESULTS_MAP (repo_survey_definition_adapter.py) — it's
+    checked via project_stats directly instead, the same signal
+    scouting-overview itself reads. Every reader call is wrapped: a
+    results_reader raising must never break the whole checklist."""
+    if not analysis_ids:
+        return None
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_RESULTS_MAP
+
+    for analysis_id in analysis_ids:
+        if analysis_id == "repository_health":
+            if registry.get_latest_project_stats(slug):
+                return True
+            continue
+        entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+        if not entry:
+            continue
+        results_reader, _ = entry
+        try:
+            data = results_reader(registry, slug)
+        except Exception:
+            continue
+        if data and (not isinstance(data, dict) or any(v for v in data.values())):
+            return True
+    return False
+
+
+@router.get("/{slug}/scouting-questions", response_model=QuestionChecklist)
+async def get_scouting_questions(
+    slug: str,
+    phase: str = "scouting",
+    perspectives: str | None = None,
+) -> QuestionChecklist:
+    """Per-phase Question checklist — which of the authored Scouting
+    questions (docs/dr-egeria/resource_questions.csv, via
+    question_catalog_reader.py) this phase raises or can answer, filtered
+    by the active Perspective set (comma-separated query param, matching
+    the UI's activePerspectives multi-select — see index.html's
+    togglePerspective()), with a computed has_data flag for
+    analysis/partial/mixed-kind questions."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
+    entries = get_questions("repo", phase=phase, perspectives=persp_list or None)
+
+    checklist = []
+    for e in entries:
+        answering = e["answering"]
+        has_data = (
+            _question_has_data(registry, slug, answering["analysis_ids"])
+            if answering["kind"] in ("analysis", "partial", "mixed")
+            else None
+        )
+        checklist.append(QuestionChecklistEntry(
+            question=e["question"],
+            stage=e["stage"],
+            perspectives=e["perspectives"],
+            kind=answering["kind"],
+            analysis_ids=answering["analysis_ids"],
+            note=answering["note"],
+            answering_mechanism=e.get("answering_mechanism", ""),
+            has_data=has_data,
+        ))
+
+    return QuestionChecklist(phase=phase, perspectives=persp_list, questions=checklist)
 
 
 class ProfileScanRequest(BaseModel):
@@ -350,6 +622,8 @@ async def run_profile_scan(slug: str, req: ProfileScanRequest | None = None) -> 
         result = await asyncio.to_thread(_run)
     except Exception as exc:
         return ProfileScanResult(status="error", slug=slug, error=str(exc))
+
+    registry.update_project_profiled_at(slug)
 
     message = f"{result.file_count} file(s) profiled"
     if include_symbols:
@@ -500,7 +774,96 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
                    "either it's scouting-tier (see Scouting instead) or an unknown id.",
         )
     _, trend_reader = entry
+    if trend_reader is None:
+        # e.g. license_classification — a single current-state classification,
+        # not a repeated-check story (license rarely changes), so it was
+        # registered with trend_reader=None rather than a reader that would
+        # always return a flat, near-meaningless one-point-per-run line.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' has no trend view — it's a current-state "
+                   "classification, not tracked over time.",
+        )
     return {"runs": trend_reader(registry, slug)}
+
+
+@router.get("/{slug}/survey-results")
+async def get_survey_results(slug: str) -> dict:
+    """Tier 2 — the repo-wide Survey Results dashboard
+    (docs/survey-results-dashboard-plan.md). Every SURVEY_RESULT_DASHBOARDS
+    entry, with its resolved analysis_ids' latest results attached (reusing
+    the exact same results_reader()s the per-analysis_id Analysis/Assessment
+    cards already call — no new persistence, this is a pure aggregation
+    layer) and its derived Perspective tags. A dashboard entry whose reader
+    raises (e.g. a step that's never been run for this repo) degrades to
+    results=None for that one analysis_id rather than failing the whole
+    dashboard list."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_RESULTS_MAP,
+        SURVEY_RESULT_DASHBOARDS,
+        get_dashboard_perspectives,
+    )
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    dashboards = []
+    for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+        analyses = []
+        for analysis_id in dashboard.analysis_ids:
+            entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
+            results = None
+            if entry:
+                results_reader, _ = entry
+                try:
+                    results = results_reader(registry, slug)
+                except Exception:
+                    results = None
+            analyses.append({"analysis_id": analysis_id, "results": results})
+        dashboards.append({
+            "id": dashboard.id,
+            "title": dashboard.title,
+            "description": dashboard.description,
+            "render": dashboard.render,
+            "custom_renderer": dashboard.custom_renderer,
+            "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
+            "analyses": analyses,
+        })
+    return {"slug": slug, "dashboards": dashboards}
+
+
+@router.get("/{slug}/survey-results/summary")
+async def get_survey_results_summary(slug: str, phase: str = "") -> dict:
+    """Tier 1 — a phase-scoped 'is it worth proceeding' stat row
+    (docs/survey-results-dashboard-plan.md D5). One stat tile per
+    ANALYSIS_KINDS entry whose analysis_catalog.yaml intent matches `phase`
+    and has a headline_reader — empty phase returns every tile with a
+    headline_reader across all intents."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_HEADLINE_MAP
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    analyses = get_analyses(resource_type="repo", intent=phase or None)
+    tiles = []
+    for a in analyses:
+        headline_reader = REPO_ANALYSIS_HEADLINE_MAP.get(a["id"])
+        if not headline_reader:
+            continue
+        try:
+            headline = headline_reader(registry, slug)
+        except Exception:
+            headline = None
+        if headline:
+            tiles.append({"analysis_id": a["id"], "analysis_name": a.get("name", a["id"]), **headline})
+    return {"slug": slug, "phase": phase, "tiles": tiles}
 
 
 class RefreshResult(BaseModel):
@@ -571,3 +934,241 @@ async def remove_project(slug: str) -> dict:
     # live: a delete on a broken registration hung indefinitely).
     await asyncio.to_thread(_do_remove)
     return {"removed": slug}
+
+
+# ── sub-resources — the "Select"/"Catalog" stages of the repo scope-
+# narrowing funnel (docs/repo-scope-narrowing-funnel.md, D2/D3/D4). Repo
+# only for Phase 1; the underlying registry table is already generic
+# across resource types (resource_type='repo' here) for when database/
+# filesystem catch up. ───────────────────────────────────────────────────
+
+class SubResourceRow(BaseModel):
+    locator: str
+    kind: str
+    cataloged_at: str
+    egeria_guid: str = ""
+
+
+@router.get("/{slug}/sub-resources", response_model=list[SubResourceRow])
+async def list_sub_resources(slug: str) -> list[SubResourceRow]:
+    """What's currently tracked locally for this repo — backs the selection
+    UI's "already cataloged" state so re-opening the panel later shows
+    prior selections (D4 — catalog is repeatable, not a one-time gate)."""
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    rows = registry.list_sub_resources("repo", slug)
+    return [
+        SubResourceRow(
+            locator=r["locator"], kind=r["kind"],
+            cataloged_at=r["cataloged_at"], egeria_guid=r.get("egeria_guid") or "",
+        )
+        for r in rows
+    ]
+
+
+class SubResourceCatalogItem(BaseModel):
+    locator: str
+    kind: str  # 'file' | 'folder'
+
+
+class SubResourceCatalogRequest(BaseModel):
+    items: list[SubResourceCatalogItem]
+    publish_to_egeria: bool = True  # default both (local + Egeria); False = sandbox-mode escape hatch
+
+
+class SubResourceCatalogResult(BaseModel):
+    cataloged: list[str]              # locators tracked locally (incl. auto-included ancestors)
+    published: dict[str, str] = {}    # locator -> Egeria guid; empty unless publish_to_egeria
+
+
+@router.post("/{slug}/sub-resources/catalog", response_model=SubResourceCatalogResult)
+async def catalog_sub_resources(slug: str, body: SubResourceCatalogRequest) -> SubResourceCatalogResult:
+    """Track the selected sub-resources locally (always), and optionally
+    publish them to Egeria as real FileFolder/DataFile assets in the same
+    action (D3 — default both; unchecking publish_to_egeria is the
+    sandbox-mode escape hatch). Repeatable (D4): re-cataloging an
+    already-tracked locator is a no-op that never disturbs its
+    egeria_guid. Every selected file's ancestor folders are auto-included
+    even if not explicitly selected, mirroring SubResourceSurveyor's own
+    ancestor-folder guarantee — NestedFile strictly requires a FileFolder
+    parent, so an inconsistent selection would otherwise silently fail to
+    publish."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_publisher import EgeriaConnectionError, EgeriaPublisher
+    from resource_explorer.surveyors.sub_surveyors import ancestor_folder_paths
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items given to catalog")
+
+    # Snapshot each item's owners/dates from the current findings into the
+    # local row (denormalized — publish_sub_resources() shouldn't need to
+    # re-join back to findings that a later survey run might supersede).
+    findings_by_path: dict[str, dict] = {}
+    for f in registry.query_findings(slug, "repo_sub_resource_survey"):
+        detail = {}
+        if f.get("detail_json"):
+            try:
+                detail = json.loads(f["detail_json"])
+            except (TypeError, ValueError):
+                detail = {}
+        findings_by_path[detail.get("path", "")] = detail
+
+    selected_kind_by_locator: dict[str, str] = {item.locator: item.kind for item in body.items}
+    for item in body.items:
+        if item.kind != "file":
+            continue
+        for ancestor in ancestor_folder_paths(item.locator):
+            selected_kind_by_locator.setdefault(ancestor, "folder")
+
+    cataloged: list[str] = []
+    for locator in sorted(selected_kind_by_locator):
+        registry.catalog_sub_resource(
+            "repo", slug, locator, selected_kind_by_locator[locator],
+            source_finding="repo_sub_resource_survey",
+            detail=findings_by_path.get(locator),
+        )
+        cataloged.append(locator)
+
+    published: dict[str, str] = {}
+    if body.publish_to_egeria:
+        if not project.egeria_asset_guid:
+            raise HTTPException(
+                status_code=409,
+                detail="Repo has no Egeria asset yet — publish the repo itself first before publishing sub-resources.",
+            )
+        publisher = EgeriaPublisher(registry=registry)
+        try:
+            published = await asyncio.to_thread(
+                publisher.publish_sub_resources,
+                slug, project.github_url, project.egeria_asset_guid, cataloged,
+            )
+        except EgeriaConnectionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    return SubResourceCatalogResult(cataloged=cataloged, published=published)
+
+
+@router.delete("/{slug}/sub-resources")
+async def uncatalog_sub_resource(slug: str, locator: str = "") -> dict:
+    """Reversible (D4) — removes RE's local tracking record only; does not
+    touch anything already published to Egeria. locator is a query param
+    (not a path segment) so the root locator ("") is representable."""
+    from resource_explorer.registry import ProjectRegistry
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Repository '{slug}' not found")
+    registry.uncatalog_sub_resource("repo", slug, locator)
+    return {"slug": slug, "locator": locator, "uncataloged": True}
+
+
+# ── scoped analysis — the "Narrow" stage of the repo scope-narrowing funnel
+# (docs/repo-scope-narrowing-funnel.md, D5/D6). Runs a corpus-shaped analysis
+# against one cataloged sub-resource instead of the whole repo; gated by
+# is_shape_compatible() so a whole_resource_only (or shape-mismatched)
+# analysis can never be requested scoped. ──────────────────────────────────
+
+class ScopedAnalysisRequest(BaseModel):
+    locator: str  # must already be tracked via /sub-resources/catalog
+
+
+@router.post("/{slug}/sub-resources/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
+async def run_scoped_analysis(slug: str, analysis_id: str, body: ScopedAnalysisRequest) -> AnalysisRunResult:
+    """Runs one analysis's step(s) scoped to a single cataloged sub-resource
+    (SurveyOrchestrator.run(steps=..., scope_locator=...)) rather than the
+    whole repo. Only reachable for analyses whose target_shape is compatible
+    with the sub-resource's kind (D6) — mirrors run_single_analysis above,
+    plus the scope gate and scope_locator passthrough."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses, is_shape_compatible
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    sub_resource = next(
+        (r for r in registry.list_sub_resources("repo", slug) if r["locator"] == body.locator), None,
+    )
+    if not sub_resource:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{body.locator}' is not a cataloged sub-resource of '{slug}' — "
+                   "catalog it first via POST /sub-resources/catalog.",
+        )
+
+    catalog_entry = next(
+        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
+    )
+    if not catalog_entry:
+        raise HTTPException(status_code=400, detail=f"Unknown analysis '{analysis_id}'")
+
+    target_shape = catalog_entry.get("target_shape", "whole_resource_only")
+    if not is_shape_compatible(target_shape, sub_resource["kind"]):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' (target_shape={target_shape}) cannot be scoped "
+                   f"to a '{sub_resource['kind']}' sub-resource.",
+        )
+
+    steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+    if not steps:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' has no mapped survey step(s).",
+        )
+
+    def _run():
+        return SurveyOrchestrator(registry).run(slug, steps=steps, scope_locator=body.locator)
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+
+    if result.errors:
+        return AnalysisRunResult(
+            status="error", slug=slug, analysis_id=analysis_id, error="; ".join(result.errors),
+        )
+    return AnalysisRunResult(
+        status="ok", slug=slug, analysis_id=analysis_id,
+        message=f"{len(result.annotations)} annotation(s), scoped to '{body.locator}'.",
+    )
+
+
+@router.get("/{slug}/sub-resources/analyses/{analysis_id}/results")
+async def get_scoped_analysis_results(slug: str, analysis_id: str, locator: str) -> dict:
+    """Latest structured results for one analysis, scoped to a single
+    cataloged sub-resource — reads the generic project_analysis_metrics
+    table filtered by scope_locator. Only meaningful for the corpus-shaped
+    kinds that persist scoped metrics today (api_structure, data_file_
+    profiling — see repo_survey_definition_adapter.STEP_REGISTRY's
+    accepts_scope_locator flag); other analysis_ids return an empty dict
+    since nothing was ever persisted under a non-empty scope_locator for
+    them (they're whole_resource_only and D6-gated out of this route by
+    run_scoped_analysis above)."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # analysis_id (analysis_catalog.yaml) -> project_analysis_metrics `kind`
+    # discriminator — same mapping used to write these rows in the
+    # surveyors themselves (upsert_metric(slug, kind, ...)).
+    metrics_kind_by_analysis_id = {
+        "api_structure": "api_structure",
+        "data_file_profiling": "data_profile",
+    }
+    kind = metrics_kind_by_analysis_id.get(analysis_id)
+    if not kind:
+        return {}
+    return registry.query_metrics(slug, kind, scope_locator=locator)

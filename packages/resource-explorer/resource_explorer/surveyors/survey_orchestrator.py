@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from contextlib import ExitStack
 from datetime import datetime
+
+from trellis_microflow import resolve_resources
 
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
@@ -35,7 +38,10 @@ class SurveyOrchestrator:
         self._force_refresh = force_refresh
         self._data_path = data_path  # local clone path for DataProfilerSurveyor Tier 2
 
-    def run(self, project_slug: str, steps: list[str] | None = None) -> SurveyResult:
+    def run(
+        self, project_slug: str, steps: list[str] | None = None,
+        scope_locator: str = "", fast: bool = False,
+    ) -> SurveyResult:
         """Survey a single project and return the assembled SurveyResult.
 
         steps : optional list of step keys (same vocabulary as
@@ -43,6 +49,19 @@ class SurveyOrchestrator:
             "repo_health", "repo_api_structure") to run only those
             sub-surveyors instead of the full set. None (default) runs
             every sub-surveyor, exactly as before this parameter existed.
+        scope_locator : D5/D6 repo scope-narrowing funnel plan — "" (default,
+            unchanged) surveys the whole repo. A non-empty locator narrows
+            corpus-shaped steps (StepInfo.accepts_scope_locator=True) to one
+            cataloged sub-resource; steps that don't accept it ignore this
+            entirely (they always run whole-repo, matching their
+            target_shape). Only meaningful alongside steps=[...] — a scoped
+            full survey isn't a supported combination and callers should
+            gate on D6 target-shape compatibility before calling this with
+            both set.
+        fast : Scouting-tier "skip anything N+1/expensive" flag — forwarded
+            only to steps whose StepInfo.accepts_fast is True (repo_health
+            today, see HealthSurveyor.__init__). False (default) is every
+            existing caller's exact prior behavior, unchanged.
         """
         project = self._registry.get(project_slug)
         if project is None:
@@ -66,47 +85,91 @@ class SurveyOrchestrator:
         )
 
         # Derived from STEP_REGISTRY (analysis-kind extensibility redesign) —
-        # a plain (project, registry) construction is the default; the two
-        # surveyors needing genuine per-instance orchestrator context
-        # (FileClassifier's Egeria-refresh client, DataProfiler's clone
-        # path) are the only explicit special cases, kept small and
-        # commented rather than forcing a fully generic instance-attr-
-        # injection mechanism for just these two. StepInfo.accepts_surveyed_at
-        # marks the surveyors that persist structured findings/metrics and
-        # need the shared per-run timestamp threaded in.
-        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+        # a plain (project, registry) construction is the default; the one
+        # surveyor needing genuine per-instance orchestrator context that
+        # isn't a D6 resource (FileClassifier's Egeria-refresh client) is
+        # the only explicit special case left, kept small and commented
+        # rather than forcing a fully generic instance-attr-injection
+        # mechanism for just this one. StepInfo.accepts_surveyed_at marks
+        # the surveyors that persist structured findings/metrics and need
+        # the shared per-run timestamp threaded in.
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            STEP_REGISTRY,
+            _resource_providers_for,
+        )
 
-        all_surveyors = {}
-        for step_key, info in STEP_REGISTRY.items():
-            if step_key == "repo_file_classification":
-                kwargs = {
-                    "pyegeria_client": self._pyegeria_client,
-                    "force_refresh": self._force_refresh,
-                }
-            elif step_key == "repo_data_profiling":
-                kwargs = {"local_path": self._data_path}
+        step_keys_to_run = (
+            set(STEP_REGISTRY.keys()) if steps is None else set(steps) & STEP_REGISTRY.keys()
+        )
+
+        # D6 (docs/unified-survey-execution-model-plan.md): resolve every
+        # shared resource any selected step needs, once, before
+        # constructing any surveyor — resolve_resources dedupes across
+        # however many steps asked for the same name. self._data_path is a
+        # real, still-live explicit override (CLI `resource-explorer
+        # refresh --data-path`) — when a caller already supplied a local
+        # clone path, skip the D6 zipball download for that purpose
+        # entirely rather than fetching one nothing will use.
+        needed_resources: set[str] = set()
+        for step_key in step_keys_to_run:
+            for resource_name, kwarg_name in STEP_REGISTRY[step_key].requires_resources.items():
+                if kwarg_name == "local_path" and self._data_path is not None:
+                    continue
+                needed_resources.add(resource_name)
+
+        with ExitStack() as stack:
+            resources = (
+                resolve_resources(
+                    stack, _resource_providers_for(project, self._registry), needed_resources
+                )
+                if needed_resources
+                else {}
+            )
+
+            # Iterate STEP_REGISTRY's own insertion order, not
+            # step_keys_to_run (a set — unordered) — a full run's step
+            # order must stay deterministic and match the registry's
+            # declared order, same as before this D6 change.
+            all_surveyors = {}
+            for step_key, info in STEP_REGISTRY.items():
+                if step_key not in step_keys_to_run:
+                    continue
+                if step_key == "repo_file_classification":
+                    kwargs = {
+                        "pyegeria_client": self._pyegeria_client,
+                        "force_refresh": self._force_refresh,
+                    }
+                else:
+                    kwargs = {}
+                if info.accepts_surveyed_at:
+                    kwargs["surveyed_at"] = surveyed_at
+                if info.accepts_scope_locator:
+                    kwargs["scope_locator"] = scope_locator
+                if info.accepts_fast:
+                    kwargs["fast"] = fast
+                for resource_name, kwarg_name in info.requires_resources.items():
+                    if kwarg_name == "local_path" and self._data_path is not None:
+                        kwargs[kwarg_name] = self._data_path
+                    else:
+                        kwargs[kwarg_name] = resources[resource_name]
+                all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
+
+            if steps is None:
+                surveyors = list(all_surveyors.values())
             else:
-                kwargs = {}
-            if info.accepts_surveyed_at:
-                kwargs["surveyed_at"] = surveyed_at
-            all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
+                surveyors = [all_surveyors[key] for key in steps if key in all_surveyors]
 
-        if steps is None:
-            surveyors = list(all_surveyors.values())
-        else:
-            surveyors = [all_surveyors[key] for key in steps if key in all_surveyors]
-
-        for surveyor in surveyors:
-            log.info("Running %s for %s …", surveyor.step_name, project.slug)
-            try:
-                annotations = surveyor.run()
-                for ann in annotations:
-                    result.add(ann)
-                log.info("  → %d annotation(s)", len(annotations))
-            except Exception as exc:
-                msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
-                log.exception(msg)
-                result.add_error(msg)
+            for surveyor in surveyors:
+                log.info("Running %s for %s …", surveyor.step_name, project.slug)
+                try:
+                    annotations = surveyor.run()
+                    for ann in annotations:
+                        result.add(ann)
+                    log.info("  → %d annotation(s)", len(annotations))
+                except Exception as exc:
+                    msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
+                    log.exception(msg)
+                    result.add_error(msg)
 
         log.info(
             "Survey complete for %s: %d annotation(s), %d error(s)",

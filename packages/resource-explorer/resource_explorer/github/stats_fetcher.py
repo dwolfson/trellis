@@ -1,6 +1,7 @@
 """Fetches GitHub statistics and writes them to the project_stats time-series table."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from resource_explorer.github.client import GitHubClient
@@ -40,15 +41,26 @@ class StatsFetcher:
     - primary language + language breakdown (bytes)
     - lines_of_code (estimated from language bytes)
     - file_count (from git tree traversal)
-    - repo_size_kb, license, topics
+    - repo_size_kb, license (human-readable name), license_spdx_id, topics
     - repo_created_at, last_pushed_at
+    - lifecycle/config flags: archived, disabled, is_fork, is_template,
+      default_branch, has_issues/wiki/discussions/projects/pages,
+      network_count, subscribers_count, visibility, is_private, homepage,
+      mirror_url, parent_full_name, allow_*_merge/delete_branch_on_merge
+      (all free — same `repo` object, zero extra API calls)
+    - security_and_analysis (7 feature-toggle states, e.g. secret scanning)
+    - environments + latest deployment (2 extra API calls; best-effort —
+      404s for repos without deploy/environment access, common)
     """
 
     def __init__(self) -> None:
         self.client = GitHubClient()
         self.registry = ProjectRegistry()
 
-    def fetch(self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> dict:
+    def fetch(
+        self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
+        fetch_diff_stats: bool = True,
+    ) -> dict:
         project = self.registry.get(project_slug)
         if not project:
             raise ValueError(f"Project '{project_slug}' not found")
@@ -59,6 +71,7 @@ class StatsFetcher:
         now = datetime.utcnow()
 
         releases = list(repo.get_releases())
+        license_name, license_spdx_id = self._license_info(repo)
 
         stats = {
             "project_slug": slug,
@@ -80,11 +93,44 @@ class StatsFetcher:
             "lines_of_code": self._estimate_loc(repo),
             "file_count": self._count_files(repo),
             "repo_size_kb": repo.size,
-            "license": self._license_name(repo),
+            "license": license_name,
+            "license_spdx_id": license_spdx_id,
             "topics": ",".join(repo.get_topics()),
             "repo_created_at": repo.created_at.isoformat() if repo.created_at else "",
             "last_pushed_at": repo.pushed_at.isoformat() if repo.pushed_at else "",
+            "archived": int(bool(repo.archived)),
+            "disabled": int(bool(repo.disabled)),
+            "is_fork": int(bool(repo.fork)),
+            "is_template": int(bool(repo.is_template)),
+            "default_branch": repo.default_branch or "",
+            "has_issues": int(bool(repo.has_issues)),
+            "has_wiki": int(bool(repo.has_wiki)),
+            "has_discussions": int(bool(repo.has_discussions)),
+            "has_projects": int(bool(repo.has_projects)),
+            "has_pages": int(bool(repo.has_pages)),
+            "network_count": repo.network_count or 0,
+            "subscribers_count": repo.subscribers_count or 0,
+            "visibility": repo.visibility or "public",
+            "is_private": int(bool(repo.private)),
+            "homepage": repo.homepage or "",
+            "mirror_url": repo.mirror_url or "",
+            "parent_full_name": self._parent_full_name(repo),
+            "allow_merge_commit": int(bool(repo.allow_merge_commit)),
+            "allow_squash_merge": int(bool(repo.allow_squash_merge)),
+            "allow_rebase_merge": int(bool(repo.allow_rebase_merge)),
+            "allow_auto_merge": int(bool(repo.allow_auto_merge)),
+            "allow_update_branch": int(bool(repo.allow_update_branch)),
+            "delete_branch_on_merge": int(bool(repo.delete_branch_on_merge)),
+            "security_and_analysis_json": self._security_and_analysis(repo),
         }
+        deployment_info = self._latest_deployment(repo)
+        stats.update({
+            "environments_json": self._environments(repo),
+            "deployments_count": deployment_info["count"],
+            "latest_deployment_at": deployment_info["at"],
+            "latest_deployment_environment": deployment_info["environment"],
+            "latest_deployment_ref": deployment_info["ref"],
+        })
 
         # Was a raw sqlite3 connection opened directly against
         # self.registry.db_path — a leftover from before the registry's
@@ -102,25 +148,57 @@ class StatsFetcher:
                  contributors_count, commits_30d, commits_90d, commits_365d, releases_count,
                  latest_release, latest_release_at, avg_release_interval_days,
                  primary_language, language_breakdown, lines_of_code, file_count,
-                 repo_size_kb, license, topics, repo_created_at, last_pushed_at)
+                 repo_size_kb, license, license_spdx_id, topics, repo_created_at, last_pushed_at,
+                 archived, disabled, is_fork, is_template, default_branch,
+                 has_issues, has_wiki, has_discussions, has_projects, has_pages,
+                 network_count, subscribers_count, visibility, is_private,
+                 homepage, mirror_url, parent_full_name,
+                 allow_merge_commit, allow_squash_merge, allow_rebase_merge,
+                 allow_auto_merge, allow_update_branch, delete_branch_on_merge,
+                 security_and_analysis_json, environments_json, deployments_count,
+                 latest_deployment_at, latest_deployment_environment, latest_deployment_ref)
                 VALUES (:project_slug, :fetched_at, :stars, :forks, :watchers, :open_issues,
                         :contributors_count, :commits_30d, :commits_90d, :commits_365d, :releases_count,
                         :latest_release, :latest_release_at, :avg_release_interval_days,
                         :primary_language, :language_breakdown, :lines_of_code, :file_count,
-                        :repo_size_kb, :license, :topics, :repo_created_at, :last_pushed_at)
+                        :repo_size_kb, :license, :license_spdx_id, :topics, :repo_created_at, :last_pushed_at,
+                        :archived, :disabled, :is_fork, :is_template, :default_branch,
+                        :has_issues, :has_wiki, :has_discussions, :has_projects, :has_pages,
+                        :network_count, :subscribers_count, :visibility, :is_private,
+                        :homepage, :mirror_url, :parent_full_name,
+                        :allow_merge_commit, :allow_squash_merge, :allow_rebase_merge,
+                        :allow_auto_merge, :allow_update_branch, :delete_branch_on_merge,
+                        :security_and_analysis_json, :environments_json, :deployments_count,
+                        :latest_deployment_at, :latest_deployment_environment, :latest_deployment_ref)
             """, stats)
         try:
-            count = self._fetch_commits(slug, repo, lookback_days=lookback_days)
+            count = self._fetch_commits(
+                slug, repo, lookback_days=lookback_days, fetch_diff_stats=fetch_diff_stats,
+            )
             stats["commits_fetched"] = count
         except Exception as exc:
             stats["commits_fetch_error"] = str(exc)
         return stats
 
-    def _fetch_commits(self, project_slug: str, repo, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> int:
+    def _fetch_commits(
+        self, project_slug: str, repo, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
+        fetch_diff_stats: bool = True,
+    ) -> int:
         """
         Fetch recent commits, store per-commit additions/deletions, and compute contributor stats.
         Returns row count processed. additions/deletions require one extra API call per new commit;
         stops fetching them gracefully if the rate limit is hit or quota is low.
+
+        fetch_diff_stats=False (the Scouting-tier "fast" path — see
+        HealthSurveyor.fast) skips the per-commit diff-stats calls entirely,
+        regardless of quota — this was a real, confirmed slowness bug: for an
+        active repo, "fetch additions/deletions for every commit in the last
+        90 days" is easily several hundred sequential API calls with no cap
+        on count or elapsed time (only an optimistic "skip if <100 calls
+        remain" quota gate), directly contradicting Coarse Scout's whole
+        premise of being the fast, cheap tier. Commit SHAs/messages/dates
+        (needed for commit counts and contributor tiers) are still fetched —
+        those come free from the same paginated commit list, no extra calls.
         """
         since = datetime.utcnow() - timedelta(days=lookback_days)
         commits = repo.get_commits(since=since)  # raises on API failure — caller handles
@@ -136,13 +214,13 @@ class StatsFetcher:
 
         # Pre-check quota: skip diff stats entirely if fewer than 100 calls remain.
         # Each new commit needs one extra REST call; for long histories this depletes the limit fast.
-        fetch_diff_stats = True
-        try:
-            rl = self.client.check_rate_limit()
-            if rl["remaining"] < 100:
-                fetch_diff_stats = False
-        except Exception:
-            pass  # optimistic if rate-limit check itself fails
+        if fetch_diff_stats:
+            try:
+                rl = self.client.check_rate_limit()
+                if rl["remaining"] < 100:
+                    fetch_diff_stats = False
+            except Exception:
+                pass  # optimistic if rate-limit check itself fails
 
         rows = []
         diff_calls = 0
@@ -241,7 +319,20 @@ class StatsFetcher:
             p25 = _percentile(commit_counts, 25)
 
             stat_rows = []
-            for email, name, commits, additions, deletions in raw:
+            # registry.py's RowWrapper.__iter__ yields column *names* (dict-
+            # like iteration convention, `for key in row`) — unpacking a row
+            # directly (`for a, b, c in raw`) silently binds the 5 column
+            # name strings instead of values, not the values themselves.
+            # Real, pre-existing, previously-undetected bug: this method was
+            # never exercised by any test with real iterable commit data
+            # (StatsFetcher's own test suite always hit a non-iterable
+            # MagicMock for repo.get_commits(), silently swallowed by
+            # fetch()'s broad except) — in production this has been raising
+            # a TypeError on every real commit-stats fetch, caught by that
+            # same broad except and surfaced only as an opaque
+            # "commits_fetch_error" string, contributor tiers never actually
+            # computed. .values() is the actual fix.
+            for email, name, commits, additions, deletions in (r.values() for r in raw):
                 if commits >= p75:
                     tier = "core"
                 elif commits >= p25:
@@ -332,9 +423,78 @@ class StatsFetcher:
                 pass
         return count
 
-    def _license_name(self, repo) -> str:
+    def _license_info(self, repo) -> tuple[str, str]:
+        """(name, spdx_id) — one repo.get_license() call feeding both the
+        existing human-readable `license` column and the new
+        `license_spdx_id` column (LicenseClassifierSurveyor, Assessment
+        expansion plan B1). PyGitHub's License object carries both on the
+        same object, so capturing spdx_id alongside the name that was
+        already being fetched is genuinely free — no second API call."""
         try:
             lic = repo.get_license()
-            return lic.license.name if lic and lic.license else ""
+            if lic and lic.license:
+                return lic.license.name or "", lic.license.spdx_id or ""
+        except Exception:
+            pass
+        return "", ""
+
+    _SECURITY_FEATURE_NAMES = (
+        "advanced_security", "dependabot_security_updates", "secret_scanning",
+        "secret_scanning_ai_detection", "secret_scanning_non_provider_patterns",
+        "secret_scanning_push_protection", "secret_scanning_validity_checks",
+    )
+
+    def _security_and_analysis(self, repo) -> str:
+        """JSON dict of GitHub's 7 security/analysis feature toggles'
+        *configuration* state (e.g. "enabled"/"disabled") — not findings,
+        just whether the feature is on. Best-effort: GitHub only populates
+        this for repos you have admin access to; empty for everything
+        else, which is most repos being scouted."""
+        try:
+            sa = repo.security_and_analysis
+            if sa is None:
+                return "{}"
+            features = {}
+            for name in self._SECURITY_FEATURE_NAMES:
+                feature = getattr(sa, name, None)
+                features[name] = feature.status if feature else None
+            return json.dumps(features)
+        except Exception:
+            return "{}"
+
+    def _parent_full_name(self, repo) -> str:
+        """Fork source, e.g. "torvalds/linux" — "" if not a fork."""
+        try:
+            return repo.parent.full_name if repo.fork and repo.parent else ""
         except Exception:
             return ""
+
+    def _environments(self, repo) -> str:
+        """JSON list of environment names. Best-effort: 404s for repos
+        without the Environments feature/API access — common for repos
+        you don't administer."""
+        try:
+            return json.dumps([e.name for e in repo.get_environments()])
+        except Exception:
+            return "[]"
+
+    def _latest_deployment(self, repo) -> dict:
+        """Most recent deployment's timestamp/environment/ref, plus the
+        total deployment count — not full deployment history (this is a
+        scouting-tier read, not a deployment-audit trail). Same
+        best-effort access caveats as _environments()."""
+        empty = {"count": 0, "at": "", "environment": "", "ref": ""}
+        try:
+            deployments = repo.get_deployments()
+            count = deployments.totalCount
+            if not count:
+                return empty
+            latest = deployments[0]
+            return {
+                "count": count,
+                "at": latest.updated_at.isoformat() if latest.updated_at else "",
+                "environment": latest.environment or "",
+                "ref": latest.ref or "",
+            }
+        except Exception:
+            return empty

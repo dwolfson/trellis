@@ -33,12 +33,11 @@ class LanguageSurveyor(BaseSurveyor):
         results: list[Annotation] = []
         try:
             slug = self.project.slug
-            with self.registry._conn() as conn:
-                row = conn.execute(
-                    "SELECT primary_language, language_breakdown, topics "
-                    "FROM project_stats WHERE project_slug = ? ORDER BY id DESC LIMIT 1",
-                    (slug,),
-                ).fetchone()
+            # D2(c) (docs/repo-survey-catalog-completion-plan.md): named
+            # registry accessor instead of a hand-rolled query — a fourth
+            # confirmed instance of the same "latest project_stats row"
+            # duplicate found in health.py/security_hygiene.py/file_structure.py.
+            row = self.registry.get_latest_project_stats(slug)
 
             if not row:
                 self._warn(results, "No stats row found — run 'refresh' to populate stats.")

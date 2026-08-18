@@ -1,0 +1,239 @@
+"""Generate all of RE's repo Survey Definition Dr.Egeria docs from repo's own
+STEP_REGISTRY — reproducible artifacts that publish repo analysis steps as
+real GovernanceActionProcessStep elements and chain them into runnable
+Survey Definitions, one per UI surface (survey_kind).
+
+Analysis-step Egeria registration plan, D1-D3
+(docs/analysis-step-egeria-registration-plan.md), extended per
+docs/discovery-automate-project-context-plan.md Part 1 to generate three
+separate Survey Definitions instead of one, each tagged with a survey_kind
+Additional Property so Discovery's candidate list doesn't show the
+Automate-tier "run everything" bundle (and vice versa):
+
+- **scouting**  — "Repo Coarse Scout": the fast, GitHub-API-only pair
+  (repo_health, repo_language) — re-authored here because the original
+  live Egeria element was lost to a database reset and never recreated
+  (confirmed missing via a live probe before this script was written).
+- **discovery** — "Repo Discovery Survey": early-headlights signals from
+  data already collected, no new fetch. Currently just
+  repo_license_classification (a real, currently-available "should we
+  pursue this" signal) — deliberately a minimal, honest interim set;
+  grows once Part 2's new Discovery-tier analyses (maturity, security
+  policy heuristic, deployment/Docker evidence, etc.) are built.
+- **automate_full** — "Repo Full Survey": every current STEP_REGISTRY
+  step, chained — the comprehensive bundle for an already-tracked
+  resource, not Discovery's launch target. Re-tags the exact same
+  qualified_name as before (upsert=true on Create Governance Action
+  Process means re-running this in Egeria updates the existing element
+  in place, not a duplicate) — only its Additional Properties gain the
+  new survey_kind tag.
+
+Run this whenever STEP_REGISTRY changes (a step added/removed/re-described),
+then execute the regenerated doc(s) against Egeria to keep Discovery/
+Scouting/Automate's candidate lists in sync. IMPORTANT: after executing a
+regenerated doc against an *already-linked* process (i.e. every time except
+the very first authoring), run
+`uv run python scripts/reconcile_survey_definition_links.py` afterward —
+Dr.Egeria's "Link First/Next Process Step" commands are not idempotent and
+will duplicate or leave stale the step-to-step links, which makes
+SurveyDefinitionReader see "branching" and refuse to run the Survey
+Definition at all (a real live incident, 2026-08-13 — see that script's and
+survey_definition_reconciler.py's docstrings for the full story).
+
+Also emits one "Link Element To Scope" ScopedBy block per Question each
+generated Survey Definition answers (docs/survey-question-context-plan.md
+D1) — the join is: each step_key's containing analysis_catalog id (via
+REPO_ANALYSIS_STEP_MAP) cross-referenced against question_catalog.yaml's
+per-question answering.analysis_ids. Run docs/dr-egeria/foundations.md and
+docs/dr-egeria/scouting-questions.md (or their generated equivalents)
+first — the Question terms these blocks reference by name must already
+exist in Egeria before this doc is executed.
+
+This is the one resource-type-specific piece of the mechanism — everything
+it calls (resource_explorer.surveyors.dr_egeria_survey_publisher) is
+resource-type-agnostic, so a future database/filesystem equivalent of this
+script just needs its own PublishableStep list(s) built from whatever
+registry that resource type uses (neither has a STEP_REGISTRY-shaped
+registry today — see the plan doc's D1 for why repo went first).
+
+D3 (docs/repo-survey-catalog-completion-plan.md): SPECS is now parsed from
+docs/dr-egeria/repo_survey_types.csv instead of being a Python literal —
+the primary Survey Type authoring mechanism, matching the precedent
+docs/dr-egeria/resource_questions.csv already set for Questions. One row
+per (survey, step) pair, grouped by (survey_kind, survey_group) and
+ordered by step_order. A single row with step_key "*" means "every
+current STEP_REGISTRY step, in STEP_REGISTRY's own order" — used for
+"Repo Full Survey" specifically so it stays automatically complete by
+construction (this is NOT just cosmetic: before this change, "Full
+Survey"'s step_keys was already `list(STEP_REGISTRY.keys())` in code, but
+the generated *doc on disk* had gone stale and silently dropped
+repo_symbol_extraction after it was added — regenerating always would
+have caught this immediately; converting "*" into an explicit hand-listed
+CSV row-list would have reintroduced exactly that failure mode for the
+next step added later, so it stays a sentinel instead).
+"""
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+
+from resource_explorer.surveyors.dr_egeria_survey_publisher import (
+    PublishableStep,
+    generate_survey_definition_markdown,
+)
+from resource_explorer.surveyors.question_catalog_reader import get_questions
+from resource_explorer.surveyors.repo_survey_definition_adapter import (
+    REPO_ANALYSIS_STEP_MAP,
+    STEP_REGISTRY,
+)
+
+TECHNOLOGY_TYPE = "Git Repository"
+DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria"
+SPECS_CSV = DOCS_DIR / "repo_survey_types.csv"
+ALL_STEPS_SENTINEL = "*"
+
+
+@dataclass(frozen=True)
+class SurveyDefSpec:
+    survey_kind: str
+    survey_group: str
+    survey_display_name: str
+    description: str
+    step_keys: list[str]  # order matters — this is the chain order
+    output_filename: str
+
+
+class SurveyTypesCsvError(ValueError):
+    """Raised on a malformed or STEP_REGISTRY-mismatched repo_survey_types.csv
+    — deliberately loud rather than silently producing a broken or
+    incomplete Survey Definition (see D3's validation-guard rationale:
+    this is exactly the class of gap that let repo_symbol_extraction
+    silently fall out of Repo Full Survey last time)."""
+
+
+def load_specs_from_csv(csv_path: Path = SPECS_CSV) -> list[SurveyDefSpec]:
+    groups: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            key = (row["survey_kind"], row["survey_group"])
+            if key not in groups:
+                groups[key] = {
+                    "survey_display_name": row["survey_display_name"],
+                    "description": row["description"],
+                    "output_filename": row["output_filename"],
+                    "steps": [],  # (step_order, step_key)
+                }
+                order.append(key)
+            groups[key]["steps"].append((int(row["step_order"]), row["step_key"]))
+
+    specs = []
+    for survey_kind, survey_group in order:
+        g = groups[(survey_kind, survey_group)]
+        step_keys = [key for _, key in sorted(g["steps"])]
+        if step_keys == [ALL_STEPS_SENTINEL]:
+            step_keys = list(STEP_REGISTRY.keys())
+        else:
+            unknown = [k for k in step_keys if k not in STEP_REGISTRY]
+            if unknown:
+                raise SurveyTypesCsvError(
+                    f"{survey_group}: step_key(s) not found in STEP_REGISTRY: {unknown} "
+                    f"(typo in {csv_path.name}, or a step was removed from STEP_REGISTRY "
+                    f"without updating the CSV)"
+                )
+        specs.append(
+            SurveyDefSpec(
+                survey_kind=survey_kind,
+                survey_group=survey_group,
+                survey_display_name=g["survey_display_name"],
+                description=g["description"],
+                step_keys=step_keys,
+                output_filename=g["output_filename"],
+            )
+        )
+
+    # Coverage guard: every STEP_REGISTRY step should appear in at least
+    # one CSV-authored survey (directly, or via the "*" sentinel) — a step
+    # with zero references is invisible to every generated Survey
+    # Definition, silently. Warn rather than hard-fail: a step legitimately
+    # excluded from every Survey Type (rare, but not impossible) shouldn't
+    # block generation of everything else.
+    referenced = {key for spec in specs for key in spec.step_keys}
+    unreferenced = [key for key in STEP_REGISTRY if key not in referenced]
+    if unreferenced:
+        print(
+            f"WARNING: STEP_REGISTRY step(s) with no Survey Type reference "
+            f"in {csv_path.name}: {unreferenced}"
+        )
+    return specs
+
+
+SPECS = load_specs_from_csv()
+
+
+def build_steps(step_keys: list[str]) -> list[PublishableStep]:
+    return [
+        PublishableStep(
+            step_key=key, description=STEP_REGISTRY[key].description, technology_type=TECHNOLOGY_TYPE,
+        )
+        for key in step_keys
+    ]
+
+
+def _build_step_key_to_questions() -> dict[str, list[str]]:
+    """Invert question_catalog.yaml's answering.analysis_ids (analysis_catalog
+    id, e.g. "security_scan") through REPO_ANALYSIS_STEP_MAP (analysis id ->
+    STEP_REGISTRY step_key(s)) to get step_key -> [question display names] —
+    the join docs/survey-question-context-plan.md's D1 depends on. A
+    question with no analysis_ids (kind="human"/"gap"/etc.) contributes
+    nothing here; that's expected, not every question is answered by a
+    survey step at all."""
+    mapping: dict[str, list[str]] = {}
+    for entry in get_questions(resource_type="repo"):
+        for analysis_id in entry["answering"]["analysis_ids"]:
+            for step_key in REPO_ANALYSIS_STEP_MAP.get(analysis_id, []):
+                mapping.setdefault(step_key, [])
+                if entry["question"] not in mapping[step_key]:
+                    mapping[step_key].append(entry["question"])
+    return mapping
+
+
+def _answered_questions(step_keys: list[str], step_key_to_questions: dict[str, list[str]]) -> list[str]:
+    """Union of questions answered by any step in this Survey Definition,
+    order-stable and de-duplicated (a question spanning multiple steps in
+    the same spec, e.g. language_file_classification's three-step bundle,
+    gets exactly one ScopedBy link, not one per contributing step)."""
+    seen: list[str] = []
+    for key in step_keys:
+        for question in step_key_to_questions.get(key, []):
+            if question not in seen:
+                seen.append(question)
+    return seen
+
+
+def main() -> None:
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    step_key_to_questions = _build_step_key_to_questions()
+    for spec in SPECS:
+        steps = build_steps(spec.step_keys)
+        answers_questions = _answered_questions(spec.step_keys, step_key_to_questions)
+        markdown = generate_survey_definition_markdown(
+            survey_group=spec.survey_group,
+            survey_display_name=spec.survey_display_name,
+            technology_type=TECHNOLOGY_TYPE,
+            description=spec.description,
+            steps=steps,
+            survey_kind=spec.survey_kind,
+            answers_questions=answers_questions,
+        )
+        output_path = DOCS_DIR / spec.output_filename
+        output_path.write_text(markdown)
+        print(
+            f"[{spec.survey_kind}] wrote {len(steps)} step(s), "
+            f"{len(answers_questions)} question link(s) to {output_path}"
+        )
+
+
+if __name__ == "__main__":
+    main()
