@@ -441,23 +441,18 @@ class _FakeGovernanceOfficerGraph:
 
 
 class _FakeMetadataExpert:
-    """Mimics the surface reconcile_step_links() actually calls — NOT
-    delete_related_elements() (see survey_definition_reader.py's comment on
-    why that method is bypassed: pyegeria's OpenMetadataDeleteRequestBody
-    model silently drops an explicit deleteMethod, always sending the
-    server's own broken default). command_root/_async_make_request is the
-    lower-level pair the real workaround hits directly."""
+    """delete_related_elements() is called directly again (pyegeria's
+    ISSUE-63 fixed upstream — the method now routes through
+    DeleteRelationshipRequestBody, which does declare deleteMethod, instead
+    of the old OpenMetadataDeleteRequestBody that silently dropped it)."""
 
     def __init__(self):
         self.deleted_guids = []
-        self.command_root = "https://fake-egeria/servers/qs-view-server/api/open-metadata/metadata-expert"
+        self.delete_bodies = []
 
-    async def _async_make_request(self, method, url, payload=None, **_kwargs):
-        assert method == "POST"
-        assert url.startswith(f"{self.command_root}/related-elements/")
-        assert url.endswith("/delete")
-        guid = url[len(f"{self.command_root}/related-elements/") : -len("/delete")]
-        self.deleted_guids.append(guid)
+    def delete_related_elements(self, relationship_guid, body=None):
+        self.deleted_guids.append(relationship_guid)
+        self.delete_bodies.append(body)
 
 
 def _unique_name_link(prev_qn, next_qn, link_guid):

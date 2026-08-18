@@ -499,37 +499,29 @@ class SurveyDefinitionReader:
 
         if not dry_run and result.to_remove:
             metadata_expert = self._connect_metadata_expert()
-            # NOT `metadata_expert.delete_related_elements(guid, body=delete_body)`
-            # — confirmed live, real pyegeria bug that CANNOT be worked around
-            # by just supplying an explicit deleteMethod in the body dict:
-            # pyegeria.models.models.OpenMetadataDeleteRequestBody declares no
-            # deleteMethod field at all, and every PyegeriaModel is configured
-            # `extra='ignore'`, so a `{"deleteMethod": "SOFT_DELETE"}` key is
-            # silently dropped during pydantic validation before the request
-            # ever reaches the server — confirmed by reading
-            # _async_open_metadata_delete_body_request's `model_dump()` call
-            # and reproducing the exact same OMAG-COMMON-400-032 error
-            # (`LookForLineage` — the server's own hardcoded, invalid default)
-            # even with deleteMethod set. Logged as a pyegeria bug (see
-            # egeria-python's PYEGERIA_ISSUES.md) rather than fixed there per
-            # this repo's convention of not editing egeria-python directly.
-            # Workaround: bypass pyegeria's model validation for this one call
-            # and hit the same endpoint via its own private transport method
-            # with a raw dict — the same request delete_related_elements()
-            # would send if its model weren't missing the field.
-            import asyncio
-
-            delete_url = f"{metadata_expert.command_root}/related-elements/{{guid}}/delete"
-            delete_body = {"class": "OpenMetadataDeleteRequestBody", "deleteMethod": "SOFT_DELETE"}
+            # deleteMethod explicit and required — real pyegeria bug, tracked
+            # as egeria-python's PYEGERIA_ISSUES.md ISSUE-63: unfixed,
+            # metadata_expert.delete_related_elements() routed through
+            # OpenMetadataDeleteRequestBody, which declared no deleteMethod
+            # field at all, so a {"deleteMethod": "SOFT_DELETE"} key was
+            # silently dropped by pydantic validation (PyegeriaModel's
+            # extra='ignore') before the request ever reached the server —
+            # every relationship this method deletes is a plain step-to-step
+            # link with no lineage semantics, so the server's own default
+            # (LookForLineage) was always rejected outright
+            # (OMAG-COMMON-400-032) with no way to override it. Fixed
+            # upstream (pyegeria >=6.0.18.x, confirmed live): the method now
+            # routes through DeleteRelationshipRequestBody, which does
+            # declare delete_method, so an explicit value here actually
+            # reaches the server. The previous workaround here bypassed
+            # pyegeria's model validation entirely via a raw
+            # _async_make_request() call — no longer needed, removed.
+            delete_body = {"class": "DeleteRelationshipRequestBody", "deleteMethod": "SOFT_DELETE"}
             for entry in result.to_remove:
                 if not entry.link_guid:
                     continue
                 try:
-                    asyncio.run(
-                        metadata_expert._async_make_request(
-                            "POST", delete_url.format(guid=entry.link_guid), delete_body
-                        )
-                    )
+                    metadata_expert.delete_related_elements(entry.link_guid, body=delete_body)
                 except Exception as exc:
                     log.warning(
                         "reconcile_step_links: failed to delete %s link %s -> %s (guid=%s): %s",
