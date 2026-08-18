@@ -54,10 +54,11 @@ def clear_caches() -> None:
     _candidates_cache.clear()
     _fetch_cache.clear()
 
-# Real response shape from GovernanceOfficer.get_governance_process_graph, confirmed
-# against a live qs-view-server for both a single-step and a two-step chained
-# Survey Definition (2026-07-07/08). This is a genuine graph representation —
-# a flat node list plus a separate flat edge list — not a nested tree:
+# Real response shape from GovernanceOfficer.get_governance_action_process_graph
+# (renamed from get_governance_process_graph in an upcoming pyegeria release),
+# confirmed against a live qs-view-server for both a single-step and a two-step
+# chained Survey Definition (2026-07-07/08). This is a genuine graph
+# representation — a flat node list plus a separate flat edge list — not a nested tree:
 #
 #   {
 #     "governanceActionProcess": {"elementHeader": {...}, "properties": {...}},
@@ -449,7 +450,7 @@ class SurveyDefinitionReader:
             return cached[1]
 
         self.connect()
-        raw = self._governance_officer.get_governance_process_graph(
+        raw = self._governance_officer.get_governance_action_process_graph(
             guid=process_guid, output_format="JSON"
         )
         if isinstance(raw, str):
@@ -485,7 +486,7 @@ class SurveyDefinitionReader:
         expected_edges = compute_expected_edges(survey_group, step_keys)
 
         try:
-            raw = self._governance_officer.get_governance_process_graph(guid=process_guid, output_format="JSON")
+            raw = self._governance_officer.get_governance_action_process_graph(guid=process_guid, output_format="JSON")
             if isinstance(raw, str):
                 import json as _json
                 raw = _json.loads(raw)

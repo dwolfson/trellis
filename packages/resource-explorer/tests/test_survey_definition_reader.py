@@ -6,7 +6,8 @@ from resource_explorer.surveyors.survey_definition_reader import (
     UnsupportedSurveyDefinitionError,
 )
 
-# Fixtures below match the real GovernanceOfficer.get_governance_process_graph
+# Fixtures below match the real GovernanceOfficer.get_governance_action_process_graph
+# (renamed from get_governance_process_graph in an upcoming pyegeria release)
 # response shape, confirmed against a live qs-view-server for both a single-step
 # and a two-step chained Survey Definition (2026-07-07/08): a flat node list
 # ("firstProcessStep" + "nextProcessSteps") plus a separate flat edge list
@@ -433,10 +434,10 @@ class _FakeGovernanceOfficerGraph:
 
     def __init__(self, links):
         self._links = links
-        self.get_governance_process_graph_calls = 0
+        self.get_governance_action_process_graph_calls = 0
 
-    def get_governance_process_graph(self, **_kwargs):
-        self.get_governance_process_graph_calls += 1
+    def get_governance_action_process_graph(self, **_kwargs):
+        self.get_governance_action_process_graph_calls += 1
         return {"elementGraph": {"processStepLinks": self._links}}
 
 
@@ -534,7 +535,7 @@ class TestReconcileStepLinks:
         reader = _reader()
 
         class _Raising:
-            def get_governance_process_graph(self, **_kwargs):
+            def get_governance_action_process_graph(self, **_kwargs):
                 raise RuntimeError("boom")
 
         reader._governance_officer = _Raising()

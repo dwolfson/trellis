@@ -65,6 +65,17 @@ dependencies = [
     # this reads as a uv resolver quirk with a just-published version, not a
     # real incompatibility) — `uv lock --upgrade-package pyegeria` already
     # resolves 6.0.18.1 today without a hard constraint.
+    #
+    # SurveyDefinitionReader.fetch()/reconcile_step_links() also now require
+    # GovernanceOfficer.get_governance_action_process_graph (renamed from
+    # get_governance_process_graph, PR odpi/egeria-python#275) and
+    # MetadataExpert.delete_related_elements()'s ISSUE-63 fix — same PR, not
+    # released to PyPI yet as of this comment. Bump this floor to the actual
+    # release version once it ships and run `uv lock --upgrade-package
+    # pyegeria`; until then the installed pyegeria must be overridden
+    # manually (e.g. `uv pip install --no-deps
+    # git+https://github.com/dwolfson/egeria-python.git@fix/pyegeria-http-endpoint-audit`)
+    # for RE's Survey Definition reader/reconciler to work at all.
     "pyegeria>=6.0.16.17",
     "mcp>=0.1.0",
     "nest-asyncio>=1.6.0",
