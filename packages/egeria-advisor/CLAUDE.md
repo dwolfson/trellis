@@ -32,16 +32,39 @@ pip install -e ".[dev]"
 
 Requires Python 3.12+. External services must be running locally:
 - **pgvector** at `localhost:5442` (PostgreSQL with pgvector extension — database: `egeria_advisor`, user: `egeria_advisor`)
-- **Ollama** at `localhost:11434` (LLM inference — pull `llama3.1:8b` and `qwen2.5-coder:32b`)
+- **Ollama** at `localhost:11434` (LLM inference — see model pull commands below)
 - **MLflow** at `localhost:5025` (optional, for experiment tracking)
 
 ### First-time database initialization
 
-There is no setup script that creates the Postgres role/database or provisions tables — a new user must do both manually:
+Whether the Postgres role/database already exist depends on the environment:
 
-1. **Create the Postgres role and database** (not automated anywhere in this repo): `createuser egeria_advisor` / `createdb -O egeria_advisor egeria_advisor` against the Postgres instance listening on `localhost:5442`, matching `pgvector_host`/`pgvector_port`/`pgvector_dbname`/`pgvector_user` in `advisor/config.py` (overridable via `.env`).
+- **Inside an egeria-workspaces checkout** (the common case): the shared Postgres container
+  (`egeria-shared-postgres`, from egeria-workspaces-fs's
+  `compose-configs/shared-infra/shared-infra.yaml`) is normally already running, and its init
+  script already creates the `egeria_advisor` role/database and runs `CREATE EXTENSION IF NOT
+  EXISTS vector` for it. Nothing to do for step 1 below.
+- **Standalone/from-scratch** (no egeria-workspaces): nothing pre-exists — create the role and
+  database yourself, e.g. `createuser egeria_advisor` / `createdb -O egeria_advisor
+  egeria_advisor` against Postgres on `localhost:5442`, matching `pgvector_host`/
+  `pgvector_port`/`pgvector_dbname`/`pgvector_user` in `advisor/config.py` (overridable via
+  `.env`). Or use resource-explorer's documented `docker run ... pgvector/pgvector:pg17` —
+  the two apps share this same database.
+
+1. **Postgres role/database** — see above; not automated by this repo either way (this repo has
+   no init script of its own — it either relies on egeria-workspaces-fs's, or you create these
+   manually for a standalone Postgres).
 2. **Metrics/symbol-store tables** (`query_metrics`, `code_symbols`, `code_relationships`, `indexed_files`, `index_metadata`, `collection_health`, `system_metrics`, `error_log`, `plan_events`, `ingest_log`) self-provision — `ConsolidatedDBManager.connect()` (`advisor/db_consolidated.py`) runs its `CREATE TABLE IF NOT EXISTS` DDL the first time anything touches it (e.g. starting the web app, or any script that constructs `MetricsCollector`/`CodeSymbolStore`). Nothing extra to run for these.
-3. **Vector collection tables** — `PgVectorStore.provision_schema()` (`advisor/vector_store_pg.py`) creates `CREATE EXTENSION IF NOT EXISTS vector` plus each collection's table + HNSW index. `advisor/web/app.py`'s startup handler calls it automatically, so starting the web UI is enough to provision empty tables for all 9 collections (`auto_provision_on_insert` is still `False` for inserts themselves — provisioning is startup-only, not per-write). CLI-only usage (no web server) or the `scripts/ingest_*.py` pipeline should still call `PgVectorStore().provision_schema()` explicitly before first use, since it's idempotent (`IF NOT EXISTS`) and safe to call repeatedly.
+3. **Vector collection tables** — `PgVectorStore.provision_schema()` (`advisor/vector_store_pg.py`) creates `CREATE EXTENSION IF NOT EXISTS vector` plus each collection's table + HNSW index. `advisor/web/app.py`'s startup handler calls it automatically, so starting the web UI is enough to provision empty tables for all 9 collections (`auto_provision_on_insert` is still `False` for inserts themselves — provisioning is startup-only, not per-write). CLI-only usage (no web server) or the `scripts/ingest_*.py` pipeline should still call `PgVectorStore().provision_schema()` explicitly before first use, since it's idempotent (`IF NOT EXISTS`) and safe to call repeatedly. EA's tables are all unqualified in the `public` schema — unlike resource-explorer's `resource_explorer` named schema, there's no separate schema-creation step needed here.
+
+### LLM models (Ollama)
+
+```bash
+ollama serve &                    # skip if already running as a background service
+ollama pull llama3.1:8b           # RAG Q&A
+ollama pull qwen2.5-coder:32b     # LGCI planning (narrative, refinement, extraction)
+ollama pull codellama:13b         # code generation
+```
 
 ## Commands
 
