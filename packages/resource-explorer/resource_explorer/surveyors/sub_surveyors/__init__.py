@@ -17,6 +17,7 @@ from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import (
     ancestor_folder_paths,
 )
 from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInventorySurveyor
+from resource_explorer.surveyors.sub_surveyors.homepage import HomepageSurveyor
 from resource_explorer.surveyors.sub_surveyors.symbol_extraction import SymbolExtractionSurveyor
 
 __all__ = [
@@ -37,5 +38,6 @@ __all__ = [
     "RepoConventionsSurveyor",
     "SubResourceSurveyor",
     "FileInventorySurveyor",
+    "HomepageSurveyor",
     "SymbolExtractionSurveyor",
 ]

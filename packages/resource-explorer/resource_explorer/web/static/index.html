@@ -6205,6 +6205,22 @@ function renderScoutingOverview(d) {
       </div>
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <!-- Website first: unlike the other tiles this one is a way *out* of the
+             app to the project's own docs, which is the fastest way to find out
+             what something actually is. Derived by the Homepage survey step —
+             GitHub's declared homepage, else a packaging manifest, else the
+             README, else the repo page itself — so it is populated for every
+             repo rather than only the ~half that declare one. -->
+        <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 min-w-0"
+             title="${d.homepage ? _esc(d.homepage) : 'No project website found'}">
+          <div class="text-[10px] text-slate-500 uppercase">Website</div>
+          <div class="text-sm font-medium truncate">
+            ${d.homepage
+              ? `<a href="${_esc(d.homepage)}" target="_blank" rel="noopener noreferrer"
+                    class="text-cyan-400 hover:text-cyan-300 hover:underline">${_esc(_prettyHost(d.homepage))} ↗</a>`
+              : '<span class="text-slate-200">—</span>'}
+          </div>
+        </div>
         <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
           <div class="text-[10px] text-slate-500 uppercase">Language</div>
           <div class="text-sm text-slate-200 font-medium">${_esc(d.primary_language) || '—'}</div>
@@ -8693,6 +8709,16 @@ function _esc(s) {
 // Relative time ("3d ago") for lifecycle badges (sidebar + Scouting) —
 // deliberately coarse (days, not hours/minutes); an exact timestamp is
 // always available in the title attribute wherever this is used.
+// Website tiles are ~1/4 of a row wide, so the full URL always truncates to
+// something unreadable. The host is the part that identifies the site; the
+// full URL stays in the tooltip and the href.
+function _prettyHost(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, '') + (u.pathname && u.pathname !== '/' ? u.pathname.replace(/\/$/, '') : '');
+  } catch { return url; }
+}
+
 function _relTime(iso) {
   if (!iso) return '';
   const then = new Date(iso).getTime();

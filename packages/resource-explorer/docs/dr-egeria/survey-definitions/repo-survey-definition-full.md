@@ -95,6 +95,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Scouting - Full Survey — Repo Homepage
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_homepage
+
+### Description
+Finds the project's external website — GitHub's declared homepage first, falling back to pyproject.toml [project.urls], package.json or the README when that is empty (measured: 11 of 24 registered repos have no declared homepage). Surfaced in Scouting as a clickable link and published to Egeria as an ExternalReference linked to the repo.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_homepage |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Scouting - Full Survey — Repo Dependency
 
 ### Qualified Name
@@ -418,6 +437,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_health
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_homepage
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_homepage
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_dependency

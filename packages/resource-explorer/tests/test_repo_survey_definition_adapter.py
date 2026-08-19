@@ -47,7 +47,7 @@ def test_all_step_keys_are_registered():
     steps = _build_re_analysis_steps()
     assert set(steps.keys()) == {
         "repo_file_inventory", "repo_file_structure", "repo_file_size", "repo_language",
-        "repo_health", "repo_dependency", "repo_documentation", "repo_security",
+        "repo_health", "repo_homepage", "repo_dependency", "repo_documentation", "repo_security",
         "repo_api_structure", "repo_data_profiling", "repo_file_classification",
         "repo_sub_resource_survey", "repo_license_classification",
         "repo_security_features", "repo_ci_quality", "repo_maturity",

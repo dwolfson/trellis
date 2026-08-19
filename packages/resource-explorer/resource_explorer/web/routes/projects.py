@@ -325,7 +325,12 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
         lifecycle_state=lifecycle_state,
-        homepage=stats.get("homepage") or "",
+        # Prefer the surveyed answer over GitHub's raw field. HomepageSurveyor
+        # writes projects.homepage_url having tried GitHub's homepage first, then
+        # the packaging manifests, then the README, then the repo URL — so it is
+        # either the same value or a better one. stats.homepage remains the
+        # fallback for repos surveyed before that step existed.
+        homepage=(project.homepage_url or stats.get("homepage") or ""),
         security_and_analysis=security_and_analysis,
         deployments_count=stats.get("deployments_count") or 0,
         latest_deployment_at=stats.get("latest_deployment_at") or "",

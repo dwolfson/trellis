@@ -93,6 +93,25 @@ Inventories data files and profiles their schema (rows/columns/dtypes/nulls).
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Coarse Profile Survey — Repo Homepage
+
+### Qualified Name
+GovActionProcessStep::RepoCoarseProfile::repo_homepage
+
+### Description
+Finds the project's external website — GitHub's declared homepage first, falling back to pyproject.toml [project.urls], package.json or the README when that is empty (measured: 11 of 24 registered repos have no declared homepage). Surfaced in Scouting as a clickable link and published to Egeria as an ExternalReference linked to the repo.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_homepage |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Coarse Profile Survey
@@ -162,6 +181,18 @@ GovActionProcessStep::RepoCoarseProfile::repo_file_structure
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoCoarseProfile::repo_data_profiling
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoCoarseProfile::repo_data_profiling
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoCoarseProfile::repo_homepage
 
 ### Guard
 Any

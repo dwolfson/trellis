@@ -53,6 +53,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     FileSizeSurveyor,
     FileStructureSurveyor,
     HealthSurveyor,
+    HomepageSurveyor,
     LanguageSurveyor,
     LicenseClassifierSurveyor,
     MaturitySurveyor,
@@ -202,6 +203,21 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "Activity, community, release-cadence, and freshness scoring from GitHub stats.",
         ["QualityScoreAnnotation"],
         accepts_fast=True,
+    ),
+    "repo_homepage": StepInfo(
+        "repo_homepage", HomepageSurveyor,
+        "Finds the project's external website — GitHub's declared homepage first, "
+        "falling back to pyproject.toml [project.urls], package.json or the README "
+        "when that is empty (measured: 11 of 24 registered repos have no declared "
+        "homepage). Surfaced in Scouting as a clickable link and published to "
+        "Egeria as an ExternalReference linked to the repo.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # Optional, not required: tier 1 reads project_stats and needs no repo
+        # contents at all, so this step still produces an answer when run without
+        # a zipball. Declaring it means the fallback tiers work for free whenever
+        # another step in the same run has already paid for the download.
+        requires_resources={"zipball_root": "local_path"},
     ),
     "repo_dependency": StepInfo(
         "repo_dependency", DependencySurveyor,

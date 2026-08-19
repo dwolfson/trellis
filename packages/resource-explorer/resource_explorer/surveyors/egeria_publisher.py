@@ -60,6 +60,7 @@ class EgeriaPublisher:
         self._asset_maker = None
         self._discovery = None
         self._automated_curation = None
+        self._external_references = None
         # Zone names: caller-supplied > config default > []
         if zone_names is not None:
             self.zone_names = zone_names
@@ -83,6 +84,8 @@ class EgeriaPublisher:
             self.zone_names = zone_names
         self._connect()
         asset_guid = self._find_or_create_asset(result)
+        # Best-effort and deliberately not fatal — see the method's docstring.
+        self._publish_homepage_reference(result, asset_guid)
         report_guid = self._create_survey_report(result, asset_guid)
         self._create_annotations(result, report_guid)
         log.info(
@@ -159,7 +162,7 @@ class EgeriaPublisher:
                 "Add it to your .env file or pass platform_url= to EgeriaPublisher."
             )
         try:
-            from pyegeria import AssetMaker, AutomatedCuration
+            from pyegeria import AssetMaker, AutomatedCuration, ExternalReferences
             from pyegeria.omvs.data_discovery import DataDiscovery
 
             self._asset_maker = AssetMaker(
@@ -178,6 +181,13 @@ class EgeriaPublisher:
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
             self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+
+            # Used only by _publish_homepage_reference() — catalogs the
+            # project's external website and links it to the library element.
+            self._external_references = ExternalReferences(
+                self.view_server, self.platform_url, self.user_id, self.user_password
+            )
+            self._external_references.create_egeria_bearer_token(self.user_id, self.user_password)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -261,6 +271,18 @@ class EgeriaPublisher:
             "description": f"GitHub repository: {result.github_url}",
             "deployedImplementationType": "GitHub Repository",
             "libraryType": "GitHub Repository",
+            # The repo's own location, in the attribute Egeria defines for it.
+            # `url` is inherited from Referenceable (confirmed against the live
+            # type system, not assumed — SourceControlLibrary -> ResourceManager
+            # -> SoftwareCapability -> Referenceable, which declares it).
+            # Previously the git URL existed only inside additionalProperties and
+            # interpolated into the description text, so nothing generic could
+            # find it: anything walking the catalog for "where does this live"
+            # looks at `url`, not at a private extension key.
+            #
+            # additionalProperties["github_url"] is kept rather than moved —
+            # existing consumers read it, and the duplication is cheap.
+            "url": result.github_url,
             "additionalProperties": {
                 "github_url": result.github_url,
                 "project_slug": result.project_slug,
@@ -283,6 +305,86 @@ class EgeriaPublisher:
                 self._registry.set_egeria_asset_guid(slug, guid)
             except Exception as exc:
                 log.warning("Could not persist Egeria asset GUID to registry: %s", exc)
+
+    def _publish_homepage_reference(self, result: SurveyResult, asset_guid: str) -> str:
+        """Catalog the project's external website as an ExternalReference linked
+        to its SourceControlLibrary.
+
+        The URL comes from HomepageSurveyor (projects.homepage_url), which tries
+        GitHub's declared homepage, then the packaging manifests, then the README,
+        then the repo URL itself. The repo-URL fallback is deliberately NOT
+        published here: an ExternalReference pointing back at the same repo the
+        library element already describes adds a catalog entry and no
+        information. Scouting still shows it as a link; only Egeria skips it.
+
+        Best-effort throughout. A failure here must not fail the publish — the
+        survey and its annotations are the point, this is an extra.
+
+        Returns the ExternalReference GUID, or "" if nothing was published.
+        """
+        if not self._registry:
+            return ""
+        try:
+            project = self._registry.get(result.project_slug)
+        except Exception:
+            return ""
+        homepage = (getattr(project, "homepage_url", "") or "").strip()
+        if not homepage:
+            return ""
+
+        # Skip the repo-URL fallback (see docstring). Compared host-wise rather
+        # than by string equality so ".git"/trailing-slash variants still match.
+        from urllib.parse import urlparse
+
+        def _same(a: str, b: str) -> bool:
+            pa, pb = urlparse(a), urlparse(b)
+            return (pa.hostname or "").lower() == (pb.hostname or "").lower() and \
+                   pa.path.rstrip("/").removesuffix(".git") == pb.path.rstrip("/").removesuffix(".git")
+
+        if _same(homepage, result.github_url):
+            log.debug("Homepage for %s is the repo itself — not cataloged separately",
+                      result.project_slug)
+            return ""
+
+        qualified_name = f"ExternalReference::{homepage}"
+        try:
+            existing = self._find_element_guid(qualified_name)
+            if existing:
+                ref_guid = existing
+            else:
+                body = {
+                    "class": "NewElementRequestBody",
+                    "properties": {
+                        "class": "ExternalReferenceProperties",
+                        "typeName": "ExternalReference",
+                        "qualifiedName": qualified_name,
+                        "displayName": f"{result.project_display_name} — project website",
+                        "description": (
+                            f"External website for {result.project_display_name}, derived by "
+                            f"Resource Explorer's Homepage survey step."
+                        ),
+                        # `url` is inherited from Referenceable, same as on the
+                        # library element above.
+                        "url": homepage,
+                        "referenceTitle": f"{result.project_display_name} website",
+                    },
+                }
+                ref_guid = self._external_references.create_external_reference(body=body)
+                log.info("Created ExternalReference %s for %s (%s)",
+                         ref_guid, result.project_slug, homepage)
+
+            # Linking is separately guarded: a duplicate link attempt on a
+            # re-publish is harmless to report but must not lose the reference.
+            try:
+                self._external_references.link_external_reference(asset_guid, ref_guid)
+            except Exception as exc:
+                log.debug("Could not link ExternalReference %s to %s: %s",
+                          ref_guid, asset_guid, exc)
+            return ref_guid
+        except Exception as exc:
+            log.warning("Could not publish homepage ExternalReference for %s: %s",
+                        result.project_slug, exc)
+            return ""
 
     # ── survey report ─────────────────────────────────────────────────────────
 

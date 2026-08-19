@@ -1958,6 +1958,25 @@ class ProjectRegistry:
                 (datetime.utcnow().isoformat(), slug),
             )
 
+    def update_project_homepage(self, slug: str, homepage_url: str) -> None:
+        """Record the project's external website — set by HomepageSurveyor.
+
+        Deliberately writes `projects.homepage_url` rather than the `homepage`
+        column on project_stats: that column is StatsFetcher's, refreshed
+        wholesale from the GitHub API on every stats run, so a value the
+        surveyor *derived* (from pyproject/package.json/README when GitHub's own
+        field is empty) would be silently discarded on the next fetch. Keeping
+        the derived answer on the project row means the two sources coexist —
+        GitHub's declared homepage stays authoritative in stats, and this holds
+        the best answer we have however it was found.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET homepage_url = ? WHERE slug = ?",
+                (homepage_url, slug),
+            )
+
     def update_ingestion_stats(self, slug: str, file_count: int, lines_of_code: int) -> None:
         """Update the most recent project_stats row with counts from actual ingestion."""
         slug = self._normalize_slug(slug)
