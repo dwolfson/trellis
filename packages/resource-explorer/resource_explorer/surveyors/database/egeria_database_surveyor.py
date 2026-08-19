@@ -812,91 +812,17 @@ class EgeriaDatabaseSurveyor:
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:
-        """Convert a dict to map<string, string> as required by Egeria."""
-        import json as _json
-        result: dict[str, str] = {}
-        for k, v in d.items():
-            result[str(k)] = _json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-        return result
+        """Delegates to the shared implementation — see annotation_props.py."""
+        from resource_explorer.surveyors.annotation_props import to_string_map
 
+        return to_string_map(d)
     def _build_annotation_props(self, ann, qualified_name: str) -> dict:
-        """Map a local Annotation dataclass to the correct Egeria properties body."""
-        from resource_explorer.surveyors.survey_report import AnnotationType
-        atype = ann.annotation_type
+        """Delegates to the shared implementation — see annotation_props.py.
 
-        _class_map = {
-            AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
-            AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
-            AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
-            AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
-            AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
-            AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
-            AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
-        }
-        egeria_class = _class_map.get(atype, "AnnotationProperties")
+        Kept as a method because tests and call sites reach for it by name."""
+        from resource_explorer.surveyors.annotation_props import build_annotation_props
 
-        props: dict = {
-            "class": egeria_class,
-            "qualifiedName": qualified_name,
-            "annotationType": atype.value,
-            "summary": ann.summary,
-            "analysisStep": ann.analysis_step,
-            "confidence": ann.confidence,
-        }
-        if ann.explanation:
-            props["explanation"] = ann.explanation
-        if ann.expression:
-            props["expression"] = ann.expression
-        if ann.json_properties:
-            import json as _json
-            props["jsonProperties"] = _json.dumps(ann.json_properties)
-
-        if atype == AnnotationType.RESOURCE_MEASURE:
-            rp = getattr(ann, "resource_properties", {})
-            if rp:
-                props["resourceProperties"] = self._to_string_map(rp)
-
-        elif atype == AnnotationType.CLASSIFICATION:
-            cc = getattr(ann, "candidate_classifications", [])
-            if cc:
-                props["candidateClassifications"] = cc
-
-        elif atype == AnnotationType.QUALITY_SCORE:
-            qs = getattr(ann, "quality_scores", {})
-            if qs:
-                props["qualityScores"] = self._to_string_map(qs)
-
-        elif atype == AnnotationType.DATA_CLASS:
-            dc = getattr(ann, "candidate_data_class_names", [])
-            if dc:
-                props["candidateDataClassGUIDs"] = dc
-
-        elif atype == AnnotationType.REQUEST_FOR_ACTION:
-            action_req = getattr(ann, "action_requested", "")
-            if action_req:
-                props["actionRequested"] = action_req
-            action_target = getattr(ann, "action_target_name", "")
-            if action_target:
-                props["actionProperties"] = {"actionTargetName": action_target}
-
-        elif atype == AnnotationType.SCHEMA_ANALYSIS:
-            sn = getattr(ann, "schema_name", "")
-            st = getattr(ann, "schema_type", "")
-            if sn:
-                props["schemaName"] = sn
-            if st:
-                props["schemaType"] = st
-
-        elif atype == AnnotationType.RELATIONSHIP:
-            ren = getattr(ann, "related_entity_name", "")
-            rtn = getattr(ann, "relationship_type_name", "")
-            if ren:
-                props["relatedEntityName"] = ren
-            if rtn:
-                props["relationshipTypeName"] = rtn
-
-        return props
-
+        return build_annotation_props(ann, qualified_name)
     @staticmethod
     def _safe_int(value, default: int = 0) -> int:
         """Safely convert value to int."""

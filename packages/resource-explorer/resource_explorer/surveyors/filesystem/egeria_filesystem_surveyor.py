@@ -522,52 +522,18 @@ class EgeriaFileSystemSurveyor:
                 )
 
     def _build_annotation_props(self, ann, qualified_name: str) -> dict:
-        """Map a local Annotation dataclass to the correct Egeria properties body."""
-        from resource_explorer.surveyors.survey_report import AnnotationType
-        atype = ann.annotation_type
+        """Delegates to the shared implementation — see annotation_props.py.
 
-        _class_map = {
-            AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
-            AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
-            AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
-            AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
-            AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
-            AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
-        }
-        
-        properties: dict[str, Any] = {
-            "class":          _class_map.get(atype, "AnnotationProperties"),
-            "typeName":       ann.egeria_type_name,
-            "qualifiedName":  qualified_name,
-            "summary":        ann.summary,
-            "confidenceLevel": ann.confidence,
-            "analysisStep":   ann.analysis_step,
-            "explanation":    ann.explanation,
-        }
+        Kept as a method because tests and call sites reach for it by name."""
+        from resource_explorer.surveyors.annotation_props import build_annotation_props
 
-        if atype == AnnotationType.RESOURCE_MEASURE:
-            properties["valueProperties"] = self._to_string_map(ann.resource_properties)
-        elif atype == AnnotationType.SCHEMA_ANALYSIS:
-            properties["schemaName"] = ann.schema_name
-            properties["schemaType"] = ann.schema_type
-            properties["analysisParameters"] = self._to_string_map(ann.json_properties)
-
-        return properties
-
+        return build_annotation_props(ann, qualified_name)
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:
-        """Convert a dict to map<string, string> as required by Egeria."""
-        import json as _json
-        result: dict[str, str] = {}
-        for k, v in d.items():
-            result[str(k)] = _json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-        return result
+        """Delegates to the shared implementation — see annotation_props.py."""
+        from resource_explorer.surveyors.annotation_props import to_string_map
 
-    _UUID_RE = __import__('re').compile(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
-        __import__('re').IGNORECASE,
-    )
-
+        return to_string_map(d)
     def _find_element_guid(self, name: str) -> str:
         """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found."""
         try:

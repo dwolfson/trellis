@@ -564,92 +564,14 @@ class EgeriaPublisher:
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:
-        """Convert a dict to map<string, string> as required by Egeria typed map fields.
+        """Delegates to the shared implementation — see annotation_props.py."""
+        from resource_explorer.surveyors.annotation_props import to_string_map
 
-        Nested dicts/lists are JSON-serialised to a string value so no nested
-        structures escape into the wire format.  All scalar values are str()-coerced.
-        """
-        result: dict[str, str] = {}
-        for k, v in d.items():
-            result[str(k)] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-        return result
-
+        return to_string_map(d)
     def _build_annotation_props(self, ann, qualified_name: str) -> dict:
-        """Map an Annotation dataclass to the correct Egeria subtype properties body."""
-        atype = ann.annotation_type
+        """Delegates to the shared implementation — see annotation_props.py.
 
-        # Map our AnnotationType enum to the Egeria Jackson subtype class name.
-        # Note: RequestForActionAnnotationProperties is NOT valid — use RequestForActionProperties.
-        _class_map = {
-            AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
-            AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
-            AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
-            AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
-            AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
-            AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
-            AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
-        }
-        egeria_class = _class_map.get(atype, "AnnotationProperties")
+        Kept as a method because tests and call sites reach for it by name."""
+        from resource_explorer.surveyors.annotation_props import build_annotation_props
 
-        props: dict = {
-            "class": egeria_class,
-            "qualifiedName": qualified_name,
-            "annotationType": atype.value,
-            "summary": ann.summary,
-            "analysisStep": ann.analysis_step,
-            "confidence": ann.confidence,
-        }
-        if ann.explanation:
-            props["explanation"] = ann.explanation
-        if ann.expression:
-            props["expression"] = ann.expression
-        if ann.json_properties:
-            props["jsonProperties"] = json.dumps(ann.json_properties)
-
-        # Subtype-specific fields — native typed fields for registered subtypes;
-        # additionalProperties (map<string,string>) for unregistered types.
-        if atype == AnnotationType.RESOURCE_MEASURE:
-            rp = getattr(ann, "resource_properties", {})
-            if rp:
-                props["resourceProperties"] = self._to_string_map(rp)
-
-        elif atype == AnnotationType.CLASSIFICATION:
-            cc = getattr(ann, "candidate_classifications", [])
-            if cc:
-                props["candidateClassifications"] = cc
-
-        elif atype == AnnotationType.QUALITY_SCORE:
-            qs = getattr(ann, "quality_scores", {})
-            if qs:
-                props["qualityScores"] = self._to_string_map(qs)
-
-        elif atype == AnnotationType.DATA_CLASS:
-            dc = getattr(ann, "candidate_data_class_names", [])
-            if dc:
-                props["candidateDataClassGUIDs"] = dc  # field name per Egeria type
-
-        elif atype == AnnotationType.REQUEST_FOR_ACTION:
-            action_req = getattr(ann, "action_requested", "")
-            if action_req:
-                props["actionRequested"] = action_req
-            action_target = getattr(ann, "action_target_name", "")
-            if action_target:
-                props["actionProperties"] = {"actionTargetName": action_target}
-
-        elif atype == AnnotationType.SCHEMA_ANALYSIS:
-            sn = getattr(ann, "schema_name", "")
-            st = getattr(ann, "schema_type", "")
-            if sn:
-                props["schemaName"] = sn
-            if st:
-                props["schemaType"] = st
-
-        elif atype == AnnotationType.RELATIONSHIP:
-            ren = getattr(ann, "related_entity_name", "")
-            rtn = getattr(ann, "relationship_type_name", "")
-            if ren:
-                props["relatedEntityName"] = ren
-            if rtn:
-                props["relationshipTypeName"] = rtn
-
-        return props
+        return build_annotation_props(ann, qualified_name)

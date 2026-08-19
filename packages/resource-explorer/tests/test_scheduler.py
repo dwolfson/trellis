@@ -482,7 +482,7 @@ class TestRunDueRepoProfileDispatch:
         _, kwargs = mock_refresh.call_args
         assert kwargs["include_symbols"] is False
         # Auto-chains the classification survey, matching the interactive
-        # Profile tab's own POST .../profile-scan behavior — a scheduled
+        # the on-demand POST .../profile-scan behavior — a scheduled
         # refresh shouldn't produce data nothing ever displays.
         from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
         MockOrch.return_value.run.assert_called_once_with(

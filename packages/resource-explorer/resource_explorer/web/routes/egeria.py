@@ -429,7 +429,7 @@ class PublishRequest(BaseModel):
     # None (default) = full survey, byte-for-byte the existing behavior.
     # A list scopes the survey (and therefore the published SurveyReport) to
     # just those SurveyOrchestrator step keys — lets each phase (Scouting,
-    # the Profile tab, etc.) publish only what it actually knows, as its own
+    # coarse profiling, etc.) publish only what it actually knows, as its own
     # SurveyReport linked to the same asset, rather than one all-or-nothing
     # publish. Same step-key vocabulary as REPO_ANALYSIS_STEP_MAP.
     steps: list[str] | None = None

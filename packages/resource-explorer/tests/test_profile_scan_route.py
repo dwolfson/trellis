@@ -1,4 +1,9 @@
-"""Tests for POST /api/projects/{slug}/profile-scan — Scouting's Profile tab.
+"""Tests for POST /api/projects/{slug}/profile-scan.
+
+API-level on-demand coarse-profile refresh. Note there is no UI caller:
+coarse profiling is surfaced as the "Coarse Profile Survey" Survey
+Definition, run from Scouting's Survey sub-tab. The route is retained as
+a scriptable trigger and mirrors what the scheduler does directly.
 Downloads the zipball once via IngestionPipeline.refresh_profile(), refreshes
 project_file_inventory/project_data_profiles (+ optionally project_code_symbols),
 then auto-chains the language_file_classification survey against the freshly

@@ -306,9 +306,12 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
         # SurveyOrchestrator step) — schedulable like "ingest", not excluded
         # like "publish". Auto-chains the language_file_classification survey
         # against the freshly refreshed inventory, matching the interactive
-        # Profile tab's own behavior (POST .../profile-scan) — a scheduled
-        # refresh should produce the same displayed result an on-demand one
-        # does, not a data-only update nothing ever reads.
+        # on-demand POST .../profile-scan route — a scheduled refresh should
+        # produce the same displayed result an on-demand one does, not a
+        # data-only update nothing ever reads. (There is no "Profile tab":
+        # coarse profiling is a Survey Definition, "Coarse Profile Survey", run
+        # from Scouting's Survey sub-tab like any other survey type. The route
+        # remains as an API-level on-demand trigger with no UI caller.)
         from resource_explorer.ingestion.pipeline import IngestionPipeline
         from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
