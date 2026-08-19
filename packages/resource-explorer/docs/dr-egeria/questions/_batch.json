@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "The Question glossary terms backing the Scouting 'Questions' checklist and — more",
+    "load-bearing than it looks — SurveyDefinitionReader's scoped candidate lookup, which joins",
+    "question display names to their Egeria GUIDs and follows ScopedBy to the Survey Definitions",
+    "that answer them. When this batch is missing, that lookup finds nothing and every Survey-tab",
+    "load silently falls back to a full instance scan (~20s vs ~0.2s).",
+    "",
+    "Runs after foundations (see ../_folder_order.json): these terms are created inside the",
+    "'User Questions' glossary and scoped to funnel-stage/perspective terms defined there.",
+    "",
+    "CANARY CHOICE — two non-obvious constraints, both found empirically on 2026-08-19:",
+    "",
+    "1. Keyed on display_name, NOT qualified_name. Dr.Egeria generates term qualified names as",
+    "   '<Org>::Term::<Hyphenated-Display-Name>::<version>' (e.g. 'Coco Pharmaceuticals::Term::",
+    "   Is-this-repository-actively-maintained?::1.0'). That embeds a deployment-specific org",
+    "   prefix and a version, so it is exactly the wrong thing to hard-code. This is the reverse",
+    "   of the foundations batch, whose Perspective qualified names ARE author-controlled and",
+    "   stable — hence _batch.json supporting either key rather than mandating one.",
+    "",
+    "2. NOT the last term in the document, and specifically APOSTROPHE-FREE. Dr.Egeria doubles",
+    "   every apostrophe on the write path ('what's' is stored as 'what''s' — egeria-python",
+    "   PYEGERIA_ISSUES.md ISSUE-69, root-caused 2026-08-19: the source CSV, the generated",
+    "   markdown and the parser's own --validate echo are all clean, but every string property",
+    "   lands in Egeria doubled). Such an element can never be found by its real name, so a",
+    "   canary naming one would mark this batch missing forever and re-heal it on every check —",
+    "   an infinite heal loop, which for the non-idempotent survey-definition batch means",
+    "   repeated duplicate-link damage. Two of this document's 41 terms are affected.",
+    "",
+    "   The term below is the last apostrophe-free term in the document and is verified present.",
+    "   Keep it that way: when regenerating, do not point the canary at anything containing an",
+    "   apostrophe until ISSUE-69 is fixed.",
+    "",
+    "Terms are generated from ../resource_questions.csv (the source of truth) via",
+    "scripts/csv_to_dr_egeria_questions.py — edit the CSV and regenerate, don't hand-edit the md."
+  ],
+  "display_name": "Resource questions (scouting stage)",
+  "canary": {
+    "display_name": "How much has changed since the last time this was surveyed — is it worth re-running now?"
+  },
+  "files": [
+    "scouting-questions.md"
+  ]
+}
