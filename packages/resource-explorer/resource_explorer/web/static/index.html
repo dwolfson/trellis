@@ -197,6 +197,12 @@
 
 <!-- Toast container (fixed overlay, survives all re-renders) -->
 <div id="toast-container"></div>
+<!-- Bootstrap banner — visible only while Dr.Egeria definitions are being
+     restored after an Egeria reset, or when a batch is missing and could not be
+     repaired. Silent in the normal case (everything present), so it costs the
+     user nothing; the whole point is that a wiped catalog used to degrade the
+     Survey tab with no signal at all. -->
+<div id="bootstrap-banner" class="hidden px-4 py-2 text-sm border-b border-amber-700/50 bg-amber-900/30 text-amber-200"></div>
 
 <!-- Backend connectivity banner — hidden by default, shown by
      checkBackendHealth() when GET /health/ready reports the database is
@@ -1295,6 +1301,77 @@ function _startBackendHealthPoll() {
 }
 
 // ── init ───────────────────────────────────────────────────────────────────────
+// ── Bootstrap banner ────────────────────────────────────────────────────────
+// Surfaces the state that used to be completely invisible: an Egeria reset
+// wipes the Dr.Egeria-authored glossaries/questions/Survey Definitions, and
+// until this existed the only symptom was a Survey tab that quietly got slower
+// and emptier. Polls the cheap in-process status endpoint (no Egeria round-trip
+// per poll), and stays hidden entirely when everything is present.
+let _bootstrapBannerTimer = null;
+
+async function _refreshBootstrapBanner() {
+  const el = document.getElementById('bootstrap-banner');
+  if (!el) return;
+  let data;
+  try {
+    const res = await fetch('/api/bootstrap/status');
+    if (!res.ok) return;              // backend down — the health banner owns that case
+    data = await res.json();
+  } catch { return; }
+
+  const batches = Object.entries(data.batches || {});
+  // present === null means "not checked yet" (first pass still running) — not a
+  // problem to report, so it must not be lumped in with a real missing batch.
+  const missing = batches.filter(([, b]) => b.present === false);
+
+  if (data.reinitializing) {
+    el.className = 'px-4 py-2 text-sm border-b border-amber-700/50 bg-amber-900/30 text-amber-200';
+    el.innerHTML = `⏳ Restoring Egeria definitions… Survey Definitions and Questions are being re-created. Some views may be incomplete until this finishes.`;
+  } else if (missing.length) {
+    const names = missing.map(([, b]) => _esc(b.display_name)).join(', ');
+    const stuck = missing.some(([, b]) => b.consecutive_failures > 0);
+    el.className = 'px-4 py-2 text-sm border-b border-red-700/50 bg-red-900/30 text-red-200';
+    el.innerHTML = `⚠ Missing Egeria definitions: <strong>${names}</strong>. `
+      + (stuck
+          ? `Automatic repair failed — check the server log, then retry.`
+          : `Automatic repair will run shortly.`)
+      + ` <button onclick="_runBootstrapNow()" class="ml-2 underline hover:text-white">Repair now</button>`;
+  } else {
+    el.className = 'hidden';
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+}
+
+async function _runBootstrapNow() {
+  // Deliberately does NOT pass force: a forced re-run re-executes batches that
+  // are already present, and for the survey definitions that duplicates every
+  // step link (Dr.Egeria's Link First/Next Process Step commands don't dedupe),
+  // taking them out of service. Repairing only what's actually missing is both
+  // sufficient and safe.
+  showToast('running', 'Running definition repair…', 4000);
+  try {
+    const res = await fetch('/api/bootstrap/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    const healed = Object.entries(data.batches || {}).filter(([, r]) => r.action === 'healed');
+    const failed = Object.entries(data.batches || {}).filter(([, r]) => r.action === 'failed');
+    if (failed.length) showToast('error', `Repair failed for ${failed.length} batch(es) — see server log`, 6000);
+    else showToast('success', healed.length ? `Repaired ${healed.length} batch(es)` : 'Everything already present', 4000);
+  } catch (e) {
+    showToast('error', 'Repair request failed', 5000);
+  }
+  _refreshBootstrapBanner();
+}
+
+function _startBootstrapBannerPoll() {
+  _refreshBootstrapBanner();
+  if (_bootstrapBannerTimer) clearInterval(_bootstrapBannerTimer);
+  _bootstrapBannerTimer = setInterval(_refreshBootstrapBanner, 30000);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   checkBackendHealth();
   _startBackendHealthPoll();
@@ -1307,6 +1384,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshRfaBadgeCount();  // header RFA-drawer badge count, without rendering/opening the drawer
   loadPerspectiveChips();
   loadWhoami();
+  _startBootstrapBannerPoll();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
   // Restore chat panel open/collapsed state (defaults to open)
   if (localStorage.getItem('pe_chat_panel_open') === '0') {

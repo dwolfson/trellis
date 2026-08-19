@@ -9,14 +9,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, automate, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     start_scheduler()
+    # Detect + repair Dr.Egeria definitions wiped by an Egeria reset. Runs one
+    # check immediately (covers a restart alongside the reset) then periodically
+    # (covers the common dev case where only the Egeria container is recycled
+    # while this process keeps running). Never blocks startup: the initial check
+    # happens inside the monitor thread, and it fails open when Egeria is
+    # unreachable — see resource_explorer/bootstrap.py.
+    start_bootstrap_monitor()
     yield
+    stop_bootstrap_monitor()
 
 
 app = FastAPI(
@@ -38,6 +47,7 @@ app.include_router(egeria.router, prefix="/api/egeria", tags=["egeria"])
 app.include_router(db_servers_routes.router, prefix="/api/db-servers", tags=["db-servers"])
 app.include_router(webhook.router, prefix="/api", tags=["webhook"])
 app.include_router(activity.router, prefix="/api/activity", tags=["activity"])
+app.include_router(bootstrap_routes.router, prefix="/api/bootstrap", tags=["bootstrap"])
 app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
 app.include_router(context.router, prefix="/api/context", tags=["context"])
 app.include_router(project_context.router, prefix="/api/project-context", tags=["project-context"])
