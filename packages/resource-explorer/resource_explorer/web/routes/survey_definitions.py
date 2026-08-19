@@ -125,6 +125,27 @@ async def list_candidates(
             except Exception as exc:
                 log.debug("get_produced_annotation_types(%r) failed: %s", adapter.egeria_technology_type_name, exc)
 
+        # Deliberately serial. Parallelising this looks like the obvious next
+        # perf win (it is ~1.3s of the endpoint's ~2.5s cold) and was measured
+        # against a real server on 2026-08-19 — it does not pay off either way:
+        #
+        #   serial                       1.39s   all 4 correct
+        #   ThreadPool, shared reader    0.34s   CORRUPTED — one candidate came
+        #                                        back CLIENT_ERROR_400 that
+        #                                        fetches fine serially
+        #   ThreadPool, reader-per-thread 1.25-1.56s over 3 trials, all correct
+        #
+        # The shared-client speedup is not real: pyegeria's sync wrappers drive
+        # an event loop (nest_asyncio) per client, so concurrent calls on one
+        # client corrupt each other — intermittently, which is the worst way for
+        # this to fail. Giving each thread its own reader is correct but buys
+        # nothing, because the per-reader connect/token handshake costs about
+        # what the concurrency saves.
+        #
+        # So: leave it serial until pyegeria exposes an async client that can be
+        # driven from one loop (then gather() the fetches properly). If the real
+        # problem is a slow/hanging definition rather than throughput, the fix is
+        # a per-fetch deadline here, not threads.
         detailed = []
         for c in thin_candidates:
             try:

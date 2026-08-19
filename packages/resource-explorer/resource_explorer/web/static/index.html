@@ -286,7 +286,12 @@
      Chips are populated dynamically from GET /api/analyses/perspectives (see
      loadPerspectiveChips()) rather than hardcoded, since the real set is bigger than
      any one static list and shouldn't silently drift out of sync with the backend. -->
-<div id="perspective-row" class="flex items-center gap-1.5 px-3 py-1 bg-slate-800/60 border-b border-slate-700 shrink-0 overflow-x-auto">
+<!-- Hidden by default: Scouting is the landing intent and does not consume
+     activePerspectives (see _PERSPECTIVE_AWARE_INTENTS). setNavIntent() reveals
+     this on Assessment/Analysis. Without the initial `hidden` the row would
+     flash on load, since setNavIntent isn't called at startup — the markup
+     above just marks Scouting active. -->
+<div id="perspective-row" style="display:none" class="flex items-center gap-1.5 px-3 py-1 bg-slate-800/60 border-b border-slate-700 shrink-0 overflow-x-auto">
   <span class="text-xs text-slate-500 mr-0.5">Perspective:</span>
   <span id="perspective-chips"></span>
 </div>
@@ -1430,11 +1435,33 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── intent navigation (primary nav) ─────────────────────────────────────────────
 const INTENT_PLACEHOLDER_TEXT = {};
 
+// Intents whose panels actually read `activePerspectives`. Verified rather than
+// assumed: the global row is consumed in exactly one place —
+// _loadAnalysisCatalogPanel()'s client-side filter over analysis-catalog cards —
+// so on every other intent it filtered nothing while still looking like a live
+// control. Worse, Scouting shows its own perspective filter inside the Questions
+// checklist, so two perspective rows appeared stacked, one of them inert.
+//
+// Note the two are NOT the same vocabulary and are not interchangeable: this one
+// is the 4 analysis_catalog.yaml tags (data_scientist/dba/security/steward),
+// while the Questions checklist uses the richer Egeria Perspective set authored
+// in docs/dr-egeria/foundations/foundations.md (Architecture, Community,
+// Consumer, Data Expert, Data Owner, ... ). Converging them is a real design
+// question, deliberately not answered by simply hiding this row.
+const _PERSPECTIVE_AWARE_INTENTS = new Set(['assessment', 'analysis']);
+
 function setNavIntent(intent) {
   currentNavIntent = intent;
   document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => {
     b.classList.toggle('active', b.dataset.navIntent === intent);
   });
+  // Visibility via inline style, NOT a `hidden` class: this row also carries
+  // Tailwind's `flex`, and in this build `.flex` wins over `.hidden` on source
+  // order, so toggling the class left it visible on every intent (measured —
+  // getComputedStyle reported `flex` in all five cases). Clearing the inline
+  // style lets the `flex` class apply again.
+  const prow = document.getElementById('perspective-row');
+  if (prow) prow.style.display = _PERSPECTIVE_AWARE_INTENTS.has(intent) ? '' : 'none';
   if (intent === 'scouting') {
     showScoutingPane();
   } else if (intent === 'discovery') {
