@@ -1,5 +1,24 @@
 ## Create Governance Action Process Step
 ### Display Name
+Coarse Profile Survey — Repo File Inventory
+
+### Qualified Name
+GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
+
+### Description
+Refreshes project_file_inventory from a fresh zipball — the table every file-shape step reads. Closes the gap where the inventory was written only by RAG ingestion/refresh_profile and never by a survey step, so a survey reported whatever an earlier, unrelated run had left behind.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_file_inventory |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Coarse Profile Survey — Repo Language
 
 ### Qualified Name
@@ -97,7 +116,19 @@ ___
 GovActionProcess::RepoCoarseProfile
 
 ### Governance Action Process Step
+GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
+
+### Next Governance Action Process Step
 GovActionProcessStep::RepoCoarseProfile::repo_language
+
+### Guard
+Any
 
 ___
 

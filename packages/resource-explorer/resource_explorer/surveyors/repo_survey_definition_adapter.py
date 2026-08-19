@@ -49,6 +49,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     DataProfilerSurveyor,
     DependencySurveyor,
     DocumentationSurveyor,
+    FileInventorySurveyor,
     FileSizeSurveyor,
     FileStructureSurveyor,
     HealthSurveyor,
@@ -159,6 +160,27 @@ def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
 
 
 STEP_REGISTRY: dict[str, StepInfo] = {
+    # FIRST BY NECESSITY, not by taste. This dict's order is also the order
+    # "Repo Full Survey" runs (repo_survey_types.csv uses the "*" sentinel,
+    # meaning "every current STEP_REGISTRY step in this order"), and six of the
+    # steps below read project_file_inventory. Refreshing the table after its
+    # consumers have already read it would leave the run reporting the previous
+    # extraction while looking like it had just profiled the repo.
+    #
+    # Costs no extra network call in any survey that already contains a
+    # zipball-using step: resolve_resources (D6) downloads and extracts once per
+    # SurveyOrchestrator.run() and shares the root with repo_data_profiling and
+    # repo_symbol_extraction.
+    "repo_file_inventory": StepInfo(
+        "repo_file_inventory", FileInventorySurveyor,
+        "Refreshes project_file_inventory from a fresh zipball — the table every "
+        "file-shape step reads. Closes the gap where the inventory was written "
+        "only by RAG ingestion/refresh_profile and never by a survey step, so a "
+        "survey reported whatever an earlier, unrelated run had left behind.",
+        ["ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
+    ),
     "repo_file_structure": StepInfo(
         "repo_file_structure", FileStructureSurveyor,
         "File counts, per-language breakdown, and top-level directory structure.",

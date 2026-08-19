@@ -39,14 +39,47 @@ def test_each_step_key_delegates_to_orchestrator_with_itself_as_the_only_step():
         assert output == {"annotations": [f"ann-for-{key}"]}
 
 
-def test_all_seventeen_step_keys_are_registered():
+def test_all_step_keys_are_registered():
+    """Exhaustive on purpose: adding a step without a runner would otherwise
+    surface only as a Survey Definition that silently does less than its
+    definition says. Deliberately not named for a count — it was
+    "seventeen" until repo_file_inventory made it eighteen."""
     steps = _build_re_analysis_steps()
     assert set(steps.keys()) == {
-        "repo_file_structure", "repo_file_size", "repo_language", "repo_health",
-        "repo_dependency", "repo_documentation", "repo_security", "repo_api_structure",
-        "repo_data_profiling", "repo_file_classification", "repo_sub_resource_survey",
-        "repo_license_classification", "repo_security_features", "repo_ci_quality",
-        "repo_maturity", "repo_conventions", "repo_symbol_extraction",
+        "repo_file_inventory", "repo_file_structure", "repo_file_size", "repo_language",
+        "repo_health", "repo_dependency", "repo_documentation", "repo_security",
+        "repo_api_structure", "repo_data_profiling", "repo_file_classification",
+        "repo_sub_resource_survey", "repo_license_classification",
+        "repo_security_features", "repo_ci_quality", "repo_maturity",
+        "repo_conventions", "repo_symbol_extraction",
+    }
+
+
+def test_file_inventory_runs_before_every_step_that_reads_the_inventory():
+    """Ordering is correctness here, not neatness. STEP_REGISTRY order is also
+    the order "Repo Full Survey" runs (the "*" sentinel in
+    repo_survey_types.csv), so a refresh placed after its consumers would leave
+    them reporting the previous extraction while the run looks like a fresh
+    profile."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    order = list(STEP_REGISTRY)
+    readers = [
+        "repo_file_structure", "repo_language", "repo_file_classification",
+        "repo_file_size", "repo_documentation", "repo_sub_resource_survey",
+    ]
+    idx = order.index("repo_file_inventory")
+    for r in readers:
+        assert idx < order.index(r), f"repo_file_inventory must precede {r}"
+
+
+def test_file_inventory_declares_the_shared_zipball_resource():
+    """Without requires_resources it gets no extraction root at all; with it,
+    resolve_resources shares one download across every step that asks."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    assert STEP_REGISTRY["repo_file_inventory"].requires_resources == {
+        "zipball_root": "local_path"
     }
 
 
