@@ -102,6 +102,16 @@ class TestProjectsRouter:
         assert len(data) == 1
         assert data[0]["disposition"] == "recommended"
 
+    def test_list_projects_does_not_exclude_using(self, client, registry):
+        """using is the stronger positive terminal state (already actively
+        using the resource, or known use elsewhere in the org) — stays
+        visible, same as recommended/tracking/investigating."""
+        registry.set_disposition("https://github.com/test/myproj", "using")
+        resp = client.get("/api/projects/")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["disposition"] == "using"
+
     def test_list_projects_excludes_abandoned_by_default(self, client, registry):
         registry.set_disposition("https://github.com/test/myproj", "abandoned", reason="no longer maintained")
         resp = client.get("/api/projects/")

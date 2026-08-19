@@ -1188,16 +1188,20 @@ let _scoutResults    = [];  // list of DiscoveredRepo from POST /api/discovery/s
 let _scoutFilterText = '';  // client-side filter over the current results batch
 
 // Disposition vocabulary — undecided (default) -> tracking/investigating ->
-// {recommended, abandoned, ignored}. `recommended` is the positive terminal
-// state (added once real use showed the original vocabulary had a full
-// "decided against it" branch but nothing for "decided for it" — everything
-// else only implied "yes" indirectly, via group membership or survey
-// activity). Both "not pursuing" states hide from the sidebar/auto-select
-// and prompt for a reason; they're kept distinct so the history reads
-// honestly ("passed on it early" vs. "went further, then decided against
-// it") — Scouting workflow redesign plan, D3. Fully reversible in every
-// direction, same as the original four — this isn't a linear workflow, a
-// user can revisit any state from any other at any time.
+// {recommended, using, abandoned, ignored}. `recommended` is a positive
+// terminal state (added once real use showed the original vocabulary had a
+// full "decided against it" branch but nothing for "decided for it" —
+// everything else only implied "yes" indirectly, via group membership or
+// survey activity). `using` is a further, stronger positive terminal state
+// than `recommended` — the org is either already actively using the
+// resource, or knows of its use elsewhere in the org (not just "worth
+// pursuing," but actual/known adoption). Both "not pursuing" states hide
+// from the sidebar/auto-select and prompt for a reason; they're kept
+// distinct so the history reads honestly ("passed on it early" vs. "went
+// further, then decided against it") — Scouting workflow redesign plan, D3.
+// Fully reversible in every direction, same as the original four — this
+// isn't a linear workflow, a user can revisit any state from any other at
+// any time.
 //
 // Each state's label doubles as its own button's text when it's the
 // *current* disposition (state/adjective form, e.g. "Recommended"); when
@@ -1205,11 +1209,11 @@ let _scoutFilterText = '';  // client-side filter over the current results batch
 // e.g. "Recommend") via _DISPOSITION_ACTION_LABELS below.
 const _DISPOSITION_LABELS = {
   undecided: '', tracking: '👁 Tracking', investigating: '🔬 Investigating',
-  recommended: '👍 Recommended', abandoned: '⛔ Abandoned', ignored: '🚫 Ignored',
+  recommended: '👍 Recommended', using: '✅ Using', abandoned: '⛔ Abandoned', ignored: '🚫 Ignored',
 };
 const _DISPOSITION_ACTION_LABELS = {
   tracking: '👁 Track', investigating: '🔬 Investigate',
-  recommended: '👍 Recommend', abandoned: '⛔ Abandon', ignored: '🚫 Ignore',
+  recommended: '👍 Recommend', using: '✅ Mark Using', abandoned: '⛔ Abandon', ignored: '🚫 Ignore',
 };
 const _HIDDEN_DISPOSITIONS = new Set(['ignored', 'abandoned']);
 function _dispositionIsHidden(d) { return _HIDDEN_DISPOSITIONS.has(d); }
@@ -2518,13 +2522,14 @@ function _renderProjectRow(p) {
   }
   // Disposition badge — separate axis from the lifecycle badge above:
   // "was this worth pursuing further," decided after scouting.
-  // `investigating` and `recommended` get a badge here (real "worth
-  // surfacing at a glance" signals — actively pursued, or positively
-  // decided on); `ignored`/`abandoned` repos are excluded from this list
-  // entirely unless _showIgnoredRepos is on, in which case the whole row
-  // is just dimmed (no separate badge needed).
+  // `investigating`, `recommended`, and `using` get a badge here (real
+  // "worth surfacing at a glance" signals — actively pursued, positively
+  // decided on, or actually in use); `ignored`/`abandoned` repos are
+  // excluded from this list entirely unless _showIgnoredRepos is on, in
+  // which case the whole row is just dimmed (no separate badge needed).
   const dispositionBadge = p.disposition === 'investigating' ? `<span data-tip="Investigating">🔬</span>`
-    : p.disposition === 'recommended' ? `<span data-tip="Recommended">👍</span>` : '';
+    : p.disposition === 'recommended' ? `<span data-tip="Recommended">👍</span>`
+    : p.disposition === 'using' ? `<span data-tip="Using">✅</span>` : '';
 
   btn.innerHTML = `
     <div class="flex items-center justify-between gap-1 min-w-0">
@@ -6299,7 +6304,7 @@ function _toggleQuestionsPerspective(p) {
 // after scouting, worth pursuing further" (D10).
 function _renderDispositionControl(d) {
   const current = d.disposition || 'undecided';
-  const keys = ['tracking', 'investigating', 'recommended', 'abandoned', 'ignored'];
+  const keys = ['tracking', 'investigating', 'recommended', 'using', 'abandoned', 'ignored'];
   const buttons = keys.map(key => {
     const isCurrent = current === key;
     // Current disposition shows its state/adjective form ("Recommended");
@@ -9230,6 +9235,7 @@ function renderScoutResults() {
         <button onclick="_setScoutDisposition(${i}, 'tracking')" title="Track" class="px-1 hover:text-cyan-400">👁</button>
         <button onclick="_setScoutDisposition(${i}, 'investigating')" title="Investigate" class="px-1 hover:text-cyan-400">🔬</button>
         <button onclick="_setScoutDisposition(${i}, 'recommended')" title="Recommend" class="px-1 hover:text-cyan-400">👍</button>
+        <button onclick="_setScoutDisposition(${i}, 'using')" title="Mark Using" class="px-1 hover:text-cyan-400">✅</button>
         <button onclick="_setScoutDisposition(${i}, 'abandoned')" title="Abandon" class="px-1 hover:text-red-400">⛔</button>
         <button onclick="_setScoutDisposition(${i}, 'ignored')" title="Ignore" class="px-1 hover:text-red-400">🚫</button>
       </td>

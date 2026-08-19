@@ -1377,11 +1377,15 @@ class ProjectRegistry:
                 )
             """)
             # Repo triage disposition — undecided (default) / tracking /
-            # investigating / recommended / abandoned / ignored. `recommended`
-            # is the positive terminal state, sitting alongside the negative
-            # terminal states abandoned/ignored — added once real use showed
+            # investigating / recommended / using / abandoned / ignored.
+            # `recommended` and `using` are both positive terminal states,
+            # sitting alongside the negative terminal states
+            # abandoned/ignored — `recommended` added once real use showed
             # the original four-state vocabulary had no "decided for it"
-            # counterpart to "decided against it." Keyed by github_url (not project_slug)
+            # counterpart to "decided against it"; `using` added later for
+            # the stronger signal that the org is already actively using
+            # the resource or knows of its use elsewhere in the org.
+            # Keyed by github_url (not project_slug)
             # so it covers both a never-imported discovery-search candidate
             # and an already-registered repo with the same row ("Discover
             # repos to scout" plan, D10). One row per github_url — upsert,

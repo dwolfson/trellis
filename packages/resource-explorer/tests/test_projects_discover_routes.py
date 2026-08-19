@@ -232,6 +232,19 @@ class TestDispositionRoute:
         disp = registry.get_disposition("https://github.com/my-org/new-repo")
         assert disp["disposition"] == "recommended"
 
+    def test_using_is_a_valid_disposition(self, client, registry):
+        """A further, stronger positive terminal state than 'recommended' —
+        the org is already actively using the resource, or knows of its use
+        elsewhere in the org."""
+        resp = client.post("/api/discovery/disposition", json={
+            "github_url": "https://github.com/my-org/new-repo",
+            "disposition": "using",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["disposition"] == "using"
+        disp = registry.get_disposition("https://github.com/my-org/new-repo")
+        assert disp["disposition"] == "using"
+
     def test_records_project_slug_when_already_registered(self, client, registry):
         resp = client.post("/api/discovery/disposition", json={
             "github_url": "https://github.com/my-org/already-here",

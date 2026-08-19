@@ -10,15 +10,19 @@ you already have." Reuses OrgImporter/_run_import_batch
 GitHubClient.search_repos() for the search itself.
 
 Also owns repo triage disposition (undecided/tracking/investigating/
-recommended/abandoned/ignored, registry.py's repo_dispositions table) —
-since a disposition can apply to a repo that was never imported at all,
-it's surfaced here on every search result, not just on already-registered
-projects (see projects.py's ProjectSummary.disposition for the
-registered-repo side of the same data). `recommended` is the positive
-terminal state — deliberately added later than the other four, once real
-use surfaced that the vocabulary had a full "decided against it" branch
-(abandoned/ignored) but nothing for "decided for it" (everything else
-implied "yes" only indirectly, via group membership or survey activity).
+recommended/using/abandoned/ignored, registry.py's repo_dispositions
+table) — since a disposition can apply to a repo that was never imported
+at all, it's surfaced here on every search result, not just on
+already-registered projects (see projects.py's ProjectSummary.disposition
+for the registered-repo side of the same data). `recommended` and `using`
+are both positive terminal states, sitting alongside the negative
+terminal states abandoned/ignored — `recommended` added once real use
+surfaced that the vocabulary had a full "decided against it" branch
+(abandoned/ignored) but nothing for "decided for it"; `using` added later
+still, for the stronger, further-along signal that the org is already
+actively using the resource or knows of its use elsewhere in the org —
+distinct from `recommended`'s "worth pursuing," which doesn't imply
+adoption has actually happened yet.
 
 "Discover repos to scout" plan, D4-D6, D10.
 """
@@ -347,12 +351,19 @@ async def import_repos(body: ImportRequest) -> ImportResponse:
     return ImportResponse(queued=len(to_queue), skipped=skipped)
 
 
-# undecided -> tracking/investigating -> {abandoned, ignored}. "ignored" =
-# passed on it early/cheaply, never got past scouting; "abandoned" = went
-# further (investigated, maybe surveyed/analyzed) and then decided against
-# it — same hiding-from-sidebar treatment, but the history reads honestly
-# instead of collapsing both into one word (Scouting workflow redesign, D3).
-_VALID_DISPOSITIONS = {"undecided", "tracking", "investigating", "recommended", "abandoned", "ignored"}
+# undecided -> tracking/investigating -> {recommended, using, abandoned, ignored}.
+# "ignored" = passed on it early/cheaply, never got past scouting;
+# "abandoned" = went further (investigated, maybe surveyed/analyzed) and
+# then decided against it — same hiding-from-sidebar treatment, but the
+# history reads honestly instead of collapsing both into one word
+# (Scouting workflow redesign, D3). "recommended" = decided for it, worth
+# pursuing. "using" = a step further than recommended — the org is either
+# already actively using the resource, or knows of its use elsewhere in
+# the org; not hidden, same as recommended (both are positive signals
+# worth surfacing, not states to tuck away).
+_VALID_DISPOSITIONS = {
+    "undecided", "tracking", "investigating", "recommended", "using", "abandoned", "ignored",
+}
 
 
 class DispositionRequest(BaseModel):
