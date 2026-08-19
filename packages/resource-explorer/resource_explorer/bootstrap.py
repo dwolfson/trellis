@@ -58,11 +58,24 @@ may itself have introduced.
 
 ## Failure behaviour
 
-Fails *open* on connection errors: if Egeria is unreachable the canary check
-returns "present", because an unreachable server is not evidence of a reset and
-healing on that basis would re-run everything against a server that is merely
-briefly down. Startup is never blocked — the initial check runs inside the
-scheduler thread, and any exception is logged and swallowed.
+Fails *open* on connection errors — but reports that it did. If Egeria is
+unreachable the canary check returns None ("could not determine"), not True.
+No heal is attempted either way, because an unreachable server is not evidence
+of a reset and healing on that basis would re-run everything against a server
+that is merely briefly down. The distinction is in the *reporting*: an
+undeterminable check must never be shown as a verified-healthy one.
+
+That distinction was missing initially and cost a real incident (2026-08-19):
+a redeploy wiped all three batches, the periodic check happened to run while
+Egeria was still restarting, failed open, and the status endpoint then reported
+present=True for every batch while every canary was in fact gone. The heal
+logic was correct throughout — only the reporting lied, and it lied silently
+because the fail-open branch logged at DEBUG. Hence: tri-state check,
+`last_verified_at`/`last_check_error` on the status, and INFO-level logging
+whenever a heal is skipped for want of a reachable server.
+
+Startup is never blocked — the initial check runs inside the scheduler thread,
+and any exception is logged and swallowed.
 
 A canary that can never resolve would otherwise re-heal its batch on every
 single pass, forever; `_consecutive_failures` caps repeated attempts per batch
@@ -138,8 +151,17 @@ class Batch:
 
 @dataclass
 class BatchStatus:
-    present: bool | None = None          # None = not yet checked
-    last_checked_at: str = ""
+    # Last *known* answer. None until a check has actually succeeded — which is
+    # NOT the same as "the last check said present". When Egeria is unreachable
+    # the check cannot answer at all, and conflating that with a verified
+    # "present" is what made a wiped catalog read as healthy after a redeploy
+    # (2026-08-19): the status endpoint said present=True for all three batches
+    # while every canary was in fact gone. last_verified_at/last_check_error
+    # exist so a stale answer can be shown as stale instead of as fact.
+    present: bool | None = None
+    last_checked_at: str = ""            # when a check was last attempted
+    last_verified_at: str = ""           # when a check last actually reached Egeria
+    last_check_error: str = ""           # non-empty => last attempt could not determine
     last_healed_at: str = ""
     last_heal_result: str = ""
     consecutive_failures: int = 0
@@ -229,15 +251,28 @@ def discover_batches(docs_dir: Path = DOCS_DIR) -> list[Batch]:
 
 # ── canary check ────────────────────────────────────────────────────────────
 
-def canary_present(batch: Batch, client=None) -> bool:
+def canary_present(batch: Batch, client=None) -> bool | None:
     """Is this batch's canary element in Egeria?
 
-    Returns True (i.e. "no heal needed") on any lookup error — see the module
-    docstring on failing open. An unreachable Egeria is not evidence of a reset,
-    and treating it as one would re-run every batch against a server that is
-    merely restarting.
+    Tri-state, and the third state matters:
+      True  — verified present
+      False — verified missing (heal it)
+      None  — COULD NOT DETERMINE (Egeria unreachable / lookup errored)
+
+    None still means "do not heal" — an unreachable Egeria is not evidence of a
+    reset, and healing on that basis would re-run every batch against a server
+    that is merely restarting. But it must not be reported as True. Collapsing
+    the two is what let a wiped catalog read as healthy after a redeploy on
+    2026-08-19: the check ran mid-redeploy, failed open, and the status endpoint
+    then showed present=True for all three batches while every canary was in
+    fact gone. The distinction is invisible to the heal logic and essential to
+    anyone reading the status.
+
+    Unreachability is logged at INFO, not DEBUG, for the same reason: a decision
+    to skip healing is an event worth seeing in a normal log.
     """
     if not batch.has_canary:
+        # Nothing to check, and nothing to heal — a known answer, not an unknown.
         return True
 
     if client is None:
@@ -246,8 +281,11 @@ def canary_present(batch: Batch, client=None) -> bool:
 
             client = SurveyDefinitionReader()._connect_classification_explorer()
         except Exception as exc:
-            log.debug("bootstrap: cannot reach Egeria for %s (%s) — assuming present", batch.batch_id, exc)
-            return True
+            log.info(
+                "bootstrap: cannot reach Egeria to check %s (%s) — skipping heal, state unknown",
+                batch.batch_id, exc,
+            )
+            return None
 
     from resource_explorer.surveyors.survey_definition_reader import _as_guid
 
@@ -267,8 +305,11 @@ def canary_present(batch: Batch, client=None) -> bool:
     try:
         return _as_guid(client.get_guid_for_name(name, **kwargs)) is not None
     except Exception as exc:
-        log.debug("bootstrap: canary lookup failed for %s (%s) — assuming present", batch.batch_id, exc)
-        return True
+        log.info(
+            "bootstrap: canary lookup failed for %s (%s) — skipping heal, state unknown",
+            batch.batch_id, exc,
+        )
+        return None
 
 
 # ── heal ────────────────────────────────────────────────────────────────────
@@ -377,24 +418,48 @@ def check_and_heal(docs_dir: Path = DOCS_DIR, force: bool = False) -> dict:
                 results[batch.batch_id] = {"action": "skipped", "reason": "too many consecutive failures"}
                 continue
 
-            present = False if force else canary_present(batch)
+            # Tri-state: True/False are verified answers, None means the check
+            # could not reach Egeria. None MUST be handled explicitly — a bare
+            # `if present:` would treat it as falsy and heal during an outage,
+            # precisely the behaviour failing open exists to prevent.
+            state = False if force else canary_present(batch)
+            now = _now()
             with _status_lock:
-                st.present = present if not force else st.present
-                st.last_checked_at = _now()
+                st.last_checked_at = now
+                if state is None:
+                    st.last_check_error = "could not reach Egeria"
+                    # Leave st.present untouched: the previous verified answer
+                    # is still the best information available, and overwriting
+                    # it with a guess is what made a wiped catalog look healthy.
+                else:
+                    st.last_check_error = ""
+                    st.last_verified_at = now
+                    if not force:
+                        st.present = state
 
-            if present:
+            if state is None:
+                results[batch.batch_id] = {"action": "unknown", "reason": "could not reach Egeria"}
+                continue
+
+            if state:
                 results[batch.batch_id] = {"action": "ok", "reason": "canary present"}
                 continue
 
             log.info("bootstrap: %s missing — healing (%d file(s))", batch.batch_id, len(batch.files))
             ok, detail = heal_batch(batch)
+            # Re-check rather than assuming the heal worked: a canary that never
+            # resolves is exactly how an infinite heal loop starts.
+            recheck = canary_present(batch) if ok else False
             with _status_lock:
                 st.last_healed_at = _now()
                 st.last_heal_result = "ok" if ok else detail
                 st.consecutive_failures = 0 if ok else st.consecutive_failures + 1
-                # Re-check rather than assuming the heal worked: a canary that
-                # never resolves is exactly how an infinite heal loop starts.
-                st.present = canary_present(batch) if ok else False
+                if recheck is None:
+                    st.last_check_error = "could not reach Egeria"
+                else:
+                    st.last_check_error = ""
+                    st.last_verified_at = _now()
+                    st.present = recheck
             results[batch.batch_id] = {"action": "healed" if ok else "failed", "reason": detail}
     finally:
         _reinitializing = False
@@ -403,22 +468,40 @@ def check_and_heal(docs_dir: Path = DOCS_DIR, force: bool = False) -> dict:
 
 
 def get_status(docs_dir: Path = DOCS_DIR) -> dict:
-    """Status for the admin banner / status endpoint."""
+    """Status for the admin banner / status endpoint.
+
+    `present` is the last *verified* answer and may be stale; `reachable` says
+    whether the most recent attempt could actually reach Egeria, and
+    `last_verified_at` says when `present` was last known to be true of the
+    real server. Consumers must show a stale answer as stale rather than as
+    fact — reporting an unreachable check as healthy is the specific bug this
+    shape exists to prevent.
+    """
     out = {}
+    any_unreachable = False
     for batch in discover_batches(docs_dir):
         with _status_lock:
             st = _status.get(batch.batch_id, BatchStatus())
+        reachable = not st.last_check_error
+        any_unreachable = any_unreachable or not reachable
         out[batch.batch_id] = {
             "display_name": batch.display_name,
             "present": st.present,
+            "reachable": reachable,
             "last_checked_at": st.last_checked_at,
+            "last_verified_at": st.last_verified_at,
+            "last_check_error": st.last_check_error,
             "last_healed_at": st.last_healed_at,
             "last_heal_result": st.last_heal_result,
             "consecutive_failures": st.consecutive_failures,
             "idempotent": batch.idempotent,
             "file_count": len(batch.files),
         }
-    return {"reinitializing": _reinitializing, "batches": out}
+    return {
+        "reinitializing": _reinitializing,
+        "egeria_reachable": not any_unreachable,
+        "batches": out,
+    }
 
 
 # ── scheduler ───────────────────────────────────────────────────────────────

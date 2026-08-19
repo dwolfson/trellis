@@ -116,12 +116,13 @@ class TestCanary:
         batch = bs.discover_batches(tmp_path)[0]
         assert bs.canary_present(batch, _FakeClient(present=[])) is False
 
-    def test_lookup_error_fails_open(self, tmp_path):
-        """An unreachable Egeria is not evidence of a reset. Healing on that
-        basis would re-run every batch against a server that is merely down."""
+    def test_lookup_error_returns_unknown_not_present(self, tmp_path):
+        """An unreachable Egeria is not evidence of a reset (so: no heal), but it
+        is also not evidence of health. Returning True here is what let a wiped
+        catalog report present=True across the board after a redeploy."""
         _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
         batch = bs.discover_batches(tmp_path)[0]
-        assert bs.canary_present(batch, _FakeClient(raises=True)) is True
+        assert bs.canary_present(batch, _FakeClient(raises=True)) is None
 
     def test_no_canary_means_never_auto_healed(self, tmp_path):
         _write_batch(tmp_path, "b", canary=None)
@@ -201,6 +202,53 @@ class TestCheckAndHeal:
         for _ in range(bs.MAX_CONSECUTIVE_FAILURES + 3):
             bs.check_and_heal(tmp_path)
         assert len(attempts) == bs.MAX_CONSECUTIVE_FAILURES
+
+    def test_unreachable_egeria_does_not_heal(self, tmp_path, monkeypatch):
+        """The regression that matters most: None is falsy, so a bare
+        `if present:` would have healed during an outage — re-running every
+        batch, including the non-idempotent one, against a server that is
+        merely restarting."""
+        _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
+        monkeypatch.setattr(bs, "canary_present", lambda b, client=None: None)
+        called = []
+        monkeypatch.setattr(bs, "heal_batch", lambda b: called.append(b.batch_id) or (True, "ok"))
+
+        res = bs.check_and_heal(tmp_path)
+        assert called == []
+        assert res["batches"]["b"]["action"] == "unknown"
+
+    def test_unreachable_check_does_not_overwrite_last_verified_answer(self, tmp_path, monkeypatch):
+        """A stale-but-real answer beats a guess. Overwriting `present` on an
+        unreachable check is how the status came to claim health it had never
+        verified."""
+        _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
+        monkeypatch.setattr(bs, "heal_batch", lambda b: (True, "ok"))
+
+        monkeypatch.setattr(bs, "canary_present", lambda b, client=None: True)
+        bs.check_and_heal(tmp_path)
+        assert bs.get_status(tmp_path)["batches"]["b"]["present"] is True
+        verified_at = bs.get_status(tmp_path)["batches"]["b"]["last_verified_at"]
+        assert verified_at
+
+        monkeypatch.setattr(bs, "canary_present", lambda b, client=None: None)
+        bs.check_and_heal(tmp_path)
+        st = bs.get_status(tmp_path)["batches"]["b"]
+        assert st["present"] is True                       # retained, not guessed
+        assert st["reachable"] is False                    # but flagged as unverified
+        assert st["last_verified_at"] == verified_at       # staleness is visible
+        assert bs.get_status(tmp_path)["egeria_reachable"] is False
+
+    def test_reachable_check_clears_a_previous_unreachable_flag(self, tmp_path, monkeypatch):
+        _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
+        monkeypatch.setattr(bs, "heal_batch", lambda b: (True, "ok"))
+        monkeypatch.setattr(bs, "canary_present", lambda b, client=None: None)
+        bs.check_and_heal(tmp_path)
+        assert bs.get_status(tmp_path)["batches"]["b"]["reachable"] is False
+
+        monkeypatch.setattr(bs, "canary_present", lambda b, client=None: True)
+        bs.check_and_heal(tmp_path)
+        st = bs.get_status(tmp_path)["batches"]["b"]
+        assert st["reachable"] is True and st["present"] is True
 
     def test_force_reruns_even_when_present(self, tmp_path, monkeypatch):
         _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
