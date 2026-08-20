@@ -133,3 +133,48 @@ class TestRunBatch:
     def test_registered_on_the_real_adapter(self):
         from resource_explorer.surveyors.repo_survey_definition_adapter import _ADAPTER, _run_batch
         assert _ADAPTER.run_batch is _run_batch
+
+def test_stage_survey_kinds_are_disjoint_where_they_should_be():
+    """The automate_full bundle must not be offered as a scouting-tier survey.
+
+    It surfaced on Scouting's Survey tab because the UI never passed the
+    survey_kind filter the endpoint has always supported, so every stage listed
+    every Survey Definition — and running the 20-step bundle from Scouting then
+    deposited Assessment-tier results (security, documentation) that rendered as
+    Scouting Results cards.
+    """
+    import csv
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "repo_survey_types.csv"
+    rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf-8")))
+    by_kind = {}
+    for r in rows:
+        by_kind.setdefault(r["survey_kind"], set()).add(r["survey_group"])
+
+    assert "RepoFullSurvey" in by_kind["automate_full"]
+    assert "RepoFullSurvey" not in by_kind.get("scouting", set())
+    # the scouting-tier set, all three of them
+    assert by_kind["scouting"] == {"RepoCoarseScout", "RepoCoarseProfile", "RepoScoutingSurvey"}
+
+
+def test_scouting_survey_covers_every_scouting_tier_step():
+    """"Scouting Survey" is the run-everything-Scouting-does option: the union
+    of Git Statistics Survey and Coarse Profile Survey, which stay available for
+    the narrower cases."""
+    import csv
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "repo_survey_types.csv"
+    rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf-8")))
+    steps = {g: [r["step_key"] for r in rows if r["survey_group"] == g]
+             for g in ("RepoCoarseScout", "RepoCoarseProfile", "RepoScoutingSurvey")}
+    union = set(steps["RepoCoarseScout"]) | set(steps["RepoCoarseProfile"])
+    assert set(steps["RepoScoutingSurvey"]) == union, (
+        f"missing {union - set(steps['RepoScoutingSurvey'])}, "
+        f"extra {set(steps['RepoScoutingSurvey']) - union}"
+    )
+    # prerequisites first — same ordering rule as STEP_REGISTRY
+    order = steps["RepoScoutingSurvey"]
+    assert order.index("repo_git_statistics") < order.index("repo_health")
+    assert order.index("repo_file_inventory") < order.index("repo_file_structure")
