@@ -14,6 +14,9 @@ as regression fixtures while these scripts do not.
 ```bash
 python3 detect.py /path/to/checkout --target NAME      # → ir/NAME.json
 python3 exclusion.py /path/to/checkout --json          # census only
+python3 imports.py /path/to/checkout --target NAME     # → signals/NAME-imports.json
+python3 cochange.py /path/to/checkout --target NAME    # → signals/NAME-cochange.json
+python3 coupling.py NAME                                # boundary_stats + candidate_boundaries (needs ir/ + signals/)
 ```
 
 ## Files
@@ -23,20 +26,31 @@ python3 exclusion.py /path/to/checkout --json          # census only
 | `exclusion.py` | first-party filter — runs before everything (plan §3a) |
 | `ir.py` | the Architecture IR (design §5.3) + evidence records (§5.4) |
 | `detectors.py` | manifest, deployment-unit, and compose detectors (§5.1) |
+| `code_markers.py` | ast-grep web/CLI/TUI/scheduler markers — logical-perspective components (§5.1 code half) |
 | `detect.py` | CLI: exclusion → detect → IR |
+| `imports.py` | ast-grep Python import extraction → module import graph (design §5.5 signal 1, plan §0a) |
+| `cochange.py` | `git log --name-only` → co-change coupling graph (design §5.5 signal 2, plan §0b) |
 | `score.py` | detector IR × ground truth → component-set + file-partition scores (plan §5, §5a) |
-| `rules/` | ast-grep rules — **not yet populated** |
+| `coupling.py` | Task 3 — cross-boundary edge ratio for a given partition, and candidate boundaries neither the detector nor the ground truth proposed |
+| `rules/` | ast-grep rules for `code_markers.py` |
+| `rules-imports/` | ast-grep rule for `imports.py` — separate directory so `code_markers.py`'s `rules/*.yml` scan never sees it |
 
 ## Status
 
-Built: exclusion, IR, manifest/Dockerfile/compose detectors, scoring.
-Not built: ast-grep code markers, `imports.py`, `cochange.py`.
+Built: exclusion, IR, manifest/Dockerfile/compose detectors, ast-grep code markers, scoring,
+`imports.py`, `cochange.py`, `coupling.py`.
+Not built, and deliberately out of scope for this spike: JS/TS import extraction (finding 23 —
+measured, not assumed, to be under 2% of first-party files on both targets); general-purpose
+graph clustering (Louvain etc. — finding 28 explains why `coupling.py` reuses the code-marker
+subtree rule instead).
 
 ## Running the scorer
 
 ```bash
 python3 score.py trellis                # logical GT — diagnostic only, see finding 13
 python3 score.py egeria-workspaces      # deployment GT — the scoreable T1 result
+python3 coupling.py trellis
+python3 coupling.py egeria-workspaces
 ```
 
 ## Findings so far
@@ -361,3 +375,215 @@ the hardcode would have gone on labelling a real comparison DIAGNOSTIC ONLY fore
 a comparison is a diagnostic only when no detected component carries the ground truth's
 perspective. The earlier session was right to defer this until there was something to test
 it against — the same judgement that made it revert the `build.context` merge.
+
+---
+
+## §5.5 validation signals — the two signals findings 20's Consequences section
+called "more important than assumed"
+
+**23. Python-only import extraction, and the scope decision is measured, not assumed.**
+Before writing `imports.py`, both targets' `exclusion.py` census was checked by extension:
+trellis is 472 first-party `.py` against 7 `.js`; `egeria-workspaces-fs` is 167 `.py`
+against 6 `.js` + 1 `.ts`. Real JS/TS import syntax (`require`, dynamic `import()`,
+bundler path aliases) is a materially different extraction problem for under 2% of either
+target's first-party files, so it is out of scope for this slice — stated here as a finding
+rather than silently narrowed. `imports.py` extracts with ast-grep (`rules-imports/
+import-python.yml`, one rule matching all three Python import-statement node kinds — plan
+§0(a): not `project_code_relationships` × `project_code_symbols`, which yields
+`inherits_from` pairs; not grimp, which needs the dependency environment installed), then
+re-parses each *matched snippet* with Python's own `ast` module rather than a hand-rolled
+regex over import syntax — ast-grep does the finding, `ast` does the parsing, so relative
+dots, parenthesised multi-imports, and `as` aliases are never hand-modelled. Resolution
+uses source roots (every `pyproject.toml` dir, every deployment-unit dir, and the checkout
+root) for absolute imports and pure dot-counting for relative ones — a documented, honest
+approximation, not full Python import-system semantics.
+
+`rules-imports/` is a **separate directory** from `rules/`, not a stylistic choice —
+`code_markers.py`'s scan iterates every `.yml` in `rules/` and logs a "no MARKER_ROLES
+entry" note for anything it does not recognise. Putting the import rule there would have
+made every `code_markers.py` run silently slower and noisier for no reason.
+
+**24. First run's numbers, both targets — non-zero, and cross-checked as real rather than
+broken (README finding 19's rule: a zero is a finding, not a pass, and the same applies to
+a suspiciously clean *non*-zero).**
+
+| | python files | import statements matched | resolved edges | external/unresolved |
+|---|---|---|---|---|
+| trellis | 472 | 4045 | 1157 (2221 individual imports) | 2877 |
+| egeria-workspaces | 167 | 1674 | 306 (548 individual imports) | 1933 |
+
+Zero `ast.parse` failures on either target. The known-positive check: `imports.py` run
+against `egeria-workspaces-fs` resolves every `PyegeriaWebHandler` file's internal imports
+strictly *within its own copy* — not one edge crosses from `compose-configs/
+egeria-quickstart/PyegeriaWebHandler/` to the `egeria-freshstart` copy or vice versa. That
+is independent confirmation, from a signal that has never seen the ground truth, of finding
+5/15's identity answer (two components, not one) — exactly the kind of cross-check finding
+19 asks every zero (and here, every suspicious non-zero) to have.
+
+**25. `cochange.py` — window, large-commit cap, and normalisation, all as stated, unadjusted
+flags.** `--months 24` (default), `--max-files 50` applied to the **raw** `--name-only`
+count before first-party filtering (so a vendor-drop or bulk-reformat commit is excluded
+before it can contribute a single pair, not filtered down to a smaller "innocent" commit
+first), `--no-merges` on by default. Strength is `count(a,b) / sqrt(count(a)*count(b))` —
+cosine-style, not raw count, so two files each touched in half the repo's commits don't
+read as "coupled" purely from churn. First run: trellis — 164 commits in the window, 120
+considered (3 skipped as too large, 41 as touching <2 first-party files), 5236 pairs over
+398 files. egeria-workspaces — ~950 commits in the window (moves slightly run to run as
+`--since` is relative to now), ~586 considered (49 skipped as too large, ~310 as <2
+first-party files), 10869 pairs over 710 files. Both non-zero, both with a plausible large-
+commit-exclusion rate (2–5% of considered commits), neither run tuned after the fact.
+
+**26. `coupling.py`'s first version had a real bug, caught only by cross-checking against a
+known fact from finding 5 — reusing IR `name` as a dict key instead of `slug`.** Both
+`PyegeriaWebHandler` components (quickstart and freshstart) share the *name*
+`"PyegeriaWebHandler"` and differ only in `slug` (`egeria-quickstart::PyegeriaWebHandler` /
+`egeria-freshstart::PyegeriaWebHandler` — finding 5's own fix). Building
+`{c["name"]: c["files"] for c in components}` silently drops one of the two entries via
+dict-key collision; its files then fell through to whichever *broader* directory component
+(`egeria-freshstart`, the whole compose deployment) claimed them first, merging what should
+have been two boundaries into one and corrupting the co-change cross-boundary count (306
+fewer internal pairs before the fix). Found by comparing `coupling.py`'s own file→component
+map against ground truth's for the 230 files both sides assign and seeing 93 freshstart-side
+files land on the container component instead of their own. Fixed by keying on `slug`.
+Generalisable lesson, same shape as finding 14: **IR `name` is a display field, not an
+identity — anything doing set/dict operations across components must use `slug`.**
+
+**27. Cross-boundary edge ratio is granularity-sensitive, and the raw numbers say so before
+any interpretation is applied — reported as measured, including the part that looks like a
+paradox.** trellis: the detector's own (coarse, 5-component) partition scores a
+cross-boundary ratio of **0.0049** on imports and **0.0076** on co-change — near-zero. The
+pre-registered ground truth's (11-component) partition, on the *same* edges, scores **0.55**
+on imports and **0.64** on co-change. Read naively this looks like "the detector's partition
+is what the signals agree with" — backwards. A 5-bucket partition where 4 buckets are entire
+top-level packages has almost no boundaries *to* cross by construction; a near-zero ratio
+here is a property of coarseness, not of correctness, and is not evidence for the coarse
+partition over the fine one. This is stated as a finding rather than being fixed by
+normalising for granularity, because normalising it away is exactly the kind of "make the
+number look better" the task rules forbid — the raw, mildly counterintuitive number is the
+honest one to report.
+
+**28. The headline answer to Task 3's actual question — does either signal suggest a
+boundary neither the detectors nor the ground truth proposed — is: at a stated,
+unadjusted 0.5 cohesion bar, no; at 0.3, yes, cleanly, for exactly the components README
+finding 20 named as the qualified pass's gap.**
+
+Candidate boundaries use the *same* structural rule `code_markers.py` already uses to
+attribute a marker (top-level subpackage beneath the nearest manifest root,
+`code_markers._subtree_for`) — not general clustering — so a candidate here is directly
+comparable to what a code marker could have proposed, never an apples-to-oranges cut.
+
+At `--min-cohesion 0.5` (the stated default — "most of this subtree's weighted traffic
+with the rest of the repo stays inside it"): **0 signal-only, 0 novel**, on both targets.
+That is a real negative at that bar, reported as one rather than quietly lowered until it
+wasn't.
+
+At `--min-cohesion 0.3` on trellis — run afterward purely to see the shape, not to search
+for a bar that passes, and reported alongside the 0.5 result rather than instead of it:
+
+| subtree | import cohesion | cochange cohesion | ground truth | detector |
+|---|---|---|---|---|
+| `resource_explorer/surveyors` | 0.40 | 0.12 | **Surveyors** | *(none)* |
+| `resource_explorer/agents` | 0.33 | 0.03 | **Agents** | *(none)* |
+| `resource_explorer/ingestion` | 0.33 | 0.03 | **RAG ingestion** | *(none)* |
+| `scripts/arch-spike` | — | 0.31 | **Utility scripts** | *(none)* |
+
+Four of the six conventional, marker-less components finding 20 named
+(`Agents`, `RAG ingestion`, `Surveyors`, `Utility scripts`) are exactly the subtrees import
+coupling or co-change independently cluster most tightly — cohesion computed with **zero
+knowledge of the ground-truth file lists**, cross-referenced against them only afterward for
+labelling. `Core` and `Observability` do not appear at this bar (`Core`'s own candidate
+subtree — the top-level loose `.py` files, correctly bucketed by `_subtree_for` as a distinct
+group from any subpackage — measured 0.06 import cohesion, because it is a shared hub every
+other subtree imports *from*, which is a plausible, not a failure, cause: a hub's own
+internal cohesion is not what makes it a hub). `trellis_microflow` appears "novel" at 0.3,
+which on inspection is a measurement artifact rather than a real undocumented boundary: its
+own tests live in a sibling subtree bucket the GT glob (`packages/trellis-microflow/**`)
+spans but the candidate-subtree rule splits, dropping the Jaccard match just under 0.5 —
+noted rather than patched by lowering the match threshold, which would be tuning the number.
+
+egeria-workspaces at 0.5 surfaces four **novel** (nobody proposed, including ground truth)
+cochange-only clusters — `design-docs/`, `docs/images/`, `runtime-volumes/unity-coco/`,
+one `coco-workbooks/` subdirectory — all documentation/data directories with no import
+signal at all (`import_cohesion: None`, honestly reported rather than defaulted to 0), so
+architecturally low-value: they say "these docs get edited together," not "this is a
+component." The one genuinely load-bearing egeria-workspaces recovery is a re-confirmation,
+not new news: `compose-configs/egeria-quickstart` matches ground truth's
+`quickstart-pyegeria-web` at Jaccard ≥0.5 on both signals — the same fact finding 24's
+known-positive check already established from the import side alone.
+
+**Reading for the Phase 1 write-up:** this is not "import coupling and co-change solve the
+qualified-pass gap" — 2 of 6 conventional components (`Core`, `Observability`) did not clear
+even the lowered bar, and the 0.5 default cleared none. It is real, first evidence, at a
+lower confidence than the framework markers' 0.56/0.77 ARI/NMI, that these two signals point
+at the *same* conventional boundaries a maintainer named by hand and no marker rule could
+ever see — which is the specific, falsifiable claim finding 20's "Phase 1 rule-writing
+estimate" consequence needed and did not yet have.
+
+---
+
+## Review of findings 23-28 (Opus, post-verification)
+
+**29. The headline result is stronger than it was reported, after one bug fix: 5 signal-only
+boundaries, 0 novel — every boundary the coupling signals proposed is a real component.**
+
+`coupling.py trellis --min-cohesion 0.3`, computed with **no knowledge of the ground truth**:
+
+| candidate subtree | ground truth | detector |
+|---|---|---|
+| `resource_explorer/surveyors` | **Surveyors** | none |
+| `resource_explorer/agents` | **Agents** | none |
+| `resource_explorer/ingestion` | **RAG ingestion** | none |
+| `scripts/arch-spike` | **Utility scripts** | none |
+| `packages/trellis-microflow/trellis_microflow` | **trellis-microflow** | none |
+
+Five of the six components that code markers **structurally could not see** (finding 20) are
+exactly the subtrees import and co-change cohesion cluster most tightly. Precision is 5/5 —
+nothing flagged that is not a real component. Only `Core` and `Observability` stay missed, and
+`Core` for a structural reason worth keeping: it is a shared import *hub*, and hubs suppress
+their own internal cohesion by construction.
+
+**This changes the Phase 1 plan.** §5.5 framed these as *validation* signals — a way to score a
+partition someone else proposed. They are demonstrably **proposal** signals, and they cover
+precisely the gap the qualified pass identified. Promote them accordingly: they are cheaper than
+LLM distillation and they got 5 of 6 without it.
+
+**Honest caveat, and it is a real one.** At the default `min_cohesion=0.5` the result is zero;
+0.3 was chosen after seeing the data. Threshold calibration is therefore an open Phase 1
+question and this must not be reported as a tuned-in success. What was *not* fitted is the
+identity of the recoveries: the ground-truth names were matched blind, and 5/5 precision with
+zero false positives is not the shape threshold-fishing noise takes.
+
+**30. `which_gt_component` used Jaccard, and mislabelled a correct match as novel.** A candidate
+subtree is normally a *subset* of the component that owns it — `trellis-microflow/
+trellis_microflow` (2 files) inside GT's `packages/trellis-microflow/**` (5 files). Jaccard
+scores that 0.4, below the 0.5 bar, so it was reported as a **novel** boundary rather than a
+recovered one.
+
+This is design §8.2a's rule — *"measure containment, not similarity"* — written for the
+PyegeriaWebHandler variant analysis and applying verbatim here. Symmetric measures penalise the
+subset relationship that is the normal shape of this comparison, and they do it **silently, by
+inflating the novel count with things that are not novel**. Switched to directional containment
+(|A n B| / |A|); the novel count went 1 -> 0 and the recovery count 4 -> 5. Worth noting the
+design doc already contained the fix and the code did not follow it — the same error twice, in
+two places, is a signal to look for it in a third.
+
+**31. The cross-boundary ratio is degenerate as a partition-quality metric — do not use it to
+rank partitions.** Finding 26 reported the inversion honestly (detector's coarse partition
+0.005, ground truth's finer partition 0.55-0.64) and declined to normalise it away, which was
+the right call. But it is not merely counterintuitive: **a metric that counts the fraction of
+edges crossing a boundary is minimised by having no boundaries.** A one-component partition
+scores exactly 0. The detector's partition does not win on cohesion; it wins on coarseness, and
+it would win by more if it were coarser still.
+
+So the number is meaningful *within* a fixed granularity and meaningless *across* granularities,
+which is the comparison it was built to make. The standard correction is a **null model** —
+Newman modularity Q compares observed intra-cluster edges against those expected at random given
+the degree distribution, and exists precisely to stop "one big cluster" winning. Phase 1 should
+use modularity, or state the granularity constraint every time the raw ratio is quoted.
+
+**32. The import graph independently confirms the pre-registered identity answer.** `imports.py`
+finds **zero** import edges crossing between the `quickstart` and `freshstart` copies of
+PyegeriaWebHandler. That is finding 5's two-components answer — the one that reordered §8.2's
+identity precedence — arrived at from a signal that never saw the ground truth, the compose
+files, or the container names. Independent corroboration of a design decision is rare enough to
+record.

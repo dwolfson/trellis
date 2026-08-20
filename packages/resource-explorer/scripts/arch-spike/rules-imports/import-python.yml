@@ -1,0 +1,15 @@
+# design §5.5 validation signal 1 / plan §0(a) — module import graph.
+# Matches every Python import form as a single node kind triple rather than
+# three separate patterns, so nothing is silently missed by a pattern that
+# only covers `import X` and not `from X import Y` (or vice versa). The text
+# of each match is re-parsed in imports.py with Python's own `ast` module —
+# ast-grep does the *finding*, ast does the reliable *parsing* of what was
+# found, which is more robust than hand-rolled regex over import syntax
+# (relative dots, parenthesised multi-imports, `as` aliases, etc).
+id: py-import
+language: Python
+rule:
+  any:
+    - kind: import_statement
+    - kind: import_from_statement
+    - kind: future_import_statement

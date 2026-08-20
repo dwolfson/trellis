@@ -238,7 +238,7 @@ class IngestionPipeline:
         (IncrementalIndexer._run_profile_only + the old extract_symbols_only)
         into a single zipball download. include_symbols=False is the fast,
         common "what's actually in this repo" pass (the "Coarse Profile
-        Survey" Survey Definition, and the profile-scan route/scheduler);
+        Survey" Survey Definition, and the scheduler's profile job);
         include_symbols=True additionally refreshes project_code_symbols,
         which is what Assessment's SecurityHygieneSurveyor/DocumentationSurveyor
         and Analysis's ApiStructureSurveyor depend on (previously only ever

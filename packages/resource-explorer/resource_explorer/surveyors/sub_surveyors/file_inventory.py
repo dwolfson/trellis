@@ -3,7 +3,7 @@
 Closes the same class of bug D5 closed for `project_code_symbols`, on the
 table that far more steps depend on. `project_file_inventory` was written by
 exactly three things — full RAG ingestion, IncrementalIndexer, and
-IngestionPipeline.refresh_profile() (the profile-scan route / scheduler job) —
+IngestionPipeline.refresh_profile() (the scheduler's profile job) —
 and by no survey step at all. Meanwhile `repo_file_structure`, `repo_language`,
 `repo_file_classification`, `repo_file_size`, `repo_documentation` and
 `repo_sub_resource_survey` all *read* it.

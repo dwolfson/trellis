@@ -306,7 +306,7 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
         # SurveyOrchestrator step) — schedulable like "ingest", not excluded
         # like "publish". Auto-chains the language_file_classification survey
         # against the freshly refreshed inventory, matching the interactive
-        # on-demand POST .../profile-scan route — a scheduled refresh should
+        # "Coarse Profile Survey" Survey Definition — a scheduled refresh should
         # produce the same displayed result an on-demand one does, not a
         # data-only update nothing ever reads. (There is no "Profile tab":
         # coarse profiling is a Survey Definition, "Coarse Profile Survey", run

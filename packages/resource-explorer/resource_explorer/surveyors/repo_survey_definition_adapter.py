@@ -51,6 +51,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     DocumentationSurveyor,
     FileInventorySurveyor,
     GitStatisticsSurveyor,
+    WebsiteIngestionSurveyor,
     FileSizeSurveyor,
     FileStructureSurveyor,
     HealthSurveyor,
@@ -273,6 +274,20 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # cheap.
         fetch_cost="download",
         compute_cost="low",
+    ),
+    # Directly after repo_homepage, which is what populates projects.homepage_url
+    # — STEP_REGISTRY order is also "Full Survey (all steps)" order, so a site
+    # ingested before it has been derived would use the previous run's URL.
+    "repo_website_ingestion": StepInfo(
+        "repo_website_ingestion", WebsiteIngestionSurveyor,
+        "Ingests the project's external website into pgvector as {slug}_web_docs, so "
+        "Chat and Understanding can answer from the project's own documentation "
+        "rather than only its source tree. Uses the site repo_homepage derived; "
+        "no-ops when that is the code host itself.",
+        ["ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        fetch_cost="download",
+        compute_cost="medium",
     ),
     "repo_dependency": StepInfo(
         "repo_dependency", DependencySurveyor,

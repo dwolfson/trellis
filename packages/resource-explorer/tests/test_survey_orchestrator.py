@@ -269,6 +269,9 @@ class TestCostTierFilter:
                 assert excluded == {
                     "repo_file_inventory", "repo_homepage", "repo_data_profiling",
                     "repo_symbol_extraction", "repo_rag_ingestion",
+                    # repo_website_ingestion (2026-08-20) — fetches the project's
+                    # external site over HTTP, so it is not zero-fetch.
+                    "repo_website_ingestion",
                     "repo_git_statistics", "repo_sub_resource_survey",
                 }
                 for key in excluded:
@@ -288,6 +291,10 @@ class TestCostTierFilter:
                 excluded = {k for k, info in STEP_REGISTRY.items() if info.compute_cost != "low"}
                 assert excluded == {
                     "repo_data_profiling", "repo_symbol_extraction", "repo_rag_ingestion",
+                    # repo_website_ingestion (2026-08-20) — embeds the project's
+                    # external site. medium rather than rag_ingestion's high: one
+                    # page, not a whole repo.
+                    "repo_website_ingestion",
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()
