@@ -165,7 +165,7 @@ repo_analyses:
     name: "License Classification"
     description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."
     resource_types: ["repo"]
-    intent: assessment  # is this worth pursuing, given its usage restrictions?
+    intent: discovery  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
     perspectives: ["steward", "security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -213,7 +213,7 @@ repo_analyses:
     name: "Maturity"
     description: "Project age/lifecycle stage (nascent/emerging/established/mature) from repo creation date — a CHAOSS-informed early-headlights signal, distinct from Repository Health's activity/community/release scoring."
     resource_types: ["repo"]
-    intent: assessment
+    intent: discovery  # retagged from 'assessment' 2026-08-20 — see CLAUDE.md rule 17.
     perspectives: ["steward", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -229,7 +229,7 @@ repo_analyses:
     name: "Repo Conventions"
     description: "Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style catalog-info.yaml), documentation breadth."
     resource_types: ["repo"]
-    intent: assessment
+    intent: discovery  # retagged from 'assessment' 2026-08-20 — see CLAUDE.md rule 17.
     perspectives: ["steward", "security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local

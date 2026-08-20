@@ -16,6 +16,7 @@ import argparse
 import glob as globlib
 import os
 import re
+import subprocess
 import sys
 
 # docs/architecture-recovery-design.md §3.1 — SolutionComponentType.java
@@ -97,12 +98,34 @@ def unquote(v: str) -> str:
     return (m.group(1) if m else v).strip()
 
 
-def matches(pattern: str, root: str) -> int:
+def tracked_files(root: str) -> set[str] | None:
+    """Files git tracks, relative to root — or None outside a git checkout.
+
+    Scoring MUST use the same file set the detector sees, and the detector's
+    exclusion pass uses `git ls-files`. Globbing the filesystem instead counts
+    untracked build output: `frontend-build/**` matches 6 tracked files and
+    1440 on disk, because an untracked node_modules sits under it. Coverage
+    computed the wrong way would have been off by 200x for that component.
+    """
+    try:
+        proc = subprocess.run(["git", "-C", root, "ls-files", "-z"],
+                              capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return {p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p}
+
+
+def expand(pattern: str, root: str, tracked: set[str] | None) -> set[str]:
+    """Files a glob matches, restricted to tracked files where git is available."""
     p = unquote(pattern)
     if p.endswith("/**"):
         p = p[:-3] + "/**/*"
-    hits = globlib.glob(os.path.join(root, p), recursive=True)
-    return sum(1 for h in hits if os.path.isfile(h))
+    hits = {os.path.relpath(h, root)
+            for h in globlib.glob(os.path.join(root, p), recursive=True)
+            if os.path.isfile(h)}
+    return hits & tracked if tracked is not None else hits
 
 
 def main() -> int:
@@ -114,11 +137,17 @@ def main() -> int:
     doc = parse(args.file)
     errors: list[str] = []
     warnings: list[str] = []
+    tracked: set[str] | None = None
 
     root = args.root or unquote(doc["meta"].get("checkout", ""))
     if root and not os.path.isdir(root):
         warnings.append(f"checkout path does not exist, skipping glob checks: {root}")
         root = ""
+    if root:
+        tracked = tracked_files(root)
+        if tracked is None:
+            warnings.append("not a git checkout — counting files on disk, which may "
+                            "include untracked build output the detector never sees")
 
     for field in ("written by", "written at"):
         v = doc["meta"].get(field, "")
@@ -140,8 +169,9 @@ def main() -> int:
         if not files:
             errors.append(f"component {name!r}: no file globs")
         for g in files:
-            if root and matches(g, root) == 0:
-                errors.append(f"component {name!r}: glob {unquote(g)!r} matches no files")
+            if root and not expand(g, root, tracked):
+                errors.append(f"component {name!r}: glob {unquote(g)!r} matches no "
+                              f"{'tracked ' if tracked is not None else ''}files")
 
     for bp, members in doc["blueprints"].items():
         if PLACEHOLDER.search(bp):
@@ -157,21 +187,24 @@ def main() -> int:
 
     # Overlapping globs are legal (a file can be in two components) but usually a slip.
     seen: dict[str, str] = {}
+    assigned = 0
     if root:
         for name, comp in real.items():
             for g in comp["files"]:
                 if PLACEHOLDER.search(g):
                     continue
-                p = unquote(g)
-                pat = p[:-3] + "/**/*" if p.endswith("/**") else p
-                for hit in globlib.glob(os.path.join(root, pat), recursive=True):
-                    if os.path.isfile(hit) and hit in seen and seen[hit] != name:
-                        warnings.append(f"file claimed by both {seen[hit]!r} and {name!r}: "
-                                        f"{os.path.relpath(hit, root)}")
+                for hit in expand(g, root, tracked):
+                    if hit in seen and seen[hit] != name:
+                        warnings.append(f"file claimed by both {seen[hit]!r} and {name!r}: {hit}")
                     seen[hit] = name
+        assigned = len(seen)
 
     print(f"{args.file}: {len(real)} components, {len(doc['blueprints'])} blueprints, "
           f"{len(doc['unassigned_ok'])} unassigned-ok, {len(doc['excluded'])} excluded")
+    if root and tracked is not None:
+        pct = 100 * assigned / len(tracked) if tracked else 0
+        print(f"  coverage: {assigned}/{len(tracked)} tracked files assigned "
+              f"to a component ({pct:.1f}%)")
     for w in dict.fromkeys(warnings):
         print(f"  warn:  {w}")
     for e in errors:

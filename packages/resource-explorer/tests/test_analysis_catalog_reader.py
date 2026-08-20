@@ -77,22 +77,45 @@ class TestFilterByIntent:
         }
 
     def test_filters_to_assessment(self):
+        """Assessment keeps what genuinely evaluates against criteria.
+        license_classification/maturity/repo_conventions moved to discovery on
+        2026-08-20 — they derive from already-collected data with zero new
+        fetch, which is Discovery's signature (CLAUDE.md rule 17)."""
         analyses = acr.get_analyses("repo", intent="assessment", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
         assert ids == {
-            "security_scan", "documentation_coverage", "license_classification",
-            "security_features", "ci_quality", "maturity", "repo_conventions",
+            "security_scan", "documentation_coverage", "security_features", "ci_quality",
         }
+
+    def test_discovery_is_the_zero_fetch_derivation_tier(self):
+        """Discovery reasons over what Scouting collected rather than fetching:
+        every one of its analyses' steps declares requires_resources={}."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP, STEP_REGISTRY,
+        )
+
+        analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
+        ids = {a["id"] for a in analyses}
+        assert ids == {"license_classification", "maturity", "repo_conventions"}
+        for aid in ids:
+            for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):
+                assert not (getattr(STEP_REGISTRY[step], "requires_resources", {}) or {}), (
+                    f"{step} fetches — it does not belong in the zero-fetch Discovery tier"
+                )
 
     def test_intent_all_returns_everything(self):
         unfiltered = acr.get_analyses("repo", include_egeria_live=False)
         all_intent = acr.get_analyses("repo", intent="all", include_egeria_live=False)
         assert len(unfiltered) == len(all_intent)
 
-    def test_discovery_and_enrichment_have_no_entries_by_design(self):
+    def test_enrichment_and_automate_have_no_entries_by_design(self):
+        """Still true for these two — Enrichment is served by context.py and
+        Automate by its own notification_subscriptions table. `discovery` was in
+        this list until 2026-08-20; it now has real entries (see
+        test_discovery_is_the_zero_fetch_derivation_tier)."""
         for rtype in ("repo", "database", "filesystem"):
-            assert acr.get_analyses(rtype, intent="discovery", include_egeria_live=False) == []
             assert acr.get_analyses(rtype, intent="enrichment", include_egeria_live=False) == []
+            assert acr.get_analyses(rtype, intent="automate", include_egeria_live=False) == []
 
 
 class TestFilterByPerspective:

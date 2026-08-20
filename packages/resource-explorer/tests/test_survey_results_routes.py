@@ -120,8 +120,9 @@ class TestSurveyResultsRoute:
 
     def test_stage_filter_selects_membership_not_equality(self, client):
         """A card spanning stages must appear under each of them: health_maturity
-        reports repository_health (scouting) and maturity (assessment)."""
-        for stage in ("scouting", "assessment"):
+        reports repository_health (scouting) and maturity (discovery, retagged
+        from assessment 2026-08-20)."""
+        for stage in ("scouting", "discovery"):
             resp = client.get(
                 f"/api/projects/myproj/survey-results?stage={stage}&include_empty=true")
             ids = {d["id"] for d in resp.json()["dashboards"]}
@@ -131,7 +132,7 @@ class TestSurveyResultsRoute:
         resp = client.get(
             "/api/projects/myproj/survey-results?stage=analysis&include_empty=true")
         ids = {d["id"] for d in resp.json()["dashboards"]}
-        assert "security_overview" not in ids   # assessment-only
+        assert "security_overview" not in ids   # discovery/assessment, not analysis
         assert "dependencies" in ids
 
     def test_unknown_stage_yields_nothing_rather_than_everything(self, client):
