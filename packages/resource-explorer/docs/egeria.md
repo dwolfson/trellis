@@ -1,31 +1,37 @@
 
-## trellis / resource-explorer
+## egeria
 
 ## Runtime Components
 
-### resource-explorer web
-#### backend
-- FastAPI web services supporting the front-end
+### egeria-platform
 
-#### front-end
-- javascript single page applications
+### egeria-servers
 
-### cli
-- terminal based interface
-### textual
-- textual based interface
-### RAG ingestion
+#### metadata servers
 
-### Agents
-- A bunch of different agents to support different analyses and interactions (code, compare, conversations, doc, examples, etc)
+#### integration daemons
 
-### Observability
-- Support for mlflow and maybe arize
-- feedback
+#### engine hosts
 
-### prefect
-- open source flow engine to choreograph execution of survey types
-### surveyors
-- microflows to perform different kinds of survey steps 
-### utility scripts
-- a variety of scripts to support different kinds of operations
+#### view servers
+
+### connectors
+Lots of connectors, each a component
+
+## deployment components
+### docker
+### build
+### swagger etc
+### startup configuration
+
+## conformance test suite
+
+
+## samples
+### http clients
+### sample clients
+### reports
+### utilities
+
+## content-packs
+pre-built loadable archives of metadata that define useful content

@@ -13,8 +13,8 @@
 #### quickstart-web-server
 - apache web server
 #### quickstart-pyegeria-web
-- pyegeriaWebHandler is a complex python module supporting both MCP commands and Egeria Portal and can be configured to run in local mode or demo mode.
-  - The portal provides many single page applications over egeria data and services
+- pyegeriaWebHandler is a complex python module using FastAPI to support both MCP commands and Egeria Portal and can be configured to run in local mode or demo mode.
+  - The portal provides many single page applications over egeria data and services written in javascript with backends in python
   - MCP provides services both to execute reports and Dr.Egeria Commands
 #### quickstart-my-profile
 - A textual application that allows users to manage their environment

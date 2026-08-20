@@ -1,0 +1,1299 @@
+# Architecture Recovery — Deriving Solution Blueprints from Repositories
+
+**Status:** design + plan. Review comments incorporated. All open questions resolved except **Q6**
+(deliberately out of scope) and **Q13** (correctly deferred to after Phase 0). **Ready to plan.**
+**Date:** 2026-08-19 (revised same day after review)
+**Context:** extends the Scouting → Discovery → Analysis funnel with a new analysis class that
+produces *design* metadata (Egeria Area 7) rather than measurements. See
+`docs/survey-and-analysis-current-state-2026-08-19.md` for what RE does today.
+
+
+> **Note on source tree.** The Egeria-side grounding in §3 (types, enums, pyegeria client methods) was
+> verified against `/Users/dwolfson/localGit/egeria-v6/egeria` and `egeria-python` and is unaffected by
+> the repo migration. **RE-side references — gap numbers, file paths, line numbers — were derived from
+> the pre-migration standalone `resource-explorer` repo and inherit the staleness documented in
+> `survey-and-analysis-current-state-2026-08-19.md`.** Re-verify anything RE-specific against
+> `trellis/packages/resource-explorer` before acting on it.
+>
+> **Revision note.** The RE-side claims added in the post-review revision — §5.5, §5.6, §5.7, §6.0,
+> §6.5, and the storage decisions in §5.4 — *were* verified against `trellis/packages/resource-explorer`
+> (`registry.py`, `surveyors/repo_survey_definition_adapter.py`, `surveyors/prefect_adapter.py`,
+> `agents/`, `configdata/analysis_catalog.yaml`). The staleness warning above still applies to the
+> gap numbers (R1–R5) and to line references in the original §1–§4 and §6.1–§6.4.
+
+---
+
+## 1. The idea in one paragraph
+
+Statically analyse a repository to recover its **architecture** — what the software components are,
+how each is run, and how they connect — and project that into Egeria as a **Solution Blueprint** with
+**Solution Components**, **Ports** and **Linking Wires**. Derived output is marked as unvalidated and
+enters a curation workflow where a human (or agent) promotes, corrects, or rejects it. The recovered
+component becomes the *aggregation unit* for RE's existing repo analyses, which today have nowhere
+useful to land.
+
+---
+
+## 2. Why this is worth doing — the reframe
+
+The obvious framing is "a new analysis that draws architecture diagrams." That undersells it.
+
+RE currently reports at two granularities, and both are wrong:
+
+- **Whole-repo** — "this repo has 412 Python files, health score 0.72, 38 dependencies." Too coarse to
+  act on. A monorepo and a single-purpose library get the same shape of answer.
+- **File / symbol** — collected in `project_code_symbols`, `project_file_inventory`,
+  `project_dependencies`, the Milvus chunks. Too fine to govern, and per the current-state doc, mostly
+  **never published to Egeria at all** (gaps R3, R4, R5).
+
+**The component is the missing middle.** Bus factor per *component* is actionable where bus factor per
+*repo* is trivia (gap R1). Dependency risk per component tells you blast radius; per repo it tells you
+nothing. Doc coverage per component identifies which subsystem is undocumented.
+
+So this work does two things at once: it adds a genuinely new capability (design metadata), and it
+gives several existing-but-orphaned analyses a granularity at which they become worth publishing.
+That second effect is the stronger business case.
+
+---
+
+## 3. Grounding — verified facts about the target types
+
+All verified against the local Egeria checkout (`/Users/dwolfson/localGit/egeria-v6/egeria`) and
+`egeria-python`, not from documentation alone.
+
+### 3.1 `SolutionComponentType` is a small closed vocabulary
+
+From `frameworks/open-metadata-framework/.../refdata/SolutionComponentType.java`:
+
+`Automated Action`, `Long Running Daemon`, `Multi-Step Process`, `Third Party Process`,
+`Manual Process`, `Data Storage`, `Software Service`, `Software Library`, `User Interface`,
+`Console Command`, `Data Distribution`, `Publishing`, `Insight Model`.
+
+**This is the single most important fact in the design.** The classification target is not open-ended
+— it is a 13-value enum, and most values are directly inferable from deployment artifacts. "How and
+where is it run" is literally what this vocabulary encodes.
+
+### 3.2 `SolutionPortDirection` is a 5-value enum
+
+From `.../enums/SolutionPortDirection.java`: `Unknown(0)`, `Output(1)`, `Input(2)`,
+`Input-Output(3)` (request-response provided), `Output-Input(4)` (request-response called), `Other(99)`.
+
+Note Input-Output vs Output-Input distinguishes *serving* an interface from *calling* one — exactly
+the client/server distinction static analysis can make from imports and framework decorators.
+
+### 3.3 `SolutionLinkingWire` properties are populatable
+
+Per 0735: `iscQualifiedNames`, `label`, `description`, `oneWay`, `integrationStyle`, `frequency`,
+`protocol`, `dataExchanged`. Also `SolutionComponentPort` (component→port) and
+`SolutionPortDelegation` (parent port → child port in decomposed hierarchies).
+
+`iscQualifiedNames` **on the wire** means ISC attribution is a labelling pass over an existing wire
+graph, not a separate extraction. Important for §9.
+
+**But `SolutionLinkingWire` is a *relationship*, not an entity** (`OpenMetadataType.java:6335`), and
+classifications attach only to entities. So the `Confidence` classification (§3.3b) **cannot be applied
+to a wire.** `SolutionPort` *is* an entity (`OpenMetadataType.java:6345`), so the resolution is to carry
+wire confidence on the ports the wire connects rather than inventing a mechanism. Recorded in Q4.
+
+### 3.3a `SolutionBlueprint` is a Collection — blueprints do not nest
+
+`SolutionBlueprint` (`OpenMetadataType.java:6396`) is *"a collection of solution components that make up
+a solution."* There is **no blueprint-to-blueprint relationship**. Nesting is `SolutionComposition`
+(`OpenMetadataType.java:6303`), which relates **SolutionComponents** to each other; `SolutionDesign`
+relates a blueprint to a digital service or product.
+
+For a monorepo this means: one blueprint per repo, each package a top-level `SolutionComponent`,
+`SolutionComposition` decomposing below that.
+
+The Collection nature gives something better than nesting anyway — **a component can be a member of
+more than one blueprint.** Cross-repo composition therefore works by wiring components across
+blueprints and collecting them into an estate-level blueprint, without duplicating anything. That is
+also the only mechanism by which §9's estate-wide ISC candidates could work. Recorded in Q8.
+
+### 3.3b `Confidence` is a classification on `Referenceable` — confirmed
+
+`getConfidenceClassification()` (`OpenMetadataTypesArchive1_2.java:6951`) defines the `Confidence`
+classification against **`Referenceable`**, so it applies to `SolutionComponent` and `SolutionPort`
+directly. Properties, via `GovernedDataClassificationBase`:
+
+`confidenceLevel` (int — a governance level from a valid-value set), `confidence` (int 0–100),
+`statusIdentifier`, `steward`, `stewardTypeName`, `stewardPropertyName`, `source`, `notes`.
+
+**`confidence` is an int 0–100** — the same scale as `project_analysis_findings.confidence`
+(`registry.py:866`), so evidence and published confidence need no conversion. Confidence is an integer
+0–100 throughout this design; there is no float scale anywhere.
+
+**`confidenceLevel` uses the existing `ConfidenceLevel` valid-value set — and we do *not* extend it.**
+From `refdata/ConfidenceLevel.java`: `Unclassified(0)`, `Ad Hoc(1)`, `Transactional(2)`,
+`Authoritative(3)`, `Derived(4)`, `Obsolete(5)`, `Other(99)`.
+
+These are **not** a degree scale, which is why they initially look like a poor fit. They are a
+*provenance* scale — and provenance is exactly the axis this feature needs. The stock descriptions
+land on our cases almost verbatim:
+
+| Value | Egeria's own description | Our use |
+|---|---|---|
+| `Derived` | "derived from other data through an analytical process" | **the default for everything this feature emits** |
+| `Authoritative` | "comes from an authoritative source; the best set of values" | human-curated **and** declared sources (§5.1) — genuinely the same epistemic status |
+| `Ad Hoc` | "comes from an ad hoc process" | heuristic and LLM-derived claims |
+| `Obsolete` | "comes from an obsolete source and must no longer be used" | **stale overlay entries** (§7.2) — a case that otherwise had no typed home |
+| `Unclassified` | "no assessment of the confidence level" | not yet assessed |
+| `Transactional` | narrow-scope transactional source | no natural use here; leaving an enum value unused is not a problem |
+
+**Consequence: §5.4's `derivation` field is redundant and is removed.** It was a local reinvention of
+`confidenceLevel`. That frees `source` to carry something more useful — the analyzer/detector id — and
+leaves `steward` for who curated.
+
+**Q12 therefore dissolves.** No level set to author, no upstream type change, and Phase 2 loses a
+prerequisite.
+
+**What it still does not answer** is the *evidence* half of Q4 — locations and excerpts have no home
+here, which is why §5.4 keeps them RE-side.
+
+### 3.3c Three orthogonal axes, not one
+
+Worth stating explicitly because they are easy to conflate, and because all three are typed and
+queryable — none needs `jsonProperties`:
+
+| Axis | Carrier | Question |
+|---|---|---|
+| **Provenance** | `confidenceLevel` (`ConfidenceLevel`) | where did this claim come from? |
+| **Degree** | `confidence` (int 0–100) | how sure are we? |
+| **Workflow** | `ContentStatus` (§3.4) | has a human signed off? |
+
+They correlate but are not substitutes. The case that proves it: a component can be `Active` — approved
+and in use — while still `Derived`, meaning accepted by a curator but never independently re-verified
+against the code. Collapsing the axes would lose that, and it is precisely the state most of a large
+estate will sit in.
+
+The second non-redundant case is `Obsolete` versus `ContentStatus.Deprecated`: *Deprecated* is a
+decision ("stop using this"), *Obsolete* is a fact about the source ("this no longer reflects
+reality"). A stale overlay entry pointing at deleted code is Obsolete, not Deprecated.
+
+### 3.4 `ContentStatus` is the derived/validated axis — confirmed
+
+From `.../enums/ContentStatus.java`:
+
+`Draft(0)` "content is incomplete" · `Prepared(1)` "ready for review" · `Proposed(2)` "in review" ·
+`Approved(3)` · `Rejected(4)` · `Active(5)` "approved and in use" · `Deprecated(6)` · `Other(99)`.
+
+This is a proper review lifecycle, not a binary flag, and it already has the states this use case
+needs.
+
+**Confirmed: `ContentStatus` is settable on any authored `Referenceable`, including
+`SolutionComponent`.** Setting it is an ordinary update with the status as a key in the JSON payload —
+no special mechanism. `update_solution_blueprint_status` in pyegeria is most likely a legacy artifact
+predating the move of `contentStatus` into the body; do not build against it as if it were the only
+path, and do not infer from its existence that status is blueprint-scoped.
+
+This resolves the granularity question: **per-component promotion works**, so the curation model in §7
+stands as designed.
+
+**Decision: use `ContentStatus`, do not invent a classification.** The `Incomplete` classification
+(0790) means *partial*, not *unverified* — wrong semantics for our case, though possibly right for a
+component we know we failed to fully resolve.
+
+### 3.5 Versioning — `versionIdentifier` is the mechanism, not instance versions
+
+Egeria has **two** version concepts, and the distinction matters:
+
+1. **Instance version** — auto-incremented by the repository on every update, queryable via
+   `asOfTime` / `getMetadataElementHistory` / `ElementVersions`. An audit trail of edits.
+2. **`versionIdentifier`** — a user-controlled string property on `Referenceable`
+   (`OpenMetadataProperty.java:244`, example value `V1.0`). Its declared purpose: *"to allow different
+   versions of the same resource to appear in the catalog as separate assets."*
+
+**We want `versionIdentifier`.** The semantics are materially different from what §8 originally
+assumed: distinct versions are **separate catalog elements**, not successive states of one element.
+That is the right model here — a blueprint for release 1.2 and a blueprint for release 2.0 are
+genuinely different designs that should be independently retrievable and comparable, not a before/after
+of one mutable object.
+
+Instance versioning remains useful as the secondary audit trail (who corrected what, when, within a
+version), but it is not the drift mechanism. See the revised §8.
+
+### 3.6 pyegeria write path exists — and `ImplementedBy` is resolved
+
+`pyegeria/omvs/solution_architect.py` provides `create_solution_blueprint`,
+`create_solution_component`, `link_subcomponent`, `link_solution_linking_wire`,
+`create_info_supply_chain`, `link_solution_design`, `link_component_to_actor`,
+`update_solution_blueprint_status`, `get_solution_component_implementations`.
+
+**`ImplementedBy` — resolved.** It is not on the solution-architect client; it is
+`GovernanceOfficer.link_design_to_implementation(design_desc_guid, implementation_guid, body)`
+(`pyegeria/omvs/governance_officer.py:2943`). The body carries `ImplementedByProperties` with:
+
+`designStep`, `role`, `transformation`, `description`, `iscQualifiedName`, plus
+`effectiveFrom`/`effectiveTo`.
+
+Two consequences worth noting:
+
+- `role` and `designStep` give us somewhere typed to record *how* a code artifact implements a
+  component (e.g. `role: "entry-point"` vs `role: "supporting-module"`) — better than another
+  `jsonProperties` blob.
+- `iscQualifiedName` appears **here too**, alongside its presence on `SolutionLinkingWire`. ISC
+  attribution therefore has two anchor points, both of which are labelling passes over structures we
+  already derive. Reinforces §9.
+
+**Status setting — resolved (§3.4).** `contentStatus` is an ordinary body key on any authored
+`Referenceable`, so per-component promotion is available. No blocker for Phase 3.
+
+**`SolutionComponentProperties` carries two fields worth planning around**, per the documented update
+body:
+
+- `versionIdentifier` — present directly on the component, not only the blueprint. Confirms §8.2's
+  scheme is expressible.
+- `additionalProperties` (map) — the interim carrier for anything not yet typed, and the documented
+  extension point for §3.7.
+- Also `plannedDeployedImplementationType` — a design-side statement of the intended implementation
+  type. Our detectors infer the *actual* one, so this is a natural home for it, and the
+  planned-vs-actual gap is itself a drift signal worth surfacing later.
+
+### 3.7 `CodeAnalysis` — a real classification, documented but not implemented
+
+Correcting the earlier reading. The `0780-Code-Analysis.md` page is a stub; the model lives entirely in
+`0780-Code-Analysis.svg`. Parsing that SVG (from `dwolfson/egeria-docs`) gives the actual definition:
+
+**`CodeAnalysis` is a «classification» applied to `Referenceable`**, with properties:
+
+| Property | Type | Note |
+|---|---|---|
+| `firstRun`, `lastRun` | date | when analysis ran — gives derived metadata its own freshness signal |
+| `analysisType` | string | which analysis produced this |
+| `description` | string | |
+| `lineCount`, `lineCountWithoutComments` | long | |
+| `simpleConditionCount`, `complexConditionCount` | long | branching complexity |
+| `setVariableCount` | long | |
+| `simpleCalculation`, `complexCalculation` | long | |
+| `dataReadCount`, `dataCreateCount`, `dataUpdateCount`, `dataDeleteCount` | long | **CRUD interaction profile** |
+| `dataChecksCount` | long | validation density |
+| `additionalProperties` | map&lt;string,string&gt; | the documented extension point |
+
+**However: it is not implemented in the framework.** Case-insensitive grep for `codeanalysis` across
+the entire Egeria checkout returns zero hits — no type definition, no properties class, nothing in the
+type archives. `OpenMetadataWikiPages.MODEL_0780_CODE_ANALYSIS` is declared (`:813`) but referenced by
+no type.
+
+So the model is designed and published in the docs, but a client cannot apply the classification
+today. Two observations:
+
+- The property set is clearly shaped by legacy/COBOL-style program analysis — condition counts,
+  calculation counts, CRUD counts. That turns out to suit our use case well: `dataReadCount` /
+  `dataCreateCount` / `dataUpdateCount` / `dataDeleteCount` on a **SolutionComponent** is a compact,
+  typed statement of that component's data interaction profile, which is exactly what governance
+  wants to know and exactly what static analysis can produce.
+- Because it attaches to `Referenceable`, it can go on a `SolutionComponent` directly — no
+  intermediate type needed.
+
+**Superseded — see §6.1.** `CodeAnalysis` will be implemented upstream, but as an **Annotation
+subtype rather than a classification** (more flexible; links to the right artifact through existing
+annotation relationships). The attribute set above is not being carried forward as-is — §6.2 proposes
+a replacement first pass, and §6.3 records what is deliberately dropped and why.
+
+The property table above is retained only as the record of what 0780 documented before this round.
+
+---
+
+## 4. Architecture of the solution
+
+```
+  repo
+    │
+    ├─ [A] Deterministic detectors ──┐
+    │      deployment artifacts,      │
+    │      entry points, configs      │
+    │                                 ├──► Architecture IR ──► [C] Curation overlay ──► [D] Egeria projection
+    ├─ [B] Distillation (heuristic    │      (normalised JSON)      (human decisions,        (Area 7 + ImplementedBy,
+    │      + LLM), boundary naming  ──┘                              replayed)                ContentStatus=Draft)
+    │
+    └─ existing RE analyses ─────────────► re-aggregated per component (§6)
+```
+
+Three-layer type model, which the initial analysis you were given collapsed into one:
+
+| Layer | Egeria area | Source | Confidence |
+|---|---|---|---|
+| **Implementation inventory** — packages, dependencies, licences | Area 0 / 4 | deterministic tools (Syft, existing `dependency_parser.py`) | high, factual |
+| **Design** — blueprint, components, ports, wires | **Area 7** | detectors + distillation | derived, needs curation |
+| **The bridge** — `ImplementedBy` | 0737 | join between the two | derived |
+
+The analysis you were handed maps only the first layer. The design layer — the thing you actually
+asked about — and therefore the bridge, are both absent from it.
+
+---
+
+## 5. Extraction design
+
+### 5.1 Detectors first, call graphs last
+
+**Deliberate departure from the tool list in the source analysis.** Joern and SCIP are heavy,
+language-limited, and answer "what calls what" — which is *not* the boundary question. Component
+boundaries and runtime shape are declared in deployment and configuration artifacts, which are cheap,
+deterministic, and multi-language for free.
+
+| Signal | Files | Yields |
+|---|---|---|
+| Container definitions | `Dockerfile*`, `*.containerfile` | `Long Running Daemon` / `Console Command`, entry command, exposed ports |
+| Compose / orchestration | `docker-compose*.y*ml`, `k8s/*.y*ml`, Helm charts | component set, inter-service wires, protocols, `Data Storage` components |
+| Service units | `*.service`, supervisord, Procfile | `Long Running Daemon` |
+| Package entry points | `[project.scripts]`, `setup.py` console_scripts, `package.json` bin/scripts, `Main-Class` | `Console Command` |
+| Web framework markers | FastAPI/Flask/Spring/Express route decorators & registrations | `Software Service`, ports with direction `Input-Output` |
+| Client libraries | psycopg/SQLAlchemy, kafka clients, boto3, requests to known hosts | wires, `protocol`, `integrationStyle`, direction `Output-Input` |
+| Scheduler / worker | Celery, APScheduler, cron, Prefect/Airflow DAGs | `Automated Action`, `Multi-Step Process`, `frequency` |
+| Front-end build | `index.html`, SPA bundlers, static handlers | `User Interface` |
+| Library shape | published package with no entry point | `Software Library` |
+| Monorepo layout | workspace members, `uv`/pnpm/Gradle multi-module | candidate component partition |
+| **Variant / near-duplicate** | per-file content hashes across candidate components | variant relationships, accidental-copy RFAs (§8.2a) |
+
+RE already has tree-sitter (`ingestion/ast_chunker.py`) and dependency parsing
+(`ingestion/dependency_parser.py`) to build on. Add call-graph tooling **only if** boundary detection
+proves insufficient in Phase 1 — do not commit to it up front.
+
+The variant row is cheap — hash every file, then compute directional containment between candidate
+components — and it catches something no structural detector can see: two components that look unrelated
+by path and manifest while being near-copies of each other. §8.2a has the worked example and the
+modelling rules.
+
+**Detection engine: `ast-grep`.** The code-marker rows above (web frameworks, client libraries,
+scheduler/worker, entry points) should not be hand-written Python regex. `ast-grep` is a single Rust
+binary running tree-sitter across ~20 languages, with rules expressed as YAML structural patterns.
+Writing the detector table as ast-grep rule files buys three things: multi-language coverage for free,
+detectors that are **data rather than code** (reviewable, extensible, curatable without a release), and
+a stable rule id per match that becomes the `detector` field in §5.4's evidence. The file-presence rows
+(Dockerfile, compose, k8s, service units) stay as ordinary parsers — use `dockerfile-parse` and PyYAML
+rather than regex, and note that Trivy already ships parsers for Dockerfile / compose / k8s / Helm /
+Terraform if piggybacking beats writing them.
+
+**Declared architecture outranks inferred architecture.** Before any inference runs, check for sources
+where the architecture is *stated* rather than derived:
+
+| Source | Yields | Confidence |
+|---|---|---|
+| `catalog-info.yaml` (Backstage) — RE's `repo_conventions` step already looks for it | component identity, type, owner, dependencies | highest — human-authored |
+| OpenAPI / AsyncAPI specs | ports, directions, protocols, `dataExchanged` | high |
+| Compose / k8s service names and labels | component names, wires | high |
+| `pyproject.toml` / `package.json` / Gradle workspace members | component partition and **stable identity** (§8.2) | high |
+
+Where these exist they short-circuit distillation entirely — there is nothing to infer and nothing for
+the LLM to name. Treat their absence, not their presence, as the interesting case.
+
+### 5.2 Distillation — the noise reducer
+
+Detectors produce candidates; distillation decides the component set. Responsibilities:
+
+0. **Read the repo's own architecture and deployment documentation** (§8.2c). Prose docs stating the
+   component set, the deployment tiers, or which divergences are intentional are detector-invisible but
+   directly readable here, and they outrank inference. This is not invention — it is reading a human's
+   statement about their own architecture, which is the highest-confidence evidence available.
+1. **Partition** the repo into components (cluster by directory, entry point, and deployment unit —
+   the *artifact* sense of deployment unit, per §8.2's floor).
+2. **Classify** each into the 13-value `SolutionComponentType` vocabulary.
+3. **Name** each in human terms.
+4. **Infer ports** and directions from interfaces served vs. consumed.
+5. **Infer wires** between components, populating `protocol` / `integrationStyle` / `frequency` /
+   `dataExchanged` / `oneWay`.
+6. **Emit evidence** for every claim (see §5.4).
+
+**Step 0, added after Phase 0 planning: exclusion.** Before any of the above, filter the file set —
+`.gitignore`-aware, plus an explicit vendor denylist (`node_modules`, `.venv`, `site-packages`,
+`vendor/`, `target/`, `dist/`, `build/`, `__pycache__`).
+
+This is not tidiness. Vendored dependency trees are **committed to git in real repos** — in
+`egeria-workspaces`, 1697 of 1703 tracked `.js` files are `node_modules`, so they are present in every
+zipball and clone. Each vendored package carries a manifest declaring a package name, which is
+**identity precedence 1 in §8.2**. A detector applying that rule faithfully to an unfiltered tree emits
+hundreds of spurious components, each with a real name, a real manifest and real evidence, and every
+downstream number is then wrong.
+
+The distinction that matters: this noise is **structural and mechanical**, not low-confidence. No amount
+of distillation or LLM adjudication fixes it, because each spurious component looks entirely legitimate
+in isolation. It must be excluded *before* detection, never filtered after. The rest of §5.2 assumes
+noise means "weak candidates"; this is a different and larger problem.
+
+Heuristics own steps 1, 4, 5; the LLM owns 2 and 3 and adjudicates ambiguous partitions. **Rule: the
+LLM never invents a component with no detector evidence behind it.** Its job is naming, classifying,
+and merging — not discovery. This keeps hallucinated architecture out of the catalog.
+
+### 5.3 The Architecture IR
+
+A normalised JSON intermediate representation at roughly C4 container/component level, produced and
+stored **before** any Egeria write. Everything downstream — projection, curation, drift — reads the IR.
+
+Rationale: the IR is diffable, testable without an Egeria server, and reviewable by a human before it
+becomes metadata. It also means re-derivation and re-publication are separable operations.
+
+### 5.4 Evidence and confidence are first-class
+
+Every component, port and wire carries an evidence record justifying each individual claim about it.
+A claim is one assertion — "this is a `Software Service`", "this wire uses `HTTPS`" — not a whole
+component.
+
+```json
+{
+  "subject":   {"kind": "component|port|wire", "slug": "resource-explorer.web"},
+  "assertion": "solutionComponentType=Software Service",
+  "detector":  "ast-grep:fastapi-app-construction",
+  "locations": [{"path": "resource_explorer/web/app.py", "line": 42,
+                 "excerpt": "app = FastAPI(title=...)"}],
+  "confidence": 90,
+  "confidenceLevel": "Derived"
+}
+```
+
+`confidenceLevel` uses Egeria's stock `ConfidenceLevel` values (§3.3b) rather than an RE-local
+`derivation` vocabulary — the two were the same axis, so there is one field, and it publishes without
+translation.
+
+Curation is impossible without showing *why* a component was proposed, and per the current-state doc,
+RE's habit of stuffing untyped detail into `jsonProperties` makes it unqueryable — evidence must not go
+the same way.
+
+**Storage — RE-side, in the existing generic findings table.** `project_analysis_findings`
+(`registry.py:866`) already carries exactly this shape and needs no schema change:
+
+| Column | Carries |
+|---|---|
+| `kind` | `architecture_recovery` |
+| `check_name` | the assertion |
+| `label` | `accept` / `uncertain` / `conflict` |
+| `confidence` | INTEGER 0–100 — **the same scale as Egeria's `ConfidenceProperties.confidence`**, so no conversion |
+| `scope_locator` | the component's path prefix — the join key to everything else (§6) |
+| `detail_json` | the `locations` array, plus `detector` and `confidenceLevel` |
+
+That the fit is exact is not a coincidence: the generic findings table was built for uniformly-shaped
+analysis output, and evidence is analysis output. Reusing it also means evidence is immediately visible
+to the annotation-Q&A agent (§6.5) with no extra tooling, and lives in the same store as the §7.2
+curation overlay — which the overlay needs anyway.
+
+**What reaches Egeria — the reasoning, not the receipts.** Base `AnnotationProperties` already provides
+typed fields for the justification:
+
+- `expression` — the detector rule id that fired
+- `explanation` — human-readable why
+- `analysisStep` — which pass produced it
+- `confidence` — the same 0–100 integer
+
+and on the `Confidence` classification itself: `confidenceLevel` (provenance), `source` (the analyzer
+id), `steward` (who curated).
+
+Locations and excerpts stay RE-side. A curator or agent that wants the receipts follows `scope_locator`
+back into RE. **Nothing goes into `jsonProperties`.** Q4 resolved on this basis (§11).
+
+
+### 5.5 Validating the partition — three independent signals
+
+Detectors *propose* a partition. Nothing above *checks* it, and a partition nobody checked is exactly
+the kind of plausible-looking output that erodes trust. Score every proposed partition against two
+signals the detectors structurally cannot see:
+
+1. **Import coupling.** A partition whose components all import each other is wrong regardless of what
+   the Dockerfiles say. Build the module import graph and measure cross-boundary edge density.
+
+   **Correction (found while planning Phase 0):** an earlier draft named RE's
+   `project_code_relationships` table as the source. It cannot serve — its schema
+   (`registry.py:608`) is `relationship_type` / `source_name` / `target_name`, **name-to-name with no
+   `file_path`**, and it holds `inherits_from` edges, not imports. Joining it against
+   `project_code_symbols` (which does carry `file_path`) recovers path pairs, but yields an
+   *inheritance* graph — a much weaker boundary signal than imports.
+
+   **Extract imports with ast-grep instead.** Import statements are among the most trivially matchable
+   constructs in any language, and ast-grep is already the detection engine (§5.1), so the marginal
+   cost is near zero. Do *not* adopt `grimp`/`import-linter`: grimp resolves modules by importing them,
+   so it needs the dependency environment installed rather than just a checkout — real operational cost
+   for a graph we can extract statically. Per-language alternatives (`dependency-cruiser`, `jdeps`,
+   `go list -deps`) remain available if the ast-grep graph proves too thin.
+
+2. **Co-change coupling.** Files that always change together belong to one component even when the
+   directory layout disagrees. It is the signal most likely to *contradict* the detectors usefully —
+   directory structure records intent, co-change records reality.
+
+   **Also corrected:** `project_commits` (`registry.py:548`) carries `sha` / `message` / author /
+   `committed_at` and **no per-file change data**, so it cannot produce this either. The source is
+   `git log --name-only` or `code-maat` over a real clone — which is why `git_clone_root` (§5.7 gap 2)
+   is a prerequisite for this signal outside the Phase 0 spike, where local checkouts stand in.
+
+**This gives Phase 0 a sharper exit criterion** than "recognisable to you": run all three — detector
+partition, import coupling, co-change coupling — and ask whether they agree with each other and with a
+**pre-registered** hand-written partition. See `docs/architecture-recovery-phase0-plan.md`, which makes
+the criterion falsifiable by requiring the expected answer to be written down before the detectors run. Three independent signals converging is evidence the premise holds. Two agreeing
+and one dissenting is a finding. All three disagreeing means §5.1 needs rethinking before anything is
+built.
+
+### 5.6 Tooling — what to adopt, and what it costs
+
+Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no
+servers, no persistent state — which is what makes them all trivially wrappable as microflow steps
+(§5.7). Cost tier maps onto the funnel: cheap enough to run on everything that passes Scouting, versus
+expensive enough to spend only on resources that earned it.
+
+| Tool | Role | Shape | Cost | Tier |
+|---|---|---|---|---|
+| `scc` | file/line/comment counts, per-language, **per directory** | Go binary, JSON | ~1s on a large repo | **Discovery** |
+| `ast-grep` | the §5.1 code-marker detectors, as YAML rules | Rust binary, JSON | seconds | **Discovery** |
+| `dockerfile-parse` + PyYAML | container / compose / k8s / service-unit parsing | pure Python | milliseconds | **Discovery** |
+| `lizard` | cyclomatic complexity, max nesting, function counts, **~15 languages** | Python lib | seconds–1 min, scales with code volume | **Discovery** |
+| `syft` | SBOM across ~20 ecosystems, with package→file mapping | Go binary, CycloneDX/SPDX | tens of seconds | **Analysis** |
+| `trivy` | SBOM + vulnerabilities + IaC misconfig + secrets; also ships compose/k8s/Helm/Terraform parsers | Go binary, JSON | first run pulls a large vuln DB, then seconds | **Analysis** (cache the DB) |
+| `PyDriller` | per-path churn, contributors, ownership, code age — the Q11 sibling annotation | Python lib | **minutes**; needs git history | **Analysis** |
+| `code-maat` | co-change coupling (§5.5) | JVM jar over `git log` output | cheap *given* the log | **Analysis** |
+| Structurizr | **export target**, not extraction — validates the IR maps onto C4 | schema / DSL | n/a | optional |
+
+**The whole detector layer is Discovery-tier.** `scc` + `ast-grep` + config parsing + `lizard` together
+run in about a minute on a large repo with no network beyond the zipball. That means the component
+partition — the thing everything else depends on — is affordable at estate scale and can run on every
+repo that clears Scouting. This is the single most important cost fact in the design.
+
+**Two things are genuinely expensive, and the funnel should gate them:**
+
+- **Git history.** A full clone is the largest cost in this feature. Mitigate with `--filter=blob:none`
+  (treeless — metadata without file contents, a large win) and a bounded window: bus-factor and churn
+  questions almost always concern recent history, so cap at N months rather than mining the full log.
+- **LLM distillation (§5.2).** Cost scales with component count and evidence volume. Gate it: invoke
+  the LLM **only** for components where detector confidence falls below threshold, and **only** for
+  naming, classification, and merge adjudication — small prompts over distilled evidence, never
+  whole-repo reading. A repo whose architecture is fully declared (§5.1) should invoke it zero times.
+
+Deliberately not adopted: `radon` (Python-only; `lizard` supersedes it), `grimp` (§5.5),
+`scancode-toolkit` (heavy; RE's existing `repo_license_classification` is sufficient), Joern / SCIP /
+stack-graphs (§10 Deferred — but note SCIP indexers emit a specified protobuf, so if symbol-granularity
+`ImplementedBy` is ever needed, you consume an index rather than adopt a framework; that is the
+cheapest re-entry point).
+
+### 5.7 Wrapping as survey steps
+
+The extension point already exists and needs no redesign: one `StepInfo` in `STEP_REGISTRY` plus one
+`AnalysisKind` in `analysis_catalog.yaml`, per
+`surveyors/repo_survey_definition_adapter.py`. `SurveyOrchestrator` derives its surveyor-construction
+dict from `STEP_REGISTRY` automatically, and `prefect_adapter.py` dispatches by `step_name` +
+`runner_kwargs` — so a new step is **Prefect-dispatchable with zero Prefect-specific work**.
+
+Proposed steps:
+
+| Step key | Wraps | `target_shape` | `accepts_scope_locator` | `requires_resources` |
+|---|---|---|---|---|
+| `repo_arch_detect` | ast-grep rules + config parsers → the IR | `corpus` | yes | `zipball_root` |
+| `repo_code_metrics` | `scc` + `lizard` → §6.2 attributes | `corpus` | yes | `zipball_root` |
+| `repo_sbom` | `syft` | `corpus` | yes | `zipball_root` |
+| `repo_history_metrics` | `PyDriller` + `code-maat` → Q11 sibling annotation | `corpus` | yes | **`git_clone_root`** |
+
+Three infrastructure notes, two of which are real gaps:
+
+1. **Zipball sharing already works.** All of these need a real checkout, and `_acquire_zipball_root` +
+   `trellis_microflow.resolve_resources` already dedupe it. Critically, dedup only happens *within* a
+   single `SurveyOrchestrator.run()` call — which is what `_run_batch` provides. So these belong as
+   **steps of one Survey Definition**, not four independent analyses: one download for the whole group.
+   This is the strongest argument for the survey-path unification work.
+
+2. **Gap: git history.** A zipball has no `.git`. `PyDriller` and co-change coupling need one. That is a
+   **new `ResourceProvider` — `git_clone_root`** — alongside `_acquire_zipball_root`, doing a treeless
+   clone. Q11's sibling annotation type currently has no data source without it; this is a
+   prerequisite, not a detail.
+
+3. **Gap: binary provisioning.** `scc`, `ast-grep`, `syft`, `trivy` are Go/Rust binaries, not pip
+   installs. Bake pinned versions into the RE image and expose a version probe — which is precisely
+   what §6.2's `analyzerVersion` is for. The network-dependent steps (`syft`, `trivy` DB pulls) want
+   Prefect task-level retries; the rest are pure functions of a checkout and need none.
+
+---
+
+## 6. Component-scoped analytics (the payoff)
+
+Once a component partition exists, re-aggregate RE's existing analyses to component granularity and
+publish those. This directly addresses gaps named in the current-state doc:
+
+| Existing analysis | Today | Per component |
+|---|---|---|
+| Contributor tiers / bus factor (`stats_fetcher.py:209-261`, gap **R1**, unpublished) | per repo — trivia | **per component — actionable risk**; a `Software Service` with bus factor 1 is a real finding |
+| Dependencies (`dependency_parser.py`) | per repo | per component → real blast radius, and the input to the vulnerability use case |
+| Symbol counts / API surface (gap **R4**) | aggregate counts only | per component, and the component's *ports* are its genuine public surface |
+| Doc coverage (`documentation.py`) | repo-level label | which subsystem is undocumented |
+| Security posture (`security.py`) | repo-level | which component carries the risk |
+| Commit history (gap **R2**) | repo time series | per-component change velocity → which parts are volatile |
+
+This is where the orphaned R-gaps get a home. Worth sequencing early (Phase 4) rather than treating as
+a follow-on, because it is the clearest demonstration of value.
+
+### 6.0 This is not new machinery — a component is a scope locator
+
+**The single most important consequence of Q3's answer.** If component identity is a module path
+(§8.2), then *a component is a path prefix* — and RE already has a path-prefix mechanism: the
+`scope_locator` column and `accepts_scope_locator` flag from the repo scope-narrowing funnel
+(`docs/repo-scope-narrowing-funnel.md`, D5/D6).
+
+So "re-aggregate existing analyses per component" is **not a new aggregation layer**. It is running the
+existing scope-locator-capable steps once per component path. Every step already flagged
+`accepts_scope_locator=True` in `STEP_REGISTRY` becomes component-scoped for free:
+`repo_file_size`, `repo_api_structure`, `repo_data_profiling`, `repo_file_classification` — plus the
+new §5.7 steps, which are all `target_shape: corpus`.
+
+`project_analysis_findings` and `project_analysis_metrics` (`registry.py:866`, `:898`) both already
+carry `scope_locator`, and both are already indexed on it. The storage question is answered before it
+is asked.
+
+Three consequences:
+
+- **Phase 4 is much cheaper than it reads.** It is largely a loop and a projection, not a redesign.
+  Re-sequence accordingly.
+- **`scope_locator` is the universal join key** — evidence (§5.4), metrics, findings, and the Egeria
+  component's qualified-name slug all key off the same path prefix.
+- **It raises the stakes on Q3.** Identity is now load-bearing for the analytics story too, not just for
+  upsert stability.
+
+### 6.1 Carrier: a `CodeAnalysis` **Annotation**, not a classification
+
+**Decision:** `CodeAnalysis` becomes an Annotation subtype rather than a classification — more
+flexible, and it links to the right artifact through existing annotation relationships rather than
+being pinned onto one element. Being an Annotation also means it inherits `AnnotationProperties`:
+
+`annotationType`, `summary`, `explanation`, `expression`, `analysisStep`, `confidence`, `units`,
+`absoluteUncertainty`, `relativeUncertainty`, `jsonProperties`, and **`sampleSize` / `samplePercent` /
+`samplingMethod`**.
+
+Two consequences for the attribute design:
+
+- **`confidence` is already there** — §5.4's per-claim confidence requirement is satisfied by the base
+  type; do not add a second confidence field.
+- **`sampleSize`/`samplePercent`/`samplingMethod` already answer "how much did we look at"** — so no
+  coverage or files-skipped attributes are needed. Reuse them, and populate them honestly when a
+  component is only partially analysed.
+
+The existing 0780 attribute set is **not** a good first pass. `setVariableCount`,
+`simpleCalculation`/`complexCalculation` and the condition counts are COBOL-era program-analysis
+metrics that do not generalise across modern multi-paradigm code, and nobody would act on them.
+
+### 6.2 Proposed first-pass attributes
+
+Scoped to metrics that are reliably extractable across languages, comparable between components and
+over time, and answer a question someone actually asks.
+
+**Scale and shape**
+
+| Attribute | Type | Note |
+|---|---|---|
+| `fileCount` | int | |
+| `lineCount` | long | total physical lines |
+| `codeLineCount` | long | excludes blanks and comments |
+| `commentLineCount` | long | explicit rather than derived — deriving breaks if a sibling field is absent |
+| `primaryLanguage` | string | |
+| `languageCount` | int | polyglot components carry real maintenance cost |
+
+**Interface surface** — the component's public face; pairs with its ports
+
+| Attribute | Type | Note |
+|---|---|---|
+| `publicSymbolCount` | long | exported functions, classes, endpoints |
+| `entryPointCount` | int | mains, CLI commands, route handlers, task definitions |
+
+**Data interaction** — the most governance-relevant group, and the part of 0780 worth keeping
+
+| Attribute | Type | Note |
+|---|---|---|
+| `dataReadCount`, `dataCreateCount`, `dataUpdateCount`, `dataDeleteCount` | long | CRUD profile |
+| `dataStoreCount` | int | distinct stores touched — blast-radius magnitude |
+| `externalCallCount` | long | calls out of the component |
+
+**Complexity**
+
+| Attribute | Type | Note |
+|---|---|---|
+| `functionCount` | long | also makes mean complexity derivable |
+| `cyclomaticComplexityTotal` | long | |
+| `cyclomaticComplexityMax` | int | **the important one** — a single 200-complexity function is the real risk, and means hide it |
+| `maxNestingDepth` | int | |
+
+**Hygiene and provenance**
+
+| Attribute | Type | Note |
+|---|---|---|
+| `testFileCount` | int | |
+| `documentedSymbolCount` | long | with `publicSymbolCount`, gives doc coverage *of the public surface* — the actionable form |
+| `analyzerName`, `analyzerVersion` | string | see below |
+
+`analyzerVersion` earns its place: without it, a metric that moves between two blueprint versions is
+ambiguous — did the code change, or did our detector improve? **Drift comparison (§8.3) is
+untrustworthy without it.** Alternative placement is the SurveyReport, but one report can carry
+annotations from several analyzers, so it belongs on the annotation.
+
+**Corollary — one annotation per analyzer per component, not one per component.** A single component's
+metrics come from several tools (`scc` for scale, `lizard` for complexity, `ast-grep` for interface
+surface, `PyDriller` for history). A single `analyzerName`/`analyzerVersion` pair cannot honestly
+describe an annotation aggregating all of them. Emit one annotation per analyzer, distinguished by
+`annotationType`; the Annotation model supports many-per-element without strain.
+
+This resolves §6.3's bus-factor exclusion as a side effect: repository-history metrics stop being a
+special case needing separate justification and become simply *another analyzer's annotation* against
+the same component. The Q11 sibling type is then a naming exercise, not a structural one.
+
+**Smaller first cut, if wanted:** the six scale fields, the four CRUD counts, and `analyzerVersion`
+carry most of the value. Complexity and hygiene can follow.
+
+### 6.3 Deliberately excluded
+
+- **Bus factor, contributor count, churn** — not code analysis. They change when nobody touches the
+  code (a contributor leaves), which makes the annotation's freshness semantics incoherent. These want
+  a **sibling annotation type** over repository history. Worth defining separately; note this is the
+  home for gap **R1**, so §6's table above should be read as spanning two annotation types, not one.
+- **Lists** (dependencies, data stores, endpoints) — the annotation carries **magnitude**; the
+  **topology** belongs on wires, ports and relationships. Duplicating identities into scalar properties
+  guarantees the two representations drift.
+- **Fan-in / fan-out, instability** — derivable from the wire graph; storing them duplicates what
+  `SolutionLinkingWire` already encodes.
+- **Language breakdown map** — map properties are unqueryable, the exact failure mode the current-state
+  doc documents repeatedly.
+- **Security / vulnerability counts** — different lifecycle; a CVE appears without the code changing.
+- **`firstRun` / `lastRun`** — the SurveyReport carries timing.
+- **`analysisType`** — that is `annotationType` on the base.
+- **`dataChecksCount`** — interesting for data quality, but probably not reliably extractable across
+  languages. Revisit after Phase 0.
+
+**Open call, deliberately deferred:** which of these justify *typed* properties versus
+`additionalProperties`. Decide after Phase 0 shows what we can extract reliably across languages —
+typing a property we can only populate for Python is worse than leaving it untyped, because it looks
+queryable and silently isn't.
+
+### 6.4 Interim carrier while the type lands
+
+The new Annotation type is expected within a day or so. Until it exists:
+
+- Use the **base `Annotation`** with the metrics in `additionalProperties`.
+- Swap to the typed `CodeAnalysis` annotation once available.
+- **No migration needed** — this is a test environment, so previously written annotations can simply be
+  re-derived rather than converted.
+
+This removes the upstream dependency from Phase 4's critical path: work proceeds against the interim
+carrier and the swap is a projection-layer change, not a redesign.
+
+### 6.5 Agents over annotations — the generalisation
+
+Three distinct roles for LLMs in this feature, deliberately separated because they have different risk
+profiles and different owners:
+
+**(a) Inside extraction (§5.2).** Naming, classification, merge adjudication, and drafting a
+component's `description`. Bounded by the standing rule: *the LLM never invents a component with no
+detector evidence behind it.* Cost-gated per §5.6 — invoked only below a confidence threshold.
+
+**(b) Curation assistant (§7).** Given the evidence and the proposed partition, draft the rationale a
+curator reads, propose merges and splits, and triage which RFAs actually matter. The human still
+decides; the agent removes the reading.
+
+**(c) Q&A over annotations — the generalisation, and the biggest lever here.**
+
+RE has specialist agents for code, dependencies, health, stats, docs and comparison
+(`agents/code_agent.py` and siblings), but **no agent over annotations**. From the agent layer's
+perspective, every survey RE has ever run is write-only. That is a large, invisible gap: the analyses
+are the product, and nothing can be asked about them.
+
+Two agents, layered:
+
+- **`AnnotationAgent` — generic, covers every analysis kind including ones not yet written.** Tools:
+  `query_annotation_types()` (the `annotation_types` table, `registry.py:1342`, already populated from
+  `ANNOTATION_TYPES_REGISTRY` — a ready-made schema catalog for the model to reason over),
+  `query_findings(slug, kind, scope_locator)`, `query_metrics(slug, kind, metric_name, scope_locator)`.
+
+- **`ArchitectureAgent` — specialises it with the blueprint graph:** components, ports, wires and their
+  `scope_locator`s. Answers the questions this feature exists to make askable — *"what talks to the
+  database?"*, *"which component has the worst bus factor?"*, *"what changed architecturally between
+  1.2 and 2.0?"* The last one is §8.3's drift diff with a natural-language front end.
+
+**Why the generic agent is possible at all: because findings and metrics are uniformly shaped.** One
+agent covers every kind precisely because `project_analysis_findings` /
+`project_analysis_metrics` are generic tables rather than per-analysis bespoke ones. Every new analysis
+becomes queryable **for free**, with no agent work.
+
+That makes §6.3's "annotations carry magnitude, not lists" rule and the generic-findings-table
+discipline the *same* rule, arriving from two directions. It is now load-bearing for the agent story as
+well as the data-modelling one — worth defending when the next analysis is tempted to add its own
+table.
+
+**Also worth doing, cheaply:** embed component descriptions and the IR into the vector store as an
+`architecture` collection. `CollectionRouter` already routes by collection, so architecture becomes
+semantically searchable alongside code with no new retrieval machinery.
+
+**Sequencing note.** `AnnotationAgent` does not depend on this feature at all — it could ship today
+against the existing analyses and would immediately be useful. It is listed in the plan below because
+architecture recovery is what makes it *compelling*, not what makes it *possible*. Splitting it out
+early is a reasonable call.
+
+---
+
+## 7. Curation
+
+Curation is not a review screen bolted on at the end — it is the mechanism that makes derived metadata
+safe to publish at all. Three parts.
+
+### 7.1 Lifecycle
+
+```
+  derived ──► Draft ──► Prepared ──► Proposed ──► Approved/Active
+                 │                        │
+                 └────► (Rejected) ◄──────┘
+```
+
+- Derivation always publishes at `ContentStatus = Draft`. Nothing derived is ever born Active.
+- RE's Curate intent presents the derived blueprint against its evidence.
+- Curator actions: **accept**, **rename**, **reclassify** (change `solutionComponentType`), **merge**
+  two components, **split** one, **reject**, **add a missing** component the detectors couldn't see.
+- Promotion to `Prepared`/`Proposed` signals human review; `Active` is the validated state.
+- Rejected components go to `Rejected`, **not deleted** — otherwise the next derivation cheerfully
+  re-proposes them.
+
+Confirmed available: `ContentStatus` is settable per component (§3.4), so promotion works at the
+granularity this model needs — a curator can accept one component and leave its neighbour in Draft.
+
+**Promotion moves two axes, not one** (§3.3c): `ContentStatus` advances through the workflow, and
+`confidenceLevel` moves `Derived` → `Authoritative` when a human actually signs off on the claim. They
+are set together but mean different things — a curator can accept a component into `Active` while
+leaving it `Derived` if they are accepting it provisionally rather than vouching for it.
+
+### 7.2 The curation overlay — the hard problem
+
+**Re-running the survey must not clobber human curation.** This is the single biggest design risk in
+the whole feature. Without a solution, the second survey undoes every correction from the first, and
+curators stop trusting the tool permanently.
+
+Design: human decisions are recorded as a **durable overlay**, separate from the IR, keyed by stable
+qualified name:
+
+```
+  raw IR (re-derived each run)  +  curation overlay (accumulated)  =  published blueprint
+```
+
+Overlay entries: renames, type overrides, merges, splits, rejections, manual additions, plus who
+decided and when. Re-derivation regenerates the raw IR freely; the overlay replays on top before
+projection.
+
+Consequences to accept up front:
+
+- Overlay entries can go **stale** — a rejected component whose code was deleted, a rename pointing at
+  a component that no longer exists. Needs its own reconciliation surface, and it is the same
+  divergence problem as `Backlog.md:13` in a new place. **Stale entries are marked
+  `confidenceLevel = Obsolete`** (§3.3b) — *"comes from an obsolete source and must no longer be
+  used"* is exactly this case, and it is a typed, queryable state rather than an RE-local flag. Note
+  this is distinct from `ContentStatus.Deprecated`, which is a decision rather than a fact about the
+  source (§3.3c).
+- When re-derivation and the overlay **conflict** (detector now says `Software Service`, human said
+  `Software Library`), the human wins, but the conflict must be **surfaced**, not silently swallowed.
+  Silent precedence is how the tool starts lying.
+- Overlay storage is RE-local (it is about RE's derivation process, not enterprise truth). That runs
+  straight into the unsolved per-user partitioning problem — noted as **Q6**, not solved here.
+
+### 7.3 Curation as RFA
+
+LLM assistance in curation is scoped in §6.5(b): draft the rationale, propose merges and splits, triage
+RFAs — the human still decides.
+
+Low-confidence components and unresolved boundaries should raise `RequestForAction` annotations —
+"component boundary uncertain, needs human review." This gives RFAs a second concrete use case beyond
+survey findings, and connects to the open `Backlog.md:53` work on making RFAs real assignable Egeria
+actions. Consistent with the funnel: derivation is cheap and automatic, human attention is spent where
+confidence is low.
+
+---
+
+## 8. Churn and versioning
+
+Re-deriving a blueprint on every survey would thrash GUIDs — and a blueprint has an order of magnitude
+more elements than a survey report, so this is `Backlog.md:13` amplified.
+
+Revised per §3.5: **`versionIdentifier` is the mechanism**, and because distinct versions surface as
+separate catalog elements, the model is *snapshot-per-version*, not mutate-in-place.
+
+### 8.1 What mints a new version
+
+**Proposal: tie `versionIdentifier` to the repository's own release identity** — git tag, release, or
+explicit pin. Rationale: a blueprint describes the architecture *of a particular version of the
+software*, so blueprint versions should track software versions rather than survey-run timestamps.
+Consequences:
+
+- Re-deriving within the same release **upserts in place** — corrections, better detectors and curation
+  all accumulate against that release's blueprint without minting versions.
+- A new release mints a **new** blueprint version, seeded from the previous one so curation carries
+  forward (§7.2 overlay replays onto it) rather than starting from a blank review queue.
+- Repos with no release discipline need a fallback. **Resolved (Q10): a precedence chain**, taking the
+  first that yields a value:
+
+  1. **`git describe --tags`** from HEAD. This degrades gracefully rather than failing — `v1.2-14-gabc123`
+     says *"14 commits past 1.2"*, which is itself the drift signal we want. **Truncate to the tag part
+     for `versionIdentifier`** so it does not mint a version per commit; keep the full string as a
+     property for precision.
+  2. **Published package version** — PyPI, npm, Maven. Often present where git tags are not, and Syft
+     (§5.6) surfaces it as a side effect of SBOM generation rather than as extra work.
+  3. **`0.0.0+HEAD`** — a single always-upserting pseudo-version. Loses drift history, which is the
+     honest outcome for a repo with no release identity at all; do not fake one.
+
+### 8.2 Identity and qualified names
+
+- **Stable qualified names remain load-bearing.** Revised:
+  `{repo}::{versionIdentifier}::SolutionComponent::{stable-slug}` — the slug derives from the
+  component's *identity*, never from its LLM-assigned display name, which will change between runs and
+  must not break identity.
+
+- **`{project}::` is deliberately dropped from the qualified name (Q7).** The architecture of a repo is
+  a fact about the repo, not about whoever is looking at it; namespacing by project means two teams
+  curate the same public repo twice and neither benefits from the other's work. Instead **the project
+  is a link, not a namespace** — attach the blueprint to the owning project by collection membership.
+  Q6's per-user partitioning then applies only to the **curation overlay** (§7.2), which is where
+  view-dependence actually belongs, rather than forking the entire blueprint. Consequence to accept: the
+  shared blueprint reflects whoever promoted last, so the rule is *shared blueprint = canonical
+  curation; project overlays are proposals until promoted.*
+
+- **Identity precedence (Q3), in order — revised after a real counterexample:**
+  1. **Deployment unit** — compose/k8s service name, systemd unit, deployment-config directory.
+  2. **Declared package name** — `[project].name`, `package.json` `name`, Maven `artifactId`. Survives
+     directory moves; the right answer for code-first repos with nothing deployed.
+  3. **Normalised module path** — strip conventional roots (`src/`, `packages/`, `lib/`) before slugging.
+
+  **Why deployment unit leads (§8.2a).** An earlier draft had declared package name first, on stability
+  grounds. `egeria-workspaces` disproves that ordering: it ships `PyegeriaWebHandler` twice, once for
+  the QuickStart deployment and once for FreshStart, with the *same package name* and deliberately
+  different admin behaviour. Package-name-first collapses two genuinely distinct components into one.
+
+  **But "deployed separately" needs a floor, or the rule over-splits (§8.2b).** It means a separate
+  deployed *artifact* — its own image, compose service, or deployment directory. It does **not** mean a
+  runtime configuration flag. The same repo also selects between three runtime modes
+  (`demo-quickstart`, `local-quickstart`, `freshstart`) via two flags in `demo_config.py`; those are one
+  component with configuration, not three components.
+
+- **Where a deployment context exists, it qualifies the slug**, otherwise identically-named packages
+  collide within one repo: `egeria-quickstart::PyegeriaWebHandler` and
+  `egeria-freshstart::PyegeriaWebHandler`. Deployment-unit names are at least as stable as package names
+  here — the package name is the *same* for both — so leading with deployment costs nothing in
+  stability.
+
+  The doc previously listed these three as alternatives; the *precedence* matters more than the pick.
+  Note the tension §8.2 names elsewhere: a raw module path **is** the directory, so `foo/` → `src/foo/`
+  would mint a new component and orphan its overlay. Normalisation reduces this; a genuine rename is
+  handled as an **overlay alias entry**, not by trying to detect moves.
+- **Upsert by qualified name**, never create-if-missing-by-search.
+- Note the tension: putting `versionIdentifier` in the qualified name makes versions cleanly separate
+  but makes "the same component across versions" a join rather than an identity. That join is exactly
+  what drift comparison needs, so it must be reliable — the stable slug is what carries it. **Q3**
+  (component identity) is therefore *more* important under this model, not less.
+
+### 8.2a Variants — components that share most of their code
+
+The `PyegeriaWebHandler` case is not an oddity; it is the general **deployment-variant** problem, and it
+needs a modelled answer because detectors will meet it constantly in repos that ship more than one
+configuration.
+
+Measured on `egeria-workspaces` (tracked, first-party files only):
+
+| | |
+|---|---|
+| `egeria-quickstart/PyegeriaWebHandler` | 138 files |
+| `egeria-freshstart/PyegeriaWebHandler` | 94 files |
+| Shared relative paths | 90 — of which **60 byte-identical, 30 divergent** |
+| Unique to quickstart / freshstart | 48 / **4** |
+
+**Measure containment, not similarity.** Only 4 files are unique to freshstart, so freshstart is very
+nearly a *subset* of quickstart: 96% of its files exist in the other component. Symmetric measures hide
+this — Jaccard is 0.63 by path and 0.42 by identical content, which reads as "moderately similar" and
+badly understates a near-containment relationship. Any duplication detector must report **directional
+containment** as the primary figure.
+
+**The 30 divergent files are the finding.** Some of that divergence is intentional — the deployments
+have different admin requirements — and some is almost certainly drift. **No tool can tell those apart**,
+which makes it exactly the right thing to raise as an RFA (§7.3): *"30 of 90 co-located files differ
+between two components declared as variants — intentional?"* That is a genuinely useful question the
+maintainer cannot easily ask today, and it is a better demonstration of this feature's value than the
+component diagram.
+
+### 8.2b Three tiers of "deployment" — and only one of them mints components
+
+`egeria-workspaces` turns out to contain three structurally different things that all get called
+deployments, and collapsing them is the main way this model goes wrong. Getting the tiers right is what
+keeps blueprint counts sane.
+
+| Tier | Example | Mints a component? | Mints a blueprint? |
+|---|---|---|---|
+| **Solution deployment** | QuickStart, FreshStart — full solutions, first-party code, different auth/admin models | **yes** | **yes** |
+| **Optional runtime add-on** | the 11 under `optional-associated-runtimes/` — Airflow, Atlas, Dagster, Spark, DuckDB, Milvus, MLflow, Ollama, Prefect, Superset, Unity Catalog | yes — third-party components | **no** |
+| **Runtime mode** | `demo-quickstart` / `local-quickstart` / `freshstart`, selected by flags in `demo_config.py` | **no** — one component, configured | no |
+
+**The add-on tier is why "blueprint per deployment config" would be wrong.** Each of the 11 is one or
+two compose files and 1–26 files total, with no first-party code — they deploy third-party runtimes into
+Docker. Giving each its own blueprint would produce 13 blueprints for one repo, most of them containing
+a single third-party component. They are **optional component sets that compose into a solution**, and
+Collection membership (§3.3a) is exactly the mechanism: an add-on's components join whichever
+blueprint(s) actually deploy them.
+
+This is also the cleanest available test of the shared-membership model — 11 add-ons across 2 solutions
+is a real composition problem rather than a hypothetical one.
+
+**The runtime-mode tier is the trap.** Those three modes share code *and* directory, differing only by
+flag. Any rule phrased as "deployed separately means separate components" splits them if applied
+naively. The floor in §8.2 exists for this case.
+
+### 8.2c The repo may document its own architecture in prose
+
+`ENVIRONMENT_DIVERGENCE.md` in `compose-configs/` states the runtime-mode table, which files are meant
+to diverge and why, and the rule for shared code. It exists because copying one environment's file over
+the other's has repeatedly caused breakages.
+
+Two consequences:
+
+- **It largely pre-answers §8.2a's divergence RFA.** The 30 divergent files are not an open question
+  for a maintainer who has read this doc — much of that divergence is documented as intentional. Raising
+  an RFA that the repo already answers would be noise, and would make the tool look like it had not
+  looked.
+- **This is a *declared architecture* source that §5.1's table cannot consume.** It is prose, not a
+  manifest — detector-invisible, but squarely readable by the LLM. So distillation's remit (§5.2) should
+  include **reading the repo's own architecture and deployment documentation** before proposing
+  boundaries. That stays inside the standing rule — the LLM is not inventing a component, it is reading
+  a human's statement about one, which is the highest-confidence evidence available.
+
+Where such a doc exists, it should be treated like `catalog-info.yaml`: declared, and outranking
+inference.
+
+**Do not model this with `KnownDuplicate` / `PeerDuplicateLink`** (0465, `OpenMetadataType.java:4415`,
+`:4425`). Their semantics are *deduplication* — "duplicate resolution processing is required", i.e.
+these are the same thing and should be consolidated. Applying them here would instruct the catalog to
+merge two components that are deliberately separate. This is the same wrong-semantics trap as
+`Incomplete` in §3.4.
+
+They are, however, exactly right for the **other** case the same detector finds: accidental copy-paste
+that *should* be one component. So the detector emits a candidate and the human classifies it, and the
+classification picks the representation:
+
+| Human verdict | Representation |
+|---|---|
+| Intentional variant | two `SolutionComponent`s, no duplicate link; overlap recorded as an annotation |
+| Accidental copy | `KnownDuplicate` + `PeerDuplicateLink`; resolution required |
+
+A concrete instance of §7.3's "curation as RFA", with real Egeria types behind each branch rather than
+a review screen for its own sake.
+
+### 8.3 Drift
+
+Compare blueprint version A against version B as two element sets, matched on stable slug:
+components added / removed / reclassified, wires added / removed, ports changed direction. This is a
+straightforward set diff rather than a temporal query, and it reads naturally as "what changed
+architecturally between release 1.2 and 2.0."
+
+Instance versioning / `asOfTime` stays available as the within-version audit trail — who corrected
+what, when — but is not the drift mechanism.
+
+### 8.4 Prerequisite
+
+Reliable writes. RE's publishers are fire-and-forget today (current-state doc §0), and this feature
+writes far more elements per run. **The outbox/retry work is a prerequisite, not a nice-to-have** — a
+half-published blueprint is worse than none.
+
+---
+
+## 9. Information Supply Chains — scoped down
+
+Agreed: ISCs are the weak half, and per your steer we are **not** promising automated ISCs.
+
+- A blueprint is a static structure readable from one repo. An ISC is an end-to-end *business* flow,
+  usually spanning repos, carrying a name only a human or a well-briefed agent can assign.
+- Within a single repo an ISC is often either trivial or meaningless — real supply chains cross
+  system boundaries.
+- What we *can* do cheaply: because `iscQualifiedNames` lives **on the wire** (§3.3), ISC attribution
+  is a labelling pass over a wire graph we already have. Once several repos are analysed, path-finding
+  across the combined graph yields ISC **candidates**.
+- **Position: derive wires, offer candidates, let humans/agents name and bound them.** Deferred to a
+  later phase; explicitly not in the Phase 1–5 plan below.
+
+---
+
+## 10. Plan
+
+Revised after the §5.5–5.7 tooling pass and §6.0's simplification. Two prerequisites moved earlier;
+Phase 4 got substantially cheaper.
+
+### Phase 0 — Spike (dogfood)
+**Planned in detail: `docs/architecture-recovery-phase0-plan.md`.**
+
+Run detectors against three targets chosen to test different things — `egeria-workspaces` (via the
+current `-fs` checkout) as the richest case, covering code-versus-deployment reconciliation, polyglot
+detection, duplicate-component identity, and the vendored-noise problem above; `trellis`/RE as the
+premise test (it has **no** deployment artifacts at all, so code-level markers must carry the whole
+partition); and `egeria` for scale. Compare the three §5.5
+signals against a **pre-registered** hand-written partition, without LLM help.
+
+Exit criteria are pass / **qualified pass** / fail, decided in advance. The qualified pass — boundaries
+recovered only where a package manifest declares them — is the most likely outcome and changes the
+Phase 1 estimate rather than killing the feature.
+
+Standalone throwaway scripts over local checkouts: no RE integration, no Egeria, no Prefect, no
+registry writes. A negative result must cost nothing to discard.
+
+Secondary, independent of the result: time `scc` and `lizard` to test §5.6's Discovery-tier cost claim.
+
+### Phase 0.5 — Infrastructure prerequisites
+Small, but both block later phases and neither is a detail:
+- **`git_clone_root` `ResourceProvider`** (treeless clone) alongside `_acquire_zipball_root` — without
+  it Q11's history metrics have no data source (§5.7 gap 2).
+- **Binary provisioning** — pin `scc`, `ast-grep`, `syft`, `trivy` into the RE image with a version
+  probe feeding `analyzerVersion` (§5.7 gap 3).
+
+### Phase 1 — Detectors + IR, no Egeria writes
+Implement §5.1's detector table **as ast-grep rules plus config parsers**, the §5.3 IR, and §5.4's
+evidence into `project_analysis_findings`. Declared-architecture sources (§5.1) short-circuit inference
+where present. Distillation heuristics only — no LLM yet. Add the §5.7 steps to `STEP_REGISTRY` and
+`analysis_catalog.yaml`. Output viewable in RE. Testable with zero Egeria dependency.
+
+### Phase 2 — Egeria projection at Draft
+Blueprint, components, subcomponents, ports, wires, `ImplementedBy`. All at `ContentStatus = Draft`.
+Stable qualified names and upsert per the revised §8.2 — **no `{project}::` prefix**; attach to the
+project by collection membership. `ImplementedBy` via
+`GovernanceOfficer.link_design_to_implementation`, populating `role` and `designStep` (§3.6).
+`versionIdentifier` per §8.1's precedence chain. `Confidence` classification on components and ports —
+`confidenceLevel = Derived`, `confidence` 0–100, `source` = analyzer id (§3.3b); wires excepted (§3.3),
+their confidence riding on the connected ports.
+**Prerequisite:** outbox/retry publishing (§8.4). *(The confidence-level set is no longer a
+prerequisite — the stock `ConfidenceLevel` values are used unextended.)*
+
+### Phase 3 — Curation
+Curate-intent review surface, the overlay (§7.2), per-component promotion through `ContentStatus`,
+RFAs for low-confidence components. Overlay is keyed by the same `scope_locator` as everything else.
+
+### Phase 4 — Component-scoped analytics
+**Substantially cheaper than originally scoped (§6.0):** a component is a path prefix, so this is
+largely running existing `accepts_scope_locator=True` steps once per component and projecting the
+result — not a new aggregation layer. Publish §6.2's attributes as **one annotation per analyzer per
+component**. Interim carrier per §6.4; swap to the typed annotation when it lands, re-deriving rather
+than migrating.
+
+Given how much cheaper this became, consider pulling a slice of it into Phase 1 — component-scoped
+metrics with no Egeria write are the most legible demonstration that the partition is real.
+
+### Phase 4.5 — `AnnotationAgent` + `ArchitectureAgent` (§6.5c)
+Generic Q&A over `annotation_types` / `project_analysis_findings` / `project_analysis_metrics`, then the
+architecture specialisation over the blueprint graph. Embed the IR as an `architecture` collection.
+**Sequencing is genuinely open (Q14)** — `AnnotationAgent` has no dependency on this feature and would
+be useful today; it is placed here because architecture recovery is what makes it compelling.
+
+### Phase 5 — LLM distillation + drift
+Add LLM naming/classification within §5.2's rule (never invents components) and §5.6's cost gate (only
+below a confidence threshold, only small prompts). Add the §8.3 drift comparison and reporting, with
+`ArchitectureAgent` as its natural-language front end.
+
+### Deferred
+ISC candidate derivation (§9). Defining Egeria's 0780 model (§3.7). Call-graph tooling (Joern/SCIP)
+unless Phase 0 shows detectors are insufficient — and if so, via SCIP's protobuf index rather than
+framework adoption (§5.6).
+
+---
+
+## 11. Open questions
+
+**Resolved in this revision** (answers given in review, grounded against the Egeria checkout where they
+made a type claim):
+
+- ~~**Q1** — Where is the `ImplementedBy` write path?~~ **RESOLVED:**
+  `GovernanceOfficer.link_design_to_implementation` (`governance_officer.py:2943`), body carries
+  `ImplementedByProperties` (`designStep`, `role`, `transformation`, `description`,
+  `iscQualifiedName`). Phase 2 unblocked.
+- ~~**Q2** — Can `ContentStatus` be set per component?~~ **RESOLVED:** yes — settable on any authored
+  `Referenceable`, as an ordinary body key. Per-component promotion works; §7 stands.
+- ~~**Q3** — component identity for qualified names?~~ **RESOLVED: module path**, refined into a
+  precedence chain — **deployment unit → declared package name → normalised module path** (§8.2), with
+  the deployment context qualifying the slug where one exists. Renames are handled as overlay aliases,
+  not by move detection.
+
+  *Revised once more* after `egeria-workspaces` supplied a counterexample: it ships `PyegeriaWebHandler`
+  twice under the same package name for two different deployments, so package-name-first would have
+  merged two deliberately distinct components. Deployment unit now leads (§8.2a).
+
+  This answer carries far more weight than expected either way: it makes a component a **path prefix**,
+  which is what §6.0 builds the entire analytics story on.
+- ~~**Q4** — where do evidence and confidence live?~~ **RESOLVED, in two halves.**
+  *Confidence:* the `Confidence` classification, confirmed against `Referenceable`
+  (`OpenMetadataTypesArchive1_2.java:6951`, §3.3b) — `confidence` int 0–100 matches RE's existing scale,
+  `confidenceLevel` carries provenance using the stock `ConfidenceLevel` values unextended, `source`
+  carries the analyzer id, `steward` carries the curator. §5.4's proposed `derivation` field was a
+  reinvention of `confidenceLevel` and has been removed.
+  *Evidence:* stays **RE-side** in `project_analysis_findings` (§5.4), which already has the exact shape
+  including `scope_locator`, `confidence` and `detail_json`. Egeria receives the *reasoning* in typed
+  base-`AnnotationProperties` fields (`expression`, `explanation`, `analysisStep`). Nothing in
+  `jsonProperties`.
+  *Carry-over:* wires cannot be classified (§3.3) — wire confidence rides on the connected `SolutionPort`s.
+- ~~**Q5** — conflict-resolution UX?~~ **RESOLVED:** part of curation and RFAs (§7.2, §7.3). The
+  requirement that conflicts be **surfaced rather than silently resolved** stands unchanged.
+- ~~**Q7** — personal or shared project?~~ **RESOLVED, but not as originally asked.** The project is a
+  **link, not a namespace**: `{project}::` is dropped from the qualified name and the blueprint attaches
+  to the owning project by collection membership (§8.2). Per-user divergence lives in the overlay, not in
+  duplicated blueprints.
+- ~~**Q8** — monorepos?~~ **RESOLVED: one blueprint per *deployable solution*** — usually one per repo,
+  but not always, and `egeria-workspaces` is the exception that shows why: it ships **two** solution
+  deployments (QuickStart and FreshStart) from one repo, each with its own component set and auth model.
+  Forcing them into one blueprint would misrepresent both.
+
+  **"Solution deployment" is doing precise work in that sentence** — see §8.2b's three tiers. The same
+  repo also carries 11 *optional runtime add-ons* and 3 *runtime modes*, and neither mints a blueprint.
+  Counting every deployment artifact would yield 13+ blueprints for one repo, most holding a single
+  third-party component.
+
+  Blueprints being Collections (§3.3a) makes this work cleanly: the two solution blueprints **share** the
+  `shared-infra.yaml` components (`kafka`, `postgres`, `kroki`, `proxy`), optionally admit the add-ons'
+  components, and hold their own variant components (§8.2a). Shared membership rather than duplication.
+
+  The "blueprints nest" half is not available — blueprints are Collections with no blueprint-to-blueprint relationship; nesting is
+  `SolutionComposition` between *components* (§3.3a). Collection membership gives something better:
+  a component can belong to several blueprints, which is how cross-repo composition and §9's estate-wide
+  ISC candidates would work.
+- ~~**Q9** — where do Phase 4's metrics land?~~ **RESOLVED:** `CodeAnalysis` as an Annotation subtype
+  (§6.1), base `Annotation` + `additionalProperties` as the interim carrier (§6.4). Further resolved in
+  this revision: **one annotation per analyzer per component** (§6.2), not one aggregate.
+- ~~**Q10** — what mints a version with no release discipline?~~ **RESOLVED:** releases, per the
+  precedence chain in §8.1 — `git describe --tags` truncated to the tag → published package version
+  (PyPI/npm/Maven, surfaced free by Syft) → `0.0.0+HEAD` always-upsert.
+- ~~**Q12** — author a `confidenceLevel` valid-value set?~~ **RESOLVED: no — use the stock
+  `ConfidenceLevel` values unextended** (`refdata/ConfidenceLevel.java`, §3.3b). They read as a poor fit
+  only if read as a degree scale; they are a *provenance* scale, and `Derived` / `Authoritative` /
+  `Ad Hoc` / `Obsolete` map onto this feature's cases almost verbatim — `Obsolete` in particular gives
+  §7.2's stale overlay entries a typed home they previously lacked. Degree stays on `confidence`
+  (int 0–100), workflow stays on `ContentStatus`; three orthogonal axes, all typed (§3.3c).
+  **Phase 2 loses a prerequisite as a result, and no upstream type change is needed.**
+- ~~**Q14** — does `AnnotationAgent` ship inside this feature or ahead of it?~~ **RESOLVED: ahead of
+  it.** It has no dependency on architecture recovery, works against every analysis RE already runs, and
+  is possible only because `project_analysis_findings` / `project_analysis_metrics` are generic. Split
+  out as its own piece of work; §6.5c and Phase 4.5 describe the content, not the sequencing.
+- ~~**Q11** — the sibling annotation type for repository history?~~ **RESOLVED in principle:** we define
+  our own annotation types, as several other analyses will need anyway. Structurally it stops being a
+  special case once §6.2's one-annotation-per-analyzer rule holds — history is just another analyzer.
+  **But it has a real prerequisite:** git history is not in a zipball, so it needs the `git_clone_root`
+  resource provider (§5.7 gap 2). Not optional if §6's value case is to be met in full.
+
+**Still open:**
+
+- **Q6** — overlay storage and per-user partitioning. Narrowed but not solved: §8.2 now confines it to
+  the curation overlay rather than the blueprint, which makes it a smaller problem than it was. Still
+  the third instance of an already-unsolved problem; do not solve it here, but do not accidentally
+  re-solve it badly either.
+- **Q13** — which §6.2 metrics justify *typed* properties versus `additionalProperties`. Deferred to
+  after Phase 0, as before — but note §5.6's tool choices (`scc`, `lizard`) make multi-language
+  extraction achievable for more of the set than the original hedge assumed, so the typed set can
+  probably be larger than §6.3 implies.
+
+---
+
+## 12. Assessment
+
+**Feasible** — blueprints yes; ISCs only semi-automatically, and scoped out accordingly.
+**Worthwhile** — first RE analysis producing design metadata, and it rescues several orphaned
+analyses by giving them a granularity worth publishing at (§6).
+**Innovative** — architecture recovery is a decades-old research area and C4-from-code tools exist;
+what is unusual is targeting a governance catalog's design types rather than a diagram, so the output
+is queryable, linkable to glossary and governance, and diffable over time. The novelty is the
+destination, not the extraction.
+
+**Biggest risk** is not extraction accuracy — it is §7.2. A tool that discards human corrections on
+every re-run will be abandoned regardless of how good its detectors are.
+
+**Two things changed the shape of this after review.** First, Q3's answer makes a component a path
+prefix, which collapses §6 from a new aggregation layer into a loop over machinery RE already has —
+the payoff section got much cheaper to build. Second, the annotation-Q&A generalisation (§6.5c) is a
+larger prize than architecture recovery itself: it makes *every* analysis RE runs askable, and it is
+available cheaply because the findings and metrics tables are generic. Architecture recovery is the
+thing that makes it compelling, not the thing that makes it possible.
+
+**Readiness:** every design question that blocked planning is answered, and nothing that remains blocks
+a phase. Q6 is deliberately out of scope (and now confined to the overlay rather than the blueprint);
+Q13 is correctly deferred to after Phase 0, since it is a question Phase 0 exists to answer. Notably,
+**no upstream Egeria type change is on the critical path** — the stock `ConfidenceLevel` values, the
+`Confidence` classification, `ContentStatus`, and base `AnnotationProperties` cover the model as
+designed, with the typed `CodeAnalysis` annotation being a swap rather than a blocker (§6.4).
+**This is plannable.**
