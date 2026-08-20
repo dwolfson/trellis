@@ -222,8 +222,43 @@ Dockerfile-derived (`physical`) component whose name happens to equal the ground
 truth's deployment-perspective name for that whole add-on **bundle** — nothing in the
 compose layer emits a service or container literally called `airflow-marquez`. Correctly
 excluding them from the deployment comparison is the same rule, just less visible than
-PyegeriaWebHandler because the name coincidence hid it. Open question for the write-up,
-not resolved here: whether an add-on-root Dockerfile like this should also carry a
-`deployment` tag alongside `physical`, since the add-on genuinely *is* deployed as a
-bundle even though no single compose service shares its name.
+PyegeriaWebHandler because the name coincidence hid it.
+
+**Resolved, not dual-tagged.** The instinct to give the add-on Dockerfile a second
+`deployment` tag was checked and rejected: doing so would recover 21/27, which is exactly
+why not to do it — it fits the model to the score rather than fixing the actual cause.
+The real cause is a **granularity inconsistency inside the pre-registered ground truth
+itself**: `egeria-workspaces.md` names `airflow-marquez` (a bundle of 9 containers) as
+one component in the same document where `quickstart-egeria-main` (one container) is
+also one component — two different levels of the same vocabulary in one fixture. That is
+a `-revised.md` question (README.md rule 3), never something to paper over with a second
+tag on the detector side. **18/27 is the honest number**; the write-up should say
+deployment-perspective recall is depressed by an add-on-tier granularity gap in the
+fixture, not by a detector or tagging defect.
+
+**18. The "deployment" perspective is a *specification* perspective, not a claim about a
+running system — a second correction of the same shape as finding 16, both times from
+refusing to collapse things that look alike.** A repo contains no deployed container; it
+contains a *description* of one — a compose service definition plus a Dockerfile — and
+the compose file that would start it. Nothing is running, so writing an Area 0
+`SoftwareServer` / `DeployedSoftwareComponent` / `DeployedOn` from static analysis would
+assert infrastructure that was never observed running; `ContentStatus = Draft` does not
+repair that, since Draft means *incomplete*, not *may not correspond to anything real*.
+Area 0's `ITInfrastructure` is explicitly "hardware and base software that supports an IT
+system" — actual infrastructure, evidenced by a live connector, not a checkout.
+
+Egeria already has the right property for this distinction: `plannedDeployedImplementationType`
+(`OpenMetadataProperty.java:2504`) on `SolutionComponent`, documented as *"the type of
+software component that is **likely** to serve as an implementation for this solution
+component"* — note "likely". So a compose service yields an Area 7 `SolutionComponent`
+carrying `plannedDeployedImplementationType` for the technology, not an Area 0
+infrastructure element. The compose file and Dockerfile themselves are real and are
+properly Area 0 0280 assets (`YAMLFile`, `BuildInstructionFile`) — it's the *inferred
+running instance* that is out of scope for this feature, not the artifacts that describe
+it. Design doc §4.1a now records this as "deployment specification"; the IR/fixture token
+stays `deployment` unchanged (churning it to match the prose would mean editing a
+pre-registered fixture), and `validate.py`'s deployment vocabulary (`Application`,
+`EventBroker`, …) is unaffected for the spike — its content survives long-term as the
+technology-type string in `plannedDeployedImplementationType` rather than as an entity
+type.
 

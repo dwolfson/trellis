@@ -103,6 +103,20 @@ dependencies = [
     # transfer plan) once code intelligence is more than a chunking nicety.
     "tree-sitter>=0.21",
     "tree-sitter-java>=0.21",
+    # Structural code-marker detection engine for architecture recovery
+    # (docs/architecture-recovery-design.md §5.1). A pip dependency rather
+    # than a system prerequisite on purpose: `ast-grep-cli` publishes
+    # prebuilt wheels for macOS arm64/x86_64, manylinux aarch64/x86_64 and
+    # Windows, at version parity with Homebrew, so `uv sync` provisions the
+    # binary and uv.lock pins it. Nobody has to `brew install` anything.
+    #
+    # This is the general answer to §5.7's binary-provisioning gap, not a
+    # one-off: prefer a wheel-distributed or Python-native implementation
+    # (ast-grep-cli here, lizard for complexity) and accept a modest
+    # performance cost, reserving true system binaries for capabilities with
+    # no alternative (syft/trivy) — which are Analysis-tier and optional, and
+    # should declare themselves unavailable rather than fail a survey.
+    "ast-grep-cli>=0.45.1",
 ]
 
 [project.optional-dependencies]
