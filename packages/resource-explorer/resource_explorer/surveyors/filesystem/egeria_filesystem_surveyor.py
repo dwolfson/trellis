@@ -78,6 +78,23 @@ class EgeriaFileSystemSurveyor:
         survey_data: dict,
         registry: ProjectRegistry | None = None,
     ) -> dict:
+        """Guarded front door — see _catalog_and_survey. Same stale-GUID
+        detection as publish_step_annotations; this path matters more, because
+        its own broad `except` would otherwise swallow the failure and return an
+        empty SurveyReport that looks like a successful publish."""
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        with guard_linkage(registry, "filesystem", fs_entity.slug,
+                           fs_entity.display_name or fs_entity.slug,
+                           fs_entity.egeria_asset_guid or ""):
+            return self._catalog_and_survey(fs_entity, survey_data, registry)
+
+    def _catalog_and_survey(
+        self,
+        fs_entity: FileSystemEntity,
+        survey_data: dict,
+        registry: ProjectRegistry | None = None,
+    ) -> dict:
         """Catalog the filesystem root folder and data files in Egeria, then publish the survey report."""
         self.connect()
 
@@ -240,6 +257,27 @@ class EgeriaFileSystemSurveyor:
         }
 
     def publish_step_annotations(
+        self,
+        fs_entity: FileSystemEntity,
+        survey_data: dict,
+        registry: ProjectRegistry | None = None,
+    ) -> dict:
+        """Guarded front door — see _publish_step_annotations for what this does.
+
+        Everything below depends on the Egeria GUID RE cached for this
+        filesystem. If Egeria no longer knows it, guard_linkage records the
+        divergence and raises a named error naming the entity and the three
+        resolutions, instead of the opaque SERVER_ERROR_500 that reached the UI
+        verbatim before. See resource_explorer/egeria_linkage.py.
+        """
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        with guard_linkage(registry, "filesystem", fs_entity.slug,
+                           fs_entity.display_name or fs_entity.slug,
+                           fs_entity.egeria_asset_guid or ""):
+            return self._publish_step_annotations(fs_entity, survey_data, registry)
+
+    def _publish_step_annotations(
         self,
         fs_entity: FileSystemEntity,
         survey_data: dict,

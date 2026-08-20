@@ -107,6 +107,23 @@ class EgeriaDatabaseSurveyor:
         registry=None,
         survey_after_catalog: bool = True,
     ) -> dict:
+        """Guarded front door — see _catalog_and_survey."""
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        with guard_linkage(registry, "database", db_entity.slug,
+                           db_entity.display_name or db_entity.slug,
+                           db_entity.egeria_asset_guid or ""):
+            return self._catalog_and_survey(
+                db_entity, db_user, db_pwd, registry, survey_after_catalog)
+
+    def _catalog_and_survey(
+        self,
+        db_entity: "DatabaseEntity",
+        db_user: str,
+        db_pwd: str,
+        registry=None,
+        survey_after_catalog: bool = True,
+    ) -> dict:
         """Catalog the PostgreSQL server + database in Egeria, then optionally initiate a native survey.
 
         Egeria's template-based creation stores the connection details (including
@@ -245,6 +262,29 @@ class EgeriaDatabaseSurveyor:
         return None
 
     def publish_step_annotations(
+        self,
+        db_entity: "DatabaseEntity",
+        schema_info: dict,
+        statistics: dict | None,
+        surveyed_at: str,
+        registry=None,
+        views: list | None = None,
+    ) -> dict:
+        """Guarded front door — see _publish_step_annotations.
+
+        Detects a cached Egeria GUID that no longer exists and records it,
+        rather than letting the server's own error reach the UI. See
+        resource_explorer/egeria_linkage.py.
+        """
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        with guard_linkage(registry, "database", db_entity.slug,
+                           db_entity.display_name or db_entity.slug,
+                           db_entity.egeria_asset_guid or ""):
+            return self._publish_step_annotations(
+                db_entity, schema_info, statistics, surveyed_at, registry, views)
+
+    def _publish_step_annotations(
         self,
         db_entity: "DatabaseEntity",
         schema_info: dict,

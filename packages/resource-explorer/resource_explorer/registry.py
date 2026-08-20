@@ -1280,6 +1280,33 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug, technology_type)
                 )
             """)
+            # Egeria linkage health, per entity, across all three resource
+            # types. RE caches Egeria GUIDs (egeria_asset_guid, and per-report /
+            # per-file GUIDs beneath them) and trusted them unconditionally: if
+            # Egeria's repository was reset independently of RE's registry, the
+            # next survey or publish failed with an opaque SERVER_ERROR_500 that
+            # reached the UI verbatim and named nothing actionable.
+            #
+            # Its own table rather than a column on each of projects/databases/
+            # filesystems: the condition and its three resolutions are identical
+            # for all three, and each egeria_*_surveyor.py already reimplements
+            # its own GUID caching — one more per-type copy is the direction that
+            # produced the drift in _build_annotation_props.
+            #
+            # A row exists only once a divergence has been detected. No row means
+            # "nothing has gone wrong", which is the overwhelmingly common case
+            # and should cost nothing to represent.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS egeria_linkage_status (
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    status       TEXT NOT NULL DEFAULT 'stale',
+                    stale_guid   TEXT DEFAULT '',
+                    detected_at  TEXT NOT NULL DEFAULT '',
+                    detail       TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rfa_actions (
                     id                TEXT PRIMARY KEY,
@@ -2798,6 +2825,63 @@ class ProjectRegistry:
                 "UPDATE projects SET egeria_asset_guid = ? WHERE slug = ?",
                 (guid, slug),
             )
+
+    # ── Egeria linkage divergence (see egeria_linkage_status's DDL comment) ──
+
+    def mark_egeria_linkage_stale(
+        self, entity_type: str, entity_slug: str, stale_guid: str = "", detail: str = "",
+    ) -> None:
+        """Record that this entity's cached Egeria GUIDs can no longer be trusted.
+
+        Deliberately does not clear the GUIDs. A stale root GUID means the whole
+        Egeria-side lineage RE cached beneath it is *unverifiable*, not
+        automatically wrong — recreating in place risks duplicating Egeria
+        elements and silently discarding catalog history that may still matter.
+        The GUIDs are kept so a human can see what RE had, and so "republish"
+        can report exactly what it is replacing.
+        """
+        from datetime import timezone
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO egeria_linkage_status
+                       (entity_type, entity_slug, status, stale_guid, detected_at, detail)
+                   VALUES (?, ?, 'stale', ?, ?, ?)
+                   ON CONFLICT (entity_type, entity_slug) DO UPDATE SET
+                       status='stale', stale_guid=excluded.stale_guid,
+                       detected_at=excluded.detected_at, detail=excluded.detail""",
+                (entity_type, entity_slug, stale_guid,
+                 datetime.now(timezone.utc).isoformat(), detail),
+            )
+
+    def get_egeria_linkage(self, entity_type: str, entity_slug: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM egeria_linkage_status WHERE entity_type=? AND entity_slug=?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_stale_egeria_linkages(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM egeria_linkage_status WHERE status='stale' "
+                "ORDER BY detected_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_egeria_linkage_status(self, entity_type: str, entity_slug: str) -> bool:
+        """Drop the divergence record — the linkage is trusted again.
+
+        Deletes rather than setting status='ok': absence already means healthy
+        (see the DDL comment), so an 'ok' row would be a second representation
+        of the same state and something else to keep consistent.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM egeria_linkage_status WHERE entity_type=? AND entity_slug=?",
+                (entity_type, entity_slug),
+            )
+        return cur.rowcount > 0
 
     def clear_egeria_registration(self, slug: str) -> dict:
         """Clear the cached Egeria GUID and all published survey records for a project.

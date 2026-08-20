@@ -83,11 +83,27 @@ class EgeriaPublisher:
         if zone_names is not None:
             self.zone_names = zone_names
         self._connect()
-        asset_guid = self._find_or_create_asset(result)
-        # Best-effort and deliberately not fatal — see the method's docstring.
-        self._publish_homepage_reference(result, asset_guid)
-        report_guid = self._create_survey_report(result, asset_guid)
-        self._create_annotations(result, report_guid)
+
+        # Everything below depends on the asset GUID RE cached for this project,
+        # directly or through the report created against it. If Egeria no longer
+        # knows that GUID, this raises a named error and records the divergence
+        # instead of surfacing a 500-word server stack — see egeria_linkage.py.
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        cached_guid = ""
+        if self._registry:
+            try:
+                cached_guid = self._registry.get_egeria_asset_guid(result.project_slug) or ""
+            except Exception:
+                cached_guid = ""
+
+        with guard_linkage(self._registry, "repo", result.project_slug,
+                           result.project_display_name, cached_guid):
+            asset_guid = self._find_or_create_asset(result)
+            # Best-effort and deliberately not fatal — see the method's docstring.
+            self._publish_homepage_reference(result, asset_guid)
+            report_guid = self._create_survey_report(result, asset_guid)
+            self._create_annotations(result, report_guid)
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.project_slug,

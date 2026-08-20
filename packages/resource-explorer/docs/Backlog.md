@@ -34,24 +34,50 @@ live Egeria — no filesystem entity is registered in this deployment, so there 
 nothing to survey. Worth re-running once one exists, since the original failure was
 invisible precisely because it was swallowed.
 
-### Egeria ↔ RE sync/divergence reconciliation — when one store is reset independently of the other
+### Egeria ↔ RE sync/divergence reconciliation — DETECTION BUILT 2026-08-20, resolution partly open
 
-Today RE trusts cached Egeria GUIDs (`egeria_asset_guid`, per-file/report GUIDs) unconditionally on every survey/publish path (`egeria_filesystem_surveyor.py:262`, `egeria_database_surveyor.py:126`/`147`, likely the same pattern in the repo path too) — reported 2026-07-21: a filesystem resurvey failed with Egeria `SERVER_ERROR_500` / `InvalidParameterException` / `OMRS-REPOSITORY-404-007`/`OMRS-REPOSITORY-404-002` because the cached GUID no longer existed in Egeria's repository, after the user reset Egeria's database independently of RE's SQLite.
+**Built:** `resource_explorer/egeria_linkage.py` detects "that GUID does not exist here"
+at the point of use and, instead of the opaque `SERVER_ERROR_500` that reached the UI
+verbatim, records the divergence in the new `egeria_linkage_status` table, raises an RFA,
+and throws a named error that says what happened and what the three choices are. Guards
+are installed on the five paths that consume a cached GUID (repo publish, plus
+`catalog_and_survey`/`publish_step_annotations` on both the database and filesystem
+surveyors); a test asserts they stay installed, so a new path added without one fails
+rather than silently reintroducing the old behaviour.
 
-**Confirmed direction (2026-07-21): this is not a per-call self-healing/retry problem.** A stale root GUID means the whole Egeria-side lineage RE cached for that asset (report GUID, per-file GUIDs, annotation GUIDs) is unverifiable, not just recreatable in place — silently recreating risks duplicating Egeria elements and quietly discarding real catalog history that may still matter. **Detect, don't auto-resolve:** catch the specific "entity GUID not known to the repository" 404/`InvalidParameterException` pattern at the point of use (today it surfaces as an opaque `SERVER_ERROR_500` all the way to the UI) and mark the local entity's Egeria linkage as stale, then let a human choose the resolution.
+The detector was validated against this deployment's live Egeria rather than against a
+paraphrase — asking for a GUID that cannot exist returns `OMAG-REPOSITORY-HANDLER-404-007`
+wrapping `OMRS-REPOSITORY-404-002`, and that verbatim message is now a test fixture. Two
+things that probe corrected: the outer code is `OMAG-REPOSITORY-HANDLER-404-007`, not the
+`OMRS-REPOSITORY-404-007` recorded here from the original report; and the response labels
+itself `CLIENT_ERROR_400` while `relatedHTTPCode` is 404, which is why detection keys on
+Egeria's message codes and not on HTTP status.
 
-**Salvage, not just discard (2026-07-21):** locally-cached survey results/annotations for an asset aren't automatically worthless just because Egeria's copy of the GUID mapping is gone — the underlying filesystem/database may not have changed at all, only Egeria's catalog was reset, so RE's existing local survey data may still be accurate and worth re-publishing rather than re-scanning from scratch. So the human-facing choice on detecting divergence should be three options, not two:
-1. **Republish** — re-run only the Egeria-publish step against RE's existing locally-cached survey data, creating fresh Egeria elements from data RE already collected (fast, no re-scan).
-2. **Re-survey** — treat as never-cataloged and re-run the full survey + publish (right call if the underlying resource may have changed too, or the local data is old enough to be suspect).
-3. **Discard locally** — purge RE's cached data for that asset since it's no longer trustworthy either.
+**Held to "detect, don't auto-resolve" as decided:** the cached GUID is deliberately *not*
+cleared on detection. It is kept so a human can see what RE had and so republish can report
+what it is replacing.
 
-Likely UI shape: the same mechanism as the RFA/ToDo pattern (item below) — this is itself a kind of RFA ("Egeria record for X not found — reconcile?").
+`GET /api/egeria/linkage/stale` lists divergences; `POST /api/egeria/linkage/{type}/{slug}/resolve`
+takes `republish` | `resurvey` | `discard`. All three clear the unusable GUID and the
+divergence record — that is what unblocks the resource, and is common to every choice.
 
-**Open questions:** (1) reactive-only detection (caught at point of use, as above) vs. also proactive — a lightweight guid-existence check before survey/publish operations, or a periodic reconciliation sweep; (2) how to distinguish "republish is safe" from "local data is too stale to trust" — probably needs a staleness heuristic (age of last local survey vs. some threshold) surfaced to the human rather than decided automatically, not a hard rule; (3) the reverse case — RE's SQLite reset, Egeria intact — is believed easier since a `_find_element_guid()`-by-name fallback already exists for the never-cached case, but this hasn't actually been verified against a genuinely-reset-RE-database scenario; (4) whether reconciliation is generic across all three resource types given each `egeria_*_surveyor.py` currently reimplements its own GUID-caching logic independently rather than sharing one — a fix probably shouldn't be filesystem-only.
-
-Related: "RFAs should become real Egeria actions" below (likely the delivery mechanism for the reconcile prompt), "Unify survey launching" below (a unified launcher is a natural place to surface a "your last sync appears stale" warning before a run even starts).
-
----
+**Still open:**
+- **republish/resurvey run the follow-up work for repos only.** For databases and
+  filesystems the link is cleared and the caller is told which existing action to run.
+  Re-publishing those from cached local data needs per-type orchestration (a database
+  publish reconstructs `schema_info` and fires Egeria's native survey), and there is no
+  registered database or filesystem in this deployment to verify such a path against.
+- **`discard` clears the Egeria linkage; it does not purge RE's local survey data**, which
+  is the stronger reading in the original note above. Deleting a user's survey history is
+  hard to reverse and should not happen behind a single API call — it needs its own
+  confirmation path before being built.
+- **Detection is reactive only** (open question 1). A proactive GUID-existence sweep would
+  have to decide how often to re-check every cataloged entity; the failure is rare and now
+  loud, so this was not worth paying for yet.
+- **Open question 3 is still untested**: the reverse case, RE's registry reset with Egeria
+  intact, is believed to be handled by the existing `_find_element_guid()`-by-name fallback,
+  but that has still not been verified against a genuinely-reset-RE database.
+- **No UI.** The RFA appears in the drawer; the resolve action is API-only so far.
 
 ### Advanced SQLGlot view analytics
 We can extend our SQL View static analyzer (`sql_analyzer.py`) with further advanced metadata analytics:
