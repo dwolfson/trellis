@@ -2327,6 +2327,16 @@ const _REPO_RESULTS_RENDER_MODE = {
   // only reached via the Survey Results dashboard's "Data Profile" grouping,
   // which still needs this render-mode entry to dispatch correctly.
   sub_resource_survey: 'custom',
+  // Added 2026-08-20. These four had backend results readers and no entry
+  // here, so their cards showed no Results button at all — the button is
+  // gated on membership of this object. Drift in exactly the direction the
+  // comment above warns about; tests/test_frontend_render_modes.py now
+  // fails when this object and ANALYSIS_KINDS disagree, so the mirror can
+  // no longer fall behind silently.
+  repository_health: 'findings_list',
+  code_symbol_extraction: 'custom',
+  rag_ingestion: 'metrics',
+  website_ingestion: 'metrics',
 };
 
 // What the trend chart's Y axis actually is, per analysis kind — the chart
@@ -2343,6 +2353,14 @@ const _REPO_TREND_LABEL = {
   ci_quality: 'CI checks passing',
   repo_conventions: 'Conventions present',
   api_structure: 'Total code symbols',
+  repository_health: 'Health checks passing',
+  code_symbol_extraction: 'Total code symbols',
+  rag_ingestion: 'Total chunks indexed',
+  website_ingestion: 'Chunks from documentation site',
+  // Reached from the Survey Results dashboard rather than a card of its own —
+  // it has no analysis_catalog.yaml entry — but it plots the same as any other
+  // trend and its Y axis needs naming just the same.
+  sub_resource_survey: 'Total size of candidate sub-resources (bytes)',
 };
 
 async function toggleAnalysisResults(analysisId, slug, btn) {

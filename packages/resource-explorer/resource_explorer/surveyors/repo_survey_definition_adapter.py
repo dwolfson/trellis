@@ -165,6 +165,32 @@ def _acquire_zipball_root(project, registry):
         yield root
 
 
+@contextmanager
+def _acquire_git_clone_root(project, registry):
+    """Treeless-clone `project`'s repo into a fresh tempdir and yield the
+    clone root. Mirrors _acquire_zipball_root exactly — a plain function,
+    not a StepInfo/surveyor, resolved once per SurveyOrchestrator.run() no
+    matter how many selected steps declare
+    `requires_resources={"git_clone_root": ...}`.
+
+    This is design §5.7 gap 2 (architecture-recovery-design.md) and
+    architecture-recovery-phase1-plan.md §3's prerequisite: co-change
+    coupling needs git history, and a zipball (what `_acquire_zipball_root`
+    yields) has no `.git` at all. The actual clone logic lives in
+    GitHubClient.git_clone_root() (mirroring zipball_root()'s D6.7 role) —
+    one implementation, not a copy per caller. See that method's docstring
+    for why the clone is `--filter=blob:none --no-checkout` rather than
+    shallow or full, and for the auth path (same GITHUB_TOKEN as the
+    zipball download, no second credential mechanism).
+    """
+    from resource_explorer.github.client import GitHubClient
+
+    client = GitHubClient()
+    repo = client.get_repo(project.github_url)
+    with client.git_clone_root(repo) as root:
+        yield root
+
+
 def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
     """Builds this run's RESOURCE_PROVIDERS, binding `project`/`registry`
     into each provider's zero-argument `acquire` via a closure — see
@@ -174,6 +200,10 @@ def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
         "zipball_root": ResourceProvider(
             name="zipball_root",
             acquire=lambda: _acquire_zipball_root(project, registry),
+        ),
+        "git_clone_root": ResourceProvider(
+            name="git_clone_root",
+            acquire=lambda: _acquire_git_clone_root(project, registry),
         ),
     }
 
@@ -860,7 +890,7 @@ def _website_ingestion_results(registry, slug: str) -> dict:
     """
     m = registry.query_metrics(slug, "website_ingestion")
     detail = m.get("detail") or {}
-    return {
+    out = {
         # int(): metric_value is a float column, and "0.0 chunk(s)" on a card
         # reads as a broken number rather than a count.
         "chunks": int(m.get("chunks", 0) or 0),
@@ -873,6 +903,12 @@ def _website_ingestion_results(registry, slug: str) -> dict:
         "discovery": detail.get("discovery", ""),
         "surveyed_at": m.get("surveyed_at", ""),
     }
+    # The "metrics" render mode lays every key out as a labelled row, so an
+    # empty descriptive field shows as a label with nothing beside it — which
+    # reads as a failed lookup rather than as "not applicable". The counts stay
+    # even at zero: there, zero is the answer.
+    return {k: v for k, v in out.items()
+            if v != "" or k in ("chunks", "pages_fetched", "pages_found", "pages_failed")}
 
 
 def _website_ingestion_trend(registry, slug: str) -> list[dict]:
