@@ -1233,6 +1233,87 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     ),
 }
 
+# ── cost tiers: ordering and per-analysis rollup ─────────────────────────
+# The ordinal scales StepInfo.fetch_cost/compute_cost draw from. Defined here,
+# beside the dataclass that declares those fields, and imported by
+# survey_orchestrator.py rather than duplicated there — two private copies of
+# an ordinal scale drift silently, and a wrong index means a cost filter that
+# quietly admits a step it was meant to exclude.
+FETCH_COST_ORDER = ["none", "api", "api_heavy", "download"]
+COMPUTE_COST_ORDER = ["low", "medium", "high"]
+
+
+def analysis_cost(analysis_id: str) -> tuple[str, str]:
+    """This analysis's (fetch_cost, compute_cost), as the max over its steps.
+
+    Max rather than sum, because these are ordinal labels and not quantities —
+    adding "download" to "api" has no meaning. What a caller wants to know is
+    "how expensive is the worst thing this will do", which is what governs
+    whether it is safe to run hourly. An analysis with no mapped steps is
+    ("none", "low"): it costs nothing here because it does nothing here (the
+    Survey-Definition and publish dispatch paths run elsewhere).
+    """
+    steps = [STEP_REGISTRY[k] for k in REPO_ANALYSIS_STEP_MAP.get(analysis_id, [])
+             if k in STEP_REGISTRY]
+    if not steps:
+        return ("none", "low")
+    return (max((s.fetch_cost for s in steps), key=FETCH_COST_ORDER.index),
+            max((s.compute_cost for s in steps), key=COMPUTE_COST_ORDER.index))
+
+
+# ── "cheap often, expensive rarely", in the scheduler's own vocabulary ────
+# Cadences are picked from {manual, daily, weekly, monthly} — there is no
+# hour-level control anywhere in this system — so the recommendation is a
+# cadence name, not an interval in hours. An hours-based floor would imply a
+# precision the scheduler cannot express and nothing could act on, which is
+# exactly how `run_time` in analysis_catalog.yaml rotted (docs/step-cost-tiers-
+# plan.md, "Why").
+#
+# Ordered most- to least-frequent, so "more frequent than recommended" is an
+# index comparison rather than a pile of special cases.
+SCHEDULE_FREQUENCY_ORDER = ["daily", "weekly", "monthly", "manual"]
+
+
+def recommended_schedule(analysis_id: str) -> str:
+    """The most frequent cadence worth using for this analysis.
+
+    Keyed on fetch cost first: a download is what a schedule actually spends on
+    someone else's infrastructure, so it dominates. High compute pushes one step
+    further out — that cost is local, but it is the one that makes a run take
+    long enough to collide with the next.
+
+    Advisory, never enforced. The legitimate reasons to run an expensive
+    analysis more often than this — actively working on it, a repo that really
+    does change that fast — are invisible from inside the scheduler. What this
+    addresses is choosing a cadence without knowing what it costs.
+
+    Known limitation, stated rather than special-cased: fetch_cost records the
+    worst case, so a step that usually skips its fetch is rated as if it always
+    paid it. rag_ingestion is the live instance — IncrementalIndexer downloads
+    only when the last-indexed SHA moved, so daily is defensible for it despite
+    the "monthly" this returns. Encoding that would mean a conditional-cost
+    axis, which is a real design question and not one worth answering to
+    improve one recommendation the user can already override.
+    """
+    fetch, compute = analysis_cost(analysis_id)
+    if fetch == "download" and compute == "high":
+        return "monthly"
+    if fetch in ("download", "api_heavy") or compute == "high":
+        return "weekly"
+    return "daily"
+
+
+def schedule_is_more_frequent_than_recommended(analysis_id: str, schedule: str) -> bool:
+    """True when `schedule` runs this analysis more often than its cost warrants.
+
+    "manual" is never too frequent — it does not recur at all.
+    """
+    if schedule not in SCHEDULE_FREQUENCY_ORDER or schedule == "manual":
+        return False
+    rec = recommended_schedule(analysis_id)
+    return SCHEDULE_FREQUENCY_ORDER.index(schedule) < SCHEDULE_FREQUENCY_ORDER.index(rec)
+
+
 # Derived views — kept as the same names/shapes scheduler.py and
 # web/routes/projects.py already import, so this consolidation doesn't
 # force churn in every caller; only ANALYSIS_KINDS is hand-maintained now.

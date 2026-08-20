@@ -8,6 +8,26 @@ from resource_explorer.registry import ProjectRegistry
 
 router = APIRouter()
 
+
+def _cost_hint(entity_type: str, analysis_id: str) -> dict:
+    """Cost tiers and the cadence they warrant, for one analysis.
+
+    Repo-only: cost tiers live on repo StepInfo entries, and database/filesystem
+    analyses have no equivalent yet. Returning empty rather than guessing keeps
+    that absence visible instead of showing every database analysis as "daily,
+    costs nothing".
+    """
+    if entity_type != "repo":
+        return {}
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_STEP_MAP, analysis_cost, recommended_schedule,
+    )
+    if analysis_id not in REPO_ANALYSIS_STEP_MAP:
+        return {}
+    fetch, compute = analysis_cost(analysis_id)
+    return {"fetch_cost": fetch, "compute_cost": compute,
+            "recommended_schedule": recommended_schedule(analysis_id)}
+
 _VALID_SCHEDULES = {"manual", "daily", "weekly", "monthly"}
 
 
@@ -22,13 +42,15 @@ def list_all_schedules() -> list[dict]:
     """Every scheduled analysis across every resource — backs the Admin
     Schedules overview. Errors surface first; see
     ProjectRegistry.list_all_schedules()'s docstring."""
-    return ProjectRegistry().list_all_schedules()
+    return [{**r, **_cost_hint(r.get("entity_type", ""), r.get("analysis_id", ""))}
+            for r in ProjectRegistry().list_all_schedules()]
 
 
 @router.get("/{entity_type}/{slug}")
 def get_schedules(entity_type: str, slug: str) -> list[dict]:
     """Return all schedules configured for a resource."""
-    return ProjectRegistry().get_schedules(entity_type, slug)
+    return [{**r, **_cost_hint(entity_type, r.get("analysis_id", ""))}
+            for r in ProjectRegistry().get_schedules(entity_type, slug)]
 
 
 @router.delete("/{entity_type}/{slug}/{analysis_id}")
@@ -54,5 +76,22 @@ def save_schedule(entity_type: str, slug: str, entry: ScheduleEntry) -> dict:
         schedule=entry.schedule,
         enabled=entry.enabled,
     )
-    return {"status": "ok", "entity_type": entity_type, "entity_slug": slug,
-            "analysis_id": entry.analysis_id, "schedule": entry.schedule, "enabled": entry.enabled}
+    hint = _cost_hint(entity_type, entry.analysis_id)
+    out = {"status": "ok", "entity_type": entity_type, "entity_slug": slug,
+           "analysis_id": entry.analysis_id, "schedule": entry.schedule,
+           "enabled": entry.enabled, **hint}
+
+    # Advisory only — the schedule above is already saved. A ceiling that
+    # refused would be wrong: wanting an expensive analysis more often than its
+    # cost suggests is a legitimate choice, and the reasons for it are invisible
+    # from here. Doing it unknowingly is the case worth catching.
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        schedule_is_more_frequent_than_recommended,
+    )
+    if hint and schedule_is_more_frequent_than_recommended(entry.analysis_id, entry.schedule):
+        out["note"] = (
+            f"This analysis is {hint['fetch_cost']}-fetch/{hint['compute_cost']}-compute; "
+            f"{hint['recommended_schedule']} is usually often enough. "
+            f"Running it {entry.schedule} is fine if you mean to."
+        )
+    return out

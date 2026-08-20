@@ -18,8 +18,15 @@ log = logging.getLogger(__name__)
 # position, not numeric value, is what run()'s max_fetch_cost/
 # max_compute_cost filter compares against. Keep in sync with the values
 # StepInfo.fetch_cost/compute_cost actually use.
-_FETCH_COST_ORDER = ["none", "api", "api_heavy", "download"]
-_COMPUTE_COST_ORDER = ["low", "medium", "high"]
+# Imported, not redeclared — see repo_survey_definition_adapter's own comment
+# on why one copy of the ordinal scale matters. Module-level import would be
+# circular (the adapter imports this module's SurveyOrchestrator), so these are
+# bound lazily at first use.
+def _cost_orders() -> tuple[list[str], list[str]]:
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        COMPUTE_COST_ORDER, FETCH_COST_ORDER,
+    )
+    return FETCH_COST_ORDER, COMPUTE_COST_ORDER
 
 
 class SurveyOrchestrator:
@@ -125,6 +132,7 @@ class SurveyOrchestrator:
         # above, same set-narrowing shape. Ordinal comparison via
         # _FETCH_COST_ORDER/_COMPUTE_COST_ORDER's index, not the string
         # values themselves.
+        _FETCH_COST_ORDER, _COMPUTE_COST_ORDER = _cost_orders()
         if max_fetch_cost is not None:
             ceiling = _FETCH_COST_ORDER.index(max_fetch_cost)
             step_keys_to_run = {
@@ -191,11 +199,11 @@ class SurveyOrchestrator:
                 all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
 
             if steps is None:
-                surveyors = list(all_surveyors.values())
+                selected = list(all_surveyors.items())
             else:
-                surveyors = [all_surveyors[key] for key in steps if key in all_surveyors]
+                selected = [(key, all_surveyors[key]) for key in steps if key in all_surveyors]
 
-            for surveyor in surveyors:
+            for step_key, surveyor in selected:
                 log.info("Running %s for %s …", surveyor.step_name, project.slug)
                 try:
                     annotations = surveyor.run()
@@ -206,6 +214,9 @@ class SurveyOrchestrator:
                     msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
                     log.exception(msg)
                     result.add_error(msg)
+                    # Also keyed by step, so a caller running steps on behalf of
+                    # several analyses at once can tell which of them failed.
+                    result.step_errors[step_key] = msg
 
         log.info(
             "Survey complete for %s: %d annotation(s), %d error(s)",
