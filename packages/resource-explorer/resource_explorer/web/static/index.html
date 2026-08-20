@@ -429,6 +429,10 @@
            cross-stage dashboard view (docs/survey-results-dashboard-plan.md
            Tier 2), reused as a sub-tab wherever "Survey" already lives. -->
       <div id="scouting-results-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
+      <!-- Shared Survey Results view for the non-Scouting stages — one panel
+           reused by Discovery/Assessment/Analysis/Enrichment, filtered server-side
+           to the active stage (see _resultsHost). -->
+      <div id="stage-results-view" class="flex-1 overflow-y-auto hidden p-4 space-y-2"></div>
 
       <!-- Disposition sub-tab (repos, repo selected) — dedicated view of
            the current disposition + full history/timeline of past
@@ -1579,6 +1583,12 @@ function _showScoutingSubTab(tab) {
 // (ids kept as-is — these are now generic containers, renaming every
 // reference wasn't worth the churn) — _questionsDispositionHost tracks which
 // host's subnav should be prepended to them.
+// Which stage is currently showing the shared Survey Results view. Same shape
+// as _questionsDispositionHost below and for the same reason: the Results
+// dashboard is one panel reused by every stage, filtered server-side to that
+// stage's cards, rather than five near-identical views.
+let _resultsHost = 'scouting';  // 'scouting' | 'discovery' | 'assessment' | 'analysis' | 'enrichment'
+
 let _questionsDispositionHost = 'scouting';  // 'scouting' | 'discovery' | 'assessment' | 'analysis' | 'enrichment'
 
 function _qdSubnavHtml(active) {
@@ -1631,6 +1641,7 @@ function _assessmentSubnavHtml(active) {
     { tab: 'analyses',      label: '📋 Analyses' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
+  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   // Questions/Disposition (D6, docs/survey-question-context-plan.md) — repo-only.
   if (_qdTabsApply()) {
     tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
@@ -1644,6 +1655,7 @@ function _assessmentSubnavHtml(active) {
 }
 
 function _showAssessmentSubTab(tab) {
+  if (tab === 'results') { _resultsHost = 'assessment'; showMainView('stage-results'); return; }
   // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
   // repos) — fall back to Analyses rather than show a blank/stale panel
   // when nothing (or a db/filesystem) is selected, same spirit as
@@ -1669,6 +1681,7 @@ function showAnalysisPane() {
 
 function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📋 Catalog' }];
+  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1680,6 +1693,7 @@ function _analysisSubnavHtml(active) {
 }
 
 function _showAnalysisSubTab(tab) {
+  if (tab === 'results') { _resultsHost = 'analysis'; showMainView('stage-results'); return; }
   if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'catalog';
   _analysisSubTab = tab;
   if (tab === 'catalog') showMainView('analysis');
@@ -1700,6 +1714,7 @@ function showDiscoveryPane() {
 
 function _discoverySubnavHtml(active) {
   const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
+  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1711,6 +1726,7 @@ function _discoverySubnavHtml(active) {
 }
 
 function _showDiscoverySubTab(tab) {
+  if (tab === 'results') { _resultsHost = 'discovery'; showMainView('stage-results'); return; }
   if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'survey-definitions';
   _discoverySubTab = tab;
   if (tab === 'survey-definitions') showMainView('survey-definitions');
@@ -1730,6 +1746,7 @@ function showEnrichmentPane() {
 
 function _enrichmentSubnavHtml(active) {
   const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '🔬 Survey' }];
+  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1741,6 +1758,7 @@ function _enrichmentSubnavHtml(active) {
 }
 
 function _showEnrichmentSubTab(tab) {
+  if (tab === 'results') { _resultsHost = 'enrichment'; showMainView('stage-results'); return; }
   if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'context';
   _enrichmentSubTab = tab;
   if (tab === 'context') showMainView('context');
@@ -4935,8 +4953,8 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
 let _surveyResultsPanelArgs = { entityType: '', slug: '', viewElId: '', subnavHtml: '' };
 let _surveyResultsActivePerspectives = new Set();
 
-async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml) {
-  _surveyResultsPanelArgs = { entityType, slug, viewElId, subnavHtml };
+async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, stage = '') {
+  _surveyResultsPanelArgs = { entityType, slug, viewElId, subnavHtml, stage };
   const view = document.getElementById(viewElId);
   if (entityType !== 'repo') {
     // repo-only for now — question_catalog_reader (the Perspective-derivation
@@ -4947,7 +4965,11 @@ async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml) {
   }
   view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Results…</div>';
   try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/survey-results`);
+    // stage= asks the server for only this stage's cards; the server also
+    // drops cards with no stored results, so an unsurveyed repo shows an empty
+    // state rather than a wall of hollow shells.
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/survey-results`
+      + (stage ? `?stage=${encodeURIComponent(stage)}` : ''));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderSurveyResultsPanel(await res.json(), entityType, slug, viewElId, subnavHtml);
   } catch (e) {
@@ -6036,6 +6058,7 @@ function showMainView(tab) {
   const understandingView = document.getElementById('understanding-view');
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
   const scoutingResultsView = document.getElementById('scouting-results-view');
+  const stageResultsView = document.getElementById('stage-results-view');
   const scoutingDiscoverView = document.getElementById('scouting-discover-view');
   const scoutingDispositionView = document.getElementById('scouting-disposition-view');
   const scoutingQuestionsView = document.getElementById('scouting-questions-view');
@@ -6054,7 +6077,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6085,7 +6108,17 @@ function showMainView(tab) {
     loadScoutingOverview();
   } else if (tab === 'scouting-results') {
     scoutingResultsView.classList.remove('hidden');
-    _loadSurveyResultsPanel('repo', selectedProject, 'scouting-results-view', _scoutingSubnavHtml('results'));
+    // 'scouting' like every other stage — without it this panel showed every
+    // card regardless of stage, which is the behaviour being fixed.
+    _loadSurveyResultsPanel('repo', selectedProject, 'scouting-results-view', _scoutingSubnavHtml('results'), 'scouting');
+  } else if (tab === 'stage-results') {
+    stageResultsView.classList.remove('hidden');
+    const subnav = {
+      discovery: _discoverySubnavHtml, assessment: _assessmentSubnavHtml,
+      analysis: _analysisSubnavHtml, enrichment: _enrichmentSubnavHtml,
+    }[_resultsHost];
+    _loadSurveyResultsPanel('repo', selectedProject, 'stage-results-view',
+                            subnav ? subnav('results') : '', _resultsHost);
   } else if (tab === 'scouting-discover') {
     scoutingDiscoverView.classList.remove('hidden');
     renderScoutingDiscoverView();

@@ -993,6 +993,43 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
 }
 
 
+def get_dashboard_stages(analysis_ids: list[str]) -> list[str]:
+    """Which funnel stage(s) a Survey Results card belongs to — derived, never
+    hand-authored, for the same reason perspectives are (see below): a card's
+    stage is a consequence of what it reports on, so deriving it means the two
+    cannot drift apart.
+
+    Source is analysis_catalog.yaml's per-analysis `intent`, deliberately rather
+    than the Funnel Stage column in the questions CSV. Both describe "stage", but
+    the catalog's is the canonical vocabulary (CLAUDE.md rule 17 — lowercase
+    scouting/discovery/assessment/analysis/enrichment/understanding/curate/
+    automate), it is complete (every analysis has one, whereas only analyses
+    referenced by a Question get a funnel stage — which would leave the
+    code_structure and data_profile cards with no stage at all and therefore
+    invisible everywhere), and it is already what the Assessment/Analysis panels
+    route by, so Results now agrees with the tabs it sits beside.
+
+    A card spanning stages is expected and fine — health_maturity reports both
+    repository_health (scouting) and maturity (assessment), so it appears under
+    both. Returned in canonical order rather than discovery order so the UI is
+    stable across runs.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    _CANONICAL = [
+        "scouting", "discovery", "assessment", "analysis",
+        "enrichment", "understanding", "curate", "automate",
+    ]
+    wanted = set(analysis_ids)
+    by_id = {a["id"]: (a.get("intent") or "").strip().lower()
+             for a in get_analyses("repo")}
+    found = {by_id[a] for a in wanted if by_id.get(a)}
+    # An analysis_id absent from the catalog (e.g. sub_resource_survey) simply
+    # contributes no stage rather than breaking the card — the card still shows
+    # wherever its other analyses place it.
+    return [s for s in _CANONICAL if s in found]
+
+
 def get_dashboard_perspectives(analysis_ids: list[str]) -> list[str]:
     """D4 — a dashboard's Perspective tags are derived, not hand-authored:
     the union of Perspectives linked to any Question whose

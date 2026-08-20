@@ -73,20 +73,71 @@ class TestSurveyResultsRoute:
         resp = client.get("/api/projects/not-a-real-repo/survey-results")
         assert resp.status_code == 404
 
-    def test_returns_every_registered_dashboard(self, client):
-        resp = client.get("/api/projects/myproj/survey-results")
+    def test_include_empty_returns_every_registered_dashboard(self, client):
+        """The old unconditional behaviour, now behind an explicit opt-in."""
+        resp = client.get("/api/projects/myproj/survey-results?include_empty=true")
         assert resp.status_code == 200
         data = resp.json()
         assert {d["id"] for d in data["dashboards"]} == set(SURVEY_RESULT_DASHBOARDS.keys())
 
-    def test_empty_state_analyses_have_null_results_not_an_error(self, client):
-        # No survey has run yet for this repo at all.
+    def test_unsurveyed_repo_shows_no_cards_by_default(self, client):
+        """The reported bug: Results advertised analyses the repo had never been
+        surveyed for. Every dashboard was returned unconditionally, and a card
+        with nothing behind it rendered as an empty shell — six cards spanning
+        thirteen analyses for a repo where only a couple had ever run."""
         resp = client.get("/api/projects/myproj/survey-results")
+        assert resp.json()["dashboards"] == []
+
+    def test_empty_state_analyses_still_carry_shaped_results_when_asked(self, client):
+        """Readers return a shaped-but-empty dict rather than raising, and that
+        stays true — the gate is applied on top of it, not instead of it."""
+        resp = client.get("/api/projects/myproj/survey-results?include_empty=true")
         data = resp.json()
         security = next(d for d in data["dashboards"] if d["id"] == "security_overview")
         assert all(a["results"] is not None for a in security["analyses"])  # findings=[] dict, not None
         for a in security["analyses"]:
             assert a["results"]["findings"] == []
+        assert security["has_results"] is False
+
+    def test_shaped_but_empty_results_do_not_count_as_data(self, client):
+        """`{"findings": [], "gap_count": 0}` is truthy, so a plain truthiness
+        check reported five-of-five analyses present for a repo that had been
+        surveyed for none of them. Found live on a repo that has never had a
+        deep survey."""
+        resp = client.get("/api/projects/myproj/survey-results?include_empty=true")
+        for d in resp.json()["dashboards"]:
+            assert d["has_results"] is False, f"{d['id']} claims data it does not have"
+
+    def test_every_dashboard_declares_its_stages(self, client):
+        """Stage is derived from analysis_catalog.yaml's per-analysis intent, so
+        a card cannot drift from the analyses it reports on."""
+        resp = client.get("/api/projects/myproj/survey-results?include_empty=true")
+        canonical = {"scouting", "discovery", "assessment", "analysis",
+                     "enrichment", "understanding", "curate", "automate"}
+        for d in resp.json()["dashboards"]:
+            assert d["stages"], f"{d['id']} has no stage — it would be invisible everywhere"
+            assert set(d["stages"]) <= canonical
+
+    def test_stage_filter_selects_membership_not_equality(self, client):
+        """A card spanning stages must appear under each of them: health_maturity
+        reports repository_health (scouting) and maturity (assessment)."""
+        for stage in ("scouting", "assessment"):
+            resp = client.get(
+                f"/api/projects/myproj/survey-results?stage={stage}&include_empty=true")
+            ids = {d["id"] for d in resp.json()["dashboards"]}
+            assert "health_maturity" in ids, f"missing from {stage}"
+
+    def test_stage_filter_excludes_other_stages(self, client):
+        resp = client.get(
+            "/api/projects/myproj/survey-results?stage=analysis&include_empty=true")
+        ids = {d["id"] for d in resp.json()["dashboards"]}
+        assert "security_overview" not in ids   # assessment-only
+        assert "dependencies" in ids
+
+    def test_unknown_stage_yields_nothing_rather_than_everything(self, client):
+        resp = client.get(
+            "/api/projects/myproj/survey-results?stage=nonsense&include_empty=true")
+        assert resp.json()["dashboards"] == []
 
     def test_populated_findings_surface_through_the_dashboard(self, client, registry):
         registry.upsert_finding("myproj", "security_hygiene", [

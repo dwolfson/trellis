@@ -792,9 +792,51 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
     return {"runs": trend_reader(registry, slug)}
 
 
+def _results_have_data(results) -> bool:
+    """Does a results payload actually contain anything?
+
+    Truthiness is not enough and that is the whole point of this function: the
+    readers return a shaped-but-empty dict when a step has never run for a repo
+    — `{"findings": [], "gap_count": 0}` — which is truthy, so `any(results)`
+    reported five-of-five analyses present for a repo that had never been
+    surveyed for any of them.
+
+    A payload counts as having data when it holds a non-empty collection or a
+    non-zero number. An all-empty, all-zero payload is what "never ran" looks
+    like. A genuinely all-zero result is therefore hidden too, which is the
+    accepted trade: it reads as "nothing to show" either way, and
+    include_empty=true returns everything for anyone who needs the distinction.
+    """
+    if not results:
+        return False
+    if isinstance(results, dict):
+        return any(_results_have_data(v) for v in results.values())
+    if isinstance(results, (list, tuple, set)):
+        return len(results) > 0
+    if isinstance(results, bool):
+        return results
+    if isinstance(results, (int, float)):
+        return results != 0
+    if isinstance(results, str):
+        return bool(results.strip())
+    return True
+
+
 @router.get("/{slug}/survey-results")
-async def get_survey_results(slug: str) -> dict:
-    """Tier 2 — the repo-wide Survey Results dashboard
+async def get_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+    """Tier 2 — the Survey Results dashboards for this repo.
+
+    stage (optional): restrict to cards belonging to that funnel stage, so each
+    intent's own Results tab shows only what it is responsible for. Omitted =
+    every stage, the original repo-wide view.
+
+    include_empty (optional): return cards with no stored results too. Off by
+    default — see the has_results comment below for why an empty card is worse
+    than an absent one.
+
+    Original docstring follows.
+
+    Tier 2 — the repo-wide Survey Results dashboard
     (docs/survey-results-dashboard-plan.md). Every SURVEY_RESULT_DASHBOARDS
     entry, with its resolved analysis_ids' latest results attached (reusing
     the exact same results_reader()s the per-analysis_id Analysis/Assessment
@@ -808,6 +850,7 @@ async def get_survey_results(slug: str) -> dict:
         REPO_ANALYSIS_RESULTS_MAP,
         SURVEY_RESULT_DASHBOARDS,
         get_dashboard_perspectives,
+        get_dashboard_stages,
     )
 
     registry = ProjectRegistry()
@@ -817,6 +860,13 @@ async def get_survey_results(slug: str) -> dict:
 
     dashboards = []
     for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+        stages = get_dashboard_stages(dashboard.analysis_ids)
+        # Stage filter: a card can legitimately belong to several stages
+        # (health_maturity reports repository_health/scouting *and*
+        # maturity/assessment), so this is membership, not equality.
+        if stage and stage not in stages:
+            continue
+
         analyses = []
         for analysis_id in dashboard.analysis_ids:
             entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
@@ -828,6 +878,17 @@ async def get_survey_results(slug: str) -> dict:
                 except Exception:
                     results = None
             analyses.append({"analysis_id": analysis_id, "results": results})
+
+        # Only surface a card backed by something that actually ran. Previously
+        # every dashboard was returned unconditionally and a card with no data
+        # rendered as an empty shell, so the Results tab advertised analyses the
+        # repo had never been surveyed for — 6 cards covering 13 analyses when
+        # Scouting only ever runs a handful. `results=None` is what a reader
+        # returns for a step with no stored rows, so it is the honest signal.
+        has_results = any(_results_have_data(a["results"]) for a in analyses)
+        if not has_results and not include_empty:
+            continue
+
         dashboards.append({
             "id": dashboard.id,
             "title": dashboard.title,
@@ -835,9 +896,11 @@ async def get_survey_results(slug: str) -> dict:
             "render": dashboard.render,
             "custom_renderer": dashboard.custom_renderer,
             "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
+            "stages": stages,
+            "has_results": has_results,
             "analyses": analyses,
         })
-    return {"slug": slug, "dashboards": dashboards}
+    return {"slug": slug, "stage": stage, "dashboards": dashboards}
 
 
 @router.get("/{slug}/survey-results/summary")
