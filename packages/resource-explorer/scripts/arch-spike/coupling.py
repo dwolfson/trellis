@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -287,6 +288,97 @@ def candidate_boundaries(root: str, tracked: set[str], package_roots: list[str],
 
     rows.sort(key=lambda r: ((r["import_cohesion"] or 0), (r["cochange_cohesion"] or 0)), reverse=True)
     return rows
+
+
+
+# ── §4.1 — coupling as PROPOSER ──────────────────────────────────────────
+#
+# Phase 1 inverts coupling's role: it stops scoring a partition someone else
+# proposed and starts contributing components to one. Two things Phase 0 did
+# not build were needed, and the first turned out differently than the Phase 1
+# plan predicted.
+#
+# **Newman modularity does not give a usable threshold, though the plan said it
+# would.** Measured on trellis, the per-subtree modularity contribution
+# Q_c = e_c/m - (deg_c/2m)^2 is POSITIVE for 15 of 16 candidates — in a sparse
+# import graph almost any subtree beats chance, so `Q > 0` admits nearly
+# everything. Q remains a good *ranking* (it puts surveyors, ingestion and
+# agents at the top) but it is not a bar. Recorded as a plan-level miss: the
+# fallback the plan named — relative ranking rather than an absolute threshold
+# — is what the data actually supports.
+#
+# **What discriminates is directional dispersion.** A raw cohesion bar rejects
+# any component that is structurally connective, which is why Core and
+# Observability were missed in Phase 0: a shared library has almost no internal
+# edges and enormous fan-in, so `internal/(internal+external)` is near zero for
+# a component that plainly exists. But its fan-in is spread EVENLY across many
+# others, and that is measurable. Three shapes, and the third is the only one
+# that is genuinely not a component:
+#
+#   cohesive         — high internal ratio. The classic case.
+#   connective       — low internal ratio, but external edges DISPERSED across
+#                      many neighbours. A library (fan-in) or an orchestrator
+#                      (fan-out). Real components; the Phase 0 rule threw them
+#                      away.
+#   merge-candidate  — low internal ratio AND external edges CONCENTRATED on
+#                      one neighbour. Not a component: it belongs to that
+#                      neighbour.
+#
+# Dispersion is normalised Shannon entropy over the external edge weights, so
+# it is 1.0 when spread evenly across neighbours and 0.0 when they all point
+# one way. Admitting on EITHER direction is deliberate — an earlier version
+# required fan-in to exceed fan-out and misclassified `agents`, which is
+# dispersed in both but slightly more outbound.
+
+COHESIVE_BAR = 0.35
+DISPERSION_BAR = 0.6
+
+
+def _dispersion(counter: dict) -> float:
+    """Normalised entropy of external edge weights across neighbours.
+
+    1.0 = spread evenly across many; 0.0 = all pointing at one. A single
+    neighbour is 0.0 by definition, which is the merge-candidate signal.
+    """
+    total = sum(counter.values())
+    if total == 0 or len(counter) < 2:
+        return 0.0
+    ps = [v / total for v in counter.values()]
+    return -sum(p * math.log(p) for p in ps) / math.log(len(counter))
+
+
+def classify_subtree(internal: float, fan_in: dict, fan_out: dict) -> tuple[str, float, str]:
+    """(shape, confidence, why) for one candidate subtree."""
+    fi, fo = sum(fan_in.values()), sum(fan_out.values())
+    total = internal + fi + fo
+    cohesion = internal / total if total else 0.0
+    d_in, d_out = _dispersion(fan_in), _dispersion(fan_out)
+
+    if cohesion >= COHESIVE_BAR:
+        return "cohesive", 75, f"internal edge ratio {cohesion:.2f}"
+    if d_in >= DISPERSION_BAR and fi >= fo:
+        return "connective-library", 60, (
+            f"low cohesion ({cohesion:.2f}) but fan-in dispersed across "
+            f"{len(fan_in)} components (entropy {d_in:.2f}) — shared-library shape")
+    if d_out >= DISPERSION_BAR:
+        return "connective-orchestrator", 60, (
+            f"low cohesion ({cohesion:.2f}) but fan-out dispersed across "
+            f"{len(fan_out)} components (entropy {d_out:.2f}) — orchestrator shape")
+    if d_in >= DISPERSION_BAR:
+        return "connective-library", 55, (
+            f"low cohesion ({cohesion:.2f}), fan-in dispersed (entropy {d_in:.2f})")
+    dominant = max(fan_out or fan_in or {"?": 0}, key=(fan_out or fan_in or {"?": 0}).get)
+    return "merge-candidate", 0, (
+        f"low cohesion ({cohesion:.2f}) and external edges concentrated on "
+        f"{dominant} — belongs to it rather than standing alone")
+
+
+def modularity_contribution(internal: float, degree: float, total_weight: float) -> float:
+    """Newman Q_c. Kept for RANKING, explicitly not used as a threshold —
+    see the module note above for why `Q > 0` admits nearly everything."""
+    if total_weight <= 0:
+        return 0.0
+    return internal / total_weight - (degree / (2 * total_weight)) ** 2
 
 
 # ── driving one target ──────────────────────────────────────────────────

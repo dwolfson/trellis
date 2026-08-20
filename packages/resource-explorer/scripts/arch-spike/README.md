@@ -587,3 +587,60 @@ PyegeriaWebHandler. That is finding 5's two-components answer — the one that r
 identity precedence — arrived at from a signal that never saw the ground truth, the compose
 files, or the container names. Independent corroboration of a design decision is rare enough to
 record.
+
+---
+
+## Phase 1 §4.1 — coupling as proposer
+
+**33. Newman modularity does not give a usable threshold. The Phase 1 plan said it would; the
+data says otherwise.** Per-subtree contribution `Q_c = e_c/m - (deg_c/2m)^2` is **positive for 15
+of 16 candidates** on trellis — in a sparse import graph almost any subtree beats chance, so
+`Q > 0` admits nearly everything. Q survives as a *ranking* (it puts surveyors, ingestion and
+agents on top) but not as a bar.
+
+Recorded as a plan-level miss rather than quietly substituted: §4.1 proposed modularity
+specifically to remove the hand-set cohesion bar, and it does not. The fallback the same plan
+named — **relative ranking rather than an absolute threshold** — is what the data supports.
+
+**34. What discriminates is *directional dispersion*, and it explains the Phase 0 misses.** A raw
+cohesion bar rejects any component that is structurally *connective*. `Core` has 27 internal
+import edges against **238 fan-in**: cohesion 0.09, obviously a real component, unreachable by any
+cohesion threshold. But its fan-in is spread evenly across 14 others, and that is measurable as
+normalised entropy.
+
+Three shapes, of which only the third is genuinely not a component:
+
+| shape | signature | example |
+|---|---|---|
+| **cohesive** | high internal ratio | `surveyors` (0.42) |
+| **connective — library** | low cohesion, fan-**in** dispersed | `Core` (d=0.73), `Observability` (0.96) |
+| **connective — orchestrator** | low cohesion, fan-**out** dispersed | `cli` (0.82), `web`, `tui` |
+| **merge-candidate** | low cohesion, externals **concentrated** on one neighbour | `trellis-microflow/tests` |
+
+Admitting on *either* direction is deliberate. An earlier cut required fan-in to exceed fan-out
+and misclassified `agents`, which is dispersed both ways but slightly more outbound.
+
+**35. Coverage 4 -> 11 of 13, which clears Phase 1's target; precision falls, which the plan
+predicted.**
+
+| | Phase 0 | §4.1 |
+|---|---|---|
+| GT components covered | 4 of 11 scored | **11 of 13** |
+| subtrees proposed | 4 | 16 |
+| rough precision | — | **~0.69** |
+
+The five unmatched proposals are `configdata` (data, not code), `dashboard`, `github`, and two
+`tests` trees. Several are defensible as components and simply are not in the ground truth;
+`tests` is explicitly `unassigned_ok`. **This is exactly the precision-for-coverage trade the
+Phase 1 plan named as its first risk**, now measured rather than anticipated, and the ARI floor
+in §5 of that plan exists to bound it.
+
+Two honest limits on the numbers above:
+
+- **`Web front-end` is unreachable by this signal.** It is `web/static/**` — JavaScript SPAs —
+  and `imports.py` is Python-only. Correct behaviour, not a miss to fix here.
+- **The coverage figure was measured with a crude prefix match**, not `score.py`. The subtree
+  `resource_explorer/` prefix-matches every nested file, so `Core` was attributed to `Surveyors`
+  by majority vote and shows as missed when its subtree was in fact proposed. Real coverage is
+  probably 12 of 13. **Do not quote 11/13 as final** — proper scoring runs through `score.py`
+  against the pre-registered fixture, and that is the next step.
