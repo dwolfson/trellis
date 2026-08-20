@@ -257,6 +257,26 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: sub_resource_survey
+    name: "Sub-resource Survey"
+    description: "Walk the file inventory to recommend which top-level folders and well-known files are worthy of becoming their own Egeria asset, with size/mode/ownership metadata tiered by cost."
+    resource_types: ["repo"]
+    # analysis, not assessment: it produces a structural recommendation about
+    # what the repo *contains* and how it is shaped, not a scored judgement of
+    # quality. It was absent from this catalog entirely until 2026-08-20, which
+    # meant it carried no intent — and since Survey Results dashboards derive
+    # their stage from the intents of their analyses, data_profile was placed on
+    # the strength of data_file_profiling alone and this analysis was invisible
+    # to stage routing.
+    intent: analysis
+    perspectives: ["steward", "data_scientist", "all"]
+    annotation_types: ["ClassificationAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: corpus
+    native_process_ref: null
+
   - id: api_structure
     name: "API & Symbol Extraction"
     description: "Extract public functions, classes, and API endpoints from Python, JavaScript, and OpenAPI source."

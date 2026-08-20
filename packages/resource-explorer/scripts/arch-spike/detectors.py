@@ -16,6 +16,8 @@ import json
 import os
 import re
 import tomllib
+
+import yaml
 from collections import defaultdict
 
 from ir import Component, Evidence, Identity, Location
@@ -120,30 +122,62 @@ def dockerfile_entry(root: str, rel: str) -> tuple[str, int, str]:
     return best
 
 
-def compose_services(root: str, rel: str) -> list[tuple[str, int]]:
-    """Service names from a compose file, with line numbers.
+def compose_services(root: str, rel: str) -> list[tuple[str, str, int]]:
+    """(service key, component name, line) per service in a compose file.
 
-    A deliberately shallow line-based read rather than a YAML parse: compose
-    files in the wild carry anchors, merge keys and templating that a strict
-    parser rejects, and this slice only needs the service names. A real parser
-    is Phase 1's problem, and the shallowness is recorded as an IR note.
+    Uses a real YAML parser. The first version read the file line-wise, on the
+    stated assumption that compose files in the wild carry anchors, merge keys
+    and templating a strict parser would reject. **That assumption was wrong** —
+    PyYAML parses all 25 compose files in egeria-workspaces without error — and
+    the shallow reader accumulated three separate failure modes before this was
+    checked: filename-based detection missed every solution deployment,
+    first-wins missed layered overrides, and a column-0 comment inside the
+    services block silently truncated the parse after 4 of 7 services. Worth
+    recording as a finding: the cheap-parser instinct cost more than it saved,
+    and each failure was silent rather than loud.
+
+    `container_name` is preferred over the service key. The key is an internal
+    handle (`apache-web`); container_name is what the human sees in `docker ps`
+    and what they call it — validated against the hand-written ground truth,
+    where every named component is a declared container_name.
+
+    Line numbers come from a targeted re-scan, since PyYAML discards them and
+    §5.4 needs a location to point a curator at.
     """
-    out: list[tuple[str, int]] = []
-    in_services = False
+    path = os.path.join(root, rel)
     try:
-        text = open(os.path.join(root, rel), encoding="utf-8", errors="replace").read()
-    except OSError:
-        return out
-    for n, line in enumerate(text.splitlines(), 1):
-        if re.match(r"^services:\s*$", line):
-            in_services = True
+        text = open(path, encoding="utf-8", errors="replace").read()
+        data = yaml.safe_load(text)
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return []
+
+    lines = text.splitlines()
+
+    def line_of(key: str, value: str) -> int:
+        pat = re.compile(rf"^\s*(?:container_name:\s*)?{re.escape(value)}\s*:?\s*$")
+        for n, line in enumerate(lines, 1):
+            if pat.match(line):
+                return n
+        for n, line in enumerate(lines, 1):
+            if re.match(rf"^\s{{1,4}}{re.escape(key)}\s*:\s*$", line):
+                return n
+        return 0
+
+    out: list[tuple[str, str, int]] = []
+    for key, body in services.items():
+        if not isinstance(key, str):
             continue
-        if in_services:
-            if line and not line[0].isspace():
-                in_services = False
-                continue
-            if m := _SERVICE_LINE.match(line):
-                out.append((m.group("name"), n))
+        name = key
+        if isinstance(body, dict):
+            cn = body.get("container_name")
+            if isinstance(cn, str) and cn.strip():
+                name = cn.strip()
+        out.append((key, name, line_of(key, name)))
     return out
 
 
@@ -345,35 +379,52 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
                 confidence=70, confidence_level="Derived",
             ))
 
-    # Compose services are third-party components with no first-party code
-    # (§8.2b's add-on tier) — real components, but not ones a manifest declares.
+    # Compose services are components with no first-party code of their own
+    # (§8.2b's add-on and shared-infra tiers) — real components, but not ones a
+    # manifest declares.
+    #
+    # Merged ACROSS every compose file in a unit rather than first-wins. These
+    # deployments are layered: a base file declares `apache-web:` with no
+    # container_name and an override supplies `container_name:
+    # quickstart-web-server`. First-wins registered the base and discarded the
+    # override, losing the human-facing name for 3 of 16 components. Layered
+    # compose is the norm, not an oddity, so any per-file pass under-reports.
     for unit, decls in units.items():
+        merged: dict[str, tuple[str, str, int]] = {}   # service key -> (name, decl, line)
         for decl in decls:
             if os.path.basename(decl).startswith("Dockerfile"):
                 continue
-            for svc, line in compose_services(root, decl):
-                slug = _slug(os.path.basename(unit), svc)
-                if any(c.slug == slug for c in components):
-                    continue
-                components.append(Component(
-                    slug=slug, name=svc, type="Third Party Process",
-                    identity=Identity("deployment-unit", svc, unit),
-                    files=[], confidence=65, confidence_level="Derived",
-                ))
-                evidence.append(Evidence(
-                    subject_kind="component", subject_slug=slug,
-                    assertion="declared as a compose service",
-                    detector="compose:services",
-                    locations=[Location(decl, line, f"{svc}:")],
-                    confidence=65, confidence_level="Derived",
-                ))
+            for key, name, line in compose_services(root, decl):
+                prior = merged.get(key)
+                # A declared container_name always beats a bare service key,
+                # whichever file it arrived in.
+                if prior is None or (name != key and prior[0] == key):
+                    merged[key] = (name, decl, line)
+
+        for key, (name, decl, line) in merged.items():
+            slug = _slug(os.path.basename(unit), name)
+            if any(c.slug == slug for c in components):
+                continue
+            named = name != key
+            components.append(Component(
+                slug=slug, name=name, type="Third Party Process",
+                identity=Identity("deployment-unit", name, unit),
+                files=[], confidence=75 if named else 65, confidence_level="Derived",
+            ))
+            evidence.append(Evidence(
+                subject_kind="component", subject_slug=slug,
+                assertion=("declared container_name on a compose service" if named
+                           else "declared as a compose service"),
+                detector="compose:container_name" if named else "compose:services",
+                locations=[Location(decl, line, f"{name}")],
+                confidence=75 if named else 65, confidence_level="Derived",
+            ))
 
     if gradle := gradle_modules(root, files):
         for g in gradle:
             notes.append(f"{g['rel']}: {len(g['modules'])} Gradle modules — "
                          f"not expanded into components in this slice")
 
-    notes.append("compose parsed line-wise, not with a YAML parser — service names only")
     notes.append("no code-marker detectors yet: every Software Service in this target "
                  "is currently reported as Console Command or Software Library")
     return components, evidence, notes

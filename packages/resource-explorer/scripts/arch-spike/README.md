@@ -84,6 +84,31 @@ FastAPI service *and* a CLI *and* a TUI; its manifest says only that it has a sc
 Confidence is set to reflect that ceiling rather than overstating it, and every IR
 carries a note saying so.
 
+**9. `container_name` is the component's name, and it is declared.** Every runtime component
+the maintainer named by hand in the `egeria-workspaces` ground truth is a `container_name:`
+in a compose file. Reading the service key instead — an internal handle like `apache-web`
+or `kafka` — matched **2 of 16**; preferring `container_name` matches **16 of 16**. The key
+is a handle; container_name is what shows up in `docker ps` and what people call the thing.
+Design consequence: where a deployment declares a container name, that IS the component's
+name (§8.2 says which identity *rung* to use, but not which *name*, and a unit can have
+three — service key, container name, directory name).
+
+**10. The cheap-parser instinct cost more than it saved.** `compose_services` began as a
+line-wise reader, justified in its own docstring on the assumption that real compose files
+carry anchors, merge keys and templating a strict parser would reject. **The assumption was
+never tested and is false** — PyYAML parses all 25 compose files in `egeria-workspaces`
+without error. Before that was checked, the shallow reader had accumulated three separate
+failure modes, each silent: filename detection missed every solution deployment (finding 3),
+first-wins missed layered base/override files, and a **column-0 comment inside the services
+block** truncated the parse after 4 of 7 services. Now a real YAML parse with a targeted
+re-scan for line numbers. The generalisable lesson for Phase 1: prefer the real parser, and
+test the excuse for not using one before writing the excuse into a docstring.
+
+**11. Layered compose is the norm.** These deployments split across a base file and several
+overrides (`egeria-quickstart.yaml` + `-local` + `-ssl` + `-demo` + …), and the human-facing
+`container_name` often lives in a different file from the service declaration. Any per-file
+pass under-reports; services must be merged across every file in a deployment unit.
+
 **8. Scale behaves, so far.** `egeria` yields 231 Gradle modules from `settings.gradle`,
 deliberately not expanded into components in this slice (plan §3, T3 — the question is
 shape, not leaves). Worth noting the count differs from the 254 `include` lines counted
