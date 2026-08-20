@@ -50,6 +50,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     DependencySurveyor,
     DocumentationSurveyor,
     FileInventorySurveyor,
+    GitStatisticsSurveyor,
     FileSizeSurveyor,
     FileStructureSurveyor,
     HealthSurveyor,
@@ -161,6 +162,21 @@ def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
 
 
 STEP_REGISTRY: dict[str, StepInfo] = {
+    # Ordered ahead of everything, including repo_file_inventory: eight steps
+    # read project_stats and this is the only one that writes it. Same reason
+    # file_inventory is early — STEP_REGISTRY order is "Repo Full Survey" order,
+    # so a refresh placed after its readers leaves them on the previous run's
+    # numbers. API-only, no zipball, so it costs nothing to put first.
+    "repo_git_statistics": StepInfo(
+        "repo_git_statistics", GitStatisticsSurveyor,
+        "Refreshes project_stats (stars, forks, contributors, commit activity, "
+        "releases, security config, deployments) from the GitHub API — the table "
+        "eight other steps read. Replaces five independent StatsFetcher calls "
+        "that each refreshed it separately in the same run.",
+        ["ResourceMeasureAnnotation"],
+        accepts_fast=True,
+        accepts_surveyed_at=True,
+    ),
     # FIRST BY NECESSITY, not by taste. This dict's order is also the order
     # "Repo Full Survey" runs (repo_survey_types.csv uses the "*" sentinel,
     # meaning "every current STEP_REGISTRY step in this order"), and six of the
@@ -746,6 +762,42 @@ def _data_profile_headline(registry, slug: str) -> dict | None:
     return {"label": f"{result['total']} data file(s) profiled", "status": "info"}
 
 
+def _health_results(registry, slug: str) -> dict:
+    """Latest health scores. HealthSurveyor writes these as metrics under the
+    "repository_health" kind; before it did, this analysis had no reader at all,
+    so its Survey Results card could never populate however often the survey
+    ran — the scores existed only as in-memory annotations on their way to
+    Egeria."""
+    m = registry.query_metrics(slug, "repository_health")
+    detail = m.get("detail") or {}
+    scores = {k: m.get(k) for k in ("overall", "activity", "community",
+                                    "release_cadence", "freshness")
+              if m.get(k) is not None}
+    if not scores:
+        return {"metrics": {}, "detail": {}, "surveyed_at": ""}
+    return {"metrics": scores, "detail": detail, "surveyed_at": m.get("surveyed_at", "")}
+
+
+def _health_trend(registry, slug: str) -> list[dict]:
+    """Overall score over time — the one number worth a line chart; the four
+    component scores are visible on the card itself."""
+    return [
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "repository_health", "overall")
+    ]
+
+
+def _health_headline(registry, slug: str) -> dict | None:
+    result = _health_results(registry, slug)
+    overall = (result.get("metrics") or {}).get("overall")
+    if overall is None:
+        return None
+    # Bands match how the scores are built (0-100, four equally weighted
+    # components) rather than being tuned separately here.
+    status = "ok" if overall >= 70 else "warn" if overall >= 40 else "gap"
+    return {"label": f"Health {overall:.0f}/100", "status": status}
+
+
 def _api_structure_headline(registry, slug: str) -> dict | None:
     result = _api_structure_results(registry, slug)
     symbol_count = sum(sum(kinds.values()) for kinds in result.get("by_language", {}).values())
@@ -832,7 +884,12 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             headline_reader=_file_classification_headline,
         ),
     ),
-    "repository_health": AnalysisKind("repository_health", ["repo_health"]),
+    "repository_health": AnalysisKind(
+        "repository_health", ["repo_health"],
+        results=AnalysisKindResults(
+            _health_results, _health_trend, "metrics", headline_reader=_health_headline,
+        ),
+    ),
     "dependency_analysis": AnalysisKind(
         "dependency_analysis", ["repo_dependency"],
         results=AnalysisKindResults(

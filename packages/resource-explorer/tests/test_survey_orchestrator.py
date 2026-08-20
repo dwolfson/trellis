@@ -231,6 +231,9 @@ class TestFastFlag:
             for p in patchers:
                 p.stop()
 
-    def test_only_repo_health_accepts_fast(self):
+    def test_which_steps_accept_fast(self):
+        """fast skips StatsFetcher's per-commit diff-stats calls. It moved with
+        the fetch itself: repo_git_statistics now does the refresh, repo_health
+        keeps the flag because its scoring window is the same 90-day history."""
         accepting = {k for k, info in STEP_REGISTRY.items() if info.accepts_fast}
-        assert accepting == {"repo_health"}
+        assert accepting == {"repo_health", "repo_git_statistics"}

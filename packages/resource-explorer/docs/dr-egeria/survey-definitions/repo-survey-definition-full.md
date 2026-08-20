@@ -1,5 +1,24 @@
 ## Create Governance Action Process Step
 ### Display Name
+Scouting - Full Survey — Repo Git Statistics
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_git_statistics
+
+### Description
+Refreshes project_stats (stars, forks, contributors, commit activity, releases, security config, deployments) from the GitHub API — the table eight other steps read. Replaces five independent StatsFetcher calls that each refreshed it separately in the same run.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_git_statistics |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Scouting - Full Survey — Repo File Inventory
 
 ### Qualified Name
@@ -382,7 +401,19 @@ ___
 GovActionProcess::RepoFullSurvey
 
 ### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_git_statistics
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_git_statistics
+
+### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_file_inventory
+
+### Guard
+Any
 
 ___
 

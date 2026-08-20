@@ -1,4 +1,4 @@
-"""Sub-surveyor: Project Health → QualityScoreAnnotation."""
+"""Sub-surveyor: Project Health → QualityScoreAnnotation + persisted metrics."""
 from __future__ import annotations
 
 import json
@@ -26,8 +26,10 @@ class HealthSurveyor(BaseSurveyor):
       freshness_score  — days since last push / last commit
     """
 
-    def __init__(self, project: Project, registry: ProjectRegistry, fast: bool = False) -> None:
+    def __init__(self, project: Project, registry: ProjectRegistry, fast: bool = False,
+                 surveyed_at: str | None = None) -> None:
         super().__init__(project, registry)
+        self._surveyed_at = surveyed_at
         # fast=True is Coarse Scout's own flag (StepInfo.accepts_fast,
         # repo_survey_definition_adapter.py) — skips StatsFetcher's N+1
         # per-commit diff-stats calls below. A confirmed real slowness bug,
@@ -53,19 +55,18 @@ class HealthSurveyor(BaseSurveyor):
         try:
             slug = self.project.slug
 
-            # Refresh project_stats before reading it — previously this
-            # surveyor only ever read whatever StatsFetcher wrote at
-            # registration time (wizard.py/org_importer.py, never again),
-            # so "Repository Health" silently scored stale stars/forks/
-            # commit-activity data no matter how often it was run or
-            # scheduled. Best-effort: a GitHub API hiccup here shouldn't
-            # fail the whole health check — fall back to whatever's
-            # already in project_stats, same as before this fix.
-            try:
-                from resource_explorer.github.stats_fetcher import StatsFetcher
-                StatsFetcher().fetch(slug, fetch_diff_stats=not self.fast)
-            except Exception:
-                log.warning("HealthSurveyor: stats refresh failed for %s, using existing data", slug)
+            # The project_stats refresh that used to live here is now the
+            # repo_git_statistics step, ordered first in STEP_REGISTRY. It was
+            # this surveyor's private side effect, which meant the seven other
+            # steps reading project_stats were fresh only when repo_health
+            # happened to be in the same run and happened to precede them.
+            # Making it a declared step gives every reader the same guarantee
+            # and gives the refresh its own results/trend.
+            #
+            # Consequence worth knowing: running repo_health alone no longer
+            # refreshes stats implicitly — it scores what is stored, and the
+            # surveyed_at on its metrics says how old that is. Same trade
+            # repo_file_inventory made.
 
             # D2(c) (docs/repo-survey-catalog-completion-plan.md): use the
             # named registry accessor instead of hand-rolling this query —
@@ -190,6 +191,54 @@ class HealthSurveyor(BaseSurveyor):
                     },
                 )
             )
+
+            # Persist the scores so this analysis has a results view like every
+            # other one. It previously produced only in-memory annotations —
+            # rich enough for the Egeria publish and for Scouting's own tiles,
+            # but with nothing stored, `repository_health` had no reader, its
+            # results were permanently null, and the Survey Results card that
+            # names it could never populate however often the survey ran. The
+            # asymmetry was invisible because the Scouting overview reads
+            # project_stats directly rather than going through survey results.
+            #
+            # Metrics rather than findings: these are four normalised 0-100
+            # scores plus an overall, which is the shape query_metrics_history
+            # already trends. The full json_properties blob rides along as
+            # `detail` on the first row (see upsert_metric) so the results view
+            # can show the same picture Egeria gets, without duplicating a large
+            # blob across all five rows.
+            try:
+                self.registry.upsert_metric(
+                    self.project.slug,
+                    "repository_health",
+                    {
+                        "overall": float(round(overall, 1)),
+                        "activity": float(activity_score),
+                        "community": float(community_score),
+                        "release_cadence": float(release_score),
+                        "freshness": float(freshness_score),
+                    },
+                    detail={
+                        "stars": stars, "forks": forks, "contributors": contributors,
+                        "commits_30d": commits_30d, "commits_90d": commits_90d,
+                        "commits_365d": commits_365d, "releases_count": releases,
+                        "avg_release_interval_days": release_interval,
+                        "days_since_last_push": days_since_push,
+                        "archived": bool(s.get("archived")),
+                        "is_fork": bool(s.get("is_fork")),
+                        "default_branch": s.get("default_branch") or "",
+                        "subscribers_count": s.get("subscribers_count") or 0,
+                        "homepage": s.get("homepage") or "",
+                        "deployments_count": s.get("deployments_count") or 0,
+                        "latest_deployment_at": s.get("latest_deployment_at") or "",
+                    },
+                    surveyed_at=self._surveyed_at,
+                )
+            except Exception as exc:
+                # Never fail the survey over the results copy — the annotations
+                # are the contract, this is the queryable mirror of them.
+                log.warning("Could not persist health metrics for %s: %s",
+                            self.project.slug, exc)
 
         except Exception as exc:
             log.exception("HealthSurveyor failed for %s", self.project.slug)
