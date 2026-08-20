@@ -12,11 +12,27 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ## Open items
 
-### HIGH — Suspected bug: filesystem annotations never reach Egeria
+### ~~HIGH — Suspected bug: filesystem annotations never reach Egeria~~ — FIXED 2026-08-20
 
-`egeria_filesystem_surveyor.py:540` reads `ann.egeria_type_name`. No such attribute exists on any class in `survey_report.py` and the name appears nowhere else in the package (**re-confirmed against this tree 2026-08-19**), so every call to `_build_annotation_props` should raise `AttributeError`. In `catalog_and_survey` the broad `except` swallows it *after* the SurveyReport is created (empty report, no error surfaced); in `publish_step_annotations` the call is unguarded, so the whole Survey Definition publish fails. If confirmed, every filesystem analysis is unpublished.
+Confirmed real and fixed. `egeria_filesystem_surveyor.py` read `ann.egeria_type_name`,
+which exists on no class in `survey_report.py`, so `_build_annotation_props` raised
+`AttributeError` on every call — swallowed by the broad `except` in `catalog_and_survey`
+(empty SurveyReport, no error surfaced) and fatal in `publish_step_annotations`.
 
-**Static evidence only — reproduce against a live server before fixing.** Note the related shape drift: the filesystem publisher is a third near-duplicate of `_build_annotation_props` and has diverged from the other two (`valueProperties` vs `resourceProperties`, `confidenceLevel` vs `confidence`, no CLASSIFICATION/QUALITY_SCORE/DATA_CLASS/REQUEST_FOR_ACTION branches, RELATIONSHIP missing from `_class_map`). A one-line fix leaves that standing. See `docs/survey-and-analysis-current-state-2026-08-19.md` §2.3.
+Fixed by consolidating rather than by a one-line attribute rename, because the item
+itself flagged that the real defect was three near-duplicate `_build_annotation_props`
+implementations that had drifted apart (`valueProperties` vs `resourceProperties`,
+`confidenceLevel` vs `confidence`, four missing annotation-type branches, RELATIONSHIP
+absent from `_class_map`). A rename would have left the drift standing and the next
+divergence free to happen. `surveyors/annotation_props.py` is now the single
+implementation; all three surveyors delegate to it, keeping their method names since
+tests and call sites reach for them by name.
+
+**Verified:** all seven annotation classes in `survey_report.py` pass through all three
+publishers without raising. **Not verified:** an end-to-end filesystem publish against a
+live Egeria — no filesystem entity is registered in this deployment, so there was
+nothing to survey. Worth re-running once one exists, since the original failure was
+invisible precisely because it was swallowed.
 
 ### Egeria ↔ RE sync/divergence reconciliation — when one store is reset independently of the other
 
