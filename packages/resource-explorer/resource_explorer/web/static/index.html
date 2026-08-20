@@ -4684,9 +4684,11 @@ const _SURVEY_PANEL_CACHE_TTL_MS = 60_000;
 // their own yet (Assessment, Analysis), so this change removes a wrong listing
 // without silently emptying panels that have nothing to replace it with.
 const _STAGE_SURVEY_KIND = {
-  scouting:  'scouting',
-  discovery: 'discovery',
-  automate:  'automate_full',
+  scouting:   'scouting',
+  discovery:  'discovery',
+  assessment: 'assessment',
+  analysis:   'analysis',
+  automate:   'automate_full',
 };
 
 async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {

@@ -310,6 +310,52 @@ def test_stage_survey_kinds_are_disjoint_where_they_should_be():
     assert "RepoFullSurvey" not in by_kind.get("scouting", set())
     # the scouting-tier set, all three of them
     assert by_kind["scouting"] == {"RepoCoarseScout", "RepoCoarseProfile", "RepoScoutingSurvey"}
+    # Every stage that has survey types of its own now filters to them, so the
+    # automate_full bundle cannot reappear in any of them.
+    for kind in ("assessment", "analysis", "discovery"):
+        assert "RepoFullSurvey" not in by_kind.get(kind, set())
+
+
+def test_assessment_and_analysis_surveys_are_self_sufficient():
+    """Both prefix the prerequisite refresh steps. Every assessment- and
+    analysis-tier step reads project_stats, and documentation/data_profiling/
+    sub_resource_survey also read project_file_inventory — neither table is
+    written by a step in those tiers, so without the prefix the run scores
+    whatever an earlier, unrelated survey happened to leave behind. This is the
+    same failure repo_git_statistics and repo_file_inventory were created to fix.
+    """
+    import csv
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "repo_survey_types.csv"
+    rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf-8")))
+    for group in ("RepoAssessmentSurvey", "RepoAnalysisSurvey"):
+        steps = [r["step_key"] for r in rows if r["survey_group"] == group]
+        assert steps, f"{group} has no steps"
+        assert steps[0] == "repo_git_statistics", f"{group} must refresh stats first"
+        assert steps[1] == "repo_file_inventory", f"{group} must refresh the inventory second"
+
+
+def test_analysis_survey_carries_the_expensive_steps_and_assessment_does_not():
+    """Assessment is cheap apart from its prerequisites; Analysis is deliberately
+    the expensive tier. If that inverts, the cost tiers are telling us the
+    membership is wrong."""
+    import csv
+    from pathlib import Path
+
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    csv_path = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "repo_survey_types.csv"
+    rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf-8")))
+
+    def costs(group, skip_prereqs=True):
+        steps = [r["step_key"] for r in rows if r["survey_group"] == group]
+        if skip_prereqs:
+            steps = steps[2:]
+        return {s: STEP_REGISTRY[s].compute_cost for s in steps}
+
+    assert set(costs("RepoAssessmentSurvey").values()) == {"low"}
+    assert "high" in costs("RepoAnalysisSurvey").values()
 
 
 def test_scouting_survey_covers_every_scouting_tier_step():
