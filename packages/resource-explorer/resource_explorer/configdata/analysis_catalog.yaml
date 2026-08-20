@@ -341,6 +341,22 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: website_ingestion
+    name: "Ingest Documentation Site"
+    description: "Embed the project's documentation site into pgvector so Chat and Understanding can answer from what the project says about itself, not only from its source tree. Collapses versioned docs to the current release. Skips when the repo builds that site itself — the source is already ingested in a better form."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: minutes
+    action: ingest
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: egeria_publish
     name: "Publish to Egeria Catalog"
     description: "Register the repository in Egeria and publish all survey annotations as a SurveyReport asset. Requires Egeria connection."

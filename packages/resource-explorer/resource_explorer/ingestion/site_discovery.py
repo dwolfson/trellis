@@ -63,6 +63,28 @@ def _is_sphinx_conf(path: str) -> bool:
     return p.endswith("conf.py") and ("doc" in p or "sphinx" in p)
 
 
+# Hosts that are a code forge, not a documentation site. A repo whose declared
+# homepage points back at its own forge page has no docs site — HomepageSurveyor
+# falls back to the README/manifest URLs and those sometimes *are* the repo URL
+# (measured: kedro_plugins). Ingesting anyway would embed the forge's own UI
+# chrome — file listings, nav, sign-in prompts — as if it were documentation,
+# and those pages match almost any query while answering none of them.
+_CODE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org",
+               "sourceforge.net", "git.sr.ht")
+
+
+def is_code_host(url: str) -> bool:
+    """True when this URL is a forge page rather than a documentation site.
+
+    Checked on the host, not the full URL, so a project's own docs hosted *by*
+    a forge (github.io / gitlab.io pages) is correctly not treated as a forge
+    page — that is a real published site and the one thing this must not
+    exclude, since it is how a large share of projects publish docs at all.
+    """
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    return host in _CODE_HOSTS
+
+
 def repo_publishes_site(file_inventory: list[str]) -> str:
     """If this repo builds a website, return the marker that says so, else "".
 
@@ -148,6 +170,29 @@ def is_sitemap_index(xml: str) -> bool:
     return "<sitemapindex" in (xml or "").lower()
 
 
+_META_REFRESH = re.compile(
+    r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]*content=["'][^"']*url=([^"'\s>]+)""",
+    re.I)
+
+
+def follow_meta_refresh(html: str, base_url: str) -> str | None:
+    """The target of a `<meta http-equiv="refresh">` landing page, if it is one.
+
+    urllib follows HTTP redirects but not this one, so a site whose entry point
+    is a meta-refresh stub reads as a page that fetched fine and simply had no
+    content — the ingest reports success having embedded nothing. Measured on
+    sqlglot.com, a 138-byte stub pointing at ./sqlglot.html; pdoc generates this
+    shape by default, so it is a family of sites rather than one project's quirk.
+    """
+    m = _META_REFRESH.search(html or "")
+    if not m:
+        return None
+    target = urljoin(base_url, m.group(1).strip())
+    # Only within the same site: a redirect off-host is a different project's
+    # documentation, not this one's.
+    return target if urlparse(target).netloc == urlparse(base_url).netloc else None
+
+
 def discover_pages(base_url: str, fetch, max_pages: int = 400) -> tuple[list[str], str]:
     """Return (page urls, how they were found).
 
@@ -177,6 +222,13 @@ def discover_pages(base_url: str, fetch, max_pages: int = 400) -> tuple[list[str
         pages = collapse_versioned(filter_doc_pages(urls))
         if pages:
             return sorted(pages)[:max_pages], f"sitemap ({candidate})"
+    # No sitemap: the page itself is the answer — unless it is a meta-refresh
+    # stub, in which case the real page is one hop away and the stub has no
+    # content at all.
+    html = fetch(base_url)
+    target = follow_meta_refresh(html or "", base_url)
+    if target:
+        return [target], "single page (meta-refresh from no-sitemap landing page)"
     return [base_url], "single page (no sitemap)"
 
 def site_collection_name(url: str) -> str:

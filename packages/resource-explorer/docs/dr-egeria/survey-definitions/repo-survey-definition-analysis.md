@@ -38,6 +38,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Analysis Survey — Repo Homepage
+
+### Qualified Name
+GovActionProcessStep::RepoAnalysisSurvey::repo_homepage
+
+### Description
+Finds the project's external website — GitHub's declared homepage first, falling back to pyproject.toml [project.urls], package.json or the README when that is empty (measured: 11 of 24 registered repos have no declared homepage). Surfaced in Scouting as a clickable link and published to Egeria as an ExternalReference linked to the repo.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_homepage |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Analysis Survey — Repo Dependency
 
 ### Qualified Name
@@ -150,6 +169,25 @@ Refreshes the project's pgvector collections via IncrementalIndexer — the quer
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Analysis Survey — Repo Website Ingestion
+
+### Qualified Name
+GovActionProcessStep::RepoAnalysisSurvey::repo_website_ingestion
+
+### Description
+Ingests the project's documentation site into pgvector as web_docs_{host}, so Chat and Understanding can answer from the project's own documentation rather than only its source tree. Keyed on the site's host, not the repo slug — several repos in one project share one site and therefore one collection. Uses the site repo_homepage derived, collapsing versioned docs to the current release; skips entirely when the repo builds that site itself, since the source is already ingested in a better form.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_website_ingestion |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Analysis Survey
@@ -158,7 +196,7 @@ Analysis Survey
 GovActionProcess::RepoAnalysisSurvey
 
 ### Description
-Everything Analysis extracts: dependencies, API/symbol structure, data-file profiles, sub-resource recommendations, and the pgvector re-embedding that Chat and Understanding query. Prefixed by the same two prerequisite refresh steps as Assessment Survey, for the same reason. This is deliberately the expensive tier — repo_rag_ingestion is compute_cost=high and repo_data_profiling/repo_symbol_extraction are medium — and it includes ingestion per the rag-ingestion plan's D6, which named an Analysis Survey as its natural home. Because the cost filter exists, that inclusion is not binding: run with max_compute_cost='medium' for a structural pass that skips re-embedding.
+Everything Analysis extracts: dependencies, API/symbol structure, data-file profiles, sub-resource recommendations, and the two ingestion passes Chat and Understanding query — the repository's own source, and the project's documentation site. Prefixed by three prerequisite refresh steps: repo_git_statistics and repo_file_inventory for the same reason Assessment Survey needs them, plus repo_homepage, which is the only step that writes projects.homepage_url — without it repo_website_ingestion would ingest whatever site an earlier, unrelated run happened to derive, or none at all. This is deliberately the expensive tier: repo_rag_ingestion is compute_cost=high, repo_website_ingestion, repo_data_profiling and repo_symbol_extraction are medium, and the two ingestion steps both fetch. Because the cost filter exists, that is not binding — run with max_compute_cost='medium' for a structural pass that skips re-embedding, or max_fetch_cost='api' to skip both ingests.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -192,6 +230,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoAnalysisSurvey::repo_file_inventory
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAnalysisSurvey::repo_homepage
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAnalysisSurvey::repo_homepage
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoAnalysisSurvey::repo_dependency
@@ -255,6 +305,18 @@ GovActionProcessStep::RepoAnalysisSurvey::repo_sub_resource_survey
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoAnalysisSurvey::repo_rag_ingestion
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAnalysisSurvey::repo_rag_ingestion
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAnalysisSurvey::repo_website_ingestion
 
 ### Guard
 Any

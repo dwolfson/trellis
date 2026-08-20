@@ -280,10 +280,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # ingested before it has been derived would use the previous run's URL.
     "repo_website_ingestion": StepInfo(
         "repo_website_ingestion", WebsiteIngestionSurveyor,
-        "Ingests the project's external website into pgvector as {slug}_web_docs, so "
-        "Chat and Understanding can answer from the project's own documentation "
-        "rather than only its source tree. Uses the site repo_homepage derived; "
-        "no-ops when that is the code host itself.",
+        "Ingests the project's documentation site into pgvector as web_docs_{host}, "
+        "so Chat and Understanding can answer from the project's own documentation "
+        "rather than only its source tree. Keyed on the site's host, not the repo "
+        "slug — several repos in one project share one site and therefore one "
+        "collection. Uses the site repo_homepage derived, collapsing versioned docs "
+        "to the current release; skips entirely when the repo builds that site "
+        "itself, since the source is already ingested in a better form.",
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         fetch_cost="download",
@@ -845,6 +848,68 @@ def _rag_ingestion_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _website_ingestion_results(registry, slug: str) -> dict:
+    """What the last repo_website_ingestion run put into pgvector for this
+    project's documentation site.
+
+    `reason` is carried through deliberately: three of this step's outcomes are
+    legitimate zeros — no homepage derived yet, the repo publishes its own site
+    (so the source is already ingested in a better form), or discovery found
+    nothing — and without the reason they render identically to a failure. The
+    card reads the reason, not just the count.
+    """
+    m = registry.query_metrics(slug, "website_ingestion")
+    detail = m.get("detail") or {}
+    return {
+        # int(): metric_value is a float column, and "0.0 chunk(s)" on a card
+        # reads as a broken number rather than a count.
+        "chunks": int(m.get("chunks", 0) or 0),
+        "pages_fetched": int(m.get("pages_fetched", 0) or 0),
+        "pages_found": detail.get("pages_found", 0),
+        "pages_failed": detail.get("pages_failed", 0),
+        "url": detail.get("url", ""),
+        "collection": detail.get("collection", ""),
+        "reason": detail.get("reason", ""),
+        "discovery": detail.get("discovery", ""),
+        "surveyed_at": m.get("surveyed_at", ""),
+    }
+
+
+def _website_ingestion_trend(registry, slug: str) -> list[dict]:
+    return [
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "website_ingestion", "chunks")
+    ]
+
+
+def _website_ingestion_headline(results: dict) -> dict | None:
+    """Survey Results dashboard headline. A skip is reported as its own status
+    rather than as zero-with-a-warning — "this repo publishes its own site" is a
+    correct, final answer, and flagging it as a shortfall would push someone to
+    "fix" a duplicate ingest we deliberately avoid."""
+    if not results.get("surveyed_at"):
+        return None
+    reason = results.get("reason", "")
+    if reason == "self_published":
+        return {"label": "Site ingested as repo source", "status": "ok"}
+    if reason == "code_host":
+        return {"label": "No docs site (homepage is the repo)", "status": "unknown"}
+    if reason in ("no_homepage", "no_collection_type"):
+        return {"label": "No site to ingest", "status": "unknown"}
+    chunks = results.get("chunks", 0)
+    if not chunks:
+        # An unreachable host and a reachable-but-empty site are both zero, and
+        # they call for opposite responses — fix the recorded URL, or look at
+        # why extraction found nothing. Measured: docs.unitycatalog.com no
+        # longer resolves, while sqlglot.com was reachable and yielded nothing
+        # until meta-refresh handling landed.
+        if results.get("pages_failed") and not results.get("pages_fetched"):
+            return {"label": "Documentation site unreachable", "status": "warn"}
+        return {"label": "Nothing ingested from site", "status": "warn"}
+    return {"label": f"{chunks} chunk(s) from {results.get('pages_fetched', 0)} page(s)",
+            "status": "ok"}
+
+
 def _generic_findings_headline(results: dict, *, noun: str = "check") -> dict | None:
     """Survey Results dashboard, Tier 1 (docs/survey-results-dashboard-plan.md
     D5) — generic headline compression for any findings_list-shaped results
@@ -1150,6 +1215,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _rag_ingestion_results, _rag_ingestion_trend, "metrics",
             headline_reader=_rag_ingestion_headline,
+        ),
+    ),
+    "website_ingestion": AnalysisKind(
+        "website_ingestion", ["repo_website_ingestion"],
+        results=AnalysisKindResults(
+            _website_ingestion_results, _website_ingestion_trend, "metrics",
+            headline_reader=_website_ingestion_headline,
         ),
     ),
     "code_symbol_extraction": AnalysisKind(

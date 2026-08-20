@@ -28,7 +28,7 @@ easily mistaken for a bug: the ingest would otherwise succeed and look productiv
 2,398 of them are the same ~220 docs pages repeated across ten releases.
 Ingesting all of them embeds ten near-identical copies of every passage, so a
 query matches a dozen versions with no basis for choosing between them —
-retrieval gets worse while the chunk count looks impressive. Collapsed to 447.
+retrieval gets worse while the chunk count looks impressive. Collapsed to 456.
 
 Not a crawler: it reads the site's own sitemap, and falls back to the single page
 when there isn't one rather than following links. Bounded by max_pages.
@@ -81,6 +81,29 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
 
     def _note(self, summary: str, explanation: str, props: dict, confidence: int = 100
               ) -> list[Annotation]:
+        """Build this step's single annotation, and persist the same numbers as a
+        metric so the Analysis card has something to render.
+
+        Every terminal path in run() returns through here, including the skips and
+        failures — deliberately, so a repo that publishes its own site shows
+        "0 chunks, reason: self_published" on its card rather than an empty panel
+        indistinguishable from "never run". The reason string is what makes that
+        outcome legible as a decision rather than a fault.
+        """
+        try:
+            self.registry.upsert_metric(
+                self.project.slug, "website_ingestion",
+                {"chunks": int(props.get("chunks", 0) or 0),
+                 "pages_fetched": int(props.get("pages_fetched", 0) or 0)},
+                detail={k: v for k, v in props.items()
+                        if k in ("url", "collection", "reason", "marker", "discovery",
+                                 "pages_found", "pages_failed", "ingested", "error")},
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception as exc:
+            log.warning("Could not persist website ingestion snapshot for %s: %s",
+                        self.project.slug, exc)
+
         return [ResourceMeasureAnnotation(
             summary=summary, analysis_step=STEP, confidence=confidence,
             explanation=explanation,
@@ -91,6 +114,7 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         from resource_explorer.ingestion.site_discovery import (
             discover_pages,
+            is_code_host,
             repo_publishes_site,
             site_collection_name,
         )
@@ -101,6 +125,18 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                 "No website to ingest", "This project has no external site recorded. Run "
                 "repo_homepage first — it derives one from GitHub, the packaging manifests "
                 "or the README.", {"ingested": False, "reason": "no_homepage"})
+
+        # A homepage pointing back at the forge is not a documentation site.
+        # repo_homepage falls back to manifest/README URLs when GitHub declares
+        # no homepage, and those are sometimes the repo's own URL.
+        if is_code_host(url):
+            return self._note(
+                "No documentation site — homepage is the code host",
+                f"{url} is the repository's own forge page, not a documentation site. "
+                "Ingesting it would embed the forge's navigation and file listings as if "
+                "they were documentation. Nothing to do until this project publishes docs "
+                "somewhere else.",
+                {"ingested": False, "reason": "code_host", "url": url})
 
         # Skip a site whose source we already ingest as a repo (see docstring).
         try:

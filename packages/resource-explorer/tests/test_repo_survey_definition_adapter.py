@@ -378,3 +378,51 @@ def test_scouting_survey_covers_every_scouting_tier_step():
     order = steps["RepoScoutingSurvey"]
     assert order.index("repo_git_statistics") < order.index("repo_health")
     assert order.index("repo_file_inventory") < order.index("repo_file_structure")
+
+
+# ── website ingestion wired into Analysis (2026-08-20) ───────────────────────
+
+
+def test_website_ingestion_is_an_analysis_kind_with_results():
+    """The step existed in STEP_REGISTRY for a while with no AnalysisKind, which
+    made it runnable from code and invisible from the UI — no card, no Results.
+    Registration is what makes it reachable, so assert it directly."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
+
+    kind = ANALYSIS_KINDS["website_ingestion"]
+    assert kind.step_keys == ["repo_website_ingestion"]
+    assert kind.results is not None
+    assert kind.results.render == "metrics"
+
+
+def test_website_ingestion_catalog_entry_is_tagged_analysis():
+    """A card only appears under the intent its catalog entry names. Tagged
+    analysis rather than scouting because the step fetches from the network —
+    the collect-vs-reason axis in CLAUDE.md rule 17."""
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    entries = {e["id"]: e for e in get_analyses("repo")}
+    assert entries["website_ingestion"]["intent"] == "analysis"
+
+
+def test_analysis_survey_derives_the_homepage_before_ingesting_the_site():
+    """repo_homepage is the only step that writes projects.homepage_url, and
+    repo_website_ingestion reads it. Without the prerequisite in the same
+    definition, the Analysis Survey would ingest whichever site an earlier,
+    unrelated run happened to derive — or silently ingest nothing at all, which
+    reports as success. Same implicit-prerequisite shape as the file-inventory
+    and git-statistics prefixes this survey already carries."""
+    import csv
+    from pathlib import Path
+
+    csv_path = (Path(__file__).resolve().parents[1]
+                / "docs" / "dr-egeria" / "repo_survey_types.csv")
+    with csv_path.open() as fh:
+        rows = [r for r in csv.DictReader(fh)
+                if r["survey_group"] == "RepoAnalysisSurvey"]
+
+    order = [r["step_key"] for r in sorted(rows, key=lambda r: int(r["step_order"]))]
+    assert "repo_website_ingestion" in order
+    assert order.index("repo_homepage") < order.index("repo_website_ingestion")
+    # The self-published check reads the repo's own file inventory.
+    assert order.index("repo_file_inventory") < order.index("repo_website_ingestion")

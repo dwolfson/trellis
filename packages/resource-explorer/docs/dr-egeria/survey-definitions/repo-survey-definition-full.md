@@ -133,6 +133,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Website Ingestion
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_website_ingestion
+
+### Description
+Ingests the project's documentation site into pgvector as web_docs_{host}, so Chat and Understanding can answer from the project's own documentation rather than only its source tree. Keyed on the site's host, not the repo slug — several repos in one project share one site and therefore one collection. Uses the site repo_homepage derived, collapsing versioned docs to the current release; skips entirely when the repo builds that site itself, since the source is already ingested in a better form.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_website_ingestion |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Dependency
 
 ### Qualified Name
@@ -499,6 +518,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_homepage
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_website_ingestion
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_website_ingestion
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_dependency

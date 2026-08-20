@@ -136,3 +136,74 @@ class TestPickRichest:
 
         best, _ = pick_richest(["https://dead.io", "https://live.io"], fetch)
         assert best == "https://live.io"
+
+
+class TestIsCodeHost:
+    """A homepage pointing back at the forge is not a documentation site.
+
+    Real instance: kedro_plugins declares https://github.com/kedro-org/kedro-plugins
+    as its homepage, because HomepageSurveyor falls back to manifest/README URLs
+    when GitHub declares no homepage, and those are sometimes the repo's own URL.
+    """
+
+    def test_forge_pages_are_not_documentation_sites(self):
+        from resource_explorer.ingestion.site_discovery import is_code_host
+
+        assert is_code_host("https://github.com/kedro-org/kedro-plugins")
+        assert is_code_host("https://www.gitlab.com/g/p")
+        assert is_code_host("https://bitbucket.org/t/r")
+
+    def test_forge_hosted_pages_sites_are_real_documentation(self):
+        """The distinction that matters: github.io is how a large share of
+        projects publish docs at all, so excluding it would skip exactly the
+        sites most worth ingesting."""
+        from resource_explorer.ingestion.site_discovery import is_code_host
+
+        assert not is_code_host("https://docling-project.github.io/docling/")
+        assert not is_code_host("https://egeria-project.org")
+        assert not is_code_host("https://sqlglot.com/")
+
+
+class TestFollowMetaRefresh:
+    """urllib follows HTTP redirects but not <meta http-equiv="refresh">.
+
+    Found live: sqlglot.com is a 138-byte stub pointing at ./sqlglot.html, so
+    the ingest fetched a page successfully, extracted nothing, and reported
+    "0 chunks from 1 page" — a success-shaped result with no content in it.
+    pdoc emits this shape by default, so it is a family of sites.
+    """
+
+    STUB = ('<!doctype html><html><head><meta charset="utf-8">'
+            '<meta http-equiv="refresh" content="0; url=./sqlglot.html"/>'
+            '</head></html>')
+
+    def test_resolves_the_target_against_the_landing_page(self):
+        from resource_explorer.ingestion.site_discovery import follow_meta_refresh
+
+        assert (follow_meta_refresh(self.STUB, "https://sqlglot.com/")
+                == "https://sqlglot.com/sqlglot.html")
+
+    def test_ordinary_page_is_not_a_redirect(self):
+        from resource_explorer.ingestion.site_discovery import follow_meta_refresh
+
+        assert follow_meta_refresh("<html><body>Real docs</body></html>",
+                                   "https://example.org/") is None
+
+    def test_off_host_target_is_ignored(self):
+        """A redirect to another domain is a different project's docs, not a
+        deeper page of this one — following it would file someone else's
+        content under this project."""
+        from resource_explorer.ingestion.site_discovery import follow_meta_refresh
+
+        html = '<meta http-equiv="refresh" content="0; url=https://elsewhere.example/docs">'
+        assert follow_meta_refresh(html, "https://sqlglot.com/") is None
+
+    def test_discovery_returns_the_target_when_there_is_no_sitemap(self):
+        from resource_explorer.ingestion.site_discovery import discover_pages
+
+        def fetch(url):
+            return None if url.endswith("sitemap.xml") else self.STUB
+
+        pages, how = discover_pages("https://sqlglot.com/", fetch)
+        assert pages == ["https://sqlglot.com/sqlglot.html"]
+        assert "meta-refresh" in how
