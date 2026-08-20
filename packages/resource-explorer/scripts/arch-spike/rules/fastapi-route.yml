@@ -1,0 +1,27 @@
+# design §5.1 "Web framework markers" — a route registration is evidence for a
+# SolutionPort with direction Input-Output (§3.2: serving an interface, not
+# calling one).
+#
+# VERIFIED against a real parse tree, and the first draft was badly wrong.
+# It matched the CALL form (`$APP.get($PATH, $$$ARGS)`) on the theory that
+# over-matching was acceptable at Phase 0's confidence ceiling — "e.g. a dict
+# named `router` with a `.get` method". Measured, that theory understated the
+# damage by an order of magnitude: 620 matches across resource_explorer,
+# almost all of them `dict.get(key, default)` — one of the commonest idioms in
+# Python. Top-matching file was `cli/main.py` (38), which registers no routes
+# at all.
+#
+# Routes are DECORATORS, not calls. Matching the decorator form finds 145
+# real registrations and no dict lookups. The lesson generalises: a code
+# marker must match the syntactic form the framework actually uses, and
+# "over-matching is acceptable" is a claim to measure, never to assume.
+id: fastapi-route-registration
+language: Python
+rule:
+  any:
+    - pattern: "@$APP.get($$$ARGS)"
+    - pattern: "@$APP.post($$$ARGS)"
+    - pattern: "@$APP.put($$$ARGS)"
+    - pattern: "@$APP.delete($$$ARGS)"
+    - pattern: "@$APP.patch($$$ARGS)"
+    - pattern: "@$APP.websocket($$$ARGS)"

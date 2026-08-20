@@ -262,3 +262,43 @@ pre-registered fixture), and `validate.py`'s deployment vocabulary (`Application
 technology-type string in `plannedDeployedImplementationType` rather than as an entity
 type.
 
+**19. Every ast-grep rule was verified against real parse trees, and two of the eight were
+wrong — in opposite directions.** The drafts had never been run (no binary). Counts against
+`resource_explorer`:
+
+| rule | draft | verified | |
+|---|---|---|---|
+| `fastapi-route` | **620** | **149** | draft matched `dict.get(k, default)` |
+| `scheduler-worker` | **0** | **4** | draft missed Prefect entirely |
+| `cli-entry` | 6 | 6 | ok |
+| `client-postgres` | 3 | 3 | ok |
+| `fastapi-app` | 1 | 1 | ok |
+| `textual-app` | 1 | 1 | ok |
+| `client-boto3` | 0 | 0 | **correct** zero — repo has no boto3 |
+| `client-kafka` | 0 | 0 | **correct** zero — repo has no kafka |
+
+`fastapi-route` matched the *call* form `$APP.get($PATH, $$$ARGS)`. Its own comment predicted
+over-matching and judged it acceptable — "e.g. a dict named `router` with a `.get` method".
+Measured, that understated the damage by an order of magnitude: it matched **every two-argument
+`.get()` call in Python**, one of the language's commonest idioms. The top-matching file was
+`cli/main.py` (38 hits), which registers no routes at all. Routes are **decorators**; matching
+`@$APP.get($$$ARGS)` finds 149 real registrations and no dict lookups.
+
+`scheduler-worker` scored zero, which reads as "this repo has no scheduler" and is false — RE
+orchestrates through Prefect (`resource_explorer/prefect/flows.py`). The draft only looked for
+APScheduler *class construction*, and Prefect declares work with *decorators*. This was the rule
+the earlier session deliberately omitted rather than guess at decorator syntax unverified; that
+was the right call, since guessing would have produced another silent zero.
+
+**The generalisable lessons, both cheap and both only visible by running the rules:**
+
+- **A zero is a finding, not a pass.** It means either the technology is genuinely absent
+  (boto3, kafka — correct here) or the pattern is broken (`scheduler-worker`). The two are
+  *indistinguishable* without a known-positive file to check against, so every rule needs one.
+- **"Over-matching is acceptable" is a claim to measure, never to assume.** A code marker must
+  match the syntactic form the framework actually uses. Matching a superficially similar form
+  produced a 4x-inflated count dominated entirely by false positives.
+
+Worth noting `ast-grep` resolved from `.venv/bin/` and **not** from PATH despite a `brew install`
+— which is the argument for the pip dependency (finding: commit 60a6d5f) landing in practice
+rather than in principle.

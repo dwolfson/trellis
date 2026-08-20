@@ -1,0 +1,8 @@
+# design §5.1 "Web framework markers" — FastAPI/Flask/Spring/Express route
+# decorators & registrations -> Software Service, ports Input-Output.
+# This rule catches app CONSTRUCTION (`FastAPI(...)`), which is the strongest
+# single-file signal that a directory is a web service rather than a library.
+id: fastapi-app-construction
+language: Python
+rule:
+  pattern: FastAPI($$$ARGS)
