@@ -302,3 +302,62 @@ was the right call, since guessing would have produced another silent zero.
 Worth noting `ast-grep` resolved from `.venv/bin/` and **not** from PATH despite a `brew install`
 — which is the argument for the pip dependency (finding: commit 60a6d5f) landing in practice
 rather than in principle.
+
+---
+
+## Phase 0 verdict: QUALIFIED PASS
+
+**20. T2 scored, and the answer is the middle outcome plan §6 pre-defined.**
+
+`trellis`, logical perspective, code-marker detectors wired (`code_markers.py`):
+
+| measure | value | reading |
+|---|---|---|
+| file-partition **ARI** | **0.56** | good agreement on boundaries |
+| file-partition **NMI** | **0.77** | good agreement on boundaries |
+| files scored | **38** of 182 GT-assigned | **coverage is the problem** |
+| components proposed | **4** of 11 | `web`, `cli`, `tui`, `prefect` |
+| component-set F1 | 0.00 | see below — a measurement artifact |
+
+**Where the detectors fire, they get the boundary right. They fire on 4 of 11 components.**
+ARI 0.56 / NMI 0.77 is not a weak result — on the subtrees it proposes, the partition
+substantially agrees with the maintainer's. But it proposes only the four subtrees that
+happen to use a *framework*: FastAPI (`web`), Typer (`cli`), Textual (`tui`), Prefect
+(`prefect`). `Agents`, `Core`, `RAG ingestion`, `Observability`, `Surveyors` and
+`Utility scripts` have no framework marker of any kind, so no code-marker rule can see
+them, and no rule that could be written would — there is nothing distinctive to match.
+
+That is **exactly** the qualified pass described in plan §6: *"boundaries recovered only
+where a manifest declares them... does not kill the feature, but changes it"*. Refined by
+measurement: boundaries are recovered where a manifest declares them **or a framework
+marker fires**, and the union still leaves the majority of a code-first repo invisible.
+
+**Consequences, per plan §6's own instruction that a qualified pass changes the estimate:**
+
+- LLM distillation (§5.2, Phase 5) is **not optional polish**. It is the only mechanism
+  that can propose `Agents` or `Core`, because those boundaries are conventional rather
+  than declared. Phase 5 should move earlier.
+- The §5.5 validation signals (import coupling, co-change) matter more than assumed —
+  they are the only *detector-side* signals that could propose an undeclared boundary.
+- The Phase 1 rule-writing estimate should not rise much. More rules would not have
+  helped here; the missing components have nothing to match on. Effort belongs in
+  distillation and coupling, not in more markers.
+
+**21. Component-set F1 of 0.00 is a measurement artifact, not a detection failure.**
+The detector emits `web`, `cli`, `tui`, `prefect` — directory basenames. The ground truth
+says `Web backend`, `CLI`, `Textual TUI`, `Prefect orchestration`. The *boundaries* agree
+(ARI 0.56); only the *names* differ.
+
+This is by design and should not be scored as error: §5.2 assigns naming to the LLM
+precisely because detectors cannot produce human names. So **component-set agreement is
+the wrong measure for the logical perspective** — it is the right measure for deployment,
+where names are declared (`container_name`, finding 9) and it scored 16/16. Different
+perspectives need different measures, which is plan §5a's rule arriving one level deeper
+than it was written.
+
+**22. `diagnostic_only` is now derived rather than hardcoded.** It was `perspective ==
+"logical"`, correct while nothing emitted logical components. Once `code_markers.py` did,
+the hardcode would have gone on labelling a real comparison DIAGNOSTIC ONLY forever. Now:
+a comparison is a diagnostic only when no detected component carries the ground truth's
+perspective. The earlier session was right to defer this until there was something to test
+it against — the same judgement that made it revert the `build.context` merge.

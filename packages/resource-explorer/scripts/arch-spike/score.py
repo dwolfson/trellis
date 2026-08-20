@@ -142,7 +142,14 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
 
     perspective = doc["meta"].get("perspective", "logical").strip().lower()
     files_required = perspective in validate.FILES_REQUIRED
-    diagnostic_only = perspective == "logical"
+    # Derived, not hardcoded to `== "logical"`. A comparison is a diagnostic
+    # only when NO detected component carries the ground truth's perspective —
+    # i.e. nothing in this IR is even the right kind of claim. Once the
+    # code-marker pass began emitting logical-perspective components this
+    # became a real comparison for trellis, and the hardcode would have gone on
+    # labelling it DIAGNOSTIC ONLY forever.
+    det_perspectives = {c.get("perspective", "physical") for c in ir["components"]}
+    diagnostic_only = perspective not in det_perspectives
     # The detector slice reads manifests + deployment artifacts only (plan
     # §5a preface) — never the logical perspective. Any `logical`-perspective
     # ground truth is therefore a cross-perspective diagnostic, not a score.

@@ -430,6 +430,16 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
             notes.append(f"{g['rel']}: {len(g['modules'])} Gradle modules — "
                          f"not expanded into components in this slice")
 
-    notes.append("no code-marker detectors yet: every Software Service in this target "
-                 "is currently reported as Console Command or Software Library")
+
+    # Code-marker pass (§5.1's code half) — logical-perspective components the
+    # manifest and deployment detectors structurally cannot see. Package roots
+    # come from the manifests already found, so markers refine a boundary that
+    # was detected, never invent one from nothing.
+    from code_markers import propose as _propose_markers
+    package_roots = sorted({m["dir"] for m in manifests}) or ["."]
+    mc, me, mn = _propose_markers(root, files, package_roots)
+    components.extend(mc)
+    evidence.extend(me)
+    notes.extend(mn)
+
     return components, evidence, notes
