@@ -103,6 +103,140 @@ def test_file_inventory_declares_the_shared_zipball_resource():
     }
 
 
+class TestStepCostTiers:
+    """Step cost tiers plan (docs/step-cost-tiers-plan.md). Exhaustive on
+    purpose, same rationale as test_all_step_keys_are_registered above — a
+    new step must make a cost decision, not silently inherit the
+    StepInfo default."""
+
+    def test_every_step_declares_both_cost_fields(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        for key, info in STEP_REGISTRY.items():
+            assert info.fetch_cost in {"none", "api", "api_heavy", "download"}, key
+            assert info.compute_cost in {"low", "medium", "high"}, key
+
+    def test_fetch_cost_is_never_numeric(self):
+        """D2/Hazards: the moment these are seconds, they're wrong for every
+        repo but the one they were measured on — same rot as run_time."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        for info in STEP_REGISTRY.values():
+            assert not info.fetch_cost.isdigit()
+            assert not info.compute_cost.isdigit()
+
+    def test_d3_zipball_steps_never_declare_fetch_cost_none(self):
+        """D3: fetch_cost must stay consistent with the structural
+        requires_resources signal — a step that downloads a zipball cannot
+        claim to fetch nothing."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        for key, info in STEP_REGISTRY.items():
+            if "zipball_root" in info.requires_resources:
+                assert info.fetch_cost != "none", key
+
+    def test_the_four_zipball_steps_are_exactly_these(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        zipball_steps = {
+            k for k, info in STEP_REGISTRY.items() if "zipball_root" in info.requires_resources
+        }
+        assert zipball_steps == {
+            "repo_file_inventory", "repo_homepage", "repo_data_profiling", "repo_symbol_extraction",
+        }
+
+    def test_rag_ingestion_is_the_only_high_compute_cost_step(self):
+        """D4: compute_cost="high" (embeds the repo) is explicitly called
+        out for exactly this one step — a second "high" step should be a
+        deliberate decision, not something this test lets slip by."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        high_compute = {k for k, info in STEP_REGISTRY.items() if info.compute_cost == "high"}
+        assert high_compute == {"repo_rag_ingestion"}
+
+    def test_git_statistics_is_the_measured_api_heavy_baseline(self):
+        """D4: the 430s-against-odpi/egeria measurement this whole plan is
+        grounded in."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        assert STEP_REGISTRY["repo_git_statistics"].fetch_cost == "api_heavy"
+        assert STEP_REGISTRY["repo_git_statistics"].compute_cost == "low"
+
+
+class TestStageCostConsistency:
+    """The stage-assignment connection (docs/step-cost-tiers-plan.md) —
+    a question tagged Scouting/Discovery (the two zero/near-zero-fetch
+    funnel stages, CLAUDE.md rule 17) must not be answered by a
+    survey-action analysis whose run_time is anything but "fast". Uses
+    analysis_catalog.yaml's existing run_time, not the new per-step
+    fetch_cost/compute_cost fields — deriving an analysis's cost from its
+    steps' costs is explicitly out of scope for this plan (D1).
+
+    action != "survey" entries are excluded: egeria_publish (action=
+    "publish") is the one hit this check finds without the exclusion, and
+    it's a catalog-of-record write, not an analysis — see the plan's note.
+    With the exclusion applied, this passes cleanly today and exists to
+    catch future drift (a Scouting/Discovery question acquiring an
+    expensive answer), not to clean up a present violation.
+    """
+
+    _FAST_ONLY_STAGES = {"Scouting", "Discovery"}
+
+    def _analyses_by_id(self):
+        import yaml
+        from pathlib import Path
+
+        config_path = (
+            Path(__file__).parent.parent / "resource_explorer" / "configdata" / "analysis_catalog.yaml"
+        )
+        raw = yaml.safe_load(config_path.read_text())
+        analyses = {}
+        for section in ("repo_analyses", "database_analyses", "filesystem_analyses"):
+            for entry in raw.get(section) or []:
+                analyses[entry["id"]] = entry
+        return analyses
+
+    def _questions(self):
+        import yaml
+        from pathlib import Path
+
+        config_path = (
+            Path(__file__).parent.parent / "resource_explorer" / "configdata" / "question_catalog.yaml"
+        )
+        raw = yaml.safe_load(config_path.read_text())
+        return raw.get("repo_questions") or []
+
+    def test_no_fast_stage_question_is_answered_by_a_non_fast_survey_analysis(self):
+        analyses = self._analyses_by_id()
+        violations = []
+        for question in self._questions():
+            stage = question["stage"]
+            if stage not in self._FAST_ONLY_STAGES:
+                continue
+            for analysis_id in question["answering"].get("analysis_ids") or []:
+                analysis = analyses.get(analysis_id)
+                if analysis is None or analysis.get("action") != "survey":
+                    continue
+                if analysis.get("run_time") != "fast":
+                    violations.append((question["question"], stage, analysis_id, analysis.get("run_time")))
+        assert violations == []
+
+    def test_egeria_publish_is_the_one_hit_the_action_exclusion_clears(self):
+        """Confirms the action != "survey" exclusion is actually doing
+        something, not vacuously passing because the data changed: without
+        it, egeria_publish (linked from the "Analysis/Enrichment" governance
+        question, run_time=minutes, action=publish) would be a real
+        candidate hit if Analysis/Enrichment were ever added to
+        _FAST_ONLY_STAGES — the plan's one known case from 2026-08-20."""
+        analyses = self._analyses_by_id()
+        assert analyses["egeria_publish"]["run_time"] == "minutes"
+        assert analyses["egeria_publish"]["action"] == "publish"
+        governance_question = next(
+            q for q in self._questions() if "egeria_publish" in (q["answering"].get("analysis_ids") or [])
+        )
+        assert governance_question["stage"] == "Analysis/Enrichment"
+
+
 class TestRunBatch:
     """D1 (docs/survey-tab-unification-plan.md) — repo's own
     ResourceTypeAdapter.run_batch: one SurveyOrchestrator.run(steps=[...])

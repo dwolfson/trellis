@@ -1,6 +1,6 @@
 # Step cost tiers — composing surveys by budget instead of enumeration
 
-**Status: planned, not started. Written 2026-08-20.**
+**Status: implemented 2026-08-20.**
 
 ## Why
 

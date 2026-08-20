@@ -237,3 +237,92 @@ class TestFastFlag:
         keeps the flag because its scoring window is the same 90-day history."""
         accepting = {k for k, info in STEP_REGISTRY.items() if info.accepts_fast}
         assert accepting == {"repo_health", "repo_git_statistics"}
+
+
+class TestCostTierFilter:
+    """Step cost tiers plan (docs/step-cost-tiers-plan.md, D5) —
+    max_fetch_cost/max_compute_cost narrow step_keys_to_run by ordinal
+    position, same set-narrowing shape steps=[...] already has. Both None
+    (the default) must run every step, unchanged."""
+
+    def test_both_none_runs_all_21_steps(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project)
+                for key, m in mocks.items():
+                    m.return_value.run.assert_called_once()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_max_fetch_cost_none_excludes_every_download_and_api_heavy_step(self, registry, project):
+        """Ceiling "none" must exclude the 4 zipball (download) steps and
+        every step that makes its own API calls (repo_git_statistics,
+        repo_sub_resource_survey) — anything above "none" on the fetch
+        axis, regardless of compute_cost."""
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project, max_fetch_cost="none")
+                excluded = {k for k, info in STEP_REGISTRY.items() if info.fetch_cost != "none"}
+                assert excluded == {
+                    "repo_file_inventory", "repo_homepage", "repo_data_profiling",
+                    "repo_symbol_extraction", "repo_rag_ingestion",
+                    "repo_git_statistics", "repo_sub_resource_survey",
+                }
+                for key in excluded:
+                    mocks[key].return_value.run.assert_not_called()
+                for key, m in mocks.items():
+                    if key not in excluded:
+                        m.return_value.run.assert_called_once()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_max_compute_cost_low_excludes_medium_and_high_steps(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project, max_compute_cost="low")
+                excluded = {k for k, info in STEP_REGISTRY.items() if info.compute_cost != "low"}
+                assert excluded == {
+                    "repo_data_profiling", "repo_symbol_extraction", "repo_rag_ingestion",
+                }
+                for key in excluded:
+                    mocks[key].return_value.run.assert_not_called()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_both_ceilings_combine_as_an_intersection(self, registry, project):
+        """max_fetch_cost and max_compute_cost each narrow independently —
+        a step must clear both ceilings to run."""
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(
+                    project, max_fetch_cost="none", max_compute_cost="low",
+                )
+                mocks["repo_health"].return_value.run.assert_called_once()
+                for key in (
+                    "repo_git_statistics", "repo_rag_ingestion", "repo_data_profiling",
+                    "repo_symbol_extraction", "repo_sub_resource_survey",
+                ):
+                    mocks[key].return_value.run.assert_not_called()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_cost_ceiling_combines_with_explicit_steps_as_an_intersection(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(
+                    project, steps=["repo_health", "repo_rag_ingestion"], max_fetch_cost="none",
+                )
+                mocks["repo_health"].return_value.run.assert_called_once()
+                mocks["repo_rag_ingestion"].return_value.run.assert_not_called()
+        finally:
+            for p in patchers:
+                p.stop()

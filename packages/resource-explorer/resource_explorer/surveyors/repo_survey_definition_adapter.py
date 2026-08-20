@@ -120,6 +120,21 @@ class StepInfo:
     # selected in that run, via trellis_microflow.resolve_resources — see
     # RESOURCE_PROVIDERS below for what "zipball_root" actually does.
     requires_resources: dict[str, str] = field(default_factory=dict)
+    # Step-cost-tiers plan (docs/step-cost-tiers-plan.md, D2) — two
+    # independent, deliberately coarse/ordinal axes so a caller (a survey
+    # author, the scheduler, or SurveyOrchestrator.run()'s new
+    # max_fetch_cost/max_compute_cost filter) can act on network cost and
+    # CPU cost separately instead of being forced into one blended score.
+    # Do NOT make these numeric — seconds are right for exactly one repo
+    # and wrong for every other, which is how `run_time` in
+    # analysis_catalog.yaml rotted (see that plan's "Why").
+    #   fetch_cost   : "none" | "api" | "api_heavy" | "download"
+    #   compute_cost : "low" | "medium" | "high"
+    # D3: fetch_cost="none" is invalid for any step declaring
+    # requires_resources={"zipball_root": ...} — enforced by
+    # test_step_cost_tiers.py, not just by convention.
+    fetch_cost: str = "none"
+    compute_cost: str = "low"
 
 
 # ── D6: shared-resource providers ────────────────────────────────────────
@@ -177,6 +192,12 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ResourceMeasureAnnotation"],
         accepts_fast=True,
         accepts_surveyed_at=True,
+        # Measured 2026-08-19/20: 430s against odpi/egeria at fast=False —
+        # fetch_diff_stats is one GitHub API call per commit over a 90-day
+        # window. No zipball, so compute itself is cheap; the cost is all
+        # network/rate-limit.
+        fetch_cost="api_heavy",
+        compute_cost="low",
     ),
     # FIRST BY NECESSITY, not by taste. This dict's order is also the order
     # "Repo Full Survey" runs (repo_survey_types.csv uses the "*" sentinel,
@@ -198,28 +219,39 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
+        # One of the 4 zipball steps (D3/D4) — a real download, so "none"
+        # is invalid here. Walking the extracted tree is cheap.
+        fetch_cost="download",
+        compute_cost="low",
     ),
     "repo_file_structure": StepInfo(
         "repo_file_structure", FileStructureSurveyor,
         "File counts, per-language breakdown, and top-level directory structure.",
         ["ResourceMeasureAnnotation"],
+        # Reads project_file_inventory (no zipball, no API) — D4's "17
+        # zero-fetch steps" default.
     ),
     "repo_file_size": StepInfo(
         "repo_file_size", FileSizeSurveyor,
         "Per-file sizes, total footprint, size-by-type, top-10 largest files.",
         ["ResourceMeasureAnnotation", "RequestForActionAnnotation"],
         accepts_scope_locator=True,
+        # Reads project_file_inventory — no fetch of its own.
     ),
     "repo_language": StepInfo(
         "repo_language", LanguageSurveyor,
         "Primary/secondary language and coarse project-type classification.",
         ["ClassificationAnnotation"],
+        # Reads project_file_inventory — no fetch of its own.
     ),
     "repo_health": StepInfo(
         "repo_health", HealthSurveyor,
         "Activity, community, release-cadence, and freshness scoring from GitHub stats.",
         ["QualityScoreAnnotation"],
         accepts_fast=True,
+        # Reads project_stats (already fetched by repo_git_statistics) —
+        # no API call of its own, confirmed by HealthSurveyor.run() reading
+        # registry.get_latest_project_stats() only.
     ),
     "repo_homepage": StepInfo(
         "repo_homepage", HomepageSurveyor,
@@ -235,23 +267,33 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # a zipball. Declaring it means the fallback tiers work for free whenever
         # another step in the same run has already paid for the download.
         requires_resources={"zipball_root": "local_path"},
+        # Optional zipball (see the constructor comment above) but still
+        # one of the 4 steps that declare it — "download", not "none",
+        # per D3. Parsing pyproject.toml/package.json/README for a URL is
+        # cheap.
+        fetch_cost="download",
+        compute_cost="low",
     ),
     "repo_dependency": StepInfo(
         "repo_dependency", DependencySurveyor,
         "Package dependencies per ecosystem (PyPI/npm/Maven).",
         ["DataClassAnnotation", "ResourceMeasureAnnotation"],
+        # Read-only over project_dependencies (populated at ingest time) —
+        # no fetch, no re-parsing here.
     ),
     "repo_documentation": StepInfo(
         "repo_documentation", DocumentationSurveyor,
         "Presence of README/CHANGELOG/CONTRIBUTING/SECURITY and overall doc-quality label.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+        # Reads project_file_inventory — no fetch of its own.
     ),
     "repo_security": StepInfo(
         "repo_security", SecurityHygieneSurveyor,
         "Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.",
         ["ClassificationAnnotation", "RequestForActionAnnotation"],
         accepts_surveyed_at=True,
+        # Reads project_file_inventory + project_stats — no fetch of its own.
     ),
     "repo_license_classification": StepInfo(
         "repo_license_classification", LicenseClassifierSurveyor,
@@ -259,6 +301,9 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "weak copyleft/strong copyleft/source-available/unknown).",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+        # Reads project_stats.license_spdx_id — the table-read D4 calls
+        # out by name as the reason a single blended score would be wrong
+        # for this step.
     ),
     "repo_security_features": StepInfo(
         "repo_security_features", SecurityFeaturesSurveyor,
@@ -266,18 +311,25 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "scanning, etc.) — configuration state, not artifact presence.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+        # Reads project_stats.security_and_analysis_json (already fetched
+        # by StatsFetcher) — no new API call, per this surveyor's own
+        # docstring.
     ),
     "repo_ci_quality": StepInfo(
         "repo_ci_quality", CiQualitySurveyor,
         "Whether CI workflows actually run tests/lint/build, via a keyword "
         "scan of workflow content — not just whether a CI config exists.",
         ["ClassificationAnnotation"],
+        # Read-only at survey time over already-parsed findings (parsing
+        # happens once at ingest, per this surveyor's own docstring) — no
+        # fetch, no re-scan here.
     ),
     "repo_maturity": StepInfo(
         "repo_maturity", MaturitySurveyor,
         "Project age/lifecycle stage (nascent/emerging/established/mature), "
         "from repo_created_at — a CHAOSS-informed Discovery-tier signal.",
         ["ClassificationAnnotation"],
+        # Reads project_stats.repo_created_at — no fetch of its own.
     ),
     "repo_conventions": StepInfo(
         "repo_conventions", RepoConventionsSurveyor,
@@ -285,6 +337,9 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "automation, deployment/Docker evidence, catalog self-description "
         "(Backstage-style), documentation breadth.",
         ["ClassificationAnnotation"],
+        # Read-only at survey time over already-parsed findings (same
+        # ingest-time-parsing relationship as repo_ci_quality) — no fetch
+        # here.
     ),
     "repo_api_structure": StepInfo(
         "repo_api_structure", ApiStructureSurveyor,
@@ -292,6 +347,9 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         accepts_scope_locator=True,
+        # Reads project_code_symbols — doesn't extract itself (that's
+        # repo_symbol_extraction's job), per this surveyor's own
+        # docstring. No fetch, no re-parsing.
     ),
     "repo_data_profiling": StepInfo(
         "repo_data_profiling", DataProfilerSurveyor,
@@ -311,6 +369,11 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # cost this step didn't previously pay through this path) — not
         # silent.
         requires_resources={"zipball_root": "local_path"},
+        # One of the 4 zipball steps. compute_cost="medium", not "low":
+        # Tier 2 profiles every readable data file's rows/columns/dtypes/
+        # null-rate with pandas, real per-file work beyond a table read.
+        fetch_cost="download",
+        compute_cost="medium",
     ),
     "repo_file_classification": StepInfo(
         "repo_file_classification", FileClassifierSurveyor,
@@ -318,6 +381,8 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ClassificationAnnotation", "ResourceMeasureAnnotation"],
         static_kwargs={"pyegeria_client": None, "force_refresh": False},
         accepts_scope_locator=True,
+        # Reads project_file_inventory + does filename/extension mapping —
+        # no fetch, cheap per-file lookup.
     ),
     "repo_symbol_extraction": StepInfo(
         "repo_symbol_extraction", SymbolExtractionSurveyor,
@@ -329,6 +394,12 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
+        # One of the 4 zipball steps. compute_cost="medium", not "low":
+        # unlike repo_api_structure (a read of already-extracted symbols),
+        # this step does the tree-sitter/ast extraction itself, across
+        # every supported-language file in the zipball.
+        fetch_cost="download",
+        compute_cost="medium",
     ),
     "repo_sub_resource_survey": StepInfo(
         "repo_sub_resource_survey", SubResourceSurveyor,
@@ -337,6 +408,17 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "sub-resource cataloging plan) — survey only, does not catalog.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+        # Not in D4's explicit measurement list — flagged here rather than
+        # left at the "none" default, and picked conservatively pending a
+        # real measurement. _codeowners_rules() makes one API call, and
+        # _attach_tier2_dates() makes one further get_commits() call PER
+        # "worthy" finding (Tier 2 dates) — bounded by worthy-entry count
+        # rather than total commit count like repo_git_statistics, but the
+        # same N+1-shaped sequential-API-calls pattern that made
+        # repo_git_statistics expensive. compute_cost stays "low": the
+        # cost here is network/rate-limit, not CPU.
+        fetch_cost="api_heavy",
+        compute_cost="low",
     ),
     # LAST BY NECESSITY, the mirror image of repo_git_statistics/
     # repo_file_inventory being first. Those are first because other steps read
@@ -361,6 +443,15 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "A no-op when the repository's last indexed commit is unchanged.",
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
+        # compute_cost="high" (D4 explicit): embeds the repository.
+        # fetch_cost="download" records the worst case, not the common
+        # one — IncrementalIndexer downloads only when the last-indexed
+        # SHA moved (see the "No requires_resources on purpose" comment
+        # above), which is exactly the conditionality a coarse ordinal
+        # field can't express. Recorded here rather than inventing a
+        # fifth fetch_cost value, per D4.
+        fetch_cost="download",
+        compute_cost="high",
     ),
 }
 

@@ -14,6 +14,13 @@ from resource_explorer.surveyors.survey_report import SurveyResult
 
 log = logging.getLogger(__name__)
 
+# Step-cost-tiers plan (docs/step-cost-tiers-plan.md, D2/D5) — ordinal
+# position, not numeric value, is what run()'s max_fetch_cost/
+# max_compute_cost filter compares against. Keep in sync with the values
+# StepInfo.fetch_cost/compute_cost actually use.
+_FETCH_COST_ORDER = ["none", "api", "api_heavy", "download"]
+_COMPUTE_COST_ORDER = ["low", "medium", "high"]
+
 
 class SurveyOrchestrator:
     """
@@ -41,6 +48,7 @@ class SurveyOrchestrator:
     def run(
         self, project_slug: str, steps: list[str] | None = None,
         scope_locator: str = "", fast: bool = False,
+        max_fetch_cost: str | None = None, max_compute_cost: str | None = None,
     ) -> SurveyResult:
         """Survey a single project and return the assembled SurveyResult.
 
@@ -62,6 +70,17 @@ class SurveyOrchestrator:
             only to steps whose StepInfo.accepts_fast is True (repo_health
             today, see HealthSurveyor.__init__). False (default) is every
             existing caller's exact prior behavior, unchanged.
+        max_fetch_cost, max_compute_cost : step-cost-tiers plan
+            (docs/step-cost-tiers-plan.md, D5) — optional ceilings on
+            StepInfo.fetch_cost/compute_cost ("none"/"api"/"api_heavy"/
+            "download" and "low"/"medium"/"high" respectively, compared by
+            ordinal position). A step whose cost exceeds either ceiling is
+            excluded from this run, same as if it had been left out of
+            `steps`. Both None (default) applies no filter — every
+            existing caller's exact prior behavior, unchanged. This is
+            deliberately the only new surface this plan adds — no new
+            survey types, no scheduler changes; see the plan's "Out of
+            scope".
         """
         project = self._registry.get(project_slug)
         if project is None:
@@ -101,6 +120,23 @@ class SurveyOrchestrator:
         step_keys_to_run = (
             set(STEP_REGISTRY.keys()) if steps is None else set(steps) & STEP_REGISTRY.keys()
         )
+
+        # D5 cost-tier filter — applied after the steps=[...] selection
+        # above, same set-narrowing shape. Ordinal comparison via
+        # _FETCH_COST_ORDER/_COMPUTE_COST_ORDER's index, not the string
+        # values themselves.
+        if max_fetch_cost is not None:
+            ceiling = _FETCH_COST_ORDER.index(max_fetch_cost)
+            step_keys_to_run = {
+                k for k in step_keys_to_run
+                if _FETCH_COST_ORDER.index(STEP_REGISTRY[k].fetch_cost) <= ceiling
+            }
+        if max_compute_cost is not None:
+            ceiling = _COMPUTE_COST_ORDER.index(max_compute_cost)
+            step_keys_to_run = {
+                k for k in step_keys_to_run
+                if _COMPUTE_COST_ORDER.index(STEP_REGISTRY[k].compute_cost) <= ceiling
+            }
 
         # D6 (docs/unified-survey-execution-model-plan.md): resolve every
         # shared resource any selected step needs, once, before
