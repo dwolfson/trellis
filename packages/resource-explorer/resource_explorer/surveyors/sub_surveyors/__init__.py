@@ -20,6 +20,7 @@ from resource_explorer.surveyors.sub_surveyors.git_statistics import GitStatisti
 from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInventorySurveyor
 from resource_explorer.surveyors.sub_surveyors.homepage import HomepageSurveyor
 from resource_explorer.surveyors.sub_surveyors.symbol_extraction import SymbolExtractionSurveyor
+from resource_explorer.surveyors.sub_surveyors.rag_ingestion import RagIngestionSurveyor
 
 __all__ = [
     "ancestor_folder_paths",
@@ -42,4 +43,5 @@ __all__ = [
     "GitStatisticsSurveyor",
     "HomepageSurveyor",
     "SymbolExtractionSurveyor",
+    "RagIngestionSurveyor",
 ]

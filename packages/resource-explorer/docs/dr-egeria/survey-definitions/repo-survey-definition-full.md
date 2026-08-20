@@ -378,6 +378,25 @@ Surveys file/folder characteristics to recommend which sub-resources are worthy 
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Rag Ingestion
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_rag_ingestion
+
+### Description
+Refreshes the project's pgvector collections via IncrementalIndexer — the queryable representation Chat, the query router and every RAG-backed answer read, previously built only at registration, on webhook or from a bespoke route branch and never by a survey step. A no-op when the repository's last indexed commit is unchanged.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_rag_ingestion |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Full Survey (all steps)
@@ -627,6 +646,18 @@ GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_sub_resource_survey
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_sub_resource_survey
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_rag_ingestion
 
 ### Guard
 Any

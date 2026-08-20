@@ -58,6 +58,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     LanguageSurveyor,
     LicenseClassifierSurveyor,
     MaturitySurveyor,
+    RagIngestionSurveyor,
     RepoConventionsSurveyor,
     SecurityFeaturesSurveyor,
     SecurityHygieneSurveyor,
@@ -335,6 +336,30 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "are worthy of cataloging as their own Egeria assets (Assessment "
         "sub-resource cataloging plan) — survey only, does not catalog.",
         ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    # LAST BY NECESSITY, the mirror image of repo_git_statistics/
+    # repo_file_inventory being first. Those are first because other steps read
+    # what they write; nothing downstream reads what this one writes — pgvector
+    # is consumed by Chat and the query router, not by other survey steps — and
+    # this is by far the most expensive operation in the set. Since this dict's
+    # order is also "Full Survey (all steps)" order (the "*" sentinel in
+    # repo_survey_types.csv), putting it anywhere but last would delay every
+    # cheap signal a survey exists to produce.
+    #
+    # No requires_resources on purpose: IncrementalIndexer downloads its own
+    # zipball only when there are changed files, so declaring the shared
+    # zipball_root would force a download on every run including the common
+    # no-op case. The resource-sharing win doesn't apply to a step whose common
+    # case is fetching nothing at all.
+    "repo_rag_ingestion": StepInfo(
+        "repo_rag_ingestion", RagIngestionSurveyor,
+        "Refreshes the project's pgvector collections via IncrementalIndexer — "
+        "the queryable representation Chat, the query router and every "
+        "RAG-backed answer read, previously built only at registration, on "
+        "webhook or from a bespoke route branch and never by a survey step. "
+        "A no-op when the repository's last indexed commit is unchanged.",
+        ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
     ),
 }
@@ -691,6 +716,29 @@ def _symbol_extraction_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _rag_ingestion_results(registry, slug: str) -> dict:
+    """Live-ish snapshot of what is in pgvector for this project, as recorded
+    by the last repo_rag_ingestion run. Reads the persisted metric rather than
+    counting the vector store again here: the results route runs per page load,
+    and RagIngestionSurveyor already reads the store's live counts at survey
+    time — the number a user wants is "what does my chat index contain as of
+    the last time anything checked", not a per-request count query."""
+    m = registry.query_metrics(slug, "rag_ingestion")
+    return {
+        "total_chunks": m.get("total_chunks", 0),
+        "collections": m.get("collections", 0),
+        "by_collection": (m.get("detail") or {}).get("by_collection", {}),
+        "surveyed_at": m.get("surveyed_at", ""),
+    }
+
+
+def _rag_ingestion_trend(registry, slug: str) -> list[dict]:
+    return [
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "rag_ingestion", "total_chunks")
+    ]
+
+
 def _generic_findings_headline(results: dict, *, noun: str = "check") -> dict | None:
     """Survey Results dashboard, Tier 1 (docs/survey-results-dashboard-plan.md
     D5) — generic headline compression for any findings_list-shaped results
@@ -811,6 +859,19 @@ def _symbol_extraction_headline(registry, slug: str) -> dict | None:
     if not result.get("symbol_count"):
         return None
     return {"label": f"{result['symbol_count']} symbol(s) extracted", "status": "info"}
+
+
+def _rag_ingestion_headline(registry, slug: str) -> dict | None:
+    result = _rag_ingestion_results(registry, slug)
+    total = result.get("total_chunks") or 0
+    if not total:
+        # "gap", not None: unlike the other kinds, an empty result here is a
+        # real finding — nothing is indexed, so Chat has nothing to answer from.
+        return {"label": "Nothing indexed for chat", "status": "gap"}
+    return {
+        "label": f"{total} chunk(s) across {result.get('collections', 0)} collection(s)",
+        "status": "ok",
+    }
 
 
 def _file_classification_headline(registry, slug: str) -> dict | None:
@@ -971,6 +1032,20 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # (see repo_symbol_extraction's StepInfo docstring for the bug this
     # closes). Kept separate from "api_structure" rather than bundled into
     # it — see that AnalysisKind's own comment for why.
+    # The fourth instance of the "a table everything reads that nothing writes"
+    # pattern, and the largest. Note D5: this does NOT replace the
+    # action=="ingest" branches in scheduler.py and web/routes/projects.py —
+    # existing schedules reference rag_ingestion by analysis id and the Analysis
+    # card's Run button uses that route, so both keep working unchanged. This
+    # adds the survey-step path and the results view; retiring the branches is a
+    # separate follow-up.
+    "rag_ingestion": AnalysisKind(
+        "rag_ingestion", ["repo_rag_ingestion"],
+        results=AnalysisKindResults(
+            _rag_ingestion_results, _rag_ingestion_trend, "metrics",
+            headline_reader=_rag_ingestion_headline,
+        ),
+    ),
     "code_symbol_extraction": AnalysisKind(
         "code_symbol_extraction", ["repo_symbol_extraction"],
         results=AnalysisKindResults(

@@ -51,7 +51,7 @@ def test_all_step_keys_are_registered():
         "repo_api_structure", "repo_data_profiling", "repo_file_classification",
         "repo_sub_resource_survey", "repo_license_classification",
         "repo_security_features", "repo_ci_quality", "repo_maturity",
-        "repo_conventions", "repo_symbol_extraction",
+        "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
     }
 
 
@@ -71,6 +71,26 @@ def test_file_inventory_runs_before_every_step_that_reads_the_inventory():
     idx = order.index("repo_file_inventory")
     for r in readers:
         assert idx < order.index(r), f"repo_file_inventory must precede {r}"
+
+
+def test_rag_ingestion_runs_last():
+    """The mirror of the two ordering tests above. STEP_REGISTRY order is "Full
+    Survey (all steps)" order, and repo_rag_ingestion is both the most expensive
+    step in the set and the only one nothing downstream reads (pgvector is read
+    by Chat and the query router, not by other steps) — so it must never delay
+    the cheap signals a survey exists to produce."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    assert list(STEP_REGISTRY)[-1] == "repo_rag_ingestion"
+
+
+def test_rag_ingestion_declares_no_shared_resource():
+    """Deliberate divergence from repo_file_inventory/repo_symbol_extraction:
+    IncrementalIndexer downloads a zipball only when there are changed files, so
+    declaring zipball_root would make the common no-op case pay for a download."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    assert STEP_REGISTRY["repo_rag_ingestion"].requires_resources == {}
 
 
 def test_file_inventory_declares_the_shared_zipball_resource():
