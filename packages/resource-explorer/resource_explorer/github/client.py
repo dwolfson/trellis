@@ -178,6 +178,121 @@ class GitHubClient:
 
         return _cm()
 
+    def clone_git_root(
+        self,
+        repo: Repository,
+        dest_dir: "Path",
+        shallow_since: str | None = None,
+    ) -> "Path":
+        """
+        Clone `repo` into `dest_dir` as a **treeless** (`--filter=blob:none`)
+        checkout and return the clone root. History is complete unless
+        `shallow_since` bounds it; file *contents* are fetched from the
+        remote lazily, on demand, rather than up front.
+
+        This exists for co-change coupling (design §5.7 gap 2): a zipball
+        (see download_zipball above) has no `.git` at all, and a shallow
+        clone (`--depth`) truncates exactly the history co-change needs —
+        neither works. Treeless is the one clone mode that is both
+        affordable and history-complete: a full non-treeless clone of a
+        large repo is the single largest cost this feature could incur.
+
+        `--no-checkout` on top of `--filter=blob:none` is not optional: a
+        normal clone checks out HEAD's working tree, which under a treeless
+        filter means fetching every blob in HEAD's tree from the promisor
+        remote during clone — silently paying for the exact thing
+        `--filter=blob:none` exists to avoid. Without a working tree, the
+        yielded root has `.git` and full commit/tree/rename metadata but no
+        checked-out files; that's the right shape for `git log --name-only`
+        (walks commit/tree objects, never a blob) and wrong for anything
+        that wants to read file contents. Only `cochange.py` consumes this
+        provider today, and it only ever runs `git log --name-only` — so
+        the pairing is sound. It is worth restating for whoever adds the
+        next consumer: reading file contents out of this root will trigger
+        a blob fetch per file touched and erode the whole point of
+        treeless.
+
+        Auth mirrors download_zipball(): the same `GITHUB_TOKEN`
+        (`cfg.token`), via `GIT_CONFIG_*` env vars rather than embedding the
+        token in the clone URL or passing it as a CLI arg — either of those
+        would leave it readable in this process's argv (e.g. to `ps`) or in
+        a `.git/config` file inside the tempdir. `http.extraHeader` is the
+        same "Authorization: token …" shape download_zipball() sends as an
+        HTTP header, just handed to git via its config-from-env mechanism
+        instead of httpx/requests.
+
+        Time-bound: `cfg.clone_timeout_seconds` (default 300s, same knob
+        download_zipball() uses) via subprocess timeout — a hung clone must
+        fail the survey step, not wedge it.
+        """
+        import os
+        import subprocess
+
+        cfg = get_config().github
+        args = [
+            "git", "clone",
+            "--filter=blob:none",
+            "--no-checkout",
+        ]
+        if shallow_since:
+            args.append(f"--shallow-since={shallow_since}")
+        if not cfg.ssl_verify:
+            args += ["-c", "http.sslVerify=false"]
+        args += [repo.clone_url, str(dest_dir)]
+
+        env = dict(os.environ)
+        if cfg.token:
+            # GIT_CONFIG_COUNT/_KEY_N/_VALUE_N is git's documented way to
+            # inject config without a CLI arg or an on-disk file — see
+            # git-config(1) "ENVIRONMENT". base64 per RFC 7617's Basic
+            # scheme; "x-access-token" is the user GitHub expects a PAT to
+            # authenticate as.
+            import base64
+            basic = base64.b64encode(f"x-access-token:{cfg.token}".encode()).decode()
+            env["GIT_CONFIG_COUNT"] = "1"
+            env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
+            env["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {basic}"
+        env["GIT_TERMINAL_PROMPT"] = "0"  # never hang waiting for a password prompt
+
+        try:
+            proc = subprocess.run(
+                args, capture_output=True, env=env,
+                timeout=cfg.clone_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"git clone of {repo.full_name} timed out after "
+                f"{cfg.clone_timeout_seconds}s"
+            ) from exc
+
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", "replace")
+            raise RuntimeError(f"git clone of {repo.full_name} failed: {stderr}")
+
+        return dest_dir
+
+    def git_clone_root(self, repo: Repository, shallow_since: str | None = None):
+        """Context manager: treeless-clone `repo` into a fresh tempdir and
+        yield the clone root. Mirrors zipball_root() above — same
+        tempfile.TemporaryDirectory() lifetime pattern, same "one shared
+        implementation, callers wrap it" role for
+        repo_survey_definition_adapter.py's _acquire_git_clone_root (D6's
+        resolve_resources mechanism). See clone_git_root()'s docstring for
+        why this is treeless+no-checkout rather than shallow or a full
+        clone.
+        """
+        import tempfile
+        from contextlib import contextmanager
+        from pathlib import Path
+
+        @contextmanager
+        def _cm():
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "repo"
+                yield self.clone_git_root(repo, dest, shallow_since=shallow_since)
+
+        return _cm()
+
     def list_files(self, repo: Repository, path: str = "", recursive: bool = True) -> list[str]:
         """Return all file paths via git tree. Handles large repos where the recursive tree is truncated."""
         try:
