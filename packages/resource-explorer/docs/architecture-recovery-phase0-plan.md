@@ -8,6 +8,13 @@ Nothing else.
 
 ---
 
+> **PHASE 0 IS COMPLETE — verdict: QUALIFIED PASS.**
+> Results, the eighteen design corrections, and the changes to Phase 1 are in
+> **`architecture-recovery-phase0-findings.md`**. This plan is kept as the record of what was
+> intended, including where the intent turned out to be wrong: §5's scoring model needed a
+> second measure, §3's target characterisation was rewritten once, and §6's cost measurement
+> named two tools that are no longer in the toolchain.
+
 ## 0. Three corrections to the parent design, found while planning this
 
 All three were discovered by checking the code and repos rather than assuming, and all three change the
