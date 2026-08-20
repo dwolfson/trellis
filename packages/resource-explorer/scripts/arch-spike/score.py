@@ -169,6 +169,24 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
         return bool(file_assignment({comp["name"]: comp["files"]}, root, tracked))
 
     scoped_components = [c for c in ir["components"] if in_scope(c)] if root else ir["components"]
+
+    # Perspective filtering — plan §5a, and the correction behind findings 15/16:
+    # a Dockerfile-directory component (physical — an implementation artifact)
+    # and the compose-service component it builds (deployment — a running
+    # container) are NOT the same thing counted twice; they are two
+    # perspectives on one system, related one-to-many by ImplementedBy (design
+    # §3.6, §4.2 "map, never merge"). Comparing a `deployment` ground truth
+    # against `physical` detector output was scoring the wrong axis, which is
+    # what made PyegeriaWebHandler read as spurious. For a genuinely scoreable
+    # perspective (deployment/physical/dev), only same-perspective components
+    # are eligible. For a `logical` ground truth (diagnostic_only) NO detector
+    # in this slice targets that perspective at all, so filtering strictly
+    # would make the comparison vacuous — plan §5a wants it computed anyway,
+    # cross-perspective, purely as a distillation-baseline diagnostic. Hence
+    # the filter applies only outside the diagnostic case.
+    if not diagnostic_only:
+        scoped_components = [c for c in scoped_components if c.get("perspective") == perspective]
+
     det_names_all = {c["name"] for c in scoped_components}
     det_files_by_name = {c["name"]: c["files"] for c in scoped_components if c["files"]}
     det_file_map = file_assignment(det_files_by_name, root, tracked) if root and tracked is not None else {}

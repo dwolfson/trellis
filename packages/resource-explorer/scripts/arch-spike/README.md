@@ -182,3 +182,48 @@ duplicate and give the compose-named component its files — making T1 **partial
 file-scoreable** for the first time — and is exactly the code-versus-deployment
 reconciliation plan §3 T1 item 2 exists to test. Currently that test fails.
 
+**15. The first proposed fix for finding 14 (merge on `build.context`) was wrong, and the
+regression it caused is what proved it.** Implemented as a straight merge — join, rename
+to `container_name`, drop the duplicate — it dropped T1 recall from 0.78 to **0.48**
+(13/27), not an improvement. Root cause: the join assumed one build context maps to one
+deployed component. It does not, and not marginally — `compose-configs/egeria-quickstart`
+is the build context for **7** services, `airflow-marquez`'s compose file backs **9**
+containers from one image family. Even narrowing the join key to `(context, dockerfile)`
+— there are 5 different Dockerfiles under the quickstart context — leaves 3 of 14 keys
+still colliding: `Dockerfile-apache-web` and `Dockerfile-jupyter` are each shared by
+**FreshStart reusing QuickStart's build context** (a real, previously undocumented
+cross-solution build-sharing fact, not a detector artifact), and one airflow key backs
+all 8 airflow containers. **No join key makes this 1:1** — build unit → deployed
+component is one-to-many, the norm in compose rather than an edge case, and a
+merge-based fix would have papered over real architecture instead of modelling it.
+Reverted rather than patched with a same-context-collision guard, since a guard that
+skips colliding joins just declines to model the common case.
+
+**16. The actual correction: finding 14's "duplicate" was a perspective conflation, not a
+bug.** `PyegeriaWebHandler` (a source directory with a Dockerfile) and
+`quickstart-pyegeria-web` (a running container) are not the same component counted
+twice — they are the **physical** and **deployment** perspectives (design §4.1) on the
+same system, related one-to-many by `ImplementedBy` (§3.6), and §4.2 says explicitly to
+**map, never merge** across perspectives. The fix that holds: tag every `Component` with
+its perspective (`ir.py`, defaults `physical`; compose-service-derived components are
+tagged `deployment`) and have `score.py` compare only same-perspective components against
+a ground truth's declared `Perspective:` — the same rule already applied at file level
+(finding 12's `Scope:` handling), now applied per component. The `logical`-perspective
+(T2, diagnostic-only) comparison deliberately keeps comparing across all perspectives,
+since plan §5a wants that cross-perspective number computed as a distillation baseline,
+not scored.
+
+**17. Perspective filtering's effect on T1 was bigger than expected, and the extra
+recall drop is a genuine finding, not a bug to chase back to 21/27.** Precision holds
+essentially flat (0.313 → 0.310), but recall drops further than the PyegeriaWebHandler
+fix alone predicts — **0.78 → 0.67** (21/27 → 18/27), because `airflow-marquez`,
+`duckdb` and `unity-catalog` were *also* cross-perspective coincidences: each is a
+Dockerfile-derived (`physical`) component whose name happens to equal the ground
+truth's deployment-perspective name for that whole add-on **bundle** — nothing in the
+compose layer emits a service or container literally called `airflow-marquez`. Correctly
+excluding them from the deployment comparison is the same rule, just less visible than
+PyegeriaWebHandler because the name coincidence hid it. Open question for the write-up,
+not resolved here: whether an add-on-root Dockerfile like this should also carry a
+`deployment` tag alongside `physical`, since the add-on genuinely *is* deployed as a
+bundle even though no single compose service shares its name.
+

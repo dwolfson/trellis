@@ -345,7 +345,7 @@ different Egeria homes, and radically different availability.
 | Perspective | Question it answers | Derived from | Egeria home | Vocabulary | Available |
 |---|---|---|---|---|---|
 | **Physical** | what is on disk | file tree, manifests, imports | Area 0/4 | 0280 Software Development Assets (`SourceCodeFile`, `ScriptFile`) | **always** |
-| **Deployment** | what runs | Dockerfile, compose, entry points | Area 0 | `SoftwareCapability` subtypes — `Application`, `APIManager`, `EventBroker`, `AnalyticsEngine`, … | only where artifacts exist |
+| **Deployment specification** | what the repo *says* should run | Dockerfile, compose, entry points | **Area 7** + `plannedDeployedImplementationType` | Egeria technology types (`Apache Kafka Server`, `PostgreSQL Database Server`) | only where artifacts exist |
 | **Logical** | what the software *is* | cohesion, naming, docs, judgement | **Area 7** | `SolutionComponentType` (13, closed) | needs inference or a human |
 | **Dev / DevOps** | how it is built, tested, released | CI config, build files, test trees | Area 0 0280 + `SourceControlLibrary`; pipelines have **no good type** | weakest of the four | usually |
 
@@ -363,6 +363,52 @@ The same effect shows up in the type vocabularies. Asked to classify RE's front 
 picked `Application` — which is not one of the 13 `SolutionComponentType` values but *is* a
 `SoftwareCapability` subtype. That is not a mistake; it is classifying in the deployment perspective
 when the logical one was asked for. Four perspectives, three vocabularies, and no signposting.
+
+### 4.1a Specification, not deployment — the correction that renames a perspective
+
+An earlier draft called the second perspective **Deployment** and mapped it to Area 0's
+`SoftwareServer`, `DeployedSoftwareComponent` and `DeployedOn`. **That was wrong, and wrong in a way
+that would have put fiction into the catalog.**
+
+A repository contains no deployed container. It contains a *description* of a container — a compose
+service definition and a Dockerfile — and the compose file that would start one. `quickstart-pyegeria-web`
+is not a running thing this analysis observed; it is a name the repo declares for a container that
+may never have been started anywhere.
+
+Area 0's `ITInfrastructure` hierarchy is explicitly *"hardware and base software that supports an IT
+system"* — actual infrastructure. Writing `SoftwareServer` from static repo analysis asserts that a
+server exists. **`ContentStatus = Draft` does not repair this**: Draft means "content is incomplete",
+not "this element may not correspond to anything real". A governance catalog that cannot distinguish
+a running server from a YAML file describing one is worse than one that stays quiet.
+
+**Egeria already models the distinction.** From `OpenMetadataProperty.java`:
+
+| Property | Meaning | Where |
+|---|---|---|
+| `deployedImplementationType` (:249) | *"Name of a particular type of technology"* — e.g. `PostgreSQL Database Server`. Asserts what a real asset **is**. | actual assets / infrastructure |
+| **`plannedDeployedImplementationType`** (:2504) | *"The type of software component that is **likely** to serve as an implementation for this solution component."* | **`SolutionComponent`** — Area 7 |
+
+That second property is precisely this feature's output: a design element that names the technology
+*likely* to implement it, without claiming an instance exists. Note Egeria's own wording — "likely".
+
+**Revised mapping.** What a compose file yields is:
+
+- a **`SolutionComponent`** (Area 7 design) — safe, asserts no infrastructure;
+- carrying **`plannedDeployedImplementationType`** for the technology (`Apache Kafka Server`, …);
+- with `solutionComponentType` from the closed 13;
+- evidenced by **real Area 0 assets** — the compose file and Dockerfile genuinely exist and are
+  properly catalogued as 0280 `YAMLFile` / `BuildInstructionFile`.
+
+**Area 0's deployment types stay out of scope for this feature entirely.** They are populated by an
+integration connector surveying a live environment, which is a different activity with a different
+evidence base. If RE ever wants them, it must observe a running system, not read a repo.
+
+Consequence for §4.2's vocabulary table: the `SoftwareCapability` subtypes (`Application`,
+`EventBroker`, …) describe *deployed* capabilities and are therefore also unsafe as entity types
+here. Their content survives as the technology-type **string** in
+`plannedDeployedImplementationType` — which is the same vocabulary RE already consumes via
+`find_technology_types` and `technology_type_processes.yaml`, so this is familiar ground rather than
+a new dependency.
 
 ### 4.2 Do not merge the vocabularies — map them
 

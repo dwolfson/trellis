@@ -75,6 +75,14 @@ class Component:
     confidence: int = 50
     confidence_level: str = "Derived"
     blueprint: str = ""                                  # solution deployment (§8.2b)
+    # design §4.1 — physical/deployment/logical/dev. NOT interchangeable, and a
+    # component is only ever comparable to ground truth in its own perspective
+    # (plan §5a). Finding 15/16: a Dockerfile-directory component and the
+    # compose-service component it builds are not duplicates of one thing —
+    # they are physical and deployment readings of the same system, related
+    # one-to-many by ImplementedBy (§3.6, §4.2 "map, never merge"), so scoring
+    # must keep them apart rather than reconcile them into one.
+    perspective: str = "physical"
 
     def __post_init__(self) -> None:
         if self.type is not None and self.type not in COMPONENT_TYPES:

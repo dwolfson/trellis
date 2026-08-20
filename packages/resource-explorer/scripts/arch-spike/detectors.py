@@ -410,6 +410,11 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
                 slug=slug, name=name, type="Third Party Process",
                 identity=Identity("deployment-unit", name, unit),
                 files=[], confidence=75 if named else 65, confidence_level="Derived",
+                # deployment perspective (§4.1) — a running container, not a
+                # source directory. See ir.py's Component.perspective docstring
+                # for why this is tagged rather than reconciled with the
+                # Dockerfile/manifest components below, which stay `physical`.
+                perspective="deployment",
             ))
             evidence.append(Evidence(
                 subject_kind="component", subject_slug=slug,
