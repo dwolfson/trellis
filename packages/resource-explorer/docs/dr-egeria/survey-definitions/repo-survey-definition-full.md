@@ -1,6 +1,6 @@
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Git Statistics
+Full Survey (all steps) — Repo Git Statistics
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_git_statistics
@@ -19,7 +19,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo File Inventory
+Full Survey (all steps) — Repo File Inventory
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_file_inventory
@@ -38,7 +38,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo File Structure
+Full Survey (all steps) — Repo File Structure
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_file_structure
@@ -57,7 +57,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo File Size
+Full Survey (all steps) — Repo File Size
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_file_size
@@ -76,7 +76,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Language
+Full Survey (all steps) — Repo Language
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_language
@@ -95,7 +95,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Health
+Full Survey (all steps) — Repo Health
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_health
@@ -114,7 +114,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Homepage
+Full Survey (all steps) — Repo Homepage
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_homepage
@@ -133,7 +133,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Dependency
+Full Survey (all steps) — Repo Dependency
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_dependency
@@ -152,7 +152,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Documentation
+Full Survey (all steps) — Repo Documentation
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_documentation
@@ -171,7 +171,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Security
+Full Survey (all steps) — Repo Security
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_security
@@ -190,7 +190,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo License Classification
+Full Survey (all steps) — Repo License Classification
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_license_classification
@@ -209,7 +209,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Security Features
+Full Survey (all steps) — Repo Security Features
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_security_features
@@ -228,7 +228,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Ci Quality
+Full Survey (all steps) — Repo Ci Quality
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_ci_quality
@@ -247,7 +247,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Maturity
+Full Survey (all steps) — Repo Maturity
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_maturity
@@ -266,7 +266,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Conventions
+Full Survey (all steps) — Repo Conventions
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_conventions
@@ -285,7 +285,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Api Structure
+Full Survey (all steps) — Repo Api Structure
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_api_structure
@@ -304,7 +304,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Data Profiling
+Full Survey (all steps) — Repo Data Profiling
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_data_profiling
@@ -323,7 +323,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo File Classification
+Full Survey (all steps) — Repo File Classification
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_file_classification
@@ -342,7 +342,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Symbol Extraction
+Full Survey (all steps) — Repo Symbol Extraction
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
@@ -361,7 +361,7 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Scouting - Full Survey — Repo Sub Resource Survey
+Full Survey (all steps) — Repo Sub Resource Survey
 
 ### Qualified Name
 GovActionProcessStep::RepoFullSurvey::repo_sub_resource_survey
@@ -380,13 +380,13 @@ ___
 
 ## Create Governance Action Process
 ### Display Name
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Qualified Name
 GovActionProcess::RepoFullSurvey
 
 ### Description
-Every current Resource Explorer repo analysis step, chained into one Survey Definition — the comprehensive bundle for an already-tracked repo, not Discovery's launch target. Regenerated by scripts/generate_repo_survey_definition.py from repo_survey_definition_adapter.py's STEP_REGISTRY, the single source of truth for what RE can actually run against a Git repository. Renamed from 'Repo Full Survey' (per direct request, following the 'Scouting - Full Survey' naming convention) — qualified_name unchanged, in-place rename of the existing element.
+Every current Resource Explorer repo analysis step, chained into one Survey Definition — the comprehensive bundle for an already-tracked repo, not Discovery's launch target. Regenerated by scripts/generate_repo_survey_definition.py from repo_survey_definition_adapter.py's STEP_REGISTRY, the single source of truth for what RE can actually run against a Git repository. Named 'Full Survey (all steps)' — deliberately NOT 'Scouting - ...', which it was briefly called: this is an automate_full bundle, and the Scouting prefix made it read as a Scouting-tier survey, which is how running it from Scouting came to deposit Assessment-tier results that rendered as Scouting Results cards. Scouting's own run-everything option is 'Scouting Survey'. qualified_name has never changed across either rename, so both were in-place updates of the same element. Scales poorly by construction: as repo survey steps grow into the dozens, some of them expensive, 'run every step' stops being a sensible default and this becomes a deliberate, scheduled choice rather than a convenient one.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -635,7 +635,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Is this repository actively maintained?
@@ -644,7 +644,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Who maintains this repository?
@@ -653,7 +653,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 How widely adopted and active is the community around this repository?
@@ -662,7 +662,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 How is it supported?
@@ -671,7 +671,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 What dependencies does this require?
@@ -680,7 +680,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 How well documented is it?
@@ -689,7 +689,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Does it fit into our security infrastructure?
@@ -698,7 +698,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Is there a current, published, security analysis?
@@ -707,7 +707,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 What explicit license does the repository use, and are there non-standard or copyleft terms?
@@ -716,7 +716,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Is there a validation / deployment test for it?
@@ -725,7 +725,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 How mature is it?
@@ -734,7 +734,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 What deployment styles does this support?
@@ -743,7 +743,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Does the repository publish a clear process for reporting security vulnerabilities?
@@ -752,7 +752,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Does the repository have automated build tooling in place?
@@ -761,7 +761,7 @@ ___
 
 ## Link Element To Scope
 ### Target Element
-Scouting - Full Survey
+Full Survey (all steps)
 
 ### Scope Reference
 Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
