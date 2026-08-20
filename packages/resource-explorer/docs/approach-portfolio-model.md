@@ -152,6 +152,88 @@ to see that trade and decline it.
 
 ---
 
+## 5a. RFA is the wrong shape for most of this — the channel is a conversation
+
+§5 above framed the human channel as RFA. **That is too narrow, and narrow in a way that matters.**
+
+RFA is one-directional, ticket-shaped and asynchronous: the system asks, the human answers later,
+one question at a time. That is the right shape for *findings* — "this component has bus factor
+1, someone should look". It is the wrong shape for **triage and refinement**, which is what
+selecting among approaches actually requires.
+
+RE already has the better channel and it is not being used for this: the chat panel, the agent
+layer, and one or more LLMs.
+
+### What a conversation gives that a ticket cannot
+
+- **Bidirectionality.** The human wants to ask *why* before deciding whether a boundary is right.
+  §5.4's evidence model — file, line, detector, excerpt, per claim — was built for exactly that
+  question and **has no interactive consumer today**. A form field cannot answer "what made you
+  think this?"; an agent over the evidence table can.
+- **Iteration inside one context.** Architecture recovery is propose → correct → re-derive →
+  propose again. A ticket queue serialises that into round-trips measured in days.
+- **Correcting premises, not just outputs.** This is the difference that matters. A queue surfaces
+  *findings*; a conversation surfaces *wrong assumptions*, and those are worth more.
+
+### The worked example is this project
+
+Phase 0 produced eighteen corrections to a design that had been reviewed twice. The ones that
+changed the model all came from conversational turns in which the maintainer questioned a premise:
+
+| What was said | What it changed |
+|---|---|
+| *"the container is not really there — just the description of it"* | §4.1a: deployment became a **specification** perspective; Area 0 infrastructure types ruled out of scope |
+| *"two components that share 90% of their code"* | §8.2: identity precedence reordered, deployment unit ahead of package name |
+| *"I was looking a bit coarser"* | §4.3's how-far-down question, and §2's sufficiency-per-stage reframe |
+
+**No ticket would have carried any of them.** None is a finding about a result; each is a
+correction to what the system believed it was doing.
+
+### The architectural caution
+
+**The session is the interface. It is not the system of record.**
+
+A conversation is ephemeral; the curation overlay (§7.2) is durable and is what makes
+re-derivation safe. Every decision taken in chat must land in the overlay keyed by stable
+qualified name — otherwise the next run discards it, which is precisely the failure §7.2 exists to
+prevent. Get this wrong and the result is a pleasant interface that forgets everything, which is
+worse than a ticket queue that remembers.
+
+The same applies to the *reasons*. "These are two components because they are separate
+deployments" is more durable than the decision alone: it is the rule that answers the next twenty
+cases, and it belongs in the record.
+
+### Two consequences worth naming
+
+**An LLM is an approach in the portfolio, not a separate category.** If it proposes boundaries, it
+is evaluated by §3's outcome record and retired by §6's rule exactly like coupling or code
+markers. "Maybe multiple" is genuinely useful here: a second model as an independent **second
+opinion** on a low-confidence boundary is a portfolio member whose entire value is disagreeing
+with the first, and disagreement is a signal the current design has no other way to generate.
+
+**Agents that ask are a different shape from agents that answer.** §6.5 designed `AnnotationAgent`
+and `ArchitectureAgent` to answer questions about results. Asking requires an agent to know its
+own uncertainty and to present competing readings with the evidence for each. That is available —
+confidence and evidence are first-class (§5.4, §3.3b) — but it is a different prompt, a different
+surface, and it should be designed rather than assumed to fall out.
+
+### Scale — this is a tier, not a replacement
+
+An interactive session does not survive 200 repos, so this is not conversation *instead of* RFA.
+It is the funnel again, applied to human attention:
+
+| Channel | Cost | Use for |
+|---|---|---|
+| **Fully automatic** | none | everything, always; record confidence and move on |
+| **RFA / batch** | low, async | findings; disambiguations that can wait; breadth |
+| **Interactive session** | high, synchronous | depth on repos that earn it; premise correction; portfolio triage |
+
+Reserve the session for what earns it — a flagship repo, a recurring disagreement across many
+repos, or a result the funnel says is not yet good enough for its stage (§2). Everything else
+stays automatic or async, with confidence shown.
+
+---
+
 ## 6. Bounding it — the risk
 
 **A portfolio with an evaluation harness is exactly the shape of a research project that never
@@ -186,14 +268,17 @@ Deliberately listed, because the amount of new machinery is smaller than the ide
 | catalogue of approaches with cost/tier | `configdata/analysis_catalog.yaml`, §5.6 cost tiers |
 | record an approach outcome | `project_analysis_findings` / `_metrics` (generic, `scope_locator`-keyed) |
 | query outcomes | `AnnotationAgent` (§6.5c) — free, because the tables are uniform |
-| ask a human | `rfa_actions` + the RFA drawer (§7.3) |
+| ask a human, async | `rfa_actions` + the RFA drawer (§7.3) |
+| ask a human, interactive | the chat panel + `agents/` — exists, unused for this (§5a) |
+| interrogate a proposal's reasoning | `project_analysis_findings` evidence rows (§5.4) — exists, **no consumer** |
 | record the answer durably | the curation overlay (§7.2) |
 | repo characteristics for selection | Scouting-tier analyses, already collected |
 | evaluate a partition | `score.py` / `coupling.py` from Phase 0 |
 | stage semantics for sufficiency | the eight intents, already canonical |
 
 **Genuinely new:** an approach *identity* and its outcome vocabulary; the sufficiency-per-stage
-thresholds; the selection lookup; and the retirement rule.
+thresholds; the selection lookup; the retirement rule; and an agent that **asks** rather than
+answers (§5a).
 
 ---
 
