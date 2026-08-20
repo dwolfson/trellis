@@ -24,12 +24,20 @@ python3 exclusion.py /path/to/checkout --json          # census only
 | `ir.py` | the Architecture IR (design §5.3) + evidence records (§5.4) |
 | `detectors.py` | manifest, deployment-unit, and compose detectors (§5.1) |
 | `detect.py` | CLI: exclusion → detect → IR |
+| `score.py` | detector IR × ground truth → component-set + file-partition scores (plan §5, §5a) |
 | `rules/` | ast-grep rules — **not yet populated** |
 
 ## Status
 
-Built: exclusion, IR, manifest/Dockerfile/compose detectors.
-Not built: ast-grep code markers, `imports.py`, `cochange.py`, `score.py`.
+Built: exclusion, IR, manifest/Dockerfile/compose detectors, scoring.
+Not built: ast-grep code markers, `imports.py`, `cochange.py`.
+
+## Running the scorer
+
+```bash
+python3 score.py trellis                # logical GT — diagnostic only, see finding 13
+python3 score.py egeria-workspaces      # deployment GT — the scoreable T1 result
+```
 
 ## Findings so far
 
@@ -113,3 +121,85 @@ pass under-reports; services must be merged across every file in a deployment un
 deliberately not expanded into components in this slice (plan §3, T3 — the question is
 shape, not leaves). Worth noting the count differs from the 254 `include` lines counted
 by grep during planning: 231 is after deduplication and comment-stripping.
+
+**12. `score.py` reuses `validate.py`'s parser rather than writing a second one, and had
+to extend it slightly.** The original `parse()` only captured `type`/`files`/`identity`/
+`notes` off a component's bullets; `Provenance:` (needed for the maintainer/all tier
+split, README.md "Provenance") and per-component `Perspective:` were silently dropped.
+Changed to capture any bullet label generically into the component dict rather than
+whitelisting a fourth and fifth name — `validate.py`'s own type/files checks are
+unaffected, and any future field (e.g. a Q11 sibling-annotation-style tag) is captured
+for free. Re-ran `validate.py` against all three fixtures after the change; same
+component/blueprint counts, same coverage percentages.
+
+**13. T2 (trellis, logical GT) confirms the cross-perspective warning is not academic.**
+`score.py` reports it as `[DIAGNOSTIC ONLY]` per plan §5a rather than a score, and the
+numbers show why that label matters: 2/13 components matched (`resource-explorer`,
+`resource-explorer-frontend-build` — trivial manifest-name hits), ARI=0.08. This is not
+new information — finding 6 already predicted the qualified-pass outcome — but it is the
+first time it is a *falsifiable number* rather than a description. The comparison stays
+useful as a distillation baseline (design §4.1's stated purpose for it), just not as a
+pass/fail input.
+
+**14. T1 (egeria-workspaces, deployment GT) component-set: 21/27 matched, recall 0.78 —
+the real scoreable Phase 0 measure, and the first one.** All 6 misses are optional
+add-on *directories* (`dagster`, `milvus`, `mlflow`, `prefect`, `superset-compose`,
+`deltalake-spark`) that never mint a top-level component. Root cause, found by reading
+`build_components()`: a directory-level component only fires when the directory *itself*
+contains a Dockerfile (as `airflow-marquez`, `duckdb`, `unity-catalog` do — all three
+matched). The other six declare their containers entirely inside nested compose files
+with no Dockerfile at the add-on root, so nothing in the current detector logic
+addresses that directory as a unit at all. Not fixed here — it is a real Phase 1 gap in
+the deployment-unit detector, not a scoring bug, and belongs in the write-up (plan §7.4)
+rather than a quiet patch to a throwaway spike.
+
+**15. Most of T1's 46 "spurious" detector components are a ground-truth granularity gap,
+not false positives.** They are the individual per-service containers inside each add-on
+(`dagster::egeria-optional-dagster-user-code`, `unity-catalog::uc_server2`, …) — exactly
+what `egeria-workspaces.md`'s own add-on section says it left out ("individual container
+names are not yet enumerated"). Precision computed against a GT that stops at the
+directory level for add-ons is not a meaningful number until the fixture is extended to
+per-container detail (a fixture change, which per README.md rule 3 belongs in a new
+`egeria-workspaces-revised.md`, not an edit to the pre-registered file) — recorded here
+so the low precision figure (0.31) is not misread as a detector defect.
+
+**12. First real scores — and the headline is a *granularity* mismatch, not a detection failure.**
+`score.py` against the pre-registered ground truth:
+
+| | component-set | file-partition |
+|---|---|---|
+| **T1** `egeria-workspaces` (deployment) | 21/27 matched, recall **0.78**, precision **0.31** | N/A — 25 of 27 components own no first-party files |
+| **T2** `trellis` (logical) | 0/11 maintainer-tier | ARI 0.08 / NMI 0.30 over 192 files — **DIAGNOSTIC ONLY** |
+
+Recall 0.78 with precision 0.31 is one finding, not two: the detector emits **67** components where
+ground truth has 27, and almost every extra is a *sub-service of an optional add-on* —
+`airflow-apiserver`, `airflow-scheduler`, `airflow-worker`, `dl-hive-metastore`, `dl-minio`, and so
+on. The maintainer named each add-on as **one** component (`airflow-marquez`); the detector
+enumerated its individual compose services. The six "missed" add-ons (`dagster`, `milvus`, `mlflow`,
+`prefect`, `superset-compose`, `deltalake-spark`) are the same effect seen from the other side —
+found, but under their service names rather than the add-on's.
+
+So detector and human agree on *what exists* and disagree on *how far down to go* — design doc
+§4.3's "how far down" question, arriving as a measurement rather than a discussion. Worth noting it
+is the **add-on tier** (§8.2b) where this bites, and not the solution tier, which matched cleanly.
+
+**13. The same component is emitted twice, under two names — the reconciliation test failing.**
+`PyegeriaWebHandler` (from the Dockerfile-directory detector, *has files, no container name*) and
+`quickstart-pyegeria-web` (from the compose detector, *has the container name, no files*) are the
+same thing. Two detectors found it from two angles and nothing reconciled them, so it scores as one
+spurious component **and** one missed one.
+
+**The join key is declared and we are not reading it**: that service carries
+`build.context: ./PyegeriaWebHandler`. Merging on `build.context` would remove the duplicate, give
+the compose-named component its files — which would make T1 **partially file-scoreable** for the
+first time — and is precisely the code-versus-deployment reconciliation plan §3 T1 item 2 exists to
+test. Currently that test fails.
+
+**14. `score.py` needed no ground-truth edits to run, which is the point.** It reuses
+`validate.parse()` (generalised there to capture any `**Label:**`, so `Provenance:` is read without
+a second parser), honours `Scope:` on both sides, and correctly refuses to roll T2 into a pass/fail
+verdict — labelling it `DIAGNOSTIC ONLY` because a `logical` ground truth cannot be scored against
+detectors that read only manifests and deployment artifacts (plan §5a). The T2 numbers still earn
+their place: ARI 0.08 quantifies *how far* the physical partition sits from the logical one, which
+is the value case for distillation stated as a measurement instead of an assertion.
+

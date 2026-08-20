@@ -306,7 +306,44 @@ would be meaningless.
 
 ---
 
+## 5a. Score each perspective separately — or measure nothing
+
+**Discovered mid-spike, and it invalidates the original single-score design.** The detectors scored
+16/16 on T1 and 1-of-10 on T2. That is not a detector that works on one repo and fails on another: T1's
+ground truth is a **deployment** architecture, T2's is a **logical** one, and the detectors read
+deployment and physical artifacts. A single aggregate score across both would have recorded a
+perspective mismatch as a premise failure (design doc §4.1).
+
+So every score below is **per perspective** — physical, deployment, logical, dev — and a detector is
+only ever compared against ground truth in the perspective it actually reads. Cross-perspective
+comparison is not a weaker measurement; it is a meaningless one.
+
+Two consequences for the ground-truth files: each component must state **which perspective** it
+belongs to, and each `Type` must state **which vocabulary** it came from (§4.2 — there are three).
+
+### Two measures, not one
+
+The original plan described only file-partition agreement. T1's ground truth showed why that is
+insufficient: **most of its components have no first-party files at all** — `kafka`, `postgres`,
+`kroki` are third-party images. File-based scoring cannot score them even in principle.
+
+| Measure | What it compares | Applies to |
+|---|---|---|
+| **Component-set agreement** — precision/recall on names | did we find the right *things* | every component, including fileless ones |
+| **File-partition agreement** — ARI / NMI | did we draw the boundaries in the right *places* | only components with files |
+
+T1 currently sits at 16/16 on the first measure and is unscoreable on the second. T2 will be the
+reverse. That asymmetry is a property of the targets, not a defect in either.
+
+---
+
 ## 6. Exit criteria — falsifiable, decided in advance
+
+**Scored per perspective (§5a).** The criteria below apply to the perspective a given detector reads —
+currently physical and deployment. The logical perspective is **not** testable in Phase 0, because no
+detector targets it: distillation and human curation are what produce it (§4.3), and both are later
+phases. Recording "detectors did not recover the logical architecture" as a Phase 0 failure would be
+recording the design working as intended.
 
 **Pass.** On T2, detector output agrees substantially with pre-registered ground truth at the component
 level, and the disagreements are explicable — a merge you consider defensible, a split you had not

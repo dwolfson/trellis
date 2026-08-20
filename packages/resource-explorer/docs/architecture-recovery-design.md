@@ -20,6 +20,32 @@ produces *design* metadata (Egeria Area 7) rather than measurements. See
 > (`registry.py`, `surveyors/repo_survey_definition_adapter.py`, `surveyors/prefect_adapter.py`,
 > `agents/`, `configdata/analysis_catalog.yaml`). The staleness warning above still applies to the
 > gap numbers (R1–R5) and to line references in the original §1–§4 and §6.1–§6.4.
+>
+> **2026-08-20 update, from `re/deferred-cleanup-followups` (79d74c8) — facts confirmed to bear on
+> this doc, everything else in that session's changes is unrelated:**
+> - **Annotation publishing has one canonical module now: `surveyors/annotation_props.py`.**
+>   The three near-identical `_build_annotation_props` implementations that used to exist per-publisher
+>   have been consolidated there (a real bug — `resourceProperties`/`confidenceLevel` field-name drift
+>   and a missing RELATIONSHIP case — was found and fixed doing it), and a test asserts every publisher
+>   produces byte-identical output. **If this feature's projection layer (§5.4, §6.1, §6.4) writes
+>   `Annotation`/`CodeAnalysis` properties, go through that module rather than adding a fourth
+>   `_build_annotation_props`.**
+> - **`STEP_REGISTRY` order is now load-bearing, not just registration order** — it drives "Full
+>   Survey (all steps)" execution order via the `*` sentinel in `repo_survey_types.csv`, and a step
+>   that writes a table must precede its readers or the run silently reads stale data. Confirmed by
+>   three new steps (`repo_git_statistics`, `repo_file_inventory`, `repo_homepage`) each fixing exactly
+>   that bug. Directly relevant to §5.7: the proposed `repo_arch_detect` / `repo_code_metrics` /
+>   `repo_sbom` / `repo_history_metrics` steps must be registered in an order consistent with what they
+>   read and write, not just added.
+> - **pyegeria floor is now `>=6.0.18.4`** (needed for `get_governance_action_process_graph` and an
+>   ISSUE-63 delete fix). Below that floor, link-reconciliation tooling can silently no-op while
+>   reporting removals — worth checking against whatever pyegeria version Phase 0/1 tooling pins.
+> - **§3's `SourceControlLibrary` grounding gets one correction and one addition**, both verified by
+>   walking the live type system: `SourceControlLibrary` inherits `url` from `Referenceable` (so it's
+>   available without extension), and a project's external website is cataloged as a linked
+>   `ExternalReference`, not a property on the library itself. Also: `SoftwareLibrary` is a **sibling**
+>   of `SourceControlLibrary` under `ResourceManager`, not its parent — matters if any Area 7 modelling
+>   here assumed a `SourceControlLibrary` *is a* `SoftwareLibrary`.
 
 ---
 
@@ -309,16 +335,117 @@ The property table above is retained only as the record of what 0780 documented 
     └─ existing RE analyses ─────────────► re-aggregated per component (§6)
 ```
 
-Three-layer type model, which the initial analysis you were given collapsed into one:
+### 4.1 Four perspectives, not one architecture
+
+**The most important structural revision in this document.** An earlier draft treated "the
+architecture" as one thing recovered at one granularity. It is four different views of the same repo
+information, and they are not interchangeable — they have different sources, different vocabularies,
+different Egeria homes, and radically different availability.
+
+| Perspective | Question it answers | Derived from | Egeria home | Vocabulary | Available |
+|---|---|---|---|---|---|
+| **Physical** | what is on disk | file tree, manifests, imports | Area 0/4 | 0280 Software Development Assets (`SourceCodeFile`, `ScriptFile`) | **always** |
+| **Deployment** | what runs | Dockerfile, compose, entry points | Area 0 | `SoftwareCapability` subtypes — `Application`, `APIManager`, `EventBroker`, `AnalyticsEngine`, … | only where artifacts exist |
+| **Logical** | what the software *is* | cohesion, naming, docs, judgement | **Area 7** | `SolutionComponentType` (13, closed) | needs inference or a human |
+| **Dev / DevOps** | how it is built, tested, released | CI config, build files, test trees | Area 0 0280 + `SourceControlLibrary`; pipelines have **no good type** | weakest of the four | usually |
+
+`ImplementedBy` (0737) remains the bridge, now specifically between **Logical** and the other three.
+
+**Why this is load-bearing and not taxonomy for its own sake.** The Phase 0 spike scored **16/16** on
+`egeria-workspaces` and **1 of ~10** on `trellis`, which reads as "works on one repo, fails on the
+other". It is neither. The workspaces ground truth is a *deployment* architecture (container names,
+services); the trellis ground truth is a *logical* one (agents, surveyors, observability, core). The
+detectors read deployment and physical artifacts. **A deployment-perspective detector was being scored
+against a logical-perspective ground truth**, and the original exit criteria would have recorded a
+measurement error as a premise failure.
+
+The same effect shows up in the type vocabularies. Asked to classify RE's front end, the maintainer
+picked `Application` — which is not one of the 13 `SolutionComponentType` values but *is* a
+`SoftwareCapability` subtype. That is not a mistake; it is classifying in the deployment perspective
+when the logical one was asked for. Four perspectives, three vocabularies, and no signposting.
+
+### 4.2 Do not merge the vocabularies — map them
+
+The obvious reaction is to reconcile `SolutionComponentType` with the `SoftwareCapability` subtypes.
+**Resist it.** They differ because they describe different things: `Application` is a deployed
+capability and `Software Service` is a designed component, and they are one system seen from two
+layers rather than two names for one concept. `ImplementedBy` is precisely the relationship that joins
+them, and collapsing the lists would destroy the distinction it encodes.
+
+Nor does `SolutionComponentType` need extending for the cases seen so far — `User Interface` covers a
+front end and a terminal UI, `Console Command` covers a CLI. §3.1 calls the closed 13-value vocabulary
+"the single most important fact in the design" because it keeps classification tractable; extending it
+is cheap and therefore dangerous. Extend only for a case that survives the mapping.
+
+**What is needed instead:** every recorded type states *which vocabulary it came from*, and the
+projection maps between them.
+
+### 4.3 Successive refinement — perspectives map onto the funnel
+
+The four are not derived at once. Each stage's output is what the next one draws on, and the ordering
+follows availability and cost rather than importance:
+
+| Stage | Perspective | Character |
+|---|---|---|
+| **Scouting** | — | one presence check: does this repo have a deployment architecture at all? Routes everything downstream. |
+| **Discovery** | **Physical** | deterministic, always available; produces the path-prefix map §6.0 depends on |
+| **Analysis** | **Deployment** + **Dev** | deterministic where artifacts exist; this is what the Phase 0 detectors already do well |
+| **Assessment / Curate** | **Logical** | needs distillation and a human, seeded by the cheap perspectives rather than started cold |
+
+This lands on existing RE machinery rather than new infrastructure: `resource_questions.csv` →
+`question_catalog.yaml` already carries `stage` and `answering_mechanism` across 41 questions, with
+"Code Analysis" already among the mechanisms. Architecture recovery becomes **new question rows in an
+existing catalog**, tagged by perspective and stage.
+
+It also dissolves the "how far down should the partition go?" question, which has no general answer
+because it was three questions wearing one coat:
+
+- **Physical** — depth is given by the artifact. A package is a package, a module is a module. No judgement.
+- **Deployment** — depth is given by the deployable unit. No judgement.
+- **Dev** — depth is given by the pipeline and test layout. Little judgement.
+- **Logical** — depth **is** the judgement, and it is the only place it is.
+
+Which is exactly why the logical perspective is the one that needs a human or an LLM, and why the
+other three must not wait for it.
+
+### 4.4 The Dev/DevOps perspective earns its place
+
+Weakest Egeria support of the four, and still worth having, for two reasons that have nothing to do
+with completeness.
+
+**It gives a home to the files the other perspectives discard.** Docs, tests and CI config are
+`unassigned_ok` from every other view — but they are not unassigned, they are this perspective's
+content. A repo where a third of the files are "unowned" is not well modelled; it is modelled from
+only three of four angles.
+
+**RE already collects this data and has nowhere to put it.** `repo_ci_quality`, `repo_conventions`
+(build automation, deployment evidence), and §6.2's `testFileCount` all exist and land nowhere
+architectural — the same orphaned-analysis problem §6 exists to solve, in a fourth instance.
+
+It passes the test for being a perspective rather than a cross-cutting concern: it partitions the same
+repo *differently*, cutting across components, and answers questions with real governance value —
+which components have no tests, what the release path is, what is built but never deployed.
+
+**Known gap, stated rather than glossed:** Egeria's 0280 Software Development Assets are *file-level*
+(`SourceCodeFile`, `BuildInstructionFile`, `ScriptFile`, `PropertiesFile`, `YAMLFile`), not
+architecture-level, and there is **no pipeline type** — `GovernanceActionProcess` is the nearest fit
+and is not a natural one. This perspective may be the first genuine case for a new type, and that case
+should be made from Phase 0 evidence rather than assumed now.
+
+---
+
+### 4.5 Layer model (revised)
 
 | Layer | Egeria area | Source | Confidence |
 |---|---|---|---|
 | **Implementation inventory** — packages, dependencies, licences | Area 0 / 4 | deterministic tools (Syft, existing `dependency_parser.py`) | high, factual |
+| **Deployment** — servers, capabilities, containers | Area 0 (`SoftwareServer`, `DeployedSoftwareComponent`, `DeployedOn`) | deployment artifacts | high where present, absent otherwise |
 | **Design** — blueprint, components, ports, wires | **Area 7** | detectors + distillation | derived, needs curation |
-| **The bridge** — `ImplementedBy` | 0737 | join between the two | derived |
+| **The bridge** — `ImplementedBy` | 0737 | join between design and the rest | derived |
 
-The analysis you were handed maps only the first layer. The design layer — the thing you actually
-asked about — and therefore the bridge, are both absent from it.
+An earlier draft folded deployment into implementation inventory. That was wrong: deployment has its
+own Egeria types and a completely different availability profile — total on `egeria-workspaces`,
+entirely absent on `trellis`.
 
 ---
 

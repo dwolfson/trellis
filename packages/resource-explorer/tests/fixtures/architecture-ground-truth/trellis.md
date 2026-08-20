@@ -10,6 +10,12 @@
 **Vocabulary:** SolutionComponentType (design doc §3.1, 13 closed values)
 **Written by:** dwolfson
 **Written at:** 2026-08-20
+**Scope:** `packages/resource-explorer`, `packages/trellis-microflow`, `packages/trellis-vectorstore`
+
+> **`packages/egeria-advisor` is explicitly OUT of scope** — 879 files, a second application, and
+> hand-partitioning it adds no Phase 0 signal. Scoring must exclude it on both sides, or the
+> denominator is wrong. Including the two small packages keeps the *monorepo* question testable
+> (does the detector separate workspace members?), which a resource-explorer-only scope would lose.
 
 > No **Blueprints** section — trellis ships one solution.
 >
@@ -120,6 +126,24 @@
   component rather than unassigned; a directory-clustering detector cannot find it, because
   it is defined by *not* being in a directory.
 - **Provenance:** maintainer confirmed the component; files filled by assistant
+
+### trellis-microflow
+
+- **Type:** Software Library
+- **Perspective:** logical
+- **Files:**
+  - `packages/trellis-microflow/**`
+- **Notes:** Shared microflow resource-sharing primitives (`ResourceProvider`, `resolve_resources`).
+- **Provenance:** assistant (workspace member; maintainer scoped T2 to resource-explorer originally)
+
+### trellis-vectorstore
+
+- **Type:** Software Library
+- **Perspective:** logical
+- **Files:**
+  - `packages/trellis-vectorstore/**`
+- **Notes:** Shared `BaseVectorStore` / `PgVectorStore`.
+- **Provenance:** assistant (workspace member)
 
 ### Utility scripts
 

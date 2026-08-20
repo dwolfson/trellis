@@ -45,6 +45,36 @@ reported separately (plan §5).
 | `_TEMPLATE.md` | — | copy this for a new target |
 | `validate.py` | — | parses and checks one file; see below |
 
+## Perspective and vocabulary — read this before writing one
+
+A partition is only meaningful **within a perspective** (design doc §4.1). Every file declares
+one in its header, and it determines two things:
+
+| Perspective | `Vocabulary` for `Type:` | File globs |
+|---|---|---|
+| `logical` | `SolutionComponentType` — the closed 13 (§3.1) | required |
+| `deployment` | Area 0 `SoftwareCapability` subtypes — `Application`, `EventBroker`, … | optional |
+| `physical` / `dev` | Area 0 model 0280 — `SourceCodeFile`, `BuildInstructionFile`, … | required |
+
+**Do not mix them in one file**, and do not translate between them — `Application` (a deployed
+capability) and `Software Service` (a designed component) are one system seen from two layers,
+joined by `ImplementedBy`, not two names for one thing (§4.2).
+
+Deployment components frequently own **no first-party files at all** — `kafka`, `postgres` and
+`kroki` are third-party images. That is why globs are optional there, and why file-partition
+scoring does not apply to that perspective; only component-set agreement does (plan §5a).
+
+An optional `Scope:` line narrows which paths count. Without it, coverage on a monorepo is
+meaningless: trellis ground truth excludes `packages/egeria-advisor` (879 files), so whole-repo
+coverage reads 15% where in-scope coverage is 48%.
+
+## Provenance
+
+Each component carries a `Provenance:` line — `maintainer`, `maintainer (type assigned by
+assistant)`, `assistant`, and so on. Scoring can then be reported twice: maintainer-authored
+only, and maintainer-plus-assisted. The contamination is measured rather than denied, which is
+the only honest way to accept assistance in a pre-registered artifact.
+
 ## Format
 
 Markdown, loosely following this repo's Dr.Egeria convention (`##` section, `###` item):

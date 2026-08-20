@@ -19,13 +19,52 @@ import re
 import subprocess
 import sys
 
-# docs/architecture-recovery-design.md §3.1 — SolutionComponentType.java
-VALID_TYPES = {
+# Three vocabularies, one per perspective — design doc §4.2. They are NOT
+# interchangeable and must not be merged: `Application` is a deployed capability
+# and `Software Service` is a designed component, the same system seen from two
+# layers, joined by ImplementedBy.
+#
+# An earlier version of this validator enforced SolutionComponentType against
+# every file, which rejected the entire (correct) deployment-perspective ground
+# truth for egeria-workspaces. The validator was encoding the single-perspective
+# model the design has since abandoned.
+
+# Logical — SolutionComponentType.java refdata enum, closed at 13 (§3.1)
+LOGICAL_TYPES = {
     "Automated Action", "Long Running Daemon", "Multi-Step Process",
     "Third Party Process", "Manual Process", "Data Storage", "Software Service",
     "Software Library", "User Interface", "Console Command", "Data Distribution",
     "Publishing", "Insight Model",
 }
+
+# Deployment — Area 0 SoftwareCapability subtypes (open; extend as Egeria does)
+DEPLOYMENT_TYPES = {
+    "SoftwareCapability", "Application", "APIManager", "EventBroker", "DataManager",
+    "DatabaseManager", "FileManager", "FileSystem", "ContentCollectionManager",
+    "SoftwareService", "UserAuthenticationManager", "ReportingEngine",
+    "AnalyticsEngine", "WorkflowEngine", "InventoryCatalog", "MasterDataManager",
+    "NetworkGateway", "CloudPlatform", "CloudTenant", "SoftwareArchive",
+    "DeployedSoftwareComponent", "DataProcessingEngine",
+}
+
+# Physical / dev — Area 0 model 0280 Software Development Assets
+PHYSICAL_TYPES = {
+    "SourceCodeFile", "BuildInstructionFile", "ExecutableFile", "ScriptFile",
+    "PropertiesFile", "YAMLFile", "SourceControlLibrary", "SoftwareLibrary",
+}
+
+VOCABULARIES = {
+    "logical": LOGICAL_TYPES,
+    "deployment": DEPLOYMENT_TYPES,
+    "physical": PHYSICAL_TYPES,
+    "dev": PHYSICAL_TYPES,
+}
+
+# Only perspectives whose components are defined by code they own need file
+# globs. A deployment component is often a third-party image with no
+# first-party files at all (kafka, postgres, kroki) — demanding globs there
+# would force either a fabricated path or a missing component.
+FILES_REQUIRED = {"logical", "physical", "dev"}
 
 PLACEHOLDER = re.compile(r"<[^>]+>")
 BULLET = re.compile(r"^\s*-\s+(?:\*\*(?P<label>[^*]+):\*\*\s*)?(?P<value>.*)$")
@@ -51,8 +90,11 @@ def parse(path: str) -> dict:
 
         if m := re.match(r"^##\s+(?!#)(?P<t>.+)$", line):
             title = m.group("t").strip().lower()
+            # Any section whose title contains "component" collects components,
+            # so a file may group them (e.g. "Optional runtime add-ons" vs the
+            # main set) without the parser losing half the partition.
             section = ("blueprints" if title.startswith("blueprint")
-                       else "components" if title.startswith("component")
+                       else "components" if "component" in title or "add-on" in title
                        else "unassigned" if title.startswith("unassigned")
                        else "excluded" if title.startswith("excluded")
                        else None)
@@ -81,10 +123,15 @@ def parse(path: str) -> dict:
                 attr = label.strip().lower()
                 if attr == "type":
                     comp["type"] = value
-                elif attr in ("identity", "notes"):
+                elif attr == "files":
+                    if value:
+                        comp["files"].append(value)
+                else:
+                    # Generic capture — identity/notes plus anything not yet
+                    # named here (provenance, per-component perspective, …).
+                    # score.py reads `provenance` off this without a second
+                    # parser (README.md: "score.py consumes the same parse").
                     comp[attr] = value
-                elif attr == "files" and value:
-                    comp["files"].append(value)
             elif indented and attr == "files":
                 comp["files"].append(value)
         elif section in ("unassigned", "excluded") and not label:
@@ -145,6 +192,18 @@ def main() -> int:
         root = ""
     if root:
         tracked = tracked_files(root)
+        # A Scope: line narrows the denominator. Without it, coverage on a
+        # monorepo is meaningless — trellis ground truth deliberately excludes
+        # packages/egeria-advisor (879 files), so whole-repo coverage reads 15%
+        # when in-scope coverage is 50%. Scoring must use the same scope on both
+        # sides or the numbers describe nothing.
+        scope = doc["meta"].get("scope", "")
+        if tracked is not None and scope:
+            prefixes = [unquote(x).rstrip("/") for x in CODE_SPAN.findall(scope)] \
+                       or [x.strip().rstrip("/") for x in scope.split(",") if x.strip()]
+            if prefixes:
+                tracked = {f for f in tracked
+                           if any(f == p or f.startswith(p + "/") for p in prefixes)}
         if tracked is None:
             warnings.append("not a git checkout — counting files on disk, which may "
                             "include untracked build output the detector never sees")
@@ -155,6 +214,14 @@ def main() -> int:
             errors.append(f"metadata '{field}' is still a placeholder — "
                           f"pre-registration needs a real name and date")
 
+    perspective = doc["meta"].get("perspective", "logical").strip().lower()
+    valid_types = VOCABULARIES.get(perspective)
+    if valid_types is None:
+        errors.append(f"unknown Perspective {perspective!r} — expected one of "
+                      f"{', '.join(sorted(VOCABULARIES))}")
+        valid_types = LOGICAL_TYPES
+    files_required = perspective in FILES_REQUIRED
+
     real = {n: c for n, c in doc["components"].items() if not PLACEHOLDER.search(n)}
     if not real:
         errors.append("no components defined (only template placeholders)")
@@ -162,11 +229,11 @@ def main() -> int:
     for name, comp in real.items():
         if not comp["type"]:
             errors.append(f"component {name!r}: no **Type:**")
-        elif comp["type"] not in VALID_TYPES:
-            errors.append(f"component {name!r}: type {comp['type']!r} is not one of the 13 "
-                          f"§3.1 values")
+        elif comp["type"] not in valid_types:
+            errors.append(f"component {name!r}: type {comp['type']!r} is not in the "
+                          f"{perspective} vocabulary (§4.2)")
         files = [f for f in comp["files"] if not PLACEHOLDER.search(f)]
-        if not files:
+        if not files and files_required:
             errors.append(f"component {name!r}: no file globs")
         for g in files:
             if root and not expand(g, root, tracked):
@@ -199,12 +266,23 @@ def main() -> int:
                     seen[hit] = name
         assigned = len(seen)
 
-    print(f"{args.file}: {len(real)} components, {len(doc['blueprints'])} blueprints, "
+    print(f"{args.file} [{perspective}]: {len(real)} components, "
+          f"{len(doc['blueprints'])} blueprints, "
           f"{len(doc['unassigned_ok'])} unassigned-ok, {len(doc['excluded'])} excluded")
     if root and tracked is not None:
-        pct = 100 * assigned / len(tracked) if tracked else 0
-        print(f"  coverage: {assigned}/{len(tracked)} tracked files assigned "
-              f"to a component ({pct:.1f}%)")
+        in_scope = len(tracked)
+        with_files = sum(1 for c in real.values()
+                         if [f for f in c["files"] if not PLACEHOLDER.search(f)])
+        if files_required:
+            pct = 100 * assigned / in_scope if in_scope else 0
+            scoped = " in scope" if doc["meta"].get("scope") else ""
+            print(f"  coverage: {assigned}/{in_scope} tracked files{scoped} assigned "
+                  f"to a component ({pct:.1f}%)")
+        else:
+            # File-partition scoring does not apply here (plan §5a): only
+            # component-set agreement does.
+            print(f"  perspective={perspective}: file coverage N/A — "
+                  f"{with_files}/{len(real)} components own first-party files")
     for w in dict.fromkeys(warnings):
         print(f"  warn:  {w}")
     for e in errors:
