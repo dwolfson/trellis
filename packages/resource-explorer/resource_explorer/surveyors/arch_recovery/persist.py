@@ -23,6 +23,8 @@ oversight — see the port's write-up for the trade.
 """
 from __future__ import annotations
 
+from resource_explorer.step_outcome import PARTIAL, RECOVERED, StepOutcome
+
 from .ir import Component, Evidence
 
 KIND = "architecture_recovery"
@@ -121,7 +123,18 @@ def persist_ir(
     # Stamping it on every row is the minimum honest fix and needs no schema
     # change. The distinction it restores is "is this result complete?", which
     # no consumer could previously ask.
-    partial = bool(run_scope)
+    # The shared outcome vocabulary (resource_explorer/step_outcome.py), rather
+    # than a local `partial` boolean. Two spellings of one fact is the family of
+    # bug this whole area has been fixing all session, so the local one goes.
+    #
+    # `run_scope` stays its OWN key rather than being folded into `cause`: the
+    # outcome set is small and shared so it can be queried across steps, while
+    # the scope is a value only this step knows how to interpret.
+    outcome = (
+        StepOutcome(PARTIAL, cause="scoped_run", detail={"run_scope": run_scope})
+        if run_scope else StepOutcome(RECOVERED)
+    )
+    outcome_row = outcome.as_row()
     slug_to_scope: dict[str, str] = {c.slug: scope_locator_for(c) for c in components}
 
     for c in components:
@@ -139,7 +152,7 @@ def persist_ir(
                         "method": c.identity.method, "value": c.identity.value,
                         "deployment_context": c.identity.deployment_context,
                     },
-                    "run_scope": run_scope, "partial": partial,
+                    "run_scope": run_scope, **outcome_row,
                     "files": c.files, "blueprint": c.blueprint,
                     "proposed_by": c.proposed_by, "perspective": c.perspective,
                     "confidence_level": c.confidence_level,

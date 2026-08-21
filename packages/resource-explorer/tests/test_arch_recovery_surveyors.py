@@ -13,6 +13,7 @@ import subprocess
 import pytest
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import PARTIAL, RECOVERED
 from resource_explorer.surveyors.arch_recovery import code_markers
 from resource_explorer.surveyors.sub_surveyors.arch_recovery_coupling import ArchCouplingSurveyor
 from resource_explorer.surveyors.sub_surveyors.arch_recovery_detect import ArchDetectSurveyor
@@ -235,7 +236,7 @@ class TestScopedRunsAreMarkedPartial:
         # API, and it is why the scope must be passed explicitly here.
         row = registry.query_findings(project.slug, "architecture_recovery", "packages/foo")[0]
         detail = json.loads(row["detail_json"])
-        assert detail["partial"] is False
+        assert detail["outcome"] == RECOVERED
         assert detail["run_scope"] == ""
 
     def test_a_scoped_run_is_marked_partial_and_names_its_scope(self, project, registry):
@@ -252,10 +253,68 @@ class TestScopedRunsAreMarkedPartial:
 
         row = registry.query_findings(project.slug, "architecture_recovery", "packages/foo")[0]
         detail = json.loads(row["detail_json"])
-        assert detail["partial"] is True
+        assert detail["outcome"] == PARTIAL
+        assert detail["outcome_cause"] == "scoped_run"
         assert detail["run_scope"] == "packages/foo"
         # the collision itself: component scope and run scope are the same value
         assert row["scope_locator"] == detail["run_scope"], (
             "this equality is the bug's signature — the only thing separating "
-            "the two meanings is now the explicit run_scope/partial stamp"
+            "the two meanings is the explicit outcome/run_scope stamp"
         )
+
+    def test_run_scope_stays_its_own_key_rather_than_folding_into_cause(self):
+        """The outcome set is small and shared so it can be queried across
+        steps; `run_scope` is a value only this step knows how to interpret.
+        Folding it into the free-text cause would make it unqueryable and would
+        be a second spelling of the same fact."""
+        from resource_explorer.step_outcome import PARTIAL, StepOutcome
+
+        o = StepOutcome(PARTIAL, cause="scoped_run", detail={"run_scope": "packages/foo"})
+        row = o.as_row()
+        assert row["outcome_cause"] == "scoped_run"
+        assert "packages/foo" not in row["outcome_cause"]
+
+
+class TestResultsReaderSurfacesPartial:
+    """Writing a field nobody reads is the same failure as not writing it.
+
+    design §4.1c stamped `run_scope`/`outcome` onto every persisted row so a
+    scoped run — incomplete by construction — could not be mistaken for a
+    complete one. The guard wrote the data and stopped there: the results reader
+    pulled name/type/confidence/perspective/proposed_by and never looked at it,
+    so the signal died one layer below where the design doc checked and a scoped
+    run still presented as complete to every caller and to the UI.
+    """
+
+    def test_a_scoped_run_is_reported_partial_at_the_top_level(self, project, registry):
+        from resource_explorer.surveyors.arch_recovery.ir import Component, Identity
+        from resource_explorer.surveyors.arch_recovery.persist import persist_ir
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+
+        c = Component(slug="s", name="foo", type="Software Library",
+                      identity=Identity("package-name", "foo"), files=["packages/foo/**"])
+        persist_ir(registry, project.slug, [c], [], "2026-08-21T00:00:00",
+                   run_scope="packages/foo")
+
+        out = _architecture_recovery_results(registry, project.slug)
+        assert out["partial"] is True
+        assert out["scoped_to"] == ["packages/foo"]
+        assert "packages/foo" in out["completeness_note"]
+
+    def test_a_whole_repo_run_is_not_reported_partial(self, project, registry):
+        from resource_explorer.surveyors.arch_recovery.ir import Component, Identity
+        from resource_explorer.surveyors.arch_recovery.persist import persist_ir
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+
+        c = Component(slug="s", name="foo", type="Software Library",
+                      identity=Identity("package-name", "foo"), files=["packages/foo/**"])
+        persist_ir(registry, project.slug, [c], [], "2026-08-21T00:00:00")
+
+        out = _architecture_recovery_results(registry, project.slug)
+        assert out["partial"] is False
+        assert out["scoped_to"] == []
+        assert out["completeness_note"] == ""

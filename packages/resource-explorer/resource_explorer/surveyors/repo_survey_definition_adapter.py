@@ -42,6 +42,8 @@ from typing import Callable
 
 from trellis_microflow import ResourceProvider
 
+from resource_explorer.step_outcome import PARTIAL
+
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
     ApiStructureSurveyor,
@@ -1088,6 +1090,8 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
             "type": detail.get("type"),
             "confidence": latest.get("confidence", 0),
             "perspective": detail.get("perspective", "physical"),
+            "outcome": detail.get("outcome", ""),
+            "run_scope": detail.get("run_scope", ""),
             "proposed_by": approaches or (detail.get("proposed_by") or []),
             "surveyed_at": latest.get("surveyed_at", ""),
             "evidence": [
@@ -1101,9 +1105,31 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
             "metrics": {k: v for k, v in metrics.items() if k not in ("surveyed_at", "detail")},
         })
     components.sort(key=lambda c: c["path"])
+
+    # Surface the outcome at the top level, not only per component.
+    #
+    # design §4.1c added run_scope/outcome to every persisted row precisely so a
+    # SCOPED run — whose component set is incomplete by construction — could not
+    # be mistaken for a complete one. That guard wrote the data and stopped:
+    # this reader pulled name/type/confidence/perspective/proposed_by and never
+    # looked at it, so the signal died one layer below where the design doc
+    # checked, and a scoped run still presented as complete to the caller.
+    #
+    # Writing a field nobody reads is the same failure as not writing it. The
+    # top-level flag is what a caller can act on without inspecting every
+    # component.
+    scoped = sorted({c["run_scope"] for c in components if c.get("run_scope")})
+    partial = any(c.get("outcome") == PARTIAL for c in components)
     return {
         "components": components,
         "component_count": len(components),
+        "partial": partial,
+        "scoped_to": scoped,
+        "completeness_note": (
+            f"Partial result — this analysis was scoped to {', '.join(scoped)}, so components "
+            f"outside that scope were never looked for."
+            if partial and scoped else ""
+        ),
         "surveyed_at": max((c["surveyed_at"] for c in components), default=""),
     }
 
