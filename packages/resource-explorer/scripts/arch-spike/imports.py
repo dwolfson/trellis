@@ -152,6 +152,28 @@ def _try_module_file(dotted_parts: list[str], root_prefix: str, fp_set: set[str]
     return None
 
 
+def roots_for_file(importing_file: str, source_roots: list[str]) -> list[str]:
+    """`source_roots` reordered so the importing file's OWN enclosing roots
+    come first, nearest first.
+
+    Resolving against one global, globally-ordered root list is wrong whenever
+    a repo contains two copies of the same code, and egeria-workspaces does:
+    `PyegeriaWebHandler` ships once under egeria-quickstart and once under
+    egeria-freshstart, both of which are source roots, both containing a file
+    called `common_serialize.py`. A flat sibling import (`from common_serialize
+    import ...`) in a *quickstart* handler was resolving into the *freshstart*
+    copy, because the global ordering put freshstart first for every file
+    regardless of where the import lived.
+
+    Measured before the fix: 156 of 170 quickstart-sourced edges pointed into
+    freshstart, and only 14 stayed inside quickstart. An import resolves within
+    its own copy first — that is what "sibling" means."""
+    own = [r for r in source_roots
+           if r != "." and (importing_file == r or importing_file.startswith(r + "/"))]
+    own.sort(key=len, reverse=True)          # nearest enclosing root first
+    return own + [r for r in source_roots if r not in own]
+
+
 def resolve_absolute(module: str, source_roots: list[str], fp_set: set[str]) -> str | None:
     parts = module.split(".")
     for root in source_roots:
@@ -233,9 +255,10 @@ def build_graph(root: str, first_party: list[str]) -> dict:
             kind = "absolute" if level == 0 else "relative"
             if level == 0:
                 if module:
-                    target = resolve_absolute(module, roots, fp_set)
+                    file_roots = roots_for_file(src, roots)
+                    target = resolve_absolute(module, file_roots, fp_set)
                     if target is None and name:
-                        target = resolve_absolute(f"{module}.{name}", roots, fp_set)
+                        target = resolve_absolute(f"{module}.{name}", file_roots, fp_set)
                 display = f"{module}.{name}" if (module and name) else (module or name or "?")
             else:
                 if module:

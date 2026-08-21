@@ -671,3 +671,61 @@ Two consequences for Phase 1:
 Separately: the Java adversarial target is blocked. `egeria` has **zero** tracked `.py` files and
 `imports.py` extracts Python only, so the "does this generalise beyond a well-factored Python
 monorepo?" question cannot be answered with the current extractor at all.
+
+---
+
+**37. CORRECTION — finding 32 was wrong, and finding 36's diagnosis was wrong. Both were
+artifacts of one import-resolution bug.**
+
+`imports.py` resolved every absolute import against a single **global** source-root list, tried in
+the same order regardless of which file the import appeared in. `egeria-workspaces` ships
+`PyegeriaWebHandler` twice — once under `egeria-quickstart`, once under `egeria-freshstart` — and
+both are source roots, both containing a file called `common_serialize.py`. So a flat sibling
+import in a *quickstart* handler resolved into the *freshstart* copy.
+
+Measured before the fix:
+
+| | before | after |
+|---|---|---|
+| quickstart → quickstart | **14** | **170** |
+| quickstart → freshstart | **156** | **0** |
+| freshstart → freshstart | 134 | 136 |
+
+**Finding 32 is retracted.** It claimed `imports.py` found *zero* import edges crossing between
+the two copies, and offered that as independent corroboration of the pre-registered
+two-components identity answer. In fact **156 edges crossed**, every one of them misresolved. The
+identity answer stands on its own evidence; this particular corroboration was spurious and should
+not be cited.
+
+**Finding 36's conclusion is withdrawn.** It read the zero-candidates result as a *layout*
+problem — "the subtree rule assumes a structure flat repos do not have" — and generalised that
+into a design gap. The real cause was that the import graph for that repo was **89% missing**. A
+flat application is not structureless; the measurement was.
+
+**The fix**: resolve against the importing file's own nearest enclosing source root first
+(`roots_for_file`). An import resolves within its own copy — that is what "sibling" means. Trellis
+is essentially unaffected (1165 → 1185 edges) because it has no duplicated copies, which is also
+why the bug hid: it is invisible on a repo with one copy of everything.
+
+**38. With the graph corrected, the flat app does have internal structure — and it is the shape
+the classifier is built for.** Re-running community detection on quickstart's
+`PyegeriaWebHandler`:
+
+- **75 files, 170 internal edges** (was 15 files, 14 edges)
+- **4 communities, modularity Q = 0.427** — meaningful structure, not noise
+- fan-in leaders: `common_serialize.py` (64), `egeria_auth.py` (42), `demo_config.py` (37),
+  `demo_db.py` (25) — textbook **connective-library** signatures (finding 34)
+
+So the genuine remaining gap is narrower than finding 36 claimed, and now has evidence behind it:
+**the candidate *generator* is directory-based, and a flat directory generates no candidates even
+when the graph plainly contains communities.** `_subtree_for` needs a companion that clusters the
+file-level graph directly where directory structure is absent. That is a real design item — but it
+is now motivated by Q = 0.427 and four visible communities, rather than by a bug.
+
+**39. Three "design problems" this session turned out to be measurement bugs.** The
+`build.context` merge regression (finding 15), the Jaccard novel-boundary mislabel (finding 30),
+and now this. Each initially presented as a property of the domain and each was a defect in how
+the domain was being measured. The pattern is worth carrying into Phase 1: **when a signal says
+something surprising about the code, suspect the measurement before revising the model** — all
+three were caught by checking a number against something already known to be true, and none by
+reasoning about the design.
