@@ -468,6 +468,49 @@ Two of the three bugs above would have been import-time errors under this rule. 
 one would not: that is a key-semantics problem rather than a resource one, and it remains
 unguarded (see §6.0).
 
+### 4.1c The fourth: `scope_locator` carries two meanings, and one of them means "incomplete"
+
+§4.1b closed the resource-capability gap and named the one it could not close. This is that one,
+found by looking for it.
+
+`scope_locator` in `project_analysis_findings` means two different things **for the same analysis
+kind**:
+
+| meaning | written by | example |
+|---|---|---|
+| **run scope** — this run was narrowed to a subtree (D5/D6) | any `accepts_scope_locator` step | `packages/foo` |
+| **component identity** — this component *is* that subtree (§6.0) | architecture recovery | `packages/foo` |
+
+They collide exactly. Run `repo_arch_detect` scoped to `packages/foo` and the component found
+there keys on the identical string.
+
+**The collision is not the damage; the missing distinction is.** A scoped run sees only part of the
+repo, so its component set is *necessarily incomplete* — and nothing recorded that. Verified: zero
+references to run scope anywhere in the persist path. A partial architecture was written with rows
+indistinguishable from a complete one, so any reader merging them presents a fragment as the whole
+thing, silently.
+
+A second instance surfaced while testing the first. `query_findings(slug, kind, scope_locator="")`
+defaults to `""` meaning *whole-resource* — the **run-scope** reading. A component row never keys on
+`""`; it keys on its own path. So the default query returns nothing for architecture recovery, for
+a reason that looks like "no data" and is actually "wrong question".
+
+**Fix, and its limit.** Every row now carries `run_scope` and `partial` in `detail_json` — no schema
+change, and it restores a question no consumer could previously ask: *is this result complete?*
+
+Unlike §4.1b this **cannot** be an import-time error. Resource capability is a wiring property, so a
+mismatch is checkable before anything runs. This is a *runtime value* ambiguity: the same column
+legitimately holds both meanings and only the writer knows which. The honest fix is therefore to
+make the distinction explicit **in the data**, not to enforce it structurally — and to say so rather
+than imply the guard is as strong as §4.1b's.
+
+**What the four have in common**, now that all of them are found: in every case an object was
+constructed correctly and only a *key, path, or capability* was wrong; in every case the failure
+mode was an empty or merged result rather than an exception; and in every case it was caught by
+asking the data a question it could not answer, never by reading the code. A design that names
+distinctions the plumbing does not carry will lose them — quietly, and in whichever layer nobody
+thought to write them down.
+
 ### 4.2 Do not merge the vocabularies — map them
 
 The obvious reaction is to reconcile `SolutionComponentType` with the `SoftwareCapability` subtypes.

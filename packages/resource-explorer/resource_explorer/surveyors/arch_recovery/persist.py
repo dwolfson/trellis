@@ -92,6 +92,7 @@ def persist_ir(
     surveyed_at: str,
     *,
     run_label: str = "run",
+    run_scope: str = "",
     extra_metrics: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, str]:
     """Write one survey run's IR into the generic findings/metrics tables.
@@ -105,6 +106,22 @@ def persist_ir(
     repo_arch_coupling attaches import_cohesion/cochange_cohesion without
     this module needing to know about coupling-specific signals.
     """
+    # `run_scope` is the scope the RUN was narrowed to (D5/D6), which is a
+    # different thing from a component's own `scope_locator` even though both
+    # are paths and both live in the same column.
+    #
+    # They collide exactly: run `repo_arch_detect` scoped to `packages/foo` and
+    # the component found there also keys on `packages/foo`. Because nothing
+    # recorded which meaning a row carried, a SCOPED run — which by definition
+    # saw only part of the repo, so its component set is necessarily incomplete
+    # — wrote rows indistinguishable from a whole-repo run's. A reader merging
+    # them presents a partial architecture as the whole architecture, with no
+    # signal that anything is missing.
+    #
+    # Stamping it on every row is the minimum honest fix and needs no schema
+    # change. The distinction it restores is "is this result complete?", which
+    # no consumer could previously ask.
+    partial = bool(run_scope)
     slug_to_scope: dict[str, str] = {c.slug: scope_locator_for(c) for c in components}
 
     for c in components:
@@ -122,6 +139,7 @@ def persist_ir(
                         "method": c.identity.method, "value": c.identity.value,
                         "deployment_context": c.identity.deployment_context,
                     },
+                    "run_scope": run_scope, "partial": partial,
                     "files": c.files, "blueprint": c.blueprint,
                     "proposed_by": c.proposed_by, "perspective": c.perspective,
                     "confidence_level": c.confidence_level,

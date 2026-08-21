@@ -6,6 +6,7 @@ results reader that reassembles them.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 
@@ -201,3 +202,60 @@ class TestScopeLocatorUniqueness:
             files=["packages/foo/**"],
         )
         assert scope_locator_for(c) == "packages/foo"
+
+
+class TestScopedRunsAreMarkedPartial:
+    """The fourth bug of the family: `scope_locator` carried two meanings.
+
+    D5/D6 scope narrowing uses it for "this run was narrowed to `packages/foo`".
+    Architecture recovery (design §6.0) uses it for "this component IS
+    `packages/foo`". Same column, same kind, and they collide exactly — run
+    repo_arch_detect scoped to a subtree and the component found there keys on
+    the identical value.
+
+    Because nothing recorded which meaning a row carried, a SCOPED run — which
+    by definition saw only part of the repo, so its component set is
+    necessarily incomplete — wrote rows indistinguishable from a whole-repo
+    run's. A reader merging them shows a partial architecture as if it were the
+    whole one, with no signal that anything is missing.
+    """
+
+    def test_a_whole_repo_run_is_not_marked_partial(self, project, registry, tmp_path):
+        from resource_explorer.surveyors.arch_recovery.ir import Component, Identity
+        from resource_explorer.surveyors.arch_recovery.persist import persist_ir
+
+        c = Component(slug="s", name="foo", type="Software Library",
+                      identity=Identity("package-name", "foo"), files=["packages/foo/**"])
+        persist_ir(registry, project.slug, [c], [], "2026-08-21T00:00:00")
+
+        # NB: query_findings defaults to scope_locator="" meaning
+        # "whole-resource" — the RUN-scope meaning. A component row never keys
+        # on "", it keys on its own path, so the default query finds nothing.
+        # That mismatch is the same two-meanings problem surfacing in the query
+        # API, and it is why the scope must be passed explicitly here.
+        row = registry.query_findings(project.slug, "architecture_recovery", "packages/foo")[0]
+        detail = json.loads(row["detail_json"])
+        assert detail["partial"] is False
+        assert detail["run_scope"] == ""
+
+    def test_a_scoped_run_is_marked_partial_and_names_its_scope(self, project, registry):
+        """Without this, the run scope and the component scope are the same
+        string in the same column and neither the caller nor a later reader can
+        tell a complete result from a fragment."""
+        from resource_explorer.surveyors.arch_recovery.ir import Component, Identity
+        from resource_explorer.surveyors.arch_recovery.persist import persist_ir
+
+        c = Component(slug="s", name="foo", type="Software Library",
+                      identity=Identity("package-name", "foo"), files=["packages/foo/**"])
+        persist_ir(registry, project.slug, [c], [], "2026-08-21T00:00:00",
+                   run_scope="packages/foo")
+
+        row = registry.query_findings(project.slug, "architecture_recovery", "packages/foo")[0]
+        detail = json.loads(row["detail_json"])
+        assert detail["partial"] is True
+        assert detail["run_scope"] == "packages/foo"
+        # the collision itself: component scope and run scope are the same value
+        assert row["scope_locator"] == detail["run_scope"], (
+            "this equality is the bug's signature — the only thing separating "
+            "the two meanings is now the explicit run_scope/partial stamp"
+        )

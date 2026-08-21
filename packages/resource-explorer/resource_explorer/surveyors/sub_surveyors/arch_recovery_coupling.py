@@ -138,7 +138,8 @@ class ArchCouplingSurveyor(BaseSurveyor):
 
             persist_ir(
                 self.registry, self.project.slug, components, evidence,
-                self._surveyed_at, run_label="coupling", extra_metrics=extra_metrics,
+                self._surveyed_at, run_label="coupling",
+                run_scope=self._scope_locator, extra_metrics=extra_metrics,
             )
 
             shape_counts: dict[str, int] = {}

@@ -73,6 +73,7 @@ class ArchDetectSurveyor(BaseSurveyor):
             persist_ir(
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="detect",
+                run_scope=self._scope_locator,
             )
 
             by_type: dict[str, int] = {}
