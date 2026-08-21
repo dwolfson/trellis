@@ -309,6 +309,22 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: architecture_recovery
+    name: "Architecture Recovery"
+    description: "Recover candidate architecture components from package manifests, deployment units (Dockerfile/compose), ast-grep code markers, and import/co-change coupling — a component partition proposal with confidence and evidence, not a published blueprint (docs/architecture-recovery-phase1-plan.md)."
+    resource_types: ["repo"]
+    intent: analysis  # collects a fresh partition from the checkout — CLAUDE.md rule 17
+    perspectives: ["all"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: corpus
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: repo_profile_refresh
     name: "Refresh Coarse Profile"
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."

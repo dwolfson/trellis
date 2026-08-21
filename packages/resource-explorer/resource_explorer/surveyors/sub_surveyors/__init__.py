@@ -22,6 +22,8 @@ from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInvento
 from resource_explorer.surveyors.sub_surveyors.homepage import HomepageSurveyor
 from resource_explorer.surveyors.sub_surveyors.symbol_extraction import SymbolExtractionSurveyor
 from resource_explorer.surveyors.sub_surveyors.rag_ingestion import RagIngestionSurveyor
+from resource_explorer.surveyors.sub_surveyors.arch_recovery_detect import ArchDetectSurveyor
+from resource_explorer.surveyors.sub_surveyors.arch_recovery_coupling import ArchCouplingSurveyor
 
 __all__ = [
     "ancestor_folder_paths",
@@ -46,4 +48,6 @@ __all__ = [
     "HomepageSurveyor",
     "SymbolExtractionSurveyor",
     "RagIngestionSurveyor",
+    "ArchDetectSurveyor",
+    "ArchCouplingSurveyor",
 ]

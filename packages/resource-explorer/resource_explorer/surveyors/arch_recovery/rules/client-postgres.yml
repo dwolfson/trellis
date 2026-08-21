@@ -1,0 +1,9 @@
+# design §5.1 "Client libraries" — a Postgres/SQL wire, direction Output-Input
+# (this component calls the database; §3.2). Two ORM/driver families: raw
+# psycopg2 (RE's own database-surveying stack per CLAUDE.md) and SQLAlchemy.
+id: client-postgres
+language: Python
+rule:
+  any:
+    - pattern: psycopg2.connect($$$ARGS)
+    - pattern: create_engine($$$ARGS)

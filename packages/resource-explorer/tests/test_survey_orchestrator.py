@@ -27,6 +27,14 @@ def _fake_zipball_root(*_args, **_kwargs):
     yield "/fake/zipball/root"
 
 
+@contextmanager
+def _fake_git_clone_root(*_args, **_kwargs):
+    """Stand-in for _acquire_git_clone_root — no real clone. Any full-run
+    (steps=None) test now resolves this resource too, because
+    repo_arch_coupling declares requires_resources={"git_clone_root": ...}."""
+    yield "/fake/clone/root"
+
+
 @pytest.fixture
 def registry(tmp_path):
     return ProjectRegistry(db_path=str(tmp_path / "test.db"))
@@ -74,6 +82,14 @@ def _patch_all_surveyors():
     )
     zip_patcher.start()
     patchers.append(zip_patcher)
+    # repo_arch_coupling declares requires_resources={"git_clone_root": ...} —
+    # patch the clone primitive too, same reasoning as the zipball one above.
+    clone_patcher = patch(
+        "resource_explorer.surveyors.repo_survey_definition_adapter._acquire_git_clone_root",
+        _fake_git_clone_root,
+    )
+    clone_patcher.start()
+    patchers.append(clone_patcher)
     return mocks, patchers
 
 
@@ -273,6 +289,9 @@ class TestCostTierFilter:
                     # external site over HTTP, so it is not zero-fetch.
                     "repo_website_ingestion",
                     "repo_git_statistics", "repo_sub_resource_survey",
+                    # repo_arch_detect/repo_arch_coupling (Phase 1 plan §4.2) —
+                    # a zipball and a real git clone respectively, both downloads.
+                    "repo_arch_detect", "repo_arch_coupling",
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()
@@ -295,6 +314,9 @@ class TestCostTierFilter:
                     # external site. medium rather than rag_ingestion's high: one
                     # page, not a whole repo.
                     "repo_website_ingestion",
+                    # repo_arch_coupling — classify_subtree/cohesion computation
+                    # over the whole import graph, medium not low.
+                    "repo_arch_coupling",
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()

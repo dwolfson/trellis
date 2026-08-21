@@ -2338,6 +2338,8 @@ const _REPO_RESULTS_RENDER_MODE = {
   code_symbol_extraction: 'custom',
   rag_ingestion: 'metrics',
   website_ingestion: 'metrics',
+  // Phase 1 plan §4.2/§4.4 — architecture recovery's results view.
+  architecture_recovery: 'custom',
 };
 
 // What the trend chart's Y axis actually is, per analysis kind — the chart
@@ -2362,6 +2364,7 @@ const _REPO_TREND_LABEL = {
   // it has no analysis_catalog.yaml entry — but it plots the same as any other
   // trend and its Y axis needs naming just the same.
   sub_resource_survey: 'Total size of candidate sub-resources (bytes)',
+  architecture_recovery: 'Components proposed (per run)',
 };
 
 async function toggleAnalysisResults(analysisId, slug, btn) {
@@ -2496,6 +2499,19 @@ function _renderCustomAnalysisResults(analysisId, data) {
         <div class="text-xs text-slate-300 flex justify-between gap-2">
           <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
           <span class="text-slate-500">${count}</span>
+        </div>`).join('');
+  }
+  if (analysisId === 'architecture_recovery') {
+    if (!data.components || !data.components.length) return `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`;
+    return `<div class="text-xs text-slate-400 mb-1">${data.component_count} component(s)${data.surveyed_at ? ` · last run ${_relTime(data.surveyed_at)}` : ''}</div>` +
+      data.components.slice(0, 20).map(c => `
+        <div class="text-xs text-slate-300 mb-1">
+          <div class="flex justify-between gap-2">
+            <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
+            <span class="text-slate-500 shrink-0">${c.type ? _esc(c.type) : 'untyped'} · ${c.confidence}%</span>
+          </div>
+          <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
+          <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
         </div>`).join('');
   }
   if (analysisId === 'sub_resource_survey') {

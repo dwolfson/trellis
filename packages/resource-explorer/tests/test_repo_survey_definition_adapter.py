@@ -52,6 +52,7 @@ def test_all_step_keys_are_registered():
         "repo_sub_resource_survey", "repo_license_classification",
         "repo_security_features", "repo_ci_quality", "repo_maturity",
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
+        "repo_arch_detect", "repo_arch_coupling",
     }
 
 
@@ -135,7 +136,7 @@ class TestStepCostTiers:
             if "zipball_root" in info.requires_resources:
                 assert info.fetch_cost != "none", key
 
-    def test_the_four_zipball_steps_are_exactly_these(self):
+    def test_the_five_zipball_steps_are_exactly_these(self):
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 
         zipball_steps = {
@@ -143,6 +144,16 @@ class TestStepCostTiers:
         }
         assert zipball_steps == {
             "repo_file_inventory", "repo_homepage", "repo_data_profiling", "repo_symbol_extraction",
+            "repo_arch_detect",
+        }
+
+    def test_arch_coupling_uses_git_clone_root_not_zipball(self):
+        """repo_arch_coupling needs real `git log` history, which a zipball
+        does not have — this is the step git_clone_root exists for."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        assert STEP_REGISTRY["repo_arch_coupling"].requires_resources == {
+            "git_clone_root": "local_path"
         }
 
     def test_rag_ingestion_is_the_only_high_compute_cost_step(self):

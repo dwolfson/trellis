@@ -2806,6 +2806,54 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def query_finding_scopes(self, slug: str, kind: str, check_name: str = "") -> list[str]:
+        """Distinct `scope_locator`s that currently have at least one
+        finding row for (slug, kind) — optionally narrowed to one
+        check_name. This is the "list every component" query for a
+        many-scope_locator analysis kind like architecture_recovery
+        (design doc §6.0: a component IS a scope_locator/path prefix),
+        where query_findings' single-scope_locator contract has nothing to
+        enumerate against. Ordered for stable UI rendering, not by recency.
+        """
+        slug = self._normalize_slug(slug)
+        sql = "SELECT DISTINCT scope_locator FROM project_analysis_findings WHERE project_slug = ? AND kind = ?"
+        params: list = [slug, kind]
+        if check_name:
+            sql += " AND check_name = ?"
+            params.append(check_name)
+        sql += " ORDER BY scope_locator"
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [r["scope_locator"] for r in rows]
+
+    def query_findings_all_runs(self, slug: str, kind: str, scope_locator: str) -> list[dict]:
+        """Every finding row ever written for one (kind, scope_locator) —
+        deliberately NOT narrowed to the latest surveyed_at the way
+        query_findings() is.
+
+        architecture_recovery is the one analysis kind where this matters:
+        two independent survey steps (repo_arch_detect, repo_arch_coupling)
+        can each contribute evidence for the SAME component (scope_locator)
+        at DIFFERENT times — they are not required to run in the same
+        SurveyOrchestrator batch. query_findings()'s "latest surveyed_at
+        wins" semantics would silently discard whichever step ran earlier,
+        which is exactly the "which approach proposed this" information the
+        results view exists to show (Phase 1 plan §4.4). Every other caller
+        of the generic findings table writes one kind from one step, where
+        "latest run replaces the previous one" is the right reading — this
+        method exists because that assumption doesn't hold here.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
+                "FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug, kind, scope_locator),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
         """Return file paths, sizes, and git mode bits from the inventory for a project.
 

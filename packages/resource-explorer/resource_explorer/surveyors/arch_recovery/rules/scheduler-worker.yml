@@ -1,0 +1,30 @@
+# design §5.1 "Scheduler / worker" — Celery, APScheduler, cron, Prefect/
+# Airflow DAGs -> Automated Action / Multi-Step Process, `frequency`.
+#
+# VERIFIED. The APScheduler constructor patterns alone scored ZERO against
+# resource_explorer, which reads like "this repo has no scheduler" and is
+# false — RE orchestrates through Prefect (`resource_explorer/prefect/
+# flows.py`). The miss was structural, not a tuning problem: the draft only
+# looked for class construction, and Prefect declares work with DECORATORS.
+#
+# This is the rule the earlier draft deliberately omitted rather than guess at
+# decorator syntax unverified. Testable now, and the omission was the right
+# call — guessing would have produced another silent zero.
+#
+# A zero from a code marker is a finding, not a pass: it means either the
+# technology is genuinely absent (boto3 and kafka in this repo — correct
+# zeros) or the pattern is wrong (this one). The two are indistinguishable
+# without checking, which is why every rule needs a known-positive file.
+id: scheduler-worker
+language: Python
+rule:
+  any:
+    # Prefect — decorator-declared flows and tasks
+    - pattern: "@flow($$$ARGS)"
+    - pattern: "@task($$$ARGS)"
+    # APScheduler — constructor-declared
+    - pattern: BackgroundScheduler($$$ARGS)
+    - pattern: AsyncIOScheduler($$$ARGS)
+    - pattern: BlockingScheduler($$$ARGS)
+    # Celery
+    - pattern: Celery($$$ARGS)

@@ -45,6 +45,8 @@ from trellis_microflow import ResourceProvider
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
     ApiStructureSurveyor,
+    ArchCouplingSurveyor,
+    ArchDetectSurveyor,
     CiQualitySurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
@@ -446,6 +448,45 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # unlike repo_api_structure (a read of already-extracted symbols),
         # this step does the tree-sitter/ast extraction itself, across
         # every supported-language file in the zipball.
+        fetch_cost="download",
+        compute_cost="medium",
+    ),
+    # Architecture recovery — Phase 1 plan §4.2 (docs/architecture-recovery-
+    # phase1-plan.md), ported from scripts/arch-spike (44 findings recorded
+    # there). Two steps rather than one because they need different shared
+    # resources — repo_arch_detect reads files (a zipball is enough),
+    # repo_arch_coupling needs real `git log` history (git_clone_root) for
+    # co-change — but grouped into one Survey Definition they still share
+    # one checkout per resource kind via `_run_batch`. Both write into the
+    # existing `project_analysis_findings`/`project_analysis_metrics`
+    # tables under kind="architecture_recovery" (design doc §5.4/§6.0) —
+    # no new table.
+    "repo_arch_detect": StepInfo(
+        "repo_arch_detect", ArchDetectSurveyor,
+        "Recovers candidate architecture components from package manifests, "
+        "deployment units (Dockerfile/compose), and ast-grep code markers — "
+        "the deterministic half of architecture recovery (design doc §5.1).",
+        ["ResourceMeasureAnnotation", "RequestForActionAnnotation"],
+        accepts_surveyed_at=True,
+        accepts_scope_locator=True,
+        requires_resources={"zipball_root": "local_path"},
+        # Measured on the arch-spike (docs/architecture-recovery-phase1-
+        # findings.md §1): 5.3s per repo for the whole toolchain, so "fast"
+        # is honest rather than optimistic.
+        fetch_cost="download",
+        compute_cost="low",
+    ),
+    "repo_arch_coupling": StepInfo(
+        "repo_arch_coupling", ArchCouplingSurveyor,
+        "Proposes additional architecture-component boundaries from import "
+        "coupling and co-change coupling — the conventional, undeclared "
+        "components (Agents, Core, Surveyors, ...) that manifests and code "
+        "markers structurally cannot see (design doc §5.5, Phase 1 plan "
+        "§4.1). Needs real git history, not just a checkout.",
+        ["ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        accepts_scope_locator=True,
+        requires_resources={"git_clone_root": "local_path"},
         fetch_cost="download",
         compute_cost="medium",
     ),
@@ -918,6 +959,91 @@ def _website_ingestion_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _architecture_recovery_results(registry, slug: str) -> dict:
+    """Phase 1 plan §4.4 — the results view. Reads back what
+    repo_arch_detect/repo_arch_coupling wrote into the generic findings/
+    metrics tables (kind="architecture_recovery") and reassembles it into
+    one component list, each with its evidence and **which approach
+    proposed it** (manifest / deployment / code marker / coupling, and for
+    coupling its shape) — this is the "portfolio legible" requirement, and
+    it falls out of grouping by scope_locator rather than needing an
+    explicit cross-step merge (see persist.py's module docstring).
+
+    Uses query_finding_scopes/query_findings_all_runs (registry.py) rather
+    than the single-scope query_findings, because repo_arch_detect and
+    repo_arch_coupling are independent steps that may run at different
+    times — a component both propose needs evidence from both runs, not
+    just whichever ran most recently.
+    """
+    scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
+    components = []
+    for scope in scopes:
+        rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+        comp_rows = [r for r in rows if r["check_name"] == "component"]
+        evidence_rows = [r for r in rows if r["check_name"] != "component"]
+        if not comp_rows:
+            continue
+        # Latest "component" row per run wins for name/type/confidence —
+        # earlier runs at the same scope_locator are superseded facts about
+        # the SAME component, unlike evidence, which accumulates.
+        latest = max(comp_rows, key=lambda r: r["surveyed_at"])
+        detail = _json_or_empty(latest.get("detail_json"))
+        approaches = sorted({r["label"] for r in evidence_rows if r["label"]})
+        metrics = registry.query_metrics(slug, "architecture_recovery", scope)
+        components.append({
+            "path": scope,
+            "name": detail.get("name", scope),
+            "type": detail.get("type"),
+            "confidence": latest.get("confidence", 0),
+            "perspective": detail.get("perspective", "physical"),
+            "proposed_by": approaches or (detail.get("proposed_by") or []),
+            "surveyed_at": latest.get("surveyed_at", ""),
+            "evidence": [
+                {
+                    "assertion": r["check_name"], "approach": r["label"],
+                    "summary": r["summary"], "confidence": r["confidence"],
+                    "surveyed_at": r["surveyed_at"],
+                }
+                for r in evidence_rows
+            ],
+            "metrics": {k: v for k, v in metrics.items() if k not in ("surveyed_at", "detail")},
+        })
+    components.sort(key=lambda c: c["path"])
+    return {
+        "components": components,
+        "component_count": len(components),
+        "surveyed_at": max((c["surveyed_at"] for c in components), default=""),
+    }
+
+
+def _json_or_empty(raw) -> dict:
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _architecture_recovery_trend(registry, slug: str) -> list[dict]:
+    # Two independent counters (detect/coupling never share a metric_name —
+    # see persist.py's run-summary comment) merged by surveyed_at into one
+    # "total proposed this run" trend point.
+    by_run: dict[str, float] = {}
+    for name in ("detect_component_count", "coupling_component_count"):
+        for r in registry.query_metrics_history(slug, "architecture_recovery", name):
+            by_run[r["surveyed_at"]] = by_run.get(r["surveyed_at"], 0) + r["metric_value"]
+    return [{"surveyed_at": ts, "value": v} for ts, v in sorted(by_run.items())]
+
+
+def _architecture_recovery_headline(registry, slug: str) -> dict | None:
+    result = _architecture_recovery_results(registry, slug)
+    if not result.get("surveyed_at"):
+        return None
+    n = result["component_count"]
+    return {"label": f"{n} component(s) recovered", "status": "info" if n else "warn"}
+
+
 def _website_ingestion_headline(results: dict) -> dict | None:
     """Survey Results dashboard headline. A skip is reported as its own status
     rather than as zero-with-a-warning — "this repo publishes its own site" is a
@@ -1265,6 +1391,18 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _symbol_extraction_results, _symbol_extraction_trend, "custom",
             headline_reader=_symbol_extraction_headline,
+        ),
+    ),
+    # Phase 1 plan §4.2/§4.4 — bundles both architecture-recovery steps the
+    # way language_file_classification bundles three: one card, one Results
+    # view, over both repo_arch_detect's and repo_arch_coupling's combined
+    # output (grouped by scope_locator, not by which step wrote it — see
+    # _architecture_recovery_results' docstring).
+    "architecture_recovery": AnalysisKind(
+        "architecture_recovery", ["repo_arch_detect", "repo_arch_coupling"],
+        results=AnalysisKindResults(
+            _architecture_recovery_results, _architecture_recovery_trend, "custom",
+            headline_reader=_architecture_recovery_headline,
         ),
     ),
 }

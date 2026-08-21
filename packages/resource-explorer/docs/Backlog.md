@@ -79,6 +79,26 @@ exercise, including what "success having done nothing" looks like per step, sinc
 shape none of these tests catch on their own.
 
 
+### Architecture recovery — the PORTED implementation has never been scored
+
+Phase 1's declared numbers (13 of 13 components, 97% coverage, ARI 0.969 —
+`docs/architecture-recovery-phase1-findings.md`) were measured on the **throwaway spike** in
+`scripts/arch-spike/`. What shipped into `resource_explorer/surveyors/arch_recovery/` is a *port*,
+and it has at least one known behavioural difference: the spike merged agreeing proposals at IR
+level and boosted confidence on agreement, while the port discovers agreement at read time by
+grouping on `scope_locator` and does not boost. There may be others; nobody has checked.
+
+**Do not assume the port reproduces the spike's numbers.** Run `score.py` against the ported
+pipeline's output and the pre-registered fixtures, and record the result. If it differs, that is a
+finding either way — the port is wrong, or the merge mattered less than assumed.
+
+This is the same class of error the spike hit three times (README findings 15, 30, 37): assuming a
+property of the code when it was actually a property of how the code was being measured. A port
+that passes its unit tests can still partition differently.
+
+Cheap: `score.py` and the fixtures already exist; only the plumbing from the ported pipeline's
+output to the scorer is new.
+
 ### Architecture recovery — re-check the Phase 1 measurements once there are more samples
 
 **Not a doubt about the current numbers; a limit on what two repos can establish.** Phase 1's
