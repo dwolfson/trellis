@@ -90,6 +90,41 @@ def normalize_github_url(url: str) -> str:
     return (url or "").strip().lower().rstrip("/").removesuffix(".git")
 
 
+def github_org_from_url(address: str) -> str:
+    """The org/user name if this URL names a whole account rather than one repo.
+
+    A repo URL has two path segments (`github.com/apache/airflow`); an account
+    has one (`github.com/apache`). People list both — a foundation's page is the
+    obvious thing to copy when the point is "everything these people publish" —
+    and treating an account URL as a repo simply fails to fetch, which surfaces
+    as an unexplained empty result rather than "that is an organisation".
+
+    Returns "" when the URL is a repo, is not GitHub, or is neither.
+    """
+    from urllib.parse import urlparse
+
+    u = (address or "").strip()
+    if not u:
+        return ""
+    parsed = urlparse(u if "://" in u else f"https://{u}")
+    if "github.com" not in (parsed.netloc or "").lower():
+        return ""
+    parts = [seg for seg in (parsed.path or "").split("/") if seg]
+    # /orgs/<name> is GitHub's own canonical URL for an organisation and is what
+    # the browser address bar shows on an org page, so it is at least as likely
+    # to be pasted as the short form.
+    if len(parts) == 2 and parts[0].lower() == "orgs":
+        return parts[1].removesuffix(".git")
+    if len(parts) != 1:
+        return ""
+    name = parts[0].removesuffix(".git")
+    # Not every one-segment path is an account: these are GitHub's own pages.
+    if name.lower() in {"orgs", "topics", "search", "explore", "features",
+                        "marketplace", "sponsors", "settings", "notifications"}:
+        return ""
+    return name
+
+
 def resource_key(resource_type: str, address: str) -> str:
     """Stable identity for a resource, independent of RE's slug.
 

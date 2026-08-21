@@ -32,10 +32,17 @@ import asyncio
 import json
 from pathlib import Path
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 router = APIRouter()
+
+# Referenced by discover_from_list's unreachable-URL reporting. Its absence
+# made any load containing a single unfetchable repo raise NameError and
+# fail the whole request — invisible until a list contained one.
+log = logging.getLogger(__name__)
 
 # Curated pre-filter list, loaded from configdata/foundation_prefilters.json —
 # a plain JSON file (not a Python constant) so new entries can be added
@@ -339,8 +346,54 @@ class RepoListText(BaseModel):
     text: str
 
 
-@router.post("/from-list", response_model=list[DiscoveredRepo])
-async def discover_from_list(body: RepoListText) -> list[DiscoveredRepo]:
+# One account can hold thousands of repos; a file of five foundation pages must
+# not become an unbounded fetch. Capped and reported as truncated so a partial
+# expansion is never mistaken for the whole account.
+_ORG_EXPAND_LIMIT = 100
+
+
+async def _expand_org(org: str) -> list[str]:
+    """Repo URLs belonging to a GitHub account, newest-activity first.
+
+    Reuses the same search path as the ad-hoc form (`org:X`), so an expanded
+    account and a typed org search return the same repos in the same order.
+    """
+    import asyncio as _asyncio
+
+    from resource_explorer.github.client import GitHubClient
+
+    def _search():
+        return GitHubClient().search_repos(
+            f"org:{org} fork:false archived:false",
+            sort="updated", limit=_ORG_EXPAND_LIMIT)
+
+    repos = await _asyncio.to_thread(_search)
+    return [r["html_url"] for r in repos]
+
+
+class ListLoadResult(BaseModel):
+    """What the file contained, not just what survived it.
+
+    The first version returned a bare list, so a file of 50 rows that yielded 47
+    results looked identical to a file of 47 — the three that were dropped
+    existed only as a log line nobody reads. Loading a list is precisely the
+    moment a user needs to be told what was accepted, because they are about to
+    act on the result as if it were their file.
+    """
+    repos: list[DiscoveredRepo]
+    rows_read: int = 0          # non-blank, non-comment lines that parsed
+    usable: int = 0             # rows that were valid repo addresses
+    already_registered: int = 0
+    skipped: list[str] = []     # "line 5: no address"
+    unreachable: list[str] = []  # addresses GitHub would not return
+    # Account URLs found in the file and what each expanded to. Reported rather
+    # than silently folded in, because "I gave you 3 lines and got 214 repos"
+    # needs an explanation attached to it.
+    expanded_orgs: list[dict] = []
+
+
+@router.post("/from-list", response_model=ListLoadResult)
+async def discover_from_list(body: RepoListText) -> ListLoadResult:
     """Turn a CSV or a plain list of URLs into ordinary discovery results.
 
     Deliberately routed through the same enrichment tail as search, so an
@@ -352,7 +405,7 @@ async def discover_from_list(body: RepoListText) -> list[DiscoveredRepo]:
     step is how a typo'd row, or a repo someone already decided to ignore, ends
     up in the catalog with nobody having looked at it.
     """
-    from resource_explorer.batch_io import parse_csv_text
+    from resource_explorer.batch_io import github_org_from_url, parse_csv_text
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -361,24 +414,64 @@ async def discover_from_list(body: RepoListText) -> list[DiscoveredRepo]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    urls = [r.address for r in rows if r.resource_type == "repo" and not r.errors]
+    candidates = [r.address for r in rows if r.resource_type == "repo" and not r.errors]
+
+    # An account URL ("github.com/apache") names everything those people publish,
+    # not one repo, and fetching it as a repo simply fails — which is how a file
+    # of foundation pages came back empty with nothing explaining why. Expand it
+    # into the same review table instead: that table already *is* the "which of
+    # these do you want" question, so asking it again in a dialog would only add
+    # a step before the same choice.
+    urls: list[str] = []
+    expanded: list[dict] = []
+    for addr in candidates:
+        org = github_org_from_url(addr)
+        if not org:
+            urls.append(addr)
+            continue
+        try:
+            found = await _expand_org(org)
+        except Exception as exc:
+            log.warning("could not expand organisation %s: %s", org, exc)
+            expanded.append({"org": org, "count": 0, "error": str(exc)[:200]})
+            continue
+        urls.extend(found)
+        expanded.append({"org": org, "count": len(found),
+                         "truncated": len(found) >= _ORG_EXPAND_LIMIT})
+
     if not urls:
         # An empty result and "nothing in your file was usable" are different
         # answers; say which.
         bad = [f"line {r.line}: {'; '.join(r.errors)}" for r in rows if r.errors][:5]
+        if expanded:
+            bad.append("organisation(s) expanded to no repos: "
+                       + ", ".join(e["org"] for e in expanded))
         detail = ("No usable repo rows found. "
                   + ("Problems: " + "; ".join(bad) if bad else
                      "Expected one GitHub URL per line, or a CSV with an 'address' column."))
         raise HTTPException(status_code=400, detail=detail)
 
     repos = await _run_list_urls(urls, registry)
-    # A URL that could not be fetched is dropped by _run_list_urls. Report the
-    # count rather than letting 40 lines quietly become 31 results.
-    fetched = {r["html_url"].lower().rstrip("/") for r in repos}
-    for u in urls:
-        if u.lower().rstrip("/").removesuffix(".git") not in fetched:
-            log.warning("discovery from-list: could not fetch %s", u)
-    return _enrich_repos(repos, registry)
+    # _run_list_urls drops a URL GitHub will not return. Reported rather than
+    # logged: 40 lines quietly becoming 31 results is the failure this endpoint
+    # is most likely to produce, and a log line is not an answer to "did my file
+    # load?".
+    fetched = {r["html_url"].lower().rstrip("/").removesuffix(".git") for r in repos}
+    unreachable = [u for u in urls
+                   if u.lower().rstrip("/").removesuffix(".git") not in fetched]
+    for u in unreachable:
+        log.warning("discovery from-list: could not fetch %s", u)
+
+    enriched = _enrich_repos(repos, registry)
+    return ListLoadResult(
+        repos=enriched,
+        rows_read=len(rows),
+        usable=len(urls),
+        already_registered=sum(1 for r in enriched if r.already_registered),
+        skipped=[f"line {r.line}: {'; '.join(r.errors)}" for r in rows if r.errors],
+        unreachable=unreachable,
+        expanded_orgs=expanded,
+    )
 
 
 @router.post("/search", response_model=list[DiscoveredRepo])

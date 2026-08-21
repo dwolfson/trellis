@@ -256,12 +256,12 @@ class TestFromListRoute:
         r = client.post("/api/discovery/from-list",
                         json={"text": "https://github.com/tobymao/sqlglot\n"})
         assert r.status_code == 200
-        assert r.json()[0]["already_registered"] is True
+        assert r.json()["repos"][0]["already_registered"] is True
 
     def test_a_new_repo_is_not_marked(self, client):
         r = client.post("/api/discovery/from-list",
                         json={"text": "https://github.com/apache/airflow\n"})
-        assert r.json()[0]["already_registered"] is False
+        assert r.json()["repos"][0]["already_registered"] is False
 
     def test_the_route_registers_nothing(self, client, registry):
         before = len(registry.list_all())
@@ -292,7 +292,7 @@ class TestFromListRoute:
 
         resp = client.post("/api/discovery/from-list", json={"text": buf.getvalue()})
         assert resp.status_code == 200
-        assert all(x["already_registered"] for x in resp.json())
+        assert all(x["already_registered"] for x in resp.json()["repos"])
 
 
 class TestInventoryDownloadRoute:
@@ -347,7 +347,7 @@ class TestInventoryDownloadRoute:
             disc._run_list_urls = original
 
         assert resp.status_code == 200
-        assert all(x["already_registered"] for x in resp.json())
+        assert all(x["already_registered"] for x in resp.json()["repos"])
 
     def test_it_reflects_the_registry_at_request_time(self, client, registry):
         """No caching: a stale scorecard that looks authoritative is the failure
@@ -358,3 +358,156 @@ class TestInventoryDownloadRoute:
                              github_url="https://github.com/n/one", description=""))
         after = len(client.get("/api/discovery/inventory.csv").text.strip().splitlines())
         assert after == before + 1
+
+
+class TestLoadReportsWhatHappenedToTheFile:
+    """A file that loses rows on the way in has to say so.
+
+    The route first returned a bare list, so 50 rows yielding 47 results looked
+    identical to a file of 47 — the three dropped rows existed only in a server
+    log. "I loaded the file and got no confirmation" is what that produces.
+    """
+
+    @pytest.fixture
+    def client(self, registry, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from resource_explorer.web.app import app
+
+        monkeypatch.setattr("resource_explorer.registry.ProjectRegistry",
+                            lambda *a, **kw: registry)
+
+        async def fake_list_urls(urls, reg):
+            # Anything with "missing" in it is treated as unfetchable, standing in
+            # for a renamed or private repo — the common case in an edited file.
+            return [{"full_name": "x/y", "html_url": u, "description": "", "stars": 0,
+                     "language": "", "license": "", "forks": 0, "archived": False,
+                     "fork": False, "updated_at": ""}
+                    for u in urls if "missing" not in u]
+
+        monkeypatch.setattr("resource_explorer.web.routes.discovery._run_list_urls",
+                            fake_list_urls)
+        return TestClient(app)
+
+    def test_it_counts_rows_read_against_repos_listed(self, client):
+        d = client.post("/api/discovery/from-list", json={"text":
+            "https://github.com/a/b\nhttps://github.com/c/d\n"}).json()
+        assert d["rows_read"] == 2 and len(d["repos"]) == 2
+
+    def test_skipped_rows_are_named_with_their_line(self, client):
+        d = client.post("/api/discovery/from-list", json={"text":
+            "https://github.com/a/b\nthis is not a url\n"}).json()
+        assert len(d["skipped"]) == 1 and "line 2" in d["skipped"][0]
+
+    def test_unreachable_repos_are_named_not_just_dropped(self, client):
+        """The quiet one: GitHub not returning a repo removed it from the results
+        with nothing said, so an edited file with a renamed repo came back short."""
+        d = client.post("/api/discovery/from-list", json={"text":
+            "https://github.com/a/b\nhttps://github.com/org/missing-repo\n"}).json()
+        assert d["usable"] == 2
+        assert len(d["repos"]) == 1
+        assert d["unreachable"] == ["https://github.com/org/missing-repo"]
+
+    def test_an_unreachable_repo_does_not_fail_the_whole_load(self, client):
+        """It did: the unreachable-reporting loop referenced an undefined `log`,
+        so one unfetchable repo raised NameError and 500'd the request — latent
+        until a list actually contained one."""
+        r = client.post("/api/discovery/from-list", json={"text":
+            "https://github.com/a/b\nhttps://github.com/org/missing-repo\n"})
+        assert r.status_code == 200
+
+    def test_already_registered_is_counted(self, client):
+        d = client.post("/api/discovery/from-list", json={"text":
+            "https://github.com/tobymao/sqlglot\nhttps://github.com/a/b\n"}).json()
+        assert d["already_registered"] == 1
+
+
+class TestOrganisationUrlsAreExpanded:
+    """A file may list an account page rather than a repo.
+
+    "https://github.com/apache" is the obvious thing to copy when the point is
+    "everything these people publish", and fetching it as a repo simply fails —
+    so a file of foundation pages came back empty with nothing explaining why.
+    """
+
+    @pytest.mark.parametrize("url,expected", [
+        ("https://github.com/apache", "apache"),
+        ("github.com/cncf", "cncf"),
+        ("https://github.com/apache/", "apache"),
+        # GitHub's own canonical org URL, and what the address bar shows.
+        ("https://github.com/orgs/apache", "apache"),
+    ])
+    def test_account_urls_are_recognised(self, url, expected):
+        from resource_explorer.batch_io import github_org_from_url
+
+        assert github_org_from_url(url) == expected
+
+    @pytest.mark.parametrize("url", [
+        "https://github.com/apache/airflow",     # a repo
+        "https://gitlab.com/some-group",         # not GitHub
+        "https://github.com/topics/python",      # GitHub's own pages
+        "https://github.com/search",
+        "",
+    ])
+    def test_non_accounts_are_left_alone(self, url):
+        """A false positive here is expensive: a repo mistaken for an account
+        would pull in that account's entire output instead of the one repo."""
+        from resource_explorer.batch_io import github_org_from_url
+
+        assert github_org_from_url(url) == ""
+
+    def test_an_account_row_expands_and_says_so(self, registry, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from resource_explorer.web.app import app
+
+        monkeypatch.setattr("resource_explorer.registry.ProjectRegistry",
+                            lambda *a, **kw: registry)
+
+        async def fake_expand(org):
+            return [f"https://github.com/{org}/one", f"https://github.com/{org}/two"]
+
+        async def fake_list_urls(urls, reg):
+            return [{"full_name": u.split("github.com/")[-1], "html_url": u,
+                     "description": "", "stars": 0, "language": "", "license": "",
+                     "forks": 0, "archived": False, "fork": False, "updated_at": ""}
+                    for u in urls]
+
+        import resource_explorer.web.routes.discovery as disc
+        monkeypatch.setattr(disc, "_expand_org", fake_expand)
+        monkeypatch.setattr(disc, "_run_list_urls", fake_list_urls)
+
+        d = TestClient(app).post("/api/discovery/from-list",
+                                 json={"text": "https://github.com/acme\n"}).json()
+
+        assert len(d["repos"]) == 2
+        # One line in, two repos out — the count has to be explained, or it reads
+        # as the loader inventing rows.
+        assert d["rows_read"] == 1
+        assert d["expanded_orgs"] == [{"org": "acme", "count": 2, "truncated": False}]
+
+    def test_a_failed_expansion_is_reported_not_swallowed(self, registry, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from resource_explorer.web.app import app
+
+        monkeypatch.setattr("resource_explorer.registry.ProjectRegistry",
+                            lambda *a, **kw: registry)
+
+        async def boom(org):
+            raise RuntimeError("rate limited")
+
+        async def fake_list_urls(urls, reg):
+            return [{"full_name": "x/y", "html_url": u, "description": "", "stars": 0,
+                     "language": "", "license": "", "forks": 0, "archived": False,
+                     "fork": False, "updated_at": ""} for u in urls]
+
+        import resource_explorer.web.routes.discovery as disc
+        monkeypatch.setattr(disc, "_expand_org", boom)
+        monkeypatch.setattr(disc, "_run_list_urls", fake_list_urls)
+
+        d = TestClient(app).post("/api/discovery/from-list", json={
+            "text": "https://github.com/acme\nhttps://github.com/a/b\n"}).json()
+
+        assert d["repos"], "one bad org must not lose the rest of the file"
+        assert d["expanded_orgs"][0]["error"]

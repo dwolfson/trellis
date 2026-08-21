@@ -9434,6 +9434,54 @@ async function searchScoutRepos() {
 }
 
 
+function _renderListLoadSummary(filename, d) {
+  // A file that loses rows on the way in must say so at the moment it happens.
+  // The first version reported only how many results came back, so 50 rows
+  // yielding 47 looked exactly like a file of 47 — and the three that were
+  // dropped existed only in a server log.
+  const el = document.getElementById('scout-list-feedback');
+  if (!el) { showToast('success', `${filename}: ${(d.repos||[]).length} repo(s) listed below.`, 6000); return; }
+
+  const shown = (d.repos || []).length;
+  const lost = (d.rows_read || 0) - shown;
+  const parts = [
+    `<span class="text-emerald-400">✓ ${_esc(filename)} loaded</span>`,
+    `<span class="text-slate-400">${d.rows_read} row(s) read → <strong class="text-slate-200">${shown}</strong> listed below`
+      + (d.already_registered ? `, ${d.already_registered} already registered` : '') + `.</span>`,
+  ];
+  // Explain a row count that grew. "I gave you 3 lines and got 214 repos" needs
+  // a reason attached, and a truncated account must not read as the whole one.
+  if ((d.expanded_orgs || []).length) {
+    const bits = d.expanded_orgs.map(o => o.error
+      ? `<span class="text-amber-400">${_esc(o.org)} (could not expand: ${_esc(o.error)})</span>`
+      : `${_esc(o.org)} → ${o.count} repo(s)${o.truncated ? ' <span class="text-amber-400">(first ' + o.count + ' only)</span>' : ''}`);
+    parts.push('<span class="text-cyan-400">Organisation URL(s) expanded:</span> '
+      + `<span class="text-slate-400">${bits.join('; ')}</span>`);
+  }
+  if ((d.skipped || []).length) {
+    parts.push(`<span class="text-amber-400">${d.skipped.length} row(s) skipped:</span> `
+      + `<span class="text-slate-500">${d.skipped.slice(0, 5).map(_esc).join('; ')}`
+      + (d.skipped.length > 5 ? ` … and ${d.skipped.length - 5} more` : '') + `</span>`);
+  }
+  if ((d.unreachable || []).length) {
+    parts.push(`<span class="text-amber-400">${d.unreachable.length} not found on GitHub:</span> `
+      + `<span class="text-slate-500">${d.unreachable.slice(0, 5).map(_esc).join(', ')}`
+      + (d.unreachable.length > 5 ? ` … and ${d.unreachable.length - 5} more` : '') + `</span>`);
+  }
+  // The step people expect to have already happened. Loading only lists
+  // candidates for review; nothing reaches the catalog or the left-hand list
+  // until rows are selected and imported.
+  if (shown) {
+    parts.push('<span class="text-cyan-400">Nothing is registered yet — select rows below '
+      + 'and use “Import Selected” to add them to the catalog.</span>');
+  }
+  el.innerHTML = parts.map(x => `<div>${x}</div>`).join('');
+  showToast(lost > 0 ? 'info' : 'success',
+    `${filename}: ${shown} repo(s) listed` + (lost > 0 ? `, ${lost} not usable` : '')
+      + '. Select rows and Import Selected to register them.', 7000);
+}
+
+
 function _listFeedback(msg, isError) {
   const el = document.getElementById('scout-list-feedback');
   if (el) {
@@ -9506,12 +9554,11 @@ async function _loadRepoListFromFile(input) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${res.status}`);
     }
-    _scoutResults = await res.json();
+    const d = await res.json();
+    _scoutResults = d.repos || [];
     _scoutFilterText = '';
-    const already = _scoutResults.filter(r => r.already_registered).length;
-    _listFeedback(`${file.name}: ${_scoutResults.length} repo(s)`
-      + (already ? ` — ${already} already registered` : ''), false);
     renderScoutResults();
+    _renderListLoadSummary(file.name, d);
   } catch(e) {
     _listFeedback(`Could not load ${file.name}: ${e.message}`, true);
   }
