@@ -644,3 +644,30 @@ Two honest limits on the numbers above:
   by majority vote and shows as missed when its subtree was in fact proposed. Real coverage is
   probably 12 of 13. **Do not quote 11/13 as final** — proper scoring runs through `score.py`
   against the pre-registered fixture, and that is the next step.
+
+**36. The proposer produces ZERO candidates on the second target — the subtree rule assumes a
+layout the estate does not always have.** `coupling.classify_subtree` was validated on trellis
+(11 of 13). Run against `egeria-workspaces`, which has 306 resolved import edges and is not short
+of signal, it proposes **nothing**.
+
+Diagnosed rather than assumed (finding 19's rule): `PyegeriaWebHandler` is a **flat** module
+directory — every `.py` file sits directly in it, with only `tests/` beneath. `_subtree_for`
+requires at least two path parts under a package root, so a flat application has no subpackages to
+partition by and the candidate set is empty. The zero is real, not an invocation error.
+
+This is the generalisation risk the Phase 1 plan named as its second, arriving sooner than
+expected and for a different reason than predicted. It is **not** a language problem — both
+targets are Python. It is a *layout* problem: the boundary rule inherits directory structure from
+the manifest, and a repo with no internal directory structure offers it nothing.
+
+Two consequences for Phase 1:
+
+- **The ≥9-components target is currently met on one repo out of two**, and single-app repos are
+  common. Discovery-sufficiency cannot be claimed on trellis alone.
+- **A flat repo needs a boundary source that is not the directory tree** — co-change clusters over
+  individual files, or naming, or distillation. That is a different mechanism, not a tuning
+  change, and it should be decided before the port rather than discovered after it.
+
+Separately: the Java adversarial target is blocked. `egeria` has **zero** tracked `.py` files and
+`imports.py` extracts Python only, so the "does this generalise beyond a well-factored Python
+monorepo?" question cannot be answered with the current extractor at all.
