@@ -75,6 +75,9 @@ class Component:
     confidence: int = 50
     confidence_level: str = "Derived"
     blueprint: str = ""                                  # solution deployment (§8.2b)
+    # Which approach(es) proposed this component. Plural because independent
+    # agreement is a signal in its own right (Phase 1 §4.4, portfolio note §3).
+    proposed_by: list[str] = field(default_factory=list)
     # design §4.1 — physical/deployment/logical/dev. NOT interchangeable, and a
     # component is only ever comparable to ground truth in its own perspective
     # (plan §5a). Finding 15/16: a Dockerfile-directory component and the

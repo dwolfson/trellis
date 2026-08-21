@@ -9,17 +9,88 @@ writes, no Egeria, no Prefect, no network. Reads a local checkout, writes JSON.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
 import exclusion
-from detectors import build_components
+from detectors import build_components, python_manifests
 from ir import IR
+
+SPIKE_DIR = os.path.dirname(os.path.abspath(__file__))
+SIGNALS_DIR = os.path.join(SPIKE_DIR, "signals")
+
+
+def _coupling_components(root: str, target: str, first_party: list[str]) -> tuple[list, list, list]:
+    """§4.1 — coupling as proposer. Optional: only runs when `imports.py` has
+    already been run for this target (`signals/{target}-imports.json`), same
+    graceful-absence pattern `code_markers.scan` uses for a missing ast-grep
+    binary — a missing precomputed signal is a note, not an error, so targets
+    with no signal file (or no Python) still produce a valid IR."""
+    path = os.path.join(SIGNALS_DIR, f"{target}-imports.json")
+    if not os.path.isfile(path):
+        return [], [], [f"coupling: no signals/{target}-imports.json — run imports.py "
+                        f"first; coupling proposer skipped"]
+    with open(path, encoding="utf-8") as fh:
+        sig = json.load(fh)
+    import coupling  # local: keeps detect.py's default (no-coupling) path free of this import
+    package_roots = sorted({m["dir"] for m in python_manifests(root, first_party)}) or ["."]
+    return coupling.propose(set(first_party), package_roots, sig.get("edges", []))
+
+
+def _merge_agreeing(components: list) -> tuple[list, list]:
+    """Collapse components that different approaches proposed for the SAME
+    file set, and treat the agreement as evidence rather than as a duplicate.
+
+    Independent approaches converging on one boundary is the strongest signal
+    this design produces — it is what the portfolio model (see
+    docs/approach-portfolio-model.md) exists to exploit — and before this it
+    surfaced as two rows in the IR and a double-count in every score.
+
+    Merge rules, in order of what each approach can honestly contribute:
+
+    - **Type comes from whichever approach can supply one.** A code marker
+      knows a subtree serves HTTP; coupling knows only *where* a boundary is,
+      never what kind of thing sits inside it. So a marker-derived type wins
+      over `None`, and coupling-only components keep `None` rather than being
+      given a guessed type — classification is distillation's job (§5.2).
+    - **Confidence rises with agreement**, capped at 95: two independent
+      approaches agreeing is worth more than either alone, but never certainty.
+    - **Every contributing slug is kept** in `proposed_by`, because Phase 1
+      §4.4 wants the portfolio legible — which approach found what is a
+      first-class question, not debug output.
+    """
+    by_files: dict[tuple, list] = {}
+    for c in components:
+        by_files.setdefault(tuple(sorted(c.files)), []).append(c)
+
+    merged, notes = [], []
+    for files, group in by_files.items():
+        if len(group) == 1 or not files:
+            merged.extend(group)
+            continue
+        typed = next((c for c in group if c.type is not None), None)
+        winner = typed or group[0]
+        winner.confidence = min(95, max(c.confidence for c in group) + 10 * (len(group) - 1))
+        winner.proposed_by = sorted({c.slug.split("::")[0] for c in group})
+        merged.append(winner)
+        notes.append(f"{files[0]}: proposed independently by "
+                     f"{', '.join(winner.proposed_by)} — merged, confidence raised to "
+                     f"{winner.confidence}")
+    return merged, notes
 
 
 def run(root: str, target: str, extra_excludes: tuple[str, ...] = ()) -> IR:
     census = exclusion.scan(root, extra_excludes)
     components, evidence, notes = build_components(root, census.first_party)
+
+    cc, ce, cn = _coupling_components(root, target, census.first_party)
+    components.extend(cc)
+    evidence.extend(ce)
+    notes.extend(cn)
+
+    components, merge_notes = _merge_agreeing(components)
+    notes.extend(merge_notes)
     ir = IR(target=target, checkout=census.root, census=census.as_dict(),
             components=components, evidence=evidence, notes=notes)
     if census.first_party_ratio < 0.5:

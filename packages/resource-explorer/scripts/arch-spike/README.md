@@ -729,3 +729,52 @@ the domain was being measured. The pattern is worth carrying into Phase 1: **whe
 something surprising about the code, suspect the measurement before revising the model** — all
 three were caught by checking a number against something already known to be true, and none by
 reasoning about the design.
+
+---
+
+## Phase 1 §4.1 scored — targets met
+
+**40. With coupling wired in as a proposer and agreeing proposals merged, trellis scores 12 of 13
+components and ARI 0.965.**
+
+| Phase 1 §5 target | Phase 0 | now | |
+|---|---|---|---|
+| components (T2) | 4 of 11 | **12 of 13** | met |
+| file coverage, in scope | 21% | **87%** (165 of 190 GT-assigned) | met |
+| partition accuracy, ARI | 0.56 | **0.965** (NMI 0.973) | met, floor held |
+
+**Ten of the twelve are exact file-set matches** — `CLI`, `Textual TUI`, `RAG ingestion`,
+`Agents`, `Observability`, `Prefect orchestration`, `Surveyors`, `Core`, `trellis-microflow`,
+`trellis-vectorstore` all at F1 1.0. `Web backend` 0.84, `Web front-end` 0.63.
+
+`Core` at F1 1.0 is the one worth pausing on: it was unrecoverable in Phase 0 by any mechanism
+tried, and it is recovered exactly by the connective-library rule (finding 34).
+
+The single miss is `Utility scripts` at F1 0.42, and the cause is mundane — the proposer emits
+`scripts/*` where the ground truth says `scripts/**`. A non-recursive glob against a recursive
+one, not a boundary disagreement.
+
+**41. Agreement between approaches was surfacing as a duplicate instead of as confidence.** Two
+approaches proposing the same file set produced two IR components and double-counted in every
+score. They are now merged: type comes from whichever approach can supply one (a code marker knows
+a subtree serves HTTP; coupling knows only *where* a boundary is), confidence rises with agreement
+capped at 95, and every contributing approach is kept in `proposed_by` so the portfolio stays
+legible (Phase 1 §4.4).
+
+Coupling-only components deliberately keep `type = None`. Coupling locates boundaries; it does not
+classify them, and inventing a type from the shape would be exactly the over-claiming §5.2 assigns
+to distillation instead. 17 of 27 components currently have no type — that is honest, and it is
+the concrete size of the naming-and-classification job distillation inherits.
+
+**42. Component-set F1 remains 0.00, and it is still the wrong measure** (finding 21). The
+detector emits `agents`, `surveyors`, `cli`; the ground truth says `Agents`, `Surveyors`, `CLI`.
+The boundaries are identical — ARI 0.965 — and only the names differ, several of them by
+capitalisation alone. **Do not read 0.00 as a failure**; read the file-partition numbers, which is
+what §5a of the plan says to do for the logical perspective.
+
+**43. Two measurement scripts in a row collided on non-unique component names.** A components-by-
+name dict silently dropped one of two `PyegeriaWebHandler` entries in `coupling.py`, and while
+scoring this result the same mistake reproduced in a throwaway matcher, where two components named
+`cli` (one in resource-explorer, one in egeria-advisor) overwrote each other and made `CLI` look
+like a 0.02 miss. **Component names are not unique; slugs are.** Key by slug, always — the design
+says as much in §8.2 and it has now cost two debugging detours.

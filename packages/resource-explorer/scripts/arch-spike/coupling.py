@@ -381,6 +381,138 @@ def modularity_contribution(internal: float, degree: float, total_weight: float)
     return internal / total_weight - (degree / (2 * total_weight)) ** 2
 
 
+# ── wiring classify_subtree into actual Component proposals ──────────────
+#
+# `classify_subtree` above was written and never called from `run()` — it
+# scored candidate subtrees for the boundary-stats/candidate-boundaries
+# report (Task 3), which is a DIAGNOSTIC over a partition someone else
+# proposed. Phase 1 plan §4.1 wants the opposite: coupling contributing
+# `Component` entries to the IR itself, the same shape `code_markers.propose`
+# already emits, so `score.py` needs no second code path to read them.
+#
+# Only import edges feed this — they are directional (source -> target),
+# which `fan_in`/`fan_out` requires. Co-change pairs are undirected and are
+# deliberately not fed through here.
+
+def _neighbor_breakdown(file_subtree: dict[str, str], edges: list[dict],
+                        src_key: str, tgt_key: str, weight_key: str) -> dict[str, dict]:
+    """subtree -> {"internal": w, "fan_in": {other_subtree: w}, "fan_out": {other_subtree: w}}.
+
+    fan_in/fan_out are keyed by NEIGHBOURING CANDIDATE SUBTREES, not files —
+    that is what makes dispersion meaningful ("spread across 14 others",
+    finding 34). An edge whose far end has no candidate subtree (a loose
+    top-level file, an excluded path) contributes to neither dict: it is
+    real external traffic but has no neighbour identity to disperse across,
+    so counting it would understate cohesion without informing dispersion.
+    """
+    table: dict[str, dict] = {}
+
+    def row(sub: str) -> dict:
+        return table.setdefault(sub, {"internal": 0, "fan_in": {}, "fan_out": {}})
+
+    for e in edges:
+        sa, sb = file_subtree.get(e[src_key]), file_subtree.get(e[tgt_key])
+        if sa is None and sb is None:
+            continue
+        w = e.get(weight_key, 1)
+        if sa is not None and sa == sb:
+            row(sa)["internal"] += w
+        elif sa is not None and sb is not None:
+            row(sa)["fan_out"][sb] = row(sa)["fan_out"].get(sb, 0) + w
+            row(sb)["fan_in"][sa] = row(sb)["fan_in"].get(sa, 0) + w
+        # else: one side has no candidate subtree — external traffic with no
+        # neighbour identity, deliberately not counted (see docstring).
+    return table
+
+
+def _subtree_glob(sub: str, package_roots: list[str]) -> str:
+    """The glob that matches exactly the files `_subtree_for` assigned to
+    `sub` — not an approximation, and this is the part the task brief warned
+    about by name: the old ad-hoc measurement's `resource_explorer/` prefix
+    match swallowed every nested file and attributed `Core` to `Surveyors` by
+    majority vote (README finding 35/36's caveat). Using `{sub}/**`
+    unconditionally here would reintroduce exactly that bug, one level down.
+
+    `_subtree_for` only ever produces subtree names of two shapes: `<root>/X`
+    (files sitting DIRECTLY in X — a deeper file under X/Y is claimed by the
+    *other*, longer-named bucket `<root>/X/Y` instead, never by this one) and
+    `<root>/X/Y` (files anywhere under X/Y, any depth — parts beyond the
+    second are ignored by `_subtree_for`, so this bucket DOES recurse). A
+    one-segment bucket must not use a recursive glob or it silently claims
+    files a sibling bucket already owns.
+    """
+    best = max((p for p in package_roots
+               if sub == p or sub.startswith(p.rstrip("/") + "/") or p == "."),
+              key=len, default=None)
+    inner = sub if best is None or best == "." else sub[len(best):].lstrip("/")
+    depth = inner.count("/") + 1 if inner else 0
+    return f"{sub}/**" if depth >= 2 else f"{sub}/*"
+
+
+def propose(tracked: set[str], package_roots: list[str],
+           import_edges: list[dict]) -> tuple[list, list, list]:
+    """Coupling as PROPOSER (plan §4.1) — subtrees classified `cohesive`,
+    `connective-library` or `connective-orchestrator` become `Component`
+    entries with `perspective="logical"`, the same perspective
+    `code_markers.propose` uses, so `score.py` scores both through one path.
+    `merge-candidate` subtrees are deliberately never emitted — they are the
+    one shape `classify_subtree` says is NOT a component (finding 34).
+
+    Thresholds (`COHESIVE_BAR`, `DISPERSION_BAR`) are read as-is, never
+    adjusted here — task rule: never tune a threshold to move a score.
+    """
+    from ir import Component, Evidence, Identity, Location  # local: matches code_markers' import style
+
+    all_files = sorted(tracked)
+    file_subtree = candidate_subtrees(all_files, package_roots)
+    subtree_files: dict[str, set[str]] = {}
+    for f, s in file_subtree.items():
+        subtree_files.setdefault(s, set()).add(f)
+
+    breakdown = _neighbor_breakdown(file_subtree, import_edges, "source", "target", "weight")
+
+    components: list = []
+    evidence: list = []
+    notes: list[str] = []
+    shape_counts: dict[str, int] = {}
+
+    for sub, files in sorted(subtree_files.items()):
+        if len(files) < 2:
+            continue
+        row = breakdown.get(sub, {"internal": 0, "fan_in": {}, "fan_out": {}})
+        shape, confidence, why = classify_subtree(row["internal"], row["fan_in"], row["fan_out"])
+        shape_counts[shape] = shape_counts.get(shape, 0) + 1
+        if shape == "merge-candidate":
+            continue
+
+        name = os.path.basename(sub.rstrip("/")) or sub
+        slug = "coupling::" + sub.replace("/", "::")
+        # type left None: coupling establishes a BOUNDARY, not a
+        # SolutionComponentType — that needs a code marker or a human, and
+        # asserting one here would overstate what this signal knows.
+        components.append(Component(
+            slug=slug, name=name, type=None,
+            identity=Identity("module-path", sub),
+            files=[_subtree_glob(sub, package_roots)], confidence=int(confidence),
+            confidence_level="Derived", perspective="logical",
+        ))
+        evidence.append(Evidence(
+            subject_kind="component", subject_slug=slug,
+            assertion=f"coupling shape = {shape}",
+            detector=f"coupling:{shape}",
+            locations=[Location(sub, 0, why)],
+            confidence=int(confidence), confidence_level="Derived",
+        ))
+
+    notes.append(
+        f"coupling: {len(components)} logical components proposed from "
+        f"{len(subtree_files)} candidate subtrees "
+        f"(shapes: {', '.join(f'{k}={v}' for k, v in sorted(shape_counts.items()))}; "
+        f"COHESIVE_BAR={COHESIVE_BAR}, DISPERSION_BAR={DISPERSION_BAR})"
+    )
+    return components, evidence, notes
+
+
 # ── driving one target ──────────────────────────────────────────────────
 
 def run(target: str, gt_name: str, root_override: str | None, min_cohesion: float) -> dict:
