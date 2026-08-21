@@ -12,6 +12,73 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ## Open items
 
+### Testing strategy — four silent-failure classes, one built, three open
+
+Eight faults found on 2026-08-20 shared one shape: **the code ran, reported success, and did
+nothing.** None threw. Each was found by hand, late, after the capability had been "done" for
+a while, and every one of them passed its own module's tests. What they had in common was a
+gap *between* two components, invisible from inside either.
+
+**BUILT — `tests/test_reachability_audit.py`.** Structural comparison of every registry
+against the surface meant to expose it: steps vs. survey types, analysis kinds vs. catalog
+entries vs. dispatch, generated documents vs. the batch manifest, intents vs. rule 17's
+canonical eight. Verified against the real historical faults rather than assumed — replaying
+`repo_website_ingestion`'s orphan state, the 4-of-7 batch manifest, and a typo'd intent each
+fails it. Deliberately asserts only that things are wired together, never that they work;
+behaviour is each capability's own job, and these bugs all passed those tests.
+
+Note it excludes the `*` (Full Survey) sentinel on purpose. That bundle is generated *from*
+STEP_REGISTRY, so it can never be missing anything, and counting it would have declared
+`repo_website_ingestion` reachable on the day it was reachable from nothing.
+
+### Open — a "no silent success" check over 197 swallow-and-continue handlers
+
+`resource_explorer` has 197 broad `except` handlers whose body only logs. Most are legitimate
+best-effort writes; the problem is that nothing distinguishes those from the ones that hide a
+defect. Two did exactly that this session: `EgeriaDatabaseSurveyor.catalog_and_survey`
+returned success while swallowing a stale-GUID 404, and `run_prefect_step` reported "API
+dispatch failed" for an `UnboundLocalError` that made the whole Prefect API path unreachable.
+
+Proposed rule, not yet built: a handler that swallows *and whose function still reports
+success* must record something observable — a metric, an error field, a divergence row. That
+is precisely the fix applied to both sites above. Invasive across 197 call sites, so it wants
+a design pass and probably a staged rollout (new code first, then per-module), rather than a
+sweep.
+
+### Open — pin real dependency error payloads as fixtures, and a live smoke tier
+
+Several of these were findable *only* against live Egeria: which paths actually consume a
+cached GUID, a divergence swallowed by a non-fatal handler, and the real error codes. The
+live probe corrected two things this backlog had recorded from the original report — the
+outer code is `OMAG-REPOSITORY-HANDLER-404-007`, not `OMRS-REPOSITORY-404-007`, and the
+response self-labels `CLIENT_ERROR_400` while `relatedHTTPCode` is 404.
+
+Two pieces: capture real error payloads verbatim as fixtures (started —
+`tests/test_egeria_linkage_divergence.py`'s `LIVE_ERROR`) rather than paraphrasing them; and
+add a marked live smoke tier that skips when Egeria is unreachable, in the shape of the
+existing `requires_pgvector` tier. No mock would have found the three faults above, so this
+is not a substitute for unit tests but the only cover for that class.
+
+### Open — grow the repo corpus substantially, as a bug-finding strategy
+
+37 repos registered, 9 with a derived homepage, 5 groups. That small corpus has already been
+the single most productive source of real defects: of the handful of repos with homepages,
+three exhibited distinct, unanticipated shapes — `sqlglot.com` is a 138-byte pdoc
+meta-refresh stub (ingest reported success having embedded nothing), `kedro_plugins` declares
+its own GitHub URL as its homepage (would have ingested forge chrome as documentation), and
+`docs.unitycatalog.com` no longer resolves. Versioned-vs-unversioned sitemaps and
+site-built-from-an-ingested-repo came from the same handful.
+
+That is a very high defect rate per repo, and it argues the corpus is the limiting factor on
+finding the next class of bug rather than the test suite is. RE already has the machinery to
+act on this — org import and the Discovery search/list sources — so this is a matter of
+deliberately importing breadth (several foundations, several languages, monorepos, archived
+and fork-heavy orgs, repos with no docs at all) and then running the full survey set across
+it looking for steps that report success having done nothing. Worth planning as its own
+exercise, including what "success having done nothing" looks like per step, since that is the
+shape none of these tests catch on their own.
+
+
 ### Architecture recovery — re-check the Phase 1 measurements once there are more samples
 
 **Not a doubt about the current numbers; a limit on what two repos can establish.** Phase 1's
