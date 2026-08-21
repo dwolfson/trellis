@@ -1201,6 +1201,34 @@ let _dbMap           = {};  // slug → DatabaseSummary, populated by renderData
 let _fsMap           = {};  // slug → FileSystemSummary
 let _groups          = [];  // list of GroupSummary from /api/projects/groups
 let _scoutResults    = [];  // list of DiscoveredRepo from POST /api/discovery/search
+// Hide rows that cannot be acted on. Off by default: a row silently absent is
+// indistinguishable from one that never loaded, and seeing "already registered"
+// is what confirms a loaded file actually matched. Sorting new rows first
+// (below) solves the findability problem this would otherwise be needed for.
+let _scoutHideRegistered = false;
+let _scoutResultsSource = '';  // human description of what produced _scoutResults
+// Which source pane is showing. Two inputs fill one results table, and you use
+// one at a time — stacking both cost a screenful of scrolling between the input
+// and its results, and side-by-side was worse: the search form is eight fields
+// plus chips, the list form is two buttons, so equal columns squeeze one and
+// waste the other. A third source (GitLab) becomes another segment; it would
+// not become a third column.
+// Remembered across renders because whichever you used last is almost always
+// the one you want next.
+let _scoutSourceMode = (() => {
+  try { return localStorage.getItem('re.scoutSourceMode') || 'search'; }
+  catch (_) { return 'search'; }
+})();
+
+async function _setScoutSourceMode(mode) {
+  _scoutSourceMode = mode;
+  try { localStorage.setItem('re.scoutSourceMode', mode); } catch (_) {}
+  // Rebuilding the pane empties the results container, so put the current
+  // batch back afterwards. Switching how you would find repos must not throw
+  // away the ones you are part-way through reviewing.
+  await renderScoutingDiscoverView();
+  if ((_scoutResults || []).length) renderScoutResults();
+}
 let _scoutFilterText = '';  // client-side filter over the current results batch
 
 // Disposition vocabulary — undecided (default) -> tracking/investigating ->
@@ -9183,7 +9211,15 @@ async function renderScoutingDiscoverView() {
         <div class="text-[10px] text-slate-500">Manage saved sources in ⚙ Admin → Discovery Sources.</div>
       </div>` : ''}
 
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+      <div class="flex items-center gap-1 mb-2">
+        <button onclick="_setScoutSourceMode('search')"
+          class="text-xs px-3 py-1.5 rounded-l ${_scoutSourceMode === 'search' ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'} transition-colors">🔍 Search GitHub</button>
+        <button onclick="_setScoutSourceMode('list')"
+          class="text-xs px-3 py-1.5 rounded-r ${_scoutSourceMode === 'list' ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'} transition-colors">📄 From a list</button>
+        <span class="text-[10px] text-slate-600 ml-2">both fill the same table below</span>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2 ${_scoutSourceMode === 'list' ? '' : 'hidden'}">
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">From a list</div>
         <p class="text-[11px] text-slate-500">
           A CSV with an <span class="font-mono">address</span> column, or one GitHub URL per line.
@@ -9209,7 +9245,7 @@ async function renderScoutingDiscoverView() {
         <div id="scout-list-feedback" class="text-[11px] text-slate-500"></div>
       </div>
 
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3 ${_scoutSourceMode === 'search' ? '' : 'hidden'}">
         <div class="flex items-center justify-between gap-2">
           <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Search GitHub</div>
           <button onclick="_saveCurrentSearchAsSource()" class="text-xs text-cyan-400 hover:text-cyan-300">💾 Save as new source</button>
@@ -9334,6 +9370,7 @@ async function runDiscoverySource(slug) {
       throw new Error(err.detail || `HTTP ${res.status}`);
     }
     _scoutResults = await res.json();
+    _scoutResultsSource = 'GitHub search';
     _scoutFilterText = '';
     fb.textContent = `Found ${_scoutResults.length} repo(s).`;
     renderScoutResults();
@@ -9556,6 +9593,7 @@ async function _loadRepoListFromFile(input) {
     }
     const d = await res.json();
     _scoutResults = d.repos || [];
+    _scoutResultsSource = file.name;
     _scoutFilterText = '';
     renderScoutResults();
     _renderListLoadSummary(file.name, d);
@@ -9627,17 +9665,39 @@ function renderScoutResults() {
     .filter(({ r }) => !term || [r.full_name, r.description, r.language, r.license]
       .some(v => (v || '').toLowerCase().includes(term)));
 
+  const registeredCount = _scoutResults.filter(r => r.already_registered).length;
+  if (_scoutHideRegistered) visible = visible.filter(({ r }) => !r.already_registered);
+
   if (_scoutSortKey) {
     visible = visible.slice().sort((a, b) => {
       const av = a.r[_scoutSortKey], bv = b.r[_scoutSortKey];
       if (typeof av === 'number' || typeof bv === 'number') return ((av || 0) - (bv || 0)) * _scoutSortDir;
       return String(av || '').localeCompare(String(bv || '')) * _scoutSortDir;
     });
+  } else {
+    // Actionable rows first. An org expansion can return 200 already-registered
+    // repos around the 20 you can actually add; without this the ones you came
+    // for are somewhere in the middle of a scroll. Only applies to the default
+    // ordering — an explicit column sort is the user asking for something else.
+    visible = visible.slice().sort((a, b) =>
+      (a.r.already_registered ? 1 : 0) - (b.r.already_registered ? 1 : 0));
   }
 
   const sortIndicator = (key) => _scoutSortKey === key ? (_scoutSortDir === 1 ? ' ▲' : ' ▼') : '';
   const resizeHandle = (col) => `<span onmousedown="_startScoutColResize(event, '${col}')"
     class="inline-block w-1 h-3 ml-1 cursor-col-resize hover:bg-cyan-500 align-middle"></span>`;
+
+  // How many rows "Select all new" would actually tick — the same predicate it
+  // uses. Shown on the button so the number of actionable rows is known before
+  // scrolling a list that may be mostly unactionable.
+  const selectableCount = visible.filter(({ r }) =>
+    !r.already_registered && !_dispositionIsHidden(r.disposition)).length;
+
+  // Where this batch came from. Obvious when one input was visible at a time on
+  // screen; not obvious at all once the input can be switched underneath the
+  // results, or when you come back to the tab later.
+  const provenance = _scoutResultsSource
+    ? `<span class="text-[10px] text-slate-500">from ${_esc(_scoutResultsSource)}</span>` : '';
 
   // Rows default to UNCHECKED — a search/list result is a candidate to
   // review, not an assumed import; explicit "Select all new" opts in.
@@ -9670,12 +9730,20 @@ function renderScoutResults() {
   results.innerHTML = `
     <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
       <div class="flex items-center gap-2">
-        <button onclick="_selectAllNewScoutRepos()" class="text-xs text-cyan-400 hover:text-cyan-300">Select all new</button>
+        <button onclick="_selectAllNewScoutRepos()" class="text-xs text-cyan-400 hover:text-cyan-300"
+          title="Selects every row that can be imported — skips already-registered repos and any disposition you have hidden.">Select all new${selectableCount ? ` (${selectableCount})` : ''}</button>
         <button onclick="_deselectAllScoutRepos()" class="text-xs text-slate-400 hover:text-slate-300">Deselect all</button>
+        ${registeredCount ? `<label class="text-[10px] text-slate-500 flex items-center gap-1 cursor-pointer"
+            title="They cannot be selected either way; this only removes them from view.">
+          <input type="checkbox" ${_scoutHideRegistered ? 'checked' : ''} class="accent-cyan-600"
+                 onchange="_scoutHideRegistered=this.checked; renderScoutResults();">
+          Hide ${registeredCount} already registered
+        </label>` : ''}
         <input id="scout-filter" type="text" placeholder="Filter results…" value="${_esc(_scoutFilterText)}"
           oninput="_applyScoutFilter(this.value)"
           class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1 w-40">
         <span class="text-[10px] text-slate-500">${visible.length} of ${_scoutResults.length} shown</span>
+        ${provenance}
       </div>
       <div class="flex items-center gap-2">
         <select id="scout-target-group" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 px-2 py-1.5">
