@@ -106,6 +106,19 @@ What is needed is `(repo characteristics) → (approach, outcome)`, and **the ch
 already collected by Scouting**: language mix, presence of deployment artifacts, monorepo layout,
 size, first-party ratio. Those are exactly the axes that predicted the Phase 0 outcomes.
 
+> **TESTED 2026-08-20 AT n=3 — THE RULES BELOW DO NOT HOLD. See §8's result.** The two worked
+> examples are kept as illustrations of the *shape* a rule would take, not as findings. One is
+> circular and one is disconfirmed:
+>
+> - The *"markers ~35%"* figure matches trellis's measured 4/11 = 36% — but this note was written
+>   **after** `architecture-recovery-phase0-findings.md` (commits `973e6d0` then `726b338`), so
+>   that is Phase 0's own result reflected back, not independent confirmation. The coupling half
+>   of the same example (*"~80%"*) is nearer 62% in isolation.
+> - The *"compose-rich → deployment ~100%"* example is **disconfirmed**. `egeria-workspaces`
+>   matches its preconditions exactly and deployment recall measured **18/27 = 67%**.
+>
+> Do not cite either as evidence.
+
 From a handful of repos this yields rules of the shape:
 
 > No deployment artifacts, >80% Python, single package → markers recover ~35% of components,
@@ -291,3 +304,33 @@ failures included — and see whether the selection rules in §4 fall out of tha
 If they do, the model is worth building. If four approaches over three repos produce nothing a
 person could not have said unaided, that is a real answer too, and it costs an afternoon to find
 out rather than a phase.
+
+### Result (2026-08-20): the rules do not fall out. Do not build the manager yet.
+
+Run as specified. 21 `approach_run` rows across four approaches and three targets, failures and
+regressions included, plus 15 `repo_characteristics` rows — all into
+`project_analysis_findings`, no new table. Spike README findings 48–51 carry the detail.
+
+**The grid is qualitatively full but half `unverified`** — the whole `egeria` row (two of four
+approaches structurally cannot run on a repo with zero tracked `.py` files) and half of
+`egeria-workspaces`'s. §3's `unverified`-vs-`no_signal` distinction earned its keep immediately:
+coupling on `egeria` is *unverified* because it cannot run at all, while coupling on
+`PyegeriaWebHandler` is a genuine *no_signal* because a known-positive sits right beside the zero
+(Q = 0.427, four communities — finding 38). Without that distinction both would have been recorded
+as zeros and the grid would have looked twice as informative as it is.
+
+**Neither worked example survived** (see the note in §4). One is circular, one is disconfirmed by
+the single repo positioned to test it.
+
+**What this does and does not mean.** It does *not* mean the portfolio model is wrong. It means
+three repos, with half the grid unverified, is not a sample a lookup table can be built from — and
+that more analysis of *these* three will not help, since 47 findings have already characterised
+them about as thoroughly as they can be. What is needed is more repos, ideally covering the
+profile combinations §4's examples name.
+
+**Decision: do not build the portfolio manager, the selection lookup, or the retirement rule.**
+Revisit at the 8–10 repos `Backlog.md` already schedules for the measurement re-check — the same
+sample serves both, so this costs nothing extra to wait for.
+
+The afternoon was well spent. It cost one session to establish that the selection layer is
+premature, versus discovering it after a selection engine existed and had to be unwound.

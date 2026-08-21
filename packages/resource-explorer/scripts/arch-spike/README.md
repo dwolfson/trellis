@@ -942,3 +942,113 @@ in one of them, which is the strongest argument yet for
 Recorded in `tests/fixtures/architecture-ground-truth/trellis-revised.md`, with the residue rule
 decided: **adopt by default, ask when not obvious** — the asking surface being a file tree with
 checkboxes, since the answer is naturally a selection rather than a boolean.
+
+---
+
+## Phase 1 §4.6 — portfolio backfill (approach-portfolio-model.md §8)
+
+**48. Findings 1-47 backfilled into `project_analysis_findings` as 21 `kind='approach_run'` rows
+(4 approaches x 3 targets, several targets carrying more than one row where an approach was tried,
+regressed, and fixed) plus 15 `kind='repo_characteristics'` rows, in a throwaway local SQLite
+registry** (no shared Postgres, no Egeria, no network — `ProjectRegistry(db_path=...)` pointed at
+a scratch file, per the same pattern finding 45 used for scoring the port). Every row's
+`detail_json` carries a `source` key citing the finding number(s) it comes from, so the backfill
+is traceable back to this document rather than being a second, independent record of the same
+facts. No new table — both kinds reuse `project_analysis_findings` exactly as portfolio note §3
+specifies.
+
+**One gotcha worth recording on its own: `ProjectRegistry._normalize_slug()` replaces `-` with
+`_`.** `egeria-workspaces` is stored (and must be queried back) as `egeria_workspaces`. Trivial
+once known, silent if not — a query for the literal target name returns nothing and looks like
+missing data rather than a slug mismatch. Filed here because it is exactly finding 43's shape
+(non-unique/non-normalized keys costing a debugging detour) arriving a third time, this time in
+`registry.py` itself rather than the spike.
+
+**49. Portfolio note §3's `unverified`-vs-`no_signal` rule was not a hypothetical — the backfill
+data needed it for real, more than once.** Two clean cases:
+
+- `coupling` on `egeria`: cannot run at all (zero tracked `.py` files, `imports.py` is
+  Python-only, finding 36). No known-positive file can exist, so this is `unverified`, not
+  `no_signal` — a zero here would be indistinguishable from "the tool is broken."
+- `coupling` on `egeria-workspaces`, inside `PyegeriaWebHandler`: the candidate *generator*
+  proposes zero boundaries even on the corrected graph, but the corrected graph has a known
+  positive right next to the zero — Q=0.427, four visible communities (finding 38). That
+  known-positive is exactly what makes this a meaningful `no_signal` (a real capability gap in the
+  directory-based candidate rule) rather than an unverified zero. Without finding 38's measurement,
+  this cell would have had to be recorded as `unverified` too.
+
+Both `manifest` and `code_markers` on `egeria` are `unverified` for the same structural reason as
+`coupling`: `code_markers` targets Python-framework syntax egeria has none of, and `manifest` (231
+Gradle modules) was never scored against anything, because T3's ground truth deliberately stayed
+at shape level. `deployment` on `egeria` is `unverified` for a different, more mundane reason — it
+was simply never run in the spike; no finding claims otherwise.
+
+**50. The 4x3 grid is qualitatively full (12 of 12 cells have at least one row) but only half is a
+scored outcome — 6 of 12 cells are `unverified`, all six of them on `egeria` or half of
+`egeria-workspaces`.** Laid out (best non-regression label and confidence per cell):
+
+| target | manifest | deployment | code_markers | coupling |
+|---|---|---|---|---|
+| `trellis` | partial (40) | no_signal (90) | partial (75) | recovered (95) |
+| `egeria-workspaces` | unverified (20) | partial (65) | unverified (15) | no_signal (70) |
+| `egeria` | unverified (30) | unverified (10) | unverified (5) | unverified (0) |
+
+`egeria`'s entire row is `unverified` — not because every approach failed, but because none of the
+four was ever scored against anything on that target (T3's ground truth stayed at shape level by
+design, and two of the four approaches structurally cannot run there at all). That is a very
+different thing from "the portfolio doesn't work on Java repos," and the table as recorded cannot
+be misread that way, which is the entire point of keeping `unverified` distinct from `no_signal`.
+
+**51. Checking portfolio note §4's selection-rule shape against this data: it does not fall out,
+and the one place it looks like it does is the weakest evidence in the table, not the strongest.**
+
+§4 gives two worked examples:
+
+> *"No deployment artifacts, >80% Python, single package -> markers recover ~35% of components,
+> coupling ~80%. Run coupling first."*
+
+`trellis` matches two of those three characteristics (no deployment artifacts: confirmed by direct
+search this session; 99.8% Python) but not the third — it is a 4-package uv workspace, not a
+single package. On the two-of-three match: `code_markers` recovers 4 of 11 GT components = **36%**,
+strikingly close to the quoted "~35%". `coupling`'s *final* number is 13/13 = 100%, but that figure
+is the merged detectors-plus-coupling result (finding 41), not coupling in isolation — coupling's
+own unique, marker-blind contribution is roughly 8 of 13 (~62%), not the ~80% quoted. So half of
+this example lines up and half does not, on the only repo that even partially matches its
+precondition — and the half that lines up is worth real suspicion: `approach-portfolio-model.md`
+is dated 2026-08-20, *after* Phase 0's findings existed, so a design note quoting "~35%" for
+"markers recover" on a profile trellis matches may simply be restating Phase 0's own trellis
+number back at itself rather than an independent prediction the backfill then confirmed. That is
+not evidence for the rule; it is circularity risk stated plainly.
+
+> *"Compose-rich, low first-party ratio -> deployment detectors recover ~100% of declared
+> containers. Markers add nothing; skip them."*
+
+`egeria-workspaces` matches this profile exactly — 25 compose files, 29% first-party. Measured
+`deployment` recall against it is **18/27 = 67%**, not "~100%". This is not a near-miss shaded by
+methodology; it is the T1 exit-criteria number Phase 1 explicitly held as a floor, arrived at after
+three rounds of detector fixes (findings 9-17) and one real regression along the way (finding 15).
+The one target that matches this rule's precondition **disconfirms its prediction outright.**
+
+`egeria` cannot test either rule. It matches neither example's precondition (100% Java, not
+Python; deployment artifacts unmeasured), and two of the four approaches cannot even execute on
+it. It is not silent evidence for or against §4 — it is a target the modest lookup, as specified,
+was never going to have anything to say about, which is itself informative: §4's two example
+profiles are both implicitly Python-flavoured, and the estate's most language-diverse target falls
+through both of them.
+
+**Verdict: at n=3 targets, §4's selection rules do not fall out of this data, and the one example
+that looks confirmed is the one built on the smallest, most circular evidence in the set — the
+other is actively contradicted by the one repo positioned to test it.** This is the honest reading
+plan §4.6 and portfolio note §8 asked for, not a reluctant one: three repos is not a sample a
+lookup table can be built from, and pretending otherwise here would be exactly the "prove the
+model prematurely" failure §8 warns against. What would change this verdict is not more analysis
+of these three repos — the four approaches are now about as well-characterised on `trellis` and
+`egeria-workspaces` as 47+ findings can make them — but **more repos**, each contributing one more
+data point per cell, ideally covering the profile combinations §4's own examples describe
+(single-package Python, compose-heavy-non-Python, and everything unlike both). `Backlog.md`'s
+standing 8-10-repo re-run item is already the right-sized next step; nothing about this backfill
+argues for a different one.
+
+**Do not build the portfolio manager, selection lookup, or retirement rule yet.** Portfolio note §6
+already names the risk this avoids — an evaluation harness that outgrows the results it ranks —
+and at n=3, with two of three targets' grids half `unverified`, there is nothing yet to rank.
