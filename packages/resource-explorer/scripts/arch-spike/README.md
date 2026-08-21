@@ -820,3 +820,94 @@ follow for Phase 1:
   ground truth never assigned to anything. Whether they are unowned or belong somewhere is a real
   open question about the fixture, and belongs in a `-revised.md` rather than being decided by a
   detector.
+
+## Phase 1 §4.6 — the PORTED pipeline scored (docs/Backlog.md, "never been scored")
+
+**45. The port reproduces the spike exactly on the trellis target — component set, counts, and
+file-partition all match.** Ran `ArchDetectSurveyor`/`ArchCouplingSurveyor` (`resource_explorer/
+surveyors/sub_surveyors/arch_recovery_{detect,coupling}.py`, commit `45b8be3`) directly against
+`/Users/dwolfson/localGit/egeria-v6/trellis` with an isolated throwaway SQLite registry, read the
+result back out of `project_analysis_findings`/`project_analysis_metrics` (the real
+`persist_ir()`/registry path, not a re-implementation), and fed it into `score.py` via a small
+loader shim (`load_ir` monkeypatch — no changes to `score.py` itself).
+
+| | spike (`ir/trellis.json`) | port |
+|---|---|---|
+| components (raw) | 27 (22 logical, 5 physical) | 27 (22 logical, 5 physical) |
+| component-set (logical, exact-name) | 0/11 matched, F1 0.00 | 0/11 matched, F1 0.00 |
+| file-partition ARI / NMI (maintainer) | 0.9778 / 0.978 | 0.9778 / 0.978 |
+| file-partition ARI / NMI (all) | 0.9784 / 0.9804 | 0.9784 / 0.9804 |
+
+Bit-for-bit identical. (Component-set F1 0.00 is not a regression — finding 42 already
+established this is a naming-case artifact of `score.py`'s exact-string match against
+`Agents`/`agents` etc.; read the file-partition row instead, per plan §5a.) The two components
+that land on the same `scope_locator` in the port (`web`, `tui` — one proposal from the code-marker
+pass, one from coupling, same file glob both times) confirm the documented known difference
+behaves exactly as described: the port discovers the agreement at read time instead of an
+IR-level merge, does **not** apply the spike's +10-confidence-per-agreement boost, but also does
+**not** lose or corrupt either proposal. Harmless here.
+
+**46. The port has a severe, previously-unknown regression on the deployment perspective —
+T1 recall drops from 18/27 (67%) to 2/27 (7%) — and it is NOT the known merge difference.**
+Same method against `/Users/dwolfson/localGit/egeria-v6/egeria-workspaces-fs`:
+
+| | spike (`ir/egeria-workspaces.json`) | port |
+|---|---|---|
+| components (raw, all perspectives) | 70 (58 deployment, 10 physical, 2 logical) | 70 (58 deployment, 10 physical, 2 logical) |
+| T1 component-set (deployment), matched | **18/27** (recall 0.67, target ≥18/27) | **2/27** (recall 0.07) |
+| detected_count after scoping | 58 | **10** |
+
+The **detectors themselves are faithful** — raw output is 70 components in both, same
+perspective breakdown, same per-container `Component` records (`detectors.py`'s compose-service
+loop still emits one `Component` per `container_name`, exactly as its own comment describes:
+*"egeria-workspaces ships PyegeriaWebHandler twice... collapsing them is the failure the revised
+precedence chain exists to prevent"*). The regression is introduced one layer downstream, in
+`persist.py`'s `scope_locator_for()`:
+
+```python
+ctx = component.identity.deployment_context
+if ctx:
+    return ctx
+return component.identity.value or component.slug
+```
+
+For a compose-service component, `identity = Identity("deployment-unit", name, unit)` —
+`value` is the container name (unique per container, exactly what `detectors.py` computed it
+to be), but `deployment_context` (`ctx`) is the **compose file's directory** (`unit`), shared by
+every container declared in that compose file. Because fileless components have no `files[0]` to
+fall back on first, `scope_locator_for` returns `ctx`, not `value` — so all 9 containers under
+`compose-configs/egeria-quickstart` (and all 9 under `airflow-marquez`, all 6 under
+`deltalake-spark`, etc.) get **the same `scope_locator`**. Confirmed directly against the
+registry (not inferred): 58 raw `component` finding rows collapse onto only **10** distinct
+`scope_locator`s (one per compose unit directory) — e.g.
+`compose-configs/optional-associated-runtimes/apache-atlas` carries 6 different container names
+(`zookeeper`, `hadoop-namenode`, `hadoop-datanode`, `atlas-hive-metastore`, `hive-server`,
+`apache-atlas`) under one scope. Every reader of this table — including
+`_architecture_recovery_results()`, the results view's own reader — then does `max(comp_rows,
+key=surveyed_at)` to pick "the" component per scope; since all rows from one run share a
+`surveyed_at`, `max` keeps whichever was inserted first and **silently discards the other 5-8
+container identities and their evidence** at that scope. This is a real defect in the shipped
+code (`resource_explorer/surveyors/arch_recovery/persist.py`), not an artifact of how this
+scoring session read the data back — any consumer of `project_analysis_findings` for
+`kind="architecture_recovery"` on a compose-heavy repo sees the same collapse.
+
+This is a different bug from the one the backlog item named as "known" (finding-41-style
+IR-level merge/confidence-boost, confirmed harmless in finding 45 above). The known difference
+costs nothing; this one costs the entire deployment-perspective result. `persist.py`'s own
+docstring for `scope_locator_for` states the intent correctly ("Preferred source is the
+component's own `files` glob... Only a files-less component... falls back to its declared
+deployment context") but the fallback chosen for the files-less case (`deployment_context`
+before `value`) is backwards for exactly the shape `detectors.py` was written to produce:
+many same-context, differently-identified fileless components. Swapping the fallback order
+(`value` before `deployment_context`, or qualifying `deployment_context` with `value` the way
+`detectors.py`'s own `_slug()` already does for the Dockerfile-unit case at line ~354) would fix
+it, but per the task's ground rules this write-up does not modify `arch_recovery/` — it only
+scores and reports.
+
+**Route taken:** the ported `ArchDetectSurveyor`/`ArchCouplingSurveyor` classes were called
+directly (real `persist_ir()`/registry write-and-read-back path) against local checkouts, not
+through the full `SurveyOrchestrator`/Survey Definition/Egeria plumbing (registry/project setup
+for that was judged disproportionate to a scoring task — no Egeria writes, no network, per the
+task's hard rules). This is a weaker claim than "the deployed survey steps agree" but a stronger
+one than "the modules agree in isolation," since it exercises the actual registry schema and the
+actual read-back grouping logic where the finding-46 defect lives.

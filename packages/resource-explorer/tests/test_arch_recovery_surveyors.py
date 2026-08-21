@@ -148,3 +148,54 @@ class TestResultsReaderCombinesBothSteps:
             cwd=root, check=True,
         )
         return root
+
+
+class TestScopeLocatorUniqueness:
+    """Regression for spike README findings 45-46.
+
+    A files-less component (compose-derived — §8.2b's add-on and shared-infra
+    tiers own no first-party code) once fell back to `identity.deployment_context`
+    for its `scope_locator`. That is the compose FILE'S directory, shared by every
+    service declared in it, so distinct containers collided on the join key: 58
+    compose-service components collapsed onto 10 locators and every reader kept
+    one container per file, silently discarding the rest. T1 deployment recall
+    fell 18/27 -> 2/27 and no unit test noticed, because each component was built
+    correctly and only the persisted key was wrong.
+    """
+
+    @staticmethod
+    def _fileless(slug: str, container: str, compose_dir: str):
+        from resource_explorer.surveyors.arch_recovery.ir import Component, Identity
+        return Component(
+            slug=slug, name=container, type=None,
+            identity=Identity("deployment-unit", container, compose_dir), files=[],
+        )
+
+    def test_containers_from_one_compose_file_get_distinct_scope_locators(self):
+        from resource_explorer.surveyors.arch_recovery.persist import scope_locator_for
+
+        shared = "compose-configs/shared-infra"
+        components = [
+            self._fileless(f"shared-infra::{n}", n, shared)
+            for n in ("egeria-shared-kafka", "egeria-shared-postgres",
+                      "egeria-shared-kroki", "egeria-shared-kroki-mermaid")
+        ]
+        locators = [scope_locator_for(c) for c in components]
+        assert len(set(locators)) == len(components), (
+            f"distinct containers collided on scope_locator: {locators}"
+        )
+        # and the shared compose directory must not be the key for any of them
+        assert shared not in locators
+
+    def test_path_bearing_components_still_use_their_path_prefix(self):
+        """The fix must not disturb the normal case: a component that owns
+        files is still keyed by its path prefix (design §6.0)."""
+        from resource_explorer.surveyors.arch_recovery.ir import Component, Identity
+        from resource_explorer.surveyors.arch_recovery.persist import scope_locator_for
+
+        c = Component(
+            slug="coupling::packages::foo", name="foo", type=None,
+            identity=Identity("module-path", "packages/foo"),
+            files=["packages/foo/**"],
+        )
+        assert scope_locator_for(c) == "packages/foo"

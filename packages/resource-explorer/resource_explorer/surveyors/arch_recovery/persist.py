@@ -46,10 +46,23 @@ def scope_locator_for(component: Component) -> str:
                 stripped = g[: -len(suffix)]
                 return stripped
         return "" if g == "**" else g
-    ctx = component.identity.deployment_context
-    if ctx:
-        return ctx
-    return component.identity.value or component.slug
+    # A files-less component (compose-derived, §8.2b's add-on and shared-infra
+    # tiers, which own no first-party code) has no path prefix to use, so the
+    # join key falls back to its slug.
+    #
+    # It must NOT fall back to `identity.deployment_context`, which an earlier
+    # version did: that is the compose file's directory and is therefore SHARED
+    # by every service declared in that file. Measured, it collapsed 58 distinct
+    # compose-service components onto 10 join keys, and every reader — including
+    # the shipped results view — kept one container per compose file and silently
+    # discarded the rest. T1 deployment recall fell from 18/27 to 2/27 (spike
+    # README findings 45-46).
+    #
+    # The slug is the right fallback because it is already unique and already
+    # carries the deployment context that §8.2 requires for exactly this reason
+    # ("egeria-quickstart::quickstart-pyegeria-web") — reusing that guarantee
+    # rather than inventing a second one.
+    return component.slug or component.identity.value
 
 
 def detector_family(detector: str) -> str:
