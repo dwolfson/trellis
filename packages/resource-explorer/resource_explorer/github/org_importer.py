@@ -99,36 +99,74 @@ def _run_import_batch(
     stars:>=500") — threaded into the activity-log summary text only; unlike
     an org name it isn't necessarily a valid URL path, so it's never used to
     build entity_location for the batch-summary entry below."""
+    try:
+        _import_batch_body(source_label, repos, group_slug)
+    except BaseException:
+        # This function is a daemon thread's entry point: an exception here goes
+        # nowhere at all. Nothing should reach this after the guards below, so
+        # arriving here means a new failure mode, and it must not be silent.
+        log.exception(
+            "Import: batch '%s' terminated unexpectedly after starting %d repo(s); "
+            "some may not have been registered", source_label, len(repos))
+        raise
+
+
+def _import_batch_body(source_label: str, repos: list[dict], group_slug: str) -> None:
     registry = ProjectRegistry()
     importer = OrgImporter(registry)
+
+    def _safe_log(**kwargs) -> None:
+        """Activity logging must never end the batch.
+
+        It did, on 2026-08-21: a registry write inside the success path raised
+        ("server closed the connection unexpectedly"), the except handler called
+        log_scout again, that raised too, and the second exception escaped the
+        loop and killed this daemon thread. One repo of many was registered, no
+        batch summary was written, and nothing anywhere said so — the user saw
+        the first repo appear and the rest silently not.
+
+        The audit trail is important, but it is not more important than the work
+        it describes. A failure to record must not become a failure to do.
+        """
+        try:
+            log_scout(registry, **kwargs)
+        except Exception:
+            log.exception("Import: could not write activity entry for %s",
+                          kwargs.get("entity_slug", "?"))
 
     succeeded = 0
     failed = 0
     for repo in repos:
         github_url = repo["github_url"]
         display_name = repo.get("display_name") or github_url
+
+        # Only the import itself is inside this try. Logging used to be too,
+        # which meant a logging failure was counted and reported as an import
+        # failure for a repo that had in fact been registered.
         try:
             importer.import_repo(
                 github_url, display_name, repo.get("description", ""), group_slug,
             )
-            succeeded += 1
-            log_scout(
-                registry, entity_type="repo", entity_slug=_url_to_slug(github_url),
-                entity_name=display_name, entity_location=github_url,
-                status="ok", summary=f"Imported '{display_name}' from {source_label}",
-            )
         except Exception as exc:
             failed += 1
             log.exception("Import: failed to register %s", github_url)
-            log_scout(
-                registry, entity_type="repo", entity_slug=_url_to_slug(github_url),
+            _safe_log(
+                entity_type="repo", entity_slug=_url_to_slug(github_url),
                 entity_name=display_name, entity_location=github_url,
                 status="error", summary=f"Failed to import '{display_name}' from {source_label}",
                 detail=str(exc),
             )
+            continue
 
-    log_scout(
-        registry, entity_type="repo", entity_slug=_slugify_source_label(source_label),
+        succeeded += 1
+        _safe_log(
+            entity_type="repo", entity_slug=_url_to_slug(github_url),
+            entity_name=display_name, entity_location=github_url,
+            status="ok", summary=f"Imported '{display_name}' from {source_label}",
+        )
+
+    _safe_log(
+        entity_type="repo", entity_slug=_slugify_source_label(source_label),
         entity_name=source_label, entity_location=source_label,
         status="error" if failed else "ok",
         summary=f"Import batch complete ({source_label}): {succeeded} succeeded, {failed} failed, out of {len(repos)} requested",
