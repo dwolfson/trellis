@@ -12,6 +12,64 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ## Open items
 
+### Step outcomes and the Egeria governance model — what landed 2026-08-21, and what was deferred
+
+**Landed:** `resource_explorer/step_outcome.py` — the five-label vocabulary from
+`docs/approach-portfolio-model.md` §3 (`recovered` / `partial` / `no_signal` / `unverified` /
+`regression`), with §3's rule enforced in the constructor: an approach with no known-positive
+check cannot report `no_signal`, only `unverified`. `repo_website_ingestion` is the first
+adopter. Recording only — nothing routes on these labels.
+
+**Established while investigating, all verified against the live server rather than read:**
+
+- Guards already round-trip in RE today. `scripts/generate_repo_survey_definition.py` emits
+  `### Guard / Any` on every `Link Next Process Step`; Dr.Egeria's command accepts `Guard` and
+  `Mandatory Guard`; a live read of Analysis Survey returns `guard: 'Any'`, `mandatoryGuard:
+  False` on all 9 links. The reader receives them and discards them.
+- `NextGovernanceActionProcessStepProperties` carries exactly `guard: Optional[str]` and
+  `mandatory_guard: Optional[bool]`. A flat token, no structured payload — which is *why*
+  outcome and cause are separate fields, not a stylistic choice.
+- RE consults no Egeria specification at all. `STEP_REGISTRY` is a specification living in
+  Python. `SpecificationProperties` is the pyegeria client for the real thing.
+
+**Deferred, with the reason:**
+
+1. **Guard-based branching.** Deferred by decision 2026-08-21 — recorded outcomes are useful
+   without routing, and branching is real work in `survey_definition_reader` (a documented v1
+   boundary, see `docs/survey-definitions.md`). Authored links stay `guard: Any` until wanted.
+2. **Whether a locally-produced guard can be recorded against the process at all**, given RE
+   acts as its own engine host. Untested. If it turns out to be engine-action-only, then for
+   RE-executed surveys this vocabulary is a *recording* mechanism and only a *routing* one
+   under Egeria coordination — a real difference, worth knowing before building on it.
+3. **Generating the Egeria specification from the enforced local contract.** Direction agreed
+   (master in Egeria, cached locally), and the shape agreed with the arch-recovery session:
+   keep `ResourceProvider.provides` / `requires_views` / `validate_resource_views()` as the
+   *enforced* contract and generate the published spec from it, so the two cannot drift. One
+   property to honour: generation must fail loudly if the enforced contract has no expressible
+   form in the spec, rather than emitting a lossy one — otherwise the drift returns through the
+   generator.
+4. **`Produced Request Parameters` as the carrier if a cause ever needs to reach a *later*
+   step** rather than only be recorded. Read in the docs, **not exercised** — do not build on
+   it as verified.
+5. **Adopting the vocabulary in the other 23 steps.** Only `repo_website_ingestion` uses it.
+   The file-inventory readers are the obvious next ones, since "the table was empty" is exactly
+   an `unverified` that currently reads as a confident zero.
+6. **Converging with arch-recovery's `run_scope`/`partial`.** That session already emits
+   `partial` on scoped runs (`ca34edf`) and offered a walkthrough of where `StepInfo` /
+   `requires_resources` / `resolve_resources` would need to change. Not started; deliberately
+   not touching their plumbing.
+7. **pyegeria ISSUE-70** — `ActionAuthor.update_next_action_process_step()` always raises
+   `AttributeError` (calls a method that does not exist). Logged in
+   `/Users/dwolfson/localGit/egeria-python/PYEGERIA_ISSUES.md`, **not fixed**, per the standing
+   rule. Not blocking: guards are authored through Dr.Egeria. It blocks amending a guard in
+   place, which would be tidier than re-authoring a document and re-running the reconciler.
+8. **`repo_arch_detect` / `repo_arch_coupling` are not assigned to a stage**, so Egeria's
+   RepoFullSurvey holds 22 of `STEP_REGISTRY`'s 24. Both guards
+   (`tests/test_reachability_audit.py`, `tests/test_egeria_live_smoke.py`) carry them as
+   explicit exemptions and will demand action once they are placed. The arch-recovery session
+   owns that call.
+
+
 ### Testing strategy — four silent-failure classes, one built, three open
 
 Eight faults found on 2026-08-20 shared one shape: **the code ran, reported success, and did
