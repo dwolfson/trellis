@@ -1862,5 +1862,105 @@ def prefect_worker(
         raise typer.Exit(1)
 
 
+# ── batch CSV import/export (resource_explorer/batch_io.py) ─────────────────
+
+@app.command(name="export-resources")
+def export_resources(
+    path: str = typer.Argument(help="CSV file to write"),
+):
+    """Export every registered resource as a CSV inventory + scorecard.
+
+    Columns prefixed `status_` are observed state and are ignored if the file is
+    imported again, so an export can be handed straight back to import-resources
+    without editing. See resource_explorer/batch_io.py for why that line exists.
+    """
+    from resource_explorer.batch_io import export_rows, write_csv
+    from resource_explorer.registry import ProjectRegistry
+
+    rows = export_rows(ProjectRegistry())
+    n = write_csv(rows, path)
+    by_type: dict[str, int] = {}
+    for r in rows:
+        by_type[r["resource_type"]] = by_type.get(r["resource_type"], 0) + 1
+    console.print(f"[green]Wrote {n} resource(s) to {path}[/green]")
+    for t, c in sorted(by_type.items()):
+        console.print(f"  {t}: {c}")
+
+
+@app.command(name="import-resources")
+def import_resources(
+    path: str = typer.Argument(help="CSV file to read (see export-resources for the shape)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen, write nothing"),
+    group: Optional[str] = typer.Option(None, "--group", help="Group for rows that name none"),
+):
+    """Register resources listed in a CSV, skipping any already present.
+
+    Registers only — no RAG ingestion, matching the org-import path, so a large
+    batch is cheap. Surveying afterwards is the expensive half.
+    """
+    from resource_explorer.batch_io import parse_csv, plan_import
+    from resource_explorer.github.org_importer import OrgImporter
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        rows = parse_csv(path)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if not rows:
+        console.print("[yellow]No rows found.[/yellow]")
+        raise typer.Exit(0)
+
+    plan = plan_import(registry, rows)
+    console.print(f"[bold]{plan.total} row(s) in {path}[/bold]")
+    console.print(f"  [green]{len(plan.to_register)}[/green] to register")
+    console.print(f"  [dim]{len(plan.already_registered)} already registered[/dim]")
+    for label, bucket in (("invalid", plan.invalid),
+                          ("duplicate in file", plan.duplicate_in_file),
+                          ("unsupported type", plan.unsupported_type)):
+        if bucket:
+            console.print(f"  [yellow]{len(bucket)} {label}[/yellow]")
+            for r in bucket[:10]:
+                console.print(f"     line {r.line}: {r.address or '(no address)'} — {'; '.join(r.errors)}")
+            if len(bucket) > 10:
+                console.print(f"     … and {len(bucket) - 10} more")
+
+    if dry_run:
+        console.print("[dim]--dry-run: nothing written.[/dim]")
+        raise typer.Exit(0)
+    if not plan.to_register:
+        raise typer.Exit(0)
+
+    importer = OrgImporter(registry=registry)
+    registered = failed = 0
+    for row in plan.to_register:
+        try:
+            importer.import_repo(
+                row.address,
+                row.display_name or row.address.rstrip("/").rsplit("/", 1)[-1],
+                row.notes,
+                row.group or group or "",
+            )
+            registered += 1
+        except Exception as exc:
+            # Per-row isolation, like _run_import_batch: one bad repo in a batch
+            # of hundreds must not end the run.
+            failed += 1
+            console.print(f"  [red]line {row.line}: {row.address} — {exc}[/red]")
+
+        # Disposition is intent, so it is applied whether or not registration
+        # succeeded — a candidate can carry one before it is ever registered.
+        if row.disposition:
+            try:
+                registry.set_disposition(row.address, row.disposition,
+                                         reason=row.disposition_reason)
+            except Exception as exc:
+                console.print(f"  [yellow]line {row.line}: disposition not set — {exc}[/yellow]")
+
+    console.print(f"[green]Registered {registered}[/green]"
+                  + (f", [red]{failed} failed[/red]" if failed else ""))
+
+
 if __name__ == "__main__":
     app()

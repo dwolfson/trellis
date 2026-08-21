@@ -9187,6 +9187,16 @@ async function renderScoutingDiscoverView() {
         <div class="flex items-center justify-between gap-2">
           <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Ad-hoc search</div>
           <button onclick="_saveCurrentSearchAsSource()" class="text-xs text-cyan-400 hover:text-cyan-300">💾 Save as new source</button>
+          <!-- Loading a list lands in the same results table as a search, on
+               purpose: a bulk import that skips the review step is how a typo'd
+               row, or a repo someone already decided to ignore, ends up in the
+               catalog with nobody having looked at it. -->
+          <label class="text-xs text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                 title="A CSV with an 'address' column (the shape export-resources writes), or one GitHub URL per line. Nothing is imported until you select rows below.">
+            📄 Load from file
+            <input id="scout-list-file" type="file" accept=".csv,.txt,text/csv,text/plain"
+                   class="hidden" onchange="_loadRepoListFromFile(this)">
+          </label>
         </div>
         <div class="flex items-center gap-2 text-xs text-slate-500">
           <span>GitHub source: <span class="font-mono text-slate-400">${_esc(baseUrlInfo.base_url)}</span>${baseUrlInfo.is_override ? ' <span class="text-cyan-400">(override)</span>' : ''}</span>
@@ -9404,6 +9414,39 @@ async function searchScoutRepos() {
     renderScoutResults();
   } catch(e) {
     fb.innerHTML = `<span class="text-red-400">Failed: ${_esc(e.message)}</span>`;
+  }
+}
+
+
+async function _loadRepoListFromFile(input) {
+  const file = input.files && input.files[0];
+  input.value = '';            // let the same file be picked again after a fix
+  if (!file) return;
+
+  const fb = document.getElementById('scout-search-feedback');
+  fb.textContent = `Reading ${file.name}…`;
+  document.getElementById('scout-results').innerHTML = '';
+  try {
+    const text = await file.text();
+    // Sent as text rather than multipart: the server parses one format for the
+    // CLI and the UI alike (batch_io.parse_csv_text), so validation cannot
+    // differ between them.
+    const res = await fetch('/api/discovery/from-list', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    _scoutResults = await res.json();
+    _scoutFilterText = '';
+    const already = _scoutResults.filter(r => r.already_registered).length;
+    fb.textContent = `${file.name}: ${_scoutResults.length} repo(s)`
+      + (already ? ` — ${already} already registered` : '');
+    renderScoutResults();
+  } catch(e) {
+    fb.innerHTML = `<span class="text-red-400">Could not load ${_esc(file.name)}: ${_esc(e.message)}</span>`;
   }
 }
 

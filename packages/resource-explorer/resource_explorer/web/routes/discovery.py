@@ -286,6 +286,58 @@ async def _run_list_urls(urls: list[str], registry) -> list[dict]:
     return await asyncio.to_thread(_fetch_all)
 
 
+class RepoListText(BaseModel):
+    """A pasted or uploaded list of resources.
+
+    Text rather than a file upload: the browser reads the file and posts its
+    contents, which keeps this endpoint free of a multipart dependency and makes
+    it equally usable for a paste, a drag-and-drop, or curl.
+    """
+    text: str
+
+
+@router.post("/from-list", response_model=list[DiscoveredRepo])
+async def discover_from_list(body: RepoListText) -> list[DiscoveredRepo]:
+    """Turn a CSV or a plain list of URLs into ordinary discovery results.
+
+    Deliberately routed through the same enrichment tail as search, so an
+    uploaded list arrives in the same review table with already_registered
+    dimmed and prior dispositions shown, and is imported by the same button.
+    Nothing is registered here — this endpoint only reads.
+
+    That matters more than the convenience: a bulk import that skips the review
+    step is how a typo'd row, or a repo someone already decided to ignore, ends
+    up in the catalog with nobody having looked at it.
+    """
+    from resource_explorer.batch_io import parse_csv_text
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        rows = parse_csv_text(body.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    urls = [r.address for r in rows if r.resource_type == "repo" and not r.errors]
+    if not urls:
+        # An empty result and "nothing in your file was usable" are different
+        # answers; say which.
+        bad = [f"line {r.line}: {'; '.join(r.errors)}" for r in rows if r.errors][:5]
+        detail = ("No usable repo rows found. "
+                  + ("Problems: " + "; ".join(bad) if bad else
+                     "Expected one GitHub URL per line, or a CSV with an 'address' column."))
+        raise HTTPException(status_code=400, detail=detail)
+
+    repos = await _run_list_urls(urls, registry)
+    # A URL that could not be fetched is dropped by _run_list_urls. Report the
+    # count rather than letting 40 lines quietly become 31 results.
+    fetched = {r["html_url"].lower().rstrip("/") for r in repos}
+    for u in urls:
+        if u.lower().rstrip("/").removesuffix(".git") not in fetched:
+            log.warning("discovery from-list: could not fetch %s", u)
+    return _enrich_repos(repos, registry)
+
+
 @router.post("/search", response_model=list[DiscoveredRepo])
 async def search_repos(req: RepoSearchRequest) -> list[DiscoveredRepo]:
     """Read-only — does not touch the registry except to read
