@@ -159,12 +159,27 @@ class SurveyDefinitionExecutor:
         from resource_explorer.config import get_config
         from resource_explorer.surveyors.prefect_adapter import run_prefect_step
 
+        # Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py)
+        # and have no STEP_REGISTRY entry, so there is nothing local to run them
+        # with. Named here rather than inline so the list is findable from both
+        # sides; they should carry executes_at="prefect" once authored.
+        PREFECT_ONLY_STEPS = ("soda_data_quality", "great_expectations_validation")
+
         def _use_prefect(step) -> bool:
-            if step.executes_at == "prefect" or step.re_analysis_step in ("soda_data_quality", "great_expectations_validation"):
+            """Which engine runs this step.
+
+            executes_at is what the definition asked for, and it is honoured.
+            `prefect.enabled` says Prefect is reachable — it does not re-route a
+            step that named a different engine; `prefect.route_local_steps` is
+            the explicit opt-in for that, because taking RE's own steps to
+            Prefect is a real deployment choice but not one to make silently.
+            """
+            if step.executes_at == "prefect" or step.re_analysis_step in PREFECT_ONLY_STEPS:
                 return True
             if step.executes_at == "resource-explorer":
                 try:
-                    return bool(get_config().prefect.enabled)
+                    cfg = get_config().prefect
+                    return bool(cfg.enabled and getattr(cfg, "route_local_steps", False))
                 except Exception:
                     return False
             return False

@@ -199,6 +199,20 @@ class PrefectConfig(BaseSettings):
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
     enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
+    # Route steps that explicitly declare executes_at="resource-explorer" through
+    # Prefect as well. Off by default, and deliberately its own setting rather
+    # than a second meaning for `enabled`.
+    #
+    # `enabled` used to imply this, so turning Prefect on silently overrode every
+    # definition that had named its engine. executes_at is documented as naming
+    # the execution engine and as being open-ended precisely so engines can be
+    # chosen per step (docs/Backlog.md) — a global flag that overrules it takes
+    # away the only way to say "run this one here", and makes executes_at:
+    # "prefect" redundant into the bargain.
+    #
+    # Wanting RE's own steps run through Prefect for retries and telemetry is a
+    # legitimate deployment choice; it just has to be asked for.
+    route_local_steps: bool = Field(default=False, alias="PREFECT_ROUTE_LOCAL_STEPS")
 
     model_config = _ENV_FILE_CONFIG
 
