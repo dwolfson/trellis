@@ -110,8 +110,19 @@ divergence record — that is what unblocks the resource, and is common to every
   (`c2e8bb6c-…`), so a registry that has lost its GUID can recover it. Two of the five paths
   above rely on that route exclusively and are therefore immune to the forward case. Still
   unverified end to end against a genuinely reset RE database.
-- **No UI for resolve.** The RFA now appears in the drawer (it did not until the
-  `log_rfa` fix below); the three-way resolve action is still API-only.
+- ~~**No UI for resolve.**~~ **BUILT 2026-08-20.** Admin ▸ 🔗 Egeria Links lists every
+  divergence with Republish / Re-survey / Discard, and an affected repo shows the same three
+  actions as a banner on its Scouting card — placed directly above the "☁ Published to
+  Egeria" badge, which is actively misleading while the link is broken since it reports a
+  catalog entry RE can no longer reach. Both call one shared button-builder so the wording of
+  a destructive-sounding choice cannot differ between them.
+
+  Found while verifying: `discard` reported "RE's local survey results are untouched" while
+  also deleting `project_egeria_surveys` — the record of past publishes. Those GUIDs point
+  into the repository that no longer has the asset, and the publish history itself remains in
+  the activity log, so nothing of value was preserved by keeping them; but the sentence was
+  not true, and the one action a user might fear is the wrong place to be imprecise. It now
+  names the count it removes and what survives.
 
 ### Automate: had never notified anyone — two independent faults, both fixed 2026-08-20
 

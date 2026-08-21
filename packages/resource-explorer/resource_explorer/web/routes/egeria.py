@@ -473,8 +473,17 @@ async def resolve_stale_linkage(
 
     next_step = ""
     if req.action == "discard":
-        next_step = ("Link cleared. RE's local survey results are untouched; nothing "
-                     "will be written to Egeria until you publish again.")
+        # Say what was actually removed. For a repo, clearing the registration
+        # also drops project_egeria_surveys — the record of past publishes and
+        # their report GUIDs. Those GUIDs point into the same repository that no
+        # longer has the asset, so keeping them would preserve nothing but stale
+        # pointers; the publish history itself remains in the activity log. But
+        # "untouched", which this said before, was not true of them, and the one
+        # action a user might fear is the wrong place to be imprecise.
+        removed = (f" {deleted} publish record(s) removed;" if deleted else "")
+        next_step = (f"Link cleared.{removed} survey results and annotations are "
+                     "untouched, and past publishes remain in the activity log. "
+                     "Nothing will be written to Egeria until you publish again.")
     elif entity_type == "repo":
         from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator

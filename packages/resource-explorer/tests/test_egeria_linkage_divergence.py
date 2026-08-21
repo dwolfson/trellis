@@ -333,9 +333,10 @@ class TestResolveRoutes:
         # The link is gone from both places it was recorded...
         assert reg.get_egeria_linkage("repo", "myproj") is None
         assert not reg.get_egeria_asset_guid("myproj")
-        # ...and the wording says plainly that local results survived, because
-        # "discard" is the one action a user could reasonably fear.
-        assert "local survey results are untouched" in r.json()["next_step"].lower()
+        # ...and the wording says plainly what survived and what did not, because
+        # "discard" is the one action a user could reasonably fear. See
+        # TestResolveIsHonestAboutWhatItRemoves for why this sentence changed.
+        assert "untouched" in r.json()["next_step"].lower()
 
     def test_resolving_something_that_is_not_stale_is_a_404(self, client):
         c, _ = client
@@ -352,3 +353,61 @@ class TestResolveRoutes:
         c, _ = client
         assert c.post("/api/egeria/linkage/nonsense/myproj/resolve",
                       json={"action": "discard"}).status_code == 422
+
+
+class TestResolveIsHonestAboutWhatItRemoves:
+    """`discard` is the action a user is most likely to fear, so its report has
+    to be exact.
+
+    It said "RE's local survey results are untouched" while
+    clear_egeria_registration was also deleting project_egeria_surveys — the
+    record of past publishes and their report GUIDs. Those GUIDs point into the
+    repository that no longer has the asset, so nothing of value is preserved by
+    keeping them, and the publish history itself survives in the activity log.
+    But the sentence was not true of them, and I only noticed by running discard
+    against a real record and looking at what disappeared.
+    """
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from resource_explorer.web.app import app
+
+        db = str(tmp_path / "t.db")
+        monkeypatch.setattr("resource_explorer.web.routes.egeria.ProjectRegistry",
+                            lambda *a, **kw: ProjectRegistry(db_path=db))
+        reg = ProjectRegistry(db_path=db)
+        reg.add(Project(slug="myproj", display_name="My Proj",
+                        github_url="https://github.com/o/myproj", description=""))
+        reg.set_egeria_asset_guid("myproj", "abc-123")
+        reg.record_egeria_survey("myproj", surveyed_at="2026-08-01T00:00:00",
+                                 report_guid="rep-1", annotation_count=3)
+        reg.mark_egeria_linkage_stale("repo", "myproj", "abc-123", "gone")
+        return TestClient(app), reg
+
+    def test_it_reports_the_publish_records_it_deletes(self, client):
+        c, _ = client
+        body = c.post("/api/egeria/linkage/repo/myproj/resolve",
+                      json={"action": "discard"}).json()
+
+        assert body["surveys_deleted"] == 1
+        assert "1 publish record(s) removed" in body["next_step"]
+
+    def test_it_does_not_claim_they_were_untouched(self, client):
+        c, _ = client
+        step = c.post("/api/egeria/linkage/repo/myproj/resolve",
+                      json={"action": "discard"}).json()["next_step"]
+
+        assert "survey results and annotations are untouched" in step
+        assert "activity log" in step
+
+    def test_survey_annotations_really_do_survive(self, client):
+        """The claim the message makes, checked rather than asserted in prose."""
+        c, reg = client
+        reg.upsert_metric("myproj", "maturity", {"score": 4},
+                          surveyed_at="2026-08-01T00:00:00")
+
+        c.post("/api/egeria/linkage/repo/myproj/resolve", json={"action": "discard"})
+
+        assert reg.query_metrics("myproj", "maturity").get("score") == 4

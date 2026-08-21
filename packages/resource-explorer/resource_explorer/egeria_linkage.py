@@ -143,9 +143,9 @@ def note_divergence(
             detail=(
                 f"RE's stored Egeria GUID ({stale_guid or 'unknown'}) is not known to "
                 "the repository, so surveys and publishes for this resource will keep "
-                "failing until the link is reconciled. Local survey results are "
-                "untouched. Resolve it from the resource's Egeria panel: republish, "
-                "re-survey, or discard."
+                "failing until the link is reconciled. Survey results and annotations "
+                "are kept. Resolve it from Admin \u25b8 Egeria Links, or from the "
+                "resource's own Scouting card: republish, re-survey, or discard."
             ),
         )
     except Exception:

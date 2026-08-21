@@ -495,6 +495,7 @@
       <!-- Discovery Sources view (Admin) — named, reusable "where do we
            scout" searches/lists, picked from Scouting's Discover sub-tab. -->
       <div id="admin-discovery-sources-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <div id="admin-egeria-links-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -6124,11 +6125,12 @@ function showMainView(tab) {
   const annotationTypesView = document.getElementById('annotation-types-view');
   const adminGroupsView = document.getElementById('admin-groups-view');
   const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
+  const adminEgeriaLinksView = document.getElementById('admin-egeria-links-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6218,6 +6220,10 @@ function showMainView(tab) {
     adminDiscoverySourcesView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminDiscoverySourcesPanel();
+  } else if (tab === 'admin-egeria-links') {
+    adminEgeriaLinksView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminEgeriaLinksPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -6255,6 +6261,21 @@ async function loadScoutingOverview() {
 
 function renderScoutingOverview(d) {
   const view = document.getElementById('scouting-overview-view');
+  // A broken catalog link makes the "Published to Egeria" badge below actively
+  // misleading - it reports an entry RE can no longer reach - so say so above it,
+  // offering the same three choices as Admin > Egeria Links.
+  const staleLinkBanner = d.egeria_link_stale
+    ? `<div class="mb-3 rounded border border-amber-700/60 bg-amber-950/30 p-3">
+         <div class="text-xs text-amber-300 font-medium mb-1">&#128279; Egeria catalog link is stale</div>
+         <p class="text-[11px] text-slate-400 mb-2 max-w-3xl">
+           Egeria no longer has the element RE recorded for this repo
+           ${d.egeria_link_stale_guid ? `(<span class="font-mono">${_esc(d.egeria_link_stale_guid)}</span>)` : ''} -
+           its repository was most likely reset independently of Resource Explorer. Survey results
+           are kept. Every option clears the unusable link; they differ in what runs next.
+         </p>
+         ${_egeriaLinkActionsHtml('repo', d.slug)}
+       </div>`
+    : '';
   const surveyedBadge = d.last_surveyed_at
     ? `<span class="text-emerald-400" title="Surveyed ${_esc(d.last_surveyed_at)}">📊 Surveyed ${_relTime(d.last_surveyed_at)}</span>`
     : `<span class="text-slate-500">🆕 Not yet surveyed</span>`;
@@ -6281,6 +6302,8 @@ function renderScoutingOverview(d) {
       </div>
 
       <div class="text-sm text-slate-300">${_esc(d.description) || '<span class="text-slate-500">No description on GitHub.</span>'}</div>
+
+      ${staleLinkBanner}
 
       <div class="flex flex-wrap gap-4 text-xs items-center">
         ${surveyedBadge}${publishedBadge}${lifecycleBadge}
@@ -8851,6 +8874,7 @@ function _adminSubnavHtml(active) {
     { tab: 'annotations',       label: '📝 Annotation Types' },
     { tab: 'admin-groups',     label: '🗂 Groups' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
+    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -9673,6 +9697,99 @@ async function deleteAdminGroup(slug) {
 // (a saved search, or a manually-curated list of github_urls) — picked from
 // Scouting's Discover sub-tab instead of re-typing filters every time.
 // "Scouting workflow redesign" plan, D1/D2. ─────────────────────────────────
+
+// -- Egeria link reconciliation (resource_explorer/egeria_linkage.py) --------
+// Shown here as well as on the affected resource, because a divergence is a
+// property of the RE-to-Egeria pairing rather than of any one resource, and can
+// affect repos, databases and filesystems alike. The RFA raised at detection
+// time points here.
+async function loadAdminEgeriaLinksPanel() {
+  const view = document.getElementById('admin-egeria-links-view');
+  view.innerHTML = _adminSubnavHtml('admin-egeria-links') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading...</div>';
+  try {
+    const res = await fetch('/api/egeria/linkage/stale');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderAdminEgeriaLinksPanel(await res.json());
+  } catch (e) {
+    view.innerHTML = _adminSubnavHtml('admin-egeria-links') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAdminEgeriaLinksPanel(rows) {
+  const view = document.getElementById('admin-egeria-links-view');
+  const body = rows.length
+    ? rows.map(r => `<tr class="border-b border-slate-800 align-top">
+        <td class="px-3 py-2 text-xs text-slate-200">${_esc(r.entity_type)}/${_esc(r.entity_slug)}</td>
+        <td class="px-3 py-2 text-xs text-slate-500 font-mono">${_esc(r.stale_guid || '-')}</td>
+        <td class="px-3 py-2 text-xs text-slate-500" title="${_esc(r.detected_at)}">${r.detected_at ? _relTime(r.detected_at) : '-'}</td>
+        <td class="px-3 py-2 text-xs">${_egeriaLinkActionsHtml(r.entity_type, r.entity_slug)}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="4" class="px-4 py-6 text-center text-slate-500 text-xs">
+         No divergences. Every resource RE has cataloged still resolves in Egeria.
+       </td></tr>`;
+
+  view.innerHTML = _adminSubnavHtml('admin-egeria-links') + `
+    <div class="p-4">
+      <h1 class="text-lg font-bold text-slate-100 mb-1">&#128279; Egeria Links</h1>
+      <p class="text-xs text-slate-500 mb-3 max-w-3xl">
+        Resources whose stored Egeria GUID is no longer known to the repository - normally
+        because Egeria's repository was reset independently of Resource Explorer. RE keeps its
+        local survey results and stops rather than guessing, because re-creating the element
+        automatically could duplicate Egeria records and discard catalog history.
+        <strong class="text-slate-400">Every option below clears the unusable link;</strong>
+        they differ in what runs afterwards.
+      </p>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">
+        <table class="w-full text-left">
+          <thead><tr class="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
+            <th class="px-3 py-2">Resource</th><th class="px-3 py-2">Stale GUID</th>
+            <th class="px-3 py-2">Detected</th><th class="px-3 py-2">Resolve</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// Shared by the Admin table and the per-resource banner, so the wording of a
+// destructive-sounding choice cannot differ between the two places it is offered.
+function _egeriaLinkActionsHtml(entityType, slug) {
+  const btn = (action, label, cls, title) =>
+    `<button onclick="_resolveEgeriaLink('${_esc(entityType)}', '${_esc(slug)}', '${action}')"
+       title="${_esc(title)}"
+       class="text-xs px-2 py-0.5 rounded ${cls} transition-colors">${label}</button>`;
+  return `<div class="flex flex-wrap gap-1.5">
+    ${btn('republish', 'Republish', 'bg-cyan-700 hover:bg-cyan-600 text-white',
+          'Re-publish the survey results RE already holds. Fast, no re-scan - right when only Egeria was reset and the resource itself has not changed.')}
+    ${btn('resurvey', 'Re-survey', 'bg-slate-700 hover:bg-slate-600 text-slate-200',
+          'Survey the resource from scratch, then publish. Right when the resource may also have changed, or the local data is old enough to doubt.')}
+    ${btn('discard', 'Discard link', 'bg-slate-800 hover:bg-slate-700 text-slate-400',
+          'Clear the broken link and stop. Survey results and annotations are kept; past publishes stay in the activity log.')}
+  </div>`;
+}
+
+async function _resolveEgeriaLink(entityType, slug, action) {
+  if (action === 'resurvey' &&
+      !confirm(`Re-survey ${entityType}/${slug} from scratch and publish to Egeria?\n\nThis re-runs the full survey, which can take minutes.`)) return;
+  try {
+    const res = await fetch(`/api/egeria/linkage/${entityType}/${slug}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
+    showToast('success', d.next_step || 'Egeria link resolved.', 8000);
+  } catch (e) {
+    showToast('error', `Could not resolve: ${e.message}`, 8000);
+  }
+  if (document.getElementById('admin-egeria-links-view')?.classList.contains('hidden') === false) {
+    loadAdminEgeriaLinksPanel();
+  }
+  if (typeof selectedProject !== 'undefined' && selectedProject === slug) loadScoutingOverview();
+}
 
 async function loadAdminDiscoverySourcesPanel() {
   const view = document.getElementById('admin-discovery-sources-view');

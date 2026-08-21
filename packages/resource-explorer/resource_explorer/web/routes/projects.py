@@ -278,6 +278,13 @@ class ScoutingOverview(BaseModel):
     latest_deployment_at: str = ""
     latest_deployment_environment: str = ""
     latest_deployment_ref: str = ""
+    # Set when this repo's cached Egeria GUID was found not to exist
+    # (resource_explorer/egeria_linkage.py). Carried here because this card is
+    # where the "Published to Egeria" badge is shown, and that badge is actively
+    # misleading while the link is broken — it reports a catalog entry RE can no
+    # longer reach.
+    egeria_link_stale: bool = False
+    egeria_link_stale_guid: str = ""
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -307,7 +314,11 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
     except (TypeError, ValueError):
         security_and_analysis = {}
 
+    linkage = registry.get_egeria_linkage("repo", project.slug) or {}
+
     return ScoutingOverview(
+        egeria_link_stale=linkage.get("status") == "stale",
+        egeria_link_stale_guid=linkage.get("stale_guid", ""),
         slug=project.slug,
         display_name=project.display_name,
         github_url=project.github_url,
