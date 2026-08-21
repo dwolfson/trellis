@@ -405,7 +405,11 @@ async def discover_from_list(body: RepoListText) -> ListLoadResult:
     step is how a typo'd row, or a repo someone already decided to ignore, ends
     up in the catalog with nobody having looked at it.
     """
-    from resource_explorer.batch_io import github_org_from_url, parse_csv_text
+    from resource_explorer.batch_io import (
+        describe_skipped,
+        github_org_from_url,
+        parse_csv_text,
+    )
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -442,7 +446,7 @@ async def discover_from_list(body: RepoListText) -> ListLoadResult:
     if not urls:
         # An empty result and "nothing in your file was usable" are different
         # answers; say which.
-        bad = [f"line {r.line}: {'; '.join(r.errors)}" for r in rows if r.errors][:5]
+        bad = [describe_skipped(r) for r in rows if r.errors][:5]
         if expanded:
             bad.append("organisation(s) expanded to no repos: "
                        + ", ".join(e["org"] for e in expanded))
@@ -468,7 +472,7 @@ async def discover_from_list(body: RepoListText) -> ListLoadResult:
         rows_read=len(rows),
         usable=len(urls),
         already_registered=sum(1 for r in enriched if r.already_registered),
-        skipped=[f"line {r.line}: {'; '.join(r.errors)}" for r in rows if r.errors],
+        skipped=[describe_skipped(r) for r in rows if r.errors],
         unreachable=unreachable,
         expanded_orgs=expanded,
     )

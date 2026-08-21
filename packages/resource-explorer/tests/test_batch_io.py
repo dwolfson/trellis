@@ -511,3 +511,86 @@ class TestOrganisationUrlsAreExpanded:
 
         assert d["repos"], "one bad org must not lose the rest of the file"
         assert d["expanded_orgs"][0]["error"]
+
+
+class TestSkippedRowsAreIdentifiable:
+    """A skipped row has to say where it was and what was on it.
+
+    The line number alone is enough to find it in an editor; the value is what
+    makes the problem obvious without going to look. In a 500-row file that is
+    the difference between a hunt and a fix. The CLI already printed the value
+    and the web route did not — same data, two formats, and the surface people
+    actually use had the less useful one.
+    """
+
+    def test_it_names_the_line_and_the_value(self):
+        from resource_explorer.batch_io import ImportRow, describe_skipped
+
+        row = ImportRow(resource_type="repo", address="htps://typo/x y", line=312,
+                        errors=["not a URL (contains a space)"])
+        out = describe_skipped(row)
+        assert "line 312" in out
+        assert "htps://typo/x y" in out
+        assert "not a URL" in out
+
+    def test_an_empty_value_says_so_rather_than_showing_nothing(self):
+        from resource_explorer.batch_io import ImportRow, describe_skipped
+
+        row = ImportRow(resource_type="repo", address="", line=7, errors=["no address"])
+        assert "(empty)" in describe_skipped(row)
+
+    def test_a_huge_value_is_truncated(self):
+        """A malformed CSV row can be an entire record collapsed into one cell;
+        one bad row must not flood the report."""
+        from resource_explorer.batch_io import ImportRow, describe_skipped
+
+        row = ImportRow(resource_type="repo", address="x" * 500, line=1, errors=["bad"])
+        out = describe_skipped(row)
+        assert len(out) < 200 and "…" in out
+
+    def test_both_surfaces_use_the_same_formatter(self):
+        """They drifted once already. Assert against the source rather than
+        trusting that two call sites stay in step."""
+        import inspect
+
+        from resource_explorer.cli import main as cli
+        from resource_explorer.web.routes import discovery
+
+        assert "describe_skipped" in inspect.getsource(cli.import_resources)
+        assert "describe_skipped" in inspect.getsource(discovery.discover_from_list)
+
+
+class TestMangledCsvIsDiagnosedNotFetched:
+    """An exported file whose header was edited or dropped falls back to
+    plain-list mode, where each comma-separated row becomes one bogus "URL".
+
+    Those then fail to fetch and are reported as unreachable — pointing at
+    GitHub or the network, when the actual problem is the header. That is a
+    long way to send someone for a one-line fix.
+    """
+
+    def test_a_comma_row_in_plain_mode_is_diagnosed(self):
+        from resource_explorer.batch_io import parse_csv_text
+
+        rows = parse_csv_text("https://github.com/a/b,,,,tracking\n")
+        assert rows[0].errors and "no recognised header" in rows[0].errors[0]
+
+    def test_an_empty_csv_row_is_diagnosed_too(self):
+        from resource_explorer.batch_io import parse_csv_text
+
+        rows = parse_csv_text(",,,,\n")
+        assert rows[0].errors
+
+    def test_a_proper_csv_is_unaffected(self):
+        """The diagnosis must not fire for a file with a real header — that is
+        the normal case and it contains commas on every line."""
+        from resource_explorer.batch_io import parse_csv_text
+
+        rows = parse_csv_text("resource_type,address,group\nrepo,https://github.com/a/b,asf\n")
+        assert not rows[0].errors and rows[0].group == "asf"
+
+    def test_a_plain_url_list_is_still_unaffected(self):
+        from resource_explorer.batch_io import parse_csv_text
+
+        rows = parse_csv_text("https://github.com/a/b\n")
+        assert not rows[0].errors

@@ -1898,7 +1898,7 @@ def import_resources(
     Registers only — no RAG ingestion, matching the org-import path, so a large
     batch is cheap. Surveying afterwards is the expensive half.
     """
-    from resource_explorer.batch_io import parse_csv, plan_import
+    from resource_explorer.batch_io import describe_skipped, parse_csv, plan_import
     from resource_explorer.github.org_importer import OrgImporter
     from resource_explorer.registry import ProjectRegistry
 
@@ -1922,7 +1922,7 @@ def import_resources(
         if bucket:
             console.print(f"  [yellow]{len(bucket)} {label}[/yellow]")
             for r in bucket[:10]:
-                console.print(f"     line {r.line}: {r.address or '(no address)'} — {'; '.join(r.errors)}")
+                console.print(f"     {describe_skipped(r)}")
             if len(bucket) > 10:
                 console.print(f"     … and {len(bucket) - 10} more")
 

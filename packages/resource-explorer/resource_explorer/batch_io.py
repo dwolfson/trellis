@@ -158,6 +158,28 @@ class ImportRow:
         return resource_key(self.resource_type, self.address)
 
 
+def describe_skipped(row: "ImportRow", max_value: int = 80) -> str:
+    """One line naming where a skipped row was and what was on it.
+
+    The line number alone is enough to find it in an editor; the value is what
+    makes the problem obvious without going and looking. In a 500-row file the
+    difference between "line 312: not a URL" and
+    `line 312: "htps://github.com/a/b" — not a URL` is the difference between a
+    hunt and a fix.
+
+    Truncated because a malformed CSV row can be enormous — a whole record
+    collapsed into one cell — and one bad row must not flood the report.
+    """
+    value = (row.address or "").strip()
+    if not value:
+        shown = "(empty)"
+    elif len(value) > max_value:
+        shown = f'"{value[:max_value]}…"'
+    else:
+        shown = f'"{value}"'
+    return f"line {row.line}: {shown} — {'; '.join(row.errors)}"
+
+
 @dataclass
 class ImportPlan:
     """What a file would do, computed before anything is written."""
@@ -209,6 +231,15 @@ def parse_csv_text(text: str) -> list[ImportRow]:
         if " " in line:
             row.errors.append("not a URL (contains a space) — if this is a CSV, "
                               "it needs an 'address' column header")
+        elif "," in line:
+            # Reached plain-list mode with comma-separated content, which means
+            # the header sniff failed — an exported file whose header row was
+            # edited or dropped is the likely cause. Without this the whole row
+            # is treated as one URL and sent to GitHub, coming back as
+            # "unreachable", which points at the network instead of the header.
+            row.errors.append("looks like a CSV row, but the file has no "
+                              "recognised header — the first line must include "
+                              "an 'address' column")
         rows.append(row)
     return rows
 
