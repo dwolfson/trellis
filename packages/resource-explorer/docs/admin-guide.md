@@ -272,6 +272,10 @@ Results from the Egeria survey appear with a ☁ badge when the survey completes
 
 When a survey produces `RequestForAction` annotations, they appear in the **RFAs** panel. Assign and answer them there. Answers are currently stored locally in `resource_context`; Egeria write-back is planned.
 
+### Question catalog (Scouting "Questions" tab)
+
+The questions shown in Scouting's **Questions** checklist tab, and the corresponding `Question` elements published to Egeria, are both generated from `docs/dr-egeria/resource_questions.csv`. See [`docs/dr-egeria/resource_questions_guide.md`](dr-egeria/resource_questions_guide.md) for the full column reference, editing workflow, and regeneration commands.
+
 ---
 
 ## Observability
