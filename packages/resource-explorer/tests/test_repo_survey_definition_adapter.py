@@ -449,3 +449,62 @@ def test_analysis_survey_derives_the_homepage_before_ingesting_the_site():
     assert order.index("repo_homepage") < order.index("repo_website_ingestion")
     # The self-published check reads the repo's own file inventory.
     assert order.index("repo_file_inventory") < order.index("repo_website_ingestion")
+
+
+class TestResourceViews:
+    """The perspective distinction, enforced in the plumbing.
+
+    design §4.1 names four perspectives as a modelling concept, and three
+    separate bugs lived in the gap below the model — each silent, each
+    invisible to unit tests because the objects were built correctly and only
+    the wiring was wrong. This is the structural guard for the third: two repo
+    resources both yield "a directory" and are not interchangeable.
+    """
+
+    def test_providers_declare_what_they_supply(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            VIEW_HISTORY, VIEW_SOURCE, _resource_providers_for,
+        )
+
+        providers = _resource_providers_for(None, None)
+        # A zipball has no .git; a --no-checkout clone's root has only .git.
+        assert providers["zipball_root"].provides == frozenset({VIEW_SOURCE})
+        assert providers["git_clone_root"].provides == frozenset({VIEW_HISTORY})
+
+    def test_every_resource_step_declares_the_view_it_reads(self):
+        """A missing declaration is an unchecked assumption, and unchecked
+        assumptions are precisely what this mechanism exists to catch — so the
+        absence of one is itself a failure, not a default."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        undeclared = {
+            step: sorted(set(info.requires_resources) - set(info.requires_views or {}))
+            for step, info in STEP_REGISTRY.items()
+            if set(info.requires_resources) - set(info.requires_views or {})
+        }
+        assert undeclared == {}, f"steps using a resource without saying what they read: {undeclared}"
+
+    def test_a_step_reading_source_from_a_history_only_resource_is_rejected(self):
+        """The original defect, as a test. repo_arch_coupling once declared
+        `{"git_clone_root": "local_path"}` and read import source files from
+        it. The clone root contains only `.git`, so extraction scanned an empty
+        tree, produced zero edges and proposed zero components — on every repo,
+        with no error, through a full test suite and a live run."""
+        import copy
+
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            STEP_REGISTRY, VIEW_SOURCE, validate_resource_views,
+        )
+
+        broken = copy.deepcopy(STEP_REGISTRY)
+        broken["repo_arch_coupling"].requires_resources = {"git_clone_root": "local_path"}
+        broken["repo_arch_coupling"].requires_views = {"git_clone_root": VIEW_SOURCE}
+
+        problems = validate_resource_views(broken)
+        assert problems, "the view check failed to reject a source read from a history-only resource"
+        assert "git_clone_root" in problems[0] and "source" in problems[0]
+
+    def test_the_shipped_registry_is_consistent(self):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import validate_resource_views
+
+        assert validate_resource_views() == []

@@ -410,6 +410,64 @@ here. Their content survives as the technology-type **string** in
 `find_technology_types` and `technology_type_processes.yaml`, so this is familiar ground rather than
 a new dependency.
 
+### 4.1b The perspectives must be enforced below the model, not only in it
+
+§4.1 and §4.1a describe the perspectives as a **modelling** concept — which vocabulary a component
+gets, which Egeria area it lands in. Nothing enforced them below that, and **three separate bugs
+lived in exactly that gap.** All three were silent, and all three were invisible to unit tests for
+the same reason: the objects were constructed correctly and only the plumbing was wrong.
+
+| what served two purposes | consequence |
+|---|---|
+| `scope_locator` — path prefix **and** identity | 58 distinct components collapsed onto 10 keys; readers kept one container per compose file |
+| import source roots — one global order for **two copies** of one package | 156 of 170 edges resolved into the wrong copy |
+| one directory — the **code** view and the **change** view | coupling scanned an empty tree, proposed zero components on every repo |
+
+The third is worth stating precisely, because it looks like a configuration typo and is not. Two
+repo resources both yield "a directory" and are not interchangeable:
+
+- **`zipball_root`** — files on disk, **no `.git`**
+- **`git_clone_root`** — `--filter=blob:none --no-checkout`, so its root contains **only `.git`**
+
+`--no-checkout` is *correct* for the history view: without it a treeless clone fetches every blob
+in HEAD and defeats the filter. It became a bug the moment a second consumer with a different view
+was pointed at the same artifact. Both satisfied "a path exists". Neither the type system nor any
+test could tell them apart, **because the difference had never been written down.**
+
+**The mechanism.** A provider declares what it supplies, a step declares what it reads, and a
+mismatch fails at import:
+
+```python
+"git_clone_root": ResourceProvider(..., provides=frozenset({VIEW_HISTORY}))
+
+"repo_arch_coupling": StepInfo(...,
+    requires_resources={"zipball_root": "source_path", "git_clone_root": "history_path"},
+    requires_views={"zipball_root": VIEW_SOURCE, "git_clone_root": VIEW_HISTORY})
+```
+
+Re-introducing the original defect now raises at import:
+
+> `repo_arch_coupling: reads 'source' from 'git_clone_root', which provides ['history']`
+
+**Failing at import rather than warning is deliberate.** A step wired to a resource that cannot
+give it what it reads does not degrade — it silently produces nothing, which is indistinguishable
+from *"this repo has no components"*. That is exactly how the defect survived a 1576-test suite
+and a live run, and was caught only by checking a number against something already known.
+
+A step that uses a resource without declaring what it reads is a failure too, not a default —
+an undeclared assumption is the thing this exists to catch. `trellis-microflow`'s
+`ResourceProvider.provides` carries opaque labels and assigns them no meaning; the vocabulary
+belongs to the app.
+
+**The general principle, and the one to carry into later phases:** a perspective distinction that
+exists only in a design document will be violated by the plumbing, silently, and the violation
+will look like an empty result rather than an error. Where two things are genuinely different
+views of one system, the *pipes* have to know it — not just the model they carry.
+
+Two of the three bugs above would have been import-time errors under this rule. The `scope_locator`
+one would not: that is a key-semantics problem rather than a resource one, and it remains
+unguarded (see §6.0).
+
 ### 4.2 Do not merge the vocabularies — map them
 
 The obvious reaction is to reconcile `SolutionComponentType` with the `SoftwareCapability` subtypes.

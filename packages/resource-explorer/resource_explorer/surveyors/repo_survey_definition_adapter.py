@@ -86,6 +86,36 @@ from resource_explorer.surveyors.survey_definition_executor import (
 REPO_COARSE_SCOUT_SURVEY_DEFINITION_QN = "GovActionProcess::RepoCoarseScout"
 
 
+# ── Resource views — the perspective distinction, in the plumbing ────────
+#
+# design §4.1 names four perspectives as a MODELLING concept. Nothing enforced
+# them below the model, and three separate bugs lived in exactly that gap —
+# each silent, each invisible to unit tests because the objects were built
+# correctly and only the plumbing was wrong:
+#
+#   * `scope_locator` served both "path prefix" and "identity" -> 58 distinct
+#     components collapsed onto 10 keys (spike findings 45-46)
+#   * one global import-root order served two copies of one package -> 156 of
+#     170 edges resolved into the wrong copy (finding 37)
+#   * one directory served both the code view and the change view -> coupling
+#     scanned an empty tree and proposed nothing, on every repo (finding 52)
+#
+# The third is the one this fixes structurally. Two repo resources both yield
+# "a directory" and they are not interchangeable:
+#
+#   SOURCE   files on disk. A zipball extract has them; a --no-checkout clone
+#            does not — its root contains only `.git`.
+#   HISTORY  git metadata for `git log`. A clone has it; a zipball has no
+#            `.git` at all.
+#
+# A step declares which views it needs per resource; a provider declares which
+# it supplies; `validate_resource_views()` compares them at import. A step that
+# asks a history-only resource for source files now fails loudly at wiring
+# time instead of quietly reporting nothing.
+VIEW_SOURCE = "source"
+VIEW_HISTORY = "history"
+
+
 # ── Step-level registry ──────────────────────────────────────────────────
 
 @dataclass
@@ -123,6 +153,13 @@ class StepInfo:
     # selected in that run, via trellis_microflow.resolve_resources — see
     # RESOURCE_PROVIDERS below for what "zipball_root" actually does.
     requires_resources: dict[str, str] = field(default_factory=dict)
+    # {resource_name: view} — what this step actually READS from that
+    # resource. Checked against the provider's `provides` at import by
+    # validate_resource_views(). Every entry in requires_resources should have
+    # one; test_every_resource_step_declares_its_view enforces that, because a
+    # missing declaration is an unchecked assumption and unchecked assumptions
+    # are what this mechanism exists to catch.
+    requires_views: dict[str, str] = field(default_factory=dict)
     # Step-cost-tiers plan (docs/step-cost-tiers-plan.md, D2) — two
     # independent, deliberately coarse/ordinal axes so a caller (a survey
     # author, the scheduler, or SurveyOrchestrator.run()'s new
@@ -201,10 +238,16 @@ def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
     return {
         "zipball_root": ResourceProvider(
             name="zipball_root",
+            # Files, no history: a zipball has no `.git` at all.
+            provides=frozenset({VIEW_SOURCE}),
             acquire=lambda: _acquire_zipball_root(project, registry),
         ),
         "git_clone_root": ResourceProvider(
             name="git_clone_root",
+            # History, NO files: `--filter=blob:none --no-checkout` yields a
+            # root containing only `.git`. Declaring VIEW_SOURCE here would be
+            # a lie, and it is the lie that cost finding 52.
+            provides=frozenset({VIEW_HISTORY}),
             acquire=lambda: _acquire_git_clone_root(project, registry),
         ),
     }
@@ -252,6 +295,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
         # One of the 4 zipball steps (D3/D4) — a real download, so "none"
         # is invalid here. Walking the extracted tree is cheap.
         fetch_cost="download",
@@ -300,6 +344,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # a zipball. Declaring it means the fallback tiers work for free whenever
         # another step in the same run has already paid for the download.
         requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
         # Optional zipball (see the constructor comment above) but still
         # one of the 4 steps that declare it — "download", not "none",
         # per D3. Parsing pyproject.toml/package.json/README for a URL is
@@ -419,6 +464,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # cost this step didn't previously pay through this path) — not
         # silent.
         requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
         # One of the 4 zipball steps. compute_cost="medium", not "low":
         # Tier 2 profiles every readable data file's rows/columns/dtypes/
         # null-rate with pandas, real per-file work beyond a table read.
@@ -444,6 +490,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
         # One of the 4 zipball steps. compute_cost="medium", not "low":
         # unlike repo_api_structure (a read of already-extracted symbols),
         # this step does the tree-sitter/ast extraction itself, across
@@ -470,6 +517,7 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         accepts_scope_locator=True,
         requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
         # Measured on the arch-spike (docs/architecture-recovery-phase1-
         # findings.md §1): 5.3s per repo for the whole toolchain, so "fast"
         # is honest rather than optimistic.
@@ -488,6 +536,8 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_scope_locator=True,
         requires_resources={"zipball_root": "source_path",
                             "git_clone_root": "history_path"},
+        requires_views={"zipball_root": VIEW_SOURCE,
+                        "git_clone_root": VIEW_HISTORY},
         fetch_cost="download",
         compute_cost="medium",
     ),
@@ -575,6 +625,47 @@ def _run_batch(project, registry, step_keys: list[str], fast: bool = False, **_)
     orch = SurveyOrchestrator(registry)
     result = orch.run(project.slug, steps=step_keys, fast=fast)
     return {"annotations": result.annotations, "errors": result.errors}
+
+
+def validate_resource_views(registry: dict | None = None,
+                            providers: dict | None = None) -> list[str]:
+    """Every declared view must be supplied by the named resource.
+
+    Run at import (below). Raises rather than warns: a step wired to a
+    resource that cannot give it what it reads does not degrade gracefully —
+    it silently produces nothing, which is indistinguishable from "this repo
+    has no components" and is exactly how finding 52 survived a full test
+    suite and a live run.
+
+    A provider with no declared `provides` is skipped rather than assumed
+    empty, so third-party or not-yet-annotated providers do not break the
+    build; the exhaustiveness test covers that gap instead.
+    """
+    registry = STEP_REGISTRY if registry is None else registry
+    if providers is None:
+        providers = _resource_providers_for(None, None)
+    problems: list[str] = []
+    for step_key, info in registry.items():
+        for resource_name, view in (info.requires_views or {}).items():
+            if resource_name not in info.requires_resources:
+                problems.append(
+                    f"{step_key}: declares view {view!r} for {resource_name!r}, "
+                    f"which it does not require")
+                continue
+            provider = providers.get(resource_name)
+            if provider is None or not provider.provides:
+                continue
+            if view not in provider.provides:
+                problems.append(
+                    f"{step_key}: reads {view!r} from {resource_name!r}, which "
+                    f"provides {sorted(provider.provides)}")
+    return problems
+
+
+_VIEW_PROBLEMS = validate_resource_views()
+if _VIEW_PROBLEMS:                       # fail at import, not at survey time
+    raise RuntimeError(
+        "resource view mismatch in STEP_REGISTRY:\n  " + "\n  ".join(_VIEW_PROBLEMS))
 
 
 def _build_re_analysis_steps() -> dict:
