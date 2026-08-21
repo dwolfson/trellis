@@ -5704,10 +5704,21 @@ function renderAutomateSubscriptionsPanel(subs) {
     : '';
 
   const rows = subs.map(s => {
-    const statusBadge = s.active
-      ? '<span class="text-emerald-400">● active</span>'
-      : '<span class="text-slate-600">○ inactive</span>';
-    const checkedInfo = s.last_checked_at ? `checked ${_relTime(s.last_checked_at)}` : 'never checked yet';
+    // An active subscription with no recurring schedule for the same analysis can
+    // never fire — detection only runs off scheduled completions. That was said
+    // only in a toast at create time and a tooltip on the Notify button, so a
+    // subscription made weeks ago sat here looking healthy and inert. Say it on
+    // the row, where it stays visible for as long as the condition is true.
+    const statusBadge = !s.active
+      ? '<span class="text-slate-600">○ inactive</span>'
+      : (s.has_schedule === false
+          ? `<span class="text-amber-400" title="Detection only runs off scheduled runs. Set a cadence for '${_esc(s.analysis_id)}' on this resource in the ⏱ Schedules tab, or from the analysis card's ⏱ Schedule action.">● active — but never fires (no schedule)</span>`
+          : '<span class="text-emerald-400">● active</span>');
+    const checkedInfo = s.last_checked_at
+      ? `checked ${_relTime(s.last_checked_at)}`
+      : (s.active && s.has_schedule === false
+          ? 'never — no schedule to run off'
+          : 'never checked yet');
     const notifiedInfo = s.notification_count > 0
       ? `<span class="text-cyan-400">🔔 notified ${s.notification_count}×</span>${s.last_notified_at ? ` (last ${_relTime(s.last_notified_at)})` : ''}`
       : '<span class="text-slate-600">never notified</span>';

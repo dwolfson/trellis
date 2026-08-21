@@ -113,6 +113,38 @@ divergence record — that is what unblocks the resource, and is common to every
 - **No UI for resolve.** The RFA now appears in the drawer (it did not until the
   `log_rfa` fix below); the three-way resolve action is still API-only.
 
+### Automate: had never notified anyone — two independent faults, both fixed 2026-08-20
+
+Its whole value is the notification, and nothing errored while it delivered none.
+
+1. **Delivery** — every RFA it wrote was invisible in the RFA drawer (see the item below).
+2. **Prerequisite** — detection only runs off a *scheduled* completion, so a subscription
+   with no recurring schedule for the same analysis can never fire. The live state was
+   exactly that: an active `maturity` subscription on `sqlglot`, `last_checked_at` empty,
+   and the only schedule in the deployment belonging to a different entity *and* a
+   different analysis. The warning existed only as a toast at create time and a tooltip on
+   the Notify button — nothing on the subscription row, so one made weeks earlier sat there
+   looking healthy and inert.
+
+`SubscriptionData` now carries `has_schedule`, computed against enabled, non-`manual`
+schedules for the same (entity_type, entity_slug, analysis_id), and the row renders
+"active — but never fires (no schedule)" with a pointer to where to set one. A `manual`
+cadence deliberately does not count: it never recurs, so nothing ever completes for
+detection to compare against.
+
+`tests/test_automate_end_to_end.py` follows the whole chain — scheduled run → detection →
+RFA a human can see — rather than a unit of it, because the two failure modes are
+indistinguishable from outside: a subscription that never fires and one with nothing to
+report both show "never notified".
+
+**Not a fault, found alongside:** the one schedule in this deployment
+(`localhost_docker_coco_ods` / `index_health`) errors on every run with "No Survey
+Definition found matching 'index_health'". `index_health` is not in the database analysis
+catalog (`schema_inventory`, `row_count_snapshot`, `privilege_audit`, `egeria_db_survey`) —
+a stale schedule pointing at an analysis that no longer exists. The scheduler is behaving
+as designed here (D5: report a stale schedule, never silently fall back), and the Schedules
+tab shows the error. It just needs deleting.
+
 ### ~~RFAs written by `log_rfa()` never reached the RFA drawer~~ — FIXED 2026-08-20
 
 `GET /api/activity/rfas`, the feed behind the drawer, keeps only *annotations* whose
