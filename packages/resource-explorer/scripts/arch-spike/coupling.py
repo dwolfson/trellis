@@ -449,6 +449,47 @@ def _subtree_glob(sub: str, package_roots: list[str]) -> str:
     return f"{sub}/**" if depth >= 2 else f"{sub}/*"
 
 
+
+def _adopt_orphan_buckets(by_subtree: dict, all_buckets: set[str]) -> list[str]:
+    """Give every candidate bucket that was NOT proposed to its nearest
+    proposed ancestor.
+
+    `_subtree_glob` is self-consistent: a one-segment bucket uses `X/*` because
+    files under `X/Y` belong to the separate bucket `X/Y`. That is right while
+    `X/Y` is itself proposed — it is how `Core` gets `resource_explorer/*` and
+    scores an exact match, since `agents/`, `cli/` and the rest really are their
+    own components.
+
+    It goes wrong when the nested bucket is NOT proposed. `scripts/arch-spike`
+    is a bucket (20 files) that no signal proposes — the spike's modules barely
+    import one another — so `scripts/*` claimed 7 files and 20 were orphaned,
+    owned by nobody. The ground truth folds them into `Utility scripts`, and
+    that is the more useful reading: **a component owns everything beneath it
+    that nothing else claims.**
+
+    So this is not a glob fix, it is the residue rule stated properly. Adopting
+    an orphan cannot create an overlap, because a bucket is adopted only when no
+    component claims it.
+    """
+    proposed = set(by_subtree)
+    notes = []
+    for own, c in sorted(by_subtree.items()):
+        for bucket in sorted(all_buckets):
+            if bucket == own or not bucket.startswith(own.rstrip("/") + "/"):
+                continue
+            if any(bucket == p or bucket.startswith(p.rstrip("/") + "/")
+                   for p in proposed if p != own and p.startswith(own)):
+                continue                      # a nearer proposed ancestor owns it
+            if bucket in proposed:
+                continue                      # it is a component in its own right
+            glob = f"{bucket}/**"
+            if glob not in c.files:
+                c.files.append(glob)
+                notes.append(f"{own}: adopted unproposed subtree {bucket} "
+                             f"(nothing else claims it)")
+    return notes
+
+
 def propose(tracked: set[str], package_roots: list[str],
            import_edges: list[dict]) -> tuple[list, list, list]:
     """Coupling as PROPOSER (plan §4.1) — subtrees classified `cohesive`,
@@ -475,6 +516,7 @@ def propose(tracked: set[str], package_roots: list[str],
     evidence: list = []
     notes: list[str] = []
     shape_counts: dict[str, int] = {}
+    by_subtree: dict[str, object] = {}          # subtree -> its Component, for orphan adoption
 
     for sub, files in sorted(subtree_files.items()):
         if len(files) < 2:
@@ -496,6 +538,7 @@ def propose(tracked: set[str], package_roots: list[str],
             files=[_subtree_glob(sub, package_roots)], confidence=int(confidence),
             confidence_level="Derived", perspective="logical",
         ))
+        by_subtree[sub] = components[-1]
         evidence.append(Evidence(
             subject_kind="component", subject_slug=slug,
             assertion=f"coupling shape = {shape}",
@@ -503,6 +546,8 @@ def propose(tracked: set[str], package_roots: list[str],
             locations=[Location(sub, 0, why)],
             confidence=int(confidence), confidence_level="Derived",
         ))
+
+    notes.extend(_adopt_orphan_buckets(by_subtree, set(subtree_files)))
 
     notes.append(
         f"coupling: {len(components)} logical components proposed from "

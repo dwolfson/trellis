@@ -778,3 +778,45 @@ scoring this result the same mistake reproduced in a throwaway matcher, where tw
 `cli` (one in resource-explorer, one in egeria-advisor) overwrote each other and made `CLI` look
 like a 0.02 miss. **Component names are not unique; slugs are.** Key by slug, always — the design
 says as much in §8.2 and it has now cost two debugging detours.
+
+**44. The `scripts` glob was not a glob bug — it was the residue rule, and fixing it properly is a
+trade rather than a clean win.**
+
+`_subtree_glob` emits `X/*` for a one-segment bucket because files under `X/Y` belong to the
+separate bucket `X/Y`. That is correct while `X/Y` is itself proposed, and it is exactly why
+`Core` got `resource_explorer/*` and matched exactly — `agents/`, `cli/` and the rest really are
+their own components.
+
+It breaks when the nested bucket is **not** proposed. `scripts/arch-spike` is a 20-file bucket no
+signal proposes (the spike's modules barely import one another), so `scripts/*` claimed 7 files
+and 20 were owned by nobody. The rule that fixes it is the residue rule stated properly: **a
+component owns everything beneath it that nothing else claims.**
+
+| | before | after |
+|---|---|---|
+| components matched (F1≥0.5) | 12 of 13 | **13 of 13** |
+| file coverage in scope | 87% | **97%** (184 of 190) |
+| ARI / NMI | 0.965 / 0.973 | **0.969 / 0.977** |
+| `Utility scripts` | 0.42 | **exact** |
+| `Core` | **exact** | **0.51** |
+
+**`Core` got worse, and that is the interesting part.** Adoption gives `resource_explorer` the
+unproposed `github/`, `configdata/` and `dashboard/` buckets — but the ground truth's `Core` is
+explicitly *"the 19 top-level modules"*, so those do not belong to it.
+
+The two ground-truth components genuinely disagree about residue ownership, and both readings are
+deliberate: `Utility scripts` is written `scripts/**` (a bag of scripts, and arch-spike is more
+scripts), while `Core` is written `resource_explorer/*.py` (top-level modules, and `github/` is a
+distinct concern). **No single mechanical rule reproduces both**, because the difference is a
+human judgement about what a component is *for*, not about where its files sit.
+
+Kept the adoption rule and recorded the cost rather than special-casing it. Special-casing would
+be tuning to the fixture, which is the one thing the ground truth exists to prevent. Two things
+follow for Phase 1:
+
+- **Residue ownership is a disambiguation worth asking a human** (portfolio note §5a) — it is
+  cheap to answer, impossible to derive, and it changes the partition.
+- The orphan buckets adoption surfaced — `github/`, `configdata/`, `dashboard/` — are files the
+  ground truth never assigned to anything. Whether they are unowned or belong somewhere is a real
+  open question about the fixture, and belongs in a `-revised.md` rather than being decided by a
+  detector.
