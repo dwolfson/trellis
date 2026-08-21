@@ -911,3 +911,34 @@ for that was judged disproportionate to a scoring task — no Egeria writes, no 
 task's hard rules). This is a weaker claim than "the deployed survey steps agree" but a stronger
 one than "the modules agree in isolation," since it exercises the actual registry schema and the
 actual read-back grouping logic where the finding-46 defect lives.
+
+**47. The residue rule surfaced misplaced code, not just unassigned files — and the dependency
+data overturned the maintainer's first read of it.**
+
+Finding 44's orphans (`github/`, `configdata/`, `dashboard/`) were put to the maintainer. The
+answer was not "here is the component that owns them" but **"the code is in the wrong place"** —
+`github/` described as *"utilities to fetch git data and statistics, so they are effectively used
+by surveyors — you could move that folder"*, `dashboard/` as *"might not be properly organized"*.
+
+That is the feature doing the job it exists for: not describing the architecture, but finding
+where the code disagrees with the intended one.
+
+**Then the measurement contradicted the instinct.** `resource_explorer.github` is imported by
+**six** subsystems — `web/routes` (2 files), `surveyors/sub_surveyors` (2), `ingestion` (2), `cli`
+(2), `surveyors` (1), `agents` (1). Surveyors are 3 of 11 importers, not the owner. Moving
+`github/` under `surveyors/` would create upward dependencies from `web/`, `ingestion/`, `cli/`
+and `agents/` **into** `surveyors/` — worse coupling, not better.
+
+It matches its measured signature precisely: fan-in 22, dispersion 0.90 — the
+**connective-library** shape (finding 34). A utility imported evenly by many components is not
+misplaced; it is a library.
+
+**Both halves are the point.** A human knows things no detector does (that `configdata` is package
+config, that `dashboard` is presentation support). A detector knows things no human recalls (that
+six subsystems import `github`, not one). The check ran in both directions and changed the answer
+in one of them, which is the strongest argument yet for
+`approach-portfolio-model.md` §5a's bidirectional channel over a one-way RFA.
+
+Recorded in `tests/fixtures/architecture-ground-truth/trellis-revised.md`, with the residue rule
+decided: **adopt by default, ask when not obvious** — the asking surface being a file tree with
+checkboxes, since the answer is naturally a selection rather than a boolean.
