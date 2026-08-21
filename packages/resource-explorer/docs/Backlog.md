@@ -31,7 +31,7 @@ Note it excludes the `*` (Full Survey) sentinel on purpose. That bundle is gener
 STEP_REGISTRY, so it can never be missing anything, and counting it would have declared
 `repo_website_ingestion` reachable on the day it was reachable from nothing.
 
-### Open — a "no silent success" check over 197 swallow-and-continue handlers
+### BUILT 2026-08-20 — a "no silent success" ratchet (`tests/test_no_silent_success.py`)
 
 `resource_explorer` has 197 broad `except` handlers whose body only logs. Most are legitimate
 best-effort writes; the problem is that nothing distinguishes those from the ones that hide a
@@ -39,13 +39,21 @@ defect. Two did exactly that this session: `EgeriaDatabaseSurveyor.catalog_and_s
 returned success while swallowing a stale-GUID 404, and `run_prefect_step` reported "API
 dispatch failed" for an `UnboundLocalError` that made the whole Prefect API path unreachable.
 
-Proposed rule, not yet built: a handler that swallows *and whose function still reports
-success* must record something observable — a metric, an error field, a divergence row. That
+**Built as a ratchet, not a sweep.** 112 existing sites (the earlier figure of 115 double-counted
+handlers in nested functions) are recorded in `tests/no_silent_success_baseline.json` keyed by
+`path::function` with a count — not line numbers, which churn on unrelated edits. A new site
+fails the test; a baseline entry that no longer exists also fails, so the number can go down
+but never up and the baseline cannot rot. Verified in both directions, and the detector is
+proven against the two real bug shapes plus four near-miss controls (narrow except, re-raise,
+handler that returns, log-only handler in a void function).
+
+Still open, deliberately: fixing the 112. The rule is that a handler that swallows *and whose
+function still reports success* must record something observable — a metric, an error field, a divergence row. That
 is precisely the fix applied to both sites above. Invasive across 197 call sites, so it wants
 a design pass and probably a staged rollout (new code first, then per-module), rather than a
 sweep.
 
-### Open — pin real dependency error payloads as fixtures, and a live smoke tier
+### BUILT 2026-08-20 — live smoke tier (`tests/test_egeria_live_smoke.py`) + pinned error payloads
 
 Several of these were findable *only* against live Egeria: which paths actually consume a
 cached GUID, a divergence swallowed by a non-fatal handler, and the real error codes. The
