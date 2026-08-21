@@ -64,9 +64,18 @@ divergence record — that is what unblocks the resource, and is common to every
 **Still open:**
 - **republish/resurvey run the follow-up work for repos only.** For databases and
   filesystems the link is cleared and the caller is told which existing action to run.
-  Re-publishing those from cached local data needs per-type orchestration (a database
-  publish reconstructs `schema_info` and fires Egeria's native survey), and there is no
-  registered database or filesystem in this deployment to verify such a path against.
+  Re-publishing those from cached local data needs per-type orchestration — a database
+  publish reconstructs `schema_info` and fires Egeria's native survey — which is the real
+  reason it is not built here.
+
+  **Correction (2026-08-20):** the commit that added this said there was "no registered
+  database or filesystem in this deployment". That was wrong and was never checked — only
+  filesystems were. There are two registered databases, `localhost_docker_coco_ods` and
+  `localhost_docker_coco_pharma`; filesystems are genuinely zero. Neither database carries
+  an `egeria_asset_guid`, so neither can exhibit this divergence today — a stale link needs
+  a cached GUID first. So the path is testable in principle, but only after cataloging one
+  of them in Egeria, which is a real write to the live catalog and a deliberate choice
+  rather than a side effect of verification.
 - **`discard` clears the Egeria linkage; it does not purge RE's local survey data**, which
   is the stronger reading in the original note above. Deleting a user's survey history is
   hard to reverse and should not happen behind a single API call — it needs its own
