@@ -1052,3 +1052,52 @@ argues for a different one.
 **Do not build the portfolio manager, selection lookup, or retirement rule yet.** Portfolio note §6
 already names the risk this avoids — an evaluation harness that outgrows the results it ranks —
 and at n=3, with two of three targets' grids half `unverified`, there is nothing yet to rank.
+
+---
+
+**53. Java extraction works, and the adversarial target is scoreable for the first time.** `egeria`
+— 231 Gradle modules, 4,515 tracked `.java` files, **zero** `.py` — previously could not be run at
+all, which was recorded as `unverified` rather than `no_signal` precisely because a zero from an
+extractor that cannot read the language is not evidence about the repo.
+
+Verified independently: 30,552 import statements → **48,894 distinct edges**, with a known-positive
+checked first (`ProfileReportResponse.java` visibly imports
+`OpenMetadataConformanceProfileResults`; the edge appears). Per finding 19, that check is what makes
+the aggregate trustworthy rather than a possible silent zero.
+
+Resolution mirrors finding 37's fix: a duplicate fully-qualified name across two Gradle modules
+resolves within the importing file's own module first.
+
+**54. Two-thirds of Java edges are wildcard imports, and a wildcard edge means "might use", not
+"does use".** Measured: 32,480 of 48,894 edges (66%) come from `import a.b.*;`, with single files
+fanning out to hundreds of targets — `OpenMetadataPropertyConverterBase.java` reaches **704**,
+`OpenMetadataType.java` 674.
+
+This is a real over-approximation specific to Java, and it plausibly explains the shape of the
+result: of 321 classified subtrees only **4** came out `cohesive` against **156** `connective`.
+Heavy dispersed fan-in and fan-out from wildcard imports into shared framework packages is exactly
+what the dispersion signal reads as "connective", whether or not the code genuinely is.
+
+**So Java coupling numbers carry a caveat Python's do not.** Python edges are exact per-symbol;
+Java's are two-thirds "might". Worth tagging `kind: wildcard` on the edge (done) so a consumer can
+down-weight or exclude them, and worth deciding deliberately before Java results are compared with
+Python ones.
+
+**55. The Gradle granularity collapse and the flat-repo zero are the SAME bug, from opposite
+directions.** On `egeria`, coupling proposed roughly one component per Gradle module's `src/main`
+and `src/test` — it never drills into the `org/odpi/openmetadata/...` hierarchy inside a module.
+
+`_subtree_for` is a **fixed-depth directory rule**: the top-level subpackage two levels below a
+package root. That is tuned to Python's conventional layout, and it degenerates whenever a repo's
+structure differs:
+
+| repo shape | package root | what the rule yields |
+|---|---|---|
+| flat app (`PyegeriaWebHandler`) | the app dir | **nothing** — no subdirectories to find (finding 36/37) |
+| Gradle (`egeria`) | each of 231 modules | **`src/main` / `src/test`** — never the package tree below |
+| Python monorepo (`trellis`) | each workspace member | the right answer, which is why it looked correct |
+
+Both failures were previously read as separate problems — one a "flat repo" limitation, one a
+"Java scale" observation. They are one cause: **the candidate generator assumes a directory depth
+rather than deriving one.** That reframes the flat-repo work from a special case into the general
+fix, and gives it a second target to be validated against instead of one.

@@ -273,3 +273,122 @@ class TestFinding44ResidueRule:
         assert scripts_comp is not None, "expected 'scripts' to be proposed as cohesive"
         assert "scripts/subtool/**" in scripts_comp.files
         assert any("adopted unproposed subtree" in n for n in notes)
+
+
+# ── Java import extraction — the adversarial-target extension ─────────────
+#
+# `odpi/egeria` (231 Gradle modules) has zero tracked .py files, so it was
+# unreachable by coupling until imports.py grew a Java extractor/resolver
+# (README's Java section: "does this generalise beyond a well-factored
+# Python monorepo?" was unanswerable without this). Fixture trees mirror the
+# Python finding-37 tests above: small, synthetic, built in tmp_path.
+
+def _java(root, rel, package, body=""):
+    """Write one first-party .java file with a `package` declaration —
+    java_fqcn_index needs it to build fqcn -> file."""
+    return _write(root, rel, f"package {package};\n\n{body}\n")
+
+
+class TestJavaImportPlainClass:
+    def test_plain_class_import_resolves_to_the_declaring_file(self, tmp_path):
+        root = str(tmp_path)
+        _java(root, "modA/src/main/java/com/example/foo/Foo.java", "com.example.foo",
+              "import com.example.bar.Bar;\npublic class Foo { Bar b; }")
+        _java(root, "modA/src/main/java/com/example/bar/Bar.java", "com.example.bar",
+              "public class Bar {}")
+        files = [
+            "modA/src/main/java/com/example/foo/Foo.java",
+            "modA/src/main/java/com/example/bar/Bar.java",
+        ]
+
+        graph = imports.build_graph(root, files)
+        edges = {(e["source"], e["target"], e["kind"]) for e in graph["edges"]}
+
+        assert ("modA/src/main/java/com/example/foo/Foo.java",
+                "modA/src/main/java/com/example/bar/Bar.java", "class") in edges
+
+
+class TestJavaImportStaticAndWildcard:
+    def test_static_member_import_resolves_to_the_declaring_class_not_the_member(self, tmp_path):
+        root = str(tmp_path)
+        _java(root, "modA/src/main/java/com/example/Foo.java", "com.example",
+              "import static com.example.Util.doThing;\npublic class Foo { { doThing(); } }")
+        _java(root, "modA/src/main/java/com/example/Util.java", "com.example",
+              "public class Util { public static void doThing() {} }")
+        files = [
+            "modA/src/main/java/com/example/Foo.java",
+            "modA/src/main/java/com/example/Util.java",
+        ]
+
+        graph = imports.build_graph(root, files)
+        edges = {(e["source"], e["target"], e["kind"]) for e in graph["edges"]}
+
+        assert ("modA/src/main/java/com/example/Foo.java",
+                "modA/src/main/java/com/example/Util.java", "static") in edges
+
+    def test_class_wildcard_import_fans_out_to_every_top_level_type_in_the_package(self, tmp_path):
+        root = str(tmp_path)
+        _java(root, "modA/src/main/java/com/example/Foo.java", "com.example",
+              "import com.example.baz.*;\npublic class Foo {}")
+        _java(root, "modA/src/main/java/com/example/baz/Qux.java", "com.example.baz", "public class Qux {}")
+        _java(root, "modA/src/main/java/com/example/baz/Zed.java", "com.example.baz", "public class Zed {}")
+        files = [
+            "modA/src/main/java/com/example/Foo.java",
+            "modA/src/main/java/com/example/baz/Qux.java",
+            "modA/src/main/java/com/example/baz/Zed.java",
+        ]
+
+        graph = imports.build_graph(root, files)
+        edges = {(e["source"], e["target"], e["kind"]) for e in graph["edges"]}
+
+        assert ("modA/src/main/java/com/example/Foo.java",
+                "modA/src/main/java/com/example/baz/Qux.java", "wildcard") in edges
+        assert ("modA/src/main/java/com/example/Foo.java",
+                "modA/src/main/java/com/example/baz/Zed.java", "wildcard") in edges
+
+    def test_stdlib_import_is_external_not_a_silent_drop(self, tmp_path):
+        root = str(tmp_path)
+        _java(root, "modA/src/main/java/com/example/Foo.java", "com.example",
+              "import java.util.List;\npublic class Foo { List x; }")
+        files = ["modA/src/main/java/com/example/Foo.java"]
+
+        graph = imports.build_graph(root, files)
+
+        assert graph["edge_count"] == 0
+        assert graph["unresolved_import_count"] == 1
+        assert graph["external_by_file"] == {"modA/src/main/java/com/example/Foo.java": 1}
+
+
+class TestJavaFinding37StyleModuleResolution:
+    """Gradle's 231-module layout can declare the same fqcn twice (e.g. a
+    same-named test fixture class in two modules) — the same duplicate-copy
+    risk finding 37 found and fixed for Python's two PyegeriaWebHandler
+    copies. A Java import must resolve within its own module first."""
+
+    def test_duplicate_fqcn_across_two_modules_resolves_within_the_importing_module(self, tmp_path):
+        root = str(tmp_path)
+        for mod, marker in (("modA", "A"), ("modB", "B")):
+            _write(root, f"{mod}/build.gradle", "// dummy\n")
+            _java(root, f"{mod}/src/main/java/com/example/Shared.java", "com.example",
+                  f"public class Shared {{ /* {marker} */ }}")
+        _java(root, "modA/src/main/java/com/example/Foo.java", "com.example",
+              "import com.example.Shared;\npublic class Foo { Shared s; }")
+        files = [
+            "modA/build.gradle", "modB/build.gradle",
+            "modA/src/main/java/com/example/Shared.java",
+            "modB/src/main/java/com/example/Shared.java",
+            "modA/src/main/java/com/example/Foo.java",
+        ]
+
+        graph = imports.build_graph(root, files)
+        edges = {(e["source"], e["target"]) for e in graph["edges"]}
+
+        assert ("modA/src/main/java/com/example/Foo.java",
+                "modA/src/main/java/com/example/Shared.java") in edges
+        assert ("modA/src/main/java/com/example/Foo.java",
+                "modB/src/main/java/com/example/Shared.java") not in edges
+
+    def test_module_root_for_file_picks_the_nearest_enclosing_build_gradle(self):
+        module_roots = {".", "modA", "modB"}
+        assert imports.module_root_for_file("modA/src/main/java/com/example/Foo.java",
+                                             module_roots) == "modA"

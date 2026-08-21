@@ -1,0 +1,16 @@
+# design §5.5 signal 1 / plan §0(a), Java extension — the adversarial-target
+# extractor (README: "the Java adversarial target is blocked" / "extend imports.py
+# to Java"). Mirrors import-python.yml's approach: match the whole
+# `import_declaration` statement as one node kind, plain/static/wildcard alike,
+# rather than three separate patterns. ast-grep does the *finding*; imports.py's
+# own regex re-parses the matched text (static? wildcard?) the same way
+# import-python.yml's match is re-parsed with Python's `ast` module.
+#
+# VERIFIED against a real parse tree (finding-19 discipline — every rule gets a
+# known-positive run before it is trusted): `import_declaration` matches plain
+# (`import a.b.C;`), static (`import static a.b.C.member;`), and class-wildcard
+# (`import a.b.*;`) forms identically; no separate node kind exists per form.
+id: java-import
+language: Java
+rule:
+  kind: import_declaration
