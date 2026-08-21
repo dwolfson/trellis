@@ -9172,8 +9172,8 @@ async function renderScoutingDiscoverView() {
   view.innerHTML = _scoutingSubnavHtml('discover') + `
     <div class="max-w-4xl mx-auto space-y-4">
       <div>
-        <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔍 Search repos to scout</h1>
-        <p class="text-xs text-slate-400 mt-1">Search GitHub for candidate repos, before any specific one is registered. Select repos and import them into the catalog to start Scouting them.</p>
+        <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🎯 Select repos to scout</h1>
+        <p class="text-xs text-slate-400 mt-1">Find candidate repos before any specific one is registered — by searching GitHub, or by loading a list you already have. Both arrive in the same table below; nothing is registered until you select rows and import.</p>
       </div>
 
       ${(sourceButtons || quickAddButtons) ? `<div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
@@ -9183,29 +9183,36 @@ async function renderScoutingDiscoverView() {
         <div class="text-[10px] text-slate-500">Manage saved sources in ⚙ Admin → Discovery Sources.</div>
       </div>` : ''}
 
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
-        <div class="flex items-center justify-between gap-2">
-          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Ad-hoc search</div>
-          <button onclick="_saveCurrentSearchAsSource()" class="text-xs text-cyan-400 hover:text-cyan-300">💾 Save as new source</button>
-          <!-- Loading a list lands in the same results table as a search, on
-               purpose: a bulk import that skips the review step is how a typo'd
-               row, or a repo someone already decided to ignore, ends up in the
-               catalog with nobody having looked at it. -->
-          <label class="text-xs text-cyan-400 hover:text-cyan-300 cursor-pointer"
-                 title="A CSV with an 'address' column (the shape export-resources writes), or one GitHub URL per line. Nothing is imported until you select rows below.">
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">From a list</div>
+        <p class="text-[11px] text-slate-500">
+          A CSV with an <span class="font-mono">address</span> column, or one GitHub URL per line.
+          Loading routes through the same review table as a search — deliberately, since a bulk
+          import that skips review is how a typo'd row, or a repo someone already decided to
+          ignore, ends up in the catalog with nobody having looked at it.
+          The download is the same file: current inventory plus status, editable and re-importable.
+        </p>
+        <div class="flex items-center gap-3 flex-wrap">
+          <label class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 cursor-pointer transition-colors"
+                 title="A CSV with an 'address' column (the shape Download inventory writes), or one GitHub URL per line. Nothing is imported until you select rows below.">
             📄 Load from file
             <input id="scout-list-file" type="file" accept=".csv,.txt,text/csv,text/plain"
                    class="hidden" onchange="_loadRepoListFromFile(this)">
           </label>
-          <!-- The other half of the same file: what this downloads can be edited
-               and handed back to "Load from file". A plain link rather than a
-               fetch+blob, so the browser handles the download itself and the
-               dated filename the server sets is preserved. -->
-          <a href="/api/discovery/inventory.csv" download
-             class="text-xs text-cyan-400 hover:text-cyan-300"
+          <button onclick="_downloadInventory(this)"
+             class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 transition-colors"
              title="Download every registered resource as CSV — inventory plus current status (registered, cataloged, surveyed, disposition). Re-importable: the status_ columns are ignored on the way back in.">
             ⬇ Download inventory
-          </a>
+          </button>
+          <span class="text-[10px] text-slate-600">also: <span class="font-mono">resource-explorer import-resources / export-resources</span></span>
+        </div>
+        <div id="scout-list-feedback" class="text-[11px] text-slate-500"></div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Search GitHub</div>
+          <button onclick="_saveCurrentSearchAsSource()" class="text-xs text-cyan-400 hover:text-cyan-300">💾 Save as new source</button>
         </div>
         <div class="flex items-center gap-2 text-xs text-slate-500">
           <span>GitHub source: <span class="font-mono text-slate-400">${_esc(baseUrlInfo.base_url)}</span>${baseUrlInfo.is_override ? ' <span class="text-cyan-400">(override)</span>' : ''}</span>
@@ -9427,13 +9434,64 @@ async function searchScoutRepos() {
 }
 
 
+function _listFeedback(msg, isError) {
+  const el = document.getElementById('scout-list-feedback');
+  if (el) {
+    el.innerHTML = isError ? `<span class="text-red-400">${_esc(msg)}</span>` : _esc(msg);
+  }
+  // Always toast an error, whether or not the inline slot exists: this whole
+  // handler was silently dying on a missing element, which is how a button that
+  // could never work still looked like a working button.
+  if (isError) showToast('error', msg, 8000);
+}
+
+
+async function _downloadInventory(btn) {
+  // Was a plain <a download>, which silently saved whatever the endpoint
+  // returned — including an error body. A stale server 404'd and the browser
+  // dutifully wrote {"detail":"Not Found"} to disk as a .csv-shaped download
+  // that looked like it had worked. Checking the response first is the whole
+  // point: a failed export must look like a failure.
+  const original = btn.textContent;
+  btn.textContent = '⬇ Preparing…';
+  try {
+    const res = await fetch('/api/discovery/inventory.csv');
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const text = await res.text();
+    if (!text.trim()) throw new Error('the server returned an empty file');
+
+    // Prefer the server's dated filename; fall back to building the same shape
+    // so a downloaded file is always identifiable by date.
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename="?([^";]+)"?/);
+    const name = m ? m[1] : `re-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    const url = URL.createObjectURL(new Blob([text], {type: 'text/csv'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+
+    const rows = Math.max(0, text.trim().split('\n').length - 1);
+    _listFeedback(`Downloaded ${name} — ${rows} resource(s).`, false);
+  } catch (e) {
+    _listFeedback(`Export failed: ${e.message}. If the server was restarted recently, reload this page.`, true);
+  } finally {
+    btn.textContent = original;
+  }
+}
+
+
 async function _loadRepoListFromFile(input) {
   const file = input.files && input.files[0];
   input.value = '';            // let the same file be picked again after a fix
   if (!file) return;
 
-  const fb = document.getElementById('scout-search-feedback');
-  fb.textContent = `Reading ${file.name}…`;
+  _listFeedback(`Reading ${file.name}…`, false);
   document.getElementById('scout-results').innerHTML = '';
   try {
     const text = await file.text();
@@ -9451,11 +9509,11 @@ async function _loadRepoListFromFile(input) {
     _scoutResults = await res.json();
     _scoutFilterText = '';
     const already = _scoutResults.filter(r => r.already_registered).length;
-    fb.textContent = `${file.name}: ${_scoutResults.length} repo(s)`
-      + (already ? ` — ${already} already registered` : '');
+    _listFeedback(`${file.name}: ${_scoutResults.length} repo(s)`
+      + (already ? ` — ${already} already registered` : ''), false);
     renderScoutResults();
   } catch(e) {
-    fb.innerHTML = `<span class="text-red-400">Could not load ${_esc(file.name)}: ${_esc(e.message)}</span>`;
+    _listFeedback(`Could not load ${file.name}: ${e.message}`, true);
   }
 }
 
