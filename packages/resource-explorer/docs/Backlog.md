@@ -110,7 +110,28 @@ divergence record — that is what unblocks the resource, and is common to every
   (`c2e8bb6c-…`), so a registry that has lost its GUID can recover it. Two of the five paths
   above rely on that route exclusively and are therefore immune to the forward case. Still
   unverified end to end against a genuinely reset RE database.
-- **No UI.** The RFA appears in the drawer; the resolve action is API-only so far.
+- **No UI for resolve.** The RFA now appears in the drawer (it did not until the
+  `log_rfa` fix below); the three-way resolve action is still API-only.
+
+### ~~RFAs written by `log_rfa()` never reached the RFA drawer~~ — FIXED 2026-08-20
+
+`GET /api/activity/rfas`, the feed behind the drawer, keeps only *annotations* whose
+`annotation_type` contains "RequestForAction" — it never looks at `operation="rfa"`.
+`log_rfa()` wrote its entry with an empty annotations list, so every RFA it produced was
+invisible there: the entry existed in the activity log, and the one surface built to act on
+it showed nothing.
+
+All three producers were affected — Automate's change notifications (`scheduler.py`),
+Enrichment's context requests (`web/routes/context.py`), and Egeria linkage divergences.
+Each is by definition a request for a human action, and no human was shown one. **Automate
+is the one that mattered most**: its entire delivery mechanism is "notify via RFA", so
+subscriptions could fire correctly and still appear to do nothing.
+
+Nothing failed, which is why it lasted: the writes succeeded, the entries were real, and
+only a reader looking for a different shape came up empty. Found while checking whether the
+divergence RFA above actually reached a user. `tests/test_rfa_visibility.py` asserts each
+producer reaches the drawer feed, at its own call site rather than through a mock of
+`log_rfa` — a stubbed test would pass even with the fix reverted.
 
 ### Advanced SQLGlot view analytics
 We can extend our SQL View static analyzer (`sql_analyzer.py`) with further advanced metadata analytics:
