@@ -351,7 +351,32 @@ class ProjectRegistry:
             if path_str and path_str != ":memory:":
                 Path(path_str).parent.mkdir(parents=True, exist_ok=True)
 
-        self.engine = create_engine(self.database_url)
+        # pool_pre_ping: validate a pooled connection before handing it out, and
+        # transparently replace it if the server has gone away. Without it a
+        # connection severed while idle in the pool is discovered only when a
+        # caller tries to use it, as
+        # `psycopg2.OperationalError: server closed the connection unexpectedly`
+        # — which then fails whatever that caller was doing.
+        #
+        # Observed 2026-08-20: a background org-import batch died on exactly
+        # this and failed to register docling-graph. Nothing on the Postgres side
+        # closed it — the container had been up 17 hours without restarting,
+        # idle_session_timeout is 0, and it was at 25 of 1000 connections. This
+        # is known Egeria-side behaviour against the shared instance, being
+        # fixed upstream; RE's job is not to fix it here but to survive it.
+        #
+        # That distinction is the point. An upstream bug RE cannot control turned
+        # into a lost registration because the pool handed out a connection it
+        # had never checked. pre_ping costs one round-trip per checkout against a
+        # local socket and makes the drop a reconnect instead of a failure — so
+        # the upstream fix, whenever it lands, stops being load-bearing for us.
+        #
+        # pool_recycle bounds how long a connection may live regardless, so a
+        # half-open connection that still answers a ping cannot linger forever.
+        # Both are no-ops for SQLite, which is why they are not conditional.
+        self.engine = create_engine(
+            self.database_url, pool_pre_ping=True, pool_recycle=1800,
+        )
         self._init_schema()
 
     @contextmanager
