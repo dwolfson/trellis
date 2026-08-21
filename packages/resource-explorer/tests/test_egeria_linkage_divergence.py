@@ -140,32 +140,160 @@ class TestGuard:
         assert any("stale" in (e.get("summary") or "").lower() for e in rfas)
 
 
-class TestGuardsAreActuallyInstalled:
-    """The guard only helps at the paths that consume a cached GUID. These are
-    the four the backlog named; a new one added without a guard would reintroduce
-    the opaque failure at that path only."""
+class TestGuardsMatchWhereCachedGuidsAreUsed:
+    """A guard belongs exactly where a cached GUID is consumed — no more.
 
-    @pytest.mark.parametrize("module_path,cls_name,method", [
+    The first version of this guarded five paths, on the reading that all five
+    used a cached GUID. Two do not: they resolve their Egeria element by name
+    every time, so a stale cached GUID cannot break them. Proven live rather than
+    by reading — publishing through the database path with a GUID Egeria cannot
+    have (00000000-dead-beef-...) raised nothing at all, because that path never
+    looks at the cached value.
+
+    An inert guard is not merely useless there: it would relabel an unrelated
+    lookup failure as a stale-linkage divergence, marking a healthy entity for
+    reconciliation on evidence that has nothing to do with the cached GUID.
+
+    Guarded, because they read the cached GUID first:
+      repo publish              — no by-name fallback at all, so a stale GUID is fatal
+      filesystem publish_step_annotations — `fs.egeria_asset_guid or _find_element_guid(...)`
+                                  (the exact shape of the 2026-07-21 report)
+      database catalog_and_survey — uses it as the server element GUID
+
+    Unguarded, because they resolve by name:
+      filesystem catalog_and_survey
+      database publish_step_annotations
+    """
+
+    CONSUMES_CACHED_GUID = [
+        ("resource_explorer.surveyors.egeria_publisher", "EgeriaPublisher", "publish"),
         ("resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor",
          "EgeriaFileSystemSurveyor", "publish_step_annotations"),
+        ("resource_explorer.surveyors.database.egeria_database_surveyor",
+         "EgeriaDatabaseSurveyor", "catalog_and_survey"),
+    ]
+    RESOLVES_BY_NAME = [
         ("resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor",
          "EgeriaFileSystemSurveyor", "catalog_and_survey"),
         ("resource_explorer.surveyors.database.egeria_database_surveyor",
          "EgeriaDatabaseSurveyor", "publish_step_annotations"),
-        ("resource_explorer.surveyors.database.egeria_database_surveyor",
-         "EgeriaDatabaseSurveyor", "catalog_and_survey"),
-        ("resource_explorer.surveyors.egeria_publisher", "EgeriaPublisher", "publish"),
-    ])
-    def test_entry_point_uses_the_guard(self, module_path, cls_name, method):
+    ]
+
+    @staticmethod
+    def _source(module_path, cls_name, method):
         import importlib
         import inspect
 
-        cls = getattr(importlib.import_module(module_path), cls_name)
-        src = inspect.getsource(getattr(cls, method))
-        assert "guard_linkage" in src, (
-            f"{cls_name}.{method} consumes a cached Egeria GUID but does not wrap the "
-            "work in guard_linkage — a divergence there still surfaces as a raw "
-            "server error.")
+        return inspect.getsource(getattr(getattr(importlib.import_module(module_path),
+                                                 cls_name), method))
+
+    @pytest.mark.parametrize("mod,cls,method", CONSUMES_CACHED_GUID)
+    def test_paths_using_a_cached_guid_are_guarded(self, mod, cls, method):
+        assert "guard_linkage" in self._source(mod, cls, method), (
+            f"{cls}.{method} reads a cached Egeria GUID but does not wrap the work in "
+            "guard_linkage — a divergence there still surfaces as a raw server error.")
+
+    @pytest.mark.parametrize("mod,cls,method", RESOLVES_BY_NAME)
+    def test_by_name_paths_are_not_guarded(self, mod, cls, method):
+        """The reverse direction, and the one that caught the real mistake: a
+        guard here cannot fire for its stated reason, and could misattribute an
+        ordinary lookup failure to the cached GUID."""
+        assert "guard_linkage" not in self._source(mod, cls, method), (
+            f"{cls}.{method} resolves its Egeria element by name, so a stale cached GUID "
+            "cannot break it. Guarding it can only produce false divergences.")
+
+    @pytest.mark.parametrize("mod,cls,method", CONSUMES_CACHED_GUID + RESOLVES_BY_NAME)
+    def test_the_classification_still_matches_the_code(self, mod, cls, method):
+        """Both lists above are claims about what the code does. If a by-name path
+        starts reading `egeria_asset_guid` (or a guarded one stops), the lists are
+        stale and the guard placement is wrong — fail here rather than let the
+        two drift apart silently."""
+        src = self._source(mod, cls, method)
+        if "guard_linkage" in src:
+            # Two guard shapes exist: a thin front door delegating to `_method`
+            # (the surveyors, whose bodies were too long to re-indent), and an
+            # inline `with` block (the repo publisher). Check the body that
+            # actually does the work in either case.
+            try:
+                src += self._source(mod, cls, "_" + method)
+            except AttributeError:
+                pass
+            assert ("egeria_asset_guid" in src or "get_egeria_asset_guid" in src), (
+                f"{cls}.{method} is guarded but no longer reads a cached GUID — the guard "
+                "is now inert and should be removed.")
+        else:
+            assert "egeria_asset_guid" not in src, (
+                f"{cls}.{method} now reads a cached GUID but is not guarded.")
+
+
+class TestNonFatalHandlersStillRecord:
+    """A divergence swallowed by a deliberately non-fatal handler must still be
+    recorded.
+
+    Found by running the real thing against live Egeria rather than by reading:
+    catalog_and_survey with a GUID Egeria cannot have produced exactly the error
+    the detector recognises — and then returned success, with server_survey_guid
+    empty and a WARNING in the log nobody reads. The wrapping guard never saw it,
+    because the exception never escaped.
+
+    The catalog work genuinely does succeed there, so this stays non-fatal. But
+    "non-fatal" must not mean "invisible", or every later run silently skips the
+    server survey the same way.
+    """
+
+    def test_a_swallowed_divergence_is_recorded_and_does_not_raise(self, registry):
+        from unittest.mock import patch
+
+        from resource_explorer.registry import DatabaseEntity
+        from resource_explorer.surveyors.database.egeria_database_surveyor import (
+            EgeriaDatabaseSurveyor)
+
+        db = DatabaseEntity(slug="mydb", display_name="My DB", host="h", port=5432,
+                            database_name="mydb", db_type="postgres",
+                            egeria_asset_guid="00000000-dead-beef-0000-000000000000")
+
+        # Only the server survey fails, which is what happened live: the server
+        # GUID is the cached one, while the database element is resolved by name
+        # and is perfectly valid.
+        def _survey(kind, guid):
+            if guid == "00000000-dead-beef-0000-000000000000":
+                raise Exception(LIVE_ERROR)
+            return "db-survey-guid"
+
+        s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
+        with patch.object(EgeriaDatabaseSurveyor, "connect"), \
+             patch.object(EgeriaDatabaseSurveyor, "_find_element_guid", return_value="db-guid"), \
+             patch.object(EgeriaDatabaseSurveyor, "_initiate_survey", side_effect=_survey):
+            out = s._catalog_and_survey(db, "u", "p", registry=registry,
+                                        survey_after_catalog=True)
+
+        # Non-fatal: the method still returns, and the work that did succeed is
+        # reported rather than discarded.
+        assert out["server_survey_guid"] == ""
+        assert out["survey_action_guid"] == "db-survey-guid"
+        # But the divergence is no longer invisible.
+        row = registry.get_egeria_linkage("database", "mydb")
+        assert row and row["stale_guid"] == "00000000-dead-beef-0000-000000000000"
+
+    def test_an_ordinary_survey_failure_is_not_recorded_as_a_divergence(self, registry):
+        """Survey initiation fails for plenty of reasons that say nothing about
+        the GUID; only the unknown-GUID shape should mark a link stale."""
+        from unittest.mock import patch
+
+        from resource_explorer.registry import DatabaseEntity
+        from resource_explorer.surveyors.database.egeria_database_surveyor import (
+            EgeriaDatabaseSurveyor)
+
+        db = DatabaseEntity(slug="mydb", display_name="My DB", host="h", port=5432,
+                            database_name="mydb", db_type="postgres", egeria_asset_guid="real-guid")
+        s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
+        with patch.object(EgeriaDatabaseSurveyor, "connect"), \
+             patch.object(EgeriaDatabaseSurveyor, "_find_element_guid", return_value="db-guid"), \
+             patch.object(EgeriaDatabaseSurveyor, "_initiate_survey",
+                          side_effect=Exception("Governance engine is not running")):
+            s._catalog_and_survey(db, "u", "p", registry=registry, survey_after_catalog=True)
+
+        assert registry.get_egeria_linkage("database", "mydb") is None
 
 
 class TestResolveRoutes:

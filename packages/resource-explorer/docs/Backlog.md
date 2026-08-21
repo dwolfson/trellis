@@ -39,11 +39,33 @@ invisible precisely because it was swallowed.
 **Built:** `resource_explorer/egeria_linkage.py` detects "that GUID does not exist here"
 at the point of use and, instead of the opaque `SERVER_ERROR_500` that reached the UI
 verbatim, records the divergence in the new `egeria_linkage_status` table, raises an RFA,
-and throws a named error that says what happened and what the three choices are. Guards
-are installed on the five paths that consume a cached GUID (repo publish, plus
-`catalog_and_survey`/`publish_step_annotations` on both the database and filesystem
-surveyors); a test asserts they stay installed, so a new path added without one fails
-rather than silently reintroducing the old behaviour.
+and throws a named error that says what happened and what the three choices are.
+
+**Corrected 2026-08-20 by testing against live Egeria with a deliberately bad GUID** — the
+first version guarded five paths on the assumption all five consume a cached GUID. Only
+three do:
+
+| path | cached GUID | by-name fallback | guarded |
+|---|---|---|---|
+| repo publish | yes | **none** — a stale GUID is fatal | yes |
+| filesystem `publish_step_annotations` | yes (`guid or _find_element_guid(...)`) | yes | yes |
+| database `catalog_and_survey` | yes (as the *server* element) | yes | yes |
+| filesystem `catalog_and_survey` | no | yes | no |
+| database `publish_step_annotations` | no | yes | no |
+
+The two unguarded ones resolve their element by name every time, so a stale cached GUID
+cannot break them — and a guard there could only misattribute an unrelated lookup failure
+to a GUID that was never used. Tests assert the placement in *both* directions, plus that
+the classification still matches what the code does, so the table above cannot quietly rot.
+
+**The real defect that live testing exposed:** in database `catalog_and_survey`, the stale
+GUID does produce exactly the error the detector recognises — at
+`_initiate_survey("PostgreSQL Server", server_guid)` — but the surrounding
+`except Exception: log.warning(...non-fatal...)` swallowed it, and the method returned
+success with `server_survey_guid=''`. The wrapping guard never saw it because the exception
+never escaped. Since the cataloging work genuinely does succeed there, this stays non-fatal,
+but it now records the divergence and raises the RFA: "non-fatal" must not mean "invisible",
+or every later run skips the server survey the same silent way.
 
 The detector was validated against this deployment's live Egeria rather than against a
 paraphrase — asking for a GUID that cannot exist returns `OMAG-REPOSITORY-HANDLER-404-007`
@@ -83,9 +105,11 @@ divergence record — that is what unblocks the resource, and is common to every
 - **Detection is reactive only** (open question 1). A proactive GUID-existence sweep would
   have to decide how often to re-check every cataloged entity; the failure is rare and now
   loud, so this was not worth paying for yet.
-- **Open question 3 is still untested**: the reverse case, RE's registry reset with Egeria
-  intact, is believed to be handled by the existing `_find_element_guid()`-by-name fallback,
-  but that has still not been verified against a genuinely-reset-RE database.
+- **Open question 3, partly answered 2026-08-20.** The by-name fallback works: with
+  `coco_ods` cataloged, `_find_element_guid("coco_ods")` returns the same GUID as the cache
+  (`c2e8bb6c-…`), so a registry that has lost its GUID can recover it. Two of the five paths
+  above rely on that route exclusively and are therefore immune to the forward case. Still
+  unverified end to end against a genuinely reset RE database.
 - **No UI.** The RFA appears in the drawer; the resolve action is API-only so far.
 
 ### Advanced SQLGlot view analytics

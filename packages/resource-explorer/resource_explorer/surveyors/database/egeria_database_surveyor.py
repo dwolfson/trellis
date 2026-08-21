@@ -116,6 +116,25 @@ class EgeriaDatabaseSurveyor:
             return self._catalog_and_survey(
                 db_entity, db_user, db_pwd, registry, survey_after_catalog)
 
+    @staticmethod
+    def _note_stale_guid_if_any(exc, db_entity, guid: str, registry) -> None:
+        """Record a divergence found inside a deliberately non-fatal handler.
+
+        Separate from guard_linkage because the two answer different questions.
+        The guard converts a *fatal* failure into a named one; this reports a
+        failure the caller has decided to continue past. Both must record it —
+        the whole defect being fixed is that an unusable GUID produced no visible
+        signal anywhere.
+        """
+        if registry is None or not guid:
+            return
+        from resource_explorer.egeria_linkage import is_unknown_guid_error, note_divergence
+
+        if not is_unknown_guid_error(exc):
+            return
+        note_divergence(registry, "database", db_entity.slug,
+                        db_entity.display_name or db_entity.slug, guid, exc)
+
     def _catalog_and_survey(
         self,
         db_entity: "DatabaseEntity",
@@ -195,6 +214,15 @@ class EgeriaDatabaseSurveyor:
                     log.info(f"Egeria server survey initiated: {server_survey_guid}")
                 except Exception as exc:
                     log.warning(f"Server survey initiation failed (non-fatal): {exc}")
+                    # This is where a stale cached GUID actually surfaces, and it
+                    # was being thrown away at WARNING level. Confirmed live
+                    # 2026-08-20: pointing this at a GUID Egeria cannot have
+                    # returns OMAG-REPOSITORY-HANDLER-404-007 here, and the
+                    # method still returned success with server_survey_guid=''.
+                    # The catalog work above genuinely did succeed, so this stays
+                    # non-fatal — but "non-fatal" must not mean "invisible", or
+                    # every subsequent run silently skips the server survey too.
+                    self._note_stale_guid_if_any(exc, db_entity, server_guid, registry)
 
             # Survey the database (captures schemas, tables, columns, relationships)
             if db_guid:
@@ -203,6 +231,7 @@ class EgeriaDatabaseSurveyor:
                     log.info(f"Egeria database survey initiated: {survey_action_guid}")
                 except Exception as exc:
                     log.warning(f"Cataloged OK but Egeria database survey initiation failed: {exc}")
+                    self._note_stale_guid_if_any(exc, db_entity, db_guid, registry)
 
         return {
             "server_guid": server_guid,
@@ -262,29 +291,6 @@ class EgeriaDatabaseSurveyor:
         return None
 
     def publish_step_annotations(
-        self,
-        db_entity: "DatabaseEntity",
-        schema_info: dict,
-        statistics: dict | None,
-        surveyed_at: str,
-        registry=None,
-        views: list | None = None,
-    ) -> dict:
-        """Guarded front door — see _publish_step_annotations.
-
-        Detects a cached Egeria GUID that no longer exists and records it,
-        rather than letting the server's own error reach the UI. See
-        resource_explorer/egeria_linkage.py.
-        """
-        from resource_explorer.egeria_linkage import guard_linkage
-
-        with guard_linkage(registry, "database", db_entity.slug,
-                           db_entity.display_name or db_entity.slug,
-                           db_entity.egeria_asset_guid or ""):
-            return self._publish_step_annotations(
-                db_entity, schema_info, statistics, surveyed_at, registry, views)
-
-    def _publish_step_annotations(
         self,
         db_entity: "DatabaseEntity",
         schema_info: dict,
