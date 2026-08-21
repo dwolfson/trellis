@@ -47,12 +47,36 @@ class ArchCouplingSurveyor(BaseSurveyor):
         self,
         project: Project,
         registry: ProjectRegistry,
-        local_path: str | None = None,
+        source_path: str | None = None,
+        history_path: str | None = None,
         scope_locator: str = "",
         surveyed_at: str | None = None,
     ) -> None:
         super().__init__(project, registry)
-        self.local_path = local_path
+        # TWO resources, because coupling draws on two different views of the
+        # same repo and one artifact cannot serve both:
+        #
+        #   source_path  (zipball_root)    — the CODE view. Import extraction
+        #                                    needs files on disk.
+        #   history_path (git_clone_root)  — the CHANGE view. Co-change needs
+        #                                    git history and no file contents.
+        #
+        # An earlier version passed `git_clone_root` as a single `local_path`
+        # and read both from it. That clone is `--filter=blob:none
+        # --no-checkout`, so its root contains **only `.git`** — verified: zero
+        # .py files. Co-change worked; import extraction silently scanned an
+        # empty tree, produced zero edges, and coupling proposed zero
+        # components on every real repo. The first live run against
+        # egeria-python returned 9 components, all from manifests and code
+        # markers, and none from coupling.
+        #
+        # `--no-checkout` is correct for the history view — without it a
+        # treeless clone fetches every blob in HEAD, defeating the filter. It
+        # became a bug only when a second consumer with a different view was
+        # pointed at the same root. Naming the two resources by the view each
+        # serves is what stops that recurring.
+        self.source_path = source_path
+        self.history_path = history_path
         self._scope_locator = scope_locator
         self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
 
@@ -62,8 +86,13 @@ class ArchCouplingSurveyor(BaseSurveyor):
 
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
-        if not self.local_path:
-            self._warn(results, "No local clone available — git_clone_root resource was not resolved")
+        if not self.source_path:
+            self._warn(results, "No source tree available — zipball_root resource was not resolved; "
+                                "import coupling needs files on disk")
+            return results
+        if not self.history_path:
+            self._warn(results, "No git history available — git_clone_root resource was not resolved; "
+                                "co-change needs git log")
             return results
 
         try:
@@ -79,19 +108,17 @@ class ArchCouplingSurveyor(BaseSurveyor):
                 scope_locator_for,
             )
 
-            root = str(self.local_path)
+            root = str(self.source_path)
+            history_root = str(self.history_path)
             census = exclusion.scan(root)
-            if not census.tracked_by_git:
-                self._warn(results, "git_clone_root did not yield a real git checkout — co-change needs git log")
-                return results
 
             first_party = census.first_party
             if self._scope_locator:
                 first_party = [f for f in first_party if path_matches_scope(f, self._scope_locator)]
 
-            graph = imports.build_graph(root, first_party)
-            cochange_result = cochange.build_cochange(
-                root, first_party, _COCHANGE_MONTHS, _COCHANGE_MAX_FILES, True,
+            graph = imports.build_graph(root, first_party)              # code view
+            cochange_result = cochange.build_cochange(                   # change view
+                history_root, first_party, _COCHANGE_MONTHS, _COCHANGE_MAX_FILES, True,
             )
 
             package_roots = sorted({m["dir"] for m in detectors.python_manifests(root, first_party)}) or ["."]

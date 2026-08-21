@@ -144,16 +144,28 @@ class TestStepCostTiers:
         }
         assert zipball_steps == {
             "repo_file_inventory", "repo_homepage", "repo_data_profiling", "repo_symbol_extraction",
-            "repo_arch_detect",
+            "repo_arch_detect", "repo_arch_coupling",
         }
 
-    def test_arch_coupling_uses_git_clone_root_not_zipball(self):
-        """repo_arch_coupling needs real `git log` history, which a zipball
-        does not have — this is the step git_clone_root exists for."""
+    def test_arch_coupling_needs_BOTH_a_source_tree_and_git_history(self):
+        """Coupling draws on two different views of the repo and one artifact
+        cannot serve both.
+
+        `git_clone_root` is `--filter=blob:none --no-checkout`, so its root
+        contains only `.git` — verified, zero source files. That is correct for
+        the CHANGE view (co-change needs history and no blobs) and useless for
+        the CODE view (import extraction needs files on disk).
+
+        An earlier version passed the clone alone as `local_path` and read both
+        from it. Co-change worked; import extraction silently scanned an empty
+        tree and coupling proposed zero components on every real repo — caught
+        only when the first live run against egeria-python returned 9
+        components, none of them from coupling."""
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 
         assert STEP_REGISTRY["repo_arch_coupling"].requires_resources == {
-            "git_clone_root": "local_path"
+            "zipball_root": "source_path",
+            "git_clone_root": "history_path",
         }
 
     def test_rag_ingestion_is_the_only_high_compute_cost_step(self):

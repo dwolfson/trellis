@@ -88,14 +88,15 @@ class TestArchCouplingSurveyor:
         return root
 
     def test_no_local_path_raises_an_rfa_not_an_exception(self, project, registry):
-        results = ArchCouplingSurveyor(project, registry, local_path=None).run()
+        results = ArchCouplingSurveyor(project, registry, source_path=None, history_path=None).run()
         assert len(results) == 1
         assert results[0].annotation_type.value == "RequestForAction"
 
     def test_cohesive_subpackage_is_proposed_and_persisted(self, tmp_path, project, registry):
         root = self._git_repo_with_two_cohesive_subpackages(tmp_path)
 
-        results = ArchCouplingSurveyor(project, registry, local_path=root, surveyed_at="2026-08-21T00:00:00").run()
+        results = ArchCouplingSurveyor(project, registry, source_path=root, history_path=root,
+                             surveyed_at="2026-08-21T00:00:00").run()
 
         assert any(isinstance(r, ResourceMeasureAnnotation) for r in results)
         scopes = registry.query_finding_scopes(project.slug, "architecture_recovery", check_name="component")
@@ -127,7 +128,8 @@ class TestResultsReaderCombinesBothSteps:
 
         root = self._git_repo_with_two_cohesive_subpackages_static(tmp_path)
         ArchDetectSurveyor(project, registry, local_path=root, surveyed_at="2026-08-21T00:00:00").run()
-        ArchCouplingSurveyor(project, registry, local_path=root, surveyed_at="2026-08-22T00:00:00").run()
+        ArchCouplingSurveyor(project, registry, source_path=root, history_path=root,
+                             surveyed_at="2026-08-22T00:00:00").run()
 
         result = _architecture_recovery_results(registry, project.slug)
         comp = next((c for c in result["components"] if c["path"] == "pkg"), None)
