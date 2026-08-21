@@ -9197,6 +9197,15 @@ async function renderScoutingDiscoverView() {
             <input id="scout-list-file" type="file" accept=".csv,.txt,text/csv,text/plain"
                    class="hidden" onchange="_loadRepoListFromFile(this)">
           </label>
+          <!-- The other half of the same file: what this downloads can be edited
+               and handed back to "Load from file". A plain link rather than a
+               fetch+blob, so the browser handles the download itself and the
+               dated filename the server sets is preserved. -->
+          <a href="/api/discovery/inventory.csv" download
+             class="text-xs text-cyan-400 hover:text-cyan-300"
+             title="Download every registered resource as CSV — inventory plus current status (registered, cataloged, surveyed, disposition). Re-importable: the status_ columns are ignored on the way back in.">
+            ⬇ Download inventory
+          </a>
         </div>
         <div class="flex items-center gap-2 text-xs text-slate-500">
           <span>GitHub source: <span class="font-mono text-slate-400">${_esc(baseUrlInfo.base_url)}</span>${baseUrlInfo.is_override ? ' <span class="text-cyan-400">(override)</span>' : ''}</span>

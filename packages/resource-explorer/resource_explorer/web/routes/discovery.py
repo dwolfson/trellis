@@ -32,7 +32,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -284,6 +284,49 @@ async def _run_list_urls(urls: list[str], registry) -> list[dict]:
         return out
 
     return await asyncio.to_thread(_fetch_all)
+
+
+@router.get("/inventory.csv")
+def export_inventory() -> Response:
+    """Download every registered resource as the CSV inventory + scorecard.
+
+    Paired with "Load from file" on the same pane, because the two halves are
+    the same file: what comes out can be edited and handed straight back in, and
+    the `status_` columns it carries are ignored on the way in (see
+    resource_explorer/batch_io.py).
+
+    Streams from the registry on every request rather than caching — a stale
+    scorecard that looks authoritative is the failure mode this format is most
+    likely to produce.
+    """
+    import csv as _csv
+    import io as _io
+
+    from resource_explorer.batch_io import ALL_COLUMNS, export_rows
+    from resource_explorer.registry import ProjectRegistry
+
+    rows = export_rows(ProjectRegistry())
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=list(ALL_COLUMNS))
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({c: r.get(c, "") for c in ALL_COLUMNS})
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        # Dated filename: the point of the scorecard is diffing one against
+        # another, and "inventory.csv (3)" in a downloads folder makes that
+        # needlessly hard.
+        headers={"Content-Disposition":
+                 f'attachment; filename="re-inventory-{_today()}.csv"'},
+    )
+
+
+def _today() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 class RepoListText(BaseModel):

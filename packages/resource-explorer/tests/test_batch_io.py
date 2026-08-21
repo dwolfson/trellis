@@ -293,3 +293,68 @@ class TestFromListRoute:
         resp = client.post("/api/discovery/from-list", json={"text": buf.getvalue()})
         assert resp.status_code == 200
         assert all(x["already_registered"] for x in resp.json())
+
+
+class TestInventoryDownloadRoute:
+    """The other half of "Load from file". It was CLI-only at first, which made
+    the pane offer an import with no matching export — the asymmetry a user
+    noticed before any test did."""
+
+    @pytest.fixture
+    def client(self, registry, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from resource_explorer.web.app import app
+
+        monkeypatch.setattr("resource_explorer.registry.ProjectRegistry",
+                            lambda *a, **kw: registry)
+        return TestClient(app)
+
+    def test_it_downloads_as_a_dated_csv_attachment(self, client):
+        r = client.get("/api/discovery/inventory.csv")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        # Dated, because the point of a scorecard is diffing one against another
+        # and "inventory.csv (3)" makes that needlessly hard.
+        assert "attachment" in r.headers["content-disposition"]
+        assert "re-inventory-" in r.headers["content-disposition"]
+
+    def test_it_carries_the_full_column_set(self, client):
+        import csv as _csv
+        import io as _io
+
+        from resource_explorer.batch_io import ALL_COLUMNS
+
+        r = client.get("/api/discovery/inventory.csv")
+        assert _csv.DictReader(_io.StringIO(r.text)).fieldnames == list(ALL_COLUMNS)
+
+    def test_what_it_downloads_can_be_loaded_straight_back(self, client, registry):
+        """The pairing is only real if the round-trip holds through the routes,
+        not just through the library."""
+        csv_text = client.get("/api/discovery/inventory.csv").text
+
+        async def fake_list_urls(urls, reg):
+            return [{"full_name": "x/y", "html_url": u, "description": "", "stars": 0,
+                     "language": "", "license": "", "forks": 0, "archived": False,
+                     "fork": False, "updated_at": ""} for u in urls]
+
+        import resource_explorer.web.routes.discovery as disc
+        original = disc._run_list_urls
+        disc._run_list_urls = fake_list_urls
+        try:
+            resp = client.post("/api/discovery/from-list", json={"text": csv_text})
+        finally:
+            disc._run_list_urls = original
+
+        assert resp.status_code == 200
+        assert all(x["already_registered"] for x in resp.json())
+
+    def test_it_reflects_the_registry_at_request_time(self, client, registry):
+        """No caching: a stale scorecard that looks authoritative is the failure
+        mode this format is most likely to produce."""
+        before = len(client.get("/api/discovery/inventory.csv").text.strip().splitlines())
+
+        registry.add(Project(slug="newone", display_name="New One",
+                             github_url="https://github.com/n/one", description=""))
+        after = len(client.get("/api/discovery/inventory.csv").text.strip().splitlines())
+        assert after == before + 1
