@@ -39,6 +39,13 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import (
+    PARTIAL,
+    RECOVERED,
+    UNVERIFIED,
+    StepOutcome,
+    no_signal,
+)
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
@@ -79,8 +86,8 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             log.debug("website fetch failed for %s: %s", url, exc)
             return None
 
-    def _note(self, summary: str, explanation: str, props: dict, confidence: int = 100
-              ) -> list[Annotation]:
+    def _note(self, summary: str, explanation: str, props: dict, confidence: int = 100,
+              outcome: "StepOutcome | None" = None) -> list[Annotation]:
         """Build this step's single annotation, and persist the same numbers as a
         metric so the Analysis card has something to render.
 
@@ -90,14 +97,21 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         indistinguishable from "never run". The reason string is what makes that
         outcome legible as a decision rather than a fault.
         """
+        detail = {k: v for k, v in props.items()
+                  if k in ("url", "collection", "reason", "marker", "discovery",
+                           "pages_found", "pages_failed", "ingested", "error")}
+        if outcome is not None:
+            # The shared vocabulary (resource_explorer/step_outcome.py) alongside
+            # this step's own `reason`. Both are kept: the outcome is queryable
+            # across every step, the cause is local knowledge, and Egeria's guard
+            # is a flat token so they could not be one field even if we wanted.
+            detail.update(outcome.as_row())
         try:
             self.registry.upsert_metric(
                 self.project.slug, "website_ingestion",
                 {"chunks": int(props.get("chunks", 0) or 0),
                  "pages_fetched": int(props.get("pages_fetched", 0) or 0)},
-                detail={k: v for k, v in props.items()
-                        if k in ("url", "collection", "reason", "marker", "discovery",
-                                 "pages_found", "pages_failed", "ingested", "error")},
+                detail=detail,
                 surveyed_at=self._surveyed_at,
             )
         except Exception as exc:
@@ -124,7 +138,9 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             return self._note(
                 "No website to ingest", "This project has no external site recorded. Run "
                 "repo_homepage first — it derives one from GitHub, the packaging manifests "
-                "or the README.", {"ingested": False, "reason": "no_homepage"})
+                "or the README.", {"ingested": False, "reason": "no_homepage"},
+                outcome=StepOutcome(UNVERIFIED, cause="no_homepage",
+                                    detail={"needs": "repo_homepage"}))
 
         # A homepage pointing back at the forge is not a documentation site.
         # repo_homepage falls back to manifest/README URLs when GitHub declares
@@ -136,7 +152,11 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                 "Ingesting it would embed the forge's navigation and file listings as if "
                 "they were documentation. Nothing to do until this project publishes docs "
                 "somewhere else.",
-                {"ingested": False, "reason": "code_host", "url": url})
+                {"ingested": False, "reason": "code_host", "url": url},
+                # Provable: the URL was resolved and positively identified as a
+                # forge page, so the zero is the answer rather than a failure to
+                # look.
+                outcome=no_signal("code_host", known_positive=True, url=url))
 
         # Skip a site whose source we already ingest as a repo (see docstring).
         try:
@@ -150,7 +170,11 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                 "is already ingested as repository source, in a better form than the rendered "
                 "HTML would be. Ingesting it again would duplicate the same material and "
                 "split retrieval across two copies of it.",
-                {"ingested": False, "reason": "self_published", "marker": marker, "url": url})
+                {"ingested": False, "reason": "self_published", "marker": marker, "url": url},
+                # The marker in the repo's own file inventory is the
+                # known-positive: something was found, and it is what rules the
+                # ingest out.
+                outcome=no_signal("self_published", known_positive=True, marker=marker))
 
         try:
             pages, how = discover_pages(url, self._fetch, max_pages=self._max_pages)
@@ -158,7 +182,9 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             log.warning("site discovery failed for %s: %s", self.project.slug, exc)
             return self._note("Website discovery failed", f"Could not work out which pages of "
                               f"{url} to ingest: {exc}", {"ingested": False, "error": str(exc)},
-                              confidence=0)
+                              confidence=0,
+                              outcome=StepOutcome(UNVERIFIED, cause="discovery_failed",
+                                                  detail={"error": str(exc)[:200]}))
 
         collection = site_collection_name(url)
         chunks_added, fetched, failed = 0, 0, 0
@@ -170,7 +196,8 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             if ctype is None:
                 return self._note("web_docs collection type is not configured",
                                   "Cannot ingest a website without its chunking configuration.",
-                                  {"ingested": False, "reason": "no_collection_type"}, confidence=0)
+                                  {"ingested": False, "reason": "no_collection_type"}, confidence=0,
+                                  outcome=StepOutcome(UNVERIFIED, cause="no_collection_type"))
 
             store = MultiCollectionStore()
             texts, metas = [], []
@@ -204,7 +231,27 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             return self._note("Website ingestion failed", f"Discovered {len(pages)} page(s) via "
                               f"{how} but could not embed them: {exc}",
                               {"ingested": False, "error": str(exc), "pages_found": len(pages)},
-                              confidence=0)
+                              confidence=0,
+                              outcome=StepOutcome(UNVERIFIED, cause="ingest_failed",
+                                                  detail={"error": str(exc)[:200],
+                                                          "pages_found": len(pages)}))
+
+        # What was actually achieved, in the shared vocabulary:
+        #   chunks + nothing unreachable  -> recovered
+        #   chunks + some pages missing   -> partial (knowingly incomplete)
+        #   no chunks, pages were fetched -> the site was reached and yielded
+        #       nothing; the fetch itself is the known-positive, so this is a
+        #       provable no_signal rather than a failure to look
+        #   no chunks, nothing fetched    -> unverified; the site was never read
+        if chunks_added and failed:
+            outcome = StepOutcome(PARTIAL, cause="pages_unreachable",
+                                  detail={"fetched": fetched, "failed": failed})
+        elif chunks_added:
+            outcome = StepOutcome(RECOVERED, cause="",
+                                  detail={"chunks": chunks_added, "pages": fetched})
+        else:
+            outcome = no_signal("no_extractable_text", known_positive=bool(fetched),
+                                fetched=fetched, failed=failed)
 
         return self._note(
             f"{chunks_added} chunk(s) from {fetched} page(s) of {url}",
@@ -215,7 +262,8 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             {"ingested": True, "url": url, "collection": collection,
              "pages_found": len(pages), "pages_fetched": fetched, "pages_failed": failed,
              "chunks": chunks_added, "discovery": how},
-            confidence=100 if chunks_added else 50)
+            confidence=100 if chunks_added else 50,
+            outcome=outcome)
 
 
 def _extract_text(html: str) -> str:
