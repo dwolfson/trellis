@@ -12,6 +12,52 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ## Open items
 
+### Architecture recovery — re-check the Phase 1 measurements once there are more samples
+
+**Not a doubt about the current numbers; a limit on what two repos can establish.** Phase 1's
+measurement goals were declared met on 2026-08-20 (`docs/architecture-recovery-phase1-findings.md`)
+— 13 of 13 components, 97% file coverage, ARI 0.969 on trellis, T1 recall held at 18/27, 5.3s per
+repo. Every criterion in the plan's §5 was cleared, several by a wide margin.
+
+Re-run the whole evaluation, and expect to revise, when there is materially more experience:
+**roughly 8–10 surveyed repos of varied shape**, or the first time a real user disagrees with a
+partition RE published.
+
+What only more samples can settle:
+
+- **n=2, and they are not independent.** trellis is a well-factored Python monorepo — close to the
+  best case for import cohesion — and `egeria-workspaces` is a flat app. Both are ours, both are
+  Python, both were partly written by the people writing the detectors.
+- **`COHESIVE_BAR` and `DISPERSION_BAR` are unvalidated.** They were set by inspection on one
+  repo. The Phase 1 plan's own preferred answer (Newman modularity as a null-model threshold) was
+  tried and failed — `Q > 0` admitted 15 of 16 candidates (README finding 33) — so the current
+  bars are a placeholder, not a result.
+- **The residue rule is a known trade, not a solution.** Adopting unproposed subtrees took
+  `Utility scripts` to exact and `Core` from exact to 0.51, because the two ground-truth entries
+  disagree about residue ownership *deliberately* (finding 44). More repos will show which reading
+  is the common one — or that it is genuinely per-repo and belongs to a human.
+- **T2's ground truth is not a clean pre-registration.** The trellis component count was reported
+  to the maintainer before the fixture was written. Contamination runs the safe way — the fixture
+  contradicts the detector rather than echoing it — but it is a caveat on T2's numbers that a
+  fresh repo would not carry.
+- **T1 precision is 0.31 and is not really understood.** It is dominated by add-on granularity
+  (finding 12), where the maintainer names a 9-container bundle as one component. Whether that is
+  a fixture inconsistency or the normal way people think about add-ons needs more than one
+  example.
+- **Python only.** `imports.py` extracts Python; `egeria` has zero tracked `.py` files, so the
+  obvious adversarial target cannot be scored at all and "does this generalise beyond Python?"
+  is currently unanswerable.
+
+**Cheap to redo, which is the point.** `score.py`, `coupling.py` and the pre-registered fixtures
+already exist, so re-running is hours, not a phase — provided new targets get **pre-registered
+ground truth written before the detectors run on them** (`tests/fixtures/architecture-ground-truth/README.md`).
+Writing that fixture is the actual cost, and it is what makes the re-check meaningful rather than
+a re-confirmation.
+
+Related: `docs/approach-portfolio-model.md` §4 proposes recording approach outcomes against repo
+characteristics — if that is built, this re-check becomes a query rather than an exercise.
+
+
 ### ~~HIGH — Suspected bug: filesystem annotations never reach Egeria~~ — FIXED 2026-08-20
 
 Confirmed real and fixed. `egeria_filesystem_surveyor.py` read `ann.egeria_type_name`,
