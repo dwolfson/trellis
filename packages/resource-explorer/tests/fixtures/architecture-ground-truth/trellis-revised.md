@@ -112,3 +112,60 @@ to derive — and it is a better shape than a yes/no prompt because the answer i
 *selection*, not a boolean.
 
 Not built. Recorded here as the decided design so it is not re-litigated.
+
+---
+
+## Sub-structure — which components can be nested at all
+
+Added 2026-08-22, after the generator moved from a fixed depth to a stored hierarchy
+(`approach-portfolio-model.md` §2a). A flat fixture was being used to score a nested proposal, which
+made the containment result harder to read than it needed to be.
+
+**Provenance, and why this is not circular.** These sub-directories are read from `git ls-files` —
+a fact about the repo that predates any detector run — **not** from what the generator proposed.
+Recording detector output as ground truth is exactly the circularity pre-registration exists to
+prevent. What is recorded here is *layout*; whether a given sub-directory is a **genuine
+component** is a maintainer judgement and is marked below as unconfirmed.
+
+**The headline: 9 of 11 `resource_explorer` components have no sub-directories at all.**
+
+| component | sub-directories |
+|---|---|
+| `Agents`, `CLI`, `Textual TUI`, `RAG ingestion`, `Observability`, `Prefect orchestration` | **none — flat** |
+| (also `github`, `dashboard`, `configdata`, now assigned to Core/Web backend above) | **none — flat** |
+| **`Surveyors`** (87 files) | `arch_recovery`, `database`, `file_classifier`, `filesystem`, `sub_surveyors` |
+| **`Web backend` / `Web front-end`** (32 files) | `routes`, `static` |
+
+So **hierarchical and flat scoring are identical for nine of the eleven**, and the whole nested-vs-flat
+question turns on two components. That is a much narrower problem than the redesign implied, and it
+means the current 9/13 is not really a verdict on hierarchies — it is a verdict on two boundaries.
+
+### The `web` split is the contested one, and the fixture already takes a side
+
+`Web backend` is `web/routes/**` + `web/app.py`; `Web front-end` is `web/static/**` +
+`frontend-build/**`. **That split is exactly the directory split** — `routes` and `static`.
+
+The hierarchy generator produced something different: `web` as its own node (holding `app.py` and
+one sibling), with `static` absorbed as residue because it has no import cohesion, and `routes` as a
+separate cohesive node. Neither ground-truth component is reconstructed exactly, which is the whole
+of the 10/13 → 9/13 movement.
+
+**Worth being precise about who is wrong.** The fixture's boundary is defensible and so is the
+generator's: `static` is JavaScript with no Python imports, so a cohesion-based signal cannot see it
+as belonging with `routes`, while a human knows both are "the web tier". This is not a tuning
+failure — it is a signal that **cohesion cannot recover a boundary that spans languages**, which is
+the same limit finding 54 found in Java's wildcards and finding 57 in Rust.
+
+### Unconfirmed — maintainer judgement needed
+
+Whether these are genuine components or merely directories is not recorded here, because nobody has
+said. The two that matter:
+
+- Are `surveyors/database`, `surveyors/filesystem`, `surveyors/sub_surveyors` (etc.) **components**
+  in their own right, or implementation detail of one `Surveyors` component?
+- Should `Web backend` and `Web front-end` remain two components when the detector, working from
+  imports alone, cannot see the boundary between them?
+
+Neither blocks scoring — containment handles both readings — but answering them would make the
+9/13 mean something. **Provenance:** assistant (layout, from `git ls-files`); maintainer judgement
+outstanding on component status.
