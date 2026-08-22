@@ -511,6 +511,74 @@ asking the data a question it could not answer, never by reading the code. A des
 distinctions the plumbing does not carry will lose them — quietly, and in whichever layer nobody
 thought to write them down.
 
+### 4.1d Language is a boundary some signals cross and others cannot
+
+Three findings turned out to be one constraint, and it is not "we need more extractors".
+
+| finding | symptom |
+|---|---|
+| **54** | two-thirds of Java edges are wildcard imports — `import a.b.*` means *might use*, so cohesion over-approximates |
+| **57** | Rust has no extractor, so coupling saw nothing and said nothing until `unverified` was wired |
+| `web/static` | JavaScript with no Python imports, so cohesion cannot see it belonging with `web/routes` — yet a human knows both are the web tier |
+
+**The common cause: an import edge cannot cross a language.** That is not a gap in our extractors,
+it is what an import *is*. `index.html` will never import `projects.py`. So a component whose parts
+are written in different languages has a seam that import cohesion is **structurally incapable** of
+seeing — and adding a JavaScript extractor would not help, because the edge does not exist in either
+language's syntax.
+
+This is exactly where the maintainer's `web application` parent sits (§8.2a of
+`trellis-revised.md`): one component, two independently substitutable sub-components, in two
+languages, joined by nothing an importer can observe.
+
+**Co-change is language-agnostic, and measurably sees the seam.** It operates on commits, not
+syntax. Measured on trellis across the `web/routes` (Python) ↔ `web/static` (JS/HTML/CSS) boundary:
+
+| | pairs |
+|---|---|
+| within-zone co-change | 9 |
+| **cross-language co-change** | **18** |
+
+The seam imports cannot see is **twice as visible** to co-change as the coupling within either
+side, and the pairs are meaningful rather than incidental — `projects.py ↔ index.html`,
+`feedback.py ↔ admin-feedback.html`, `discovery.py ↔ index.html`. Backend route and the page it
+serves, changing together.
+
+**And we compute it already without using it.** `coupling.propose()` takes `import_edges` only.
+Co-change is calculated, attached as a supporting metric, and never reaches shape classification —
+blind in exactly the place where it is the only signal that works.
+
+### The position
+
+**Use imports for within-language cohesion and co-change for cross-language seams.** Not one
+replacing the other: they answer different questions, and each is weak where the other is strong.
+
+- **Imports** — precise, directional, per-symbol; supports fan-in/fan-out dispersion (§4.1's
+  connective shapes) and therefore the library/orchestrator distinction. Cannot cross a language.
+- **Co-change** — crosses any boundary, needs no parser, works on Rust today. Non-directional,
+  noisier, needs history, and sensitive to commit hygiene.
+
+**How much this matters depends on the repo, and should be measured rather than assumed.** Extractor
+coverage of first-party code files:
+
+| repo | covered | uncovered |
+|---|---|---|
+| `egeria` | 99% | .sql, .sh |
+| `trellis` | 96% | .sh, .js, .html |
+| **`egeria-workspaces`** | **65%** | **.html 57, .sh 28, .js 7** |
+
+A single-language repo barely notices. A polyglot one is a third invisible — and it is precisely
+the polyglot repos where a component most often spans languages.
+
+### Honest limits
+
+- **n=1 seam.** The 18-vs-9 result is one boundary in one repo. A repo whose commits are
+  "update everything" will show co-change everywhere and discriminate nothing.
+- **Co-change cannot type a component.** It says "these belong together", never "this is a library"
+  — that needs direction, which only imports supply. So it can find a seam it cannot characterise.
+- **Not implemented.** `propose()` would need co-change edges alongside import edges, with the two
+  weighted differently rather than pooled — pooling would let a noisy signal dilute a precise one.
+
 ### 4.2 Do not merge the vocabularies — map them
 
 The obvious reaction is to reconcile `SolutionComponentType` with the `SoftwareCapability` subtypes.

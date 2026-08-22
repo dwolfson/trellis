@@ -1295,3 +1295,38 @@ That is not a scoring bug, it is a modelling consequence: **a component can be r
 no files of its own.** Egeria models it fine (`SolutionComposition`, §3.3a), and containment can
 score it by unioning children — but any measure that starts from "the files this component owns"
 will silently skip it, which is how a genuine component becomes invisible rather than wrong.
+
+**63. Findings 54, 57 and the `web/static` case are one constraint — and co-change already sees
+what imports structurally cannot.**
+
+An import edge **cannot cross a language**. `index.html` will never import `projects.py`. So a
+component whose parts are in different languages has a seam import cohesion is incapable of seeing,
+and adding a JavaScript extractor would not help, because the edge does not exist in either
+language's syntax. That is not a gap in tooling; it is what an import is.
+
+Tested on trellis across `web/routes` (Python) ↔ `web/static` (JS/HTML/CSS):
+
+| | pairs |
+|---|---|
+| within-zone co-change | 9 |
+| **cross-language co-change** | **18** |
+
+The invisible seam is **twice as visible** to co-change as the coupling within either side, and the
+pairs are meaningful — `projects.py ↔ index.html`, `feedback.py ↔ admin-feedback.html`,
+`discovery.py ↔ index.html`. Backend route and the page it serves, changing together. This is
+exactly the boundary the maintainer's `web application` parent describes, and it is the boundary
+whose loss caused the 10/13 → 9/13 movement.
+
+**We compute co-change and do not use it.** `coupling.propose()` takes `import_edges` only —
+co-change is calculated, attached as a supporting metric, and never reaches shape classification.
+Blind in precisely the place where it is the only working signal.
+
+Extractor coverage of first-party code files, which decides how much this matters per repo:
+`egeria` 99%, `trellis` 96%, **`egeria-workspaces` 65%** (57 `.html`, 28 `.sh`, 7 `.js` unseen). A
+single-language repo barely notices; a polyglot one is a third invisible, and polyglot repos are
+where components most often span languages.
+
+Written up as design §4.1d. **Not implemented** — `propose()` would need co-change edges weighted
+separately from import edges rather than pooled, since pooling lets a noisy non-directional signal
+dilute a precise directional one. And the result is n=1 seam: a repo whose commits are "update
+everything" would show co-change everywhere and discriminate nothing.
