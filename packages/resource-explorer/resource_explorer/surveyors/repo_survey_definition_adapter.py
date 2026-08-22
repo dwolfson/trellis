@@ -42,7 +42,7 @@ from typing import Callable
 
 from trellis_microflow import ResourceProvider
 
-from resource_explorer.step_outcome import PARTIAL
+from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
 
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
@@ -1106,6 +1106,34 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
         })
     components.sort(key=lambda c: c["path"])
 
+    # Per-run outcome, read from the run-summary metric row persist_ir
+    # writes unconditionally (scope_locator="", metric_name=
+    # "{detect,coupling}_component_count") — the ONE row a component-less
+    # run still produces, since every other row above is written per
+    # component and a zero-component run has none of those (README finding
+    # 57; see persist.py's run-summary comment for why this is where it
+    # lives). Read per run_label rather than via query_metrics(scope_locator
+    # ="") because repo_arch_detect/repo_arch_coupling are independent
+    # StepInfo entries that are not guaranteed to share one surveyed_at —
+    # the same reason _architecture_recovery_trend below reads them apart.
+    run_outcomes: dict[str, dict] = {}
+    for run_label in ("detect", "coupling"):
+        history = registry.query_metrics_history_raw(
+            slug, "architecture_recovery", f"{run_label}_component_count", scope_locator="",
+        )
+        if not history:
+            continue
+        latest = history[-1]  # ASC-ordered; last is most recent
+        detail = _json_or_empty(latest.get("detail_json"))
+        run_outcomes[run_label] = {
+            "component_count": int(latest.get("metric_value", 0) or 0),
+            "outcome": detail.get("outcome", ""),
+            "outcome_cause": detail.get("outcome_cause", ""),
+            "outcome_detail": detail.get("outcome_detail", {}),
+            "run_scope": detail.get("run_scope", ""),
+            "surveyed_at": latest.get("surveyed_at", ""),
+        }
+
     # Surface the outcome at the top level, not only per component.
     #
     # design §4.1c added run_scope/outcome to every persisted row precisely so a
@@ -1118,19 +1146,44 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
     # Writing a field nobody reads is the same failure as not writing it. The
     # top-level flag is what a caller can act on without inspecting every
     # component.
-    scoped = sorted({c["run_scope"] for c in components if c.get("run_scope")})
-    partial = any(c.get("outcome") == PARTIAL for c in components)
+    #
+    # run_outcomes covers what the per-component loop above cannot: a run
+    # that persisted zero "component" finding rows still ran, and — since
+    # README finding 57 — still records why via its run-summary row. `scoped`/
+    # `partial` stay sourced from components (a component's own run_scope is
+    # more specific than the run-summary's, which is only ever the CURRENT
+    # scope_locator this surveyor instance was given), but `unverified` can
+    # only ever be seen here, because an unverified run is definitionally one
+    # that produced no components to carry it.
+    scoped = sorted({c["run_scope"] for c in components if c.get("run_scope")}
+                     | {o["run_scope"] for o in run_outcomes.values() if o.get("run_scope")})
+    partial = (any(c.get("outcome") == PARTIAL for c in components)
+               or any(o.get("outcome") == PARTIAL for o in run_outcomes.values()))
+    unverified = sorted(
+        run_label for run_label, o in run_outcomes.items() if o.get("outcome") == UNVERIFIED
+    )
+    surveyed_at = max(
+        [c["surveyed_at"] for c in components] + [o["surveyed_at"] for o in run_outcomes.values()],
+        default="",
+    )
     return {
         "components": components,
         "component_count": len(components),
+        "run_outcomes": run_outcomes,
         "partial": partial,
+        "unverified": unverified,
         "scoped_to": scoped,
+        "unverified_note": (
+            f"{', '.join(unverified)} could not verify this repo — "
+            f"{'; '.join(o['outcome_cause'] for rl, o in run_outcomes.items() if rl in unverified)}"
+            if unverified else ""
+        ),
         "completeness_note": (
             f"Partial result — this analysis was scoped to {', '.join(scoped)}, so components "
             f"outside that scope were never looked for."
             if partial and scoped else ""
         ),
-        "surveyed_at": max((c["surveyed_at"] for c in components), default=""),
+        "surveyed_at": surveyed_at,
     }
 
 
@@ -1158,6 +1211,13 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
     result = _architecture_recovery_results(registry, slug)
     if not result.get("surveyed_at"):
         return None
+    if result.get("unverified"):
+        # An unverified run and a genuine zero look identical as a bare
+        # count (README finding 57) — the headline is the one place every
+        # caller sees, so this is where that distinction has to survive or
+        # it is lost the same way it was before this outcome was wired up.
+        return {"label": f"Unverified — {', '.join(result['unverified'])} could not read this repo",
+                "status": "warn"}
     n = result["component_count"]
     return {"label": f"{n} component(s) recovered", "status": "info" if n else "warn"}
 

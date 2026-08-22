@@ -26,6 +26,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, StepOutcome, no_signal
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
@@ -124,6 +125,43 @@ class ArchCouplingSurveyor(BaseSurveyor):
             package_roots = sorted({m["dir"] for m in detectors.python_manifests(root, first_party)}) or ["."]
             components, evidence, notes = coupling.propose(set(first_party), package_roots, graph["edges"])
 
+            # Coupling is entirely dependent on the import graph (module
+            # docstring) — unlike repo_arch_detect, there is no
+            # manifest/Dockerfile fallback that could produce a component
+            # without source extraction, so a repo with none of imports.py's
+            # extractable languages guarantees an empty graph regardless of
+            # what coupling.propose() does with it. Zero components on such a
+            # repo is not evidence of a flat/small repo; it is evidence the
+            # method never had anything to read (README finding 57).
+            extractable = imports.extractable_first_party(first_party)
+            if not extractable:
+                coupling_outcome: StepOutcome | None = StepOutcome(
+                    UNVERIFIED, cause="no_supported_source",
+                    detail={
+                        "languages_present": imports.languages_present(first_party),
+                        "supported_languages": sorted(set(imports.SUPPORTED_EXTENSIONS.values())),
+                    },
+                )
+            elif not components:
+                # Extractable source existed, so the graph was at least given
+                # something to work with. Whether the resulting zero is
+                # trustworthy comes down to whether the graph itself produced
+                # any resolved edges: if it did, propose() genuinely had
+                # material to carve a boundary from and declined to — a real
+                # (if uninteresting) no_signal. If it did not, the run is
+                # exactly as blind as the no-supported-source case above, just
+                # for a subtler reason (resolution failure, wrong root, empty
+                # tree — the four bugs step_outcome.py's docstring lists), so
+                # it stays unverified rather than being trusted as a zero.
+                coupling_outcome = no_signal(
+                    "no_boundary_from_coupling",
+                    known_positive=graph["resolved_import_count"] > 0,
+                    resolved_import_count=graph["resolved_import_count"],
+                    edge_count=graph["edge_count"],
+                )
+            else:
+                coupling_outcome = None  # persist_ir's ordinary scoped/recovered default
+
             # Supporting co-change cohesion per proposed subtree — computed,
             # attached as evidence, and deliberately NOT part of the shape
             # decision above (see module docstring).
@@ -140,6 +178,7 @@ class ArchCouplingSurveyor(BaseSurveyor):
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="coupling",
                 run_scope=self._scope_locator, extra_metrics=extra_metrics,
+                outcome=coupling_outcome,
             )
 
             shape_counts: dict[str, int] = {}
@@ -147,14 +186,26 @@ class ArchCouplingSurveyor(BaseSurveyor):
                 if e.detector.startswith("coupling:"):
                     shape_counts[e.detector.split(":", 1)[1]] = shape_counts.get(e.detector.split(":", 1)[1], 0) + 1
 
-            results.append(ResourceMeasureAnnotation(
-                summary=(
+            if components:
+                summary = (
                     f"{len(components)} boundary(ies) proposed from import/co-change coupling "
                     f"({', '.join(f'{n} {s}' for s, n in sorted(shape_counts.items(), key=lambda kv: -kv[1]))})"
-                    if components else
+                )
+            elif coupling_outcome is not None and coupling_outcome.outcome == UNVERIFIED:
+                langs = ", ".join(sorted(imports.languages_present(first_party))) or "none recognized"
+                summary = (
+                    "Unverified — import extraction only reads "
+                    f"{'/'.join(sorted(set(imports.SUPPORTED_EXTENSIONS.values())))}; "
+                    f"this repo's first-party files are {langs}, so coupling could not run"
+                )
+            else:
+                summary = (
                     "No coupling-proposed boundaries — repo may be too flat/small for a "
-                    "subtree partition, or import extraction found no first-party Python"
-                ),
+                    "subtree partition"
+                )
+
+            results.append(ResourceMeasureAnnotation(
+                summary=summary,
                 analysis_step=STEP,
                 resource_properties={
                     "component_count": len(components),

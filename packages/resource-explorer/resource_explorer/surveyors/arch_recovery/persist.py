@@ -96,6 +96,7 @@ def persist_ir(
     run_label: str = "run",
     run_scope: str = "",
     extra_metrics: dict[str, dict[str, float]] | None = None,
+    outcome: StepOutcome | None = None,
 ) -> dict[str, str]:
     """Write one survey run's IR into the generic findings/metrics tables.
 
@@ -107,6 +108,15 @@ def persist_ir(
     alongside the standard confidence/evidence_count metrics — this is how
     repo_arch_coupling attaches import_cohesion/cochange_cohesion without
     this module needing to know about coupling-specific signals.
+
+    outcome: caller-supplied StepOutcome, overriding the scoped/recovered
+    default below. Only the caller knows whether this run's zero (if it was
+    one) is trustworthy — repo_arch_detect and repo_arch_coupling have
+    different known-positive checks (README findings 57/58), and this
+    module has no opinion on either. Passed through unconditionally when
+    given: a caller-supplied `unverified` for an unsupported language is a
+    stronger, more specific statement than the generic `scoped_run`
+    `partial` this function would otherwise compute, so it always wins.
     """
     # `run_scope` is the scope the RUN was narrowed to (D5/D6), which is a
     # different thing from a component's own `scope_locator` even though both
@@ -130,10 +140,11 @@ def persist_ir(
     # `run_scope` stays its OWN key rather than being folded into `cause`: the
     # outcome set is small and shared so it can be queried across steps, while
     # the scope is a value only this step knows how to interpret.
-    outcome = (
-        StepOutcome(PARTIAL, cause="scoped_run", detail={"run_scope": run_scope})
-        if run_scope else StepOutcome(RECOVERED)
-    )
+    if outcome is None:
+        outcome = (
+            StepOutcome(PARTIAL, cause="scoped_run", detail={"run_scope": run_scope})
+            if run_scope else StepOutcome(RECOVERED)
+        )
     outcome_row = outcome.as_row()
     slug_to_scope: dict[str, str] = {c.slug: scope_locator_for(c) for c in components}
 
@@ -210,8 +221,20 @@ def persist_ir(
     # same SurveyOrchestrator batch (and therefore not guaranteed to share
     # one surveyed_at) — a shared metric_name would let one step's count
     # silently overwrite the other's in query_metrics' "latest wins" read.
+    #
+    # This is also THE place a component-less run's outcome is recorded
+    # (README finding 57). Every other row above is written per-component, so
+    # zero components means zero of them — this row is the one thing
+    # persist_ir writes unconditionally regardless of len(components), which
+    # makes it the only reliable place for a caller's `unverified` (or any
+    # other outcome) to land when there is nothing else to attach it to. The
+    # alternative — a synthetic zero-confidence Component just to carry the
+    # outcome — would fabricate a row in the "component" check_name that
+    # every reader (and the ground-truth comparison) treats as a real
+    # candidate, which is worse than the bug being fixed.
     registry.upsert_metric(
         slug, KIND, {f"{run_label}_component_count": float(len(components))},
+        detail={"run_scope": run_scope, **outcome_row},
         surveyed_at=surveyed_at, scope_locator="",
     )
 

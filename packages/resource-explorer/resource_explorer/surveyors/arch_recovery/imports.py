@@ -124,6 +124,54 @@ from .code_markers import _binary  # reuse — do NOT reimplement the venv-vs-PA
 
 RULES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules-imports")
 
+# The only languages this module can actually extract an import graph from.
+# This is the single source of truth for "extractable" — read by
+# arch_recovery_coupling.py (and arch_recovery_detect.py) to decide whether a
+# zero-component run means "genuinely nothing" or "this step cannot read this
+# language yet" (README findings 57/58). When a new language extractor is
+# added below (a new rules-imports/*.yml + resolver + a fp_<lang> line in
+# build_graph), add its extension here too — that is what makes the
+# no_supported_source check start passing on its own instead of silently
+# staying stale the way the bug it fixes did.
+SUPPORTED_EXTENSIONS: dict[str, str] = {".py": "python", ".java": "java"}
+
+# A much broader, best-effort extension -> language map, used only to name
+# what *is* present in a repo imports.py cannot read — e.g. surfacing
+# "rust" in an unverified outcome's detail instead of a bare boolean. Not
+# used for any extraction decision, so it can be as loose as it likes;
+# SUPPORTED_EXTENSIONS above is the only list that gates behaviour.
+_KNOWN_LANGUAGES_BY_EXTENSION: dict[str, str] = {
+    ".py": "python", ".java": "java", ".rs": "rust", ".go": "go", ".cs": "csharp",
+    ".rb": "ruby", ".kt": "kotlin", ".kts": "kotlin", ".js": "javascript",
+    ".jsx": "javascript", ".ts": "typescript", ".tsx": "typescript", ".c": "c",
+    ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".hpp": "cpp", ".swift": "swift",
+    ".scala": "scala", ".php": "php", ".m": "objective-c", ".mm": "objective-c",
+    ".ex": "elixir", ".exs": "elixir", ".erl": "erlang", ".clj": "clojure",
+    ".hs": "haskell", ".lua": "lua", ".dart": "dart", ".sh": "shell",
+}
+
+
+def extractable_first_party(first_party: list[str]) -> list[str]:
+    """The subset of `first_party` this module can extract imports from —
+    i.e. what `build_graph` will actually scan. Empty means an import graph
+    from this repo is guaranteed empty regardless of what ast-grep finds,
+    which is the condition callers use to decide `unverified` vs a trusted
+    zero."""
+    return [f for f in first_party if os.path.splitext(f)[1] in SUPPORTED_EXTENSIONS]
+
+
+def languages_present(first_party: list[str]) -> dict[str, int]:
+    """Best-effort census of what languages `first_party` actually contains,
+    by extension — for outcome detail only (e.g. `{"rust": 214}`), so an
+    `unverified` result says what could not be read rather than just that
+    something could not be read."""
+    counts: dict[str, int] = {}
+    for f in first_party:
+        lang = _KNOWN_LANGUAGES_BY_EXTENSION.get(os.path.splitext(f)[1])
+        if lang:
+            counts[lang] = counts.get(lang, 0) + 1
+    return counts
+
 
 # ── ast-grep extraction ─────────────────────────────────────────────────
 

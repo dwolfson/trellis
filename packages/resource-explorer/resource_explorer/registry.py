@@ -2806,6 +2806,24 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def query_metrics_history_raw(
+        self, slug: str, kind: str, metric_name: str, scope_locator: str = "",
+    ) -> list[dict]:
+        """Like query_metrics_history, but including detail_json — for a
+        reader that needs the per-run detail attached to a metric row (e.g.
+        an outcome stamped on a component-less run's summary row, which has
+        no finding row of its own to carry it — see persist.py's run-summary
+        comment) rather than only its trend value."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, metric_value, detail_json FROM project_analysis_metrics "
+                "WHERE project_slug = ? AND kind = ? AND metric_name = ? AND scope_locator = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug, kind, metric_name, scope_locator),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def query_finding_scopes(self, slug: str, kind: str, check_name: str = "") -> list[str]:
         """Distinct `scope_locator`s that currently have at least one
         finding row for (slug, kind) — optionally narrowed to one

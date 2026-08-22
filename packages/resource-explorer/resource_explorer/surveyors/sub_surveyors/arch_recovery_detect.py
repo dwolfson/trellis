@@ -21,6 +21,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, StepOutcome, no_signal
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
@@ -59,8 +60,15 @@ class ArchDetectSurveyor(BaseSurveyor):
             return results
 
         try:
-            from resource_explorer.surveyors.arch_recovery import exclusion
-            from resource_explorer.surveyors.arch_recovery.detectors import build_components
+            from resource_explorer.surveyors.arch_recovery import exclusion, imports
+            from resource_explorer.surveyors.arch_recovery import code_markers
+            from resource_explorer.surveyors.arch_recovery.detectors import (
+                build_components,
+                deployment_units,
+                gradle_modules,
+                node_manifests,
+                python_manifests,
+            )
             from resource_explorer.surveyors.arch_recovery.persist import persist_ir
 
             root = str(self.local_path)
@@ -70,20 +78,64 @@ class ArchDetectSurveyor(BaseSurveyor):
                 first_party = [f for f in first_party if path_matches_scope(f, self._scope_locator)]
 
             components, evidence, notes = build_components(root, first_party)
+
+            # Unlike coupling, detect has three independent ways to find a
+            # component — package manifests, Dockerfile/compose deployment
+            # units, and ast-grep code markers — and only the last needs
+            # source-language extraction at all (module docstring). So a zero
+            # here is only ambiguous if NONE of the three had anything to work
+            # with: no recognized manifest ecosystem, no deployment unit, and
+            # no first-party file in a language the code-marker rules cover.
+            # If any of those existed, this run had a real chance to find
+            # something and zero is a trustworthy answer, not a blind spot.
+            if not components:
+                has_manifest = bool(
+                    python_manifests(root, first_party)
+                    or node_manifests(root, first_party)
+                    or gradle_modules(root, first_party)
+                )
+                has_deployment_unit = any(u != "." for u in deployment_units(root, first_party))
+                present_langs = imports.languages_present(first_party)
+                has_marker_language = bool(set(present_langs) & code_markers.marker_languages())
+                if has_manifest or has_deployment_unit or has_marker_language:
+                    detect_outcome: StepOutcome | None = no_signal(
+                        "no_components_detected", known_positive=True,
+                        has_manifest=has_manifest, has_deployment_unit=has_deployment_unit,
+                    )
+                else:
+                    detect_outcome = StepOutcome(
+                        UNVERIFIED, cause="no_supported_source",
+                        detail={
+                            "languages_present": present_langs,
+                            "marker_languages": sorted(code_markers.marker_languages()),
+                        },
+                    )
+            else:
+                detect_outcome = None  # persist_ir's ordinary scoped/recovered default
+
             persist_ir(
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="detect",
-                run_scope=self._scope_locator,
+                run_scope=self._scope_locator, outcome=detect_outcome,
             )
 
             by_type: dict[str, int] = {}
             for c in components:
                 by_type[c.type or "Unclassified"] = by_type.get(c.type or "Unclassified", 0) + 1
-            summary = (
-                f"{len(components)} candidate component(s) detected "
-                f"({', '.join(f'{n} {t}' for t, n in sorted(by_type.items(), key=lambda kv: -kv[1]))})"
-                if components else "No components detected from manifests, deployment units, or code markers"
-            )
+            if components:
+                summary = (
+                    f"{len(components)} candidate component(s) detected "
+                    f"({', '.join(f'{n} {t}' for t, n in sorted(by_type.items(), key=lambda kv: -kv[1]))})"
+                )
+            elif detect_outcome is not None and detect_outcome.outcome == UNVERIFIED:
+                langs = ", ".join(sorted(imports.languages_present(first_party))) or "none recognized"
+                summary = (
+                    "Unverified — no recognized manifest, deployment unit, or "
+                    f"code-marker-supported language found; this repo's first-party "
+                    f"files are {langs}"
+                )
+            else:
+                summary = "No components detected from manifests, deployment units, or code markers"
             results.append(ResourceMeasureAnnotation(
                 summary=summary, analysis_step=STEP,
                 resource_properties={

@@ -57,6 +57,25 @@ MARKER_ROLES: dict[str, tuple[str, int, bool]] = {
 }
 
 
+def marker_languages() -> set[str]:
+    """Which languages have at least one rule in RULES_DIR — read from each
+    rule file's own `language:` field rather than hardcoded, so a new marker
+    rule for another language (e.g. a Rust `axum`/`clap` construction rule)
+    starts counting the moment its .yml lands, with nothing else to update.
+    Lowercased so callers can compare against imports.languages_present()'s
+    keys without a case-mapping table."""
+    langs: set[str] = set()
+    for fn in sorted(os.listdir(RULES_DIR)):
+        if not fn.endswith((".yml", ".yaml")):
+            continue
+        with open(os.path.join(RULES_DIR, fn), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("language:"):
+                    langs.add(line.split(":", 1)[1].strip().lower())
+                    break
+    return langs
+
+
 def _binary() -> str | None:
     """Prefer the venv's ast-grep over a system one, so the spike works for
     anyone who ran `uv sync` (pyproject declares `ast-grep-cli`). Verified
