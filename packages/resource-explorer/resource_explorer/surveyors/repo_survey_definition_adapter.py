@@ -43,6 +43,7 @@ from typing import Callable
 from trellis_microflow import ResourceProvider
 
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
+from resource_explorer.surveyors.arch_recovery import projection as arch_projection
 
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors import (
@@ -1053,7 +1054,9 @@ def _website_ingestion_trend(registry, slug: str) -> list[dict]:
     ]
 
 
-def _architecture_recovery_results(registry, slug: str) -> dict:
+def _architecture_recovery_results(
+    registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
+) -> dict:
     """Phase 1 plan §4.4 — the results view. Reads back what
     repo_arch_detect/repo_arch_coupling wrote into the generic findings/
     metrics tables (kind="architecture_recovery") and reassembles it into
@@ -1068,9 +1071,18 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
     repo_arch_coupling are independent steps that may run at different
     times — a component both propose needs evidence from both runs, not
     just whichever ran most recently.
+
+    **Projected to `max_depth` by default** (approach-portfolio-model.md
+    §2a / projection.py) — the generator now stores the whole candidate
+    hierarchy rather than choosing a level (item 2/3 of that redesign), and
+    a UI rendering a few thousand raw candidates flat (the `egeria` case
+    this exists for) is unusable. Nothing is discarded server-side: pass
+    `max_depth=None` for the full, unprojected hierarchy (e.g. component-
+    scoped analytics, design §6, which wants the fine-grained partition).
     """
     scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
     components = []
+    slug_to_path: dict[str, str] = {}
     for scope in scopes:
         rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
         comp_rows = [r for r in rows if r["check_name"] == "component"]
@@ -1084,6 +1096,8 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
         detail = _json_or_empty(latest.get("detail_json"))
         approaches = sorted({r["label"] for r in evidence_rows if r["label"]})
         metrics = registry.query_metrics(slug, "architecture_recovery", scope)
+        if detail.get("slug"):
+            slug_to_path[detail["slug"]] = scope
         components.append({
             "path": scope,
             "name": detail.get("name", scope),
@@ -1094,6 +1108,16 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
             "run_scope": detail.get("run_scope", ""),
             "proposed_by": approaches or (detail.get("proposed_by") or []),
             "surveyed_at": latest.get("surveyed_at", ""),
+            # Granularity is not precision (§2a) — depth/parent are the
+            # stored hierarchy, kept even after projection collapses which
+            # rows get SHOWN (below), so nothing computed is lost, only
+            # summarised. `parent_slug` is detector-namespaced (§8.2's
+            # `code::`/`coupling::` prefixes), so it only resolves to a
+            # `parent_path` when that ancestor was ALSO persisted this run;
+            # otherwise it stays "" and this node is its branch's coarsest
+            # available reading, same as a root-attached node.
+            "depth": detail.get("depth", 0),
+            "parent_slug": detail.get("parent_slug", ""),
             "evidence": [
                 {
                     "assertion": r["check_name"], "approach": r["label"],
@@ -1104,7 +1128,16 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
             ],
             "metrics": {k: v for k, v in metrics.items() if k not in ("surveyed_at", "detail")},
         })
+    for c in components:
+        c["parent_path"] = slug_to_path.get(c["parent_slug"], "")
     components.sort(key=lambda c: c["path"])
+    # `scoped`/`partial`/`surveyed_at` below must see every persisted
+    # component, not just the ones a coarse projection chooses to SHOW — a
+    # projected-away node's own run_scope/outcome would otherwise silently
+    # stop being able to mark the whole result partial/scoped.
+    all_components = components
+    displayed = (arch_projection.project_rows(components, max_depth)
+                if max_depth is not None else components)
 
     # Per-run outcome, read from the run-summary metric row persist_ir
     # writes unconditionally (scope_locator="", metric_name=
@@ -1155,20 +1188,25 @@ def _architecture_recovery_results(registry, slug: str) -> dict:
     # scope_locator this surveyor instance was given), but `unverified` can
     # only ever be seen here, because an unverified run is definitionally one
     # that produced no components to carry it.
-    scoped = sorted({c["run_scope"] for c in components if c.get("run_scope")}
+    scoped = sorted({c["run_scope"] for c in all_components if c.get("run_scope")}
                      | {o["run_scope"] for o in run_outcomes.values() if o.get("run_scope")})
-    partial = (any(c.get("outcome") == PARTIAL for c in components)
+    partial = (any(c.get("outcome") == PARTIAL for c in all_components)
                or any(o.get("outcome") == PARTIAL for o in run_outcomes.values()))
     unverified = sorted(
         run_label for run_label, o in run_outcomes.items() if o.get("outcome") == UNVERIFIED
     )
     surveyed_at = max(
-        [c["surveyed_at"] for c in components] + [o["surveyed_at"] for o in run_outcomes.values()],
+        [c["surveyed_at"] for c in all_components] + [o["surveyed_at"] for o in run_outcomes.values()],
         default="",
     )
     return {
-        "components": components,
-        "component_count": len(components),
+        "components": displayed,
+        "component_count": len(displayed),
+        # The full, unprojected count — so a caller/UI can say "13 shown
+        # (of 42 total)" rather than a projected view silently looking like
+        # the whole answer (§2a: coarsening a view must never look like
+        # discarding the data behind it).
+        "raw_component_count": len(all_components),
         "run_outcomes": run_outcomes,
         "partial": partial,
         "unverified": unverified,

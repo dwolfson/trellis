@@ -87,17 +87,28 @@ class TestFilterByIntent:
             "security_scan", "documentation_coverage", "security_features", "ci_quality",
         }
 
+    # architecture_recovery was assigned intent: discovery 2026-08-22 (the
+    # maintainer's explicit ruling, not this test's) even though both of its
+    # steps fetch (repo_arch_detect needs a zipball, repo_arch_coupling also
+    # a git clone) — the one named exception to CLAUDE.md rule 17's zero-
+    # fetch signature. Recorded here rather than silently weakening the
+    # check for everything else: a NEW discovery entry that also fetches
+    # should still fail this test unless it is deliberately added here too.
+    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery"}
+
     def test_discovery_is_the_zero_fetch_derivation_tier(self):
         """Discovery reasons over what Scouting collected rather than fetching:
-        every one of its analyses' steps declares requires_resources={}."""
+        every one of its analyses' steps declares requires_resources={} —
+        except the named exception above."""
         from resource_explorer.surveyors.repo_survey_definition_adapter import (
             REPO_ANALYSIS_STEP_MAP, STEP_REGISTRY,
         )
 
         analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
-        assert ids == {"license_classification", "maturity", "repo_conventions"}
-        for aid in ids:
+        assert ids == {"license_classification", "maturity", "repo_conventions"} \
+                       | self.DISCOVERY_FETCHES_ANYWAY
+        for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):
                 assert not (getattr(STEP_REGISTRY[step], "requires_resources", {}) or {}), (
                     f"{step} fetches — it does not belong in the zero-fetch Discovery tier"

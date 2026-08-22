@@ -55,13 +55,11 @@ STEPS_NOT_IN_A_STAGE_SURVEY = {
         "No catalog entry and never independently schedulable — bundled only in "
         "Full Survey by design (docs/Backlog.md, repo-scheduling plan D3)."
     ),
-    "repo_arch_detect": (
-        "Architecture-recovery prototype (scripts/arch-spike), added 2026-08-20 and "
-        "not yet assigned to a stage. Remove this entry when it is placed."
-    ),
-    "repo_arch_coupling": (
-        "Same architecture-recovery prototype as repo_arch_detect."
-    ),
+    # repo_arch_detect/repo_arch_coupling were here (docs/Backlog.md item 8)
+    # until 2026-08-22, when the maintainer assigned both to Discovery — see
+    # docs/dr-egeria/repo_survey_types.csv's RepoArchitectureDiscovery rows
+    # and analysis_catalog.yaml's architecture_recovery entry. Placed now,
+    # not exempt.
 }
 
 

@@ -52,6 +52,7 @@
   "files": [
     "repo-survey-definition-scouting.md",
     "repo-survey-definition-discovery.md",
+    "repo-survey-definition-architecture-discovery.md",
     "repo-survey-definition-coarse-profile.md",
     "repo-survey-definition-scouting-all.md",
     "repo-survey-definition-assessment.md",

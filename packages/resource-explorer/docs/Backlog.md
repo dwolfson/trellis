@@ -63,11 +63,18 @@ adopter. Recording only — nothing routes on these labels.
    `/Users/dwolfson/localGit/egeria-python/PYEGERIA_ISSUES.md`, **not fixed**, per the standing
    rule. Not blocking: guards are authored through Dr.Egeria. It blocks amending a guard in
    place, which would be tidier than re-authoring a document and re-running the reconciler.
-8. **`repo_arch_detect` / `repo_arch_coupling` are not assigned to a stage**, so Egeria's
-   RepoFullSurvey holds 22 of `STEP_REGISTRY`'s 24. Both guards
-   (`tests/test_reachability_audit.py`, `tests/test_egeria_live_smoke.py`) carry them as
-   explicit exemptions and will demand action once they are placed. The arch-recovery session
-   owns that call.
+8. ~~`repo_arch_detect` / `repo_arch_coupling` are not assigned to a stage`~~ **RESOLVED
+   2026-08-22.** Assigned to Discovery — `analysis_catalog.yaml`'s `architecture_recovery`
+   entry retagged `intent: discovery`, and a new `RepoArchitectureDiscovery` survey_group
+   (`docs/dr-egeria/repo_survey_types.csv`, `repo-survey-definition-architecture-discovery.md`)
+   authored live in Egeria and reconciled. `tests/test_reachability_audit.py`'s
+   `STEPS_NOT_IN_A_STAGE_SURVEY` exemption for both steps is removed;
+   `test_analysis_catalog_reader.py::test_discovery_is_the_zero_fetch_derivation_tier` now
+   carries a named, single exception (`DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery"}`)
+   since — unlike every other Discovery-tier analysis — both steps DO fetch (zipball, and a git
+   clone for co-change), a real tension with CLAUDE.md rule 17 recorded rather than papered
+   over. Egeria's RepoFullSurvey now holds all 24 of `STEP_REGISTRY`'s steps reachable from a
+   stage-specific survey.
 
 
 ### Testing strategy — four silent-failure classes, one built, three open

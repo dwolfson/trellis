@@ -86,6 +86,19 @@ class Component:
     # one-to-many by ImplementedBy (§3.6, §4.2 "map, never merge"), so scoring
     # must keep them apart rather than reconcile them into one.
     perspective: str = "physical"
+    # Granularity is not precision (approach-portfolio-model.md §2a) — a
+    # generator does not choose a depth, it emits the whole hierarchy and
+    # links each candidate to its nearest candidate ancestor. `depth` counts
+    # path segments below the owning package root (0 = attaches directly to
+    # the package root); `parent_slug` is that ancestor's `slug`, or "" when
+    # no shallower candidate exists (this component IS the coarsest
+    # available reading for its branch). Nothing else about a Component's
+    # shape changes — a nested component is still a component, so the
+    # classifier, evidence model and persistence work unchanged (design
+    # §3.3a — `SolutionComposition` nests `SolutionComponent`s natively, so
+    # this is what the target model already expects, not a workaround).
+    parent_slug: str = ""
+    depth: int = 0
 
     def __post_init__(self) -> None:
         if self.type is not None and self.type not in COMPONENT_TYPES:

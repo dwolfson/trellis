@@ -25,21 +25,18 @@ from __future__ import annotations
 import math
 import os
 
-from .code_markers import _subtree_for
+from .code_markers import file_subtree_map
 
 # ── Task 3.2's building blocks, kept because propose() and the surveyor
 # both need them (candidate subtree assignment + cohesion measurement) ──
 
 def candidate_subtrees(files: list[str], package_roots: list[str]) -> dict[str, str]:
-    """file -> subtree, same rule code_markers.py uses to attribute a marker
-    (top-level subpackage beneath the nearest manifest root). Files with no
-    enclosing package root are excluded (None)."""
-    out = {}
-    for f in files:
-        sub = _subtree_for(f, package_roots)
-        if sub is not None:
-            out[f] = sub
-    return out
+    """file -> subtree — every directory holding >=2 first-party files, at
+    every depth, is a candidate (code_markers.build_hierarchy); a file maps
+    to the deepest one that contains it. Files with no enclosing package
+    root, or no qualifying ancestor, are excluded (absent from the dict)."""
+    file_subtree, _hierarchy = file_subtree_map(files, package_roots)
+    return file_subtree
 
 
 def cohesion_table(file_subtree: dict[str, str], edges: list[dict],
@@ -196,57 +193,69 @@ def _neighbor_breakdown(file_subtree: dict[str, str], edges: list[dict],
     return table
 
 
-def _subtree_glob(sub: str, package_roots: list[str]) -> str:
-    """The glob that matches exactly the files `_subtree_for` assigned to
-    `sub` — not an approximation. Using `{sub}/**` unconditionally would
-    reintroduce the majority-vote bug (README finding 35/36's caveat).
+def _component_globs(sub: str, files: set[str]) -> list[str]:
+    """The precise glob set for exactly the files `sub` owns after rehoming
+    (below) — not an approximation, and not the old fixed-depth choice
+    between `X/*` and `X/**` (that choice assumed depth topped out at two
+    segments, which an unbounded hierarchy does not). A file directly in
+    `sub` is covered by `sub/*`; a file under some non-candidate (or
+    dropped) descendant is residue and is covered by one `sub/<branch>/**`
+    per distinct immediate branch — never a single `sub/**`, which would
+    also swallow a sibling candidate nested under `sub` and reintroduce the
+    majority-vote bug (README finding 35/36's caveat).
 
-    `_subtree_for` only ever produces subtree names of two shapes: `<root>/X`
-    (files sitting DIRECTLY in X — a deeper file under X/Y is claimed by the
-    *other*, longer-named bucket `<root>/X/Y` instead, never by this one) and
-    `<root>/X/Y` (files anywhere under X/Y, any depth — parts beyond the
-    second are ignored by `_subtree_for`, so this bucket DOES recurse). A
-    one-segment bucket must not use a recursive glob or it silently claims
-    files a sibling bucket already owns.
+    `sub == "."` (the flat-repo case, §2a/finding 55 — the package root
+    itself is now an eligible candidate) uses bare `*`/`<branch>/**`, no
+    `./` prefix, matching detectors.py's own root-glob convention.
     """
-    best = max((p for p in package_roots
-               if sub == p or sub.startswith(p.rstrip("/") + "/") or p == "."),
-              key=len, default=None)
-    inner = sub if best is None or best == "." else sub[len(best):].lstrip("/")
-    depth = inner.count("/") + 1 if inner else 0
-    return f"{sub}/**" if depth >= 2 else f"{sub}/*"
+    at_root = sub == "."
+    prefix = "" if at_root else sub.rstrip("/") + "/"
+    direct = False
+    branches: set[str] = set()
+    for f in files:
+        rest = f[len(prefix):] if (at_root or f.startswith(prefix)) else f
+        parts = rest.split("/")
+        if len(parts) > 1:
+            branches.add(parts[0])
+        else:
+            direct = True
+    star = "*" if at_root else f"{sub}/*"
+    globs = [star] if direct else []
+    globs.extend((f"{b}/**" if at_root else f"{sub}/{b}/**") for b in sorted(branches))
+    return globs or [star]
 
 
-def _adopt_orphan_buckets(by_subtree: dict, all_buckets: set[str]) -> list[str]:
-    """Give every candidate bucket that was NOT proposed to its nearest
-    proposed ancestor — the residue rule stated properly (README finding 44):
-    a component owns everything beneath it that nothing else claims.
+def _rehome_dropped(subtree_files: dict[str, set[str]], hierarchy: dict[str, dict],
+                    emitted: set[str]) -> tuple[dict[str, set[str]], list[str]]:
+    """Every candidate is emitted UNLESS `classify_subtree` calls it
+    `merge-candidate` (§2a — depth is never pruned away by the generator
+    itself; only the classifier's own "not a component" verdict drops one).
+    A dropped candidate's files still need an owner — the residue rule
+    stated properly (README finding 44): a component owns everything
+    beneath it that nothing else claims. Generalises the old one-level
+    orphan-adoption pass to the unbounded hierarchy by walking each dropped
+    candidate's `parent` chain to the nearest ancestor that WAS emitted.
 
-    `_subtree_glob` is self-consistent: a one-segment bucket uses `X/*`
-    because files under `X/Y` belong to the separate bucket `X/Y`. That is
-    right while `X/Y` is itself proposed. It goes wrong when the nested
-    bucket is NOT proposed — its files are then orphaned, owned by nobody.
-
-    Adopting an orphan cannot create an overlap, because a bucket is
-    adopted only when no component claims it.
+    Returns `(owned, notes)` — `owned` maps each emitted subtree to the
+    full set of files it ends up covering (its own plus any rehomed
+    residue); a dropped candidate with no emitted ancestor at all (rare —
+    every candidate on its branch was a merge-candidate) contributes no
+    files anywhere, same as the old orphan pass leaving a truly unclaimed
+    bucket unclaimed.
     """
-    proposed = set(by_subtree)
-    notes = []
-    for own, c in sorted(by_subtree.items()):
-        for bucket in sorted(all_buckets):
-            if bucket == own or not bucket.startswith(own.rstrip("/") + "/"):
-                continue
-            if any(bucket == p or bucket.startswith(p.rstrip("/") + "/")
-                   for p in proposed if p != own and p.startswith(own)):
-                continue                      # a nearer proposed ancestor owns it
-            if bucket in proposed:
-                continue                      # it is a component in its own right
-            glob = f"{bucket}/**"
-            if glob not in c.files:
-                c.files.append(glob)
-                notes.append(f"{own}: adopted unproposed subtree {bucket} "
-                             f"(nothing else claims it)")
-    return notes
+    owned: dict[str, set[str]] = {sub: set(files) for sub, files in subtree_files.items()
+                                  if sub in emitted}
+    notes: list[str] = []
+    for sub, files in sorted(subtree_files.items()):
+        if sub in emitted:
+            continue
+        anc = hierarchy.get(sub, {}).get("parent")
+        while anc is not None and anc not in emitted:
+            anc = hierarchy.get(anc, {}).get("parent")
+        if anc is not None:
+            owned.setdefault(anc, set()).update(files)
+            notes.append(f"{anc}: adopted unproposed subtree {sub} (nothing else claims it)")
+    return owned, notes
 
 
 def propose(tracked: set[str], package_roots: list[str],
@@ -258,46 +267,76 @@ def propose(tracked: set[str], package_roots: list[str],
     deliberately never emitted — they are the one shape `classify_subtree`
     says is NOT a component (finding 34).
 
+    Every OTHER candidate subtree — every directory holding >=2 first-party
+    files, at every depth — is emitted (approach-portfolio-model.md §2a):
+    the generator does not choose a level, it emits the whole hierarchy
+    (`parent_slug`/`depth`, linked to the nearest candidate ancestor) and
+    lets a consumer project (`projection.py`). The ~3,000-candidate count
+    that killed the earlier "generate all depths, then prune parent-vs-
+    children" experiment (README finding 56) stops being a problem once
+    depth is stored rather than chosen — nothing here is pruned by level,
+    only by the classifier's own verdict.
+
     Thresholds (`COHESIVE_BAR`, `DISPERSION_BAR`) are read as-is, never
     adjusted here — task rule: never tune a threshold to move a score.
     """
     from .ir import Component, Evidence, Identity, Location
 
     all_files = sorted(tracked)
-    file_subtree = candidate_subtrees(all_files, package_roots)
+    file_subtree, hierarchy = file_subtree_map(all_files, package_roots)
     subtree_files: dict[str, set[str]] = {}
     for f, s in file_subtree.items():
         subtree_files.setdefault(s, set()).add(f)
 
     breakdown = _neighbor_breakdown(file_subtree, import_edges, "source", "target", "weight")
 
-    components: list = []
-    evidence: list = []
-    notes: list[str] = []
+    classified: dict[str, tuple[str, float, str]] = {}
     shape_counts: dict[str, int] = {}
-    by_subtree: dict[str, object] = {}          # subtree -> its Component, for orphan adoption
-
+    emitted: set[str] = set()
     for sub, files in sorted(subtree_files.items()):
         if len(files) < 2:
             continue
         row = breakdown.get(sub, {"internal": 0, "fan_in": {}, "fan_out": {}})
         shape, confidence, why = classify_subtree(row["internal"], row["fan_in"], row["fan_out"])
+        classified[sub] = (shape, confidence, why)
         shape_counts[shape] = shape_counts.get(shape, 0) + 1
-        if shape == "merge-candidate":
-            continue
+        if shape != "merge-candidate":
+            emitted.add(sub)
 
+    owned, notes = _rehome_dropped(subtree_files, hierarchy, emitted)
+
+    def _nearest_emitted_ancestor(sub: str) -> str | None:
+        # `hierarchy`'s own `parent` is the nearest CANDIDATE ancestor,
+        # which may itself have been dropped as a merge-candidate and so
+        # never became a Component (same walk `_rehome_dropped` does for
+        # files). `parent_slug` must skip past those so a consumer can
+        # walk purely emitted components end-to-end when projecting
+        # (projection.py) — a link to a slug that was never emitted is a
+        # dead end, not a coarser reading.
+        anc = hierarchy.get(sub, {}).get("parent")
+        while anc is not None and anc not in emitted:
+            anc = hierarchy.get(anc, {}).get("parent")
+        return anc
+
+    components: list = []
+    evidence: list = []
+    for sub in sorted(emitted):
+        shape, confidence, why = classified[sub]
         name = os.path.basename(sub.rstrip("/")) or sub
         slug = "coupling::" + sub.replace("/", "::")
+        node = hierarchy.get(sub, {})
+        parent_dir = _nearest_emitted_ancestor(sub)
         # type left None: coupling establishes a BOUNDARY, not a
         # SolutionComponentType — that needs a code marker or a human, and
         # asserting one here would overstate what this signal knows.
         components.append(Component(
             slug=slug, name=name, type=None,
             identity=Identity("module-path", sub),
-            files=[_subtree_glob(sub, package_roots)], confidence=int(confidence),
+            files=_component_globs(sub, owned.get(sub, set())), confidence=int(confidence),
             confidence_level="Derived", perspective="logical",
+            parent_slug=f"coupling::{parent_dir.replace('/', '::')}" if parent_dir else "",
+            depth=node.get("depth", 0),
         ))
-        by_subtree[sub] = components[-1]
         evidence.append(Evidence(
             subject_kind="component", subject_slug=slug,
             assertion=f"coupling shape = {shape}",
@@ -305,8 +344,6 @@ def propose(tracked: set[str], package_roots: list[str],
             locations=[Location(sub, 0, why)],
             confidence=int(confidence), confidence_level="Derived",
         ))
-
-    notes.extend(_adopt_orphan_buckets(by_subtree, set(subtree_files)))
 
     notes.append(
         f"coupling: {len(components)} logical components proposed from "

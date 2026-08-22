@@ -313,7 +313,17 @@ repo_analyses:
     name: "Architecture Recovery"
     description: "Recover candidate architecture components from package manifests, deployment units (Dockerfile/compose), ast-grep code markers, and import/co-change coupling — a component partition proposal with confidence and evidence, not a published blueprint (docs/architecture-recovery-phase1-plan.md)."
     resource_types: ["repo"]
-    intent: analysis  # collects a fresh partition from the checkout — CLAUDE.md rule 17
+    # Retagged to discovery 2026-08-22 (maintainer's ruling) — the stored
+    # candidate hierarchy (approach-portfolio-model.md §2a) is comfortably
+    # sufficient for "which subsystem is this?" (a coarse projection, see
+    # projection.py), marginal for component-scoped metrics, and nowhere
+    # near publishable. NOTE the tension this leaves with CLAUDE.md rule
+    # 17's collect-vs-reason axis: both repo_arch_detect (zipball_root) and
+    # repo_arch_coupling (zipball_root + git_clone_root) DO fetch fresh
+    # data, unlike every other discovery-tier analysis, which is zero-fetch
+    # by construction. Recorded rather than quietly reconciled — the
+    # maintainer's call was explicit and is not this comment's to override.
+    intent: discovery
     perspectives: ["all"]
     annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local

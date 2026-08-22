@@ -167,6 +167,11 @@ def persist_ir(
                     "files": c.files, "blueprint": c.blueprint,
                     "proposed_by": c.proposed_by, "perspective": c.perspective,
                     "confidence_level": c.confidence_level,
+                    # Granularity is not precision (approach-portfolio-model.md
+                    # §2a) — the hierarchy is stored, not collapsed to one
+                    # level, so a consumer can project (projection.py) rather
+                    # than the generator having chosen a depth for them.
+                    "parent_slug": c.parent_slug, "depth": c.depth,
                 },
             }],
             surveyed_at=surveyed_at, scope_locator=loc,

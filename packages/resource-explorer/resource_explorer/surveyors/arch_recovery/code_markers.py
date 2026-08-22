@@ -12,10 +12,15 @@ emits anything comparable to a logical-perspective ground truth (§4.1).
 
 Boundary rule, and the reasoning matters more than the rule: a marker marks a
 *file*, and a component is a *subtree*, so something must decide how far up to
-attribute the marker. The rule used here is **the top-level subpackage beneath
-the owning manifest's package root** — the manifest already establishes the
-package root (identity precedence rung 2, §8.2), and the conventional
-subdivision of a package is its immediate subpackages.
+attribute the marker. **The generator does not choose a depth** (spike README
+findings 55/56/59 — a single fixed depth fits no repo shape in general: it
+yields nothing on a flat app, only `src/main`/`src/test` on Gradle, and only
+the right answer on a Python monorepo because that is the layout it was tuned
+to). Instead every directory holding >=2 first-party files, at every depth
+beneath the owning package root, is a candidate subtree, linked to its nearest
+candidate ancestor (`build_hierarchy` below) — depth is never discarded
+(approach-portfolio-model.md §2a: "store the hierarchy; project a level"). A
+marker is attributed to the deepest candidate that contains it.
 
 That is a structural rule, chosen because it derives from the manifest
 boundary already detected, NOT because it reproduces any particular ground
@@ -122,20 +127,111 @@ def scan(root: str, first_party: set[str] | None = None) -> dict[str, list[dict]
     return out
 
 
-def _subtree_for(rel: str, package_roots: list[str]) -> str | None:
-    """The top-level subpackage beneath the nearest enclosing package root."""
-    best = max((p for p in package_roots
+def _package_root_for(rel: str, package_roots: list[str]) -> str | None:
+    """The nearest (longest-matching) package root enclosing `rel`."""
+    return max((p for p in package_roots
                 if rel == p or rel.startswith(p.rstrip("/") + "/") or p == "."),
                key=len, default=None)
-    if best is None:
-        return None
-    inner = rel[len(best):].lstrip("/") if best != "." else rel
+
+
+def _ancestor_dirs(rel: str, root: str) -> list[str]:
+    """`rel`'s own directory and every ancestor, deepest first, ENDING WITH
+    `root` itself (depth 0). A file sitting directly in `root` — no
+    subdirectory at all — yields `[root]`: the package root is itself
+    eligible as a candidate (below), which is what fixes the flat-repo case
+    (spike README findings 36/55) — a repo with no subdirectory structure
+    still has exactly one thing that can become a candidate, the whole
+    package, instead of structurally having nothing (the old fixed-depth
+    rule's "a file directly in the root is not a subtree")."""
+    prefix = root.rstrip("/") + "/" if root != "." else ""
+    inner = rel[len(prefix):] if prefix else rel
+    parts = [p for p in inner.split("/")[:-1] if p]
+    return [prefix + "/".join(parts[:i]) for i in range(len(parts), 0, -1)] + [root]
+
+
+def _ancestors_of_dir(d: str, root: str) -> list[str]:
+    """Ancestors of directory `d` (excluding `d` itself), deepest first,
+    ending with `root` itself (empty when `d` already IS `root`)."""
+    if d == root:
+        return []
+    prefix = root.rstrip("/") + "/" if root != "." else ""
+    inner = d[len(prefix):] if prefix else d
     parts = [p for p in inner.split("/") if p]
-    if len(parts) < 2:            # a file directly in the root is not a subtree
-        return None
-    prefix = best.rstrip("/") + "/" if best != "." else ""
-    # skip the distribution directory itself (resource-explorer/resource_explorer/...)
-    return f"{prefix}{parts[0]}/{parts[1]}" if len(parts) > 2 else f"{prefix}{parts[0]}"
+    return [prefix + "/".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)] + [root]
+
+
+def _dir_depth(d: str, root: str) -> int:
+    """Path segments between `root` and `d` (0 when `d` IS `root`)."""
+    if d == root:
+        return 0
+    prefix = root.rstrip("/") + "/" if root != "." else ""
+    inner = d[len(prefix):] if prefix else d
+    return len([p for p in inner.split("/") if p])
+
+
+def build_hierarchy(files: list[str], package_roots: list[str]) -> dict[str, dict]:
+    """Every directory under a package root holding >=2 first-party files
+    DIRECTLY (not recursively) is a candidate subtree — approach-portfolio-
+    model.md §2a: depth is never discarded, every candidate is retained and
+    linked to its nearest candidate ancestor rather than one depth being
+    chosen (spike README findings 55/56/59 — depth profiles measured across
+    six repo shapes share no common pattern, so no fixed rule or shape-
+    detection scheme can substitute for keeping all of them).
+
+    Returns `{subtree_path: {"depth": int, "parent": str | None, "root": str,
+    "files": set[str]}}`. `depth` counts path segments below the package
+    root (0 = the package root itself, eligible exactly when >=2
+    first-party files sit directly in it with no subdirectory — the flat-
+    repo case). `parent` is the nearest ancestor directory that is ALSO a
+    candidate, or `None` when no ancestor qualifies (this subtree is the
+    coarsest available reading for its branch).
+    """
+    direct: dict[str, set[str]] = defaultdict(set)
+    depth_of: dict[str, int] = {}
+    root_of: dict[str, str] = {}
+
+    for f in files:
+        root = _package_root_for(f, package_roots)
+        if root is None:
+            continue
+        chain = _ancestor_dirs(f, root)          # deepest first, ends with root itself
+        direct[chain[0]].add(f)                  # chain[0] = f's own dir (or root, if flat)
+        for d in chain:
+            depth_of[d] = _dir_depth(d, root)
+            root_of[d] = root
+
+    candidates = {d for d, fs in direct.items() if len(fs) >= 2}
+    hierarchy: dict[str, dict] = {}
+    for d in candidates:
+        root = root_of[d]
+        parent = next((a for a in _ancestors_of_dir(d, root) if a in candidates), None)
+        hierarchy[d] = {"depth": depth_of[d], "parent": parent, "root": root, "files": direct[d]}
+    return hierarchy
+
+
+def file_subtree_map(files: list[str],
+                     package_roots: list[str]) -> tuple[dict[str, str], dict[str, dict]]:
+    """file -> its deepest owning candidate subtree (its own directory if
+    that qualifies, else the nearest candidate ancestor) — the residue
+    attribution is inherent here: a file under a non-candidate descendant of
+    a candidate directory is attributed straight to that candidate, with no
+    separate adoption pass needed for it (unlike a candidate that was later
+    dropped by classification — see coupling.py's `_rehome_dropped`).
+
+    Returns `(file_subtree, hierarchy)`; `hierarchy` is `build_hierarchy`'s
+    output, returned alongside so a caller does not recompute it.
+    """
+    hierarchy = build_hierarchy(files, package_roots)
+    out: dict[str, str] = {}
+    for f in files:
+        root = _package_root_for(f, package_roots)
+        if root is None:
+            continue
+        for d in _ancestor_dirs(f, root):
+            if d in hierarchy:
+                out[f] = d
+                break
+    return out, hierarchy
 
 
 def propose(root: str, first_party: list[str], package_roots: list[str],
@@ -146,6 +242,9 @@ def propose(root: str, first_party: list[str], package_roots: list[str],
         return [], [], ["ast-grep unavailable or no rule matched — no code-marker components"]
 
     notes: list[str] = []
+    # Every candidate subtree at every depth (§2a) — a marker is attributed
+    # to the deepest one that contains it, not to a fixed depth.
+    file_subtree, hierarchy = file_subtree_map(sorted(fp), package_roots)
     # subtree -> role -> [matches]
     by_subtree: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     wires: dict[str, list[dict]] = defaultdict(list)
@@ -157,7 +256,7 @@ def propose(root: str, first_party: list[str], package_roots: list[str],
             continue
         ctype, conf, proposes = role
         for m in matches:
-            sub = _subtree_for(m["_rel"], package_roots)
+            sub = file_subtree.get(m["_rel"])
             if sub is None:
                 continue
             (by_subtree[sub][rule_id] if proposes else wires[sub]).append(m)
@@ -175,11 +274,15 @@ def propose(root: str, first_party: list[str], package_roots: list[str],
         ctype, conf, _ = MARKER_ROLES[top_rule]
         name = os.path.basename(sub)
         slug = f"code::{sub.replace('/', '::')}"
+        node = hierarchy.get(sub, {})
+        parent_dir = node.get("parent")
         components.append(Component(
             slug=slug, name=name, type=ctype,
             identity=Identity("module-path", sub),
-            files=[f"{sub}/**"], confidence=conf, confidence_level="Derived",
+            files=["**" if sub == "." else f"{sub}/**"], confidence=conf, confidence_level="Derived",
             perspective="logical",
+            parent_slug=f"code::{parent_dir.replace('/', '::')}" if parent_dir else "",
+            depth=node.get("depth", 0),
         ))
         for rule_id, ms in ranked:
             rtype, rconf, _ = MARKER_ROLES[rule_id]
