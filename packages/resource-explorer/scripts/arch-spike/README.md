@@ -1436,3 +1436,50 @@ overlapping data can share both.
 **The division of labour this suggests:** the owners' published doc is the ground truth; an LLM is a
 useful *candidate mapper* from declared components to directories; and **the mapping must be verified
 against the repo**, which is cheap — one directory listing settled it here.
+
+---
+
+**66. The same LLM, re-prompted for "most recent", got it right — which is the argument for
+verification, not the argument against the LLM.**
+
+Told the answer was stale, the model produced a second architecture that self-corrects along exactly
+the axis finding 65 identified: coordinators consolidated into `MixCoord`, `IndexNode` folded into
+`DataNode`, streaming decoupled into `StreamingNode`, Woodpecker as a diskless WAL option.
+
+**Checked against HEAD by two directory listings, it is 9 of 10 correct:**
+
+| claimed | reality |
+|---|---|
+| `internal/proxy`, `internal/coordinator`, `internal/core`, `internal/datanode`, `internal/querynodev2`, `internal/streamingnode` | exist |
+| `internal/distributed/mixcoord`, `internal/distributed/streamingnode` | exist |
+| `pkg/streaming` | exists |
+| `internal/mq` | **absent — it is `pkg/mq`** |
+
+The negative claims verify too: no `indexnode`, no `indexcoord`, no unversioned `querycoord`. And it
+now agrees with the official docs on the structural question — one coordinator, not four.
+
+**Three things follow, all of which sharpen finding 65 rather than reversing it.**
+
+1. **The residual error is a different kind.** Not a hallucinated component but a *misplaced layer*:
+   `mq` is real, in `pkg/` not `internal/`. The same table row cites `pkg/streaming` correctly. So
+   even a mapping that is right about every component can be wrong about where components live — and
+   locating components is precisely what a scope locator does (§6.0). A component-level answer that
+   is 100% correct can still yield glob-level ground truth that is not.
+
+2. **The model had the right answer available and produced the stale one by default.** Nothing about
+   the first response signalled low confidence. The only thing that changed was the prompt. An LLM
+   proposer is therefore *unstable across prompt phrasing* in a way that does not show up in its
+   output — which is the whole reason it cannot be the fixed thing others are measured against, and
+   is fine as an approach whose output is verified.
+
+3. **Verification is cheap enough that there is no excuse.** Two `contents/` API calls settled both
+   rounds. Any pipeline that accepts an LLM component→directory mapping should resolve every path
+   against the tree and report unresolvable ones, rather than silently carrying them into a score
+   where they present as detector misses.
+
+**Where this method stops.** Structural claims — does this path exist, is this directory still here —
+verify for free. Semantic claims — "active-standby", "absorbing the legacy IndexNode role", "stateless"
+— do not, and neither the official doc nor the repo listing settles them. The owners' published
+architecture is ground truth for *what the components are*; the repo is ground truth for *where they
+are*; and the LLM is a fast candidate mapper between the two whose every claim of the second kind
+must be resolved before use. Nothing here promotes it past that.
