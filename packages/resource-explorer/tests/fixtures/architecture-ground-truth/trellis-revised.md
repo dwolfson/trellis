@@ -156,16 +156,38 @@ as belonging with `routes`, while a human knows both are "the web tier". This is
 failure — it is a signal that **cohesion cannot recover a boundary that spans languages**, which is
 the same limit finding 54 found in Java's wildcards and finding 57 in Rust.
 
-### Unconfirmed — maintainer judgement needed
+### Answered — maintainer judgement, 2026-08-22
 
-Whether these are genuine components or merely directories is not recorded here, because nobody has
-said. The two that matter:
+**`Surveyors` is a parent component with five sub-components.** The sub-directories are *"subtypes
+of surveyors for particular classes of resource — so, like an integration connector, they would be
+components (or sub-components)."* `database`, `filesystem`, `file_classifier`, `sub_surveyors` and
+`arch_recovery` each handle a resource class, which is the same shape as an integration connector:
+one contract, many implementations, each a component in its own right.
 
-- Are `surveyors/database`, `surveyors/filesystem`, `surveyors/sub_surveyors` (etc.) **components**
-  in their own right, or implementation detail of one `Surveyors` component?
-- Should `Web backend` and `Web front-end` remain two components when the detector, working from
-  imports alone, cannot see the boundary between them?
+**`web` is one component — a web application — with two sub-components**, front-end and back-end.
+The original fixture recorded `Web backend` and `Web front-end` as two *flat siblings*. That was
+missing their parent.
 
-Neither blocks scoring — containment handles both readings — but answering them would make the
-9/13 mean something. **Provenance:** assistant (layout, from `git ls-files`); maintainer judgement
-outstanding on component status.
+**The criterion for the split is substitutability, and it is worth stating generally:**
+*"conceivably you could have different front-end running against the same backend."* Front-end and
+back-end are separate sub-components because they can **vary independently** — not because they sit
+in different directories, and not because they are written in different languages.
+
+That is an architectural test no structural signal captures. Directory layout, import cohesion and
+co-change all measure *how the code is arranged*; substitutability is about *what could be swapped
+without breaking the rest*, which is a fact about design intent. It belongs with §8.2c's other
+prose-only knowledge and is a good example of what a human contributes that no detector can.
+
+**Consequence for the generator, and it is not the one expected.** The detector made `web` its own
+node with `static` absorbed as residue — and against this model that is *closer to right than the
+flat fixture was*. It correctly saw a `web` parent; it failed only to keep `static` as a child
+rather than swallowing it. The 10/13 → 9/13 movement was therefore measuring the fixture's missing
+parent as much as the generator's error.
+
+**This is the first case where the hierarchy lets ground truth express something the flat form could
+not.** The flat fixture had no way to say "these two are siblings under one parent" — it could only
+list them as unrelated peers. That is an argument for the redesign independent of the mechanical one
+about depth rules.
+
+**Provenance:** maintainer (component status and the substitutability criterion); assistant (layout
+from `git ls-files`, and this transcription).
