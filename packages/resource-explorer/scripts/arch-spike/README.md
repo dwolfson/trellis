@@ -1202,3 +1202,43 @@ hierarchy, and it is now grounded in more than the three repos finding 56 had.
 truth. They **cannot** advance `Backlog.md`'s measurement re-check, which needs *pre-registered*
 ground truth per target — and writing that is the actual cost. Two or three of these with genuinely
 different shapes would be worth more than all twenty.
+
+**60. Finding 58's answer is to read the repo's README — the signal exists, is already in hand, and
+is not a path heuristic.**
+
+The maintainer's observation: *"the README says the intent is for a tutorial, which means it is not
+an architecture worth surveying."* That is the disambiguation, and it settles the design.
+
+**The signal needs no new resource.** `repo_arch_detect` already holds `zipball_root` — the source
+view — so the README is on disk while the step runs. Nothing needs fetching; it needs reading.
+
+**This is §5.2 step 0 and §8.2c, not a new mechanism.** The design already says distillation should
+read the repo's own architecture and deployment documentation before proposing boundaries, because
+prose is detector-invisible and LLM-readable. `ENVIRONMENT_DIVERGENCE.md` was the first instance
+(§8.2c); a README declaring "this is a workshop" is the same shape, and it answers a question no
+structural signal can: **is this repo software, or materials *about* software?**
+
+**Why the cheap alternatives are worse:**
+
+- **Path heuristics misfire in both directions.** `examples/`, `tutorial/`, `workshops/` — a real
+  product can live under any of them, and tutorial material frequently does not. It would trade a
+  false-positive problem for a differently-shaped one.
+- **Keyword-matching the README misfires too.** "Workshop" and "example" appear in the READMEs of
+  real software. The judgement is about *intent*, which is what distillation is for.
+
+**A deterministic signal worth pairing with it**, since it needs no LLM and no README: `workshops`
+produced 45 components of which **44 came from deployment artifacts and essentially none from
+source**. A repo whose entire proposed architecture comes from compose files, with no first-party
+code behind any of it, is structurally suspicious — a real deployment usually ships alongside the
+thing being deployed. That is measurable now and would flag the case cheaply even where no README
+states intent.
+
+**And the human stays in it.** Per the maintainer: *"might require a human to triage."* Agreed, and
+the portfolio note §5a's rules apply — non-blocking, skippable, with the consequence stated. The
+right shape is: read the README, propose an answer with confidence, and ask only when unsure. The
+question *"is this repo software, or a tutorial about software?"* takes a human two seconds and no
+detector can answer it.
+
+**Not implemented.** It depends on distillation, which is not built, and finding 58's cost is
+precision on non-software repos rather than a broken result on real ones. Recorded so the next
+attempt starts from the README rather than from a path list.
