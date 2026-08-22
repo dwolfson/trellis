@@ -267,6 +267,70 @@ def classify(manifest: dict) -> tuple[str | None, int, str]:
     return None, 0, "manifest declares neither entry point nor build system"
 
 
+def go_subsystems(root: str, files: list[str]) -> list[dict]:
+    """Go **package trees** — the component unit a Go repo actually has.
+
+    Added after finding 69, where Prometheus scored 0/11. Manifest identity is
+    structurally blind on Go: `go.mod` declares a *module*, and in a
+    single-module repo one module spans the entire architecture. Prometheus has
+    six `go.mod` files and not one corresponds to a component.
+
+    The unit that does correspond is the **top-level directory of a module**.
+    That is not fitted to Prometheus — it is Go's own layout convention (`cmd/`
+    for binaries, `internal/` for non-exported code, one directory per
+    subsystem), and it is what the import graph respects: Go imports name a
+    package by directory path, so directory boundaries *are* dependency
+    boundaries.
+
+    Two deliberate rules:
+
+    * **`cmd/` recurses one level.** Each `cmd/X` is a separate binary by
+      convention, so `cmd/prometheus` and `cmd/promtool` are two components,
+      not one.
+    * **Files directly at a module root are skipped.** They belong to the
+      module's own package, which is the whole module — the same
+      "workspace root is a container, not a component" rule the npm detector
+      already applies.
+
+    Nested modules are honoured: a directory owned by a deeper `go.mod` is
+    attributed to that module, not to the enclosing one.
+    """
+    import imports as _imports          # go_module_index lives with resolution
+    module_index = _imports.go_module_index(root, files)     # longest path first
+    if not module_index:
+        return []
+    go_files = [f for f in files if f.endswith(".go")]
+    if not go_files:
+        return []
+
+    # dir -> owning module, longest module dir first so nested modules win
+    by_dir = sorted(((mp, md) for mp, md in module_index), key=lambda t: len(t[1]), reverse=True)
+
+    found: dict[str, dict] = {}
+    for rel in go_files:
+        for mod_path, mod_dir in by_dir:
+            prefix = (mod_dir.rstrip("/") + "/") if mod_dir else ""
+            if prefix and not rel.startswith(prefix):
+                continue
+            inner = rel[len(prefix):]
+            parts = inner.split("/")
+            if len(parts) < 2:          # directly at the module root
+                break
+            depth = 2 if parts[0] == "cmd" and len(parts) > 2 else 1
+            sub = "/".join(parts[:depth])
+            d = f"{prefix}{sub}"
+            entry = found.setdefault(d, {
+                "dir": d, "module": mod_path, "subsystem": sub,
+                "import_path": f"{mod_path.rstrip('/')}/{sub}",
+                "files": [], "has_main": False,
+            })
+            entry["files"].append(rel)
+            break
+    for entry in found.values():
+        entry["has_main"] = any(os.path.basename(f) == "main.go" for f in entry["files"])
+    return sorted(found.values(), key=lambda e: e["dir"])
+
+
 def build_components(root: str, files: list[str]) -> tuple[list[Component], list[Evidence], list[str]]:
     components: list[Component] = []
     evidence: list[Evidence] = []
@@ -424,6 +488,44 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
                 locations=[Location(decl, line, f"{name}")],
                 confidence=75 if named else 65, confidence_level="Derived",
             ))
+
+    # Go package trees (§8.2 rung 3 — module path). See go_subsystems().
+    for g in go_subsystems(root, files):
+        ident = Identity("module-path", g["import_path"])
+        ctype = "Console Command" if g["has_main"] else "Software Library"
+        components.append(Component(
+            slug=_slug("go", g["subsystem"].replace("/", "-")),
+            name=g["subsystem"],
+            type=ctype,
+            identity=ident,
+            files=[f"{g['dir']}/**"],
+            # Lower than a manifest claim on purpose: the directory boundary is
+            # reliable, the *level* is a convention rather than a declaration,
+            # and the type is inferred from `main.go` alone.
+            confidence=55,
+            confidence_level="Derived",
+            proposed_by=["go-subsystem"],
+            perspective="logical",
+        ))
+        gslug = _slug("go", g["subsystem"].replace("/", "-"))
+        evidence.append(Evidence(
+            subject_kind="component", subject_slug=gslug,
+            assertion=f"component identity = module-path:{g['import_path']}",
+            detector="go-subsystem",
+            locations=[Location(f"{g['dir']}", 0,
+                                f"{len(g['files'])} .go files under module {g['module']}")],
+            confidence=55, confidence_level="Derived",
+        ))
+        evidence.append(Evidence(
+            subject_kind="component", subject_slug=gslug,
+            assertion=f"solutionComponentType = {ctype}",
+            detector="go-subsystem",
+            locations=[Location(f"{g['dir']}", 0,
+                                "main.go present" if g["has_main"] else "no main.go — library package tree")],
+            confidence=45, confidence_level="Derived",
+        ))
+    if not go_subsystems(root, files) and any(f.endswith(".go") for f in files):
+        notes.append("go files present but no go.mod resolved — no Go components")
 
     if gradle := gradle_modules(root, files):
         for g in gradle:

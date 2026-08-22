@@ -609,7 +609,26 @@ the pending 8–10 repo measurement re-check:
 
 ---
 
-### HIGH — Go support: the component-proposing stack is Python/Java/npm-only
+### DONE (spike only) — Go support: the component-proposing stack is Python/Java/npm-only
+
+**Resolved in the spike, finding 70: Prometheus 0/11 → 11/11, ARI 0.9936.** Four changes —
+`rules-imports/import-go.yml`, Go resolution in `imports.py`, a `go_subsystems()` proposer in
+`detectors.py`, and a name-collision fix in `score.py` that had been silently discarding 30 of 173
+components. Regression-checked: `trellis` 8/11 and `egeria-workspaces` 18/27 both unchanged.
+
+**Still open, and now the binding constraints:**
+
+* **Port it.** All of the above is in `scripts/arch-spike/`. `resource_explorer/surveyors/arch_recovery/`
+  has its own copies of `imports.py`/`detectors.py`/`coupling.py` and still has no Go support — and
+  still has never been scored, per the item already in this backlog.
+* **Precision, not recall.** 173 components proposed against 11 declared. The coupling proposer emits
+  146 untyped ones. Detection is no longer the bottleneck; distillation (§5.2, Phase 5) is.
+* **Go type inference.** `has_main` types `promql`, `util` and `documentation` as `Console Command`
+  because some `main.go` sits beneath them.
+* **Go cohesion needs recursive rollup subtrees.** Files in one Go package never import each other,
+  so `coupling.py`'s `import_cohesion` is structurally ~0 at package granularity.
+
+### (superseded) HIGH — Go support: the component-proposing stack is Python/Java/npm-only
 
 **Correction to the row above.** It previously said Go repos would be fine except that "coupling
 correctly reports `unverified`". Scoring Prometheus disproved that (spike finding 69): **three of the

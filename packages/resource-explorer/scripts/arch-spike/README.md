@@ -1682,3 +1682,105 @@ The first genuinely external test. Three of the four existing fixtures are ours,
 number was measured against a partition someone here wrote. This one was written by strangers in
 2018, and it found a whole-language blind spot that four repos of our own never surfaced — because
 all four are Python, Java and JavaScript.
+
+---
+
+**70. Go support: Prometheus goes 0/11 → 11/11. Two of the four changes were in the measuring
+instrument, not the detector.**
+
+Finding 69 left two HIGH items. This is the first: read Go package structure.
+
+| change | what |
+|---|---|
+| `rules-imports/import-go.yml` | matches `import_spec` — one node per import, verified against a real parse tree before use (finding 19 discipline): 6 matches on a file with plain, parenthesised, aliased and blank-identifier forms, where `import_declaration` gave 2 |
+| `imports.py` | `go_module_index` / `resolve_go_package` / `_build_go_edges` — Go resolution is the *simplest* of the three languages, because an import path is absolute and module-qualified: no per-file search path (Python), no global type index (Java) |
+| `detectors.py` | `go_subsystems()` — the missing **proposer** |
+| `score.py` | a name-collision fix, see below |
+
+**Result on Prometheus, against ground truth we did not write:**
+
+| measure | before | after |
+|---|---|---|
+| strict containment (headline) | **0/11** | **11/11** |
+| ARI | 0.0 | **0.9936** |
+| NMI | 0.0 | **0.9894** |
+| files scanned for imports | 0 | 727 Go files, 6541 imports, 1736 first-party resolved |
+
+Verified independently rather than trusted: **10 exact file-set nodes** (`cmd/prometheus`, `config`,
+`discovery`, `scrape`, `storage`, `tsdb`, `promql`, `rules`, `notifier`, `web`) plus **one union of
+refinements** (`Remote storage` = `remote` + `prometheusremotewrite` + `azuread` + testdata).
+
+### The proposer rule, and why it is not fitted to Prometheus
+
+**A Go component is the top-level directory of a module**, with two carve-outs: `cmd/` recurses one
+level (each `cmd/X` is a separate binary by convention), and files directly at a module root are
+skipped (they are the module's own package — the same "workspace root is a container, not a
+component" rule the npm detector already applies). Nested modules win over enclosing ones.
+
+That is Go's own layout convention, and crucially **it is what the import graph respects**: a Go
+import names a package *by directory path*, so directory boundaries *are* dependency boundaries.
+Contrast Python, where a package boundary and a directory boundary are only loosely related.
+
+### Edge weighting: a Go import names a package, not a file
+
+Elsewhere weight means "how many symbols cross this edge". A Go import names a whole package, so each
+fanned-out file edge carries `w = 1/len(targets)`. Without it a 40-file package would outweigh a
+2-file package twentyfold on file count alone — and since *every* Go import is package-level, the
+distortion would be universal rather than occasional. Sanity check: aggregated to top-level
+directories the fractions sum back to whole numbers (`tsdb -> model` 136.0, `storage -> tsdb` 36.0),
+and the shape is recognisably Prometheus.
+
+### The measuring instrument was wrong twice
+
+**(a) The scorer silently discarded 30 of 173 components.** `score.py` built its file map as
+`{c["name"]: c["files"]}`. Names are **not unique** — the Go subsystem proposer and the coupling
+subtree proposer both name a component after the directory, so `config` collided with `config`, and
+the dict comprehension kept only the last. On Prometheus that dropped 30 components, *including
+every Go component whose glob was the correct one*: the ground truth's `Configuration` (224 files)
+was being compared against a component named `config` that expanded to **6**.
+
+The failure presented as **three ground-truth components the detector had in fact recovered exactly**
+— 8/11 where the truth was 11/11. Slugs are unique by construction (173/173); names are 143/173.
+Same family as findings 12/24/51: **one identifier serving two purposes, failing silently as missing
+data rather than as an error.**
+
+**(b) `storage/*.go` does not mean what `git ls-files` says it means.** `git ls-files 'storage/*.go'`
+returns **65** files — git pathspec `*` crosses `/`. `validate.expand`, using glob semantics, returns
+**20**. Twenty is the fixture's intent (files directly in `storage/`, with `storage/remote/` its own
+component), so the ground truth is right and an earlier hand-count in the fixture's drafting notes
+was wrong. Worth stating because a glob that means two different things depending on who expands it
+is precisely the recurring bug this project keeps finding.
+
+### Regression check — the reason to trust the jump
+
+The scorer change touches **every** target, so all three prior fixtures were re-scored under both
+keyings:
+
+| target | old key | new key |
+|---|---|---|
+| `trellis` | 8/11 | **8/11** |
+| `egeria-workspaces` (T1) | 18/27 | **18/27** — the pre-registered target still holds |
+| `egeria` | 0/0 | 0/0 |
+
+Only `trellis`'s ARI moved (0.4235 → 0.4142), and it moved *because* 3 more files are now assigned
+(234 vs 231) — the same collision fix recovering data. A slightly lower ARI over more covered files
+is the honest trade, not a regression.
+
+### What this does NOT fix — stated plainly
+
+1. **Precision is bad.** 173 components proposed against 11 declared. Recall is perfect; the
+   coupling proposer contributes 146 untyped (`?`) components. §2a says finding more structure must
+   not score *worse*, and it does not — but "173 components" is not a usable answer for a human, and
+   distillation (§5.2, Phase 5) is now the binding constraint rather than detection.
+2. **Type inference is noisy.** `promql`, `util` and `documentation` are typed `Console Command`
+   because *some* `main.go` exists beneath them. The `has_main` heuristic is too weak, and its
+   confidence is set to 45 for that reason.
+3. **Go package-level import cohesion is structurally ~0**, because *files in the same Go package
+   never import each other* — an import is only ever cross-package. The small nonzero values
+   (`promql` 0.0397) come entirely from external `_test` packages importing their own package.
+   `coupling.py`'s `import_cohesion` is therefore not meaningful at Go package granularity and would
+   need recursive rollup subtrees to be. Not fixed; the proposer does not depend on it.
+4. **None of this is in the package yet.** These changes are in `scripts/arch-spike/` only.
+   `resource_explorer/surveyors/arch_recovery/` carries its own copies of `imports.py`,
+   `detectors.py` and `coupling.py`, and the ported implementation still has no Go support and still
+   has never been scored.

@@ -432,6 +432,146 @@ def source_roots(root: str, first_party: list[str]) -> list[str]:
     return sorted(roots, key=len, reverse=True)
 
 
+# ── Go ──────────────────────────────────────────────────────────────────
+#
+# Go resolution is the *simplest* of the three, and for a reason worth stating:
+# an import path is absolute and module-qualified (`github.com/o/r/scrape`), so
+# there is no per-file search path to walk (Python) and no global type index to
+# build (Java). The `go.mod` module path plus the import string names the target
+# directory outright.
+#
+# The one real difference is granularity: **Go imports a package (a directory),
+# not a file.** So one import fans out to every `.go` file in that directory,
+# exactly as a Java wildcard import does — `resolve_go_package` returns a list
+# for the same reason `resolve_java_wildcard` does.
+
+GO_MOD_MODULE = re.compile(r"^\s*module\s+(\S+)", re.M)
+
+
+def _parse_go_snippet(text: str) -> tuple[str, str] | None:
+    """`(import_path, kind)` from one `import_spec` node.
+
+    Handles every spec form: plain (`"fmt"`), aliased (`stdlog "log"`), blank
+    side-effect (`_ "net/http/pprof"`) and dot (`. "pkg"`). All four are real
+    dependencies and all four are kept — a blank import is a side-effect
+    dependency, which is architecturally *more* interesting than a plain one,
+    not less.
+    """
+    m = re.search(r'"([^"]+)"', text)
+    if not m:
+        return None
+    head = text[:m.start()].strip()
+    kind = {"_": "blank", ".": "dot"}.get(head, "alias" if head else "plain")
+    return m.group(1), kind
+
+
+def go_module_index(root: str, first_party: list[str]) -> list[tuple[str, str]]:
+    """`[(module_path, dir)]` from every first-party `go.mod`, longest module
+    path first so a nested module wins over the repo-root one.
+
+    A repo may declare several modules — Prometheus declares six — and only the
+    root one usually spans the architecture (finding 69). Resolution needs them
+    all, because an import into a nested module must land in that module's
+    directory, not at the path the root module's prefix would imply.
+    """
+    out: list[tuple[str, str]] = []
+    for rel in first_party:
+        if os.path.basename(rel) != "go.mod":
+            continue
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        m = GO_MOD_MODULE.search(text)
+        if m:
+            out.append((m.group(1).rstrip("/"), os.path.dirname(rel)))
+    return sorted(out, key=lambda t: len(t[0]), reverse=True)
+
+
+def go_files_by_dir(fp_go: list[str]) -> dict[str, list[str]]:
+    """`dir -> [.go files directly in it]`. Non-recursive on purpose: a Go
+    package is exactly one directory, and subdirectories are separate packages
+    that must be imported by their own paths."""
+    idx: dict[str, list[str]] = {}
+    for rel in fp_go:
+        idx.setdefault(os.path.dirname(rel), []).append(rel)
+    return idx
+
+
+def resolve_go_package(path: str, module_index: list[tuple[str, str]],
+                       by_dir: dict[str, list[str]]) -> list[str]:
+    """Every first-party `.go` file in the imported package, or `[]` for
+    stdlib and third-party imports (which have no module prefix match and are
+    counted as external, per the Python/Java convention)."""
+    for mod_path, mod_dir in module_index:
+        if path == mod_path:
+            rest = ""
+        elif path.startswith(mod_path + "/"):
+            rest = path[len(mod_path) + 1:]
+        else:
+            continue
+        d = os.path.normpath(os.path.join(mod_dir, rest)) if rest else mod_dir
+        if d == ".":
+            d = ""
+        hits = by_dir.get(d)
+        if hits:
+            return hits
+    return []
+
+
+def _build_go_edges(root: str, fp_set: set[str], first_party: list[str]) -> tuple[
+        list[dict], Counter, list[dict], int, int, int]:
+    """Go counterpart to `_build_python_edges` / `_build_java_edges` — same
+    return shape, so `build_graph` still needs no language branch.
+
+    **Edge weighting.** Elsewhere weight means "how many symbols cross this
+    edge" (three `from x import a/b/c` lines are one architectural edge of
+    weight 3). A Go import names a whole package, so its faithful analogue is
+    weight **1 per import statement, divided across the package's files** — each
+    fanned-out edge carries `w = 1/len(targets)`. Without this, importing a
+    40-file package would outweigh importing a 2-file package twentyfold purely
+    because of file counts, and since *every* Go import is package-level the
+    distortion would be universal rather than occasional, silently skewing every
+    cohesion number computed downstream.
+
+    Note `resolved_count` here counts **imports**, matching the
+    `resolved_import_count` field name. `_build_java_edges` counts *edges* for
+    the same field, so a Java wildcard over-counts; that is pre-existing and
+    left alone rather than quietly changed under a Go commit.
+    """
+    matches = _scan_statements(root, fp_set, "import-go.yml")
+    module_index = go_module_index(root, first_party)
+    by_dir = go_files_by_dir(sorted(fp_set))
+
+    edges: list[dict] = []
+    external_by_file: Counter = Counter()
+    parse_failures: list[dict] = []
+    resolved_count = 0
+    unresolved_count = 0
+
+    for m in matches:
+        src = m["_rel"]
+        line = m.get("range", {}).get("start", {}).get("line", 0) + 1
+        parsed = _parse_go_snippet(m.get("text") or "")
+        if parsed is None:
+            parse_failures.append({"file": src, "line": line, "text": (m.get("text") or "")[:120]})
+            continue
+        path, kind = parsed
+        targets = [t for t in resolve_go_package(path, module_index, by_dir) if t != src]
+        if not targets:
+            external_by_file[src] += 1
+            unresolved_count += 1
+            continue
+        resolved_count += 1
+        share = 1.0 / len(targets)
+        for target in targets:
+            edges.append({"source": src, "target": target, "kind": kind,
+                          "line": line, "raw": path, "language": "go", "w": share})
+
+    return edges, external_by_file, parse_failures, resolved_count, unresolved_count, len(matches)
+
+
 def _build_python_edges(root: str, fp_set: set[str], roots: list[str]) -> tuple[
         list[dict], Counter, list[dict], int, int, int]:
     """Returns (edges, external_by_file, parse_failures, resolved_count,
@@ -534,7 +674,8 @@ def _build_java_edges(root: str, fp_set: set[str], first_party: list[str]) -> tu
 def build_graph(root: str, first_party: list[str]) -> dict:
     fp_py = sorted(f for f in first_party if f.endswith(".py"))
     fp_java = sorted(f for f in first_party if f.endswith(".java"))
-    fp_py_set, fp_java_set = set(fp_py), set(fp_java)
+    fp_go = sorted(f for f in first_party if f.endswith(".go"))
+    fp_py_set, fp_java_set, fp_go_set = set(fp_py), set(fp_java), set(fp_go)
     roots = source_roots(root, first_party)
     ast_available = _binary() is not None
 
@@ -543,12 +684,15 @@ def build_graph(root: str, first_party: list[str]) -> dict:
     (java_edges, java_ext, java_fail,
      java_resolved, java_unresolved, java_matched) = _build_java_edges(root, fp_java_set, first_party)
 
-    edges = py_edges + java_edges
-    external_by_file: Counter = py_ext + java_ext
-    parse_failures = py_fail + java_fail
-    resolved_count = py_resolved + java_resolved
-    unresolved_count = py_unresolved + java_unresolved
-    matched_count = py_matched + java_matched
+    (go_edges, go_ext, go_fail,
+     go_resolved, go_unresolved, go_matched) = _build_go_edges(root, fp_go_set, first_party)
+
+    edges = py_edges + java_edges + go_edges
+    external_by_file: Counter = py_ext + java_ext + go_ext
+    parse_failures = py_fail + java_fail + go_fail
+    resolved_count = py_resolved + java_resolved + go_resolved
+    unresolved_count = py_unresolved + java_unresolved + go_unresolved
+    matched_count = py_matched + java_matched + go_matched
 
     # de-duplicate identical (source, target) pairs but keep a weight —
     # a file importing another via 3 separate `from x import a/b/c` lines
@@ -563,7 +707,7 @@ def build_graph(root: str, first_party: list[str]) -> dict:
         w = weighted.setdefault(key, {"source": e["source"], "target": e["target"],
                                       "kind": e["kind"], "language": e["language"],
                                       "weight": 0, "lines": []})
-        w["weight"] += 1
+        w["weight"] += e.get("w", 1)
         if len(w["lines"]) < 5:
             w["lines"].append(e["line"])
 
@@ -571,6 +715,7 @@ def build_graph(root: str, first_party: list[str]) -> dict:
         "root": root,
         "python_files_scanned": len(fp_py),
         "java_files_scanned": len(fp_java),
+        "go_files_scanned": len(fp_go),
         "source_roots": roots,
         "ast_grep_available": ast_available,
         "import_statements_matched": matched_count,
@@ -601,7 +746,8 @@ def main() -> int:
     graph["target"] = target
     graph["census"] = census.as_dict()
 
-    scanned = graph["python_files_scanned"] + graph["java_files_scanned"]
+    scanned = (graph["python_files_scanned"] + graph["java_files_scanned"]
+               + graph["go_files_scanned"])
     if not graph["ast_grep_available"]:
         print("WARNING: ast-grep binary not found — zero edges is a broken "
               "extraction, not a real zero (README finding 19)", file=sys.stderr)
@@ -617,6 +763,7 @@ def main() -> int:
 
     print(f"wrote {path}")
     print(f"  {graph['python_files_scanned']} python files, {graph['java_files_scanned']} java files, "
+          f"{graph['go_files_scanned']} go files, "
           f"{graph['import_statements_matched']} import statements matched")
     print(f"  {graph['edge_count']} distinct file->file edges "
           f"({graph['resolved_import_count']} resolved imports, "

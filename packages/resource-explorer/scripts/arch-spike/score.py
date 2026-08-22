@@ -358,7 +358,19 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
         scoped_components = [c for c in scoped_components if c.get("perspective") == perspective]
 
     det_names_all = {c["name"] for c in scoped_components}
-    det_files_by_name = {c["name"]: c["files"] for c in scoped_components if c["files"]}
+    # Keyed by SLUG, not name. Names are not unique — two proposers can name a
+    # component after the same directory (`config` from the Go subsystem
+    # proposer and `config` from the coupling subtree proposer), and a dict
+    # comprehension over names silently keeps only the last. On Prometheus that
+    # discarded 30 of 173 components, including every Go component whose glob
+    # was the *correct* one, and the loss presented as three ground-truth
+    # components the detector had in fact recovered exactly.
+    #
+    # Same family as findings 12/24/51: one identifier serving two purposes,
+    # failing silently as missing data rather than as an error. Slugs are
+    # unique by construction; the human name is only needed for display, and
+    # the matched/unmatched lists are reported with ground-truth names anyway.
+    det_files_by_name = {c["slug"]: c["files"] for c in scoped_components if c["files"]}
     det_file_map = file_assignment(det_files_by_name, root, tracked) if root and tracked is not None else {}
 
     out: dict = {
