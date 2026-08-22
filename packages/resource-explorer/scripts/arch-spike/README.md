@@ -1101,3 +1101,44 @@ Both failures were previously read as separate problems — one a "flat repo" li
 "Java scale" observation. They are one cause: **the candidate generator assumes a directory depth
 rather than deriving one.** That reframes the flat-repo work from a special case into the general
 fix, and gives it a second target to be validated against instead of one.
+
+**56. A single depth rule does not fit the three repo shapes — measured, not assumed. The answer is
+a hierarchy, which the target model already has.**
+
+Finding 55 established that `_subtree_for`'s fixed depth is one bug with two faces. The obvious fix
+— generate candidates at *every* depth, then prune parent/child pairs by a relative test — was
+tried and **does not work**. Candidates at all depths (directories holding ≥2 source files):
+
+| target | all depths | after a parent-vs-children prune | verdict |
+|---|---|---|---|
+| `trellis` | 35 | **4** | far too aggressive — the shipped fixed-depth rule gets 13/13 here |
+| `egeria-workspaces` | 6 | **3** | non-zero at last (the flat case yields candidates), but thin |
+| `egeria` | 2,434 | **619** | still unusable at 231 Gradle modules |
+
+The prune kept a parent when its own edges — those not internal to any single child — matched or
+beat its largest child's. That is a defensible test and it fails in *both* directions at once: too
+coarse on a Python monorepo, nowhere near coarse enough on Gradle. Trying a different constant
+would move the failure, not remove it, which is the same trap modularity set in finding 33.
+
+**Why no single depth can work.** The three shapes disagree about what a component *is*, and each
+is right about itself: a Python workspace member is a component, a flat app is one component, and a
+Gradle module contains a package tree several levels deep. A rule that outputs one depth must be
+wrong for at least two of them.
+
+**The answer already exists in the target model.** Design §3.3a: components nest via
+`SolutionComposition`, and Egeria models that natively — a `SolutionComponent` can contain
+`SolutionComponent`s. So the generator should stop choosing a depth and **emit the hierarchy**,
+tagged with depth and parent, letting the consumer take the level it needs.
+
+That also lines up with `approach-portfolio-model.md` §2's sufficiency reframe, which is the
+stronger argument: **Discovery wants coarse and Analysis wants fine**, so "which depth?" was never a
+question with one answer. It is a question about what the stage will do with the partition.
+
+**Not implemented.** It changes the scoring model too — the pre-registered ground truth is flat, so
+a hierarchical proposal cannot be scored against it without deciding how a nested proposal counts
+against a flat expectation. That decision should be made deliberately, not slipped in. Recorded here
+so the next attempt starts from the hierarchy rather than re-running the depth experiment.
+
+**What was salvaged.** The flat case is no longer structurally invisible: at multiple depths
+`egeria-workspaces` yields 6 candidates where the fixed rule yielded zero. That half of finding 55
+has a working mechanism whenever the hierarchy question is settled.
