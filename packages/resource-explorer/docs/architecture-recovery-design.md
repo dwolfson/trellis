@@ -861,6 +861,80 @@ the criterion falsifiable by requiring the expected answer to be written down be
 and one dissenting is a finding. All three disagreeing means §5.1 needs rethinking before anything is
 built.
 
+### 5.5a Documentation is a source, a *dated* source, and a signal — three separate uses
+
+The Milvus ground-truth exercise (spike README findings 65–67) produced three lessons about project
+documentation. They are not one lesson: each puts docs to a different use, and each lands in a
+different part of this design.
+
+**(a) Always look for documentation first — including documentation that is not in the repo.**
+
+§5.2's step 0 already reads in-repo docs. The Milvus case shows that is not sufficient: the
+authoritative logical architecture — four layers, named components, explicitly labelled *logical* —
+is published at `milvus.io/docs/architecture_overview.md`, **not** in `milvus-io/milvus`. A survey
+that only reads the repo would miss the single best description of the system it is trying to
+recover. The repo does carry `docs/` (a `README.md`, `design-docs/`, `agent_guides/`, `archive/`),
+but the front-door architecture page lives on the project's doc site.
+
+So step 0 needs an outward hop: resolve the project's documentation site (from `README.md` links,
+repository metadata, or the package manifest homepage) and treat the published architecture page as a
+first-class input. This is a fetch, and it is the right kind — cheap, once, and it can save every
+expensive tier downstream. Consistent with CLAUDE.md rule 17: zero-fetch is a proxy for cheap, and
+here the measurement wins.
+
+**(b) A prose architecture describes a *version*, and the version is recoverable from the repo.**
+
+Documentation and code drift, and prose rarely carries a version stamp. But **every path a document
+cites is dateable**: `GET /repos/{o}/{r}/commits?path={p}&per_page=1` returns the last commit that
+touched it, and for a path that no longer exists that is effectively its deletion date.
+
+Two bounds follow, each one cheap call per path:
+
+- **Upper bound on vintage** — the newest of the now-dead paths a document cites. A description
+  naming `internal/indexcoord` (last touched 2023-01), `internal/querynode` (2023-04),
+  `internal/mq` (2024-06) and `internal/indexnode` (2025-03) cannot be describing anything after
+  ~March 2025.
+- **Lower bound on blind spot** — the churn of live paths it omits. The same description omitted
+  `internal/streamingnode` and `internal/distributed/mixcoord`, both committed to within the last
+  fortnight.
+
+Together those dated the document as roughly seventeen months stale, from four API calls and without
+reading a line of Go.
+
+This applies symmetrically. It is a check on a maintainer's doc, on an LLM's proposal, **and on our
+own output** — a recovered blueprint that cites paths deleted two years ago is stale in exactly the
+same measurable way, and §5.4's evidence records are the natural place to carry the dates.
+
+**(c) Documentation health is itself an architectural signal — arguably a strong one.**
+
+Whether a project documents its architecture, and whether that documentation is *current*, is
+evidence about the project independent of anything the docs say. The gradient is roughly:
+
+| observation | reading |
+|---|---|
+| architecture documented, docs churn tracks code churn | mature and maintained — the strongest state |
+| documented, docs lag code by a long interval | back-level docs; the project has moved and the description has not |
+| documented once, no longer touched | abandoned documentation — a health signal about the project, not just the doc |
+| stale docs *archived* rather than left in place | deliberate curation; strictly stronger than simply having docs |
+| no architecture documentation at all | either immature, or small enough not to need one — needs the maturity signals to disambiguate |
+
+Milvus sits at the top of that table: `docs/` last touched 2026-08-21 against `internal/` at
+2026-08-22 — a one-day lag — and a `docs/archive/` that is itself actively maintained.
+
+Three consequences for this design:
+
+1. **This is a Discovery-tier signal, not an Analysis one.** It reads commit dates over two path
+   sets. It costs nothing and it gates the expensive tiers, which is exactly rule 17's test.
+2. **It feeds triage, which we already know we need.** Spike finding 58's false positives were
+   settled by a human reading a README that said the repo's intent was a tutorial. Doc health is the
+   measurable half of the same judgement: *is there an architecture here worth recovering, and does
+   the project believe there is?*
+3. **Do not turn it into a score.** A marketing-maintained doc site can coexist with rotting
+   in-repo docs, and a small, stable, mature library may document lightly on purpose. Report the
+   observation and its dates as evidence (§5.4); let the confidence axes (§3.3c) and a human carry
+   the interpretation. Recording "docs lag code by N days" is defensible; ranking projects by it is
+   not.
+
 ### 5.6 Tooling — what to adopt, and what it costs
 
 Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no

@@ -1483,3 +1483,45 @@ verify for free. Semantic claims — "active-standby", "absorbing the legacy Ind
 architecture is ground truth for *what the components are*; the repo is ground truth for *where they
 are*; and the LLM is a fast candidate mapper between the two whose every claim of the second kind
 must be resolved before use. Nothing here promotes it past that.
+
+---
+
+**67. Three lessons from the Milvus exercise — and one of them is a new signal, not a new practice.**
+
+The maintainer drew three lessons. They are distinct, and only two are about validation; the third is
+a capability. All three are now design doc §5.5a.
+
+**(a) Always look for documentation — including documentation outside the repo.** §5.2 step 0 already
+reads in-repo docs, and Milvus shows that is not enough: the authoritative logical architecture lives
+at `milvus.io`, not in `milvus-io/milvus`. The repo's own `docs/` holds a README, `design-docs/`,
+`agent_guides/` and `archive/` — but not the front-door architecture page. Step 0 needs an outward
+hop from README links or manifest homepage.
+
+**(b) The version of the doc and the version of the code both matter — and the correlation is
+mechanical.** Verified here: `commits?path={p}&per_page=1` dates any path, and for a deleted path
+that date is effectively its removal.
+
+| path cited by the stale description | last commit |
+|---|---|
+| `internal/indexcoord` | 2023-01-06 |
+| `internal/querynode` | 2023-04-11 |
+| `internal/mq` | 2024-06-25 |
+| `internal/indexnode` | 2025-03-13 |
+| *omitted:* `internal/streamingnode` | 2026-08-13 |
+| *omitted:* `internal/distributed/mixcoord` | 2026-08-20 |
+
+**Vintage is bounded above by the newest dead path cited; blind spot is bounded below by the churn of
+live paths omitted.** That dated the description at ~17 months stale from four API calls, without
+reading any Go. It applies to a maintainer's doc, to an LLM's proposal, and to our own recovered
+blueprints equally.
+
+**(c) Documentation health is an architectural signal in its own right.** Not what the docs say —
+whether they exist, and whether they are kept current. Milvus: `docs/` last touched 2026-08-21,
+`internal/` 2026-08-22. A one-day lag, plus a `docs/archive/` that is itself maintained — they retire
+stale docs rather than leaving them to mislead, which is a stronger marker than merely having docs.
+
+This is Discovery-tier by rule 17's test (two commit-date lookups, gates the expensive tiers), and it
+is the measurable half of the triage judgement finding 58 needed a human for: *is there an
+architecture here worth recovering?* It should be reported as dated evidence (§5.4), **not** turned
+into a ranking — a maintained doc site can coexist with rotting in-repo docs, and a small stable
+library may document lightly on purpose.
