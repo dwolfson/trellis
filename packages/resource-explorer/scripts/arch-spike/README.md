@@ -1242,3 +1242,56 @@ detector can answer it.
 **Not implemented.** It depends on distillation, which is not built, and finding 58's cost is
 precision on non-software repos rather than a broken result on real ones. Recorded so the next
 attempt starts from the README rather than from a path list.
+
+---
+
+**61. The revised fixture was prose nothing read — and consuming it shows ARI is now the wrong
+headline measure.**
+
+`trellis-revised.md` had recorded, over two days, the maintainer's decisions on residue ownership,
+three directories of misplaced code, and the component hierarchy. **No tool read any of it.** Same
+defect as a guard writing a field no consumer reads: a decision filed is not a decision used.
+
+`score.py` now applies `{target}-revised.md` as a read-time delta over the base fixture — additional
+globs for existing components, wholly new components, and parent/child links. The base file is never
+mutated, so pre-registration holds. Two parser bugs surfaced doing it: `- **Sub-components:**`
+followed by an indented list captured **nothing** (continuation bullets were hardcoded to `files`),
+and a prose heading — *"Sub-structure — which components can be nested at all"* — matched the
+section rule `"component" in title` and became a phantom component.
+
+**Applying a correction the maintainer endorsed made ARI worse**, and that is the finding:
+
+| | base fixture | revised |
+|---|---|---|
+| strict exact containment | 10/13 | 10/13 |
+| **ARI** | **0.9785** | **0.9259** |
+
+Nothing got worse. The revision assigns `configdata` and `github` to `Core`, and `dashboard` to
+`Web backend` — and the detector proposes each of those as a **component in its own right**:
+
+| ground-truth component | detector nodes *inside* it |
+|---|---|
+| `Core` (37 files) | `configdata`, `github` |
+| `Web backend` (26 files) | `dashboard` |
+
+So the corrected fixture is *coarser* exactly where the detector is *finer*. **ARI reads that as
+disagreement**, because it compares two flat partitions and has no notion of one refining the other.
+
+**Per §2a that is precisely not an error.** A node inside a matched component is a refinement.
+ARI cannot express that, so it now measures the wrong thing — the same way component-set-by-name did
+(finding 21), and for the same underlying reason: **a measure that predates a design decision will
+quietly contradict it.**
+
+**Consequence: containment becomes the headline, ARI becomes a projected-level diagnostic.** ARI
+still means something once both sides are flattened to one declared level, and every historical
+number stays comparable there. It should not be quoted as a top-line score on a hierarchy.
+
+**62. A parent defined only by its children has no file set, so file-based scoring cannot see it.**
+`Web application` is the maintainer's parent over `Web backend` and `Web front-end`. It owns no
+files directly — its extent is the union of its children, 39 files. No detector node matches that
+union exactly; the closest is the `web` code-marker node at Jaccard **0.73**.
+
+That is not a scoring bug, it is a modelling consequence: **a component can be real and still have
+no files of its own.** Egeria models it fine (`SolutionComposition`, §3.3a), and containment can
+score it by unioning children — but any measure that starts from "the files this component owns"
+will silently skip it, which is how a genuine component becomes invisible rather than wrong.

@@ -85,6 +85,69 @@ def provenance_tier(comp: dict) -> str:
     return "maintainer" if p.startswith("maintainer") else "assistant"
 
 
+
+def load_revision(gt_name: str) -> dict | None:
+    """`{target}-revised.md`, if one exists — the sanctioned way to correct a
+    pre-registered fixture without editing it (fixtures README rule 3).
+
+    This existed as prose that **nothing read** for two days: the maintainer's
+    decisions about residue ownership, misplaced code and component hierarchy
+    were recorded and then ignored by every consumer. That is the same defect as
+    a guard writing a field no reader consumes — a decision filed is not a
+    decision used.
+    """
+    path = os.path.join(GT_DIR, f"{gt_name}-revised.md")
+    return validate.parse(path) if os.path.exists(path) else None
+
+
+def apply_revision(doc: dict, revision: dict | None) -> tuple[dict, list[str]]:
+    """Merge a revision delta onto the base fixture. Returns (doc, notes).
+
+    Three kinds of entry, all additive — a revision never removes:
+
+      * `Additional files:`  extra globs for a component the base already has
+      * `New component: yes` a component the base lacks entirely (e.g. a parent
+                             the flat fixture had no way to express)
+      * `Sub-components:`    parent/child links, by component name or by path
+
+    The base file is never mutated on disk; this is a read-time merge.
+    """
+    if not revision:
+        return doc, []
+    merged = {k: (dict(v) if isinstance(v, dict) else v) for k, v in doc.items()}
+    merged["components"] = {n: dict(c) for n, c in doc["components"].items()}
+    notes: list[str] = []
+
+    for name, rev in revision.get("components", {}).items():
+        if validate.PLACEHOLDER.search(name):
+            continue
+        extra = rev.get("additional files")
+        subs = rev.get("sub-components")
+        base = merged["components"].get(name)
+
+        if base is None:
+            merged["components"][name] = {
+                "type": rev.get("type"), "files": [], "identity": "",
+                "notes": rev.get("notes", ""),
+            }
+            base = merged["components"][name]
+            notes.append(f"revision adds component {name!r}")
+
+        if extra:
+            for g in (extra if isinstance(extra, list) else [extra]):
+                if g and g not in base["files"]:
+                    base["files"].append(g)
+            notes.append(f"revision extends {name!r} by "
+                         f"{len(extra) if isinstance(extra, list) else 1} glob(s)")
+
+        if subs:
+            kids = subs if isinstance(subs, list) else [subs]
+            base["sub_components"] = [validate.unquote(k) for k in kids]
+            notes.append(f"revision gives {name!r} {len(kids)} sub-component(s)")
+
+    return merged, notes
+
+
 # ── component-set agreement ─────────────────────────────────────────────
 
 def component_set_score(gt_names: set[str], det_names: set[str]) -> dict:
@@ -138,6 +201,7 @@ def file_partition_score(gt_files: dict[str, str], det_files: dict[str, str]) ->
 def score(target: str, gt_name: str, root_override: str | None) -> dict:
     ir = load_ir(target)
     doc = load_gt(gt_name)
+    doc, revision_notes = apply_revision(doc, load_revision(gt_name))
     real = real_components(doc)
 
     perspective = doc["meta"].get("perspective", "logical").strip().lower()
@@ -199,6 +263,7 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
     det_file_map = file_assignment(det_files_by_name, root, tracked) if root and tracked is not None else {}
 
     out: dict = {
+        "revision_applied": revision_notes,
         "target": target, "gt_file": f"{gt_name}.md", "perspective": perspective,
         "diagnostic_only": diagnostic_only, "root": root,
         "in_scope_tracked": len(tracked) if tracked is not None else None,

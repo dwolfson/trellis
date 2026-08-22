@@ -93,8 +93,13 @@ def parse(path: str) -> dict:
             # Any section whose title contains "component" collects components,
             # so a file may group them (e.g. "Optional runtime add-ons" vs the
             # main set) without the parser losing half the partition.
+            # Deliberately stricter than `"component" in title`: a prose heading such as
+            # "Sub-structure — which components can be nested at all" matched that and turned
+            # narrative subheadings into phantom components.
             section = ("blueprints" if title.startswith("blueprint")
-                       else "components" if "component" in title or "add-on" in title
+                       else "components" if (title.startswith("component")
+                                             or title.startswith("assignment")
+                                             or "add-on" in title)
                        else "unassigned" if title.startswith("unassigned")
                        else "excluded" if title.startswith("excluded")
                        else None)
@@ -132,8 +137,16 @@ def parse(path: str) -> dict:
                     # score.py reads `provenance` off this without a second
                     # parser (README.md: "score.py consumes the same parse").
                     comp[attr] = value
-            elif indented and attr == "files":
-                comp["files"].append(value)
+            elif indented and attr:
+                # An indented bullet continues whatever label opened above it. This used to be
+                # hardcoded to `files`, so `- **Sub-components:**` followed by a list silently
+                # captured nothing — the revision file recorded a decision no reader could see.
+                if attr == "files":
+                    comp["files"].append(value)
+                else:
+                    cur = comp.get(attr)
+                    comp[attr] = (cur + [value]) if isinstance(cur, list) else (
+                        [value] if not cur else [cur, value])
         elif section in ("unassigned", "excluded") and not label:
             doc["unassigned_ok" if section == "unassigned" else "excluded"].append(value)
 

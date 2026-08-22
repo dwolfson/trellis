@@ -191,3 +191,36 @@ about depth rules.
 
 **Provenance:** maintainer (component status and the substitutability criterion); assistant (layout
 from `git ls-files`, and this transcription).
+
+---
+
+## Component hierarchy — machine-readable
+
+The judgement above, in a form `score.py` can apply. Prose records *why*; this records *what*, so
+the decision is used rather than only filed. (Recorded after noticing nothing read this file — the
+same defect as a guard that writes data no reader consumes.)
+
+### Web application
+
+- **Type:** Software Service
+- **New component:** yes — not in `trellis.md`, which listed its two children as flat siblings
+- **Sub-components:**
+  - `Web backend`
+  - `Web front-end`
+- **Notes:** One web application with two independently variable parts. The criterion is
+  substitutability: a different front-end could run against the same backend.
+- **Provenance:** maintainer
+
+### Surveyors
+
+- **Sub-components:**
+  - `packages/resource-explorer/resource_explorer/surveyors/arch_recovery`
+  - `packages/resource-explorer/resource_explorer/surveyors/database`
+  - `packages/resource-explorer/resource_explorer/surveyors/file_classifier`
+  - `packages/resource-explorer/resource_explorer/surveyors/filesystem`
+  - `packages/resource-explorer/resource_explorer/surveyors/sub_surveyors`
+- **Notes:** Resource-class subtypes, the integration-connector shape — one contract, many
+  implementations. Components in their own right, not implementation detail. Named by path because
+  `trellis.md` gives them no names of their own.
+- **Provenance:** maintainer
+
