@@ -55,6 +55,53 @@ Two consequences:
 
 ---
 
+## 2a. Granularity is not precision — and depth is never discarded
+
+**A correction, and the scoring model was wrong before it.** Asked how a nested proposal should
+score against a flat ground truth, the framing offered was: a proposer that emits
+`surveyors/` *and* its five subdirectories scores 1 hit and 5 false positives, precision 0.17.
+
+That is wrong, and wrong in a way that would have pushed the design toward throwing away work.
+
+| | question it answers | a sub-component is… |
+|---|---|---|
+| **Precision** | is what we proposed **real**? | not an error — it corresponds to something |
+| **Granularity** | at what **level** did we express it? | a finer expression of the same truth |
+
+`surveyors/database` is a real, coherent subsystem. The fixture records `Surveyors` as one
+component because that is the level its author needed, not because `database` is a fiction.
+Counting it as a false positive punishes the proposer for knowing more than the fixture does.
+
+**The contrast that shows this is not mere permissiveness**: the `workshops` repo (finding 58)
+proposed 45 components for a repo of tutorial materials. That **is** a precision failure — there
+is no architecture there to be fine-grained about. The test is *"does this correspond to something
+real?"*, not *"is this coarser or finer than expected?"*
+
+So:
+
+- **A node inside a matched ground-truth component is a refinement**, not an error.
+- **A node corresponding to nothing** is a precision error — or a gap in the fixture, which finding
+  47 showed is a real possibility.
+- **Finding more structure never scores worse.** It costs compute and storage; it does not cost
+  correctness.
+
+### Depth is kept, not pruned
+
+The stronger consequence is about storage, not scoring. Extra granularity *"isn't necessary at this
+time — might be worth keeping and using later."*
+
+That rules out the whole family of designs that pick a level and discard the rest. If Discovery
+needs a coarse partition and Analysis a fine one (§2), then computing depth and throwing it away
+means recomputing it when the next stage asks — and re-deriving is exactly what the curation
+overlay exists to avoid re-doing (design §7.2).
+
+**Store the hierarchy; project a level.** Egeria supports this natively — `SolutionComposition`
+nests `SolutionComponent`s (design §3.3a) — so retaining depth is not a workaround, it is what the
+target model expects. A consumer takes the level it needs; nothing computed is thrown away.
+
+This also retires the question finding 56 spent an experiment on. *"Which depth?"* was never
+answerable, because it was the wrong question: the generator should not choose a level at all.
+
 ## 3. What has to be recorded
 
 Point (4) of the observation — capture failures, not just successes — has a concrete gap. Phase 0
