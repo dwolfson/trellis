@@ -1376,3 +1376,63 @@ exists to prevent.
 it predated, and each time the contradiction presented as a regression in the work rather than a
 fault in the measure. Worth stating as a rule: **when a change that should help makes a number
 worse, check whether the number still encodes the design.**
+
+---
+
+**65. Use the OWNERS' declared architecture as ground truth — and do not mistake an LLM's
+architecture for the owners'.**
+
+The maintainer's proposal, and it is better than deriving fixtures by hand: use the architecture a
+project **publishes about itself**. Milvus declares one at `milvus.io/docs/architecture_overview.md`
+— four layers (Access, Coordinator, Worker Nodes, Storage) with named components.
+
+**Why this is strictly better than a hand-derived fixture:**
+
+- **Inherently pre-registered.** Written by people who have never heard of Resource Explorer, years
+  before our detector existed. The contamination problem this project has been carefully managing —
+  fixtures written before runs, provenance marked, T2 caveated — simply does not arise. You cannot
+  influence a document that already exists.
+- **Authoritative rather than inferred.** A hand-derived fixture is one reader's inference about
+  code they do not own. This is the designers' own statement of intent.
+- **Declared as *logical*** — the perspective where our detector is weakest and every open question
+  lives.
+- **Scales past one person's time.** Finding published architecture docs is cheap; deriving them
+  per-repo is not.
+
+### The trap, demonstrated
+
+The maintainer also supplied an LLM-generated logical architecture of Milvus, complete with a
+component→directory mapping — apparently doing the one piece of remaining work (mapping declared
+components to file globs) for free.
+
+**Checked against `milvus-io/milvus` HEAD, five of its thirteen paths do not exist:**
+
+| claimed | reality |
+|---|---|
+| `proxy`, `coordinator`, `rootcoord`, `datacoord`, `datanode`, `core`, `storage`, `metastore` | exist |
+| `querycoord` | is `querycoordv2` |
+| `querynode` | is `querynodev2` |
+| `indexcoord` | **gone** |
+| `indexnode` | **gone** |
+| `mq` | **gone** — now `streamingcoord` / `streamingnode` |
+
+It also *omits* `streamingnode`/`streamingcoord`, which the official docs list as "Streaming Node"
+and the repo confirms. And the two sources disagree structurally: the official page describes **one**
+Coordinator ("single active component, the brain of Milvus"); the LLM describes **four** separate
+coords. **The LLM described Milvus 2.2/2.3.** The repo agrees with the official docs, not with it.
+
+**Why this matters beyond one stale answer.** The output is plausible, internally consistent,
+well-structured, and wrong in a way no amount of reading it would reveal — only checking it against
+the repo did. Had it been adopted as ground truth, our detector would have been scored against a
+version of Milvus that no longer exists, and every mismatch would have been recorded as a detector
+failure.
+
+**So an LLM is an APPROACH, not a source of truth** — subject to the same outcome record and
+retirement rule as coupling or code markers (`approach-portfolio-model.md` §3, §6), and exactly the
+"second opinion whose value is disagreeing with the first" that §5a describes. Scoring one model's
+inference against another's measures agreement, not correctness, and two models trained on
+overlapping data can share both.
+
+**The division of labour this suggests:** the owners' published doc is the ground truth; an LLM is a
+useful *candidate mapper* from declared components to directories; and **the mapping must be verified
+against the repo**, which is cheap — one directory listing settled it here.
