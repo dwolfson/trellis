@@ -618,9 +618,11 @@ components. Regression-checked: `trellis` 8/11 and `egeria-workspaces` 18/27 bot
 
 **Still open, and now the binding constraints:**
 
-* **Port it.** All of the above is in `scripts/arch-spike/`. `resource_explorer/surveyors/arch_recovery/`
-  has its own copies of `imports.py`/`detectors.py`/`coupling.py` and still has no Go support — and
-  still has never been scored, per the item already in this backlog.
+* ~~**Port it.**~~ **DONE (finding 71).** Applied as edits, not file copies, so the package's own
+  divergence survived. The ported implementation was then scored for the first time — 173 components,
+  **11/11**, ARI 0.9936, identical to the spike on every measure. Nine regression tests added; full
+  suite 1678 passed. The `score.py` name-collision bug was scorer-only: `arch_recovery/` already keys
+  by slug throughout.
 * **Precision, not recall.** 173 components proposed against 11 declared. The coupling proposer emits
   146 untyped ones. Detection is no longer the bottleneck; distillation (§5.2, Phase 5) is.
 * **Go type inference.** `has_main` types `promql`, `util` and `documentation` as `Console Command`

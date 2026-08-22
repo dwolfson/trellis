@@ -1784,3 +1784,40 @@ is the honest trade, not a regression.
    `resource_explorer/surveyors/arch_recovery/` carries its own copies of `imports.py`,
    `detectors.py` and `coupling.py`, and the ported implementation still has no Go support and still
    has never been scored.
+
+---
+
+**71. Ported into the package, and the ported implementation scored for the first time: also 11/11.**
+
+Finding 70 left Go support in `scripts/arch-spike/` only. It is now in
+`resource_explorer/surveyors/arch_recovery/` — `import-go.yml`, the Go block in `imports.py`, and
+`go_subsystems()` plus its wiring in `detectors.py`, applied as edits rather than file copies so the
+package's own divergence (relative imports, `from . import exclusion`) survived.
+
+**This closes a standing backlog item: "the ported implementation has never been scored."** Running
+the package's own `detectors.build_components` + `coupling.propose` against the Prometheus checkout
+and scoring the result against the pre-registered fixture:
+
+| | spike | **package** |
+|---|---|---|
+| components | 173 (23 Go + 146 coupling + 4 manifest) | **173** (identical) |
+| strict containment | 11/11 | **11/11** |
+| ARI / NMI | 0.9936 / 0.9894 | **0.9936 / 0.9894** |
+| Go files / edges / resolved | 727 / 17063 / 1736 | **727 / 17063 / 1736** |
+
+Identical on every measure, which is the result a port should produce and the first time it has been
+demonstrated rather than assumed.
+
+**The name-collision bug was scorer-only.** Having found it in `score.py`, the obvious worry was that
+the package carried the same latent assumption. It does not — `projection.py` uses
+`by_slug = {c.slug: c ...}` and `persist.py` uses `slug_to_scope = {c.slug: ...}`. There is no
+name-keyed dict anywhere in `arch_recovery/`. The defect lived only in the measuring instrument,
+which is consistent with where it came from: `score.py` is spike-era code that predates slugs being
+load-bearing.
+
+**Nine regression tests added** (`tests/test_arch_recovery_detectors.py`), following §4.5's rule that
+every finding that was a bug becomes a test — the three `go_subsystems` rules (top-level directories,
+`cmd/` recursing one level, module root skipped), nested-module precedence, the no-`go.mod` case, and
+five on resolution: package fan-out, **total edge weight of exactly 1.0 per import** however many
+files the package holds, stdlib/third-party counted external rather than as edges, and alias/blank
+import forms preserved. Full suite: **1678 passed, 10 skipped**.

@@ -392,3 +392,128 @@ class TestJavaFinding37StyleModuleResolution:
         module_roots = {".", "modA", "modB"}
         assert imports.module_root_for_file("modA/src/main/java/com/example/Foo.java",
                                              module_roots) == "modA"
+
+
+# ── finding 69/70: Go package structure ───────────────────────────────────
+
+class TestFinding70GoSubsystems:
+    """Finding 69: Prometheus scored 0/11 because three of the four proposers
+    are Python/Java/npm-only, and manifest identity is structurally blind on a
+    single-module Go repo — one `go.mod` spans the whole architecture. Finding
+    70 added `go_subsystems()`; these regress its three rules."""
+
+    def _repo(self, root):
+        _write(root, "go.mod", "module github.com/acme/proj\n\ngo 1.22\n")
+        _write(root, "main.go", "package main\n")                   # module root
+        _write(root, "config/config.go", "package config\n")
+        _write(root, "config/testdata/a.yml", "x: 1\n")
+        _write(root, "scrape/manager.go", "package scrape\n")
+        _write(root, "cmd/server/main.go", "package main\n")
+        _write(root, "cmd/tool/main.go", "package main\n")
+        _git_init(root)
+        return {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
+
+    def test_top_level_directories_become_components(self, tmp_path):
+        subs = self._repo(str(tmp_path))
+        assert "config" in subs and "scrape" in subs
+        assert subs["config"]["import_path"] == "github.com/acme/proj/config"
+
+    def test_cmd_recurses_one_level_so_each_binary_is_its_own_component(self, tmp_path):
+        """Go convention: every `cmd/X` is a separate binary. Collapsing them
+        into one `cmd` component would merge unrelated programs."""
+        subs = self._repo(str(tmp_path))
+        assert "cmd/server" in subs and "cmd/tool" in subs
+        assert "cmd" not in subs
+
+    def test_files_at_the_module_root_are_not_a_component(self, tmp_path):
+        """The module root is the whole module — the same 'workspace root is a
+        container, not a component' rule the npm detector already applies."""
+        subs = self._repo(str(tmp_path))
+        assert "" not in subs and "." not in subs
+        assert not any("main.go" == os.path.basename(f)
+                       and "/" not in f for s in subs.values() for f in s["files"])
+
+    def test_nested_module_wins_over_the_enclosing_one(self, tmp_path):
+        """A directory owned by a deeper `go.mod` belongs to that module.
+        Prometheus has six; only the root one spans the architecture."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "svc/svc.go", "package svc\n")
+        _write(root, "tools/go.mod", "module github.com/acme/proj/tools\n")
+        _write(root, "tools/gen/gen.go", "package gen\n")
+        _git_init(root)
+        subs = {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
+        assert subs["tools/gen"]["module"] == "github.com/acme/proj/tools"
+        assert subs["tools/gen"]["import_path"] == "github.com/acme/proj/tools/gen"
+
+    def test_no_go_mod_yields_no_components_rather_than_guessing(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "svc/svc.go", "package svc\n")
+        _git_init(root)
+        assert detectors.go_subsystems(root, _tracked(root)) == []
+
+
+class TestFinding70GoImports:
+    """Go resolution: an import path is absolute and module-qualified, so
+    resolution needs neither Python's per-file search path nor Java's global
+    type index — but a Go import names a *package*, so one import fans out to
+    every file in that directory."""
+
+    def test_first_party_import_resolves_to_every_file_in_the_package(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "config/a.go", "package config\n")
+        _write(root, "config/b.go", "package config\n")
+        _write(root, "scrape/s.go",
+               'package scrape\n\nimport (\n\t"fmt"\n\t"github.com/acme/proj/config"\n)\n')
+        _git_init(root)
+        graph = imports.build_graph(root, _tracked(root))
+
+        assert graph["go_files_scanned"] == 3
+        go_edges = [e for e in graph["edges"] if e["language"] == "go"]
+        assert {e["target"] for e in go_edges} == {"config/a.go", "config/b.go"}
+
+    def test_one_import_carries_total_weight_one_however_many_files(self, tmp_path):
+        """Elsewhere weight means 'symbols crossing this edge'. A Go import
+        names a whole package, so its share is split across the package's
+        files — otherwise a 40-file package would outweigh a 2-file one purely
+        on file count, and since every Go import is package-level the
+        distortion would be universal rather than occasional."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        for n in "abcd":
+            _write(root, f"big/{n}.go", "package big\n")
+        _write(root, "one/x.go",
+               'package one\n\nimport "github.com/acme/proj/big"\n')
+        _git_init(root)
+        graph = imports.build_graph(root, _tracked(root))
+
+        total = sum(e["weight"] for e in graph["edges"] if e["language"] == "go")
+        assert total == pytest.approx(1.0)
+
+    def test_stdlib_and_third_party_are_external_not_edges(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "a/a.go",
+               'package a\n\nimport (\n\t"fmt"\n\t"github.com/other/lib"\n)\n')
+        _git_init(root)
+        graph = imports.build_graph(root, _tracked(root))
+
+        assert [e for e in graph["edges"] if e["language"] == "go"] == []
+        assert graph["unresolved_import_count"] == 2
+
+    def test_aliased_and_blank_imports_are_kept(self, tmp_path):
+        """A blank `_` import is a side-effect dependency — architecturally
+        more interesting than a plain one, not less."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "reg/r.go", "package reg\n")
+        _write(root, "app/app.go",
+               'package app\n\nimport (\n\tcfg "github.com/acme/proj/reg"\n)\n')
+        _write(root, "app2/app.go",
+               'package app2\n\nimport (\n\t_ "github.com/acme/proj/reg"\n)\n')
+        _git_init(root)
+        graph = imports.build_graph(root, _tracked(root))
+
+        kinds = {e["kind"] for e in graph["edges"] if e["language"] == "go"}
+        assert kinds == {"alias", "blank"}
