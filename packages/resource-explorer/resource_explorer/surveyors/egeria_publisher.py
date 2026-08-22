@@ -1,7 +1,14 @@
 """
 Publishes a SurveyResult to Egeria via pyegeria.
 
-Asset type: SourceControlLibrary (subtype of SoftwareCapability / ResourceManager).
+Element type: SourceControlLibrary — a SoftwareCapability, NOT an Asset.
+Supertypes, confirmed from the server 2026-08-21: ResourceManager,
+SoftwareCapability, Referenceable, OpenMetadataRoot. It therefore does not
+appear in Egeria's Asset Catalog views, and `AssetMaker.get_asset_by_guid`
+correctly cannot retrieve it — a fact that has already produced one bug (see
+resource_explorer/egeria_linkage.py). The method below is still called
+_find_or_create_asset and the registry column is still egeria_asset_guid;
+both names are inherited and both are misleading.
 """
 from __future__ import annotations
 

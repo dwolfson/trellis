@@ -271,16 +271,26 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
     # Built once for the whole sweep — creating a client per resource would
     # mean ~20 redundant bearer-token round trips for a check that is otherwise
     # one call each.
-    # MetadataExpert, not AssetMaker. `AssetMaker.get_asset_by_guid` raises
-    # NotFound for element types it does not serve — including
-    # SourceControlLibrary, which is exactly what EgeriaPublisher creates for a
-    # repo. Verified 2026-08-21: a freshly republished sqlglot
-    # (SourceControlLibrary::https://github.com/tobymao/sqlglot) reported
-    # NotFound through AssetMaker while existing perfectly well, so a sweep built
-    # on it would mark every healthy repo stale the moment it was republished —
-    # the false positive this module's own comments call the more damaging one.
-    # get_metadata_element_by_guid is type-agnostic and got all four probe cases
-    # right: the three genuinely deleted, and the one that exists.
+    # MetadataExpert, not AssetMaker — because what RE publishes for a repo is
+    # not an Asset. Confirmed from the server 2026-08-21:
+    #
+    #     typeName   : SourceControlLibrary
+    #     superTypes : ResourceManager, SoftwareCapability, Referenceable,
+    #                  OpenMetadataRoot
+    #
+    # So `AssetMaker.get_asset_by_guid` correctly returns NotFound for it, and a
+    # sweep built on that call marks every healthy repo stale the moment it is
+    # republished — the false positive this module calls the more damaging
+    # direction in three other places. Caught by republishing one repo for real
+    # and watching the next sweep declare it gone.
+    #
+    # `get_metadata_element_by_guid` is type-agnostic and got all four probe
+    # cases right: three genuinely deleted, one that exists.
+    #
+    # Worth knowing while reading this file: the naming lies throughout. The
+    # column is `egeria_asset_guid`, the publisher method is
+    # `_find_or_create_asset`, and neither is about an Asset. That is precisely
+    # why reaching for AssetMaker felt natural.
     cfg = get_config().egeria
     element_client = MetadataExpert(cfg.view_server, cfg.platform_url,
                                  cfg.user_id, cfg.user_password)

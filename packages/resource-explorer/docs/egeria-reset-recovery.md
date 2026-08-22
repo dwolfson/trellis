@@ -140,7 +140,53 @@ that was perfectly healthy.
 
 ---
 
-## 3. What is *not* affected
+## 3. "I published it but I cannot find it in Egeria"
+
+Almost always this, and it is not a failure: **a repo is not published as an Asset.**
+Confirmed from the server 2026-08-21:
+
+```
+typeName   : SourceControlLibrary
+superTypes : ResourceManager, SoftwareCapability, Referenceable, OpenMetadataRoot
+description: Defines a software source code library that provides version control.
+```
+
+`SourceControlLibrary` is a **SoftwareCapability**, not an Asset, so it will not appear
+in an Asset Catalog view or an asset search however hard you look. Search by its
+qualified name instead — `SourceControlLibrary::<github url>` — or browse software
+capabilities / resource managers.
+
+To check one directly:
+
+```bash
+uv run python -c "
+from resource_explorer.config import get_config
+from resource_explorer.registry import ProjectRegistry
+from pyegeria.omvs.metadata_expert import MetadataExpert
+cfg = get_config().egeria
+g = ProjectRegistry().get('SLUG').egeria_asset_guid
+me = MetadataExpert(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+me.create_egeria_bearer_token()
+print(me.get_metadata_element_by_guid(g)['type']['typeName'])"
+```
+
+> **The naming in RE lies about this, and it has already caused one bug.** The registry
+> column is `egeria_asset_guid`, the publisher method is `_find_or_create_asset`, and
+> `egeria_publisher.py`'s own docstring says "Asset type: SourceControlLibrary". None of
+> them is about an Asset. The first version of `egeria-recheck` used
+> `AssetMaker.get_asset_by_guid` as its existence probe — which correctly returns
+> NotFound for a SoftwareCapability — and would therefore have reported every healthy
+> repo as stale immediately after being republished. Use
+> `MetadataExpert.get_metadata_element_by_guid`, which is type-agnostic.
+
+Whether repos *should* be Assets is a real modelling question rather than a bug —
+`SourceControlLibrary` is a defensible type for "a version-controlled library" — but it
+is a decision to take deliberately, not one to make because a particular UI view is
+empty.
+
+---
+
+## 4. What is *not* affected
 
 Worth stating, because the natural fear after a reset is that everything must be redone:
 
@@ -156,7 +202,7 @@ mapping to them.
 
 ---
 
-## 4. Verifying the recovery
+## 5. Verifying the recovery
 
 ```bash
 uv run pytest tests/test_egeria_live_smoke.py -q     # definitions match the CSV
