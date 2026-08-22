@@ -242,7 +242,7 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
     skips both `mark_egeria_linkage_stale` and `clear_egeria_linkage_status`
     writes.
     """
-    from pyegeria import AssetMaker
+    from pyegeria.omvs.metadata_expert import MetadataExpert
 
     from resource_explorer.config import get_config
 
@@ -268,17 +268,35 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
     if not resources:
         return counts
 
-    # Built once for the whole sweep — creating an AssetMaker per resource would
+    # Built once for the whole sweep — creating a client per resource would
     # mean ~20 redundant bearer-token round trips for a check that is otherwise
     # one call each.
+    # MetadataExpert, not AssetMaker. `AssetMaker.get_asset_by_guid` raises
+    # NotFound for element types it does not serve — including
+    # SourceControlLibrary, which is exactly what EgeriaPublisher creates for a
+    # repo. Verified 2026-08-21: a freshly republished sqlglot
+    # (SourceControlLibrary::https://github.com/tobymao/sqlglot) reported
+    # NotFound through AssetMaker while existing perfectly well, so a sweep built
+    # on it would mark every healthy repo stale the moment it was republished —
+    # the false positive this module's own comments call the more damaging one.
+    # get_metadata_element_by_guid is type-agnostic and got all four probe cases
+    # right: the three genuinely deleted, and the one that exists.
     cfg = get_config().egeria
-    asset_maker = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-    asset_maker.create_egeria_bearer_token()
+    element_client = MetadataExpert(cfg.view_server, cfg.platform_url,
+                                 cfg.user_id, cfg.user_password)
+    element_client.create_egeria_bearer_token()
 
     for entity_type, slug, display_name, guid in resources:
         detail = {"entity_type": entity_type, "slug": slug, "guid": guid}
         try:
-            asset_maker.get_asset_by_guid(guid)
+            element = element_client.get_metadata_element_by_guid(guid)
+            # A string result is this client's "not found" sentinel rather than an
+            # exception, so an absent element must be turned into one — otherwise
+            # a missing GUID reads as a successful check.
+            if isinstance(element, str) or not element:
+                raise LookupError(
+                    f"OMRS-REPOSITORY-404-002 element {guid} is not known to the "
+                    f"open metadata repository")
         except Exception as exc:
             if is_unknown_guid_error(exc):
                 counts["stale"] += 1

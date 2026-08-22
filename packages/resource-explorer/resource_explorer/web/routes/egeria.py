@@ -426,6 +426,85 @@ def list_stale_linkages() -> list[StaleLinkage]:
             for row in ProjectRegistry().list_stale_egeria_linkages()]
 
 
+class BulkTarget(BaseModel):
+    entity_type: str = "repo"
+    slug: str
+
+
+class BulkRequest(BaseModel):
+    """An explicit list of what to act on, never a server-side "everything stale".
+
+    A sweep result and a work list are different things: `egeria-recheck` reports
+    what it found at that moment, and deriving the target list here would act on
+    something nobody read. The UI sends the rows it displayed, so what is acted on
+    is always what was seen.
+    """
+    targets: list[BulkTarget]
+    dry_run: bool = True   # defaults to the safe direction; the caller opts out
+
+
+class BulkResolveRequest(BulkRequest):
+    action: str = "republish"
+
+
+@router.post("/linkage/resolve-all")
+async def resolve_all_linkages(req: BulkResolveRequest) -> dict:
+    """Apply one resolution to many diverged resources.
+
+    Republish is the usual choice after an Egeria reset — it re-publishes what RE
+    already holds rather than re-scanning. Runs in a thread: a republish is a
+    survey plus a publish per resource, so twenty of them is minutes, not
+    milliseconds.
+    """
+    from resource_explorer.bulk_ops import resolve_all
+
+    registry = ProjectRegistry()
+    targets = [t.model_dump() for t in req.targets]
+    try:
+        result = await asyncio.to_thread(
+            resolve_all, registry, targets, req.action, dry_run=req.dry_run)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result.as_dict()
+
+
+@router.post("/linkage/delete-local")
+async def delete_resources_locally(req: BulkRequest) -> dict:
+    """Remove resources from RE entirely — registry row and pgvector collections.
+
+    Destructive, and the collections are the expensive part to reverse:
+    re-registering means re-ingesting. Egeria is left alone. Defaults to a dry
+    run; the caller has to ask for the real thing.
+    """
+    from resource_explorer.bulk_ops import delete_local
+
+    result = await asyncio.to_thread(
+        delete_local, ProjectRegistry(), [t.model_dump() for t in req.targets],
+        dry_run=req.dry_run)
+    return result.as_dict()
+
+
+@router.post("/linkage/delete-in-egeria")
+async def delete_resources_in_egeria(req: BulkRequest) -> dict:
+    """Delete the Egeria asset RE recorded for each resource.
+
+    Only ever the GUID RE itself stored — never resolved by name, never
+    cascading, and a resource without a cached GUID is skipped rather than
+    searched for. Egeria is the catalog of record and RE otherwise only adds to
+    it; this is the one path that can remove governance history, so it is
+    deliberately the narrowest of the three.
+
+    RE's own data is untouched: registry rows, survey results and collections all
+    survive.
+    """
+    from resource_explorer.bulk_ops import delete_in_egeria
+
+    result = await asyncio.to_thread(
+        delete_in_egeria, ProjectRegistry(), [t.model_dump() for t in req.targets],
+        dry_run=req.dry_run)
+    return result.as_dict()
+
+
 @router.post("/linkage/{entity_type}/{slug}/resolve", response_model=LinkageResolveResult)
 async def resolve_stale_linkage(
     entity_type: str, slug: str, req: LinkageResolveRequest,

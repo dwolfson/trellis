@@ -49,30 +49,42 @@ UNKNOWN_GUID_ERROR = Exception(
 CONNECTION_ERROR = Exception("Connection refused")
 
 
-def _fake_asset_maker(behaviors: dict):
-    """A stand-in for pyegeria's AssetMaker: get_asset_by_guid(guid) either
-    returns normally or raises whatever `behaviors` says for that guid."""
+def _fake_element_client(behaviors: dict):
+    """A stand-in for pyegeria's MetadataExpert.
 
-    class FakeAssetMaker:
+    The sweep probes with `get_metadata_element_by_guid`, not AssetMaker's
+    `get_asset_by_guid` — AssetMaker raises NotFound for element types it does
+    not serve, including the SourceControlLibrary that EgeriaPublisher creates
+    for a repo, so a sweep built on it marked freshly republished repos stale.
+    Verified live 2026-08-21.
+
+    Two "absent" shapes are modelled because the real client has both: it raises
+    for some misses and returns a plain string sentinel for others, and treating
+    the sentinel as a hit would make a missing element read as a successful check.
+    """
+
+    class FakeElementClient:
         def __init__(self, *a, **kw):
             pass
 
         def create_egeria_bearer_token(self, *a, **kw):
             pass
 
-        def get_asset_by_guid(self, guid, *a, **kw):
+        def get_metadata_element_by_guid(self, guid, *a, **kw):
             outcome = behaviors.get(guid)
-            if outcome is not None:
+            if isinstance(outcome, BaseException):
                 raise outcome
-            return {"guid": guid}
+            if outcome is not None:
+                return outcome          # e.g. a "no elements found" string
+            return {"elementHeader": {}, "guid": guid}
 
-    return FakeAssetMaker
+    return FakeElementClient
 
 
 def _patched(behaviors: dict):
-    """Patch both the pyegeria import and RE's config so recheck_all_linkages
-    never touches a live server."""
-    return patch("pyegeria.AssetMaker", _fake_asset_maker(behaviors))
+    """Patch the client so recheck_all_linkages never touches a live server."""
+    return patch("pyegeria.omvs.metadata_expert.MetadataExpert",
+                 _fake_element_client(behaviors))
 
 
 class TestRecheckSweep:

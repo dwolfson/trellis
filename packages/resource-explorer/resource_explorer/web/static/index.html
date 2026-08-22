@@ -9944,6 +9944,9 @@ async function deleteAdminGroup(slug) {
 // property of the RE-to-Egeria pairing rather than of any one resource, and can
 // affect repos, databases and filesystems alike. The RFA raised at detection
 // time points here.
+let _egeriaLinkRows = [];    // last-loaded stale rows, indexed the same as the row checkboxes
+let _egeriaBulkPending = null;  // {kind, targets} between a dry-run preview and its confirm
+
 async function loadAdminEgeriaLinksPanel() {
   const view = document.getElementById('admin-egeria-links-view');
   view.innerHTML = _adminSubnavHtml('admin-egeria-links') +
@@ -9960,14 +9963,19 @@ async function loadAdminEgeriaLinksPanel() {
 
 function renderAdminEgeriaLinksPanel(rows) {
   const view = document.getElementById('admin-egeria-links-view');
+  // Stashed so the bulk toolbar can turn checked checkboxes back into
+  // {entity_type, slug} targets without re-parsing the DOM row by row.
+  _egeriaLinkRows = rows;
   const body = rows.length
-    ? rows.map(r => `<tr class="border-b border-slate-800 align-top">
+    ? rows.map((r, i) => `<tr class="border-b border-slate-800 align-top">
+        <td class="px-3 py-2"><input type="checkbox" id="egeria-link-cb-${i}"
+              onchange="_updateEgeriaBulkToolbar()" class="accent-cyan-600"></td>
         <td class="px-3 py-2 text-xs text-slate-200">${_esc(r.entity_type)}/${_esc(r.entity_slug)}</td>
         <td class="px-3 py-2 text-xs text-slate-500 font-mono">${_esc(r.stale_guid || '-')}</td>
         <td class="px-3 py-2 text-xs text-slate-500" title="${_esc(r.detected_at)}">${r.detected_at ? _relTime(r.detected_at) : '-'}</td>
         <td class="px-3 py-2 text-xs">${_egeriaLinkActionsHtml(r.entity_type, r.entity_slug)}</td>
       </tr>`).join('')
-    : `<tr><td colspan="4" class="px-4 py-6 text-center text-slate-500 text-xs">
+    : `<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500 text-xs">
          No divergences. Every resource RE has cataloged still resolves in Egeria.
        </td></tr>`;
 
@@ -9982,9 +9990,12 @@ function renderAdminEgeriaLinksPanel(rows) {
         <strong class="text-slate-400">Every option below clears the unusable link;</strong>
         they differ in what runs afterwards.
       </p>
+      ${rows.length ? _egeriaBulkToolbarHtml() : ''}
+      <div id="egeria-bulk-preview"></div>
       <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">
         <table class="w-full text-left">
           <thead><tr class="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
+            <th class="px-3 py-2 w-8">${rows.length ? '<input type="checkbox" id="egeria-link-cb-all" onchange="_selectAllEgeriaLinks(this.checked)" class="accent-cyan-600">' : ''}</th>
             <th class="px-3 py-2">Resource</th><th class="px-3 py-2">Stale GUID</th>
             <th class="px-3 py-2">Detected</th><th class="px-3 py-2">Resolve</th>
           </tr></thead>
@@ -9992,6 +10003,45 @@ function renderAdminEgeriaLinksPanel(rows) {
         </table>
       </div>
     </div>`;
+  _updateEgeriaBulkToolbar();
+}
+
+// One selection, three destinations (resource_explorer/bulk_ops.py). Buttons are
+// disabled at zero selected rather than hidden, so the row checkboxes and the
+// toolbar above them read as connected without a state change moving anything
+// on screen.
+function _egeriaBulkToolbarHtml() {
+  return `<div id="egeria-bulk-toolbar" class="flex items-center gap-2 mb-3 p-2 bg-slate-900 border border-slate-800 rounded text-xs">
+    <span id="egeria-bulk-count" class="text-slate-400">0 selected</span>
+    <button id="egeria-bulk-btn-republish" disabled onclick="_runEgeriaBulkAction('republish')"
+       class="px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Republish selected</button>
+    <button id="egeria-bulk-btn-delete-local" disabled onclick="_runEgeriaBulkAction('delete-local')"
+       class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Delete locally</button>
+    <button id="egeria-bulk-btn-delete-in-egeria" disabled onclick="_runEgeriaBulkAction('delete-in-egeria')"
+       class="px-2 py-1 rounded bg-red-800 hover:bg-red-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Delete in Egeria</button>
+  </div>`;
+}
+
+function _selectAllEgeriaLinks(checked) {
+  _egeriaLinkRows.forEach((r, i) => {
+    const cb = document.getElementById(`egeria-link-cb-${i}`);
+    if (cb) cb.checked = checked;
+  });
+  _updateEgeriaBulkToolbar();
+}
+
+function _selectedEgeriaLinkTargets() {
+  return _egeriaLinkRows
+    .filter((r, i) => document.getElementById(`egeria-link-cb-${i}`)?.checked)
+    .map(r => ({ entity_type: r.entity_type, slug: r.entity_slug }));
+}
+
+function _updateEgeriaBulkToolbar() {
+  const n = _selectedEgeriaLinkTargets().length;
+  const countEl = document.getElementById('egeria-bulk-count');
+  if (countEl) countEl.textContent = `${n} selected`;
+  ['egeria-bulk-btn-republish', 'egeria-bulk-btn-delete-local', 'egeria-bulk-btn-delete-in-egeria']
+    .forEach(id => { const btn = document.getElementById(id); if (btn) btn.disabled = n === 0; });
 }
 
 // Shared by the Admin table and the per-resource banner, so the wording of a
@@ -10030,6 +10080,123 @@ async function _resolveEgeriaLink(entityType, slug, action) {
     loadAdminEgeriaLinksPanel();
   }
   if (typeof selectedProject !== 'undefined' && selectedProject === slug) loadScoutingOverview();
+}
+
+// -- Bulk resolution of the selected rows above -------------------------------
+// Deliberately preview-then-confirm for all three actions, republish included:
+// the backend requires an explicit target list rather than "everything stale"
+// precisely so a user acts on what they saw, and a silent bulk run would throw
+// that away. Every click here does a dry_run:true call first; only the
+// "Confirm — run for real" button in the resulting preview repeats it with
+// dry_run:false.
+const _EGERIA_BULK_ENDPOINT = {
+  'republish':       '/api/egeria/linkage/resolve-all',
+  'delete-local':     '/api/egeria/linkage/delete-local',
+  'delete-in-egeria': '/api/egeria/linkage/delete-in-egeria',
+};
+const _EGERIA_BULK_LABEL = {
+  'republish':        'Republish selected',
+  'delete-local':      'Delete locally',
+  'delete-in-egeria':  'Delete in Egeria',
+};
+// Stated plainly once, here, rather than trusting a generic "are you sure?" to
+// carry what a destructive confirm actually loses.
+const _EGERIA_BULK_WARNING = {
+  'delete-local':      'Drops registry rows and pgvector collections — re-registering means re-ingesting.',
+  'delete-in-egeria':  "Deletes the catalog element, including survey reports published beneath it. RE's own survey results are kept.",
+};
+
+async function _postEgeriaBulk(kind, targets, dryRun) {
+  const body = { targets, dry_run: dryRun };
+  if (kind === 'republish') body.action = 'republish';
+  const res = await fetch(_EGERIA_BULK_ENDPOINT[kind], {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const d = await res.json();
+  if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
+  return d;
+}
+
+async function _runEgeriaBulkAction(kind) {
+  const targets = _selectedEgeriaLinkTargets();
+  if (!targets.length) return;
+  const previewEl = document.getElementById('egeria-bulk-preview');
+  previewEl.innerHTML = '<div class="text-slate-500 text-xs py-2">Checking what this would do…</div>';
+  try {
+    const data = await _postEgeriaBulk(kind, targets, true);
+    _egeriaBulkPending = { kind, targets };
+    previewEl.innerHTML = _egeriaBulkPreviewHtml(kind, data, 'preview');
+  } catch (e) {
+    previewEl.innerHTML = `<div class="text-red-400 text-xs py-2">Preview failed: ${_esc(e.message)}</div>`;
+  }
+}
+
+async function _confirmEgeriaBulkAction() {
+  if (!_egeriaBulkPending) return;
+  const { kind, targets } = _egeriaBulkPending;
+  const previewEl = document.getElementById('egeria-bulk-preview');
+  previewEl.innerHTML = '<div class="text-slate-500 text-xs py-2">Running…</div>';
+  try {
+    const data = await _postEgeriaBulk(kind, targets, false);
+    _egeriaBulkPending = null;
+    showToast(data.failed ? 'error' : 'success',
+      `${_EGERIA_BULK_LABEL[kind]}: ${data.succeeded} succeeded, ${data.failed} failed, ${data.skipped} skipped.`, 8000);
+    // Reload first so the row table reflects what just happened (resolved rows
+    // drop out of /linkage/stale), then re-render the result into the fresh
+    // view's preview slot — a partial run is normal, and per-item failures
+    // with their message must stay visible rather than vanishing with the reload.
+    await loadAdminEgeriaLinksPanel();
+    const freshPreviewEl = document.getElementById('egeria-bulk-preview');
+    if (freshPreviewEl) freshPreviewEl.innerHTML = _egeriaBulkPreviewHtml(kind, data, 'result');
+  } catch (e) {
+    previewEl.innerHTML = `<div class="text-red-400 text-xs py-2">Run failed: ${_esc(e.message)}</div>`;
+    showToast('error', `Bulk action failed: ${_esc(e.message)}`, 8000);
+  }
+}
+
+function _cancelEgeriaBulkPreview() {
+  _egeriaBulkPending = null;
+  const el = document.getElementById('egeria-bulk-preview');
+  if (el) el.innerHTML = '';
+}
+
+function _egeriaBulkResultCls(result) {
+  return result === 'ok' ? 'text-emerald-400' : result === 'failed' ? 'text-red-400' : 'text-slate-500';
+}
+
+function _egeriaBulkConfirmCls(kind) {
+  return kind === 'republish' ? 'bg-cyan-700 hover:bg-cyan-600'
+       : kind === 'delete-local' ? 'bg-slate-700 hover:bg-slate-600'
+       : 'bg-red-800 hover:bg-red-700';
+}
+
+// mode 'preview' is the dry_run:true result and offers Confirm/Cancel; 'result'
+// is what the real run actually did and only offers Dismiss. Same body renderer
+// for both so a batch that half-worked reads identically before and after —
+// only the heading, the destructive warning, and the footer buttons differ.
+function _egeriaBulkPreviewHtml(kind, data, mode) {
+  const label = _EGERIA_BULK_LABEL[kind];
+  const warning = mode === 'preview' ? _EGERIA_BULK_WARNING[kind] : null;
+  const total = data.succeeded + data.failed + data.skipped;
+  const rowsHtml = data.details.map(d => `<div class="flex items-start gap-2 py-0.5">
+      <span class="shrink-0 w-14 text-[10px] uppercase ${_egeriaBulkResultCls(d.result)}">${_esc(d.result)}</span>
+      <span class="text-slate-300">${_esc(d.entity_type)}/${_esc(d.slug)}</span>
+      <span class="text-slate-500">${d.message ? '— ' + _esc(d.message) : ''}</span>
+    </div>`).join('');
+  const footer = mode === 'preview'
+    ? `<div class="flex gap-2">
+         <button onclick="_confirmEgeriaBulkAction()" class="px-2 py-1 rounded ${_egeriaBulkConfirmCls(kind)} text-white transition-colors">Confirm — run for real</button>
+         <button onclick="_cancelEgeriaBulkPreview()" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Cancel</button>
+       </div>`
+    : `<button onclick="_cancelEgeriaBulkPreview()" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Dismiss</button>`;
+
+  return `<div class="mb-3 p-3 bg-slate-900 border border-slate-700 rounded text-xs">
+    <div class="font-semibold text-slate-200 mb-1">${mode === 'preview' ? 'Preview' : 'Result'}: ${_esc(label)} (${total} resource(s))</div>
+    ${warning ? `<div class="text-amber-400 mb-2">${_esc(warning)}</div>` : ''}
+    <div class="max-h-48 overflow-y-auto mb-2 font-mono text-[11px]">${rowsHtml}</div>
+    <div class="text-slate-500 mb-2">${data.succeeded} ${mode === 'preview' ? 'would proceed' : 'succeeded'}, ${data.skipped} skipped, ${data.failed} ${mode === 'preview' ? 'would fail' : 'failed'}.</div>
+    ${footer}
+  </div>`;
 }
 
 async function loadAdminDiscoverySourcesPanel() {
