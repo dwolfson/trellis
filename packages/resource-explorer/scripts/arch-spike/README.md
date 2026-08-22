@@ -1611,3 +1611,74 @@ paths it cites — and the two can be cross-checked. No heuristic dating needed.
 `GET /repos/{o}/{r}` for `homepage`; `GET /repos/{o}/{r}/contents/` for root and doc dirs;
 `GET /repos/{o}/{r}/readme` for off-site links; `GET /search/code?q=repo:{docs_repo}+architecture+in:path`
 for the pages themselves; `GET /repos/{o}/{r}/commits?path={p}&per_page=1` for every date.
+
+---
+
+**69. First score against ground truth we did not write: 0 of 11 on Prometheus. The cross-language
+limit is far wider than "coupling reports `unverified`".**
+
+`prometheus.md` was pre-registered from the owners' own `documentation/internal_architecture.md`
+(commit `9039f9a`, before any detector ran). Eleven logical components, 1205 of 1668 tracked files.
+Then the pipeline ran.
+
+| stage | result |
+|---|---|
+| detectors | **4 components**, all npm packages under `web/ui/` |
+| ast-grep code markers | **0** — rules are Python/Java |
+| imports | **0 edges** — `0 python files, 0 java files` |
+| co-change | **18219 pairs over 1030 files** — the only signal that crossed |
+| **score** | **0/11**, precision 0.00, recall 0.00, ARI 0.0 |
+
+### The correction
+
+The Backlog predicted Milvus/Prometheus would be fine except that "Go/C++ — coupling correctly
+reports `unverified`". **That was wrong, and understated the problem by a lot.** It is not coupling
+alone: *three of the four proposers* are Python/Java/npm-only. On a Go repo the component-proposing
+stack produces nothing, and co-change — the language-agnostic one — is a *validator*, not a proposer.
+The correct outcome label for this run is **`unverified`**, and it should be reached because the
+extractor set does not cover Go, not because a threshold was missed.
+
+### Why manifests found nothing, specifically
+
+Prometheus has six `go.mod` files, and **not one corresponds to a ground-truth component**: the root
+module covers the entire architecture, and the rest are peripheral (`compliance/`, `internal/tools/`,
+`documentation/examples/`, a tooling module nested under `web/ui/`).
+
+**For a single-module Go repo, manifest-based identity is structurally blind — one `go.mod` spans the
+whole architecture.** The identity precedence ladder (§8.2) has no rung that fires. Meanwhile the
+owners' eleven components map essentially 1:1 onto **Go package directories** (`config/`,
+`discovery/`, `scrape/`, `promql/`, `rules/`, `notifier/`, `tsdb/`, `storage/remote/`). The missing
+capability is not "a Go rule for ast-grep" — it is *reading Go package structure at all*.
+
+This is the same shape as finding 44's `build.context` lesson from the other direction: there, one
+build unit mapped to many components; here, one module maps to **all** components. Manifest → component
+is not a function in either direction.
+
+### The near-miss, which the §2a union rule correctly declined
+
+The 4 detected components are not junk. They are real npm packages inside `web/ui/`, and the ground
+truth folds all of them into one component, **Web UI and API**. §2a's union rule checks whether
+refinements *union to* the ground-truth file set:
+
+- detector's 4 components: **325 files**, every one inside `web/**` — containment holds
+- GT `Web UI and API`: **380 files** = `web/ui/` (344) + **`web/*.go` (38)**
+
+The union misses the 38 Go files, so the rule declines and scores 0. **That is correct behaviour**,
+and the reason is exact: **the ground-truth component is bilingual, and the detector recovered
+precisely the half written in a language it supports.** The API server is Go; the UI is TypeScript;
+the owners call them one component. Nothing demonstrates the language seam more cleanly.
+
+### The scoring gap this exposes
+
+Recovering 325 of 380 files of a component scores **identically to recovering nothing**. §2a fixed
+"finding more structure must not score worse"; this is its neighbour — *finding most of a component
+must not score the same as finding none of it*. The `partial` label already exists in
+`step_outcome.py` for exactly this state and the scorer does not emit it. Worth fixing before the
+8–10 repo re-check, or that run will report a wall of zeros that hides real near-misses.
+
+### What this exercise bought
+
+The first genuinely external test. Three of the four existing fixtures are ours, and every prior
+number was measured against a partition someone here wrote. This one was written by strangers in
+2018, and it found a whole-language blind spot that four repos of our own never surfaced — because
+all four are Python, Java and JavaScript.

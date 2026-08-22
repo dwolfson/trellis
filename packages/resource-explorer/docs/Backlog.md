@@ -602,7 +602,40 @@ the pending 8–10 repo measurement re-check:
 
 | candidate | why | caveat |
 |---|---|---|
-| `prometheus/prometheus` | `documentation/internal_architecture.md` is **in-repo**; 281 MB | smallest, cheapest first fixture |
-| `milvus-io/milvus` | 8 architecture pages in `milvus-io/milvus-docs`, current within a day | Go/C++ — coupling correctly reports `unverified` |
+| `prometheus/prometheus` | `documentation/internal_architecture.md` is **in-repo**; 281 MB | **DONE** — pre-registered `9039f9a`, scored **0/11**, see below |
+| `milvus-io/milvus` | 8 architecture pages in `milvus-io/milvus-docs`, current within a day | Go/C++ — **blocked on Go support**, see below |
 | `kubernetes/kubernetes` | canonical component names map cleanly onto `cmd/` | large; doubles as a scale test |
 | `odpi/egeria` (T3) | — | **negative result:** of 15 architecture hits in `odpi/egeria-docs`, most are under `saved/` (archived) or are dojo-tutorial SVGs. No current authoritative logical-architecture page. Our flagship target is the corpus's *weakest* ground-truth source — worth knowing before a poor T3 score is read as a detector failure. |
+
+---
+
+### HIGH — Go support: the component-proposing stack is Python/Java/npm-only
+
+**Correction to the row above.** It previously said Go repos would be fine except that "coupling
+correctly reports `unverified`". Scoring Prometheus disproved that (spike finding 69): **three of the
+four proposers produce nothing on Go.** ast-grep rules are Python/Java, `imports.py` reports
+`0 python files, 0 java files`, and manifest identity is structurally blind on a single-module repo —
+Prometheus's six `go.mod` files include a root module spanning the entire architecture and five
+peripheral ones, none matching a component. Only co-change crossed the seam (18219 pairs), and
+co-change is a *validator*, not a proposer. Result: 4 detected components against 11 declared, all
+four npm packages under `web/ui/`, score 0/11.
+
+The owners' eleven components map essentially 1:1 onto **Go package directories**. So the missing
+capability is not "add a Go ast-grep rule" — it is reading Go package structure at all, which would
+serve identity, imports and code markers together. Blocks Milvus and Kubernetes as well as Prometheus,
+i.e. three of the four ranked ground-truth candidates.
+
+### HIGH — the scorer cannot express a partial component match
+
+On Prometheus the detector recovered **325 of the 380 files** of the ground-truth component
+`Web UI and API` — every one correctly contained, missing only the 38 Go files of the API server,
+because that component is bilingual and only its TypeScript half is in a supported language. §2a's
+union rule correctly declines (the union is not the full set), so it scores **0 — identical to
+recovering nothing at all**.
+
+§2a established that finding *more* structure must not score worse. This is the neighbouring defect:
+finding *most* of a component must not score the same as finding none of it. `step_outcome.py`
+already defines `partial` for exactly this state and the scorer never emits it. **Fix before the 8–10
+repo measurement re-check**, or that run reports a wall of zeros that conceals real near-misses —
+which is the same class of mistake as the three metrics that silently contradicted design decisions
+they predated.
