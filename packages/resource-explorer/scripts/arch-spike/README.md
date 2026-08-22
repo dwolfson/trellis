@@ -1525,3 +1525,89 @@ is the measurable half of the triage judgement finding 58 needed a human for: *i
 architecture here worth recovering?* It should be reported as dated evidence (§5.4), **not** turned
 into a ranking — a maintained doc site can coexist with rotting in-repo docs, and a small stable
 library may document lightly on purpose.
+
+---
+
+**68. Scanned twelve repos for architecture docs. The docs are almost never in the repo — and the
+naive doc-health metric false-negatives on Kubernetes.**
+
+Finding 67 turned three lessons into design §5.5a. This tested two of them against a real corpus:
+`odpi/egeria` (T3), `odpi/egeria-workspaces` (T1), `milvus-io/milvus`, `apache/airflow`,
+`kubernetes/kubernetes`, `grafana/grafana`, `prometheus/prometheus`, `apache/kafka`,
+`elastic/elasticsearch`, `pola-rs/polars`, `ray-project/ray`, `redis/redis`.
+
+### (a) In-repo architecture docs are the exception, not the rule
+
+| observation | count |
+|---|---|
+| `ARCHITECTURE.md` (or similar) at repo root | **0 of 12** |
+| architecture docs findable in-repo by name | **2 of 12** — `milvus/docs/design-docs`, `prometheus/documentation/internal_architecture.md` |
+| declares a `homepage` in GitHub metadata | **11 of 12** |
+| README links to an architecture page off-site | 4 of 12 |
+| **has a separate, actively-maintained docs repo** | **5 of 5 checked** |
+
+`kubernetes/website`, `odpi/egeria-docs`, `milvus-io/milvus-docs`, `prometheus/docs`,
+`redis/redis-doc` all exist; the first four were pushed within the last two days.
+
+**§5.2 step 0, which reads in-repo docs, would find architecture in 2 of 12 cases.** The outward hop
+is not an enhancement — without it the best description of the system is missed almost every time.
+This is now the primary justification for §5.5a(a), replacing the single Milvus data point.
+
+### (b) The tombstone: doc-lag is confounded by doc *relocation*
+
+The naive metric — compare commit recency of `docs/` against code — scores Kubernetes at **1412 days
+of untouched documentation** against code touched 2 days ago. Read at face value that is an
+abandoned-documentation signal on one of the best-maintained projects in existence.
+
+The truth is the opposite. `kubernetes/kubernetes/docs/` contains exactly two entries:
+
+```
+.gitignore  OWNERS
+```
+
+It is a **tombstone**. The docs moved to `kubernetes/website`, pushed today.
+
+**So doc health cannot be measured until you know where the docs live** — §5.5a(a) and §5.5a(c) are
+*coupled*, not independent backlog items. Measuring (c) without doing (a) first produces exactly the
+wrong answer on exactly the projects that most deserve a good one.
+
+This is the same bug family as findings 30/44/51 in a new costume: **a proxy that quietly stopped
+encoding the thing it was a proxy for.** `docs/` mtime proxies for "is the documentation maintained"
+only while the documentation is still in `docs/`. Same shape as the name-matching scorer that
+predated the identity rules, and caught the same way — by asking whether a surprising number could
+possibly be true.
+
+**A tombstone is detectable and is itself a positive signal.** A docs directory holding only
+`OWNERS`/`.gitignore`/`README` stubs means deliberate relocation, which is curation — the same class
+of marker as Milvus's maintained `docs/archive/` and Egeria's `saved/`. Projects that abandon docs
+leave them rotting in place; projects that move them leave a marker.
+
+### (c) The best ground truth is a sibling docs repo, which means it is *in git*
+
+`milvus-io/milvus-docs` carries `site/en/reference/architecture/` — eight pages including
+`architecture_overview.md`, `four_layers.md`, `main_components.md`, `streaming_service.md`. Not a
+rendered site: **markdown under version control**.
+
+That closes the timestamp-correlation question §5.5a(b) left open. Both sides are git, so a document
+can be dated *two independent ways* — by its own commit history, and by the last-commit dates of the
+paths it cites — and the two can be cross-checked. No heuristic dating needed.
+
+### (d) Ground-truth candidates, ranked by what the scan actually found
+
+1. **`milvus-io/milvus`** — verified end to end. Eight architecture pages in git, Go/C++ (so coupling
+   correctly reports `unverified`), current within a day.
+2. **`kubernetes/kubernetes`** — `content/en/docs/concepts/architecture/` in `kubernetes/website`;
+   canonical component names (`kube-apiserver`, `kubelet`, `kube-scheduler`) map cleanly onto `cmd/`.
+   Large, so also a scale test.
+3. **`prometheus/prometheus`** — `documentation/internal_architecture.md` is **in-repo**, and the repo
+   is small (281 MB). The cheapest possible first fixture.
+4. **`odpi/egeria` (our T3)** — **a negative result worth recording.** Of 15 architecture hits in
+   `odpi/egeria-docs`, most are under `saved/` (archived) or are dojo-tutorial SVGs. There is no
+   current, authoritative logical-architecture page of the kind Milvus publishes. Our own flagship
+   target is the weakest ground-truth source in the corpus — which is worth knowing before anyone
+   treats a poor T3 score as a detector failure.
+
+**Recipe, for reuse** (5000 req/hr authenticated, whole scan cost ~60 calls):
+`GET /repos/{o}/{r}` for `homepage`; `GET /repos/{o}/{r}/contents/` for root and doc dirs;
+`GET /repos/{o}/{r}/readme` for off-site links; `GET /search/code?q=repo:{docs_repo}+architecture+in:path`
+for the pages themselves; `GET /repos/{o}/{r}/commits?path={p}&per_page=1` for every date.

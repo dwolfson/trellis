@@ -876,6 +876,14 @@ that only reads the repo would miss the single best description of the system it
 recover. The repo does carry `docs/` (a `README.md`, `design-docs/`, `agent_guides/`, `archive/`),
 but the front-door architecture page lives on the project's doc site.
 
+**Measured across twelve repos** (spike finding 68 — `egeria`, `egeria-workspaces`, `milvus`,
+`airflow`, `kubernetes`, `grafana`, `prometheus`, `kafka`, `elasticsearch`, `polars`, `ray`, `redis`):
+**zero** have an `ARCHITECTURE.md` at root, **two** have architecture docs findable in-repo by name,
+**eleven** declare a homepage, and **every one of the five checked has a separate, actively-maintained
+docs repo** (`kubernetes/website`, `odpi/egeria-docs`, `milvus-io/milvus-docs`, `prometheus/docs`,
+`redis/redis-doc`). Step 0 as written would find architecture in **2 of 12 cases**. The outward hop is
+not an enhancement; without it the best available description of the system is missed almost every time.
+
 So step 0 needs an outward hop: resolve the project's documentation site (from `README.md` links,
 repository metadata, or the package manifest homepage) and treat the published architecture page as a
 first-class input. This is a fetch, and it is the right kind — cheap, once, and it can save every
@@ -900,6 +908,12 @@ Two bounds follow, each one cheap call per path:
 
 Together those dated the document as roughly seventeen months stale, from four API calls and without
 reading a line of Go.
+
+Because the published docs usually live in a **sibling git repo** rather than a rendered site
+(finding 68 — `milvus-io/milvus-docs` carries `site/en/reference/architecture/`, eight markdown pages
+under version control), a document can be dated **two independent ways**: by its own commit history,
+and by the last-commit dates of the paths it cites. The two cross-check each other, and no heuristic
+dating is needed.
 
 This applies symmetrically. It is a check on a maintainer's doc, on an LLM's proposal, **and on our
 own output** — a recovered blueprint that cites paths deleted two years ago is stale in exactly the
@@ -929,7 +943,23 @@ Three consequences for this design:
    settled by a human reading a README that said the repo's intent was a tutorial. Doc health is the
    measurable half of the same judgement: *is there an architecture here worth recovering, and does
    the project believe there is?*
-3. **Do not turn it into a score.** A marketing-maintained doc site can coexist with rotting
+3. **It cannot be measured until (a) is done — the two are coupled, not independent.** The naive
+   metric (commit recency of `docs/` against code) scores **Kubernetes at 1412 days of untouched
+   documentation** against code touched two days ago. `kubernetes/kubernetes/docs/` in fact holds
+   exactly two entries, `.gitignore` and `OWNERS`: it is a **tombstone**, and the real docs moved to
+   `kubernetes/website`, pushed today. Measuring doc health without first resolving where the docs
+   live returns the *opposite* of the truth on precisely the projects that most deserve a good answer.
+
+   This is a proxy that quietly stopped encoding the thing it proxied for — the same failure shape as
+   the name-matching scorer that outlived the identity rules. `docs/` mtime means "documentation is
+   maintained" only while the documentation is still in `docs/`.
+
+   **The tombstone is itself detectable, and is a positive signal.** A docs directory holding only
+   `OWNERS`/`.gitignore`/README stubs indicates deliberate relocation — the same class of curation
+   marker as Milvus's maintained `docs/archive/` or Egeria's `saved/`. Projects that abandon
+   documentation leave it rotting in place; projects that move it leave a marker.
+
+4. **Do not turn it into a score.** A marketing-maintained doc site can coexist with rotting
    in-repo docs, and a small, stable, mature library may document lightly on purpose. Report the
    observation and its dates as evidence (§5.4); let the confidence axes (§3.3c) and a human carry
    the interpretation. Recording "docs lag code by N days" is defensible; ranking projects by it is

@@ -576,6 +576,18 @@ architecture we consume *and on our own recovered blueprints*, with the dates ca
 evidence. Cheap to build; the only real design choice is where unresolvable paths surface, and the
 answer is probably "as their own outcome", never silently as detector misses.
 
+**2a. Resolving where the docs live is a PREREQUISITE for item 3, not a sibling of it.** Measured
+over twelve repos (spike finding 68), five of five checked keep documentation in a *separate,
+actively-maintained repo*. `kubernetes/kubernetes/docs/` holds only `.gitignore` and `OWNERS` — a
+tombstone — so the naive doc-lag metric scores Kubernetes at 1412 days of abandoned documentation
+while `kubernetes/website` was pushed the same day. Resolve the docs location first (item 1), then
+measure (item 3). Detect the tombstone pattern explicitly: a docs directory holding only
+`OWNERS`/`.gitignore`/README stubs means deliberate relocation, which is a *positive* curation signal
+of the same class as Milvus's maintained `docs/archive/` and Egeria's `saved/`.
+
+Useful consequence: because the docs repo is a git repo, item 2's path-dating applies to the document
+itself as well as to the paths it cites — two independent dates that cross-check, no heuristics.
+
 **3. Doc-health as a reported signal.** Not what the docs say — whether they exist and are kept
 current. Compare commit recency of doc paths against code paths; note whether stale docs are archived
 (Milvus maintains `docs/archive/`, which is a stronger marker than merely having docs) or left in
@@ -584,3 +596,13 @@ a human for. **Report as dated evidence, do not rank on it** — a maintained do
 rotting in-repo docs, and a small stable library may document lightly on purpose. A naive `docs/` mtime
 is also too coarse on its own (one typo fix moves it); prefer a distribution over doc paths, and
 per-component lag where §6.0 scope locators make that possible.
+
+**4. Ground-truth candidates the scan surfaced**, in the order they should be attempted — this feeds
+the pending 8–10 repo measurement re-check:
+
+| candidate | why | caveat |
+|---|---|---|
+| `prometheus/prometheus` | `documentation/internal_architecture.md` is **in-repo**; 281 MB | smallest, cheapest first fixture |
+| `milvus-io/milvus` | 8 architecture pages in `milvus-io/milvus-docs`, current within a day | Go/C++ — coupling correctly reports `unverified` |
+| `kubernetes/kubernetes` | canonical component names map cleanly onto `cmd/` | large; doubles as a scale test |
+| `odpi/egeria` (T3) | — | **negative result:** of 15 architecture hits in `odpi/egeria-docs`, most are under `saved/` (archived) or are dojo-tutorial SVGs. No current authoritative logical-architecture page. Our flagship target is the corpus's *weakest* ground-truth source — worth knowing before a poor T3 score is read as a detector failure. |
