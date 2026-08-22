@@ -1962,5 +1962,77 @@ def import_resources(
                   + (f", [red]{failed} failed[/red]" if failed else ""))
 
 
+@app.command(name="egeria-recheck")
+def egeria_recheck(
+    entity_type: Optional[list[str]] = typer.Option(
+        None, "--entity-type", help="Restrict to repo/database/filesystem (repeatable; default: all)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be recorded, write nothing"),
+):
+    """Proactively re-check every cached Egeria GUID against the live server.
+
+    Reactive divergence detection only marks a linkage stale the next time
+    something actually uses the cached GUID — which can be a long time after
+    Egeria's repository was reset. This asks Egeria about every cached GUID
+    right now, so 'Admin > Egeria Links' reflects reality immediately rather
+    than staying empty until each resource happens to be surveyed again.
+
+    Examples:
+      resource-explorer egeria-recheck
+      resource-explorer egeria-recheck --dry-run
+      resource-explorer egeria-recheck --entity-type repo --entity-type database
+    """
+    from resource_explorer.egeria_linkage import recheck_all_linkages
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    types = list(entity_type) if entity_type else None
+
+    def _progress(checked, total, etype, slug):
+        console.print(f"  [{checked}/{total}] {etype}/{slug}", end="\r")
+
+    console.print("[bold]Rechecking cached Egeria GUIDs...[/bold]"
+                  + (" [dim](dry run)[/dim]" if dry_run else ""))
+    try:
+        result = recheck_all_linkages(registry, entity_types=types, progress=_progress,
+                                      dry_run=dry_run)
+    except Exception as exc:
+        console.print(f"\n[red]Could not connect to Egeria: {exc}[/red]")
+        raise typer.Exit(1)
+
+    console.print()  # clear the progress line
+    console.print(f"  checked: {result['checked']}   "
+                  f"[green]ok: {result['ok']}[/green]   "
+                  f"[red]stale: {result['stale']}[/red]   "
+                  f"[yellow]errors: {result['errors']}[/yellow]   "
+                  f"[dim]skipped (no cached GUID): {result['skipped']}[/dim]")
+
+    stale_rows = [d for d in result["details"] if d["result"] == "stale"]
+    if stale_rows:
+        # Printed as plain lines rather than a rich Table. Rich shrinks columns to
+        # the console width — 80 when output is not a terminal — and *truncates*
+        # rather than wrapping, which cut every GUID to 35 characters. A GUID
+        # missing its last character still looks like a GUID, so a piped or saved
+        # report carried identifiers that were quietly wrong, exactly when the
+        # report is most likely to be kept and acted on later.
+        console.print()
+        console.print("[bold]Stale linkages"
+                      + (" (not recorded — dry run)" if dry_run else " (recorded)")
+                      + ":[/bold]")
+        for row in stale_rows:
+            console.print(f"  {row['entity_type']:<10}  {row['slug']:<28}  {row['guid']}",
+                          highlight=False, soft_wrap=True)
+        console.print(
+            "\n[dim]Resolve from Admin > Egeria Links, or run "
+            "[bold]resource-explorer egeria-reset <slug>[/bold] for repos.[/dim]"
+        )
+
+    error_rows = [d for d in result["details"] if d["result"] == "error"]
+    if error_rows:
+        console.print()
+        console.print("[yellow]Could not verify (not marked stale):[/yellow]")
+        for row in error_rows:
+            console.print(f"  {row['entity_type']}/{row['slug']}: {row['detail'][:200]}")
+
+
 if __name__ == "__main__":
     app()

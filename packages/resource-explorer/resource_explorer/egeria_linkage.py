@@ -181,3 +181,169 @@ def guard_linkage(registry, entity_type: str, entity_slug: str, entity_name: str
             raise
         raise note_divergence(
             registry, entity_type, entity_slug, entity_name, stale_guid, exc) from exc
+
+
+def _iter_linked_resources(registry, entity_types):
+    """Yield (entity_type, slug, display_name, guid) for every registered
+    resource that carries a cached Egeria GUID, restricted to `entity_types`
+    when given.
+
+    Resources with no cached GUID are not yielded at all — there is nothing to
+    check, and counting them as "ok" would misrepresent a sweep that never
+    actually asked Egeria about them.
+    """
+    if entity_types is None or "repo" in entity_types:
+        for project in registry.list_all():
+            if project.egeria_asset_guid:
+                yield "repo", project.slug, project.display_name, project.egeria_asset_guid
+
+    if entity_types is None or "database" in entity_types:
+        for db in registry.list_databases():
+            if db.egeria_asset_guid:
+                yield "database", db.slug, db.display_name, db.egeria_asset_guid
+
+    if entity_types is None or "filesystem" in entity_types:
+        for fs in registry.list_filesystems():
+            if fs.egeria_asset_guid:
+                yield "filesystem", fs.slug, fs.display_name, fs.egeria_asset_guid
+
+
+def recheck_all_linkages(registry, *, entity_types=None, progress=None,
+                          dry_run: bool = False) -> dict:
+    """Proactively ask Egeria about every cached GUID instead of waiting for
+    the next survey/publish to trip over one.
+
+    Reactive detection (`guard_linkage`) only marks a linkage stale the next
+    time something actually uses the cached GUID — which can be arbitrarily
+    long after Egeria's repository was reset. This sweep closes that gap by
+    checking every cached GUID up front, right after a reset, so `Admin ▸
+    Egeria Links` reflects reality instead of staying empty until each
+    resource happens to be surveyed again.
+
+    Symmetric with `guard_linkage`/`note_divergence` in both directions: an
+    unknown-GUID error records a divergence exactly as the reactive path
+    would, and — the part the reactive path never does on its own — a GUID
+    that now resolves clears any divergence previously recorded for it. Without
+    that second half a fixed linkage stays listed as stale forever, since
+    nothing else in RE clears an `egeria_linkage_status` row except the
+    resolve-flow's explicit discard/republish/resurvey actions.
+
+    Connection/auth failures are deliberately kept out of "stale": marking a
+    resource stale sends a human to reconcile a catalog link that may be
+    perfectly fine — Egeria was just unreachable for a moment. Only a
+    confirmed "that GUID does not exist" answer (`is_unknown_guid_error`)
+    counts as stale; anything else that goes wrong is counted separately.
+
+    `progress`, if given, is called after each resource as
+    `progress(checked, total, entity_type, slug)` — a hook for CLI output on a
+    sweep of ~20 network calls.
+
+    `dry_run=True` runs every probe (so counts reflect the real state) but
+    skips both `mark_egeria_linkage_stale` and `clear_egeria_linkage_status`
+    writes.
+    """
+    from pyegeria import AssetMaker
+
+    from resource_explorer.config import get_config
+
+    resources = list(_iter_linked_resources(registry, entity_types))
+    total = len(resources)
+
+    counts = {"checked": 0, "ok": 0, "stale": 0, "errors": 0, "skipped": 0, "details": []}
+
+    # Skipped-count for entity types that exist but carry no GUID at all —
+    # reported separately from "checked" for the same reason _iter_linked_resources
+    # doesn't yield them: nothing was actually asked of Egeria for these.
+    all_repo = registry.list_all() if (entity_types is None or "repo" in entity_types) else []
+    all_db = registry.list_databases() if (entity_types is None or "database" in entity_types) else []
+    all_fs = registry.list_filesystems() if (entity_types is None or "filesystem" in entity_types) else []
+    counts["skipped"] = sum(
+        1 for p in all_repo if not p.egeria_asset_guid
+    ) + sum(
+        1 for d in all_db if not d.egeria_asset_guid
+    ) + sum(
+        1 for f in all_fs if not f.egeria_asset_guid
+    )
+
+    if not resources:
+        return counts
+
+    # Built once for the whole sweep — creating an AssetMaker per resource would
+    # mean ~20 redundant bearer-token round trips for a check that is otherwise
+    # one call each.
+    cfg = get_config().egeria
+    asset_maker = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+    asset_maker.create_egeria_bearer_token()
+
+    for entity_type, slug, display_name, guid in resources:
+        detail = {"entity_type": entity_type, "slug": slug, "guid": guid}
+        try:
+            asset_maker.get_asset_by_guid(guid)
+        except Exception as exc:
+            if is_unknown_guid_error(exc):
+                counts["stale"] += 1
+                detail["result"] = "stale"
+                detail["detail"] = str(exc)[:2000]
+                if not dry_run:
+                    # Records the row, deliberately WITHOUT note_divergence's
+                    # per-resource RFA. A reset makes every cataloged resource
+                    # stale at once, so one RFA each would put twenty near
+                    # identical items in the drawer and bury whatever else is in
+                    # there — the drawer is a queue of things a human should act
+                    # on, and twenty rows describing one event is one thing to
+                    # act on, not twenty. A single summary RFA is raised below.
+                    registry.mark_egeria_linkage_stale(
+                        entity_type, slug, guid, str(exc)[:2000])
+            else:
+                counts["errors"] += 1
+                detail["result"] = "error"
+                detail["detail"] = str(exc)[:2000]
+                log.warning("Egeria recheck could not verify %s/%s (GUID %s): %s",
+                           entity_type, slug, guid, exc)
+        else:
+            counts["ok"] += 1
+            detail["result"] = "ok"
+            if not dry_run:
+                # Clears a previously-recorded divergence that has since been
+                # fixed (republish/resurvey/manual repair, or Egeria's own
+                # recovery). Without this half, the sweep can only ever add
+                # rows, never remove ones that no longer apply.
+                registry.clear_egeria_linkage_status(entity_type, slug)
+
+        counts["checked"] += 1
+        counts["details"].append(detail)
+        if progress is not None:
+            progress(counts["checked"], total, entity_type, slug)
+
+    # One RFA for the sweep, not one per resource. Raised only when something was
+    # actually found, and only on a real run — a dry run must leave no trace.
+    if counts["stale"] and not dry_run:
+        try:
+            from resource_explorer.activity_logger import log_rfa
+
+            names = ", ".join(d["slug"] for d in counts["details"]
+                              if d["result"] == "stale")[:400]
+            log_rfa(
+                registry=registry,
+                entity_type="repo",
+                entity_slug="",
+                entity_name="Egeria catalog links",
+                status="error",
+                summary=(f"{counts['stale']} Egeria catalog link(s) are stale "
+                         f"— Egeria was most likely reset"),
+                detail=(
+                    f"A recheck sweep found {counts['stale']} of {counts['checked']} "
+                    f"cached Egeria GUID(s) no longer known to the repository"
+                    + (f", and could not verify {counts['errors']}" if counts["errors"] else "")
+                    + ". Survey results and annotations are kept. Resolve them from "
+                    "Admin \u25b8 Egeria Links — republish is usually right when only "
+                    "Egeria was reset and the resources themselves have not changed.\n\n"
+                    f"Affected: {names}"
+                ),
+            )
+        except Exception:
+            # Same rule as everywhere else here: failing to announce the finding
+            # must not discard the finding, which is already recorded above.
+            log.exception("Egeria recheck: could not raise the summary RFA")
+
+    return counts

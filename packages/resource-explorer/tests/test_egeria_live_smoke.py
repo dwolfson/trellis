@@ -90,16 +90,21 @@ class TestAuthoredDefinitionsMatchTheirSource:
         actual = [s.re_analysis_step for s in reader.fetch(guid).steps]
 
         if expected == ["*"]:
-            # Full Survey is "every step", generated from STEP_REGISTRY, so it is
-            # allowed to lag: a step added to the registry today is legitimately
-            # absent until the document is re-authored, and the not-yet-placed
-            # exemptions in tests/test_reachability_audit.py are exactly those.
-            # Carrying something that is *not* a step is never allowed, though —
-            # that is a definition naming a runner nothing can dispatch.
-            from tests.test_reachability_audit import STEPS_NOT_IN_A_STAGE_SURVEY
-
-            missing = [s for s in STEP_REGISTRY
-                       if s not in actual and s not in STEPS_NOT_IN_A_STAGE_SURVEY]
+            # Full Survey must contain *every* STEP_REGISTRY step — no lag
+            # allowed, contrary to what this test assumed until 2026-08-21.
+            #
+            # The reconciler derives the expected chain from STEP_REGISTRY order,
+            # so an edge that skips a registry step reads as stale and is removed,
+            # truncating the definition. Observed twice: repo_arch_detect and
+            # repo_arch_coupling sit between repo_symbol_extraction and
+            # repo_sub_resource_survey, and while the authored document omitted
+            # them every reconciler run cut the chain there — 22 steps to 20, then
+            # to 7 on an earlier occasion.
+            #
+            # So a step being absent from a *stage* survey is a live option
+            # (test_reachability_audit.STEPS_NOT_IN_A_STAGE_SURVEY), but being
+            # absent from Full Survey is not: regenerate and re-author instead.
+            missing = [s for s in STEP_REGISTRY if s not in actual]
             extra = [s for s in actual if s not in STEP_REGISTRY]
         else:
             missing = [s for s in expected if s not in actual]
@@ -119,9 +124,10 @@ class TestAuthoredDefinitionsMatchTheirSource:
         actual = [s.re_analysis_step for s in reader.fetch(guid).steps]
 
         if expected == ["*"]:
-            # Subsequence rather than equality, for the lag described above: what
-            # is present must still be in registry order, which is what encodes
-            # the prerequisites.
+            # Subsequence rather than equality: the set is checked by the test
+            # above, and what matters here is that order follows STEP_REGISTRY,
+            # which is what encodes the prerequisites — and what the reconciler
+            # compares against.
             order = {k: i for i, k in enumerate(STEP_REGISTRY)}
             positions = [order[s] for s in actual if s in order]
             assert positions == sorted(positions), (
@@ -192,9 +198,22 @@ class TestTheByNameFallbackWorks:
             EgeriaDatabaseSurveyor,
         )
 
-        cataloged = [d for d in ProjectRegistry().list_databases() if d.egeria_asset_guid]
+        registry = ProjectRegistry()
+        # A cached GUID is not enough: after an Egeria reset the GUID is still on
+        # the row while the element is gone, and a recorded stale linkage is the
+        # expected state until someone resolves it. Asserting the fallback then
+        # tests the reset rather than the fallback, so skip with the reason
+        # instead of failing — this test is about the by-name mechanism, not
+        # about whether the catalog happens to be populated right now.
+        cataloged = [
+            d for d in registry.list_databases()
+            if d.egeria_asset_guid
+            and (registry.get_egeria_linkage("database", d.slug) or {}).get("status") != "stale"
+        ]
         if not cataloged:
-            pytest.skip("no database in this deployment is cataloged in Egeria")
+            pytest.skip("no database in this deployment has a live (non-stale) Egeria link — "
+                        "run `resource-explorer egeria-recheck` and resolve from "
+                        "Admin > Egeria Links to restore one")
 
         db = cataloged[0]
         cfg = get_config().egeria

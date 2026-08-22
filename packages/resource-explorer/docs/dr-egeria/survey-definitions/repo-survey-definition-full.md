@@ -380,6 +380,44 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Arch Detect
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_arch_detect
+
+### Description
+Recovers candidate architecture components from package manifests, deployment units (Dockerfile/compose), and ast-grep code markers — the deterministic half of architecture recovery (design doc §5.1).
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_arch_detect |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Arch Coupling
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_arch_coupling
+
+### Description
+Proposes additional architecture-component boundaries from import coupling and co-change coupling — the conventional, undeclared components (Agents, Core, Surveyors, ...) that manifests and code markers structurally cannot see (design doc §5.5, Phase 1 plan §4.1). Needs real git history, not just a checkout.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_arch_coupling |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Sub Resource Survey
 
 ### Qualified Name
@@ -674,6 +712,30 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_arch_detect
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_arch_detect
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_arch_coupling
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_arch_coupling
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_sub_resource_survey

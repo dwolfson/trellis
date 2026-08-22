@@ -518,6 +518,42 @@ async def resolve_stale_linkage(
     )
 
 
+class RecheckDetail(BaseModel):
+    entity_type: str
+    slug: str
+    guid: str
+    result: str    # "ok" | "stale" | "error"
+    detail: str = ""
+
+
+class RecheckResult(BaseModel):
+    checked: int
+    ok: int
+    stale: int
+    errors: int
+    skipped: int
+    details: list[RecheckDetail]
+
+
+@router.post("/linkage/recheck", response_model=RecheckResult)
+async def recheck_linkages(entity_type: list[str] | None = None) -> RecheckResult:
+    """Proactively probe Egeria for every cached GUID instead of waiting for
+    the reactive path (guard_linkage) to trip over one on next use.
+
+    This is the sweep behind `resource-explorer egeria-recheck` — see
+    egeria_linkage.recheck_all_linkages for why it both records new
+    divergences and clears ones that have since resolved. Runs in a thread:
+    it makes one network call per cataloged resource (~20 in a typical
+    deployment) and pyegeria's sync wrappers are blocking.
+    """
+    from resource_explorer.egeria_linkage import recheck_all_linkages
+
+    registry = ProjectRegistry()
+    result = await asyncio.to_thread(
+        recheck_all_linkages, registry, entity_types=entity_type)
+    return RecheckResult(**result)
+
+
 @router.post("/{slug}/reset", response_model=ResetResult)
 async def reset_egeria(slug: str) -> ResetResult:
     """Clear the cached Egeria asset GUID and all published survey records for a project.
