@@ -253,7 +253,8 @@ def _try_module_file(dotted_parts: list[str], root_prefix: str, fp_set: set[str]
     return None
 
 
-def roots_for_file(importing_file: str, source_roots: list[str]) -> list[str]:
+def roots_for_file(importing_file: str, source_roots: list[str],
+                   fp_set_hint: frozenset[str] | set[str] = frozenset()) -> list[str]:
     """`source_roots` reordered so the importing file's OWN enclosing roots
     come first, nearest first.
 
@@ -272,6 +273,29 @@ def roots_for_file(importing_file: str, source_roots: list[str]) -> list[str]:
     own = [r for r in source_roots
            if r != "." and (importing_file == r or importing_file.startswith(r + "/"))]
     own.sort(key=len, reverse=True)          # nearest enclosing root first
+
+    # A SCRIPT directory is its own resolution root; a PACKAGE directory is not.
+    #
+    # Python puts a script's own directory on sys.path[0], so `import sibling`
+    # works between loose scripts. Inside a package it does not — py3 removed
+    # implicit relative imports, so a bare name there resolves from sys.path,
+    # not from the neighbouring file. The presence of __init__.py is exactly
+    # that distinction, so it is what this tests.
+    #
+    # Without this, a flat script directory that is neither a manifest dir nor
+    # a deployment unit is no root at all and NONE of its sibling imports
+    # resolve. Measured on `scripts/arch-spike`: 0 intra-directory edges for
+    # files that plainly import each other. Downstream that reads as "no import
+    # signal", which is indistinguishable from a genuine cross-language seam —
+    # and co-change's seam rescue duly fired on it, breaking a ground-truth
+    # match that had nothing to do with language.
+    #
+    # Related to but distinct from the wrong-copy bug: there, two directories
+    # were both roots and the wrong one won; here there is no root at all.
+    own_dir = importing_file.rsplit("/", 1)[0] if "/" in importing_file else ""
+    if own_dir and own_dir not in own and f"{own_dir}/__init__.py" not in fp_set_hint:
+        own.append(own_dir)
+
     return own + [r for r in source_roots if r not in own]
 
 
@@ -480,7 +504,7 @@ def _build_python_edges(root: str, fp_set: set[str], roots: list[str]) -> tuple[
             kind = "absolute" if level == 0 else "relative"
             if level == 0:
                 if module:
-                    file_roots = roots_for_file(src, roots)
+                    file_roots = roots_for_file(src, roots, fp_set)
                     target = resolve_absolute(module, file_roots, fp_set)
                     if target is None and name:
                         target = resolve_absolute(f"{module}.{name}", file_roots, fp_set)

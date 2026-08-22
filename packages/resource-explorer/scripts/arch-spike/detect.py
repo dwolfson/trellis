@@ -26,16 +26,39 @@ def _coupling_components(root: str, target: str, first_party: list[str]) -> tupl
     already been run for this target (`signals/{target}-imports.json`), same
     graceful-absence pattern `code_markers.scan` uses for a missing ast-grep
     binary — a missing precomputed signal is a note, not an error, so targets
-    with no signal file (or no Python) still produce a valid IR."""
+    with no signal file (or no Python) still produce a valid IR.
+
+    **Uses the package's `coupling.propose()`, not this directory's own
+    (stale) `coupling.py`.** The two diverged: the local copy predates the
+    hierarchy work (`parent_slug`/`depth`, `_component_globs`,
+    `_rehome_dropped`) and the 2026-08-22 co-change rescue (design §4.1d,
+    finding 63) — both live only in `resource_explorer/surveyors/
+    arch_recovery/coupling.py` now. Scoring against the stale local version
+    would silently measure last month's proposer, not the one the task
+    (and the sub-surveyor that actually runs in RE) uses. The local
+    `coupling.py` is untouched — it is still the Task 3 boundary-scoring
+    harness (`python3 coupling.py trellis`), a separate diagnostic this
+    function never used anyway.
+
+    Co-change is loaded the same optional way as imports
+    (`signals/{target}-cochange.json`) and passed through — absent, it is
+    simply `[]` and `propose()` behaves exactly as it did import-only.
+    """
     path = os.path.join(SIGNALS_DIR, f"{target}-imports.json")
     if not os.path.isfile(path):
         return [], [], [f"coupling: no signals/{target}-imports.json — run imports.py "
                         f"first; coupling proposer skipped"]
     with open(path, encoding="utf-8") as fh:
         sig = json.load(fh)
-    import coupling  # local: keeps detect.py's default (no-coupling) path free of this import
+    cochange_path = os.path.join(SIGNALS_DIR, f"{target}-cochange.json")
+    cochange_pairs: list = []
+    if os.path.isfile(cochange_path):
+        with open(cochange_path, encoding="utf-8") as fh:
+            cochange_pairs = json.load(fh).get("pairs", [])
+    from resource_explorer.surveyors.arch_recovery import coupling  # local import: same
+    # graceful-absence style as the stale-copy note above explains
     package_roots = sorted({m["dir"] for m in python_manifests(root, first_party)}) or ["."]
-    return coupling.propose(set(first_party), package_roots, sig.get("edges", []))
+    return coupling.propose(set(first_party), package_roots, sig.get("edges", []), cochange_pairs)
 
 
 def _merge_agreeing(components: list) -> tuple[list, list]:

@@ -1330,3 +1330,49 @@ Written up as design §4.1d. **Not implemented** — `propose()` would need co-c
 separately from import edges rather than pooled, since pooling lets a noisy non-directional signal
 dilute a precise directional one. And the result is n=1 seam: a repo whose commits are "update
 everything" would show co-change everywhere and discriminate nothing.
+
+**64. Co-change bridges the seam — and the "regression" it appeared to cause was two measurement
+bugs stacked.**
+
+`propose()` now takes co-change edges, weighted **separately** from imports per §4.1d. The design is
+narrow on purpose: co-change acts as a **rescue** that fires only when a subtree has *zero* import
+signal — the literal "structurally invisible to imports" case, not merely low cohesion — and yields
+a new shape `connective-seam` capped at confidence 40, never `connective-library` or
+`connective-orchestrator`, because those claims need a direction co-change does not have. It can
+find a seam it cannot characterise.
+
+**The success criterion was met**: `web/static` stopped being absorbed as residue. It and
+`web/routes` are now sibling nodes under `web` — the maintainer's "web application, two
+substitutable sub-components" model, recovered from a signal that crosses languages.
+
+**But the reported headline was 6/11 strict containment, called a real regression. It was not.**
+Two separate measurement defects, both found by chasing it:
+
+**(a) A resolution gap — same family as finding 37, different mechanism.** `scripts/arch-spike` is
+neither a manifest directory nor a deployment unit, so it was **no source root at all** and *zero*
+of its sibling imports resolved, though the files plainly import each other. Downstream that reads
+as "no import signal" — indistinguishable from a genuine cross-language seam — so the co-change
+rescue fired on it and broke a ground-truth match having nothing to do with language.
+
+Fixed on a principle rather than a special case: **a script directory is its own resolution root; a
+package directory is not.** Python puts a script's directory on `sys.path[0]`, so `import sibling`
+works between loose scripts; inside a package it does not, since py3 removed implicit relative
+imports. `__init__.py` *is* that distinction, so it is what the check tests. Restored 13
+intra-directory edges. (Finding 37 was *two roots and the wrong one won*; this is *no root at all*.)
+
+**(b) The headline measure implemented half its own specification.** §2a: a component is matched by
+"an exact node, **or** a set of children whose union equals it". `strict_containment_score` checked
+only exact single-node equality, so every **refinement** counted as a miss — the exact failure §2a
+exists to prevent.
+
+| | containment |
+|---|---|
+| as reported | 6/11 |
+| + script-dir resolution | 6/11 *(cause changed, not outcome)* |
+| + §2a's union rule | **8/11** |
+
+**That is the third metric in this project with the same defect** — after component-set-by-name
+(finding 21) and ARI (finding 61). Each was a measure that silently contradicted a design decision
+it predated, and each time the contradiction presented as a regression in the work rather than a
+fault in the measure. Worth stating as a rule: **when a change that should help makes a number
+worse, check whether the number still encodes the design.**

@@ -165,6 +165,105 @@ def component_set_score(gt_names: set[str], det_names: set[str]) -> dict:
     }
 
 
+# ── strict containment (finding 61) ─────────────────────────────────────
+#
+# ARI/NMI compare two FLAT partitions and have no notion of one refining the
+# other — finding 61: applying a maintainer-endorsed correction that made the
+# detector's answer objectively righter (assigning `configdata`/`github` to
+# `Core`, `dashboard` to `Web backend` — exactly the components the detector
+# already proposes as nodes in their own right) made ARI worse, because a
+# component nested one level inside a matched ground-truth component reads to
+# ARI as disagreement. Per §2a that is precisely not an error (a refinement),
+# so ARI is not the right headline once ground truth carries a hierarchy.
+#
+# Strict containment asks a narrower, matcher-free question instead: for each
+# ground-truth component, does SOME proposed node's file set equal it
+# EXACTLY? No partial credit, no clustering metric — exact glob-expanded
+# equality, scored over the same `tracked` file set the rest of this script
+# uses. This is the manual measure finding 61 used to get "10/13" on the base
+# fixture; it is implemented here so it stops being manual.
+#
+# finding 62: a parent defined only by its children (`Web application`) has
+# no files of its own — `apply_revision`'s "New component: yes" path leaves
+# it with `files: []`. Scored literally, an empty set trivially fails
+# equality against everything, so a genuinely real component becomes
+# invisible rather than wrong. The fix mirrors finding 62's own suggestion:
+# a ground-truth component with no files of its own is scored against the
+# UNION of its declared `sub_components`' owned file sets (looked up by
+# name in the same tier), not against its own (empty) globs. A component
+# that already has explicit files (`Surveyors`, whose `sub_components` only
+# annotate internal structure — its glob already covers all of them) is
+# scored on those files exactly as before; the union rule only fires when
+# there is nothing else to score against.
+
+def _component_owned_files(name: str, comp: dict, root: str,
+                           tracked: set[str] | None, tier_comps: dict[str, dict],
+                           _seen: frozenset[str] = frozenset()) -> frozenset[str]:
+    own_globs = [f for f in comp.get("files", []) if not validate.PLACEHOLDER.search(f)]
+    if own_globs:
+        hits: set[str] = set()
+        for g in own_globs:
+            hits.update(validate.expand(g, root, tracked))
+        return frozenset(hits)
+    subs = comp.get("sub_components") or []
+    if not subs or name in _seen:
+        return frozenset()
+    union: set[str] = set()
+    for sub_name in subs:
+        sub_comp = tier_comps.get(sub_name)
+        if sub_comp is None:
+            continue   # a sub-component name the current tier doesn't carry
+        union |= _component_owned_files(sub_name, sub_comp, root, tracked,
+                                        tier_comps, _seen | {name})
+    return frozenset(union)
+
+
+def strict_containment_score(tier_comps: dict[str, dict], det_files_by_name: dict[str, list[str]],
+                             root: str, tracked: set[str] | None) -> dict:
+    """(matched, total, matched_names, unmatched_names) — finding 61's
+    headline measure. `det_files_by_name` is scoped/perspective-filtered the
+    same way `det_names_all` is elsewhere in `score()`."""
+    det_owned: dict[str, frozenset[str]] = {}
+    for name, globs in det_files_by_name.items():
+        hits: set[str] = set()
+        for g in globs:
+            hits.update(validate.expand(g, root, tracked))
+        det_owned[name] = frozenset(hits)
+    det_by_fileset: dict[frozenset[str], list[str]] = {}
+    for name, files in det_owned.items():
+        if files:
+            det_by_fileset.setdefault(files, []).append(name)
+
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for name, comp in sorted(tier_comps.items()):
+        gt_files = _component_owned_files(name, comp, root, tracked, tier_comps)
+        if not gt_files:
+            unmatched.append(name)
+            continue
+        if gt_files in det_by_fileset:
+            matched.append(name)                      # exact node
+            continue
+        # §2a's other half: "an exact node, OR a set of children whose union
+        # equals it". Without this the measure credits only exact matches and
+        # reads every REFINEMENT as a miss — the precise failure §2a exists to
+        # prevent, and the same shape as ARI's (finding 61): a measure that
+        # silently contradicts a design decision it predates.
+        #
+        # Union over detector nodes wholly INSIDE the component, so a node that
+        # spills outside cannot help cover it. Exhaustive cover only: partial
+        # cover is not a match.
+        inside = [f for f in det_owned.values() if f and f <= gt_files]
+        if inside and frozenset().union(*inside) == gt_files:
+            matched.append(name)                      # covered by refinements
+        else:
+            unmatched.append(name)
+    return {
+        "matched": len(matched), "total": len(matched) + len(unmatched),
+        "matched_names": sorted(matched), "unmatched_names": sorted(unmatched),
+    }
+
+
 # ── file-partition agreement ────────────────────────────────────────────
 
 def file_assignment(components: dict[str, list[str]], root: str,
@@ -277,14 +376,17 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
         cset = component_set_score(gt_names, det_names_all)
 
         fpart = None
+        containment = None
         if files_required and root and tracked is not None:
             gt_files_by_name = {n: [f for f in c["files"] if not validate.PLACEHOLDER.search(f)]
                                  for n, c in tier_comps.items()}
             gt_files_by_name = {n: g for n, g in gt_files_by_name.items() if g}
             gt_file_map = file_assignment(gt_files_by_name, root, tracked)
             fpart = file_partition_score(gt_file_map, det_file_map)
+            containment = strict_containment_score(tier_comps, det_files_by_name, root, tracked)
 
-        out["tiers"][tier] = {"component_set": cset, "file_partition": fpart}
+        out["tiers"][tier] = {"component_set": cset, "file_partition": fpart,
+                              "strict_containment": containment}
 
     return out
 
@@ -314,7 +416,15 @@ def render(result: dict) -> str:
         else:
             lines.append(f"    file-partition: ARI={fp['ari']} NMI={fp['nmi']} "
                          f"over {fp['common']} files both sides assign "
-                         f"(gt={fp['gt_assigned']}, detector={fp['detector_assigned']})")
+                         f"(gt={fp['gt_assigned']}, detector={fp['detector_assigned']}) "
+                         f"— projected-level diagnostic only, see finding 61")
+        sc = tier.get("strict_containment")
+        if sc is not None:
+            lines.append(f"    strict containment (finding 61 — headline): "
+                         f"{sc['matched']}/{sc['total']} exact file-set matches")
+            if sc["unmatched_names"]:
+                lines.append(f"      unmatched: {', '.join(sc['unmatched_names'][:12])}"
+                             + (" ..." if len(sc["unmatched_names"]) > 12 else ""))
     return "\n".join(lines)
 
 

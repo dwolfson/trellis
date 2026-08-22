@@ -15,10 +15,16 @@ need different resources, even though grouping them into one Survey
 Definition still shares one checkout per resource kind via `_run_batch`.
 
 Co-change is computed and attached as a *supporting* metric
-(`cochange_cohesion`) alongside each proposed component, but — matching
-arch_recovery.coupling.propose()'s own documented behaviour — it does NOT
-feed the shape classification itself; only import edges are directional
-enough for the fan-in/fan-out dispersion rule (finding 34).
+(`cochange_cohesion`) alongside every proposed component, and — as of
+2026-08-22 (design §4.1d, finding 63) — is also passed into
+`coupling.propose()` itself, where it can rescue a subtree from
+`merge-candidate` when import cohesion had literally nothing to say about
+it (e.g. `web/static` — no Python imports touch pure JS/HTML/CSS). It still
+never feeds the shape classification's fan-in/fan-out dispersion rule
+(finding 34) directly — only import edges are directional enough for
+that — so a co-change rescue always comes out `connective-seam`, never
+`connective-library`/`connective-orchestrator`, and at a capped confidence.
+See `coupling.py`'s module docstring for the full reasoning.
 """
 from __future__ import annotations
 
@@ -123,7 +129,9 @@ class ArchCouplingSurveyor(BaseSurveyor):
             )
 
             package_roots = sorted({m["dir"] for m in detectors.python_manifests(root, first_party)}) or ["."]
-            components, evidence, notes = coupling.propose(set(first_party), package_roots, graph["edges"])
+            components, evidence, notes = coupling.propose(
+                set(first_party), package_roots, graph["edges"], cochange_result["pairs"],
+            )
 
             # Coupling is entirely dependent on the import graph (module
             # docstring) — unlike repo_arch_detect, there is no

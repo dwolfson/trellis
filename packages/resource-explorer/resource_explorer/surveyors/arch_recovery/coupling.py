@@ -13,12 +13,32 @@ Everything below is otherwise a straight port — see the arch-spike README
 (findings 33/34/35/39/41/43/44) for how this shape was arrived at, and do
 not re-tune `COHESIVE_BAR`/`DISPERSION_BAR` to move a score (task rule).
 
-Only import edges feed `propose()` — they are directional (source ->
-target), which fan_in/fan_out requires. Co-change pairs are undirected and
-are NOT fed into the shape classification, matching the spike exactly.
-`cohesion_table()` is kept and exposed anyway so a caller (the
+**2026-08-22 — co-change now feeds `propose()`, weighted separately, not
+pooled** (design §4.1d, README finding 63). `classify_subtree`'s fan-in/
+fan-out dispersion is unchanged and still reads import edges only — they
+are directional (source -> target), which the library/orchestrator
+distinction needs, and co-change has no direction at all. Pooling the two
+into one edge list would let a noisy, undirected signal dilute a precise,
+directional one, which is exactly what §4.1d rules out.
+
+Instead, co-change is a *rescue*, applied only where import cohesion is
+structurally blind rather than merely weak: a candidate subtree with ZERO
+import edges touching it at all (`internal == 0`, no fan-in, no fan-out —
+e.g. `web/static`, pure JS/HTML/CSS, which can never import `web/routes`'s
+Python). Only there does `classify_subtree` fall through to its
+`merge-candidate` default for want of any evidence, and only there does
+`classify_by_cochange` get a say — a subtree with *some* import signal that
+was legitimately called `merge-candidate` (externals concentrated on one
+neighbour) is left alone, because imports already answered that question.
+
+`classify_by_cochange` can only say "this belongs somewhere" — shape
+`connective-seam`, confidence capped well below any import-derived shape
+(`COCHANGE_SEAM_CONFIDENCE`) — never `connective-library` or
+`connective-orchestrator`, because those claims need direction and
+co-change has none (§4.1d "Honest limits": "co-change cannot type a
+component"). `cohesion_table()` is kept and exposed anyway so a caller (the
 repo_arch_coupling surveyor) can attach co-change cohesion as *supporting*
-evidence alongside a proposal without it influencing the proposal itself.
+evidence alongside any proposal, rescued or not.
 """
 from __future__ import annotations
 
@@ -107,6 +127,19 @@ def cohesion_table(file_subtree: dict[str, str], edges: list[dict],
 COHESIVE_BAR = 0.35
 DISPERSION_BAR = 0.6
 
+# ── co-change rescue thresholds — new, not a re-tune of the two above ────
+#
+# `COHESIVE_BAR`/`DISPERSION_BAR` are the import-cohesion bars the task rule
+# protects; these are a different signal's own bar, introduced because
+# co-change did not have one before. Not tuned against any target's score —
+# `COCHANGE_SEAM_MIN_WEIGHT` says "more than one coincidental co-commit",
+# which is the same reasoning `cochange.py`'s own `--max-files` cap uses in
+# the opposite direction (guard against noise from a single event).
+
+COCHANGE_SEAM_MIN_WEIGHT = 2
+COCHANGE_SEAM_CONFIDENCE = 40  # below every import-derived shape (55-75) —
+                                # real evidence, deliberately not overstated
+
 
 def _dispersion(counter: dict) -> float:
     """Normalised entropy of external edge weights across neighbours.
@@ -145,6 +178,69 @@ def classify_subtree(internal: float, fan_in: dict, fan_out: dict) -> tuple[str,
     return "merge-candidate", 0, (
         f"low cohesion ({cohesion:.2f}) and external edges concentrated on "
         f"{dominant} — belongs to it rather than standing alone")
+
+
+def _cochange_breakdown(file_subtree: dict[str, str], edges: list[dict],
+                        a_key: str, b_key: str, weight_key: str) -> dict[str, dict]:
+    """subtree -> {"internal": w, "neighbors": {other_subtree: w}} — the
+    undirected sibling of `_neighbor_breakdown`. Deliberately has no
+    fan_in/fan_out split: co-change pairs are unordered (`a < b` in
+    `cochange.py`'s own output), so treating one side as source and the
+    other as target would manufacture a direction the signal does not have
+    — exactly the pooling design §4.1d rules out. Both ends of a
+    cross-subtree pair receive the same weight in the other's `neighbors`.
+    """
+    table: dict[str, dict] = {}
+
+    def row(sub: str) -> dict:
+        return table.setdefault(sub, {"internal": 0, "neighbors": {}})
+
+    for e in edges:
+        sa, sb = file_subtree.get(e[a_key]), file_subtree.get(e[b_key])
+        if sa is None and sb is None:
+            continue
+        w = e.get(weight_key, 1)
+        if sa is not None and sa == sb:
+            row(sa)["internal"] += w
+        elif sa is not None and sb is not None:
+            row(sa)["neighbors"][sb] = row(sa)["neighbors"].get(sb, 0) + w
+            row(sb)["neighbors"][sa] = row(sb)["neighbors"].get(sa, 0) + w
+        # else: one side has no candidate subtree — real co-change with no
+        # neighbour identity to attribute it to, same reasoning as the
+        # import breakdown's equivalent branch.
+    return table
+
+
+def classify_by_cochange(internal: float, neighbors: dict) -> tuple[str, float, str] | None:
+    """Co-change's own, deliberately narrower, classification — called only
+    when `classify_subtree` found NO import evidence at all (see module
+    docstring). Returns `None` when co-change has nothing usable either, so
+    the caller falls back to the ordinary `merge-candidate` verdict.
+
+    Never returns `connective-library`/`connective-orchestrator` — those
+    assert a *direction* (fan-in vs fan-out) that an undirected signal
+    cannot support (design §4.1d "Honest limits": "co-change cannot type a
+    component ... it can find a seam it cannot characterise"). The one
+    shape this can propose, `connective-seam`, says only "these files
+    belong together" and carries a confidence capped below anything imports
+    produce.
+    """
+    total_neighbor = sum(neighbors.values())
+    total = internal + total_neighbor
+    if total < COCHANGE_SEAM_MIN_WEIGHT or not neighbors:
+        return None
+    dominant = max(neighbors, key=neighbors.get)
+    cohesion = internal / total if total else 0.0
+    if internal >= total_neighbor:
+        why = (f"no import signal (different language, or otherwise structurally "
+               f"invisible to import cohesion) — co-change ties its files to each "
+               f"other (internal weight {internal} of {total}); undirected, so it "
+               f"cannot be typed library or orchestrator")
+    else:
+        why = (f"no import signal — co-change links it to {dominant} "
+               f"(cross-boundary weight {neighbors[dominant]} of {total}); "
+               f"undirected, so it cannot be typed library or orchestrator")
+    return "connective-seam", COCHANGE_SEAM_CONFIDENCE, why
 
 
 def modularity_contribution(internal: float, degree: float, total_weight: float) -> float:
@@ -259,13 +355,22 @@ def _rehome_dropped(subtree_files: dict[str, set[str]], hierarchy: dict[str, dic
 
 
 def propose(tracked: set[str], package_roots: list[str],
-           import_edges: list[dict]) -> tuple[list, list, list]:
+           import_edges: list[dict],
+           cochange_edges: list[dict] | None = None) -> tuple[list, list, list]:
     """Coupling as PROPOSER (plan §4.1) — subtrees classified `cohesive`,
-    `connective-library` or `connective-orchestrator` become `Component`
+    `connective-library`, `connective-orchestrator` or (co-change rescue
+    only, see module docstring) `connective-seam` become `Component`
     entries with `perspective="logical"`, the same perspective
     `code_markers.propose` uses. `merge-candidate` subtrees are
     deliberately never emitted — they are the one shape `classify_subtree`
-    says is NOT a component (finding 34).
+    says is NOT a component (finding 34) — unless co-change rescues them.
+
+    `cochange_edges` is optional and backward compatible: omitted or empty,
+    `propose()` behaves exactly as before (import-only). When given
+    (`cochange.build_cochange(...)["pairs"]`, `a`/`b`/`cochange_count`
+    shaped), it is consulted ONLY for subtrees `classify_subtree` could not
+    see at all — never pooled into the import edge list, never allowed to
+    override a shape imports actually determined (design §4.1d).
 
     Every OTHER candidate subtree — every directory holding >=2 first-party
     files, at every depth — is emitted (approach-portfolio-model.md §2a):
@@ -289,15 +394,30 @@ def propose(tracked: set[str], package_roots: list[str],
         subtree_files.setdefault(s, set()).add(f)
 
     breakdown = _neighbor_breakdown(file_subtree, import_edges, "source", "target", "weight")
+    coc_breakdown = _cochange_breakdown(file_subtree, cochange_edges or [], "a", "b", "cochange_count")
 
     classified: dict[str, tuple[str, float, str]] = {}
     shape_counts: dict[str, int] = {}
     emitted: set[str] = set()
+    cochange_rescued: set[str] = set()
     for sub, files in sorted(subtree_files.items()):
         if len(files) < 2:
             continue
         row = breakdown.get(sub, {"internal": 0, "fan_in": {}, "fan_out": {}})
         shape, confidence, why = classify_subtree(row["internal"], row["fan_in"], row["fan_out"])
+        # Co-change rescue — only when imports had literally nothing to say
+        # about this subtree (no internal edges, no fan-in, no fan-out).
+        # A subtree imports DID have an opinion about (even a
+        # merge-candidate opinion) is left exactly as classify_subtree
+        # found it — imports already answered that question, and letting
+        # co-change override it would be pooling, not weighting separately.
+        if shape == "merge-candidate" and not row["internal"] and not row["fan_in"] and not row["fan_out"]:
+            coc_row = coc_breakdown.get(sub)
+            if coc_row is not None:
+                rescued = classify_by_cochange(coc_row["internal"], coc_row["neighbors"])
+                if rescued is not None:
+                    shape, confidence, why = rescued
+                    cochange_rescued.add(sub)
         classified[sub] = (shape, confidence, why)
         shape_counts[shape] = shape_counts.get(shape, 0) + 1
         if shape != "merge-candidate":
@@ -351,4 +471,11 @@ def propose(tracked: set[str], package_roots: list[str],
         f"(shapes: {', '.join(f'{k}={v}' for k, v in sorted(shape_counts.items()))}; "
         f"COHESIVE_BAR={COHESIVE_BAR}, DISPERSION_BAR={DISPERSION_BAR})"
     )
+    if cochange_rescued:
+        notes.append(
+            f"coupling: {len(cochange_rescued)} subtree(s) had zero import signal "
+            f"and were rescued from merge-candidate by co-change alone "
+            f"(connective-seam, confidence capped at {COCHANGE_SEAM_CONFIDENCE}): "
+            f"{', '.join(sorted(cochange_rescued))}"
+        )
     return components, evidence, notes
