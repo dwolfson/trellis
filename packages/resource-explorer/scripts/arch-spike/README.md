@@ -1142,3 +1142,63 @@ so the next attempt starts from the hierarchy rather than re-running the depth e
 **What was salvaged.** The flat case is no longer structurally invisible: at multiple depths
 `egeria-workspaces` yields 6 candidates where the fixed rule yielded zero. That half of finding 55
 has a working mechanism whenever the hierarchy question is settled.
+
+---
+
+## Six new repo shapes — three findings, two of them defects
+
+Dan added ~20 repos. Six were run through the shipped steps, chosen to include cases that *should*
+fail rather than only ones that should work.
+
+| repo | shape | components | depth profile |
+|---|---|---|---|
+| `sqlglot` | single Python package | 11 | `{0:5, 1:6}` |
+| `openlineage` | multi-language | 34 | `{0:18, 1:7, 2:4, 3:4, 4:1}` |
+| `unitycatalog` | Java/Scala multi-module | 16 | `{0:4, 1:1, 2:10, 3:1}` |
+| `unitycatalog_rs` | **Rust** | **0** | — |
+| `ryoma` | Python app | 31 | `{0:1, 1:5, 2:4, 3:21}` |
+| `workshops` | **non-code materials** | **45** | `{0:43, 1:2}` |
+
+**57. `unverified` is not wired, so an unsupported language is a silent zero — the exact failure the
+label exists to prevent.** `unitycatalog_rs` is Rust. There is no Rust extractor, so coupling cannot
+see anything; `imports.py` handles Python and Java only. It returned **0 components and recorded no
+outcome at all** — verified, zero component scopes persisted.
+
+That is indistinguishable from *"this repo genuinely has no components"*, which is precisely the
+distinction `step_outcome.py` was built for: **a zero from an extractor that cannot read the
+language is not evidence about the repo.** The vocabulary exists, the constructor enforces the rule,
+and the detect/coupling steps never emit `unverified` for an unreadable language. First real test
+outside the cases it was designed against, and it failed.
+
+Fix is small — the steps should emit `StepOutcome(UNVERIFIED, cause="no_supported_source")` when the
+first-party set contains no extractable language — but it needs doing before any corpus sweep, or
+every Rust, Go and C# repo will read as architecture-free.
+
+**58. A repo with no architecture got 45 components, 44 of them from deployment artifacts.**
+`workshops` is OpenLineage's tutorial materials. It proposed `e3-airflow`, `airflow-scheduler`,
+`airflow-worker`, `flower` and 41 more — because workshop examples *contain compose files*, and the
+deployment detector treats every service in every compose file as a component.
+
+The detector cannot tell **"this repo deploys Airflow"** from **"this repo contains a tutorial that
+shows you how to deploy Airflow."** Both are compose services declaring container names. Precision
+on a non-software repo is near zero, and nothing in the output signals low confidence — the
+components look exactly like real ones.
+
+This is the mirror of finding 57: one repo returns nothing when it should say "cannot tell", the
+other returns 45 things when it should say "nothing here". Neither failure is visible from the
+output alone.
+
+**59. Depth profiles do not cluster, which settles finding 56's open question in favour of the
+hierarchy.** Across six repos the distributions share no shape: `sqlglot` is flat
+(`{0:5, 1:6}`), `ryoma` is depth-3-heavy (21 of 31), `unitycatalog` is depth-2-heavy (10 of 16),
+`workshops` is depth-0 (43 of 45), `openlineage` spreads across five levels.
+
+Finding 56 left two candidate answers: **detect the repo's shape and pick a depth rule**, or **emit
+the hierarchy and let the consumer choose a level**. If shapes clustered into a few families the
+first would be tractable. They do not — six repos gave six profiles. That is evidence for the
+hierarchy, and it is now grounded in more than the three repos finding 56 had.
+
+**On the sample.** These six can settle shape questions because those need variety, not ground
+truth. They **cannot** advance `Backlog.md`'s measurement re-check, which needs *pre-registered*
+ground truth per target — and writing that is the actual cost. Two or three of these with genuinely
+different shapes would be worth more than all twenty.
