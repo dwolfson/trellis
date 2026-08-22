@@ -552,3 +552,35 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and op
 Every repo download (full ingest, incremental refresh, Coarse Profile's `refresh_profile()`, symbol-only extraction, single-collection re-embed — confirmed all 5 call sites 2026-08-10) already downloads into a `tempfile.TemporaryDirectory()`, self-cleaning on the `with` block's exit — success, error, or exception. No local clone persists anywhere by design; disk usage from a repo download is transient, existing only for the duration of that one run. The one non-`TemporaryDirectory` temp file (notebook parsing, `NamedTemporaryFile(delete=False)`) is explicitly `os.unlink()`'d in a `finally` block.
 
 The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-download skips the `with` block's cleanup entirely, potentially leaving an orphaned temp dir (partial zipball) in the OS temp directory. Rare, self-limiting (each leftover is at most one repo's zip; the OS's own temp-dir conventions eventually reclaim it), and not actively guarded against today. A small startup sweep clearing stale resource-explorer-tagged temp dirs from a previous crash would close it — not worth building unless actual `/tmp` bloat shows up in practice.
+---
+
+### Documentation as source, as dated source, and as signal (design §5.5a)
+
+Three implementable items came out of the Milvus ground-truth exercise (spike README findings 65–67).
+All three are Discovery-tier by rule 17's test — cheap, and they gate the expensive tiers.
+
+**1. Step 0 needs an outward hop to the project's doc site.** §5.2 step 0 reads in-repo docs only, and
+Milvus proves that insufficient: the authoritative logical architecture is at `milvus.io`, while
+`milvus-io/milvus`'s own `docs/` has a README, `design-docs/`, `agent_guides/` and `archive/` but not
+the front-door architecture page. Resolve the doc site from README links, repository metadata, or the
+package manifest homepage, and treat a published architecture page as a first-class distillation
+input. One fetch, once. Open question: how to recognise *which* published page is the architecture
+page without hand-curation — a per-project hint in the fixture is fine to start.
+
+**2. Path-dating, to put a vintage on any prose architecture.** `GET
+/repos/{o}/{r}/commits?path={p}&per_page=1` dates any path; for a path that no longer exists that is
+effectively its removal date. Vintage is bounded above by the newest dead path a description cites;
+blind spot is bounded below by the churn of live paths it omits. Verified on Milvus — four calls
+dated a stale description at ~17 months old without reading any Go. Should run on **any** prose
+architecture we consume *and on our own recovered blueprints*, with the dates carried in §5.4
+evidence. Cheap to build; the only real design choice is where unresolvable paths surface, and the
+answer is probably "as their own outcome", never silently as detector misses.
+
+**3. Doc-health as a reported signal.** Not what the docs say — whether they exist and are kept
+current. Compare commit recency of doc paths against code paths; note whether stale docs are archived
+(Milvus maintains `docs/archive/`, which is a stronger marker than merely having docs) or left in
+place. Milvus's lag is one day. This is the measurable half of the triage judgement finding 58 needed
+a human for. **Report as dated evidence, do not rank on it** — a maintained doc site can coexist with
+rotting in-repo docs, and a small stable library may document lightly on purpose. A naive `docs/` mtime
+is also too coarse on its own (one typo fix moves it); prefer a distribution over doc paths, and
+per-component lag where §6.0 scope locators make that possible.
