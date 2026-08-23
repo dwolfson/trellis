@@ -965,6 +965,48 @@ Three consequences for this design:
    the interpretation. Recording "docs lag code by N days" is defensible; ranking projects by it is
    not.
 
+### 5.5b What the repo *is* — classification before analysis
+
+**Maintainer direction, 2026-08-22.** Before asking *what is the architecture of this repo*, ask
+**what does this repo represent**: a library, an application, middleware, a tutorial, a set of
+samples, documentation, a tooling repo — or a *family* of repos playing different roles.
+
+The reason is not taxonomy for its own sake. **The classification determines which analyses are
+relevant and which questions are worth asking.** Recovering a solution blueprint from a tutorial
+repository is not a weak result; it is the wrong question. A samples repo has no architecture to
+recover, and reporting one is a false positive no confidence score can rescue. Middleware and an
+application have different port/wire expectations. A documentation repo should be answering "is it
+current, and does it match the code it documents" (§5.5a) rather than "what are its components".
+
+This generalises three things already established rather than adding a new idea:
+
+- **Spike finding 58/60** — the `workshops` false positives were settled by a human reading a README
+  that said the repo's *intent* was a tutorial. That is exactly this classification, applied by hand,
+  once.
+- **§5.5a(c) doc health** — already framed as "the measurable half of the triage judgement finding 58
+  needed a human for". Repo classification is the other half of the same triage.
+- **Rule 17's funnel** — Discovery exists to decide whether the expensive tiers are worth paying for.
+  Classification is the cheapest possible gate: it can rule out whole *categories* of analysis, not
+  just individual steps.
+
+Signals already in hand, none of which need new collection: the README's own statement of intent
+(finding 60), published architecture documentation and whether any exists (§5.5a), manifest
+`packages`/`bin`/`scripts` declarations, presence or absence of deployment artifacts (a repo with no
+Dockerfile and no compose file is not an application — `trellis.md` records exactly that), the ratio
+of test/example/notebook files to source, and dependency direction (a library is depended upon; an
+application depends).
+
+**Open, deliberately.** The vocabulary is not chosen yet, and the temptation to invent a closed enum
+should be resisted until it is checked against Egeria's existing types — `SoftwareCapability`
+subtypes and `plannedDeployedImplementationType` may already carry part of this, the same way §3.1's
+13-value `SolutionComponentType` turned out to exist rather than needing invention. Whether one repo
+gets one classification, or a monorepo gets one per workspace member, is also open — `trellis` alone
+contains an application, two libraries and a spike.
+
+**A companion question — capturing the user's intent — was raised at the same time and deliberately
+deferred to a separate discussion.** What the repo *is* and what the user *wants from it* are two
+different filters on which analyses matter, and conflating them would be a mistake.
+
 ### 5.6 Tooling — what to adopt, and what it costs
 
 Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no

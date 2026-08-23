@@ -732,3 +732,29 @@ already defines `partial` for exactly this state and the scorer never emits it. 
 repo measurement re-check**, or that run reports a wall of zeros that conceals real near-misses —
 which is the same class of mistake as the three metrics that silently contradicted design decisions
 they predated.
+
+---
+
+### Repo classification — what the repo *represents*, before what its architecture is
+
+**Maintainer direction, 2026-08-22; design §5.5b.** Classify a repo (or each member of a repo family)
+as library / application / middleware / tutorial / samples / documentation / tooling, **because the
+classification decides which analyses and which questions are relevant.** Recovering a blueprint from
+a tutorial repo is not a weak result — it is the wrong question, and spike finding 58's `workshops`
+false positives were settled exactly this way, by a human reading a README that stated the repo's
+intent.
+
+Cheapest possible funnel gate (rule 17): it rules out whole *categories* of analysis rather than
+individual steps. Every signal it needs is already collected — README intent statements, whether
+published architecture docs exist at all, manifest declarations, absence of deployment artifacts,
+test/example/notebook ratios, and dependency direction.
+
+Open on purpose: **do not invent a closed vocabulary** before checking Egeria's existing types
+(`SoftwareCapability` subtypes, `plannedDeployedImplementationType`) — §3.1's 13-value
+`SolutionComponentType` turned out to already exist rather than needing invention. Also open: whether
+a monorepo gets one classification or one per workspace member (`trellis` alone holds an application,
+two libraries and a spike).
+
+**Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
+What the repo *is* and what the user *wants from it* are two different filters on which analyses
+matter; conflating them would be a mistake.
