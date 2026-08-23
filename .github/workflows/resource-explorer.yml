@@ -29,6 +29,11 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # GitHub's default is 360 minutes. The first run sat 20+ minutes on a step
+    # that takes 5 seconds locally (see the embedding-model cache below), and
+    # would have burned six hours before failing. A suite that takes ~3 minutes
+    # locally has no business running for 30.
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -84,6 +89,17 @@ jobs:
         # "Extra `dev` is not defined in the project's optional-dependencies
         # table". uv still resolves the whole workspace from here.
         run: uv sync --extra dev
+
+      - name: Cache the sentence-transformers model
+        # The pgvector tier calls MultiCollectionStore.insert(), which embeds
+        # its text — so a cold runner downloads all-MiniLM-L6-v2 (~90MB) from
+        # HuggingFace and warms torch before a single assertion runs. That is
+        # what made the first run look hung. Cached by the model name so the
+        # key changes if the model does.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-${{ runner.os }}
 
       - name: Create the schema and the vector extension
         run: |
