@@ -610,3 +610,40 @@ class TestFinding75NestedModuleRoots:
 
         assert subs == {"svc"}
         assert "" not in subs and "." not in subs
+
+
+class TestFinding78EntryPointDetection:
+    """Finding 78: a Go executable is a package declaring `package main`, not a
+    directory containing a file named `main.go`. Kubernetes's entry points are
+    `cmd/kube-scheduler/scheduler.go`, `cmd/kubelet/kubelet.go` and so on, so
+    the filename test missed every component that mattered."""
+
+    def test_entry_point_not_named_main_go_is_still_detected(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "cmd/server/server.go", "package main\n\nfunc main() {}\n")
+        _git_init(root)
+        subs = {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs["cmd/server"]["has_main"] is True
+
+    def test_a_library_package_is_not_an_entry_point(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "lib/main.go", "package lib\n")   # named main.go, NOT package main
+        _git_init(root)
+        subs = {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs["lib"]["has_main"] is False
+
+    def test_a_nested_package_main_does_not_type_the_parent(self, tmp_path):
+        """Scanning the whole subtree typed `pkg/controlplane` as an executable
+        because some nested test helper declares `package main`."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "pkg/lib/lib.go", "package lib\n")
+        _write(root, "pkg/lib/testhelper/gen.go", "package main\n\nfunc main() {}\n")
+        _git_init(root)
+        subs = {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs["pkg/lib"]["has_main"] is False

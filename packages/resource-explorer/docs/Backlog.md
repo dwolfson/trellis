@@ -818,5 +818,21 @@ matter; conflating them would be a mistake.
   2–3 nodes (`kube-controller-manager` = `cmd/kube-controller-manager` + `pkg/controller`), and *all*
   of them must be in the window. Until something merges the `cmd/X` and `pkg/X` arms into one
   candidate — which is what the ground truth declares — each such component costs 2–3 slots instead
-  of 1. **That merge is the next concrete piece of work**, and it is worth more than further ranking
-  refinement.
+  of 1.
+
+**Attempted and does not work by import evidence (finding 78).** Strict-majority dominance from entry
+point to package finds the right partner 6 times out of 7 (`pkg/scheduler` share 1.00,
+`pkg/controller` 0.97, `pkg/proxy` 0.97, `pkg/kubelet` 0.83) **and over-reaches every time**, pulling
+in 3–44 extras such as `pkg/util/iptables` and `pkg/apis/*`. No merged set equals the ground truth.
+The distinction between "`pkg/proxy` **is** kube-proxy's implementation" and "`pkg/util/iptables` is a
+utility it **uses**" is not encoded in the import graph — both are imports dominated by one binary.
+
+The pairing *is* recoverable by name (`kube-scheduler`↔`scheduler` after prefix-stripping; Milvus's
+`internal/proxy` + `internal/distributed/proxy`), but **that is fitting to the two repos measured** and
+would be believed only after validating on a repo nobody here has looked at. Left open deliberately
+rather than shipped.
+
+**A real fix did come out of it:** entry points are packages declaring `package main`, not
+directories containing a file called `main.go` — Kubernetes's are `scheduler.go`, `kubelet.go`,
+`proxy.go`. Closes the `has_main` type-inference weakness; Prometheus no longer mistypes `promql`,
+`util` and `documentation` as `Console Command`.

@@ -267,6 +267,43 @@ def classify(manifest: dict) -> tuple[str | None, int, str]:
     return None, 0, "manifest declares neither entry point nor build system"
 
 
+PACKAGE_MAIN = re.compile(r"^package\s+main\s*$", re.M)
+
+
+def _declares_main(root: str, comp_dir: str, files: list[str]) -> bool:
+    """Is this component an executable — i.e. does a `.go` file **directly in
+    its root** declare `package main`?
+
+    Two corrections over the original `basename == "main.go"` test, both from
+    Kubernetes (finding 78):
+
+    * **Go entry points are not required to be called `main.go`.** `k8s`'s are
+      `cmd/kube-scheduler/scheduler.go`, `cmd/kubelet/kubelet.go` and so on, so
+      a filename test missed every one of the six components that matter and
+      left the entry-point set populated by test binaries instead.
+    * **Only the component's own root counts.** Scanning the whole subtree
+      typed `pkg/controlplane` as an executable because *some* nested test
+      helper declares `package main`.
+
+    Same shape as the container rule (finding 72): the language says what a
+    thing is; a filename convention only usually agrees.
+    """
+    prefix = (comp_dir.rstrip("/") + "/") if comp_dir else ""
+    for rel in files:
+        if not rel.endswith(".go"):
+            continue
+        if "/" in rel[len(prefix):]:          # not directly in the root
+            continue
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+                head = fh.read(4096)
+        except OSError:
+            continue
+        if PACKAGE_MAIN.search(head):
+            return True
+    return False
+
+
 def go_subsystems(root: str, files: list[str]) -> list[dict]:
     """Go **package trees** — the component unit a Go repo actually has.
 
@@ -365,7 +402,7 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
             entry["files"].append(rel)
             break
     for entry in found.values():
-        entry["has_main"] = any(os.path.basename(f) == "main.go" for f in entry["files"])
+        entry["has_main"] = _declares_main(root, entry["dir"], entry["files"])
     return sorted(found.values(), key=lambda e: e["dir"])
 
 

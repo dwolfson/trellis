@@ -2190,3 +2190,78 @@ Ranking is therefore **worth doing and not sufficient on its own**. The remainin
 until something merges `cmd/X` with `pkg/X` into one candidate — which is what the ground truth
 actually declares — every union-matched component costs two or three slots in the window instead of
 one.
+
+---
+
+**78. The `cmd/X` + `pkg/X` merge: one real fix, and a clean negative result.**
+
+Finding 77 left this as the next concrete work — merge the two arms of a union so a component costs
+one slot in the ranking window instead of two or three. Attempted, and it does not work by import
+evidence. Recorded in full, because the reason is more useful than the attempt.
+
+### The real fix found along the way: entry points are `package main`, not `main.go`
+
+Measuring which packages `cmd/*` imports produced nonsense at first — `pkg/scheduler`'s top importer
+was `integration` (a *test* binary), and `cmd/kube-scheduler` did not appear in the entry-point set
+at all. Cause: `has_main` tested `basename(f) == "main.go"`. **Kubernetes's entry points are
+`cmd/kube-scheduler/scheduler.go`, `cmd/kubelet/kubelet.go`, `cmd/kube-proxy/proxy.go`** — the
+filename test missed every one of the six components that matter.
+
+Two corrections, both Go semantics rather than convention — the same lesson as finding 72's container
+rule:
+
+* detect `^package main` in the file's own text, not a filename;
+* scan only files **directly in the component root**, since scanning the subtree typed
+  `pkg/controlplane` as an executable because a nested test helper declares `package main`.
+
+**This closes finding 70's known type-inference weakness.** Prometheus no longer mistypes `promql`,
+`util` and `documentation` as `Console Command`; its 7 executables are now `cmd/prometheus`,
+`cmd/promtool` and five genuine example/generator mains. Kubernetes resolves 60 real `cmd/*`
+binaries. No score changed: 11/11, 3/5, 6/6. Three regression tests added; suite 39 passed.
+
+### With correct entry points, the dominance signal is excellent
+
+Import weight from entry point to package, restricted to non-entry targets:
+
+| ground-truth partner | dominant importer | share |
+|---|---|---|
+| `pkg/scheduler` | `kube-scheduler` | **1.00** |
+| `pkg/controlplane`, `pkg/kubeapiserver` | `kube-apiserver` | **1.00** |
+| `pkg/controller` | `kube-controller-manager` | **0.97** |
+| `pkg/proxy` | `kube-proxy` | **0.97** |
+| `pkg/kubelet` | `kubelet` | **0.83** |
+| `staging/src/k8s.io/cloud-provider` | — | 0.50, correctly no majority |
+
+Six of seven partners are found by a **strict majority** rule, which is threshold-free.
+
+### And it still fails — because the graph does not encode the distinction
+
+Merging every strict-majority-dominated package into its entry point captures the right partner every
+time (`missing=[]` for five of six) **and over-reaches every time**:
+
+| entry point | packages merged | extras pulled in |
+|---|---|---|
+| `kube-proxy` | 3 | `pkg/util/iptables`, … |
+| `kube-scheduler` | 6 | `staging/.../component-base/config`, … |
+| `kubelet` | 15 | `pkg/credentialprovider`, `pkg/util/flock`, … |
+| `kube-controller-manager` | 44 | `pkg/apis/apps`, `pkg/apis/autoscaling`, … |
+
+**Not one merged set equals the ground truth.** The distinction the maintainers draw — `pkg/proxy` is
+kube-proxy's *implementation*, `pkg/util/iptables` is a *utility it uses* — **is not in the import
+graph.** Both are imports, both are dominated by exactly one binary, and `pkg/util/iptables` is
+legitimately used only by `kube-proxy`. Dominance cannot separate "is" from "uses".
+
+### Why the fitted alternative was not shipped
+
+The pairing *is* recoverable by name — `kube-scheduler`↔`scheduler`, `kube-proxy`↔`proxy`,
+`kubelet`↔`kubelet`, `kube-apiserver`↔`kubeapiserver` after stripping the `kube-` prefix; and Milvus's
+`Proxy` is `internal/proxy` + `internal/distributed/proxy`, the same basename in two trees.
+
+**That is fitting a rule to the two repos we have measured**, which is precisely the contamination
+this project's pre-registration discipline exists to prevent. A `kube-` prefix rule is a Kubernetes
+rule. It should be proposed against a repo nobody here has looked at before it is believed — the same
+standard finding 65 applied to an LLM's output.
+
+**No behaviour change from the merge attempt.** The union path already recovers these components
+(6/6 on Kubernetes); merging would have added noise without producing an exact match, and the
+ranking-window cost that motivated it remains open.
