@@ -105,10 +105,21 @@ adopter. Recording only — nothing routes on these labels.
 
    **Still open:** the remaining ~14 steps.
 
-### `project_dependencies` has no survey-step writer — `repo_dependency_extraction` is missing
+### ~~`project_dependencies` has no survey-step writer~~ — RESOLVED 2026-08-23 by `repo_manifest_parse`
 
-Found 2026-08-22 while adopting the outcome vocabulary in `repo_dependency`, and **not fixed**
-— this is a new step, not a labelling change, so it is logged rather than smuggled in.
+**Closed by `ManifestParseSurveyor`** (`repo_manifest_parse`), which does exactly what the last
+paragraph below proposed, and covers the two sibling tables that turned out to have the same
+gap: `project_analysis_findings` kind=`ci_quality` (silent for 54 of 58 resources) and
+kind=`repo_conventions` (53 of 58). It is in RepoFullSurvey, RepoCoarseProfile and
+RepoScoutingSurvey. Verified end to end: docling went from 0 dependencies to 61, plus 3 CI
+checks and 5 convention checks, from a single zipball extraction.
+
+The original entry is kept below because the measurements in it are the evidence for why the
+step exists, and because the shape it describes — a table only the ingestion pipeline writes,
+read by survey steps that report silence — is worth recognising again.
+
+Found 2026-08-22 while adopting the outcome vocabulary in `repo_dependency`, and not fixed at
+the time — a new step rather than a labelling change, so it was logged rather than smuggled in.
 
 `upsert_dependencies()` is called from exactly one place, `ingestion/pipeline.py`. No survey
 step writes it. That is precisely the gap `repo_file_inventory` (D-whatever) and
