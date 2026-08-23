@@ -831,6 +831,21 @@ location-valued lookup already produces the candidate list, so the question is "
   have no deployment artifacts.
 * **Reuse RFA and `projects.parent_slug`/`group_slug`** — a new question, not new plumbing.
 
+**Built and verified: `resource_explorer/github/doc_locations.py`.** Resolution + location-valued
+lookup, checked live against all five measured topologies — Kubernetes `docs/` correctly reported as
+a **tombstone** with docs resolving to sibling `kubernetes/website`, Prometheus showing **both**
+in-repo `documentation/` and sibling `prometheus/docs`. The two lookups that encode the bug both
+pass: `find_artifact("architecture")` returns `in-repo` (`documentation/internal_architecture.md`)
+for Prometheus and **`sibling-repo`, not `not-found`,** for Kubernetes. 28 hermetic offline tests.
+
+*Known limitation, documented in the module:* a bare `website`/`docs` sibling is the project's own
+only when the org ≈ the project. `kubernetes/website` matches correctly; `odpi/website` is the
+foundation's site and is returned for both `odpi/egeria` and `odpi/egeria-workspaces`, belonging to
+neither. Deliberately unfixed — dropping bare `website` would break the Kubernetes case this module
+exists for, and the distinguishing signal (does the org host one project or many?) needs org-level
+context. Harmless in the intended flow, since §5.5b asks the user before including a sibling: an
+extra candidate costs a checkbox, not a wrong answer.
+
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.
