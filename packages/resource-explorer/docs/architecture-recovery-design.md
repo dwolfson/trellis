@@ -1190,6 +1190,64 @@ contains an application, two libraries and a spike.
 deferred to a separate discussion.** What the repo *is* and what the user *wants from it* are two
 different filters on which analyses matter, and conflating them would be a mistake.
 
+### 5.5c Learning from user feedback — and the two things that look alike
+
+**Maintainer direction, 2026-08-22:** *"we need to continuously get feedback from the user to allow
+us to continue to refine our weights, scoring and algorithms — perhaps some of them dynamically."*
+
+Right, and necessary: every table in §5.5b is provisional, the role vocabulary is a first guess, and
+the expectation sets were written from five projects. Nothing here improves without correction from
+people who know the repos.
+
+But two mechanisms hide under "learn from feedback", and conflating them would dismantle the only
+uncontaminated measurement this project has.
+
+#### (a) Feedback as **labelled examples** — safe, and the high-value half
+
+A user saying *"this is a tutorial, not an application"* is a **data point**: a labelled example with
+an author, a date, and a repo. Stored that way it is durable, auditable, and reusable for purposes
+not yet imagined. This is the half to build first, and RE already has the plumbing — `curate.py`'s
+`resource_feedback` / `resource_curator_notes`, the RFA lifecycle, and the activity log. **Capturing
+feedback is not new infrastructure; it is a new question asked through existing surfaces.**
+
+#### (b) Feedback as **weight adjustment** — where the danger is
+
+Three rules this project has already paid for, each of which auto-tuning would violate by default:
+
+1. **Never tune on the pre-registered fixtures.** `README.md` rule 3 forbids editing them *because a
+   partition inferred from the code and then compared against that code measures nothing*. A weight
+   fitted to make `prometheus.md` score 11/11 makes that 11/11 meaningless. Feedback-derived examples
+   must form a **separate, growing corpus**, and the fixtures must never enter it.
+2. **A rule fitted to the repos you have measured is not a rule** (findings 65, 78). The `kube-`
+   prefix pairing was not shipped for exactly this reason. Feedback arrives from repos the user
+   happens to care about, which is a biased sample by construction — the correction is a **frozen
+   holdout**, not more data.
+3. **A moving weight is a moving denominator.** §6.2 already argues that a metric which changes
+   between two runs is ambiguous without `analyzerVersion` — did the code change, or the detector?
+   Silently-adjusting weights make *every* number incomparable across runs. So any weight set must be
+   **versioned and recorded with the result**, exactly like `analyzerVersion` and the in-scope repo
+   set (§5.5b).
+
+#### The ordering constraint
+
+**You cannot safely auto-tune without a way to detect that tuning made things worse.** That detector
+is the pre-registered corpus scored by strict containment (§2a, finding 61) — currently Prometheus
+11/11, Kubernetes 6/6, Milvus 3/5, trellis 9/11, egeria-workspaces 18/27. It works *only* while it
+stays out of the training loop.
+
+So the sequence is: **capture labelled feedback → make weights explicit, versioned and stated with
+every result → require a holdout run before any weight change → only then consider anything
+dynamic.** Static-but-versioned is not a lesser version of dynamic; it is the thing that makes
+dynamic detectable.
+
+#### The failure mode to name out loud
+
+A system that tunes on recent feedback gets better at **agreeing with recent users** rather than at
+being right, and it degrades invisibly, because the same feedback that shifts the weights also shapes
+what anyone thinks to check. §5.5a(c)'s guardrail — report the observations, do not rank them — is
+the same instinct one layer up: **prefer a system that shows its evidence and is corrected, over one
+that quietly converges on approval.**
+
 ### 5.6 Tooling — what to adopt, and what it costs
 
 Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no

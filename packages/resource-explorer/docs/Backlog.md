@@ -926,3 +926,28 @@ rather than shipped.
 directories containing a file called `main.go` — Kubernetes's are `scheduler.go`, `kubelet.go`,
 `proxy.go`. Closes the `has_main` type-inference weakness; Prometheus no longer mistypes `promql`,
 `util` and `documentation` as `Console Command`.
+
+---
+
+### Learning from user feedback (design §5.5c)
+
+Maintainer direction: continuously take user feedback to refine weights, scoring and algorithms,
+possibly dynamically. Necessary — every §5.5b table is provisional. Sequenced deliberately:
+
+1. **Capture feedback as labelled examples**, with author, date and repo — not as weight deltas. RE
+   already has the surfaces (`curate.py`'s `resource_feedback`/`resource_curator_notes`, RFA, the
+   activity log), so this is a new *question*, not new plumbing. Build this first; it is the half
+   with no downside.
+2. **Make weights explicit, versioned, and recorded with every result** — §6.2's `analyzerVersion`
+   argument applies verbatim: a number that moves between runs is ambiguous unless you can say which
+   weights produced it.
+3. **Keep a frozen holdout, and never let the pre-registered fixtures into the training loop.**
+   Rule 3 exists because a partition fitted to the code it is scored against measures nothing; a
+   weight fitted to make `prometheus.md` read 11/11 makes that 11/11 meaningless.
+4. **Only then consider dynamic adjustment.** You cannot safely auto-tune without a regression
+   detector, and ours is the pre-registered corpus under strict containment — which works only while
+   it stays outside the loop.
+
+Failure mode to guard against explicitly: a system tuned on recent feedback gets better at *agreeing
+with recent users* rather than at being right, and degrades invisibly because the same feedback that
+moves the weights also shapes what anyone thinks to check.
