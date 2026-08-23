@@ -289,6 +289,10 @@ class TestCostTierFilter:
                     # external site over HTTP, so it is not zero-fetch.
                     "repo_website_ingestion",
                     "repo_git_statistics", "repo_sub_resource_survey",
+                    # repo_manifest_parse (2026-08-23) — shares the zipball, but
+                    # sharing an extraction does not make a step zero-fetch: the
+                    # download still has to happen for it to run at all.
+                    "repo_manifest_parse",
                     # repo_arch_detect/repo_arch_coupling (Phase 1 plan §4.2) —
                     # a zipball and a real git clone respectively, both downloads.
                     "repo_arch_detect", "repo_arch_coupling",
@@ -317,6 +321,11 @@ class TestCostTierFilter:
                     # repo_arch_coupling — classify_subtree/cohesion computation
                     # over the whole import graph, medium not low.
                     "repo_arch_coupling",
+                    # repo_manifest_parse (2026-08-23) — three parser passes
+                    # over the extracted tree per run (dependency manifests, CI
+                    # workflow YAML, convention signals), so medium rather than
+                    # repo_file_inventory's single cheap walk.
+                    "repo_manifest_parse",
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()

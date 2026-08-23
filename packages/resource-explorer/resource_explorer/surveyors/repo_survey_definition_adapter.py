@@ -61,6 +61,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     FileStructureSurveyor,
     HealthSurveyor,
     HomepageSurveyor,
+    ManifestParseSurveyor,
     LanguageSurveyor,
     LicenseClassifierSurveyor,
     MaturitySurveyor,
@@ -303,6 +304,45 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # is invalid here. Walking the extracted tree is cheap.
         fetch_cost="download",
         compute_cost="low",
+    ),
+    # Closes the same "table nothing but IngestionPipeline ever writes" gap
+    # repo_file_inventory closed for project_file_inventory, this time for
+    # three tables at once: project_dependencies (full ingestion only — not
+    # even refresh_profile writes it), and project_analysis_findings
+    # kind="ci_quality"/"repo_conventions" (full ingestion + refresh_profile,
+    # but still never a survey step). Measured 2026-08-22: dependencies
+    # present for 3/58 registered resources, ci_quality 4/58, repo_conventions
+    # 5/58 — the org-import/discovery path deliberately skips ingestion, so
+    # for most resources these three were simply empty, and repo_dependency/
+    # repo_ci_quality/repo_conventions (all read-only at survey time) reported
+    # a confident nothing forever.
+    #
+    # Positioned directly after repo_file_inventory and before every reader of
+    # what it writes (repo_dependency, repo_ci_quality, repo_conventions) —
+    # same ordering rule repo_file_inventory's own comment states: this dict's
+    # order is "Repo Full Survey" run order, so a step placed after its
+    # readers would refresh the tables only after they had already reported
+    # the stale/empty copy. Shares repo_file_inventory's zipball_root
+    # extraction — no extra network call.
+    "repo_manifest_parse": StepInfo(
+        "repo_manifest_parse", ManifestParseSurveyor,
+        "Parses dependency manifests, CI workflow content, and repo-convention "
+        "signals from a freshly extracted zipball, refreshing project_dependencies "
+        "and project_analysis_findings (kind=\"ci_quality\"/\"repo_conventions\") — "
+        "the three tables previously written only by full ingestion (and, for the "
+        "latter two, refresh_profile), never by a survey step.",
+        ["ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
+        # One of the zipball steps (D3/D4) — a real download, so "none" is
+        # invalid here. compute_cost="medium", not "low": unlike
+        # repo_file_inventory (one walk), this parses three manifest/workflow/
+        # convention passes over the extracted tree per run — closer to
+        # repo_data_profiling/repo_symbol_extraction's own "medium" than to a
+        # single cheap walk.
+        fetch_cost="download",
+        compute_cost="medium",
     ),
     "repo_file_structure": StepInfo(
         "repo_file_structure", FileStructureSurveyor,
@@ -1002,6 +1042,33 @@ def _symbol_extraction_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _manifest_parse_results(registry, slug: str) -> dict:
+    """Combines the three sub-parse snapshots ManifestParseSurveyor records
+    (its own "manifest_parse_*" metric kinds, not the tables it writes into
+    directly) into one results shape — mirrors _symbol_extraction_results'
+    own reasoning for keeping a step's run-history separate from the table(s)
+    it feeds."""
+    deps = registry.query_metrics(slug, "manifest_parse_dependencies")
+    ci = registry.query_metrics(slug, "manifest_parse_ci_quality")
+    conventions = registry.query_metrics(slug, "manifest_parse_conventions")
+    return {
+        "dependency_count": deps.get("count", 0),
+        "dependency_outcome": (deps.get("detail") or {}).get("outcome", ""),
+        "ci_quality_count": ci.get("count", 0),
+        "ci_quality_outcome": (ci.get("detail") or {}).get("outcome", ""),
+        "conventions_count": conventions.get("count", 0),
+        "conventions_outcome": (conventions.get("detail") or {}).get("outcome", ""),
+        "surveyed_at": deps.get("surveyed_at") or ci.get("surveyed_at") or conventions.get("surveyed_at", ""),
+    }
+
+
+def _manifest_parse_trend(registry, slug: str) -> list[dict]:
+    return [
+        {"surveyed_at": r["surveyed_at"], "value": r["metric_value"]}
+        for r in registry.query_metrics_history(slug, "manifest_parse_dependencies", "count")
+    ]
+
+
 def _rag_ingestion_results(registry, slug: str) -> dict:
     """Live-ish snapshot of what is in pgvector for this project, as recorded
     by the last repo_rag_ingestion run. Reads the persisted metric rather than
@@ -1421,6 +1488,14 @@ def _symbol_extraction_headline(registry, slug: str) -> dict | None:
     return {"label": f"{result['symbol_count']} symbol(s) extracted", "status": "info"}
 
 
+def _manifest_parse_headline(registry, slug: str) -> dict | None:
+    result = _manifest_parse_results(registry, slug)
+    if not result.get("surveyed_at"):
+        return None
+    total = result["dependency_count"] + result["ci_quality_count"] + result["conventions_count"]
+    return {"label": f"{total} finding(s)/dependency(s) across 3 tables", "status": "info"}
+
+
 def _rag_ingestion_headline(registry, slug: str) -> dict | None:
     result = _rag_ingestion_results(registry, slug)
     total = result.get("total_chunks") or 0
@@ -1618,6 +1693,27 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _symbol_extraction_results, _symbol_extraction_trend, "custom",
             headline_reader=_symbol_extraction_headline,
+        ),
+    ),
+    # Independently runnable/schedulable refresh of project_dependencies +
+    # project_analysis_findings (kind="ci_quality"/"repo_conventions") — the
+    # fifth instance of "a table everything reads that nothing writes"
+    # (project_stats, project_file_inventory, project_code_symbols were the
+    # first three; this closes it for three tables at once). Kept as its own
+    # card rather than folded into dependency_analysis/ci_quality/
+    # repo_conventions for the same reason code_symbol_extraction stays
+    # separate from api_structure: this step is a real zipball download and
+    # those three are read-only, so bundling would force an unwanted download
+    # into every "just show me what's already there" card click. Included
+    # automatically in any full (steps=None) survey since it's a plain
+    # STEP_REGISTRY member either way — this card exists so it is also
+    # reachable and independently schedulable on its own, same as
+    # code_symbol_extraction.
+    "manifest_parse": AnalysisKind(
+        "manifest_parse", ["repo_manifest_parse"],
+        results=AnalysisKindResults(
+            _manifest_parse_results, _manifest_parse_trend, "custom",
+            headline_reader=_manifest_parse_headline,
         ),
     ),
     # Phase 1 plan §4.2/§4.4 — bundles both architecture-recovery steps the

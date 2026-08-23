@@ -2368,6 +2368,10 @@ const _REPO_RESULTS_RENDER_MODE = {
   website_ingestion: 'metrics',
   // Phase 1 plan §4.2/§4.4 — architecture recovery's results view.
   architecture_recovery: 'custom',
+  // Added 2026-08-23 — repo_manifest_parse's card (project_dependencies +
+  // project_analysis_findings kind="ci_quality"/"repo_conventions", all in
+  // one run). Same shape as code_symbol_extraction's own results.
+  manifest_parse: 'custom',
 };
 
 // What the trend chart's Y axis actually is, per analysis kind — the chart
@@ -2393,6 +2397,7 @@ const _REPO_TREND_LABEL = {
   // trend and its Y axis needs naming just the same.
   sub_resource_survey: 'Total size of candidate sub-resources (bytes)',
   architecture_recovery: 'Components proposed (per run)',
+  manifest_parse: 'Dependencies parsed',
 };
 
 async function toggleAnalysisResults(analysisId, slug, btn) {

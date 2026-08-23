@@ -38,6 +38,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Manifest Parse
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_manifest_parse
+
+### Description
+Parses dependency manifests, CI workflow content, and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_manifest_parse |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo File Structure
 
 ### Qualified Name
@@ -496,6 +515,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_file_inventory
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_manifest_parse
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_manifest_parse
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_file_structure

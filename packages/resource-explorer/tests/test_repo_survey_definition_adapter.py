@@ -52,7 +52,7 @@ def test_all_step_keys_are_registered():
         "repo_sub_resource_survey", "repo_license_classification",
         "repo_security_features", "repo_ci_quality", "repo_maturity",
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
-        "repo_arch_detect", "repo_arch_coupling",
+        "repo_arch_detect", "repo_arch_coupling", "repo_manifest_parse",
     }
 
 
@@ -136,7 +136,10 @@ class TestStepCostTiers:
             if "zipball_root" in info.requires_resources:
                 assert info.fetch_cost != "none", key
 
-    def test_the_five_zipball_steps_are_exactly_these(self):
+    def test_the_zipball_steps_are_exactly_these(self):
+        """Deliberately not named for a count. It was named "five" while the set
+        already listed six, which is exactly the drift the step-key test above
+        renamed itself to avoid."""
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 
         zipball_steps = {
@@ -145,6 +148,10 @@ class TestStepCostTiers:
         assert zipball_steps == {
             "repo_file_inventory", "repo_homepage", "repo_data_profiling", "repo_symbol_extraction",
             "repo_arch_detect", "repo_arch_coupling",
+            # repo_manifest_parse (2026-08-23) — parses dependency manifests, CI
+            # workflow content and convention signals from the SAME extraction
+            # the steps above share, so it adds no download of its own.
+            "repo_manifest_parse",
         }
 
     def test_arch_coupling_needs_BOTH_a_source_tree_and_git_history(self):

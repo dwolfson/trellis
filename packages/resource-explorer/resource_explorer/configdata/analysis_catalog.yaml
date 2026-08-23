@@ -309,6 +309,22 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: manifest_parse
+    name: "Refresh Dependencies & Conventions"
+    description: "Parse dependency manifests, CI workflow content, and repo-convention signals from a fresh zipball, refreshing dependency, CI-quality, and repo-convention data — the self-contained refresh 'Dependency Analysis', 'CI Quality' and 'Repo Conventions' read from. Independently runnable/schedulable so these tables stay current even for repos that skip full ingestion (the org-import/discovery path always does)."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["data_scientist", "steward", "all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: architecture_recovery
     name: "Architecture Recovery"
     description: "Recover candidate architecture components from package manifests, deployment units (Dockerfile/compose), ast-grep code markers, and import/co-change coupling — a component partition proposal with confidence and evidence, not a published blueprint (docs/architecture-recovery-phase1-plan.md)."

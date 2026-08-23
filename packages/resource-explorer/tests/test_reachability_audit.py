@@ -60,6 +60,18 @@ STEPS_NOT_IN_A_STAGE_SURVEY = {
     # docs/dr-egeria/repo_survey_types.csv's RepoArchitectureDiscovery rows
     # and analysis_catalog.yaml's architecture_recovery entry. Placed now,
     # not exempt.
+    "repo_manifest_parse": (
+        "No stage-specific CSV survey type includes it yet — added 2026-08-23. "
+        "It IS reachable (see test_every_step_is_reachable_from_a_survey_or_a_card): "
+        "its own 'manifest_parse' analysis_catalog.yaml card/AnalysisKind puts it in "
+        "REPO_ANALYSIS_STEP_MAP's card_steps, same pattern repo_symbol_extraction/ "
+        "code_symbol_extraction uses. Placing it inside one of the stage-specific CSV "
+        "survey groups that already exercise repo_dependency/repo_ci_quality/"
+        "repo_conventions (so a Coarse/Full-tier CSV survey run also refreshes what "
+        "they read) requires regenerating docs/dr-egeria/repo_survey_types.csv and "
+        "the generated Survey Definition documents/Egeria authoring — left to the "
+        "maintainer rather than done here."
+    ),
 }
 
 

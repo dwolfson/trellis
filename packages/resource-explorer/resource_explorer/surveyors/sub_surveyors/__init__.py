@@ -21,6 +21,7 @@ from resource_explorer.surveyors.sub_surveyors.website_ingestion import WebsiteI
 from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInventorySurveyor
 from resource_explorer.surveyors.sub_surveyors.homepage import HomepageSurveyor
 from resource_explorer.surveyors.sub_surveyors.symbol_extraction import SymbolExtractionSurveyor
+from resource_explorer.surveyors.sub_surveyors.manifest_parse import ManifestParseSurveyor
 from resource_explorer.surveyors.sub_surveyors.rag_ingestion import RagIngestionSurveyor
 from resource_explorer.surveyors.sub_surveyors.arch_recovery_detect import ArchDetectSurveyor
 from resource_explorer.surveyors.sub_surveyors.arch_recovery_coupling import ArchCouplingSurveyor
@@ -47,6 +48,7 @@ __all__ = [
     "WebsiteIngestionSurveyor",
     "HomepageSurveyor",
     "SymbolExtractionSurveyor",
+    "ManifestParseSurveyor",
     "RagIngestionSurveyor",
     "ArchDetectSurveyor",
     "ArchCouplingSurveyor",
