@@ -368,6 +368,36 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
             tracked = {f for f in tracked
                        if any(f == p or f.startswith(p + "/") for p in prefixes)}
 
+    # The fixture's own `Excluded — not first-party` section is a SCOPE
+    # declaration and is applied here, to `tracked`, so it narrows BOTH sides
+    # exactly as `Scope:` above does.
+    #
+    # Finding 74. `validate.py` has always parsed this section; `score.py`
+    # never read it. The consequence was that a ground-truth component whose
+    # glob spans an excluded subdirectory could never be matched by anything:
+    # the GT side expanded over all tracked files including the excluded ones,
+    # while the detector side can only ever claim FIRST-PARTY files, because
+    # `exclusion.py` removes vendored trees before detection begins. On
+    # `trellis.md` that made `Web front-end` unmatchable — its glob is
+    # `web/static/**`, and the fixture separately (and correctly) excludes
+    # `web/static/vendor/**`, which holds three `.min.js` files no detector
+    # will ever see.
+    #
+    # Finding 73 diagnosed that as a contradiction inside the fixture. It was
+    # not: the fixture was right and said so in its own Excluded section. The
+    # asymmetry was the scorer expanding the two sides against different file
+    # universes — the same family as findings 12/24/51, and the third time in
+    # this project that a "detector failure" turned out to live in the
+    # measuring instrument.
+    if tracked is not None and doc.get("excluded"):
+        drop: set[str] = set()
+        for g in doc["excluded"]:
+            if validate.PLACEHOLDER.search(g):
+                continue
+            drop |= set(validate.expand(g, root, tracked))
+        if drop:
+            tracked = tracked - drop
+
     # Scope narrowing (plan §5, GT README "Provenance"/"Scope") applies to the
     # detector side too. A component the detector found entirely outside the
     # ground-truth's declared Scope (e.g. `packages/egeria-advisor` for

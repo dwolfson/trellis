@@ -224,3 +224,45 @@ same defect as a guard that writes data no reader consumes.)
   `trellis.md` gives them no names of their own.
 - **Provenance:** maintainer
 
+---
+
+## 2026-08-22 — partial-cover measurement, and a correction in our favour
+
+Added when partial coverage became reportable (spike findings 72–74). **No fixture change is
+proposed here**, and that is the finding: `trellis.md` needed no revision on this point.
+
+### `Web front-end` was never a detector failure
+
+It had been scored a miss since the fixture was written. Partial reporting showed it at **10 of 13
+files**, missing exactly `web/static/vendor/{marked,plotly,svg-pan-zoom}.min.js`.
+
+The first diagnosis was that the fixture claimed files `exclusion.py` removes as vendored, making the
+component unmatchable by construction. **That was wrong.** `trellis.md` already carries:
+
+```
+## Excluded — not first-party
+- `packages/resource-explorer/resource_explorer/web/static/vendor/**`
+```
+
+The maintainer had excluded the vendor tree from the start. `validate.py` has always parsed that
+section; **`score.py` never read it**, so the ground-truth side expanded over every tracked file
+while the detector side could only ever claim first-party ones. Two sides, two different file
+universes.
+
+Fixed in the scorer, not here: the `Excluded` section is now applied to `tracked`, narrowing both
+sides exactly as `Scope:` already did. **`Web front-end` now matches exactly, and trellis went
+8/11 → 9/11.**
+
+Worth stating plainly because the original fixture took a decision — write down what is not
+first-party — that the tooling then ignored for weeks, and the cost was a component reading as a
+detector failure for the entire time.
+
+### What the two remaining partials actually say
+
+| component | cover | reading |
+|---|---|---|
+| `Web backend` | **25/26 (96.2%)** | misses exactly **one** file: `web/app.py`. A specific, chaseable detector gap — the FastAPI app object sits directly in `web/`, while the detector's components are `web/routes/`, `web/static/`. Not a component-wide failure. |
+| `Core` | **15/38 (39.5%)** | genuinely partial, and expected. `Core` is defined by *not* being in a directory (`resource_explorer/*.py`), which the fixture already notes a directory-clustering detector cannot find. 39.5% is the honest score for a component whose definition is negative. |
+
+Neither needs a fixture change. `Web backend` is a detector bug to fix; `Core` is a known limit
+already documented in `trellis.md`'s own notes.

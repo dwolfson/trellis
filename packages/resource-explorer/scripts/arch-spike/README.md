@@ -1946,10 +1946,64 @@ first-party and the detector never sees them.**
 completely invisible while the result was a bare "miss", and that has been sitting in `trellis.md`
 since the fixture was written.
 
-It is exactly the class of thing pre-registration is supposed to surface, and exactly the class of
-thing a pass/fail measure hides. Per `README.md` rule 3 the fixture is **not** edited — the correct
-home is a note in a revision file, alongside the existing `trellis-revised.md`.
+> **CORRECTED by finding 74 — read that before acting on this.** The conclusion above is wrong.
+> `trellis.md` was *not* contradictory: it already carried an
+> `## Excluded — not first-party` section naming `web/static/vendor/**` exactly. The fixture was
+> right; the **scorer** never read that section. No fixture note was needed.
 
 Two of the three are also arguably *detector* findings worth chasing: one file (`web/app.py`) and one
 vendor-rule disagreement are very different from "the detector failed on Web front-end", which is all
 anyone could previously have said.
+
+---
+
+**74. The fixture was right and the scorer was wrong — again. `trellis` 8/11 → 9/11.**
+
+Finding 73 concluded that `trellis.md`'s `Web front-end` was unmatchable by construction, because its
+glob `web/static/**` claims three vendored `.min.js` files that `exclusion.py` removes before
+detection. The recommendation was to record the contradiction in a revision file.
+
+**There was no contradiction.** `trellis.md` has carried this since it was written:
+
+```
+## Excluded — not first-party
+- `packages/resource-explorer/resource_explorer/web/static/vendor/**`
+```
+
+The maintainer excluded the vendor tree from the start and said so in the fixture's own vocabulary.
+`validate.py` has always parsed the section — it is in the parse dict and reported in the summary
+line ("3 excluded" on `milvus.md`). **`score.py` never referenced it once.**
+
+So the two sides were expanded against **different file universes**: ground truth over every tracked
+file, the detector over first-party files only, since `exclusion.py` runs before detection. A
+ground-truth component spanning an excluded subdirectory could therefore never be matched by
+anything.
+
+**Fix:** apply the fixture's `Excluded` globs to `tracked`, immediately after the `Scope:` narrowing
+and for the same reason — both are scope declarations by the fixture author, and both must narrow
+*both* sides. One place, four lines.
+
+| target | before | after |
+|---|---|---|
+| **`trellis`** | 8/11 | **9/11** — `Web front-end` matches exactly |
+| `prometheus` | 11/11 | 11/11 |
+| `milvus` | 3/5 | 3/5 |
+| `egeria-workspaces` | 18/27 | 18/27 |
+
+**Three things worth keeping.**
+
+1. **This is the third time a "detector failure" has turned out to live in the measuring
+   instrument** — after ARI silently contradicting §2a (finding 61), and the name-keyed component
+   dict discarding 30 of 173 components (finding 70). The pattern is specific enough to act on:
+   *when the detector looks wrong on a component, check what universe each side was expanded over
+   before believing it.*
+
+2. **Partial reporting is what made it findable at all.** As a bare "miss", `Web front-end` was
+   indistinguishable from a component the detector had no idea about, and it sat that way for weeks.
+   As "10 of 13, missing these three files", the cause was obvious in one line. A measure that can
+   only say pass/fail cannot be debugged.
+
+3. **A fixture that records a decision the tooling ignores is worse than no decision**, because it
+   reads as agreement. The maintainer did the right thing, in the right place, in the right
+   vocabulary — and it was silently discarded, with the cost landing on the detector's reputation
+   rather than the scorer's.
