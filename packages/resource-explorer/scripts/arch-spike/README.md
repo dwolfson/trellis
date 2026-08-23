@@ -2325,3 +2325,61 @@ Kubernetes and Milvus, one component on Prometheus.
 3303 was not. §5.2's rule still stands and is now enforceable: **the LLM never invents a component
 with no detector evidence behind it** — it names, classifies and merges what survives. Distillation
 has moved the problem from "unusable" to "expensive", which is the right shape of remaining work.
+
+---
+
+**80. LLM adjudicator: the guardrail holds, the plumbing works, and a local 32B is worse than the
+deterministic distiller on everything but names.**
+
+`adjudicate.py` implements §5.2 steps 2 (classify) and 3 (name) plus merge, over finding 79's
+distilled candidates. First measured run, `qwen2.5-coder:32b` via local Ollama, Prometheus:
+
+| measure | deterministic (finding 79) | + adjudicator |
+|---|---|---|
+| components | 95 | **56** |
+| strict containment | **10/11** | **9/11** |
+| types assigned | — | **53 of 56 are `Software Library`** |
+
+**Lost `Fanout storage` *and* `Remote storage`** — deterministic distillation lost only the second.
+
+### Read it by §5.2's own three jobs, because they came out differently
+
+- **Step 3, name — good.** "Prometheus Command Line Interface", "Configuration Module", "Discovery
+  Module". Human-readable, accurate, and exactly the thing no heuristic produces. This is the part
+  worth keeping.
+- **Step 2, classify — poor.** 53 of 56 components typed `Software Library`. A classifier that
+  answers the same way 95% of the time carries almost no information, whatever the accuracy of any
+  single answer.
+- **Merge — weak.** 95 → 56 is 1.7×, where the target is closer to 95 → 11. It paired a few things
+  and left the rest alone.
+
+### The genuinely good news: **zero guardrail drops**
+
+Every one of the 56 outputs referenced real candidate slugs, used a valid type, and claimed only
+files its candidates claimed. All 95 inputs were referenced; none was silently discarded. §5.2's rule
+— *the LLM never invents a component with no detector evidence* — **held without a single
+intervention.**
+
+Worth being careful about what that shows. It is evidence the *mechanism* is sound; it is not
+evidence a stronger model would stay grounded, since a weaker model that mostly renames what it is
+given has little opportunity to invent. The guardrail's value is untested until something tries to
+cross it.
+
+### What this does and does not measure
+
+**It does not measure whether LLM adjudication works.** A local 32B is not what would ship, and the
+failure modes seen — under-merging, monotone typing — are exactly what a small model does. The
+result establishes that the pipeline runs end to end, is scoreable, caches, and is grounded by
+construction.
+
+**Do not read 9/11 as a verdict on the approach.** Read it as: *this configuration is worse than
+doing nothing, and the next measurement needs a representative model.* Recorded now precisely so the
+comparison exists before a better model makes it look easy.
+
+### The `storage` split, for the third time
+
+`Fanout storage` (`storage/*.go`) and `Remote storage` (`storage/remote/**`) have now been lost by
+distillation (one of them) and adjudication (both). Prometheus's ground truth splits what every
+detector proposes as one `storage` roll-up. This is the §2a granularity tension in its most
+persistent form, and it is now the single most repeated failure in the corpus — worth attacking
+directly rather than hoping a better model resolves it.
