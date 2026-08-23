@@ -134,3 +134,54 @@ def no_signal(cause: str, *, known_positive: bool, **detail: Any) -> StepOutcome
     if not known_positive:
         return StepOutcome(UNVERIFIED, cause=cause, known_positive=False, detail=detail)
     return StepOutcome(NO_SIGNAL, cause=cause, known_positive=True, detail=detail)
+
+
+def from_upstream_table(
+    rows_available: int,
+    matched: int,
+    *,
+    empty_table_cause: str,
+    no_match_cause: str,
+    **detail: Any,
+) -> StepOutcome:
+    """The outcome for a step that reads a table an earlier step was meant to fill.
+
+    Eight of this codebase's steps do no fetching of their own: they read
+    `project_file_inventory` (or `project_code_symbols`) and report on what is
+    there. That makes their zero ambiguous in a way a fetching step's is not,
+    and the ambiguity has exactly two layers:
+
+      * **The table is empty.** Nothing distinguishes "this repo has no files"
+        — which is not a thing a real repo is — from "the inventory was never
+        populated for this slug". The step could not run, so: `unverified`.
+        This is not hypothetical. `project_file_inventory` was written only by
+        RAG ingestion and refresh_profile until `repo_file_inventory` was added,
+        so a repo registered via org-import (which deliberately skips ingestion)
+        had an empty inventory permanently, and every reader reported a
+        confident nothing forever.
+      * **The table has rows, and none of them matched.** Here the method
+        demonstrably ran over real data and found none of its thing — no data
+        files, no hygiene files, no file over 50 MB. That is `no_signal`, and
+        the non-empty table *is* the known-positive: it is the evidence that
+        would have surfaced a match had one existed.
+
+    So `rows_available` is not bookkeeping — it is the known-positive check, and
+    passing it is what earns the right to claim a provable zero. This is the
+    honest reading of §3's rule for a step whose input is another step's output:
+    the upstream table's own emptiness is the thing that can silently invalidate
+    every conclusion drawn from it.
+
+    A non-zero `matched` is `recovered` — the step found what it looks for. It
+    is deliberately never `partial` from here: whether a non-zero result is
+    *complete* is knowledge only the calling step has (a scope filter, a
+    fallback to a partial source), so a caller in that position builds its own
+    `StepOutcome(PARTIAL, ...)` rather than being handed a wrong label.
+    """
+    if rows_available <= 0:
+        return StepOutcome(UNVERIFIED, cause=empty_table_cause, known_positive=False,
+                           detail={"rows_available": 0, **detail})
+    if matched <= 0:
+        return no_signal(no_match_cause, known_positive=True,
+                         rows_available=rows_available, **detail)
+    return StepOutcome(RECOVERED, cause="", known_positive=True,
+                       detail={"rows_available": rows_available, "matched": matched, **detail})

@@ -308,8 +308,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_file_structure", FileStructureSurveyor,
         "File counts, per-language breakdown, and top-level directory structure.",
         ["ResourceMeasureAnnotation"],
-        # Reads project_file_inventory (no zipball, no API) — D4's "17
-        # zero-fetch steps" default.
+        # Reads project_stats + project_code_symbols (no zipball, no API) —
+        # D4's "17 zero-fetch steps" default. NOT project_file_inventory,
+        # despite what this comment said until 2026-08-22: the surveyor takes
+        # its file count from project_stats and both breakdowns from
+        # project_code_symbols. The distinction matters for ordering — this
+        # step's real prerequisite is repo_symbol_extraction, not
+        # repo_file_inventory.
     ),
     "repo_file_size": StepInfo(
         "repo_file_size", FileSizeSurveyor,
@@ -322,7 +327,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "repo_language", LanguageSurveyor,
         "Primary/secondary language and coarse project-type classification.",
         ["ClassificationAnnotation"],
-        # Reads project_file_inventory — no fetch of its own.
+        # Reads project_stats (not project_file_inventory, despite what this
+        # comment said until 2026-08-22 — LanguageSurveyor.run() reads
+        # get_latest_project_stats() only). Its real prerequisite is therefore
+        # repo_git_statistics. No fetch of its own.
     ),
     "repo_health": StepInfo(
         "repo_health", HealthSurveyor,
@@ -392,6 +400,9 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         ["ClassificationAnnotation", "RequestForActionAnnotation"],
         accepts_surveyed_at=True,
         # Reads project_file_inventory + project_stats — no fetch of its own.
+        # (It genuinely does as of 2026-08-22; until then it read
+        # project_code_symbols, which cannot contain SECURITY.md or a CI
+        # workflow, so every repo failed those two checks. See the surveyor.)
     ),
     "repo_license_classification": StepInfo(
         "repo_license_classification", LicenseClassifierSurveyor,

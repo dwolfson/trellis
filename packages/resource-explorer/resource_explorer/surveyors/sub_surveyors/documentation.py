@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
@@ -101,9 +102,10 @@ class DocumentationSurveyor(BaseSurveyor):
             # project_file_inventory (every file in the repo), not
             # project_code_symbols (only .py/.js/.java/.go files ever get
             # rows there — see _HYGIENE_FILES' comment).
+            inventory = self.registry.get_file_inventory(slug)
             inventory_filenames = {
                 p.replace("\\", "/").rsplit("/", 1)[-1]
-                for p in self.registry.get_file_inventory(slug)
+                for p in inventory
             }
             found_hygiene: list[str] = []
             for fname, label in _HYGIENE_FILES.items():
@@ -134,6 +136,18 @@ class DocumentationSurveyor(BaseSurveyor):
                 })
 
             # ── overall quality label ─────────────────────────────────────────
+            # Half of `score` comes from the file inventory. With an empty
+            # inventory the hygiene half is not zero, it is unmeasured — and the
+            # label that came out was "Minimal", a confident verdict about a
+            # repository nobody had looked at. That is the exact failure this
+            # vocabulary exists to name, on the one step here whose output is a
+            # judgement rather than a count.
+            outcome = from_upstream_table(
+                len(inventory), len(found_hygiene),
+                empty_table_cause="empty_file_inventory",
+                no_match_cause="no_hygiene_files",
+                doc_collections=len(present_doc_types),
+            )
             score = len(present_doc_types) + len(found_hygiene)
             if score >= 5:
                 quality = "Comprehensive"
@@ -142,27 +156,51 @@ class DocumentationSurveyor(BaseSurveyor):
             else:
                 quality = "Minimal"
 
+            unverified = outcome.outcome == UNVERIFIED
+            if unverified:
+                summary = (
+                    f"Documentation quality not established — the file inventory is "
+                    f"empty, so only {len(present_doc_types)} collection signal(s) "
+                    f"could be counted"
+                )
+            else:
+                summary = f"Documentation quality: {quality} ({score} signal(s) detected)"
+
             results.append(
                 ClassificationAnnotation(
-                    summary=f"Documentation quality: {quality} ({score} signal(s) detected)",
+                    summary=summary,
                     analysis_step=STEP,
-                    candidate_classifications=[quality],
+                    candidate_classifications=[] if unverified else [quality],
                     confidence=70,
+                    explanation=(
+                        "Hygiene files (README, CHANGELOG, CONTRIBUTING, SECURITY, "
+                        "CODEOWNERS) are read from project_file_inventory, which holds "
+                        "no rows for this repo. Run repo_file_inventory (or a Profile "
+                        "refresh) and re-run before treating this as a quality finding."
+                        if unverified else ""
+                    ),
                     json_properties={
                         "doc_collection_types": present_doc_types,
                         "hygiene_files": found_hygiene,
                         "signal_count": score,
+                        **outcome.as_row(),
                     },
                 )
             )
             findings.append({
-                "finding_type": "quality_score", "label": quality,
-                "summary": f"Documentation quality: {quality} ({score} signal(s) detected)",
+                # The label the row carries must match what the annotation says.
+                # Persisting "Minimal" while the annotation says "not established"
+                # would put the wrong answer in the trend, which is the surface
+                # that outlives the run.
+                "finding_type": "quality_score",
+                "label": "Unverified" if unverified else quality,
+                "summary": summary,
                 "confidence": 70,
                 "detail": {
                     "doc_collection_types": present_doc_types,
                     "hygiene_files": found_hygiene,
                     "signal_count": score,
+                    **outcome.as_row(),
                 },
             })
 

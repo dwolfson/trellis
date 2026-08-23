@@ -47,19 +47,61 @@ def project(registry):
 
 
 class TestSecurityHygieneSurveyorPersistence:
+    def _seed_inventory(self, registry, slug, *paths):
+        with registry._conn() as conn:
+            for path in paths:
+                conn.execute(
+                    "INSERT INTO project_file_inventory (project_slug, file_path, indexed_at) "
+                    "VALUES (?, ?, ?)",
+                    (slug, path, "2026-01-01T00:00:00"),
+                )
+
     def test_persists_three_findings(self, registry, project):
+        self._seed_inventory(registry, "myproj", "src/a.py")
         SecurityHygieneSurveyor(project, registry).run()
         findings = registry.query_findings("myproj", "security_hygiene")
         assert len(findings) == 3
         assert {f["check_name"] for f in findings} == {"security_policy", "ci_config", "license"}
 
     def test_no_artifacts_means_all_gaps(self, registry, project):
+        """Unchanged in intent — but it now needs a non-empty inventory to mean
+        what it says. Run against an empty one it used to assert three gaps,
+        which was the bug being encoded as the contract."""
+        self._seed_inventory(registry, "myproj", "src/a.py")
         annotations = SecurityHygieneSurveyor(project, registry).run()
-        # regression guard: existing annotation-building behavior unchanged
         assert len(annotations) == 3
         assert all(isinstance(a, RequestForActionAnnotation) for a in annotations)
         findings = registry.query_findings("myproj", "security_hygiene")
         assert all(f["label"] == "gap" for f in findings)  # "status" (pass/gap) -> generic "label"
+
+    def test_security_and_ci_files_are_actually_found(self, registry, project):
+        """The bug this step carried until 2026-08-22.
+
+        It searched project_code_symbols, which by construction holds only
+        .py/.js/.java/.go files — so SECURITY.md and .github/workflows/*.yml
+        could never be found there and every repo failed both checks. Verified
+        against live data at the time: docling had SECURITY.md and 13 workflow
+        files in its inventory, and zero of either in project_code_symbols.
+        """
+        self._seed_inventory(registry, "myproj",
+                             "SECURITY.md", ".github/workflows/ci.yml", "LICENSE")
+        SecurityHygieneSurveyor(project, registry).run()
+        findings = {f["check_name"]: f["label"]
+                    for f in registry.query_findings("myproj", "security_hygiene")}
+        assert findings["security_policy"] == "pass"
+        assert findings["ci_config"] == "pass"
+        assert findings["license"] == "pass"
+
+    def test_empty_inventory_raises_no_gaps_at_all(self, registry, project):
+        """An RFA is a request for someone's time. Telling a user to add a
+        SECURITY.md that may already exist is the most expensive form of this
+        bug, so the empty-inventory case emits none."""
+        annotations = SecurityHygieneSurveyor(project, registry).run()
+        assert not any(isinstance(a, RequestForActionAnnotation) for a in annotations)
+        assert len(annotations) == 1
+        assert annotations[0].json_properties["outcome"] == "unverified"
+        findings = registry.query_findings("myproj", "security_hygiene")
+        assert [f["label"] for f in findings] == ["unverified"]
 
     def test_shared_surveyed_at_threaded_through(self, registry, project):
         SecurityHygieneSurveyor(project, registry, surveyed_at="2026-01-01T00:00:00").run()
@@ -79,10 +121,37 @@ class TestDocumentationSurveyorPersistence:
         quality = [f for f in findings if f["check_name"] == "quality_score"]
         assert len(quality) == 1
 
-    def test_no_signals_yields_minimal_quality(self, registry, project):
+    def test_no_signals_with_an_empty_inventory_is_unverified_not_minimal(
+            self, registry, project):
+        """Changed deliberately 2026-08-22 (step-outcome adoption).
+
+        This used to assert "Minimal", which was the bug rather than the
+        contract: half the score comes from project_file_inventory, so an
+        empty inventory produced a confident quality verdict about a repo
+        whose files had never been read. The regression guard it was really
+        protecting — that a quality annotation is *always* emitted — is kept.
+        See tests/test_inventory_reader_outcomes.py for the full case.
+        """
         annotations = DocumentationSurveyor(project, registry).run()
-        # regression guard: overall quality annotation always present
-        assert any(isinstance(a, ClassificationAnnotation) and "Minimal" in a.summary for a in annotations)
+        quality_annotations = [
+            a for a in annotations
+            if isinstance(a, ClassificationAnnotation)
+            and ("quality" in a.summary.lower() or "not established" in a.summary)
+        ]
+        assert len(quality_annotations) == 1
+        assert "Minimal" not in quality_annotations[0].summary
+        findings = registry.query_findings("myproj", "documentation")
+        quality = next(f for f in findings if f["check_name"] == "quality_score")
+        assert quality["label"] == "Unverified"
+
+    def test_no_signals_with_a_populated_inventory_still_yields_minimal(
+            self, registry, project):
+        """The other half of the change: with files actually read, a low score
+        is a real finding again and keeps its old label."""
+        self._seed_inventory(registry, "myproj", "src/a.py")
+        annotations = DocumentationSurveyor(project, registry).run()
+        assert any(isinstance(a, ClassificationAnnotation) and "Minimal" in a.summary
+                   for a in annotations)
         findings = registry.query_findings("myproj", "documentation")
         quality = next(f for f in findings if f["check_name"] == "quality_score")
         assert quality["label"] == "Minimal"
@@ -400,9 +469,18 @@ class TestDataProfilerSurveyorPersistence:
                 (slug, "data/sample.csv", 1234, "2026-01-01T00:00:00"),
             )
 
-    def test_no_inventory_persists_nothing(self, registry, project):
+    def test_no_inventory_persists_a_labelled_zero(self, registry, project):
+        """Reversed deliberately 2026-08-22 (step-outcome adoption).
+
+        This asserted that nothing was persisted. That was the defect: a run
+        that found nothing left no point in the trend, and a gap in a trend
+        means "no data files", "step not selected" and "inventory empty" all
+        at once. The zero is now written with the outcome that explains it.
+        """
         DataProfilerSurveyor(project, registry).run()
-        assert registry.query_metrics("myproj", "data_profile") == {}
+        metrics = registry.query_metrics("myproj", "data_profile")
+        assert metrics["total_files"] == 0
+        assert metrics["total_size_bytes"] == 0
 
     def test_persists_snapshot_when_data_files_exist(self, registry, project):
         self._seed_inventory(registry, "myproj")

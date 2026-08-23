@@ -51,9 +51,42 @@ adopter. Recording only — nothing routes on these labels.
 4. **`Produced Request Parameters` as the carrier if a cause ever needs to reach a *later*
    step** rather than only be recorded. Read in the docs, **not exercised** — do not build on
    it as verified.
-5. **Adopting the vocabulary in the other 23 steps.** Only `repo_website_ingestion` uses it.
-   The file-inventory readers are the obvious next ones, since "the table was empty" is exactly
-   an `unverified` that currently reads as a confident zero.
+5. ~~**Adopting the vocabulary in the other 23 steps.**~~ **PARTLY RESOLVED 2026-08-22 — the
+   file-inventory readers are done.** `step_outcome.from_upstream_table()` is the shared
+   three-way derivation for a step that reads a table an earlier step was meant to fill:
+   empty table → `unverified`, rows present but nothing matched → `no_signal` (**the non-empty
+   table is the known-positive**), otherwise `recovered`. It never returns `partial` — whether
+   a non-zero result is *complete* is knowledge only the calling step has.
+
+   Adopted in `repo_file_size`, `repo_data_profiling`, `repo_documentation`,
+   `repo_sub_resource_survey`, `repo_file_classification`, `repo_file_structure` and
+   `repo_security`. Three things fell out of doing it that were not visible beforehand:
+
+   - **`SecurityHygieneSurveyor` was reading the wrong table entirely.** It looked for
+     SECURITY.md / CI config / LICENSE in `project_code_symbols`, which by construction holds
+     only `.py/.js/.java/.go` files — so the first two checks failed for *every repo, always*,
+     and raised RFAs at confidence 90/85 telling people to add files they already had.
+     Confirmed against live data before changing (docling: SECURITY.md + 13 workflow files in
+     the inventory, zero of either in code symbols). `documentation.py` had already been moved
+     to the inventory for this exact reason and left a comment saying why; this step was missed.
+     Now reads the inventory, and emits **no** gap RFAs when the inventory is empty.
+   - **`DocumentationSurveyor` was issuing a verdict on unread repos.** Half its score comes
+     from the inventory, so an empty one produced "Documentation quality: Minimal" — and
+     persisted `label="Minimal"` into the trend, which outlives the run. Now `Unverified` in
+     both places.
+   - **Three `StepInfo` comments named the wrong source table.** `repo_file_structure` and
+     `repo_language` do not read the inventory at all (project_stats / project_code_symbols),
+     and `repo_security` did not until this change. Corrected — the comments encode ordering
+     prerequisites, so a wrong one is a wrong dependency.
+
+   Two contracts were deliberately reversed and their tests rewritten rather than patched:
+   `test_no_inventory_persists_nothing` (a run that found nothing now leaves a labelled zero —
+   a gap in a trend is unreadable) and `test_no_signals_yields_minimal_quality`. Both carry a
+   note saying what changed and why. New coverage: `tests/test_inventory_reader_outcomes.py`.
+
+   **Still open:** the remaining ~16 steps, and the ones reading `project_code_symbols`
+   (`repo_api_structure` has the same shape — `test_no_symbols_persists_nothing` is the same
+   contract as the one reversed here, left alone deliberately rather than swept in).
 6. **Converging with arch-recovery's `run_scope`/`partial`.** That session already emits
    `partial` on scoped runs (`ca34edf`) and offered a walkthrough of where `StepInfo` /
    `requires_resources` / `resolve_resources` would need to change. Not started; deliberately

@@ -73,7 +73,6 @@
   "resource_explorer/surveyors/sub_surveyors/maturity.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/rag_ingestion.py::run": 3,
   "resource_explorer/surveyors/sub_surveyors/security_features.py::run": 1,
-  "resource_explorer/surveyors/sub_surveyors/security_hygiene.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/sub_resource_survey.py::_codeowners_rules": 1,
   "resource_explorer/surveyors/sub_surveyors/symbol_extraction.py::_local_files": 1,
   "resource_explorer/surveyors/sub_surveyors/symbol_extraction.py::run": 1,

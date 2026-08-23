@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, StepOutcome, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
@@ -136,40 +137,93 @@ class DataProfilerSurveyor(BaseSurveyor):
     def step_name(self) -> str:
         return STEP
 
+    def _record_outcome(self, outcome: StepOutcome, *, total_files: int,
+                        total_bytes: int, formats: dict | None = None) -> None:
+        """One metric row per run, on every terminal path — including the zeros.
+
+        Before this, the snapshot was written only when data files were found,
+        so the trend series simply had no point for a run that found none. A
+        gap in a trend is unreadable: it means "no data files", "step not
+        selected" and "inventory empty" all at once. Writing the zero with its
+        outcome attached distinguishes them.
+        """
+        try:
+            self.registry.upsert_metric(
+                self.project.slug, "data_profile",
+                {"total_files": total_files, "total_size_bytes": total_bytes},
+                detail={"formats": formats or {}, **outcome.as_row()},
+                surveyed_at=self._surveyed_at,
+                scope_locator=self._scope_locator,
+            )
+        except Exception as exc:
+            log.warning("Could not persist data profile snapshot for %s: %s",
+                        self.project.slug, exc)
+
     # ── public entry point ────────────────────────────────────────────────────
 
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
             rows = self.registry.get_file_inventory_with_sizes(self.project.slug)
-            if not rows:
-                results.append(
-                    RequestForActionAnnotation(
-                        summary="No file inventory found — data profiling skipped",
-                        analysis_step=STEP,
-                        confidence=100,
-                        explanation=(
-                            "project_file_inventory is empty. File inventory is populated "
-                            "during add/refresh. Run 'project-explorer refresh <slug>' to populate."
-                        ),
-                        action_requested="Run refresh to build file inventory",
-                        action_target_name=self.project.slug,
-                    )
-                )
-                return results
-
-            data_files = self._filter_data_files(rows)
+            data_files = self._filter_data_files(rows) if rows else []
             if self._scope_locator:
                 data_files = [
                     f for f in data_files
                     if path_matches_scope(f["file_path"], self._scope_locator)
                 ]
+
+            # Two zeros that used to look identical from the outside: an
+            # inventory nobody populated (this step could not run) and a repo
+            # that genuinely ships no CSV/Parquet/XLSX (it ran, and the answer
+            # is none). Only the second is a fact about the repository.
+            outcome = from_upstream_table(
+                len(rows), len(data_files),
+                empty_table_cause="empty_file_inventory",
+                no_match_cause="no_data_files",
+                scope_locator=self._scope_locator,
+            )
             if not data_files:
-                log.debug("DataProfilerSurveyor: no data files in %s", self.project.slug)
+                self._record_outcome(outcome, total_files=0, total_bytes=0)
+                if outcome.outcome == UNVERIFIED:
+                    results.append(
+                        RequestForActionAnnotation(
+                            summary="No file inventory found — data profiling skipped",
+                            analysis_step=STEP,
+                            confidence=100,
+                            explanation=(
+                                "project_file_inventory is empty, so this run cannot tell "
+                                "whether the repo has data files or whether the inventory "
+                                "was never built. Run repo_file_inventory (or a Profile "
+                                "refresh) first, then re-run."
+                            ),
+                            action_requested="Run repo_file_inventory to build the file inventory",
+                            action_target_name=self.project.slug,
+                        )
+                    )
+                else:
+                    # Provable zero: the inventory had rows and none of them were
+                    # data files. Said out loud rather than returning nothing,
+                    # which reads as "never run".
+                    results.append(
+                        ResourceMeasureAnnotation(
+                            summary=f"No data files among {len(rows):,} inventoried files",
+                            analysis_step=STEP,
+                            confidence=100,
+                            explanation=(
+                                "The repository was scanned and contains no CSV, Parquet, "
+                                "XLSX or other recognised data files"
+                                + (f" under scope '{self._scope_locator}'."
+                                   if self._scope_locator else ".")
+                            ),
+                            resource_properties={"total_files": 0, "total_size_bytes": 0},
+                            json_properties={"source": "project_file_inventory",
+                                             **outcome.as_row()},
+                        )
+                    )
                 return results
 
             # Tier 1: inventory-level format summary
-            self._tier1_summary(data_files, results)
+            self._tier1_summary(data_files, results, outcome)
 
             # Tier 2a: fresh profiling from local clone (explicit --data-path)
             if self.local_path:
@@ -225,7 +279,8 @@ class DataProfilerSurveyor(BaseSurveyor):
                 out.append({**r, "_format": _DATA_EXTENSIONS[ext], "_ext": ext})
         return out
 
-    def _tier1_summary(self, data_files: list[dict], results: list[Annotation]) -> None:
+    def _tier1_summary(self, data_files: list[dict], results: list[Annotation],
+                       outcome: StepOutcome) -> None:
         count_by_fmt: dict[str, int] = defaultdict(int)
         size_by_fmt: dict[str, int] = defaultdict(int)
         dirs_by_fmt: dict[str, set] = defaultdict(set)
@@ -267,22 +322,11 @@ class DataProfilerSurveyor(BaseSurveyor):
             )
         )
 
-        try:
-            # Generic project_analysis_metrics table (analysis-kind
-            # extensibility redesign) — a real, previously-missing gap:
-            # this surveyor computed these aggregate numbers every run but
-            # never persisted them, so data_file_profiling had no trend
-            # data despite REPO_ANALYSIS_RESULTS_MAP/_data_profile_trend
-            # already expecting a "total_files" metric history.
-            self.registry.upsert_metric(
-                self.project.slug, "data_profile",
-                {"total_files": len(data_files), "total_size_bytes": total_bytes},
-                detail={"formats": fmt_summary},
-                surveyed_at=self._surveyed_at,
-                scope_locator=self._scope_locator,
-            )
-        except Exception as exc:
-            log.warning("Could not persist data profile snapshot for %s: %s", self.project.slug, exc)
+        # Same recorder every terminal path uses, so a run that profiled
+        # nothing writes the same row shape as one that profiled thousands —
+        # differing only in the numbers and the outcome label.
+        self._record_outcome(outcome, total_files=len(data_files),
+                             total_bytes=total_bytes, formats=fmt_summary)
 
     # ── tier 2b: stored profiles ──────────────────────────────────────────────
 
