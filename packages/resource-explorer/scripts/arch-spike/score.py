@@ -236,6 +236,7 @@ def strict_containment_score(tier_comps: dict[str, dict], det_files_by_name: dic
 
     matched: list[str] = []
     unmatched: list[str] = []
+    partial: list[dict] = []
     for name, comp in sorted(tier_comps.items()):
         gt_files = _component_owned_files(name, comp, root, tracked, tier_comps)
         if not gt_files:
@@ -254,13 +255,53 @@ def strict_containment_score(tier_comps: dict[str, dict], det_files_by_name: dic
         # spills outside cannot help cover it. Exhaustive cover only: partial
         # cover is not a match.
         inside = [f for f in det_owned.values() if f and f <= gt_files]
-        if inside and frozenset().union(*inside) == gt_files:
+        covered = frozenset().union(*inside) if inside else frozenset()
+        if covered == gt_files:
             matched.append(name)                      # covered by refinements
-        else:
-            unmatched.append(name)
+            continue
+
+        unmatched.append(name)
+
+        # ── partial cover (finding 72) ──────────────────────────────────
+        #
+        # A near-miss is NOT a match and is deliberately excluded from the
+        # headline above: 575 != 576, and a measure that rounds is worse than
+        # one that is strict. But the scorer previously had no way to SAY
+        # "575 of 576", so a component recovered to 99.8% reported the same 0
+        # as one recovered not at all — and three such near-misses across two
+        # independent repos (Prometheus `Web UI and API` 325/380, Milvus
+        # `Coordinator` 575/576 and `Streaming Node` 259/260, from two
+        # unrelated causes) went invisible.
+        #
+        # No threshold is introduced. "Partial" is simply 0 < coverage < 1 —
+        # the same discipline that kept Newman modularity out (§5.5): a
+        # reported fraction beats an invented cut-off.
+        missing = gt_files - covered
+        # Components that touch this one but spill outside it cannot help
+        # cover it. Reporting them separates the two failure modes: "we found
+        # less than the component" from "we found a blob that merged it with
+        # something else".
+        overclaim = sorted(n for n, f in det_owned.items()
+                           if f and not f <= gt_files and f & gt_files)
+        partial.append({
+            "name": name,
+            "covered": len(covered), "total": len(gt_files),
+            "coverage": round(len(covered) / len(gt_files), 4),
+            "missing": len(missing),
+            "missing_sample": sorted(missing)[:5],
+            "contributors": len(inside),
+            "overclaimed_by": overclaim[:5],
+            "overclaim_count": len(overclaim),
+        })
+
+    partial.sort(key=lambda p: -p["coverage"])
     return {
         "matched": len(matched), "total": len(matched) + len(unmatched),
         "matched_names": sorted(matched), "unmatched_names": sorted(unmatched),
+        # Reported alongside the headline, never folded into it.
+        "partial": partial,
+        "partial_count": sum(1 for p in partial if p["coverage"] > 0),
+        "no_coverage_names": sorted(p["name"] for p in partial if p["coverage"] == 0),
     }
 
 
@@ -434,7 +475,27 @@ def render(result: dict) -> str:
         if sc is not None:
             lines.append(f"    strict containment (finding 61 — headline): "
                          f"{sc['matched']}/{sc['total']} exact file-set matches")
-            if sc["unmatched_names"]:
+            near = [p for p in sc.get("partial", []) if p["coverage"] > 0]
+            if near:
+                cov = sum(p["covered"] for p in near)
+                tot = sum(p["total"] for p in near)
+                lines.append(f"      partial (finding 72 — REPORTED, not counted above): "
+                             f"{len(near)} component(s) covered {cov}/{tot} files "
+                             f"({100 * cov / tot:.1f}%)")
+                for p in near:
+                    detail = (f"missing {p['missing']}: "
+                              f"{', '.join(p['missing_sample'])}"
+                              + (" ..." if p["missing"] > len(p["missing_sample"]) else ""))
+                    over = (f"; {p['overclaim_count']} overclaiming node(s): "
+                            f"{', '.join(p['overclaimed_by'])}" if p["overclaim_count"] else "")
+                    lines.append(f"        {p['name']}: {p['covered']}/{p['total']} "
+                                 f"({100 * p['coverage']:.1f}%) from {p['contributors']} node(s) "
+                                 f"— {detail}{over}")
+            if sc.get("no_coverage_names"):
+                lines.append(f"      no coverage at all: "
+                             f"{', '.join(sc['no_coverage_names'][:12])}"
+                             + (" ..." if len(sc["no_coverage_names"]) > 12 else ""))
+            elif sc["unmatched_names"] and not near:
                 lines.append(f"      unmatched: {', '.join(sc['unmatched_names'][:12])}"
                              + (" ..." if len(sc["unmatched_names"]) > 12 else ""))
     return "\n".join(lines)

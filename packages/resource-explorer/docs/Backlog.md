@@ -646,7 +646,22 @@ capability is not "add a Go ast-grep rule" — it is reading Go package structur
 serve identity, imports and code markers together. Blocks Milvus and Kubernetes as well as Prometheus,
 i.e. three of the four ranked ground-truth candidates.
 
-### HIGH (now doubly evidenced) — the scorer cannot express a partial component match
+### DONE (finding 73) — the scorer can now express a partial component match
+
+Implemented as a **reported** measure: the strict-containment headline is unchanged and stays the
+number of record, with partial cover printed beneath it as *REPORTED, not counted above*. No
+threshold — "partial" is simply `0 < coverage < 1`, since a reported fraction beats an invented
+cut-off. Overclaiming nodes are named separately so "we found less than the component" and "we found
+a blob that merged it with something else" are no longer indistinguishable.
+
+First run surfaced a real defect nobody could previously see: **`trellis.md`'s `Web front-end` is
+unmatchable by construction** — its three missing files are `web/static/vendor/*.min.js`, which
+`exclusion.py` removes as vendored, so no detector can ever claim them. Needs a note in a revision
+file (rule 3 forbids editing the fixture; `trellis-revised.md` already exists as the mechanism).
+`Web backend` likewise misses exactly one real file, `web/app.py` — a chaseable detector gap rather
+than a component-wide failure.
+
+### (superseded) HIGH (was doubly evidenced) — the scorer cannot express a partial component match
 
 **Milvus makes this urgent.** Two of its five components were recovered at **575/576** and
 **259/260** files — 99.8% — each missing exactly one `OWNERS` file, and both score **0**, identical

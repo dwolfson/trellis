@@ -1891,3 +1891,65 @@ it is the same lesson as findings 61 and 71 — the instrument, not the thing be
 **Precision remains the real problem**: 608 components proposed against 5 declared, 409 of them
 untyped from the coupling proposer. Recall is essentially perfect on both owner-published fixtures.
 Distillation (§5.2, Phase 5) is the binding constraint, not detection.
+
+---
+
+**73. Partial coverage is now reported — and on its first run it found a ground-truth component that
+is unmatchable by construction.**
+
+Findings 69 and 72 established that the scorer could not say "575 of 576": a component recovered to
+99.8% reported the same `0` as one not recovered at all. Implemented, with three deliberate
+constraints.
+
+**(a) Reported, never folded into the headline.** `strict containment: 3/5` is unchanged and stays
+the number of record. Partial cover prints beneath it, labelled *REPORTED, not counted above*.
+575 ≠ 576, and a measure that rounds is worse than one that is strict — the point was never to make
+the number go up.
+
+**(b) No threshold.** "Partial" is simply `0 < coverage < 1`. Inventing a cut-off ("≥90% counts")
+would repeat the mistake §5.5 avoided when Newman modularity was rejected as a threshold: **a
+reported fraction beats an invented cut-off.**
+
+**(c) Overclaim is reported separately**, because two failure modes were previously indistinguishable
+— *we found less than the component* versus *we found a blob that merged it with something else*. A
+detector node that overlaps a component but spills outside it cannot help cover it, so it is counted
+and named rather than silently ignored.
+
+### What it revealed immediately
+
+**Milvus** — headline unchanged at 3/5:
+
+```
+partial (REPORTED, not counted above): 2 component(s) covered 834/836 files (99.8%)
+  Coordinator:    575/576 (99.8%) from 46 node(s) — missing 1: internal/streamingcoord/OWNERS
+  Streaming Node: 259/260 (99.6%) from 47 node(s) — missing 1: internal/streamingnode/OWNERS
+```
+
+**Prometheus** — 11/11, no partial line. Nothing to report is itself the right output.
+
+**Trellis — the surprise.** Its three long-standing "misses" were never misses:
+
+| component | actual |
+|---|---|
+| `Web backend` | **25/26 (96.2%)** — missing exactly `web/app.py` |
+| `Web front-end` | **10/13 (76.9%)** — missing three files |
+| `Core` | **15/38 (39.5%)** — genuinely partial |
+
+### The finding inside the finding
+
+`Web front-end`'s three missing files are `web/static/vendor/{marked,plotly,svg-pan-zoom}.min.js`.
+Confirmed against `exclusion.scan()`: **all three are excluded as vendored, so they are not
+first-party and the detector never sees them.**
+
+**That component cannot be matched by any detector, ever.** The ground truth claims files that
+`exclusion.py` removes before detection begins — a fixture/exclusion contradiction that was
+completely invisible while the result was a bare "miss", and that has been sitting in `trellis.md`
+since the fixture was written.
+
+It is exactly the class of thing pre-registration is supposed to surface, and exactly the class of
+thing a pass/fail measure hides. Per `README.md` rule 3 the fixture is **not** edited — the correct
+home is a note in a revision file, alongside the existing `trellis-revised.md`.
+
+Two of the three are also arguably *detector* findings worth chasing: one file (`web/app.py`) and one
+vendor-rule disagreement are very different from "the detector failed on Web front-end", which is all
+anyone could previously have said.
