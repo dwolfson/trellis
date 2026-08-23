@@ -24,4 +24,13 @@ trellis-vectorstore = { workspace = true }
 # unstructured, which doesn't build on Python 3.13. RE's own standalone
 # lockfile already resolved numba to 0.65.1 with no such issue — this
 # override just restores that same resolution inside the shared workspace.
-override-dependencies = ["numba>=0.60.0"]
+override-dependencies = [
+    "numba>=0.60.0",
+    # uvloop 0.17.0 cannot build on Python 3.12+ — it uses PyLongObject.ob_digit,
+    # removed in 3.12 — and ships no cp313 wheel, so it falls back to a source
+    # build that fails. uvicorn[standard] resolved to it on Linux while macOS
+    # got 0.22.1, so `uv sync` worked on every developer machine here and failed
+    # on the first CI run (2026-08-23), which is precisely the kind of
+    # platform-split breakage nobody finds without a Linux build.
+    "uvloop>=0.21.0",
+]
