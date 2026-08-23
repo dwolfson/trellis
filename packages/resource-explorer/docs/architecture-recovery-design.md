@@ -1121,6 +1121,36 @@ documentation lives in a sibling repo produces a confident, wrong "no architectu
 finding. That is the Kubernetes tombstone case (finding 68) reaching the user as a conclusion instead
 of a question.
 
+#### Vocabulary check against Egeria — done, and nothing existing fits
+
+§3.1's lesson was that `SolutionComponentType` **already existed** rather than needing invention, so
+the same check was run before defining a role vocabulary. Searched
+`frameworks/open-metadata-framework/.../refdata/` (the same directory
+`SolutionComponentType.java` lives in) at `egeria-v6`:
+
+| candidate | what it actually encodes | verdict |
+|---|---|---|
+| `DeployedImplementationType` (~120 values) | *deployed runtime artifacts* — `SOFTWARE_SERVER`, `DOCKER_CONTAINER`, `REST_API`, `SOURCE_CODE_FILE`, connectors, file types | **wrong axis.** Describes what a thing IS at runtime, not what a body of work represents. No `library`, `tutorial`, `samples`, `documentation` |
+| `ResourceUse` (29 values) | how a resource is *used in a governance flow* — `SURVEY_RESOURCE`, `CATALOG_RESOURCE`, `INFORM_STEWARD` | wrong axis |
+| `Category` (7 values) | metadata namespaces — `OPEN_METADATA_TYPES`, `SUSTAINABILITY`, `CLINICAL_TRIALS` | unrelated |
+| `ProjectStatus`, `ProjectPhase`, `ProjectHealth` | lifecycle state of a *project*, not its kind | unrelated |
+
+**There is no existing Egeria vocabulary for what a repository represents.** The check was still worth
+running: it rules out a wrong reuse, and it found the adjacent slot is already occupied.
+
+**The adjacent slot, and why role must not go in it.** `egeria_publisher.py:295` already writes
+`"deployedImplementationType": "GitHub Repository"` for every catalogued repo. That is the *hosting
+technology*, not the role — and "GitHub Repository" is not one of the enum's ~120 values, which
+confirms the property is free text backed by an extensible valid value set. Overloading it with
+`library` / `tutorial` would collide two orthogonal facts in one property, the §4.1c mistake
+(`scope_locator` meaning two things) in a new place.
+
+**Recommended shape: a new Egeria valid value set, not a Python enum.** Valid value sets are the
+framework's native extension mechanism — `ConfidenceLevel` is one, and the maintainer has already
+confirmed they can be extended ("confidence level is defined in valid values — we can extend it if we
+want"). A valid value set is catalogable, queryable, and extensible without a code change, where a
+hardcoded Python enum is none of those and would have to be migrated the first time the list is wrong.
+
 **Open, deliberately.** The vocabulary is not chosen yet, and the temptation to invent a closed enum
 should be resisted until it is checked against Egeria's existing types — `SoftwareCapability`
 subtypes and `plannedDeployedImplementationType` may already carry part of this, the same way §3.1's
