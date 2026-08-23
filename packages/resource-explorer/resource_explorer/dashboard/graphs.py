@@ -1,8 +1,23 @@
-"""Graph builders — Plotext for terminal output, Plotly for web/export."""
+"""Graph builders — Plotext for terminal output, Plotly for web/export.
+
+Every query here goes through ProjectRegistry._conn(), NOT sqlite3.connect().
+Until 2026-08-23 all six did the latter, against `registry.db_path` — a bare
+file path that is only meaningful when the registry is configured for SQLite.
+The registry has defaulted to Postgres for some time, so db_path pointed at
+`data/registry.db`: a file that held two stale rows from 2026-08-09 and, once
+that leftover was removed, nothing at all. sqlite3.connect() creates a missing
+file rather than failing, so every chart read an empty database and rendered an
+empty chart — and each function's `except Exception: return []` meant no error
+reached anyone either.
+
+The visible symptom was "star growth over time shows no data points when there
+are clearly stars". The stars were always there: project_stats in Postgres held
+14 snapshots for sqlglot, 8 for egeria_git. The chart was reading somewhere
+else entirely.
+"""
 from __future__ import annotations
 
 import json
-import sqlite3
 
 from resource_explorer.registry import ProjectRegistry
 
@@ -13,16 +28,14 @@ def _load_history(project_slug: str, limit: int = 12) -> list[dict]:
     """Return up to `limit` project_stats rows ordered oldest → newest."""
     registry = ProjectRegistry()
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """SELECT * FROM project_stats
-               WHERE project_slug = ?
-               ORDER BY fetched_at ASC
-               LIMIT ?""",
-            (project_slug, limit),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM project_stats
+                   WHERE project_slug = ?
+                   ORDER BY fetched_at ASC
+                   LIMIT ?""",
+                (project_slug, limit),
+            ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         return []
@@ -31,13 +44,11 @@ def _load_history(project_slug: str, limit: int = 12) -> list[dict]:
 def _latest_row(project_slug: str) -> dict:
     registry = ProjectRegistry()
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-            (project_slug,),
-        ).fetchone()
-        conn.close()
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+                (project_slug,),
+            ).fetchone()
         return dict(row) if row else {}
     except Exception:
         return {}
@@ -91,9 +102,13 @@ def stars_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly figure for star growth over time."""
     import plotly.graph_objects as go
 
-    rows = _load_history(project_slug)
+    # `or 0` would turn a snapshot that never recorded a star count into a
+    # measured zero — sqlglot's first row is stars=None, which plotted as a
+    # drop to 0 followed by a jump to 9,491, i.e. a growth story that never
+    # happened. A missing reading is dropped from the series instead.
+    rows = [r for r in _load_history(project_slug) if r.get("stars") is not None]
     dates = [r["fetched_at"][:10] for r in rows]
-    stars = [r.get("stars") or 0 for r in rows]
+    stars = [r["stars"] for r in rows]
 
     fig = go.Figure(go.Scatter(x=dates, y=stars, mode="lines+markers", name="Stars"))
     fig.update_layout(
@@ -131,19 +146,24 @@ def weekly_commits_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
 
     registry = ProjectRegistry()
     try:
-        conn = sqlite3.connect(registry.db_path)
-        rows = conn.execute(
-            "SELECT committed_at FROM project_commits "
-            "WHERE project_slug = ? ORDER BY committed_at DESC",
-            (project_slug,),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT committed_at FROM project_commits "
+                "WHERE project_slug = ? ORDER BY committed_at DESC",
+                (project_slug,),
+            ).fetchall()
     except Exception:
         rows = []
 
     now = datetime.utcnow()  # naive UTC — matches stored committed_at format
     week_counts: defaultdict = defaultdict(int)
-    for (ts,) in rows:
+    # r["committed_at"], not tuple unpacking: these rows used to come from a
+    # bare sqlite3 connection with no row_factory (plain tuples); through
+    # registry._conn() they are mapping rows, and `for (ts,) in rows` would
+    # bind ts to the *column name*. The enclosing except Exception would then
+    # have turned that into a silently empty chart.
+    for r in rows:
+        ts = r["committed_at"]
         try:
             dt = datetime.fromisoformat(ts[:19])  # strip tz suffix
             weeks_ago = (now - dt).days // 7
@@ -215,12 +235,11 @@ def top_committers_plotly(project_slug: str, limit: int = 10) -> "plotly.graph_o
 
     registry = ProjectRegistry()
     try:
-        conn = sqlite3.connect(registry.db_path)
-        rows = conn.execute(
-            "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
-            (project_slug,),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
+                (project_slug,),
+            ).fetchall()
     except Exception:
         rows = []
 
@@ -228,7 +247,11 @@ def top_committers_plotly(project_slug: str, limit: int = 10) -> "plotly.graph_o
         return None
 
     counter: Counter = Counter()
-    for name, email in rows:
+    # Same mapping-row change as weekly_commits_plotly above — `for name, email
+    # in rows` bound both to column NAMES, so the chart plotted a single bar
+    # labelled "author_name".
+    for r in rows:
+        name, email = r["author_name"], r["author_email"]
         label = name or email or "unknown"
         counter[label] += 1
 
@@ -262,15 +285,13 @@ def compare_stats_plotly(project_slugs: list[str]) -> "plotly.graph_objects.Figu
     project_data: dict[str, dict] = {}
     registry = ProjectRegistry()
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        for slug in project_slugs:
-            row = conn.execute(
-                "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-                (slug,),
-            ).fetchone()
-            project_data[slug] = dict(row) if row else {}
-        conn.close()
+        with registry._conn() as conn:
+            for slug in project_slugs:
+                row = conn.execute(
+                    "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+                    (slug,),
+                ).fetchone()
+                project_data[slug] = dict(row) if row else {}
     except Exception:
         pass
 
@@ -336,13 +357,11 @@ def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
         # ── fallback: raw extension count from code symbols ───────────────────
         subtitle = "by extension (run 'project-explorer survey' for richer labels)"
         try:
-            conn = sqlite3.connect(registry.db_path)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
-                (project_slug,),
-            ).fetchall()
-            conn.close()
+            with registry._conn() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
+                    (project_slug,),
+                ).fetchall()
         except Exception:
             rows = []
 
