@@ -2671,10 +2671,28 @@ class ProjectRegistry:
         = whole-resource, matching every pre-scope-aware caller unchanged;
         a non-empty value scopes this run's findings to one cataloged
         sub-resource, kept distinct from whole-resource findings under the
-        same `kind` rather than mixed together."""
+        same `kind` rather than mixed together.
+
+        Raises ValueError if `slug` isn't a registered project. Every known
+        caller (SurveyOrchestrator.run(), run_survey_definition()) already
+        validates this upfront the same way (registry.get(slug) is None ->
+        reject), but this is the one choke point every surveyor's _persist()
+        actually reaches — 2026-08-23 incident: an unregistered/stale slug
+        got past whatever called this (bypassing those two guards, or racing
+        a project deletion mid-run) and the plain INSERT below hit
+        project_analysis_findings_project_slug_fkey, which the callers' own
+        broad try/except-and-log-warning (e.g. SecurityHygieneSurveyor.
+        _persist) silently absorbed as a generic warning instead of the
+        actionable message this now gives them."""
         if not findings:
             return
         slug = self._normalize_slug(slug)
+        if self.get(slug) is None:
+            raise ValueError(
+                f"Cannot record '{kind}' analysis findings for project '{slug}' — "
+                "no such project in the registry (it was never added, or was "
+                "removed since this survey run started)."
+            )
         surveyed_at = surveyed_at or datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.executemany(
