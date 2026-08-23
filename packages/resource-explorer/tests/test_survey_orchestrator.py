@@ -321,11 +321,11 @@ class TestCostTierFilter:
                     # repo_arch_coupling — classify_subtree/cohesion computation
                     # over the whole import graph, medium not low.
                     "repo_arch_coupling",
-                    # repo_manifest_parse (2026-08-23) — three parser passes
-                    # over the extracted tree per run (dependency manifests, CI
-                    # workflow YAML, convention signals), so medium rather than
-                    # repo_file_inventory's single cheap walk.
-                    "repo_manifest_parse",
+                    # repo_manifest_parse is deliberately NOT here: it declares
+                    # compute_cost="low" because it measures like
+                    # repo_file_inventory (0.0-0.6s across 359-5,763 files), not
+                    # like the medium steps. It was "medium" on a guess for a
+                    # few hours; see its StepInfo comment for the numbers.
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()

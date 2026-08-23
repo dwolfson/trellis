@@ -336,13 +336,23 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
         # One of the zipball steps (D3/D4) — a real download, so "none" is
-        # invalid here. compute_cost="medium", not "low": unlike
-        # repo_file_inventory (one walk), this parses three manifest/workflow/
-        # convention passes over the extracted tree per run — closer to
-        # repo_data_profiling/repo_symbol_extraction's own "medium" than to a
-        # single cheap walk.
+        # invalid here.
+        #
+        # compute_cost="low", corrected from an initial "medium" guess after
+        # measuring it (2026-08-23). The reasoning for "medium" was "three
+        # parser passes rather than one walk", which sounds right and is not:
+        #   sqlglot   359 files -> 0.0s     (repo_file_inventory: 0.0s)
+        #   docling 1,652 files -> 0.2s     (repo_file_inventory: 0.3s)
+        #   milvus  5,763 files -> 0.6s     (repo_file_inventory: 0.2s)
+        # against downloads of 6.7s/84.1s/31.2s for the same repos. It measures
+        # like repo_file_inventory, which is "low", not like repo_data_profiling
+        # or repo_symbol_extraction. This is not cosmetic: max_compute_cost="low"
+        # filters steps out of a run, so "medium" would have excluded this step
+        # from the cheap tier it was added to Coarse Profile to serve. Rule 17's
+        # principle applied to the compute axis — where a guess and a
+        # measurement disagree, the measurement wins.
         fetch_cost="download",
-        compute_cost="medium",
+        compute_cost="low",
     ),
     "repo_file_structure": StepInfo(
         "repo_file_structure", FileStructureSurveyor,
