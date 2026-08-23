@@ -848,6 +848,22 @@ while `kubernetes/website`, `prometheus/docs` and `odpi/egeria-docs` were all pu
 suppressing it here would *be* the ranking judgement §5.5a(c) forbids. And §5.5b asks before
 including a sibling, so an extra dated candidate is a checkbox, not a wrong answer.
 
+**Role classifier built** (`resource_explorer/github/repo_role.py`, 46 hermetic tests). Seven roles,
+multi-valued with a primary, every role carrying the evidence that produced it. Live-verified:
+`kubernetes/website` and `odpi/egeria-docs` → `documentation`; `milvus-io/milvus` and
+`prometheus/prometheus` → `application`; `odpi/egeria-workspaces` → `tutorial`+`application`+`library`.
+
+**Gate correction (design §5.5b).** `egeria-workspaces` ranks `tutorial` primary and is *also* target
+T1, from which architecture recovery scored 18/27. A gate keyed on the primary role would skip it.
+**Trigger the skip on containment, not primacy:** skip when a tutorial/samples/documentation role is
+present AND no deployment/structural artifacts were found. Primacy still drives the expectation set.
+
+**Known limitation, evidenced not tuned:** the README-intent matcher requires an *is-a* phrasing
+(`X is a tutorial`) and misses *purpose* phrasing — `egeria-workspaces`'s "designed for learning" is
+an explicit statement of intent that §5.2 step 0 says should outrank inference, and it does not fire.
+The role was recovered from notebook presence instead. Broadening the pattern should be validated
+against a repo not yet looked at, not tuned on this one.
+
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.

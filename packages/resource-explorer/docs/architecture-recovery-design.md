@@ -1121,6 +1121,34 @@ documentation lives in a sibling repo produces a confident, wrong "no architectu
 finding. That is the Kubernetes tombstone case (finding 68) reaching the user as a conclusion instead
 of a question.
 
+#### The gate must NOT trigger on the primary role alone
+
+Found while building the classifier, and it corrects the "gate" subsection above.
+
+`odpi/egeria-workspaces` classifies as **`tutorial`, `application`, `library`** — all three correct.
+Its README says it is *"a fully pre-configured, Docker Compose-based platform for **learning**,
+experimenting with, and operating Egeria"* and *"designed for learning and small-team use"*, and it
+carries 37 Jupyter notebooks in `workbooks/` and `coco-workbooks/`. `tutorial` ranks **primary**.
+
+**And it is target T1, from which architecture recovery scored 18/27.** A gate keyed on the primary
+role would skip the repo whose deployment architecture we have most successfully recovered.
+
+So primacy is the wrong trigger. The gate's real question is not *"what is this repo mostly?"* but
+*"is there an architecture here worth recovering?"* — and that is answered by the **presence of
+structural evidence**, not by which role sorted first:
+
+> **Skip architecture recovery when a tutorial/samples/documentation role is present AND no
+> deployment or structural artifacts were found. Never on the primary role alone.**
+
+Under that rule `egeria-workspaces` runs (25 compose files), a pure notebook workshop does not, and
+`kubernetes/website` does not. The primary role still drives the **expectation set** — what a mature
+project of this kind should have — which is what it is good for.
+
+**Why the distinction was invisible until now.** Single-role classification conflates "what it mostly
+is" with "what it contains". The multi-valued decision separates them, and the gate must key on
+*containment* while the expectation set keys on *primacy*. Two different questions, two different
+readings of the same classification.
+
 #### Vocabulary check against Egeria — done, and nothing existing fits
 
 §3.1's lesson was that `SolutionComponentType` **already existed** rather than needing invention, so
