@@ -1248,6 +1248,86 @@ what anyone thinks to check. §5.5a(c)'s guardrail — report the observations, 
 the same instinct one layer up: **prefer a system that shows its evidence and is corrected, over one
 that quietly converges on approval.**
 
+### 5.5d User motivation → disposition → next steps
+
+**Maintainer, 2026-08-23.** Step back from the repos and ask why anyone is looking at one at all.
+Motivation drives **disposition** and **next steps**, and therefore which questions — and hence which
+survey types — are relevant.
+
+The motivations, as given:
+
+| # | motivation |
+|---|---|
+| 1 | gain general understanding |
+| 2 | assess potential competition |
+| 3 | prospect for components, runtimes or tools that might be useful |
+| 4 | the components/runtimes/tools are **already in use**: (a) learn to use them, (b) evaluate robustness/security/viability, (c) decide whether to upgrade, (d) compare with alternatives, (e) investigate expanding their use |
+| 5 | the repo is **data** — analogous questions, different kinds: quality, currency, documentation |
+
+Possibly several at once, as with roles.
+
+#### The structural line inside the list
+
+**1–3 are about resources you do not use; 4 is about resources you do.** That is not a label, it
+changes what evidence *exists*. For an in-use resource there is a second corpus — which version you
+are on, which APIs you actually call, how deeply it is embedded, who owns the integration — and
+**none of it lives in the repo being surveyed.** RE has no such corpus today. Every motivation under
+4 is partly unanswerable from the repo alone, and pretending otherwise would produce confident
+answers to the wrong question. Worth naming before anything is built: *4 needs an input we do not
+have*.
+
+#### 5 is not a sixth motivation
+
+It is the observation that the **question set is resource-type-specific while the motivation set is
+not**. "Is it current?", "is it documented?", "can I depend on it?" are the same motivations aimed at
+a different kind of thing. That is good news: motivation **composes with** resource type rather than
+multiplying against it, so a data resource does not need its own motivation taxonomy.
+
+#### Disposition is the new idea, and it is the missing top layer
+
+RE produces annotations and findings — *evidence*. A **disposition** is an answer: adopt, avoid,
+monitor, upgrade, replace, ignore, investigate further. That is what a decision-maker actually wants,
+and nothing in the system currently produces it.
+
+**And Egeria may already have the vocabulary.** §5.5b's check found `ResourceUse` and set it aside as
+the wrong axis *for role* — which it is. But for disposition and next steps it looks close to right:
+`CERTIFY_RESOURCE`, `CATALOG_RESOURCE`, `UNCATALOG_RESOURCE`, `PROVISION_RESOURCE`, `CHOOSE_PATH`,
+`WATCH_DOG`, `CREATE_SUBSCRIPTION`, `IMPROVE_METADATA`, `INFORM_STEWARD`, `GENERATE_INSIGHT`. Those
+are *governance actions on a resource* — which is what a next step is. **Check this properly before
+inventing a disposition vocabulary**, exactly as §3.1's `SolutionComponentType` turned out to exist.
+
+Note `WATCH_DOG` and `CREATE_SUBSCRIPTION` in particular: motivation 4c (*do we need to upgrade?*) is
+inherently **recurring**, not a one-shot survey. It is the Automate intent by another name, which
+suggests some motivations imply a *schedule* rather than a run.
+
+#### Four axes now exist — keep them apart
+
+| axis | question | vocabulary |
+|---|---|---|
+| **role** (§5.5b) | what *is* this resource? | 7 values, provisional |
+| **motivation** (here) | why am I looking at it? | this list, provisional |
+| **perspective** | who am I? | dba / data_scientist / steward / security |
+| **intent** (the 8 UI tabs) | how am I working right now? | Scouting … Automate |
+
+These are genuinely different, and merging any two would repeat the §4.1c mistake — one field, two
+meanings — which this project has now hit three times. In particular **motivation is not the eight UI
+intents**: those are *modes of working*, this is *why*. "Evaluate robustness" (motivation) is pursued
+*through* Assessment (mode).
+
+**The combinatorial risk is real and has an answer.** Four axes multiply if each independently
+filters. They do not have to: questions in `docs/dr-egeria/resource_questions.csv` already carry
+funnel stage and perspective, so **motivation selects question sets** and the existing facets do the
+rest. One mapping, not a cross-product.
+
+#### The discipline that keeps this from becoming a taxonomy nothing uses
+
+**Every motivation must change something concrete** — which questions are asked, which survey types
+run, or which disposition is offered. **If two motivations produce identical behaviour, they are one
+motivation.** That is a falsifiable test, and it should be applied to this list before it is adopted:
+on current evidence 4b (*evaluate robustness/security/viability*) and 3 (*is this worth using?*) may
+well collapse, and 1 (*general understanding*) may turn out to be the absence of a motivation rather
+than one of them.
+
 ### 5.6 Tooling — what to adopt, and what it costs
 
 Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no
