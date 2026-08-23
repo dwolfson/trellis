@@ -94,3 +94,34 @@ one real file, that blueprints only reference defined components, and that the `
 files claimed by two components (legal, but usually a slip). Non-zero exit on any error.
 
 `score.py` consumes the same parse, so a file that validates is a file the spike can read.
+
+## Development fixture vs held-out fixtures (added 2026-08-23)
+
+Rule 3 forbids editing a fixture after the fact. It does not, on its own, stop the subtler version of
+the same mistake: **iterating something else until a fixture scores well.** A prompt revised until
+`prometheus.md` reads 11/11 has fitted the fixture just as surely as editing the fixture would have,
+and design §5.5c says the same thing about weights — *"a weight fitted to make `prometheus.md` score
+11/11 makes that 11/11 meaningless."*
+
+Prompts, weights, thresholds and filter rules are all the same hazard. So:
+
+| fixture | status | ground truth written by |
+|---|---|---|
+| `prometheus.md` | **DEV** — iterate against it freely | owner-published doc |
+| `milvus.md` | **HELD OUT** | owner-published doc |
+| `kubernetes.md` | **HELD OUT** | owner-published doc |
+| `trellis.md` | **HELD OUT** | maintainer |
+| `egeria-workspaces.md` | **HELD OUT** | maintainer |
+
+**Dev-fixture scores are a development signal, not a result**, and must be labelled as such wherever
+they are quoted. A held-out fixture is run **once**, after the thing being developed is settled, and
+that run is the measurement.
+
+If a held-out fixture is ever used for iteration it should be moved to DEV in this table rather than
+quietly reused — the table is only useful if it is honest about which numbers still mean something.
+
+Note the second column: `trellis.md` and `egeria-workspaces.md` are the only fixtures whose ground
+truth was **written by the maintainer** rather than transcribed from a project's published
+architecture document. They are therefore the only fixtures against which an adjudicator that is
+*given* the published architecture doc could ever be measured honestly — scoring that against the
+other three would be measuring transcription against transcription.
