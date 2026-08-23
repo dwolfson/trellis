@@ -101,6 +101,17 @@ class TestFindingsShapedKinds:
 
 
 class TestMetricsShapedKinds:
+    @pytest.fixture(autouse=True)
+    def _register_project(self, registry):
+        """Same fixture the sibling findings class needs. Both classes relied on
+        SQLite silently ignoring the FK to projects.slug; with the pragma on
+        (and on Postgres all along) an unregistered slug is rejected."""
+        from resource_explorer.registry import Project
+        if registry.get("myproj") is None:
+            registry.add(Project(slug="myproj", display_name="My Project",
+                                 github_url="https://github.com/test/myproj",
+                                 collections=[]))
+
     def test_no_metrics_history_is_not_changed(self, registry):
         result = detect_change(registry, "myproj", "api_structure")
         assert result.changed is False

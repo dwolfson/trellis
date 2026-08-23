@@ -385,6 +385,23 @@ class ProjectRegistry:
         raw_conn = self.engine.raw_connection()
         if not is_postgres:
             raw_conn.row_factory = sqlite3.Row
+            # SQLite ships with foreign-key enforcement OFF. Production is
+            # Postgres, which enforces — so without this the test backend is a
+            # strictly *weaker* mirror of production, and any write that
+            # violates a FK passes every test and fails live.
+            #
+            # That is not hypothetical. Two comments in this file already
+            # describe deletion-order bugs found exactly this way (see remove()
+            # and remove_database()), and on 2026-08-23 a peer session found
+            # three orphaned project_analysis_findings rows in the live
+            # Postgres for an unregistered slug — inserts that SQLite had
+            # happily accepted in tests, absorbed live by a caller's broad
+            # except+log.warning so nothing surfaced anywhere.
+            #
+            # Measured before adding: with the pragma off an orphan INSERT into
+            # project_analysis_metrics succeeds; with it on the same statement
+            # raises IntegrityError, matching Postgres.
+            raw_conn.execute("PRAGMA foreign_keys=ON")
         conn = ConnectionWrapper(raw_conn, is_postgres)
         try:
             yield conn
@@ -2198,6 +2215,30 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_file_inventory WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_egeria_surveys WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_data_profiles WHERE project_slug = ?", (normalized,))
+            # The generic analysis tables (analysis-kind extensibility redesign)
+            # were added after the comment above was written and never added
+            # here — the same omission recurring on the newer tables. Found
+            # 2026-08-23 by the real-Postgres registry tier
+            # (tests/test_integration_registry_pg.py) on its first run: every
+            # project that has ever been surveyed has rows in at least one of
+            # these, so remove() raised ForeignKeyViolation on Postgres for
+            # effectively every real project — including via Admin's bulk
+            # "delete locally". Invisible on SQLite even with the pragma on,
+            # because these two DELETEs were simply missing rather than
+            # mis-ordered. test_remove_deletes_from_every_table_with_a_fk
+            # now enumerates the FKs so a future table cannot be forgotten.
+            conn.execute("DELETE FROM project_analysis_findings WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_analysis_metrics WHERE project_slug = ?", (normalized,))
+            # The four superseded per-kind tables from Phase B. The analysis-kind
+            # redesign (D3) deliberately kept them rather than dropping them, for
+            # a soak period — so they still exist, still carry a FK, and still
+            # hold data (measured 2026-08-23: 6 security-finding rows, 4
+            # documentation-finding rows, 2 api-structure snapshots). Deprecated
+            # is not gone: while the table exists, remove() has to clear it.
+            conn.execute("DELETE FROM project_security_findings WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_documentation_findings WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_data_profile_snapshots WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_api_structure_snapshots WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
 
     # ── alias management ──────────────────────────────────────────────────────
@@ -2767,6 +2808,18 @@ class ProjectRegistry:
         if not metrics:
             return
         slug = self._normalize_slug(slug)
+        # Same guard, same reason as upsert_finding above — these two are the
+        # matched pair every surveyor's persistence path reaches, and only one
+        # of them had it. With SQLite's foreign_keys pragma now ON, the missing
+        # guard surfaced immediately as a raw `IntegrityError: FOREIGN KEY
+        # constraint failed` from two notification-detector tests, which is the
+        # vague error the finding-side guard exists to replace.
+        if self.get(slug) is None:
+            raise ValueError(
+                f"Cannot record '{kind}' analysis metrics for project '{slug}' — "
+                "no such project in the registry (it was never added, or was "
+                "removed since this survey run started)."
+            )
         surveyed_at = surveyed_at or datetime.utcnow().isoformat()
         rows = [
             {
