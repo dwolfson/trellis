@@ -15,6 +15,8 @@ session.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 _TEST_SCHEMA = "resource_explorer_test"
@@ -71,7 +73,28 @@ def pytest_configure(config):
     )
 
 
+#: Set in CI. Auto-skipping is right on a developer laptop with no services
+#: running — but it means a CI job whose Postgres service failed to start, or
+#: whose credentials are wrong, reports a green suite having silently run none
+#: of the integration tier. That is the same blind spot the tier exists to
+#: close, one level up: the tests that check production behaviour quietly not
+#: running is indistinguishable from them passing.
+#:
+#: With RE_REQUIRE_POSTGRES=1 an unreachable instance is a hard error instead.
+_REQUIRE_POSTGRES = os.environ.get("RE_REQUIRE_POSTGRES", "").strip() not in ("", "0", "false")
+
+
 def pytest_collection_modifyitems(config, items):
+    if _REQUIRE_POSTGRES and not _PGVECTOR_AVAILABLE:
+        marked = sum(1 for i in items if "requires_pgvector" in i.keywords)
+        pytest.exit(
+            f"RE_REQUIRE_POSTGRES is set but Postgres is not reachable at the "
+            f"configured host:port, so {marked} requires_pgvector test(s) would "
+            f"have been silently skipped. Check the service container and the "
+            f"PGVECTOR_* environment variables.",
+            returncode=1,
+        )
+
     skip_pgvector = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
     skip_egeria = pytest.mark.skip(reason="Egeria platform not reachable at the configured platform_url")
     for item in items:
