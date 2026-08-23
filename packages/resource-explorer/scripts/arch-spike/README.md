@@ -2106,3 +2106,87 @@ Two conclusions, both of which shape Phase 5:
    recall, is a *better* starting point for adjudication than a smaller set that has already thrown
    away a third of the answer. Over-proposal is the correct failure direction for a funnel — provided
    something downstream actually narrows it, which is exactly what does not exist yet.
+
+---
+
+**77. Candidate ranking: how many candidates must a distiller see? Hundreds, not thousands — and
+confidence is the worst signal we have.**
+
+Finding 76 showed no proposer subset is both high-recall and low-count. So the Phase 5 question is
+how far down a *ranked* list the right answers sit. `rank.py` measures **recall@N** — the same
+strict-containment rule `score.py` applies (§2a: exact node, or union of contained refinements),
+computed over only the top N candidates. It reproduces `score.py` exactly at N=ALL rather than
+approximating it.
+
+**Not tuned.** Weights fitted on these three fixtures would contaminate the only pre-registered,
+owner-published ground truth this project has. Each strategy is motivated separately, stated up
+front, and the sweep was run once.
+
+| strategy | motivation |
+|---|---|
+| `confidence` | the null hypothesis — the number the detectors already emit, used as-is (§3.3b) |
+| `agreement` | independent agreement first (Phase 1 §4.4, portfolio §3), then confidence |
+| `shallow` | §6.0 — a component is a *scope locator*, and the locators humans name are coarse |
+| `typed` | classifiable into the 13 values before `?`, then agreement, depth, confidence |
+| `rollup` | not-a-refinement-of-another-candidate first, then typed/depth/confidence |
+
+### Results
+
+```
+prometheus  (212 cand, 11 declared)   N=10   N=25   N=50  N=100  N=212
+  confidence                          1/11   1/11   2/11   7/11  11/11
+  agreement                           3/11   6/11   8/11   9/11  11/11
+  shallow                             2/11   7/11  10/11  10/11  11/11
+  typed                               6/11   9/11   9/11  10/11  11/11
+  rollup                              6/11   9/11  10/11  10/11  11/11
+
+milvus      (578 cand, 5 declared)    N=50  N=100  N=250  N=500  N=578
+  confidence                           0/5    1/5    3/5    3/5    3/5
+  typed / rollup                       0/5    3/5    3/5    3/5    3/5
+
+kubernetes  (3303 cand, 6 declared)   N=50  N=100  N=250  N=500  N=3303
+  confidence                           0/6    0/6    0/6    2/6     6/6
+  agreement                            0/6    0/6    4/6    5/6     6/6
+  typed / rollup                       3/6    4/6    5/6    5/6     6/6
+```
+
+**Confidence alone is the worst strategy at every N on every target** — 1/11 at N=25 on Prometheus
+where `typed` gets 9/11. The confidence the detectors emit is a claim about *how the identity was
+established* (§8.2's precedence rungs), not about *how likely this is to be a component*, and it
+does not transfer. Another instance of the recurring lesson: a number that does not encode the
+question being asked of it.
+
+**`rollup` ties `typed` and does not beat it — a negative result, recorded as one.** The hypothesis
+was that preferring nodes not contained in another candidate would surface the handful that matter.
+It buys nothing `typed` did not already capture, so the extra machinery is not justified by this
+evidence.
+
+### Why recall@N is harsher than "is the answer in the list"
+
+Measuring the **minimal** cover per declared component — maximal contained nodes only — gives the
+real shape:
+
+| component | candidates *contained* | **minimal cover** |
+|---|---|---|
+| `kube-controller-manager` | 140 | **2** — `cmd/kube-controller-manager` + `pkg/controller` |
+| `kubelet` | 103 | **2** |
+| `kube-scheduler` | 53 | **2** |
+| `kube-apiserver` | 27 | **3** |
+| Milvus `Proxy` | 15 | **2** |
+
+**A component needs *every* member of its cover inside the window.** Prometheus survives truncation
+because 10 of its 11 components are *exact single nodes*; Kubernetes and Milvus need both halves
+(`cmd/X` **and** `pkg/X`) in the top N simultaneously. So recall@N degrades much faster than a
+"is the right answer somewhere in the list" measure would suggest — and reporting the latter would
+have flattered the result substantially.
+
+### The practical answer for Phase 5
+
+**An adjudicator needs on the order of hundreds of candidates, not thousands** — roughly N≈25
+(Prometheus), N≈100 (Milvus), N≈250 (Kubernetes) under `typed`. That is about an order of magnitude
+off 3303, not two, and 250 evidence-carrying candidates is a tractable LLM input where 3303 is not.
+
+Ranking is therefore **worth doing and not sufficient on its own**. The remaining gap is structural:
+until something merges `cmd/X` with `pkg/X` into one candidate — which is what the ground truth
+actually declares — every union-matched component costs two or three slots in the window instead of
+one.

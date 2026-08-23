@@ -243,3 +243,73 @@ class TestApiStructureSaysWhichNothingItFound:
         ApiStructureSurveyor(project, registry).run()
         metrics = registry.query_metrics(project.slug, "api_structure")
         assert metrics["symbol_count"] == 1
+
+
+class TestDependenciesProveTheirOwnZero:
+    """The best known-positive in the set, and the worst underlying gap.
+
+    `project_dependencies` is written by IngestionPipeline and by no survey
+    step — the same trap file_inventory and code_symbols were in. Measured on
+    the live registry 2026-08-22: 3 of 58 resources had any dependency row,
+    while the repos with none ship manifests (docling a pyproject.toml, milvus
+    Cargo.toml + go.mod + requirements.txt, egeria_git a build.gradle). Every
+    one reported nothing, silently.
+
+    So this step does not fall back on "the upstream table has rows". It checks
+    for a manifest: present + zero deps is demonstrably wrong (`unverified`);
+    absent + zero deps is a real answer (`no_signal`).
+    """
+
+    def _run(self, registry, project):
+        from resource_explorer.surveyors.sub_surveyors.dependency import DependencySurveyor
+        return DependencySurveyor(project, registry).run()
+
+    def test_a_manifest_with_no_dependencies_is_unverified(self, registry, project):
+        registry.upsert_file_inventory(project.slug,
+                                       [("pyproject.toml", 400), ("src/a.py", 10)])
+        results = self._run(registry, project)
+        assert len(results) == 1
+        assert _outcome_of(results[0]) == UNVERIFIED
+        assert "pyproject.toml" in results[0].summary
+        assert results[0].json_properties["manifests_present"] == ["pyproject.toml"]
+
+    def test_no_manifest_and_no_dependencies_is_a_provable_zero(self, registry, project):
+        """A repo that declares no dependencies is unremarkable — and provable,
+        because the inventory shows there was nothing to declare them in."""
+        registry.upsert_file_inventory(project.slug, [("README.md", 100)])
+        results = self._run(registry, project)
+        assert len(results) == 1
+        assert _outcome_of(results[0]) == NO_SIGNAL
+        assert results[0].json_properties["manifests_present"] == []
+
+    def test_manifests_are_found_at_any_depth(self, registry, project):
+        """Monorepos keep them in subdirectories; a root-only check would call
+        every monorepo a provable zero."""
+        registry.upsert_file_inventory(project.slug, [("packages/web/package.json", 200)])
+        results = self._run(registry, project)
+        assert _outcome_of(results[0]) == UNVERIFIED
+
+    def test_an_empty_inventory_cannot_prove_a_zero_either(self, registry, project):
+        """The subtle one, and it was wrong in the first draft of this code.
+
+        With no inventory we cannot see whether the repo ships a manifest, so
+        "it declares no dependencies" is a claim the run has not earned — the
+        absence of a manifest is only evidence if we were able to look. The
+        first version returned no_signal here, which is the same unearned
+        confidence this whole vocabulary exists to prevent, one level up.
+        """
+        results = self._run(registry, project)
+        assert len(results) == 1
+        assert _outcome_of(results[0]) == UNVERIFIED
+        assert results[0].json_properties["manifests_present"] == []
+        assert "inventory is empty" in results[0].summary
+
+    def test_real_dependencies_are_recovered(self, registry, project):
+        registry.upsert_dependencies(project.slug, [
+            {"dep_name": "requests", "dep_version": "2.0", "ecosystem": "PyPI",
+             "dep_type": "runtime", "source_file": "pyproject.toml"},
+        ])
+        results = self._run(registry, project)
+        totals = [r for r in results if "total dependencies" in r.summary]
+        assert len(totals) == 1
+        assert _outcome_of(totals[0]) == RECOVERED

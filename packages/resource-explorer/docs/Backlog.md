@@ -94,7 +94,38 @@ adopter. Recording only — nothing routes on these labels.
    `COUNT(*)`). `test_no_symbols_persists_nothing` reversed with a note, same as
    `test_no_inventory_persists_nothing`.
 
-   **Still open:** the remaining ~15 steps.
+   **`repo_dependency` followed, and has the sharpest known-positive of the set.** It does not
+   fall back on "the upstream table has rows": it checks the file inventory for a **dependency
+   manifest**. A manifest present with zero extracted dependencies is demonstrably wrong
+   (`unverified`); no manifest, with an inventory to prove it, is a real answer (`no_signal`);
+   an empty inventory can prove neither, so it degrades to `unverified` — the first draft
+   returned `no_signal` there, which was the same unearned confidence this vocabulary exists
+   to prevent, one level up. Manifests match at any depth, or every monorepo reads as a
+   provable zero.
+
+   **Still open:** the remaining ~14 steps.
+
+### `project_dependencies` has no survey-step writer — `repo_dependency_extraction` is missing
+
+Found 2026-08-22 while adopting the outcome vocabulary in `repo_dependency`, and **not fixed**
+— this is a new step, not a labelling change, so it is logged rather than smuggled in.
+
+`upsert_dependencies()` is called from exactly one place, `ingestion/pipeline.py`. No survey
+step writes it. That is precisely the gap `repo_file_inventory` (D-whatever) and
+`repo_symbol_extraction` (D5) were added to close for their tables, and dependencies were
+left out of both passes.
+
+Measured across the live registry: **3 of 58 registered resources have any dependency row at
+all**, and the repos with none demonstrably ship manifests — docling a `pyproject.toml`,
+milvus `Cargo.toml` + `go.mod` + `requirements.txt`, trellis `package.json` +
+`pyproject.toml`, egeria_git a `build.gradle`. So `dependency_analysis` — a headline Analysis
+card with a results view and a trend — has been reporting nothing for ~95% of the corpus.
+
+The fix is the same self-contained microflow shape as `repo_symbol_extraction`: acquire the
+shared `zipball_root` resource, parse the manifests, write `project_dependencies`, then report
+what it wrote. It costs no extra download in any survey that already contains a zipball step.
+Until it exists, `repo_dependency` at least now says the zero is unverified rather than
+returning silently.
 6. **Converging with arch-recovery's `run_scope`/`partial`.** That session already emits
    `partial` on scoped runs (`ca34edf`) and offered a walkthrough of where `StepInfo` /
    `requires_resources` / `resolve_resources` would need to change. Not started; deliberately
@@ -769,3 +800,23 @@ most common failure. Do not add a sixth label unilaterally.
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.
+
+---
+
+### Phase 5 distillation — what the ranking experiment settled (finding 77)
+
+`scripts/arch-spike/rank.py` measures recall@N over ranked candidates. Conclusions, all measured:
+
+* **An adjudicator needs hundreds of candidates, not thousands** — N≈25 / 100 / 250 for Prometheus /
+  Milvus / Kubernetes under the `typed` strategy. 250 evidence-carrying candidates is a tractable LLM
+  input; 3303 is not.
+* **Do not rank by the emitted confidence.** Worst strategy at every N on every target (1/11 at N=25
+  on Prometheus vs 9/11 for `typed`). §3.3b confidence describes *how identity was established*, not
+  *how likely this is a component*.
+* **`rollup` ties `typed`** — negative result; the extra machinery is unjustified by current evidence.
+* **The remaining gap is structural, not a ranking problem.** A declared component's minimal cover is
+  2–3 nodes (`kube-controller-manager` = `cmd/kube-controller-manager` + `pkg/controller`), and *all*
+  of them must be in the window. Until something merges the `cmd/X` and `pkg/X` arms into one
+  candidate — which is what the ground truth declares — each such component costs 2–3 slots instead
+  of 1. **That merge is the next concrete piece of work**, and it is worth more than further ranking
+  refinement.
