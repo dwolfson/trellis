@@ -161,6 +161,27 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: repo_classification
+    name: "Repo Classification"
+    description: "What the repo represents (library/application/middleware/tool/tutorial/samples/documentation), where its expected artifacts live, and whether architecture recovery is worth running."
+    resource_types:
+      - repo
+    intent: discovery
+    perspectives:
+      - steward
+      - data_scientist
+      - all
+    annotation_types:
+      - ClassificationAnnotation
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: license_classification
     name: "License Classification"
     description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."

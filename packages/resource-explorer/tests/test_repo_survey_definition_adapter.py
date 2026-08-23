@@ -53,6 +53,7 @@ def test_all_step_keys_are_registered():
         "repo_security_features", "repo_ci_quality", "repo_maturity",
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
         "repo_arch_detect", "repo_arch_coupling", "repo_manifest_parse",
+        "repo_classification",
     }
 
 

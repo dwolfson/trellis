@@ -94,7 +94,15 @@ class TestFilterByIntent:
     # fetch signature. Recorded here rather than silently weakening the
     # check for everything else: a NEW discovery entry that also fetches
     # should still fail this test unless it is deliberately added here too.
-    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery"}
+    # repo_classification added 2026-08-22. It declares requires_resources={},
+    # so it would pass the check below WITHOUT being named here — and that is
+    # exactly why it is named here. It reaches GitHub directly (repo tree,
+    # README, sibling-repo listing), and letting an empty resource declaration
+    # hide a real fetch would turn rule 17's signature into a formality. The
+    # rule's actual test is "cheap enough to gate the expensive tiers", which a
+    # handful of API calls passes; the honest way to record that is an explicit
+    # exception, not silence. Design §5.5b.
+    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification"}
 
     def test_discovery_is_the_zero_fetch_derivation_tier(self):
         """Discovery reasons over what Scouting collected rather than fetching:
@@ -106,7 +114,7 @@ class TestFilterByIntent:
 
         analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
-        assert ids == {"license_classification", "maturity", "repo_conventions"} \
+        assert ids == {"license_classification", "maturity", "repo_conventions", "repo_classification"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):

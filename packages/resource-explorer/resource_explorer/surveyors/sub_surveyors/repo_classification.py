@@ -1,0 +1,187 @@
+"""Sub-surveyor: what the repo *represents*, and where its expected artifacts are.
+
+Design reference: `docs/architecture-recovery-design.md` §5.5b. This wires the
+three library modules built for it into a runnable survey step:
+
+    github/repo_role.py      -> what kind of thing is this repo (7 roles, ranked)
+    github/doc_locations.py  -> where does each artifact actually live
+    github/expectations.py   -> what should a project of this kind have, + the gate
+
+**Why this is Discovery-tier and not Assessment.** It answers "is the expensive
+work worth doing at all", which is the funnel's own question (CLAUDE.md rule 17).
+Its most valuable output is a *negative*: on a tutorial or samples repo with no
+structural evidence, architecture recovery should not run at all. §5.5b is
+explicit that this is a **gate, not a weighting** — the cost saved is the whole
+tier, not a filter applied after the expensive work already happened.
+
+**The gate keys on containment, not on the primary role.** `odpi/egeria-workspaces`
+ranks `tutorial` primary — its README says "designed for learning", and it holds
+37 notebooks — *and* it is architecture-recovery target T1, which scored 18/27.
+A gate reading the primary role would skip the repo we have recovered most
+successfully. See `expectations.recovery_gate`.
+
+**No score is emitted, deliberately.** §5.5a(c)/§5.5b: a checklist becomes a
+maturity score, and a maturity score punishes deliberate choices — a small stable
+library documents lightly on purpose. This step reports located artifacts, absent
+ones, and *confirmations* (absences that support the role, e.g. a library having
+no deployment artifacts, which `trellis.md` records verbatim). It emits no count,
+percentage or grade.
+
+**Known gap, not ours to close here.** None of `step_outcome.py`'s five labels
+fits "we deliberately did not run because it would have been the wrong question":
+`no_signal` requires `known_positive=True` and nothing ran, while `unverified`
+means *could not* run when in fact we could and chose not to. A skip is the
+funnel's biggest win and currently has no vocabulary that says so. Recorded in
+§5.5b and flagged for that module's owner; this surveyor therefore reports the
+gate as its own finding rather than mislabelling it as a degraded outcome.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+
+from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
+
+log = logging.getLogger(__name__)
+
+STEP = "RepoClassification"
+
+
+def _owner_repo(url: str) -> str:
+    """`owner/name` from a GitHub URL. Mirrors `GitHubClient._url_to_slug` —
+    duplicated rather than imported to keep this surveyor free of a client
+    construction it does not otherwise need."""
+    url = (url or "").rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    if "github.com/" in url:
+        return url.split("github.com/")[-1]
+    return url
+
+
+class RepoClassificationSurveyor(BaseSurveyor):
+    """Classifies the repo's role(s), resolves the artifacts that role implies,
+    and records whether architecture recovery should run."""
+
+    def __init__(self, project: Project, registry: ProjectRegistry,
+                 surveyed_at: str | None = None) -> None:
+        super().__init__(project, registry)
+        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+
+    @property
+    def step_name(self) -> str:
+        return STEP
+
+    def run(self) -> list[Annotation]:
+        from resource_explorer.github import expectations as ex
+
+        slug = self.project.slug
+        owner_repo = _owner_repo(getattr(self.project, "github_url", "") or "")
+        if "/" not in owner_repo:
+            log.warning("%s: no usable GitHub URL — skipping classification", slug)
+            return []
+
+        try:
+            report = ex.build_report(owner_repo)
+        except Exception as exc:
+            # Observable, not swallowed. `doc_locations`/`repo_role` degrade
+            # internally rather than raise, so reaching here means something
+            # genuinely unexpected — and a log line alone would make that
+            # indistinguishable from "this repo has no role", which is a
+            # legitimate result. A peer session lost three inserts to exactly
+            # this pattern (a broad try/except around a registry write turning
+            # an FK violation into a warning nobody read), so the failure is
+            # persisted as a finding the caller and the UI can both see.
+            log.exception("%s: repo classification failed", slug)
+            self._record_error(slug, f"{type(exc).__name__}: {exc}")
+            return []
+
+        if not report.primary_role:
+            log.info("%s: no role determined (%s)", slug, "; ".join(report.notes[:2]))
+            return []
+
+        roles = report.roles
+        summary = (f"{report.primary_role}"
+                   + (f" (also {', '.join(roles[1:])})" if len(roles) > 1 else "")
+                   + f" — architecture recovery: {report.gate}")
+
+        annotation = ClassificationAnnotation(
+            summary=summary,
+            analysis_step=STEP,
+            candidate_classifications=roles,
+            # 60 rather than a computed number: the roles carry their own
+            # evidence, and §5.5b forbids turning that evidence into a grade.
+            # This is "derived, corroborated by evidence the reader can see",
+            # which is what §3.3b's Derived level means.
+            confidence=60,
+            json_properties={
+                "primary_role": report.primary_role,
+                "roles": roles,
+                "recovery_gate": report.gate,
+                "recovery_gate_reason": report.gate_reason,
+                "located": [{"kind": i.kind, "outcome": i.outcome,
+                             "evidence": i.evidence, "date": i.date} for i in report.found],
+                "absent_but_expected": [{"kind": i.kind} for i in report.missing],
+                "absent_as_expected": [{"kind": i.kind} for i in report.confirmations],
+                "present_though_unexpected": [{"kind": i.kind, "outcome": i.outcome}
+                                              for i in report.unexpected],
+                "notes": report.notes,
+            },
+        )
+
+        findings = [{
+            "check_name": "repo_role",
+            "label": report.primary_role,
+            "summary": summary,
+            "confidence": 60,
+            "detail": {"roles": roles, "notes": report.notes},
+        }, {
+            # The gate is recorded as its own finding precisely because no
+            # step_outcome label expresses it (see the module docstring).
+            "check_name": "architecture_recovery_gate",
+            "label": report.gate,
+            "summary": report.gate_reason,
+            "confidence": 60,
+            "detail": {"primary_role": report.primary_role, "roles": roles},
+        }]
+        for item in report.missing:
+            findings.append({
+                "check_name": f"expected_{item.kind}",
+                "label": "not-found",
+                "summary": f"{item.kind}: expected for a {report.primary_role}, not located "
+                           f"in-repo, in a sibling repo, or on the doc site",
+                "confidence": 60,
+                "detail": {"kind": item.kind, "expected": True},
+            })
+        for item in report.found:
+            findings.append({
+                "check_name": f"expected_{item.kind}",
+                "label": item.outcome,
+                "summary": f"{item.kind}: {item.outcome} — {item.evidence}",
+                "confidence": 60,
+                "detail": {"kind": item.kind, "evidence": item.evidence, "date": item.date},
+            })
+
+        # Deliberately NOT wrapped in try/except: a write failure here is the
+        # exact class of bug the FK work found — an unregistered slug, or a
+        # schema mismatch — and absorbing it would hide the thing worth seeing.
+        # `upsert_finding` now raises a clear ValueError for an unregistered
+        # slug, and that should reach the caller.
+        self.registry.upsert_finding(slug, "repo_classification", findings,
+                                     surveyed_at=self._surveyed_at)
+        return [annotation]
+
+    def _record_error(self, slug: str, detail: str) -> None:
+        """Persist an unexpected classification failure as a visible finding."""
+        try:
+            self.registry.upsert_finding(
+                slug, "repo_classification",
+                [{"check_name": "classification_error", "label": "error",
+                  "summary": f"repo classification did not complete: {detail}",
+                  "confidence": 100, "detail": {"error": detail}}],
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not persist classification error", slug)

@@ -64,6 +64,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     ManifestParseSurveyor,
     LanguageSurveyor,
     LicenseClassifierSurveyor,
+    RepoClassificationSurveyor,
     MaturitySurveyor,
     RagIngestionSurveyor,
     RepoConventionsSurveyor,
@@ -453,6 +454,20 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # (It genuinely does as of 2026-08-22; until then it read
         # project_code_symbols, which cannot contain SECURITY.md or a CI
         # workflow, so every repo failed those two checks. See the surveyor.)
+    ),
+    "repo_classification": StepInfo(
+        "repo_classification", RepoClassificationSurveyor,
+        "What the repo represents (7 roles, ranked, multi-valued), where each "
+        "artifact its role implies actually lives, and whether architecture "
+        "recovery is worth running at all (design §5.5b).",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # requires_resources={} — but it DOES reach GitHub directly (repo tree,
+        # README, sibling-repo listing). Declared as a rule-17 exception in
+        # tests/test_analysis_catalog_reader.py rather than hidden behind an
+        # empty resource declaration: the zero-fetch signature is a proxy for
+        # "cheap enough to gate the expensive tiers", and this is cheap
+        # (a handful of API calls) while genuinely fetching.
     ),
     "repo_license_classification": StepInfo(
         "repo_license_classification", LicenseClassifierSurveyor,
@@ -854,6 +869,20 @@ def _license_results(registry, slug: str) -> dict:
     rows = registry.query_findings(slug, "license_classification")
     findings = [
         {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    return {"findings": findings}
+
+
+def _repo_classification_results(registry, slug: str) -> dict:
+    """Same uniform finding shape the license/security readers use. Note there
+    is deliberately NO headline reader and no trend reader: §5.5b forbids
+    reducing this to a single number, and a role is not a metric that moves
+    run-to-run in a way a sparkline would illuminate."""
+    rows = registry.query_findings(slug, "repo_classification")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
         for r in rows
     ]
     return {"findings": findings}
@@ -1414,6 +1443,28 @@ def _repo_conventions_headline(registry, slug: str) -> dict | None:
     return _generic_findings_headline(_repo_conventions_results(registry, slug), noun="convention")
 
 
+def _repo_classification_headline(registry, slug: str) -> dict | None:
+    """The role and the gate decision — the two things a reader wants at a
+    glance. Deliberately NOT a count of located-vs-missing artifacts: §5.5b
+    forbids reducing this to a number, because a checklist becomes a maturity
+    score and a score punishes deliberate choices."""
+    findings = _repo_classification_results(registry, slug).get("findings") or []
+    if not findings:
+        return None
+    by_check = {f.get("check_name"): f for f in findings}
+    if "classification_error" in by_check:
+        return {"label": by_check["classification_error"].get("summary", "Classification failed"),
+                "status": "error"}
+    role = by_check.get("repo_role")
+    gate = by_check.get("architecture_recovery_gate")
+    if not role:
+        return None
+    label = role.get("label", "unclassified")
+    if gate:
+        label = f"{label} · architecture recovery: {gate.get('label')}"
+    return {"label": label, "status": "info"}
+
+
 def _license_headline(registry, slug: str) -> dict | None:
     # Single current-state classification, not a pass/gap checklist — surface
     # its own summary text directly rather than forcing it through the
@@ -1644,6 +1695,11 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             _sub_resource_survey_results, _sub_resource_survey_trend, "custom",
             headline_reader=_sub_resource_survey_headline,
         ),
+    ),
+    "repo_classification": AnalysisKind(
+        "repo_classification", ["repo_classification"],
+        results=AnalysisKindResults(_repo_classification_results, None, "findings_list",
+                                    headline_reader=_repo_classification_headline),
     ),
     "license_classification": AnalysisKind(
         "license_classification", ["repo_license_classification"],

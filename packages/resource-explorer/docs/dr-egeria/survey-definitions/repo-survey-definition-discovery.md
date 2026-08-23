@@ -1,5 +1,24 @@
 ## Create Governance Action Process Step
 ### Display Name
+Repo Discovery Survey — Repo Classification
+
+### Qualified Name
+GovActionProcessStep::RepoDiscoverySurvey::repo_classification
+
+### Description
+What the repo represents (7 roles, ranked, multi-valued), where each artifact its role implies actually lives, and whether architecture recovery is worth running at all (design §5.5b).
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_classification |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Repo Discovery Survey — Repo License Classification
 
 ### Qualified Name
@@ -78,7 +97,19 @@ ___
 GovActionProcess::RepoDiscoverySurvey
 
 ### Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_classification
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_classification
+
+### Next Governance Action Process Step
 GovActionProcessStep::RepoDiscoverySurvey::repo_license_classification
+
+### Guard
+Any
 
 ___
 

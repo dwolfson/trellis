@@ -9,6 +9,7 @@ from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityH
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
+from resource_explorer.surveyors.sub_surveyors.repo_classification import RepoClassificationSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.maturity import MaturitySurveyor
 from resource_explorer.surveyors.sub_surveyors.repo_conventions import RepoConventionsSurveyor
@@ -39,6 +40,7 @@ __all__ = [
     "DataProfilerSurveyor",
     "CiQualitySurveyor",
     "LicenseClassifierSurveyor",
+    "RepoClassificationSurveyor",
     "SecurityFeaturesSurveyor",
     "MaturitySurveyor",
     "RepoConventionsSurveyor",
