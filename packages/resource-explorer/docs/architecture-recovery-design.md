@@ -996,6 +996,34 @@ Dockerfile and no compose file is not an application — `trellis.md` records ex
 of test/example/notebook files to source, and dependency direction (a library is depended upon; an
 application depends).
 
+#### It is a gate, not a weighting — and the outcome vocabulary has no word for it
+
+**Maintainer, same session:** *"If we classify a repo as being a tutorial there is no point trying to
+discover an architecture."*
+
+That is stronger than down-weighting a result, and the design should say so plainly: on a repo
+classified as a tutorial (or samples, or documentation), **architecture recovery does not run.** Not
+"runs and scores low", not "runs and is reported with low confidence" — does not run. The cost saved
+is the whole tier, which is what makes this the cheapest gate in the funnel rather than one more
+filter applied after the expensive work has already happened.
+
+**This exposes a gap in the five-label outcome vocabulary** (`resource_explorer/step_outcome.py`), and
+it is not ours to fix unilaterally — that module is owned elsewhere and the labels were agreed jointly:
+
+| label | why it does not fit a deliberate skip |
+|---|---|
+| `recovered` / `partial` | nothing ran |
+| `no_signal` | "genuinely nothing to find — **and provably so**"; its constructor requires `known_positive=True`, i.e. evidence the detector works. We did not run, so we can prove nothing |
+| `unverified` | "could not run, or ran with nothing to validate against" — closest, but wrong in the part that matters: we **could** have run and **chose not to**, which is a success of the funnel, not a failure of it |
+| `regression` | unrelated |
+
+A skip-because-irrelevant is a *good* outcome and currently reads as a degraded one. Whatever the
+label ends up being — `not_applicable`, or `no_signal` with the `known_positive` requirement relaxed
+for classification-gated skips — **the distinction that must survive is "we didn't run because it
+would have been the wrong question" versus "we ran and found nothing".** Conflating them would make
+the funnel's biggest win indistinguishable from its most common failure. Raise with the owner of
+`step_outcome.py` rather than adding a sixth label here.
+
 **Open, deliberately.** The vocabulary is not chosen yet, and the temptation to invent a closed enum
 should be resisted until it is checked against Egeria's existing types — `SoftwareCapability`
 subtypes and `plannedDeployedImplementationType` may already carry part of this, the same way §3.1's

@@ -755,6 +755,17 @@ Open on purpose: **do not invent a closed vocabulary** before checking Egeria's 
 a monorepo gets one classification or one per workspace member (`trellis` alone holds an application,
 two libraries and a spike).
 
+**It is a gate, not a weighting** (maintainer, same session): on a tutorial/samples/documentation
+repo, architecture recovery **does not run**, saving the whole tier rather than filtering after the
+expensive work.
+
+**Needs the owner of `step_outcome.py`.** None of the five labels fits a skip-because-irrelevant.
+`no_signal` requires `known_positive=True` (proof the detector works) and nothing ran; `unverified`
+means "could not run", but here we *could* have and chose not to — a success of the funnel, not a
+failure. The distinction that must survive: **"didn't run because it would have been the wrong
+question" vs "ran and found nothing"**. Conflating them makes the funnel's biggest win look like its
+most common failure. Do not add a sixth label unilaterally.
+
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.
