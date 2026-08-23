@@ -1328,6 +1328,54 @@ on current evidence 4b (*evaluate robustness/security/viability*) and 3 (*is thi
 well collapse, and 1 (*general understanding*) may turn out to be the absence of a motivation rather
 than one of them.
 
+### 5.5e Black box / white box — a lens derived from motivation, not a fifth axis
+
+**Maintainer, 2026-08-23.** Some questions are answerable from the outside — *how do I operate this,
+does it fit my infrastructure* — and some require looking inside — *how do I tune it, is it secure,
+is it well built*.
+
+**This is not another axis to keep apart from the other four.** It is largely *determined* by
+motivation (§5.5d), so it should be **derived and shown, never selected**. Making it a user choice
+would add the fifth independent filter §5.5d just warned about; deriving it costs nothing and
+explains the resulting question set to the user.
+
+| motivation | lens |
+|---|---|
+| 4a learn to use it | black box |
+| 3 prospect — would this be useful? | black box |
+| 4e expand its use | black box (mostly — fit and limits) |
+| 4b evaluate robustness / security / viability | **white box** |
+| 2 assess competition | **white box** (what have they actually built) |
+| 4c upgrade? | **both** — compatibility is black box, breaking changes and risk are white box |
+| 1 general understanding | undetermined — further evidence that 1 may be the *absence* of a motivation |
+
+#### Why it is worth naming: we have already built one of each
+
+- **Black box** — role classification, doc-location resolution, expectation sets (§5.5b). These read
+  only what a project *exposes*: README, published docs, manifests, deployment artifacts.
+- **White box** — architecture recovery. It reads source, import graphs and co-change history.
+
+Naming the split describes structure that already exists rather than inventing any.
+
+#### And it is approximately the funnel boundary we already have
+
+Black-box evidence is cheap and largely already collected — GitHub API, manifests, docs. White-box
+evidence needs a fetch and a parse — zipball, clone, ast-grep, import resolution. So the lens tracks
+**Discovery vs Analysis/Assessment** (CLAUDE.md rule 17) closely enough to be useful as an
+explanation of it.
+
+It also explains the one case that never fit: `architecture_recovery` is **white box yet cheap**
+(~5s/repo), which is exactly why it needed a named rule-17 exception. The tier is defined by *cost*,
+the lens by *where the evidence lives*, and they usually but not always agree.
+
+#### Deferred, deliberately: how the resource is exposed and consumed
+
+The larger question the maintainer raised alongside this — *is it a library you import, a service you
+call, a container you run, a dataset you read?* — is **its own thread and is not recorded here.** It
+is close to role (§5.5b) without being it: a thing can be a library *and* expose a REST API. It
+determines what "using it" even means, and therefore what a black-box question can be. Picking it up
+should start there rather than by extending any table above.
+
 ### 5.6 Tooling — what to adopt, and what it costs
 
 Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no
