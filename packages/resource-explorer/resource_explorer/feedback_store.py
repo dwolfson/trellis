@@ -157,7 +157,13 @@ class FeedbackStore:
             "total": total,
             "new": new,
             "wants_response": wants_response,
-            "avg_rating": round(avg_rating, 2) if avg_rating is not None else None,
+            # float(), not just round(): Postgres AVG() returns Decimal where
+            # SQLite returns a float, so without this the *type* of this field
+            # depends on the backend. FastAPI's own encoder copes, but plain
+            # json.dumps() on the result raises "Object of type Decimal is not
+            # JSON serializable" — found on the 2026-08-23 move to Postgres.
+            # The store's contract is a number, so it returns one either way.
+            "avg_rating": round(float(avg_rating), 2) if avg_rating is not None else None,
         }
 
     def update_triage_status(self, feedback_id: str, triage_status: str) -> dict[str, Any] | None:

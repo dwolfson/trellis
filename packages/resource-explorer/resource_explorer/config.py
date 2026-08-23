@@ -120,7 +120,19 @@ class PhoenixConfig(BaseSettings):
 class ObservabilityConfig(BaseSettings):
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
     phoenix: PhoenixConfig = Field(default_factory=PhoenixConfig)
+    #: Retained so an explicit sqlite:/// path still resolves, and because
+    #: MetricsCollector's own constructor still honours it — but the default
+    #: store is now the shared Postgres instance (2026-08-23), matching the
+    #: registry and the feedback store. Override METRICS_DATABASE_URL for a
+    #: from-scratch environment without the shared instance.
     metrics_db: str = "data/metrics.db"
+    metrics_database_url: str = Field(
+        default=(
+            "postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor"
+            "?options=-csearch_path%3Dresource_explorer"
+        ),
+        alias="METRICS_DATABASE_URL",
+    )
 
 
 class AgentsConfig(BaseSettings):
@@ -249,7 +261,20 @@ class FeedbackConfig(BaseSettings):
     resource_explorer/web/admin_auth.py. Leaving both unset means every
     admin-only feedback endpoint denies all requests (fail closed).
     """
-    database_url: str = Field(default="sqlite:///data/feedback.db", alias="FEEDBACK_DATABASE_URL")
+    #: Defaults to the same shared Postgres instance/schema the registry uses
+    #: (2026-08-23), not a local SQLite file. This store was written to be
+    #: portable from the start — it uses ProjectRegistry's ConnectionWrapper and
+    #: a SQLAlchemy engine, and its own docstring says "nothing here is
+    #: SQLite-specific" — so only the default URL was still pointing at a file.
+    #: Override FEEDBACK_DATABASE_URL (e.g. back to sqlite:///data/feedback.db)
+    #: for a from-scratch environment without the shared instance.
+    database_url: str = Field(
+        default=(
+            "postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor"
+            "?options=-csearch_path%3Dresource_explorer"
+        ),
+        alias="FEEDBACK_DATABASE_URL",
+    )
     admin_users: list[str] = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
     admin_token: str = Field(default="", alias="FEEDBACK_ADMIN_TOKEN")
 

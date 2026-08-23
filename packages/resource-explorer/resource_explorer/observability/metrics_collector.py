@@ -1,27 +1,63 @@
-"""SQLite-backed query metrics — always available, zero external dependencies."""
+"""Query metrics — Postgres by default, SQLite when pointed at a file.
+
+Was raw `sqlite3` until 2026-08-23: the last store in this package with no
+portability layer, and the reason a `data/metrics.db` file kept being written
+long after the registry moved to Postgres. It now uses the same SQLAlchemy
+engine + ProjectRegistry.ConnectionWrapper pair the registry and FeedbackStore
+use, which is what makes the SQL below backend-agnostic — the wrapper
+translates `?` placeholders to `%s` and rewrites
+`INTEGER PRIMARY KEY AUTOINCREMENT` to `SERIAL PRIMARY KEY` on Postgres, so
+none of the statements here needed changing.
+
+"zero external dependencies" was the original justification for SQLite. That
+stopped being true of the product as a whole once the registry required
+Postgres; keeping metrics on a file only meant one more store nobody was
+looking at.
+"""
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from resource_explorer.config import get_config
+from resource_explorer.registry import ConnectionWrapper
 
 
 class MetricsCollector:
-    def __init__(self) -> None:
-        db_path = get_config().observability.metrics_db
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.db_path = db_path
+    def __init__(self, database_url: str | None = None) -> None:
+        cfg = get_config().observability
+        # An explicit sqlite:/// metrics_db still wins, so a from-scratch or
+        # offline environment can keep a file; otherwise the shared instance.
+        if database_url is not None:
+            self.database_url = database_url
+        elif cfg.metrics_db and cfg.metrics_db != "data/metrics.db":
+            self.database_url = f"sqlite:///{cfg.metrics_db}"
+        else:
+            self.database_url = cfg.metrics_database_url
+
+        self.db_path = cfg.metrics_db
+        if self.database_url.startswith("sqlite:///"):
+            path_str = self.database_url[len("sqlite:///"):]
+            if path_str and path_str != ":memory:":
+                Path(path_str).parent.mkdir(parents=True, exist_ok=True)
+        self.engine = create_engine(self.database_url, pool_pre_ping=True)
         self._init_schema()
 
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        import sqlite3
+
+        is_postgres = self.database_url.startswith("postgresql")
+        raw_conn = self.engine.raw_connection()
+        if not is_postgres:
+            raw_conn.row_factory = sqlite3.Row
+            raw_conn.execute("PRAGMA foreign_keys=ON")
+        conn = ConnectionWrapper(raw_conn, is_postgres)
         try:
             yield conn
             conn.commit()
@@ -52,8 +88,22 @@ class MetricsCollector:
                     last_updated TEXT
                 )
             """)
-            # Migration: add chunk_refs to existing query_log tables
-            existing = {r[1] for r in conn.execute("PRAGMA table_info(query_log)")}
+            # Migration: add chunk_refs to existing query_log tables. PRAGMA is
+            # SQLite-only, so the column list comes from information_schema on
+            # Postgres — same two-backend split registry._get_table_columns
+            # makes, and read through this same open transaction so a table
+            # created moments ago is visible.
+            if conn.is_postgres:
+                rows = conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'query_log'"
+                ).fetchall()
+                existing = {r["column_name"] for r in rows}
+            else:
+                # .fetchall(), not iteration: ConnectionWrapper returns a
+                # cursor wrapper, and unlike the raw sqlite3 cursor this used
+                # to get, it is not iterable.
+                existing = {r[1] for r in conn.execute("PRAGMA table_info(query_log)").fetchall()}
             if "chunk_refs" not in existing:
                 conn.execute("ALTER TABLE query_log ADD COLUMN chunk_refs TEXT DEFAULT '[]'")
 
@@ -124,8 +174,8 @@ class MetricsCollector:
                     """INSERT INTO chunk_feedback (chunk_ref, positive_count, total_count, last_updated)
                        VALUES (?, ?, 1, ?)
                        ON CONFLICT(chunk_ref) DO UPDATE SET
-                           positive_count = positive_count + ?,
-                           total_count = total_count + 1,
+                           positive_count = chunk_feedback.positive_count + ?,
+                           total_count = chunk_feedback.total_count + 1,
                            last_updated = ?""",
                     (ref, is_positive, now, is_positive, now),
                 )
@@ -139,7 +189,7 @@ class MetricsCollector:
                        AVG(CASE WHEN feedback IS NOT NULL THEN feedback END) as avg_feedback
                 FROM query_log
             """).fetchone()
-        return dict(row) if row else {}
+        return _numeric(dict(row)) if row else {}
 
     def feedback_stats(self) -> dict:
         """Summary of feedback quality across all chunks."""
@@ -150,4 +200,15 @@ class MetricsCollector:
                        SUM(total_count) as total_votes
                 FROM chunk_feedback WHERE total_count > 0
             """).fetchone()
-        return dict(row) if row else {}
+        return _numeric(dict(row)) if row else {}
+
+
+def _numeric(d: dict) -> dict:
+    """Postgres AVG()/SUM() return Decimal where SQLite returns float/int, so
+    without this the *types* in these summaries depend on the backend and
+    json.dumps() raises "Object of type Decimal is not JSON serializable".
+    Found on the 2026-08-23 move (the feedback store's stats() hit the same
+    thing). These are numbers by contract; they come back as numbers."""
+    from decimal import Decimal
+
+    return {k: (float(v) if isinstance(v, Decimal) else v) for k, v in d.items()}
