@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, StepOutcome, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.scoping import sql_scope_filter
 from resource_explorer.surveyors.survey_report import (
@@ -57,6 +58,50 @@ class ApiStructureSurveyor(BaseSurveyor):
     def step_name(self) -> str:
         return STEP
 
+    def _record(self, outcome: StepOutcome, *, symbol_count: int,
+                relationship_count: int, by_language: dict) -> None:
+        """Generic project_analysis_metrics row — symbol/relationship counts as
+        the two trendable metrics, by_language as this run's detail blob.
+
+        Written on every terminal path, including the zero. A trend that simply
+        has no point for a run cannot be read: the gap means "no symbols",
+        "step not selected" and "extraction never ran" all at once.
+        """
+        try:
+            self.registry.upsert_metric(
+                self.project.slug, "api_structure",
+                {"symbol_count": symbol_count, "relationship_count": relationship_count},
+                detail={"by_language": by_language, **outcome.as_row()},
+                surveyed_at=self._surveyed_at,
+                scope_locator=self._scope_locator,
+            )
+        except Exception as exc:
+            log.warning("Could not persist API structure snapshot for %s: %s",
+                        self.project.slug, exc)
+
+    def _nothing_analysed(self, outcome: StepOutcome, unscoped: int) -> Annotation:
+        """Say which kind of nothing this was, rather than returning none."""
+        if outcome.outcome == UNVERIFIED:
+            summary = "API structure not analysed — no code symbols extracted"
+            explanation = (
+                "project_code_symbols holds no rows for this repo. Symbols are "
+                "written by repo_symbol_extraction (and by full RAG ingestion); "
+                "until one of those has run this is not evidence that the "
+                "repository has no public API."
+            )
+        else:
+            summary = f"No symbols matched the scope '{self._scope_locator}'"
+            explanation = (
+                f"The repo has {unscoped:,} extracted symbol(s); none of them fall "
+                "under this scope locator."
+            )
+        return ResourceMeasureAnnotation(
+            summary=summary, analysis_step=STEP, confidence=100,
+            explanation=explanation,
+            resource_properties={"symbol_counts_by_kind": {}, "relationship_count": 0},
+            json_properties={"source": "project_code_symbols", **outcome.as_row()},
+        )
+
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
@@ -72,6 +117,26 @@ class ApiStructureSurveyor(BaseSurveyor):
                 ).fetchall()
 
             if not rows:
+                # An empty project_code_symbols is overwhelmingly "extraction
+                # never ran", not "this repo has no code": measured 2026-08-22,
+                # 13 of the 20 registered repos had a populated file inventory
+                # and zero symbols — docling with 1,653 files and none, trellis
+                # with 1,078. Returning nothing left the Analysis card blank,
+                # which is the one output indistinguishable from never having
+                # run the step at all.
+                with self.registry._conn() as conn:
+                    unscoped = conn.execute(
+                        "SELECT COUNT(*) AS n FROM project_code_symbols "
+                        "WHERE project_slug = ?", (slug,),
+                    ).fetchone()["n"]
+                outcome = from_upstream_table(
+                    unscoped, 0,
+                    empty_table_cause="empty_code_symbols",
+                    no_match_cause="no_symbols_in_scope",
+                    scope_locator=self._scope_locator,
+                )
+                results.append(self._nothing_analysed(outcome, unscoped))
+                self._record(outcome, symbol_count=0, relationship_count=0, by_language={})
                 return results
 
             # Inheritance/relationship edges are a cross-cutting graph, not
@@ -139,20 +204,13 @@ class ApiStructureSurveyor(BaseSurveyor):
                 )
             )
 
-            try:
-                # Generic project_analysis_metrics table (analysis-kind
-                # extensibility redesign) — symbol/relationship counts as
-                # the two trendable metrics; by_language breakdown attaches
-                # as this run's detail blob.
-                self.registry.upsert_metric(
-                    slug, "api_structure",
-                    {"symbol_count": len(rows), "relationship_count": len(relationships)},
-                    detail={"by_language": {lang: len(syms) for lang, syms in by_lang.items()}},
-                    surveyed_at=self._surveyed_at,
-                    scope_locator=self._scope_locator,
-                )
-            except Exception as exc:
-                log.warning("Could not persist API structure snapshot for %s: %s", slug, exc)
+            self._record(
+                from_upstream_table(len(rows), len(rows),
+                                    empty_table_cause="empty_code_symbols",
+                                    no_match_cause="no_symbols_in_scope"),
+                symbol_count=len(rows), relationship_count=len(relationships),
+                by_language={lang: len(syms) for lang, syms in by_lang.items()},
+            )
 
         except Exception as exc:
             log.exception("ApiStructureSurveyor failed for %s", self.project.slug)

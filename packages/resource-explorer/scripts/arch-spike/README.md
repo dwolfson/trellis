@@ -2073,3 +2073,36 @@ untyped from the coupling proposer. Recall across the three owner-published fixt
 11/11, 3/5 (+2 at 99.8%) and 6/6 — essentially solved. Nothing about "3270 components" is usable by
 a human, and distillation (§5.2, Phase 5) is now unambiguously the only thing standing between this
 work and an answer.
+
+---
+
+**76. Can precision be fixed by dropping the noisiest proposer? Measured: no.**
+
+The coupling proposer accounts for almost all the over-proposal — 146 of 173 on Prometheus, 409 of
+608 on Milvus, 2482 of 3270 on Kubernetes, all untyped (`?`). The obvious cheap fix is to stop
+emitting it. Tested by re-scoring each target with coupling-proposed components removed:
+
+| target | with coupling | without | components |
+|---|---|---|---|
+| `prometheus` | **11/11** | 9/11 | 212 → 62 |
+| `milvus` | 3/5 | 3/5 | 609 → 162 |
+| `kubernetes` | **6/6** | 5/6 | 3303 → 795 |
+
+**Coupling is not noise-only: it earns 3 of the 20 matches across the three fixtures**, and they are
+matches nothing else produces. Deleting it trades real recall for precision, which is the wrong
+trade when recall is the thing that has been hard to get.
+
+**And removing it does not solve precision anyway.** 795 components for 6 declared on Kubernetes,
+62 for 11 on Prometheus — the `go_subsystems` proposer over-proposes *on its own*, because it emits
+every package tree in the module and a repo has far more packages than components.
+
+Two conclusions, both of which shape Phase 5:
+
+1. **This is a distillation problem, not a proposer-selection problem.** No subset of the current
+   proposers is both high-recall and low-count. §5.2's division of labour — heuristics partition, the
+   LLM classifies, names and adjudicates, and *never invents a component with no detector evidence* —
+   is the right shape, and the measurements say the adjudication half is now the load-bearing half.
+2. **The candidate set is the right input to it.** 3270 candidates with evidence, containing a 6/6
+   recall, is a *better* starting point for adjudication than a smaller set that has already thrown
+   away a third of the answer. Over-proposal is the correct failure direction for a funnel — provided
+   something downstream actually narrows it, which is exactly what does not exist yet.

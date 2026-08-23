@@ -422,10 +422,24 @@ class TestApiStructureSurveyorPersistence:
                 ("myproj", "mod.py", "python", "function", "f", "mod.f", "def f()", "", 1, 2),
             )
 
-    def test_no_symbols_persists_nothing(self, registry, project):
+    def test_no_symbols_persists_a_labelled_zero(self, registry, project):
+        """Reversed deliberately 2026-08-22, matching the same change made to
+        DataProfilerSurveyor.
+
+        The old assertion — no annotations, no metrics — was the defect stated
+        as the contract. An empty project_code_symbols overwhelmingly means
+        "extraction never ran" rather than "this repo has no code": measured on
+        the live registry that day, 13 of 20 repos had a populated file
+        inventory and zero symbols. Returning nothing left the Analysis card
+        blank, which is exactly what "never run" looks like.
+        """
         annotations = ApiStructureSurveyor(project, registry).run()
-        assert annotations == []  # regression guard: unchanged early-return
-        assert registry.query_metrics("myproj", "api_structure") == {}
+        assert len(annotations) == 1
+        assert annotations[0].json_properties["outcome"] == "unverified"
+        assert "no code symbols extracted" in annotations[0].summary
+        metrics = registry.query_metrics("myproj", "api_structure")
+        assert metrics["symbol_count"] == 0
+        assert metrics["relationship_count"] == 0
 
     def test_persists_snapshot_when_symbols_exist(self, registry, project):
         self._seed_symbols(registry, "myproj")

@@ -198,3 +198,48 @@ class TestTheClassifierAdmitsWhenItIsGuessing:
         assert len(results) == 1
         assert "Survey error" not in results[0].summary
         assert _outcome_of(results[0]) == UNVERIFIED
+
+
+class TestApiStructureSaysWhichNothingItFound:
+    """Same shape as the file-inventory readers, one table along:
+    project_code_symbols is filled by repo_symbol_extraction, and an empty one
+    means "extraction never ran" far more often than "this repo has no code".
+    Measured on the live registry 2026-08-22: 13 of 20 repos had a populated
+    file inventory and zero symbols — docling with 1,653 files and none."""
+
+    def _seed(self, registry, slug, file_path="mod.py"):
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO project_code_symbols (project_slug, file_path, language, "
+                "kind, name, qualified_name, start_line) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (slug, file_path, "python", "function", "f", "mod.f", 1))
+
+    def test_no_symbols_is_unverified_not_an_empty_card(self, registry, project):
+        from resource_explorer.surveyors.sub_surveyors.api_structure import (
+            ApiStructureSurveyor,
+        )
+        results = ApiStructureSurveyor(project, registry).run()
+        assert len(results) == 1
+        assert _outcome_of(results[0]) == UNVERIFIED
+        assert "not analysed" in results[0].summary
+
+    def test_symbols_present_but_out_of_scope_is_a_provable_zero(self, registry, project):
+        """The distinction the unscoped count exists to make: the table has
+        rows, so the step demonstrably ran — the scope just excluded them."""
+        from resource_explorer.surveyors.sub_surveyors.api_structure import (
+            ApiStructureSurveyor,
+        )
+        self._seed(registry, project.slug, "src/mod.py")
+        results = ApiStructureSurveyor(project, registry, scope_locator="docs/").run()
+        assert len(results) == 1
+        assert _outcome_of(results[0]) == NO_SIGNAL
+        assert "scope" in results[0].summary
+
+    def test_symbols_present_is_recovered(self, registry, project):
+        from resource_explorer.surveyors.sub_surveyors.api_structure import (
+            ApiStructureSurveyor,
+        )
+        self._seed(registry, project.slug)
+        ApiStructureSurveyor(project, registry).run()
+        metrics = registry.query_metrics(project.slug, "api_structure")
+        assert metrics["symbol_count"] == 1
