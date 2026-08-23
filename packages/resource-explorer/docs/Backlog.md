@@ -84,9 +84,17 @@ adopter. Recording only — nothing routes on these labels.
    a gap in a trend is unreadable) and `test_no_signals_yields_minimal_quality`. Both carry a
    note saying what changed and why. New coverage: `tests/test_inventory_reader_outcomes.py`.
 
-   **Still open:** the remaining ~16 steps, and the ones reading `project_code_symbols`
-   (`repo_api_structure` has the same shape — `test_no_symbols_persists_nothing` is the same
-   contract as the one reversed here, left alone deliberately rather than swept in).
+   **`repo_api_structure` followed on the same day.** It reads `project_code_symbols` rather
+   than the inventory, but the shape is identical and the live case was the strongest of the
+   set: measured across the registry, **13 of 20 repos had a populated file inventory and zero
+   symbols** (docling 1,653 files/0 symbols, trellis 1,078/0). For all thirteen the step
+   returned an empty annotation list — the one output indistinguishable from never having run.
+   It now emits a labelled annotation and a zero metric, and distinguishes an empty table
+   (`unverified`) from a scope that excluded every symbol (`no_signal`, via an unscoped
+   `COUNT(*)`). `test_no_symbols_persists_nothing` reversed with a note, same as
+   `test_no_inventory_persists_nothing`.
+
+   **Still open:** the remaining ~15 steps.
 6. **Converging with arch-recovery's `run_scope`/`partial`.** That session already emits
    `partial` on scoped runs (`ca34edf`) and offered a walkthrough of where `StepInfo` /
    `requires_resources` / `resolve_resources` would need to change. Not started; deliberately

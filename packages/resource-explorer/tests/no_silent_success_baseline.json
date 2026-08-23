@@ -64,7 +64,6 @@
   "resource_explorer/surveyors/filesystem/egeria_filesystem_surveyor.py::_find_element_guid": 1,
   "resource_explorer/surveyors/filesystem/egeria_filesystem_surveyor.py::catalog_and_survey": 1,
   "resource_explorer/surveyors/prefect_adapter.py::run_prefect_step": 1,
-  "resource_explorer/surveyors/sub_surveyors/api_structure.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/documentation.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/git_statistics.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/health.py::run": 1,
