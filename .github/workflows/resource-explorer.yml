@@ -14,7 +14,11 @@ name: resource-explorer
 
 on:
   push:
-    branches: [main]
+    # re/** as well as main: this workflow was added on a long-lived re/*
+    # feature branch, and a workflow that only triggers on main is untested
+    # YAML until the day it is merged — which is the worst moment to discover
+    # that a service container does not come up.
+    branches: [main, "re/**"]
   pull_request:
   workflow_dispatch:
 
