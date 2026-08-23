@@ -1087,6 +1087,40 @@ turns into a maturity score, and a maturity score punishes deliberate choices. A
 documents lightly on purpose; a project may deliberately keep tutorials in-tree. **Report the
 findings and their locations as dated evidence; do not rank projects on the count.**
 
+#### Offer to widen the scope — never widen it silently
+
+**Maintainer, same session.** When the expected artifacts for a project's role are not in the repo
+the user named, **ask whether to include other repos of the project**.
+
+The location-valued lookup makes this nearly free: resolving where documentation lives *already*
+produces the candidate list. Having found `kubernetes/website`, the remaining question is not
+"which repo?" but simply "shall I include it?".
+
+Four constraints, each with a reason:
+
+1. **Ask; do not auto-add.** Silent scope expansion is the failure mode. It causes fetches the user
+   did not ask for, and it produces results that cannot be compared with the previous run of the same
+   analysis. There is precedent for this interaction: the maintainer's earlier answer on ambiguous
+   partitions — *"if we are truly unsure we can present the user with a file tree with checkboxes"*.
+2. **Record the scope with the result.** Adding a repo changes the denominator of every coverage and
+   score. `trellis.md`'s `Scope:` line exists precisely because a wrong denominator makes a number
+   meaningless (whole-repo coverage reads 15% where in-scope coverage is 48%). §6.2 already argues
+   that a metric moving between two runs is ambiguous without `analyzerVersion`; **the set of repos in
+   scope is the same kind of provenance and must travel with the result.**
+3. **Classification must come first.** What is "missing" is only defined relative to the role.
+   Asking "where are the deployment artifacts?" for a library is noise, not a gap — a library is
+   *expected* not to have them (§5.5b, and `trellis.md` records exactly this).
+4. **Use the mechanisms that exist.** RFA is already the carrier for "the system needs something from
+   a human", and the registry already models repo families (`projects.parent_slug`,
+   `projects.group_slug`) with an Admin Groups UI on top. This is a new *question*, not new
+   plumbing.
+
+**Why this is good funnel behaviour rather than a nag.** The ask is cheap, it happens before the
+expensive tiers, and the alternative is worse than a prompt: analysing a code repo whose architecture
+documentation lives in a sibling repo produces a confident, wrong "no architecture documented"
+finding. That is the Kubernetes tombstone case (finding 68) reaching the user as a conclusion instead
+of a question.
+
 **Open, deliberately.** The vocabulary is not chosen yet, and the temptation to invent a closed enum
 should be resisted until it is checked against Egeria's existing types — `SoftwareCapability`
 subtypes and `plannedDeployedImplementationType` may already carry part of this, the same way §3.1's

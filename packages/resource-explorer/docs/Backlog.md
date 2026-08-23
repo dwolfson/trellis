@@ -816,6 +816,21 @@ maturity finding; in a *library* it is confirmation of the classification (`trel
 exactly this). Same guardrail as §5.5a(c): report locations as dated evidence, **do not rank on the
 count** — a small stable library documents lightly on purpose.
 
+**Offer to widen the scope to sibling repos** (maintainer, same session). When the expected artifacts
+for a role are not in the repo the user named, ask whether to include other repos of the project. The
+location-valued lookup already produces the candidate list, so the question is "shall I include
+`kubernetes/website`?", not "which repo?".
+
+* **Ask, never auto-add** — silent scope expansion causes unrequested fetches and results that cannot
+  be compared with the previous run. Precedent: the maintainer's "present the user with a file tree
+  with checkboxes" answer on ambiguous partitions.
+* **Record the in-scope repo set with the result** — it changes every coverage denominator, the same
+  reason `trellis.md` carries a `Scope:` line (whole-repo coverage 15% vs in-scope 48%), and the same
+  argument §6.2 makes for `analyzerVersion`.
+* **Classification first** — "missing" is only defined relative to role; a library is *expected* to
+  have no deployment artifacts.
+* **Reuse RFA and `projects.parent_slug`/`group_slug`** — a new question, not new plumbing.
+
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.
