@@ -282,9 +282,20 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
 
     Two deliberate rules:
 
-    * **`cmd/` recurses one level.** Each `cmd/X` is a separate binary by
-      convention, so `cmd/prometheus` and `cmd/promtool` are two components,
-      not one.
+    * **Descend past directories that are not packages.** In Go a directory is
+      a package only if it holds `.go` files *directly*; one that holds only
+      subdirectories is a path segment, not a unit of code. So the component
+      root is the first directory down from the module root that is itself a
+      package.
+
+      This is Go semantics, not a convention list, and it subsumes the
+      hardcoded `cmd/` carve-out this function originally had. Prometheus's
+      `cmd/` holds no `.go` files directly, so `cmd/prometheus` and
+      `cmd/promtool` fall out as separate binaries for free. Milvus needs the
+      general form: `internal/` (0 direct `.go` files) and
+      `internal/distributed/` (0) are both pure containers, and a rule naming
+      only `cmd` collapsed Milvus's entire architecture into a single
+      `internal/**` component (finding 72).
     * **Files directly at a module root are skipped.** They belong to the
       module's own package, which is the whole module — the same
       "workspace root is a container, not a component" rule the npm detector
@@ -300,6 +311,8 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
     go_files = [f for f in files if f.endswith(".go")]
     if not go_files:
         return []
+    # Directories holding .go files DIRECTLY — i.e. the real Go packages.
+    pkg_dirs = {os.path.dirname(f) for f in go_files}
 
     # dir -> owning module, longest module dir first so nested modules win
     by_dir = sorted(((mp, md) for mp, md in module_index), key=lambda t: len(t[1]), reverse=True)
@@ -314,9 +327,18 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
             parts = inner.split("/")
             if len(parts) < 2:          # directly at the module root
                 break
-            depth = 2 if parts[0] == "cmd" and len(parts) > 2 else 1
-            sub = "/".join(parts[:depth])
-            d = f"{prefix}{sub}"
+            # Descend to the first directory that is itself a Go package.
+            walked: list[str] = []
+            d = None
+            for part in parts[:-1]:
+                walked.append(part)
+                cand = f"{prefix}{'/'.join(walked)}"
+                if cand in pkg_dirs:
+                    d = cand
+                    break
+            if d is None:               # unreachable: the file's own dir is a package
+                break
+            sub = d[len(prefix):]
             entry = found.setdefault(d, {
                 "dir": d, "module": mod_path, "subsystem": sub,
                 "import_path": f"{mod_path.rstrip('/')}/{sub}",

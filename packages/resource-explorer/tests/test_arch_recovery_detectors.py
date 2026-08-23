@@ -517,3 +517,59 @@ class TestFinding70GoImports:
 
         kinds = {e["kind"] for e in graph["edges"] if e["language"] == "go"}
         assert kinds == {"alias", "blank"}
+
+
+class TestFinding72GoContainerDirectories:
+    """Finding 72: a directory is a Go package only if it holds `.go` files
+    *directly*. `go_subsystems` originally hardcoded a `cmd/` carve-out, which
+    collapsed Milvus's entire architecture into one `internal/**` component —
+    `internal/` and `internal/distributed/` are both pure containers."""
+
+    def test_a_directory_with_no_go_files_is_descended_past(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "internal/proxy/p.go", "package proxy\n")
+        _write(root, "internal/coord/c.go", "package coord\n")
+        _git_init(root)
+        subs = {s["dir"] for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs == {"internal/proxy", "internal/coord"}
+        assert "internal" not in subs
+
+    def test_it_descends_more_than_one_level_when_needed(self, tmp_path):
+        """`internal/distributed/proxy` — two container levels deep. A rule
+        that recursed a fixed single level would stop at `internal/distributed`
+        and merge every component's distributed wrapper into one."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "internal/distributed/proxy/p.go", "package proxy\n")
+        _write(root, "internal/distributed/datanode/d.go", "package datanode\n")
+        _git_init(root)
+        subs = {s["dir"] for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs == {"internal/distributed/proxy", "internal/distributed/datanode"}
+
+    def test_a_package_owns_its_whole_subtree(self, tmp_path):
+        """Once a directory IS a package, its child packages are its internals
+        — Prometheus's `config/` owns `config/testdata/` and that is the match
+        the ground truth expects."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "config/config.go", "package config\n")
+        _write(root, "config/sub/s.go", "package sub\n")
+        _git_init(root)
+        subs = {s["dir"] for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs == {"config"}
+
+    def test_cmd_recursion_now_falls_out_of_the_general_rule(self, tmp_path):
+        """The hardcoded `cmd/` carve-out is gone; `cmd/` holding no direct
+        `.go` files gets the same treatment as any other container."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "cmd/server/main.go", "package main\n")
+        _write(root, "cmd/tool/main.go", "package main\n")
+        _git_init(root)
+        subs = {s["dir"] for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs == {"cmd/server", "cmd/tool"}

@@ -646,7 +646,18 @@ capability is not "add a Go ast-grep rule" — it is reading Go package structur
 serve identity, imports and code markers together. Blocks Milvus and Kubernetes as well as Prometheus,
 i.e. three of the four ranked ground-truth candidates.
 
-### HIGH — the scorer cannot express a partial component match
+### HIGH (now doubly evidenced) — the scorer cannot express a partial component match
+
+**Milvus makes this urgent.** Two of its five components were recovered at **575/576** and
+**259/260** files — 99.8% — each missing exactly one `OWNERS` file, and both score **0**, identical
+to recovering nothing (finding 72). Combined with Prometheus's `Web UI and API` at 325/380, that is
+three near-misses across two independent repos, from two unrelated causes: an unsupported language
+and an orphaned container-level metadata file. `step_outcome.py` has defined `partial` for this state
+since the outcome vocabulary landed and the scorer has never emitted it. Strict containment itself is
+correct and must NOT be loosened — 575 ≠ 576, and a measure that rounds is worse than one that is
+strict. What is missing is the ability to *report* the near-miss alongside it.
+
+### (original entry) HIGH — the scorer cannot express a partial component match
 
 On Prometheus the detector recovered **325 of the 380 files** of the ground-truth component
 `Web UI and API` — every one correctly contained, missing only the 38 Go files of the API server,

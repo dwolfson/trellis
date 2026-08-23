@@ -1821,3 +1821,73 @@ every finding that was a bug becomes a test — the three `go_subsystems` rules 
 five on resolution: package fan-out, **total edge weight of exactly 1.0 per import** however many
 files the package holds, stdlib/third-party counted external rather than as edges, and alias/blank
 import forms preserved. Full suite: **1678 passed, 10 skipped**.
+
+---
+
+**72. Milvus, the second owner-published fixture: 3/5 exact — and the other two are 575/576 and
+259/260, each defeated by a single `OWNERS` file.**
+
+`milvus.md` was pre-registered from Milvus's own docs (commit `97d9194`) before any run. It is a
+**deliberately harder shape** than Prometheus: five components mapping **one-to-many** onto scattered
+directories (`Coordinator` alone spans six, across `internal/` and `internal/distributed/`), so every
+component can only match as a *union of refinements*, never as an exact node.
+
+### First run exposed the hardcoded `cmd/` rule
+
+Finding 70's proposer descended one level past `cmd/` only. Milvus's root module has top-level
+`internal/`, `pkg/`, `cmd/`, `client/`, `tests/` — so it emitted **`internal -> internal/**`: one
+component containing the entire architecture.** (`pkg/`, `client/` and `tests/` escaped only because
+each carries its own `go.mod`.)
+
+**Replaced with Go semantics rather than a convention list:** *a directory is a package only if it
+holds `.go` files directly; one holding only subdirectories is a path segment, not a unit of code.*
+The component root is the first directory down from the module root that is itself a package.
+
+| directory | direct `.go` | verdict |
+|---|---|---|
+| `internal/` | 0 | container — descend |
+| `internal/distributed/` | 0 | container — descend |
+| `internal/proxy/` | 139 | **package — component** |
+| `internal/coordinator/` | 9 | **package — component** |
+| Prometheus `cmd/` | 0 | container — descend |
+| Prometheus `config/` | 6 | **package — component** |
+
+This **subsumes the hardcoded carve-out entirely** — Prometheus's `cmd/prometheus` and `cmd/promtool`
+now fall out for free — and it descends *arbitrarily deep*, which Milvus needs:
+`internal/distributed/proxy` is two container levels down, and a fixed one-level rule would have
+merged every component's distributed wrapper into a single `internal/distributed` blob.
+
+**Prometheus regression: 11/11 and ARI 0.9936, unchanged.** Milvus's ARI moved **0.0 → 0.5273**,
+NMI **0.0 → 0.7703**, on the same 3/5 containment.
+
+### The two misses are one metadata file each
+
+| component | ground truth | recovered by union | missing |
+|---|---|---|---|
+| `Coordinator` | 576 files | **575** | `internal/streamingcoord/OWNERS` |
+| `Streaming Node` | 260 files | **259** | `internal/streamingnode/OWNERS` |
+
+Root cause, verified: `internal/streamingcoord` and `internal/streamingnode` hold **0 direct `.go`
+files but one `OWNERS` file each**. The proposer correctly descends past them as containers, which
+orphans that file. `internal/proxy` and `internal/datanode` *do* hold direct `.go` files, so they are
+components and their own `OWNERS`/`README.md` ride along inside `dir/**` — which is why those three
+matched exactly.
+
+**Strict containment is behaving correctly and should not be loosened.** 575 ≠ 576, and a measure that
+rounds is worse than one that is strict. The defect is that the scorer has **no way to say
+"575 of 576"** — it reports the same 0 it would report for recovering nothing.
+
+### `partial` is now doubly evidenced, from two independent repos
+
+Finding 69 raised this on Prometheus (`Web UI and API`: 325 of 380 files, the bilingual component
+whose Go half was invisible). Milvus raises it twice more, and far more sharply — **99.83% and 99.62%
+recovery scoring identical to zero**. `step_outcome.py` has defined `partial` for exactly this state
+since the outcome vocabulary landed, and the scorer has never emitted it.
+
+Two different causes, same missing expression: an unsupported language (Prometheus) and an orphaned
+metadata file (Milvus). That is the signature of a **measurement gap rather than a detector gap**, and
+it is the same lesson as findings 61 and 71 — the instrument, not the thing being measured.
+
+**Precision remains the real problem**: 608 components proposed against 5 declared, 409 of them
+untyped from the coupling proposer. Recall is essentially perfect on both owner-published fixtures.
+Distillation (§5.2, Phase 5) is the binding constraint, not detection.
