@@ -1024,6 +1024,69 @@ would have been the wrong question" versus "we ran and found nothing".** Conflat
 the funnel's biggest win indistinguishable from its most common failure. Raise with the owner of
 `step_outcome.py` rather than adding a sixth label here.
 
+#### Two questions, not one: repo **role** and project **topology**
+
+**Maintainer, same session.** Classification has a second axis. Beyond *what is this repo*, there is
+*how does this project distribute its concerns across repos* — and that is a question of **style and
+trend**, not correctness. Some projects keep a clean set of purpose-built repos; others jumble
+tutorials, docs and code together. Both are legitimate, and the difference changes **where to look
+for what**.
+
+This is why RE has a project structure above repos at all: `projects.parent_slug`,
+`projects.group_slug`, `projects.homepage_url` and `projects.docs_url` already exist in the registry.
+The topology question has a home in the data model; nothing has been asking it.
+
+**We already have five measured topologies**, gathered for the ground-truth work (finding 68) before
+this framing existed:
+
+| project | code | documentation | architecture published? |
+|---|---|---|---|
+| `milvus` | `milvus-io/milvus` | **sibling repo** `milvus-io/milvus-docs` | yes, versioned by branch |
+| `kubernetes` | `kubernetes/kubernetes` | **sibling repo** `kubernetes/website`; in-repo `docs/` is a **tombstone** | yes |
+| `prometheus` | `prometheus/prometheus` | **both** — in-repo `documentation/` *and* `prometheus/docs` | yes, in-repo, five years stale |
+| `egeria` | `odpi/egeria` | **sibling repo** `odpi/egeria-docs` | no — mostly archived under `saved/` |
+| `egeria-workspaces` | one repo | **in-repo**, mixed with code and tutorials | no |
+
+Four of five separate documentation into its own repo. That is the trend, and a heuristic that
+assumes otherwise will be wrong most of the time.
+
+#### The expectation set — and reporting *where*, not *whether*
+
+The maintainer's proposal, which is the actionable half:
+
+1. **Classify the kind of thing** from the project's documentation and web site.
+2. **Derive what a mature project of that kind should have**, then go looking for it.
+3. **The result is itself part of the classification**, and it tells you where to look for everything else.
+
+The design decision that makes this work: **the output for each expected artifact is a *location*,
+not a boolean.** Four outcomes — `in-repo`, `in a sibling repo`, `on the doc site`, `not found` — and
+only the fourth is an absence.
+
+**Finding 68 is the cautionary tale for exactly this heuristic.** "Where is the documentation?"
+answered naively against `kubernetes/kubernetes` returns *nothing, and stale for 1400 days*. The
+correct answer is "in `kubernetes/website`, updated today". A boolean checklist would have marked
+Kubernetes as undocumented. The location-valued answer is what makes the heuristic safe, and it
+**requires the outward hop of §5.5a(a) as a hard prerequisite**, not an enhancement.
+
+Indicative expectation sets — to be validated, not adopted as written:
+
+| role | expected | notably *not* expected |
+|---|---|---|
+| application | deployment artifacts, install/quickstart, configuration reference, architecture doc, release notes | published package manifests |
+| library | API reference, usage examples, versioning/changelog, published package | deployment artifacts — `trellis.md` records exactly this: "no Dockerfiles, no compose files … it has no deployment perspective at all" |
+| middleware | deployment artifacts, configuration reference, integration/connector docs, compatibility matrix | end-user UI docs |
+| tutorial / samples | stated intent, step-by-step content, sample data, environment setup | architecture, deployment topology |
+
+**Absence is evidence in two directions, and they must not be conflated.** No deployment artifacts in
+something classified as an application is a *maturity* finding. No deployment artifacts in something
+classified as a library is *confirmation* of the classification. The same observation means opposite
+things depending on the declared role — which is precisely why role must be established first.
+
+**The failure mode to design against** is the one §5.5a(c) already names: an expectation checklist
+turns into a maturity score, and a maturity score punishes deliberate choices. A small stable library
+documents lightly on purpose; a project may deliberately keep tutorials in-tree. **Report the
+findings and their locations as dated evidence; do not rank projects on the count.**
+
 **Open, deliberately.** The vocabulary is not chosen yet, and the temptation to invent a closed enum
 should be resisted until it is checked against Egeria's existing types — `SoftwareCapability`
 subtypes and `plannedDeployedImplementationType` may already carry part of this, the same way §3.1's

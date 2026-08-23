@@ -797,6 +797,25 @@ failure. The distinction that must survive: **"didn't run because it would have 
 question" vs "ran and found nothing"**. Conflating them makes the funnel's biggest win look like its
 most common failure. Do not add a sixth label unilaterally.
 
+**Second axis — project topology, not just repo role** (maintainer, same session). How a project
+distributes concerns across repos is a matter of style and trend, and it decides *where to look for
+what*. RE already models this (`projects.parent_slug`, `group_slug`, `homepage_url`, `docs_url`);
+nothing asks the question. Five topologies are already measured (finding 68): **four of five projects
+put documentation in a sibling repo** — `milvus-docs`, `kubernetes/website`, `egeria-docs`,
+`prometheus/docs` — with only `egeria-workspaces` keeping it in-tree mixed with code and tutorials.
+
+**Expectation sets, location-valued.** From the role, derive what a mature project of that kind
+should have, then find it. **Each expected artifact resolves to `in-repo` / `sibling repo` /
+`doc site` / `not found`, not to a boolean** — finding 68 is the cautionary tale, since "where are
+the docs" answered naively against `kubernetes/kubernetes` returns "nothing, stale 1400 days" when
+the truth is "in `kubernetes/website`, updated today". **Requires §5.5a(a)'s outward hop as a hard
+prerequisite.**
+
+Absence cuts both ways and must not be conflated: no deployment artifacts in an *application* is a
+maturity finding; in a *library* it is confirmation of the classification (`trellis.md` records
+exactly this). Same guardrail as §5.5a(c): report locations as dated evidence, **do not rank on the
+count** — a small stable library documents lightly on purpose.
+
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.
