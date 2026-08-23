@@ -2383,3 +2383,59 @@ distillation (one of them) and adjudication (both). Prometheus's ground truth sp
 detector proposes as one `storage` roll-up. This is the §2a granularity tension in its most
 persistent form, and it is now the single most repeated failure in the corpus — worth attacking
 directly rather than hoping a better model resolves it.
+
+---
+
+**81. Coder vs instruct, one variable: instruct wins by two components. Monotone typing is neither
+model's fault.**
+
+Finding 80 measured `qwen2.5-coder:32b`. The obvious objection: a **code-completion-tuned** model was
+asked to do classification, naming and merge judgement with structured JSON output — not code
+generation. Tested properly, with the prompt **frozen** so the model is the only variable.
+
+**A confound was caught first.** The prompt had been revised between runs (`adjudicate.py` mtime
+16:56, after finding 80's 17:03 output). Running the new model against the new prompt would have
+changed two variables and answered nothing. A frozen copy was taken and both models run against it.
+
+### Result (Prometheus, DEV fixture — development signal, not a measurement)
+
+| config | components | strict containment | type distribution |
+|---|---|---|---|
+| deterministic only (finding 79) | 95 | **10/11** | — |
+| original prompt + coder | 56 | 9/11 | 53/56 one type |
+| frozen prompt + **coder** | **16** | 6/11 | 14/16 one type |
+| frozen prompt + **instruct** | **16** | **8/11** | 15/16 one type |
+
+**Three findings, and the second is the useful one.**
+
+1. **Instruct beats coder, 6/11 → 8/11**, at an identical component count and identical prompt. The
+   hypothesis was right: coder-tuning was costing real accuracy on a task that is judgement, not code.
+2. **Monotone typing is NOT a coder-tuning artefact.** The instruct model is *worse* — 15 of 16 one
+   value against the coder's 14 of 16. Two differently-tuned models of the same size, same family,
+   same prompt, both collapse the 13-value vocabulary to essentially one. That points at the **task
+   framing**, not the model: the prompt asks for a type without giving the model what
+   `SolutionComponentType` actually distinguishes (§3.1: *"how and where is it run"*). This is now the
+   most promising thing to fix, and it is fixable in the prompt.
+3. **Merge count is prompt-driven, not model-driven.** Both models produced *exactly* 16. The merge
+   instruction dominates; the model contributes accuracy within it.
+
+### The tradeoff that matters, stated plainly
+
+**Deterministic distillation alone still has the best recall: 10/11.** Every LLM configuration is
+worse on that measure. But it leaves 95 components, and the adjudicator gets to **16 at 8/11**.
+
+For the actual goal — *an answer a human reads* — 16 components at 8/11 is plausibly more useful than
+95 at 10/11. That is a judgement call and should be made explicitly rather than by whichever number
+is quoted. Both are recorded so it can be.
+
+### A methodological cost, recorded rather than hidden
+
+The adjudicator session ran `milvus` and `kubernetes` — both **held out** — with the *coder* model
+before this comparison existed. Their timestamps confirm one settled prompt was used for both
+(`adjudicate.py` unchanged since 16:56), so those runs are internally valid. But they measure a
+configuration now known to be inferior, and re-running them under instruct would be **a second use of
+a held-out fixture**, which is what the holdout rule exists to prevent.
+
+**`trellis` and `egeria-workspaces` have not been touched by any adjudicator run.** They are the
+clean holdout for whatever configuration is finally settled — and, being maintainer-written rather
+than doc-derived, the only fixtures where a doc-fed adjudicator could ever be measured honestly.
