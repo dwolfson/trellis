@@ -188,10 +188,23 @@ def _is_tombstone(entry_names: list[str]) -> bool:
 # would break the Kubernetes case, which is the one this whole module exists
 # for (finding 68). The distinguishing signal is whether the org hosts one
 # project or many, which needs org-level context this function does not have.
-# Until then the over-match is harmless in the intended flow: §5.5b's design is
-# to ASK the user whether to include a sibling repo, never to add it silently,
-# and an extra candidate in that prompt costs a checkbox rather than a wrong
-# answer.
+# It matters less than it first appears, because **the evidence already carries
+# the discriminator**. Verified 2026-08-23:
+#
+#     odpi/website        pushed_at 2019-11-07   <- ~7 years stale
+#     kubernetes/website  pushed_at 2026-08-23
+#     prometheus/docs     pushed_at 2026-08-21
+#     odpi/egeria-docs    pushed_at 2026-08-22
+#
+# Every genuine documentation sibling was pushed within two days; the false
+# match is stale by seven years. A consumer that reads the date it is given can
+# discount it without this module making the call — which is the point of
+# §5.5a(c)'s "report the observations, do not rank them". Suppressing it here
+# would BE the ranking judgement that rule forbids.
+#
+# And in the intended flow it costs nothing: §5.5b asks the user whether to
+# include a sibling repo, never adds one silently, so an extra dated candidate
+# in that prompt is a checkbox, not a wrong answer.
 def _match_sibling_names(repo_name: str, candidate_names: list[str]) -> dict[str, str]:
     """Return {candidate_name: matched_pattern} for every name in
     `candidate_names` that matches one of `_SIBLING_NAME_PATTERNS` for

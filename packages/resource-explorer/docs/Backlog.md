@@ -842,9 +842,11 @@ for Prometheus and **`sibling-repo`, not `not-found`,** for Kubernetes. 28 herme
 only when the org ≈ the project. `kubernetes/website` matches correctly; `odpi/website` is the
 foundation's site and is returned for both `odpi/egeria` and `odpi/egeria-workspaces`, belonging to
 neither. Deliberately unfixed — dropping bare `website` would break the Kubernetes case this module
-exists for, and the distinguishing signal (does the org host one project or many?) needs org-level
-context. Harmless in the intended flow, since §5.5b asks the user before including a sibling: an
-extra candidate costs a checkbox, not a wrong answer.
+exists for. **The evidence already discriminates**: `odpi/website` was last pushed **2019-11-07**
+while `kubernetes/website`, `prometheus/docs` and `odpi/egeria-docs` were all pushed within two days
+(verified 2026-08-23). A consumer reading the date can discount it without the module deciding —
+suppressing it here would *be* the ranking judgement §5.5a(c) forbids. And §5.5b asks before
+including a sibling, so an extra dated candidate is a checkbox, not a wrong answer.
 
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
