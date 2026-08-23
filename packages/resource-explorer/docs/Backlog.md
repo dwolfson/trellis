@@ -864,6 +864,29 @@ an explicit statement of intent that §5.2 step 0 says should outrank inference,
 The role was recovered from notebook presence instead. Broadening the pattern should be validated
 against a repo not yet looked at, not tuned on this one.
 
+**Expectation sets built** (`resource_explorer/github/expectations.py`, 14 tests). Role → expected
+artifacts → each resolved to a location by `doc_locations.find_artifact`, with four states kept
+separate — `found`, `missing`, `confirmations` (not expected AND absent, which *supports* the role),
+`unexpected`. **No count, percentage or grade is exposed**, and a test asserts none leaks in.
+
+Live gate results: `odpi/egeria-workspaces` → **RUN** (tutorial primary, but deployment artifacts
+present — the case that would have been wrong under a primacy gate); `odpi/egeria-docs` → **SKIP**;
+Prometheus and Milvus → RUN with all four expected artifacts located.
+
+**Two limitations found live, recorded not tuned:**
+
+1. **The gate over-runs on documentation repos with their own build tooling.** `kubernetes/website`
+   returns RUN, because its Hugo/npm build supplies `package-manifest` and `deployment-artifacts`
+   signals — build tooling for the docs, not a product architecture. Mechanically separating
+   "tooling that builds the docs" from "the thing the repo is about" is not obviously possible from
+   these signals. **The direction of the error is the safe one**: a false RUN wastes a tier, a false
+   SKIP loses real work, so the gate is deliberately left conservative. Revisit only with a signal
+   that distinguishes them.
+2. **`find_artifact("readme")` prefers a nested README over the root one** — it returns
+   `documentation/prometheus-mixin/README.md` for Prometheus and `docs/README.md` for Milvus, when
+   the root `README.md` is plainly the right answer. Doc directories are searched before the repo
+   root. Small, real, and worth fixing in `doc_locations` (root should win for `readme`).
+
 **Companion item, deferred by the maintainer to a separate discussion: capturing the user's intent.**
 What the repo *is* and what the user *wants from it* are two different filters on which analyses
 matter; conflating them would be a mistake.
