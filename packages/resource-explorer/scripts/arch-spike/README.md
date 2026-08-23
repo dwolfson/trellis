@@ -2265,3 +2265,63 @@ standard finding 65 applied to an LLM's output.
 **No behaviour change from the merge attempt.** The union path already recovers these components
 (6/6 on Kubernetes); merging would have added noise without producing an exact match, and the
 ranking-window cost that motivated it remains open.
+
+---
+
+**79. Distillation, deterministic half: 3303 → 358 candidates on Kubernetes with recall intact.**
+
+§5.2 divides the work — *"Heuristics own steps 1, 4, 5; the LLM owns 2 and 3 and adjudicates
+ambiguous partitions."* `distill.py` answers how far the heuristic half gets **before an LLM is
+involved at all**, which matters because every candidate removed deterministically is one an
+adjudicator never sees, and a deterministic rule can be regression-tested against the pre-registered
+corpus where a prompt cannot.
+
+Three filters, each a claim about what a component *is*:
+
+1. **support-only** — a candidate whose roots are *entirely* under `test/`, `testdata/`, `docs/`,
+   `examples/`, `hack/`, `vendor/`, `mocks/`… A component may *contain* tests (Prometheus's
+   `config/` owns `config/testdata/` and the ground truth says so); one that is *only* tests is
+   support material, not architecture.
+2. **whole-repo claims** — the coupling proposer emits one per target (`.`, globbing `cmd/**`,
+   `staging/**`, …). Same thing the npm detector calls a workspace root and `go_subsystems` calls a
+   module root: **a container, not a component.**
+3. **refinements** — a candidate every root of which lies strictly inside a *classified* parent.
+
+| target | before | after | recall |
+|---|---|---|---|
+| `kubernetes` | 3303 | **358** | **6/6** — unchanged |
+| `milvus` | 609 | **238** | 3/5 — unchanged |
+| `prometheus` | 212 | **95** | 11/11 → **10/11** |
+
+**A 9× reduction on Kubernetes at no cost to recall**, and better than ranking alone achieved
+(finding 77: `typed` needed N≈250 for 5/6; this keeps 6/6 in 358 unranked).
+
+### Two failures worth keeping
+
+**The whole-repo guard was not in the first version, and its absence was catastrophic in a way that
+looked like success.** Without it, Kubernetes distilled to **4 components** — a 99.9% reduction, and
+a total loss of ground truth. The coupling proposer's `.` candidate claims `cmd/**` and `staging/**`,
+so every real component was "a refinement of" it. A filter that removes everything reports as the
+best filter, which is why the count was scored rather than admired.
+
+**Sparing typed refinements is a measured, rejected improvement.** "A classified child is a component
+in its own right, so don't drop it because a classified parent exists" sounds obviously right. It is
+strictly worse on every axis: Kubernetes 358 @ 6/6 → **762 @ 5/6**, Milvus 238 → 276 at the same 3/5,
+and Prometheus did not recover the component the change was meant to save. Left in the code as a
+comment rather than silently reverted, because the intuition is appealing enough to be retried.
+
+### The known cost, stated plainly
+
+Prometheus loses **`Remote storage`**. Its ground truth splits `storage/remote/**` out of what the
+detector proposes as one `storage` roll-up, so it was only ever matched as a *union of refinements* —
+exactly what filter 3 removes. This is the §2a granularity tension in its sharpest form: the same
+refinements that let a coarse detector match a fine ground truth are the ones that turn 6 components
+into 3303. **Dropping them trades recall for count, and the trade is repo-dependent** — free on
+Kubernetes and Milvus, one component on Prometheus.
+
+### What this leaves for the LLM
+
+358 evidence-carrying candidates for 6 declared components is a tractable adjudication input where
+3303 was not. §5.2's rule still stands and is now enforceable: **the LLM never invents a component
+with no detector evidence behind it** — it names, classifies and merges what survives. Distillation
+has moved the problem from "unusable" to "expensive", which is the right shape of remaining work.
