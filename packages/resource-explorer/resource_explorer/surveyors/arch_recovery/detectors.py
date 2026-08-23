@@ -325,7 +325,23 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
                 continue
             inner = rel[len(prefix):]
             parts = inner.split("/")
-            if len(parts) < 2:          # directly at the module root
+            if len(parts) < 2:
+                # Directly at a module root. For the OUTERMOST module that is
+                # the repo itself — not a component, same as the npm
+                # workspace-root rule. But a NESTED module root is a distinct
+                # published library and is a perfectly good component: k8s's
+                # `staging/src/k8s.io/cloud-provider` carries its own go.mod,
+                # four .go files and eight metadata files, and skipping them
+                # orphaned exactly those twelve (finding 75).
+                if not mod_dir:
+                    break
+                d = mod_dir
+                sub = mod_dir
+                entry = found.setdefault(d, {
+                    "dir": d, "module": mod_path, "subsystem": sub,
+                    "import_path": mod_path, "files": [], "has_main": False,
+                })
+                entry["files"].append(rel)
                 break
             # Descend to the first directory that is itself a Go package.
             walked: list[str] = []

@@ -2007,3 +2007,69 @@ and for the same reason — both are scope declarations by the fixture author, a
    reads as agreement. The maintainer did the right thing, in the right place, in the right
    vocabulary — and it was silently discarded, with the cost landing on the detector's reputation
    rather than the scorer's.
+
+---
+
+**75. Kubernetes, the third owner-published fixture: 6/6, ARI 0.906 — after one fix the fixture
+itself provoked.**
+
+`kubernetes.md` was pre-registered from `kubernetes/website` (commit `2d305c3`). It is the **first
+fixture whose ground truth lives in a different repository from the code** — the concrete case behind
+§5.5a(a), since `kubernetes/kubernetes/docs/` is a tombstone holding only `.gitignore` and `OWNERS`.
+
+Six components — `kube-apiserver`, `kube-scheduler`, `kube-controller-manager`,
+`cloud-controller-manager`, `kubelet`, `kube-proxy` — over 2132 of **31300** tracked files.
+
+### The shape is harder than either predecessor
+
+Prometheus's components were single directories. Milvus's spanned several directories under one
+tree. Kubernetes's span **two different top-level trees** — `cmd/kube-scheduler` *and*
+`pkg/scheduler` — so the union has to reach across `cmd/` and `pkg/`, which no containment rule
+alone can do.
+
+### First run: 5/6, with the sixth at 107/119
+
+`cloud-controller-manager` missed exactly 12 files, all at
+`staging/src/k8s.io/cloud-provider/` root: `LICENSE`, `OWNERS`, `README.md`, `go.mod`, `cloud.go`,
+`doc.go`, `plugins.go`, `ports.go` and siblings.
+
+**Different cause from Milvus's `OWNERS` misses, despite looking identical.** That directory has
+**4 direct `.go` files** — it is a package. What it also has is its own **`go.mod`**, and finding
+70's rule skips files directly at a module root as "the module is the whole repo".
+
+That rule is right for the **outermost** module and wrong for a **nested** one. Prometheus has
+`rules.go` at its repo root; treating that root as a component would emit one `**` component
+claiming the entire repository. But `staging/src/k8s.io/cloud-provider` is a *distinct published
+library* — being a module is precisely what makes it a unit, not what disqualifies it.
+
+**Fix:** skip the module root's own files only when the module is the outermost one. Nested module
+roots become components in their own right.
+
+| target | before | after |
+|---|---|---|
+| **`kubernetes`** | 5/6 | **6/6** |
+| `prometheus` | 11/11 | 11/11 |
+| `milvus` | 3/5 | 3/5 |
+| `trellis` | 9/11 | 9/11 |
+| `egeria-workspaces` | 18/27 | 18/27 |
+
+Two regression tests added (nested root becomes a component; outermost root still skipped). Suite: 36 passed.
+
+### Two things worth recording beyond the score
+
+**Name-based component-set recall hit 1.00 — the first time that metric has ever worked.** It has
+been useless on every prior target (0/13 on trellis, 0/11 on Prometheus) because detector names are
+directory names and ground-truth names are prose. Kubernetes is the exception *because its component
+names are its binary names* and the repo follows `cmd/<binary>` exactly. That is a property of this
+repo's conventions, not evidence the metric has become sound — strict containment remains the
+headline.
+
+**Scale is not the problem.** 31300 files, 13415 Go files, 93046 import statements, 57438 resolved
+first-party imports: imports ~12s, detection ~4s. The Analysis-tier cost concern (§5.6) does not
+bite here.
+
+**Precision is, catastrophically.** **3270 components proposed against 6 declared**, 2482 of them
+untyped from the coupling proposer. Recall across the three owner-published fixtures is now
+11/11, 3/5 (+2 at 99.8%) and 6/6 — essentially solved. Nothing about "3270 components" is usable by
+a human, and distillation (§5.2, Phase 5) is now unambiguously the only thing standing between this
+work and an answer.

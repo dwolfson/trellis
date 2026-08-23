@@ -573,3 +573,40 @@ class TestFinding72GoContainerDirectories:
         subs = {s["dir"] for s in detectors.go_subsystems(root, _tracked(root))}
 
         assert subs == {"cmd/server", "cmd/tool"}
+
+
+class TestFinding75NestedModuleRoots:
+    """Finding 75: files directly at a module root are skipped as "the module
+    is the whole repo" — true for the OUTERMOST module, wrong for a nested one.
+    k8s's `staging/src/k8s.io/cloud-provider` carries its own go.mod, four .go
+    files and eight metadata files; skipping them orphaned exactly those 12 and
+    left the component at 107/119."""
+
+    def test_a_nested_module_root_is_itself_a_component(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "svc/s.go", "package svc\n")
+        _write(root, "staging/lib/go.mod", "module k8s.io/lib\n")
+        _write(root, "staging/lib/lib.go", "package lib\n")
+        _write(root, "staging/lib/OWNERS", "owners\n")
+        _write(root, "staging/lib/sub/s.go", "package sub\n")
+        _git_init(root)
+        subs = {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert "staging/lib" in subs
+        assert subs["staging/lib"]["module"] == "k8s.io/lib"
+        assert "staging/lib/lib.go" in subs["staging/lib"]["files"]
+
+    def test_the_outermost_module_root_is_still_skipped(self, tmp_path):
+        """Prometheus has `rules.go` at the repo root. Treating the outermost
+        module root as a component would emit one `**` component claiming the
+        entire repository."""
+        root = str(tmp_path)
+        _write(root, "go.mod", "module github.com/acme/proj\n")
+        _write(root, "rules.go", "package proj\n")
+        _write(root, "svc/s.go", "package svc\n")
+        _git_init(root)
+        subs = {s["dir"] for s in detectors.go_subsystems(root, _tracked(root))}
+
+        assert subs == {"svc"}
+        assert "" not in subs and "." not in subs

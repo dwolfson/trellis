@@ -623,8 +623,13 @@ components. Regression-checked: `trellis` 8/11 and `egeria-workspaces` 18/27 bot
   **11/11**, ARI 0.9936, identical to the spike on every measure. Nine regression tests added; full
   suite 1678 passed. The `score.py` name-collision bug was scorer-only: `arch_recovery/` already keys
   by slug throughout.
-* **Precision, not recall.** 173 components proposed against 11 declared. The coupling proposer emits
-  146 untyped ones. Detection is no longer the bottleneck; distillation (§5.2, Phase 5) is.
+* **Precision, not recall — now the only thing that matters.** Recall across three owner-published
+  fixtures is 11/11 (Prometheus), 3/5 plus two at 99.8% (Milvus) and 6/6 (Kubernetes). Against that,
+  the proposer emits **173, 608 and 3270 components** for **11, 5 and 6** declared ones — the
+  coupling proposer contributing 146, 409 and 2482 untyped entries. Detection is solved; **nothing
+  about "3270 components" is usable by a human.** Distillation (§5.2, Phase 5) is the only remaining
+  obstacle to an answer. Scale is *not* the problem: Kubernetes' 31300 files and 93046 imports run in
+  ~16s end to end.
 * **Go type inference.** `has_main` types `promql`, `util` and `documentation` as `Console Command`
   because some `main.go` sits beneath them.
 * **Go cohesion needs recursive rollup subtrees.** Files in one Go package never import each other,
