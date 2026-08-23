@@ -962,3 +962,26 @@ possibly dynamically. Necessary — every §5.5b table is provisional. Sequenced
 Failure mode to guard against explicitly: a system tuned on recent feedback gets better at *agreeing
 with recent users* rather than at being right, and degrades invisibly because the same feedback that
 moves the weights also shapes what anyone thinks to check.
+
+---
+
+### HIGH — populate `IR.ports` and `IR.wires` (design §5.5f)
+
+Verified empty, and **nothing anywhere populates them**: both fields carry `# not in this slice`,
+§5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
+written. `ApiStructureSurveyor` does not cover it — it counts symbols and module structure, which is
+internal shape rather than exposed surface.
+
+**Why it is the biggest gap:** everything black-box we have built reads metadata *about* a resource
+(README, docs, manifests, deployment artifacts), not the interface *of* it. The system can say "an
+application with deployment artifacts" but not "serves these endpoints, consumes this topic, needs
+these ports" — and the second is what "does it fit our infrastructure" means.
+
+**Why it is cheap:** interface evidence is largely black-box observable and often in artifacts
+already fetched — OpenAPI/Swagger, `.proto`, GraphQL schemas, compose `ports:`/`expose:`, Dockerfile
+`EXPOSE`, k8s `Service` manifests, declared entry points, configured topic names. Mostly no source
+parsing, so **Discovery tier by rule 17's own test**.
+
+Check Egeria's existing vocabulary first — `SolutionPortDirection` and `SolutionLinkingWire`'s
+`protocol`/`integrationStyle`/`frequency`/`dataExchanged`/`oneWay` already exist. Third time this
+check has been the right first move, after `SolutionComponentType` and `ResourceUse`.

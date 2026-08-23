@@ -1376,6 +1376,61 @@ is close to role (§5.5b) without being it: a thing can be a library *and* expos
 determines what "using it" even means, and therefore what a black-box question can be. Picking it up
 should start there rather than by extending any table above.
 
+### 5.5f The external interface is the biggest gap, and it is cheap
+
+**Maintainer, 2026-08-23:** the external interfaces a resource exposes, and their characteristics,
+are an under-analyzed aspect. Checked rather than assumed, and it is stronger than "under-analyzed":
+
+| specified | built |
+|---|---|
+| `IR.ports` | **empty** — `# not in this slice`, and **nothing anywhere populates it** |
+| `IR.wires` | **empty** — same |
+| §5.2 step 4, "infer ports and directions from interfaces served vs. consumed" | not built |
+| §5.2 step 5, "infer wires ... `protocol` / `integrationStyle` / `frequency` / `dataExchanged` / `oneWay`" | not built |
+| §3.2 `SolutionPortDirection`, a 5-value enum | never written |
+
+`ApiStructureSurveyor` does not close this — it counts symbols and module structure, which is
+internal shape, not exposed surface.
+
+#### Why this matters more than it looks: it undercuts the black-box half
+
+§5.5e says black-box questions are *how do I operate this, does it fit my infrastructure*. But
+everything black-box we have built reads **metadata *about* the resource** — README, published docs,
+manifests, deployment artifacts — and **not the interface *of* the resource.**
+
+So today the system can say *"this is an application with deployment artifacts and a current
+architecture doc"* and cannot say *"it serves these three REST endpoints, consumes this Kafka topic,
+and needs these two ports open."* The second is what "does it fit our infrastructure" actually means.
+**The black-box half is weaker than §5.5e implies, and this is the gap.**
+
+#### The vocabulary already exists — for the third time
+
+`SolutionPortDirection` (§3.2) and `SolutionLinkingWire`'s properties are already in Egeria and
+already in this design; nothing populates them. That is the same pattern as `SolutionComponentType`
+(existed, §3.1) and the `ResourceUse` candidate for disposition (§5.5d): **check before inventing.**
+
+#### And it is cheap — unusually so for the biggest gap
+
+Interface evidence is disproportionately **black-box observable**, much of it in artifacts already
+fetched:
+
+- OpenAPI / Swagger documents, `.proto` files, GraphQL schemas
+- compose `ports:` / `expose:`, `EXPOSE` in a Dockerfile, Kubernetes `Service` manifests
+- declared entry points and console scripts (already read by `go_subsystems` and the manifest detectors)
+- event topics and queue names in configuration
+
+Most needs no source parsing at all, which puts it at **Discovery tier by rule 17's own test** —
+cheap, and it gates the expensive tiers. That is an unusual combination: the largest missing piece is
+also among the least expensive to start.
+
+#### Its relationship to the deferred thread
+
+This is the concrete, buildable half of the exposure/consumption question §5.5e deferred. **A port is
+how a resource is exposed**; the deferred thread is the broader model of what kind of thing is being
+exposed (library to import, service to call, container to run, dataset to read). Ports and wires can
+be populated without settling that model, and doing so would give it evidence to be designed against
+rather than reasoned about.
+
 ### 5.6 Tooling — what to adopt, and what it costs
 
 Everything below is either a subprocess emitting JSON or a plain Python library. No daemons, no
