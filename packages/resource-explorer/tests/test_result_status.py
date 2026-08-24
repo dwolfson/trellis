@@ -116,3 +116,44 @@ class TestSkippedByDesign:
         """It must not borrow one of step_outcome's five — a skip had no run to
         describe."""
         assert rs.skipped("x")["outcome"] == ""
+
+
+class TestMisgrouped:
+    """Right files, wrong grouping — a different kind of answer, not a weaker one.
+
+    From the architecture-recovery session's real case: Kubernetes scored 0 of 6
+    components while covering 2,002 of 2,132 files, all six collapsed under one
+    overclaiming node. Rendered as "found nothing" — which is what happened —
+    that reads as a detection failure when the fault was in the merge, and it
+    cost an afternoon.
+    """
+
+    def test_it_is_not_nothing_found(self):
+        """The confusion that motivated it."""
+        assert rs.misgrouped("x")["state"] != rs.NOTHING_FOUND
+
+    def test_it_is_not_a_degraded_measurement(self):
+        """Nothing went wrong with the looking, so it must not share a state
+        with the cases where something did."""
+        st = rs.misgrouped("x")["state"]
+        assert st not in (rs.NOT_ESTABLISHED, rs.NEVER_RUN, rs.MEASURED)
+
+    def test_it_carries_no_score_shaped_field(self):
+        """docs/architecture-recovery-design.md §5.5a(c) rules out scores,
+        grades and percentages because they punish deliberate choices. A
+        coverage number on this state would be a partial-credit score in
+        everything but name — the evidence goes in the prose instead."""
+        banned = ("score", "grade", "rating", "maturity", "percentage", "count", "coverage")
+        for field in rs.misgrouped("2,002 of 2,132 files matched"):
+            assert not any(b in field.lower() for b in banned), field
+
+    def test_the_reason_is_required_and_kept(self):
+        st = rs.misgrouped("2,002 of 2,132 files matched, but all six landed under one node.")
+        assert "2,132" in st["hint"]
+
+    def test_every_reader_state_is_distinct(self):
+        """The whole vocabulary in one assertion — five states that must never
+        collapse into each other."""
+        states = {rs.MEASURED, rs.NOTHING_FOUND, rs.NOT_ESTABLISHED,
+                  rs.NEVER_RUN, rs.SKIPPED_BY_DESIGN, rs.MISGROUPED}
+        assert len(states) == 6

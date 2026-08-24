@@ -53,6 +53,24 @@ NEVER_RUN = "never_run"
 #: does need to be told — otherwise a skipped step is indistinguishable from a
 #: step that failed to produce anything.
 SKIPPED_BY_DESIGN = "skipped_by_design"
+#: The analysis found the right material and structured it wrongly. Added
+#: 2026-08-24 with the architecture-recovery session, from a real case: on
+#: Kubernetes, component detection scored 0 of 6 while covering 2,002 of 2,132
+#: files — every component present, all six collapsed under one overclaiming
+#: node.
+#:
+#: This is NOT a weaker `measured` and NOT a stronger `nothing_found`. It is a
+#: different KIND of answer: a merge failure, not a detection failure. Rendered
+#: as the same empty state as "found nothing" it cost that session an afternoon
+#: chasing the wrong bug, which is the entire argument for the state existing.
+#:
+#: It deliberately carries no number of its own. A coverage figure belongs in
+#: the reason text as evidence, never as a field — a percentage on a state is a
+#: partial-credit score in everything but name, and
+#: docs/architecture-recovery-design.md §5.5a(c) rules those out because they
+#: punish deliberate choices. See tests/test_expectations.py, which asserts no
+#: field name contains score/grade/rating/maturity/percentage/count.
+MISGROUPED = "misgrouped"
 
 _OUTCOME_TO_STATE = {
     "recovered": MEASURED,
@@ -109,6 +127,24 @@ def skipped(reason: str, *, gate: str = "") -> dict:
         "cause": gate,
         "hint": reason,
         "known_positive": False,
+    }
+
+
+def misgrouped(reason: str) -> dict:
+    """The right material, the wrong structure.
+
+    Takes the reason as a required argument for the same purpose `skipped()`
+    does: unexplained, this renders indistinguishably from "found nothing",
+    which is the confusion it exists to end. Put the evidence in the prose —
+    "2,002 of 2,132 files matched, but all six components landed under a single
+    node" — rather than reaching for a coverage field.
+    """
+    return {
+        "state": MISGROUPED,
+        "outcome": "",
+        "cause": "",
+        "hint": reason,
+        "known_positive": True,
     }
 
 

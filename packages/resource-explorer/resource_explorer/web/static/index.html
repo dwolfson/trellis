@@ -2496,6 +2496,18 @@ function _renderEmptyResultState(data) {
       <span>Not applicable — ${_esc(st.hint || 'a gate determined this analysis does not apply here.')}</span>
     </div>`;
   }
+  if (st.state === 'misgrouped') {
+    // The right material, the wrong structure — a merge failure, not a
+    // detection failure. Distinct from BOTH neighbours on purpose: it is not
+    // an empty result (something was found) and not a degraded one (nothing
+    // went wrong with the looking). Rendered as "found nothing" it once cost a
+    // session an afternoon debugging detection when grouping was the fault.
+    // No bar, no percentage: the reason carries its own evidence as prose.
+    return `<div class="text-xs text-sky-400/90 flex items-start gap-1.5">
+      <span>◐</span>
+      <span>Found, but grouped differently — ${_esc(st.hint || 'the expected content was located under an unexpected structure.')}</span>
+    </div>`;
+  }
   if (st.state === 'not_established') {
     // A prerequisite is missing. Amber, and it names what to run — NOT "Run",
     // which is the button that just failed to produce an answer.
