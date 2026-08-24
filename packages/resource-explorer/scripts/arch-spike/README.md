@@ -1624,7 +1624,7 @@ Then the pipeline ran.
 | stage | result |
 |---|---|
 | detectors | **4 components**, all npm packages under `web/ui/` |
-| ast-grep code markers | **0** — rules are Python/Java |
+| ast-grep code markers | **0** — *stated here as "rules are Python/Java"; that was wrong, see finding 94: the code-marker rules are **Python only**, and Python/Java/Go describes the separate `rules-imports/` set* |
 | imports | **0 edges** — `0 python files, 0 java files` |
 | co-change | **18219 pairs over 1030 files** — the only signal that crossed |
 | **score** | **0/11**, precision 0.00, recall 0.00, ARI 0.0 |
@@ -3135,3 +3135,53 @@ Much smaller than Go support was, and differently shaped:
    finding, not a pass** — that is a third thing to check, not something to accept.
 
 The import graph, the expensive part, already works.
+
+**94. The code-marker proposer is Python-only, and I said otherwise twice.**
+
+Finding 93 ended with *"Java code markers matched nothing across 6172 Java files, which is worth its
+own look: the rules exist, ast-grep ran, and zero matched."* Checked, and **the rules do not exist.**
+
+| rule set | count | languages |
+|---|---|---|
+| `rules/` — **code markers** | 8 | **Python only** |
+| `rules-imports/` — import extraction | 3 | Go, Java, Python |
+
+`code_markers.marker_languages()` returns `{'python'}`. I had conflated the two rule directories:
+Python/Java/Go is the *import* set, and I attributed its coverage to the marker set — in **finding 69**
+(*"rules are Python/Java"*, now corrected in place) and again in finding 93.
+
+### What it actually means
+
+The code-marker pass is §5.1's "code half" — the proposer meant to find logical components that
+manifests and deployment artifacts structurally cannot see. **It has never run on anything but
+Python:**
+
+| target | components | code-marker |
+|---|---|---|
+| `trellis` (Python) | 66 | **5** |
+| `prometheus` (Go) | 212 | 0 |
+| `milvus` (Go) | 609 | 0 |
+| `kafka` (Java) | 595 | 0 |
+| `egeria-workspaces` | 164 | 0 |
+
+So every non-Python target has been running **three proposers, not four**, and every measurement in
+the corpus was taken that way. Prometheus at 11/11 and Kubernetes at 6/6 were achieved without the
+code-marker proposer contributing anything at all.
+
+### Two corrections that matter more than the gap
+
+**Finding 69's diagnosis was right for the wrong reason.** It concluded Go support was missing
+because "three of the four proposers are Python/Java/npm-only". The conclusion held and the fix
+worked — but one of those three was blind on Go not because Go lacked *rules of its kind*, but
+because that proposer has rules for exactly one language. Adding Go marker rules was never on the
+list, because I believed Java ones existed and Go was the exception.
+
+**And this is the same shape as finding 92, one layer in.** There, every fixture shared a hidden
+property (Go, where process and directory coincide). Here, every *proposer* claim I made shared a
+hidden property: I had checked `rules-imports/` and assumed `rules/` matched. **A capability
+described from an adjacent directory listing is not a checked capability** — the same class as
+finding 89's "committed and regression-tested is not reachable".
+
+The gap itself is smaller than it looks: the marker proposer contributes 5 of 66 components on the
+one target where it runs. It is worth knowing precisely because it has been silently absent, not
+because it was carrying the result.
