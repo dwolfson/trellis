@@ -138,14 +138,34 @@ def chunk_candidates(components: list[dict], max_per_chunk: int) -> list[list[di
 
 SYSTEM_PROMPT = f"""You are an architecture adjudicator. You are given CANDIDATE components that a
 deterministic detector pipeline proposed for a software repository, each with the file globs it
-covers and the raw evidence (source excerpts) that justify it. Your job has exactly three parts:
+covers and the raw evidence (source excerpts) that justify it. The candidate list is DELIBERATELY
+over-proposed — most repositories with dozens or hundreds of candidates have only a HANDFUL (typically
+5-25) of real architectural components, because the detectors emit roughly one candidate per source
+directory / package / module, and a real system groups many directories under one architectural
+component. Your job has exactly three parts:
 
 1. CLASSIFY each surviving component into one of these 13 values, exactly as spelled — no others
    are valid:
    {", ".join(SOLUTION_COMPONENT_TYPES)}
 2. NAME each component in clear human terms (not a raw path or slug).
-3. MERGE candidates that are really one component — e.g. a package and its CLI entry point, or
-   several near-duplicate candidates from different detectors describing the same directory.
+3. MERGE at the right grain — not too little, not too much. Two failure modes, both wrong:
+     a. UNDER-merging: renaming every candidate 1:1 (or only deduping two candidates that describe
+        the exact same directory) is NOT merging. If you produce close to as many output components
+        as input candidates, you have not done this job.
+     b. OVER-merging: dumping every library-like candidate in the whole repository into one or two
+        giant buckets ("Libraries", "Utilities") is just as wrong, and loses just as much
+        information as not merging at all — a reader gains nothing from being told "everything that
+        isn't a CLI is one Library component." Two candidates belong in the same output component
+        only if they share an IMMEDIATE common parent directory (siblings, not cousins) AND one of
+        them is clearly a small helper/support piece of the other (e.g. a `util/` or `internal/`
+        subtree of leaf packages — string helpers, pooling helpers, test helpers — merges into ONE
+        component scoped to that subtree, not into a repo-wide "utilities" component alongside
+        unrelated top-level packages). Two top-level packages that each have their own distinct
+        responsibility (e.g. a query engine vs. a storage engine vs. a notifier) stay SEPARATE
+        components even though both are "just a library" by type — the type is not the grouping key,
+        the architectural role and directory locality are.
+   You may also merge a package with its own CLI entry point, or several near-duplicate candidates
+   from different detectors describing the exact same directory.
 
 You do NOT discover components. Every component you output must be built ONLY from the candidate
 slugs you were given — you may merge candidates together, drop candidates that are noise (tests,

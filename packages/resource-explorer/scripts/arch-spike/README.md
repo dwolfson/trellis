@@ -2439,3 +2439,84 @@ a held-out fixture**, which is what the holdout rule exists to prevent.
 **`trellis` and `egeria-workspaces` have not been touched by any adjudicator run.** They are the
 clean holdout for whatever configuration is finally settled — and, being maintainer-written rather
 than doc-derived, the only fixtures where a doc-fed adjudicator could ever be measured honestly.
+
+---
+
+**82. The guardrail proves groundedness, not correctness — and Kubernetes shows the difference costs
+everything.**
+
+Held-out runs, settled v3 prompt, `qwen2.5-coder:32b`, one pass each:
+
+| target | candidates | components | strict containment | baseline | guardrail drops |
+|---|---|---|---|---|---|
+| `milvus` | 238 | 89 | 3/5 | 3/5 — **matched** | **10** |
+| `kubernetes` | 358 | 70 | **0/6** | 6/6 — **destroyed** | 0 |
+
+### What the guardrail caught — real hallucination, on first exposure
+
+On `milvus` the model **invented candidate slugs**: `coupling::internal::json`,
+`coupling::internal::registry`, `coupling::internal::util::nullutil`. It pattern-matched the
+`coupling::x::y` naming convention it saw on *other* real candidates and applied it to directories
+where no candidate was ever proposed — the real slug was `go::internal-json`. All were dropped by the
+unknown-slug check.
+
+**This retroactively corrects finding 80.** Zero drops on Prometheus was not validation, it was lack
+of opportunity — exactly as suspected there. Given a target with more candidates, the model
+hallucinated immediately, and §5.2's rule caught it. The mechanism works.
+
+### What the guardrail did NOT catch — and this is the finding
+
+On `kubernetes` the model merged **24 independent `cmd/*` binaries** — `kube-apiserver`, `kubelet`,
+`kube-scheduler`, `kube-proxy`, `kube-controller-manager`, `cloud-controller-manager` and 18 others —
+into a single component named **"CLI Commands"**.
+
+Verified directly: 24 globs on one component, `cmd/cloud-controller-manager/**` among them. Every
+slug real. Every glob grounded in a candidate. Type valid. **It passes the hard rule perfectly, and
+it destroys all six ground-truth components in one move.**
+
+> **Groundedness is not architectural correctness, and no amount of grounding checking will make it
+> so.** §5.2's rule prevents invention. It says nothing about whether the merge is *right*.
+
+### Finding 73 is what makes the failure legible
+
+The score is 0/6 — and partial cover reports **2002 of 2132 files, 93.9%**, across six components
+all sitting under one overclaiming node.
+
+Without partial reporting this reads as total failure. With it, the diagnosis is exact: **the right
+files were found and grouped wrongly.** That is a completely different defect from "found nothing",
+and it is the difference between "the detector is broken" and "the merge grain is wrong".
+
+### Prompt iteration did not transfer, which is the holdout rule's whole point
+
+Three dev-fixture iterations: v1 under-merged (95→56), v2 collapsed totally (95→4, **0/11**), v3
+settled (95→16). v3's fix was learned against Prometheus's *fan-out utility packages*. On Kubernetes
+the over-merge reappeared in a **structurally different shape** — sibling CLI binaries — and v3 had
+nothing to say about it.
+
+Tuning suppressed the failure mode *visible on the dev fixture* and left the general defect intact.
+Had the prompt been iterated against Kubernetes directly, 6/6 would have been recoverable and
+meaningless.
+
+### The concrete fix this points to, and we already have the signal
+
+**A merged component should not span multiple entry points.** Finding 78 built exactly that signal —
+`package main` detection, per component root. Twenty-four `cmd/*` binaries are twenty-four
+independent deployables, and any merge unioning more than one of them is almost certainly wrong.
+
+That is a **partition-level post-check** to sit beside the groundedness check: not "did you invent
+this?" but "does this grouping contradict evidence we already hold?". It is principled rather than a
+tuned threshold, it uses a signal already extracted, and it would have caught this exact failure.
+
+### One drop that was arguably wrong
+
+On `milvus` the model identified third-party compose services (etcd, pulsar, minio, jaeger) as a
+deployment-perspective component, grounded in real slugs — and the guardrail dropped it because those
+candidates are legitimately **fileless**, and the grounding rule requires non-empty `files`.
+`egeria-workspaces.md` records exactly this case: *"deployment components frequently own no
+first-party files at all."* The rule is too strict for the deployment perspective.
+
+### Cost
+
+10 LLM calls, **$0** (the Anthropic key has no credit; everything ran locally), **~133 minutes** of
+wall time — 11.5s for a one-candidate chunk to 31.6 min for a 177-candidate one. Chunking grouped by
+shallowest shared path prefix so no component's candidates split across a boundary.
