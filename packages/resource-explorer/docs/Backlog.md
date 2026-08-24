@@ -160,6 +160,62 @@ returning silently.
    stage-specific survey.
 
 
+### `DependencyParser` covers 4 ecosystems; `_MANIFESTS` claims 12
+
+Found 2026-08-23 while checking whether the repos reporting zero dependencies genuinely had
+none. Nine of thirteen did. **Four did not**, and they cluster by build system:
+
+| repo | manifest present | parser support |
+|---|---|---|
+| `egeria_git` (6,016 files) | `build.gradle` | none |
+| `docling_java` | `build.gradle.kts` | none |
+| `ol_diff` | `build.gradle` | none |
+| `unitycatalog_rs` | `Cargo.toml` | none |
+
+`DependencyParser.parse()` globs for exactly `pyproject.toml`, `requirements*.txt`,
+`setup.py`, `package.json`, `go.mod` and `pom.xml` — Python, Node, Go, Maven. But
+`sub_surveyors/dependency.py`'s `_MANIFESTS` — the *known-positive* set that decides whether a
+zero is provable — also lists `build.gradle`, `build.gradle.kts`, `Cargo.toml`, `Gemfile`,
+`composer.json`, `setup.cfg` and `Pipfile`. So a Gradle or Rust repo ships a manifest the
+surveyor recognises and the parser cannot read.
+
+**The vocabulary is already handling this correctly, which is why it is a backlog item rather
+than an incident.** Those four report `unverified` ("a manifest is here and nothing was
+parsed"), not `no_signal` ("this repo declares no dependencies"). Without that distinction
+Egeria's own repo would read as having zero dependencies.
+
+Two ways to close it, and they are not equivalent:
+
+1. **Add Gradle and Cargo parsers.** The honest fix — `build.gradle`/`build.gradle.kts` and
+   `Cargo.toml` are the two that actually occur in this corpus. Gemfile/composer.json have no
+   instances here yet.
+2. **Narrow `_MANIFESTS` to what the parser supports.** Cheaper and *wrong*: a Gradle repo
+   would then claim a **provable** zero, which is worse than the current admission of
+   ignorance. Do not do this without also removing the ecosystems from the surveyor's remit.
+
+### `cnf_certification` is a tombstone repo — RE has no signal for "moved"
+
+`cncf/cnf-certification` has a one-file inventory (`README.md`), and that is **correct**, not a
+truncated download — confirmed against the GitHub API 2026-08-23: `size: 4`, 5 stars, last
+pushed 2026-03-09, and a description reading "CNF Certification is now part of the Cloud
+Native Telcom Initiative's test catalog focus area @ https://github.com/lfn-cnti/certification".
+The project moved; the repo is a signpost.
+
+Two separate things follow, worth not conflating:
+
+- **Immediate:** it is a disposition decision for a human — `abandoned` with the successor URL
+  as the reason, and probably register `lfn-cnti/certification` instead. No code needed.
+- **Worth designing:** RE has no way to *notice* this. A repo whose entire content is a README
+  pointing at another repository is a recognisable shape — near-empty inventory, recent-ish
+  last-push, a URL to a different repo in the description or README body — and it currently
+  surveys as a perfectly healthy, extremely small project. Every zero it produces is a true
+  zero, so no outcome label is wrong; the labels just cannot say "this is not where the
+  project lives any more". That is a genuinely new signal, not a bug in an existing one.
+
+It also cost real time: this repo is where the 58-repo refresh stalled for ~15 minutes, since
+`clone_timeout_seconds: 300` with 3 retries is a poor shape for a batch run — 15 minutes of
+silence per bad repo. Worth revisiting alongside any bulk-refresh work.
+
 ### Testing strategy — four silent-failure classes, one built, three open
 
 Eight faults found on 2026-08-20 shared one shape: **the code ran, reported success, and did
