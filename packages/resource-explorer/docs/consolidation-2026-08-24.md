@@ -204,6 +204,20 @@ Nobody currently running has context on any of it, so none of it should be dropp
 staged deletion between them: stashes are where work goes to be forgotten, and nothing
 surfaces them.
 
+A second `egeria-python` session reported work already committed and pushed (**PR #300**,
+ISSUE-73 multi-link relationship GUID fix), plus two pieces of knowledge it wrote down on being
+asked: the `Exception` relationship type is `MULTI_LINK` live with no pyegeria OMVS wrapper and
+has never been checked against a live server for a REST endpoint; and ISSUE-68's claim that
+`SolutionLinkingWire` is `UNI_LINK` **is now stale** — it flipped to `MULTI_LINK` server-side,
+confirmed by live query. Both are in `PYEGERIA_ISSUES.md` via that PR rather than only in a
+session.
+
+Worth noting how it avoided the collision this document keeps describing: it used an isolated
+`git worktree` **because** another session had live uncommitted work in the shared checkout,
+and routed around it rather than working alongside it. That checkout is now on
+`feat/element-register` with one file still dirty and **four stashes still present** —
+verified after the sweep, so the stashes are outstanding regardless of the branch tidy-up.
+
 ### A recovery path for ended sessions
 
 **Closed sessions' transcripts are on disk**, which changes the cost of a session ending
