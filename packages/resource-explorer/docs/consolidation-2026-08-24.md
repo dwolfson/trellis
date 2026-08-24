@@ -177,6 +177,20 @@ was left visible deliberately so it stays a decision. Ignoring it means every fr
 recreates the dev-server config by hand. Recorded here so that after the session closes it is
 not mistaken for something forgotten.
 
+### A recovery path for ended sessions
+
+**Closed sessions' transcripts are on disk**, which changes the cost of a session ending
+mid-conversation. `~/Documents/Claude Conversations/` holds **87 exported transcripts**,
+verified, including several from today (`Opis-Egeria Resource Explorer redesign`,
+`Opus- Resource explorer architecture recovery design`). So when a session ends before
+answering — which happened three times today — its context up to the last export is readable
+rather than gone.
+
+Not a substitute for committing: an export is a transcript, not a decision, and reading one to
+recover a rationale is far more expensive than the two lines the session could have written.
+But "the session ended" is no longer the same as "the reasoning is lost", and that is worth
+knowing before anyone reconstructs something from scratch.
+
 ### Knowledge held outside any repo (session-export task)
 
 Not egeria work and not in git; recorded because it would otherwise be rediscovered from
@@ -193,6 +207,11 @@ scratch. The exporter lives at `~/.claude/scheduled-tasks/export-claude-sessions
 - **Rejected, so nobody retries it:** exporting tool inputs/results untruncated. 558 MB of
   jsonl produces an unusable export; capping input at 1500 chars, results at 2000 and thinking
   at 4000 yields 69 MB and loses nothing that reads as substance.
+
+**The exporter is itself unbacked.** `export_sessions.py` (8.5K) is in no git repository —
+verified. If `~/.claude` is ever reset it is gone, along with the four findings above, and the
+87 transcripts it produced lose their means of being regenerated. Not this consolidation's
+problem to fix, but it is the one artifact in this document with no copy anywhere.
 
 ---
 
