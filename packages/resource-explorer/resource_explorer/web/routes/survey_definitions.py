@@ -146,6 +146,10 @@ async def list_candidates(
         # driven from one loop (then gather() the fetches properly). If the real
         # problem is a slow/hanging definition rather than throughput, the fix is
         # a per-fetch deadline here, not threads.
+        from resource_explorer.registry import ProjectRegistry
+
+        last_activity_by_ref = ProjectRegistry().get_survey_definition_last_activity(entity_type, slug)
+
         detailed = []
         for c in thin_candidates:
             try:
@@ -180,10 +184,53 @@ async def list_candidates(
                     step_info["egeria_produced_annotation_types"] = produced_annotation_types
                 steps.append(step_info)
 
+            last_activity = last_activity_by_ref.get(c["qualified_name"], {})
             detailed.append({
                 **c, "description": survey_def.description, "error": None, "steps": steps,
                 "survey_kind": survey_def.survey_kind,
+                "last_run_at": last_activity.get("last_run_at", ""),
+                "last_run_status": last_activity.get("last_run_status", ""),
+                "last_published_at": last_activity.get("last_published_at", ""),
             })
+
+        # Composite-survey propagation (2026-08-24 — direct feedback: "if a
+        # Survey includes all the steps of other surveys and we run it, does
+        # it also mean that the smaller size survey ran?" e.g. Scouting
+        # Survey's own description says it's literally "the union of Git
+        # Statistics Survey and Coarse Profile Survey"). A candidate whose
+        # own re_analysis_step set is a non-empty SUBSET of another
+        # candidate's set inherits that superset's last-run info when it has
+        # none of its own — the smaller survey's steps genuinely did execute
+        # as part of the bigger run, so its badge should say so. Marked via
+        # `last_run_via` (the superset's own ref) so the UI can render this
+        # honestly ("via Scouting Survey") rather than implying a direct run;
+        # a candidate that HAS its own last_run_at is never overwritten, even
+        # if a later superset run exists — its own history takes precedence.
+        # When multiple supersets qualify, the one with the most recent
+        # last_run_at wins (most relevant to "did this run recently").
+        def _step_set(cand: dict) -> set[str]:
+            return {s["re_analysis_step"] for s in cand.get("steps", []) if s.get("re_analysis_step")}
+
+        step_sets = {c["qualified_name"]: _step_set(c) for c in detailed}
+        for cand in detailed:
+            if cand.get("last_run_at"):
+                continue
+            own_steps = step_sets.get(cand["qualified_name"])
+            if not own_steps:
+                continue
+            best = None
+            for other in detailed:
+                if other["qualified_name"] == cand["qualified_name"] or not other.get("last_run_at"):
+                    continue
+                other_steps = step_sets.get(other["qualified_name"])
+                if not other_steps or other_steps == own_steps or not own_steps.issubset(other_steps):
+                    continue
+                if best is None or other["last_run_at"] > best["last_run_at"]:
+                    best = other
+            if best is not None:
+                cand["last_run_at"] = best["last_run_at"]
+                cand["last_run_status"] = best.get("last_run_status", "")
+                cand["last_run_via"] = best["qualified_name"]
 
         # Native Egeria processes for this Technology Type (config/technology_
         # type_processes.yaml), shown as informational only — NOT merged into
@@ -271,22 +318,36 @@ def _run_survey_definition_background(
     from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
     from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
 
+    # Embedded in `detail` on every terminal path (success, reader/executor
+    # error, and unexpected crash) — see registry.get_survey_definition_last_
+    # activity(), which scans activity_log for exactly this key to compute
+    # each candidate's last-run badge. summary alone isn't reliable for this:
+    # it does contain the ref for the *initial* 'running' row (see the route
+    # below), but this call always overwrites summary on the terminal row, so
+    # by the time anything queries a completed run, the ref only survives if
+    # it's also in detail.
+    ref = body.survey_definition_ref
+
     registry = ProjectRegistry()
     try:
         result = _execute_survey_definition_sync(entity_type, slug, body)
     except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
-        registry.update_activity_status(activity_id, "error", summary=str(exc), detail=json.dumps({"errors": [str(exc)]}))
+        registry.update_activity_status(
+            activity_id, "error", summary=str(exc),
+            detail=json.dumps({"errors": [str(exc)], "survey_definition_ref": ref}),
+        )
         return
     except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
         log.exception("Survey Definition run background thread crashed for %s/%s", entity_type, slug)
         registry.update_activity_status(
             activity_id, "error", summary=f"Survey Definition run crashed: {exc}",
-            detail=json.dumps({"errors": [str(exc)]}),
+            detail=json.dumps({"errors": [str(exc)], "survey_definition_ref": ref}),
         )
         return
 
     errors = result.get("errors") or []
     summary = f"Completed with {len(errors)} error(s)" if errors else "Survey Definition run complete"
+    result["survey_definition_ref"] = ref
     registry.update_activity_status(activity_id, "error" if errors else "ok", summary=summary, detail=json.dumps(result))
 
 

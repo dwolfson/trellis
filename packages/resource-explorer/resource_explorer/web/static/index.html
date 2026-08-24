@@ -73,6 +73,14 @@
     .proj-actions { opacity:0; transition:opacity .12s; display:flex; align-items:center; gap:2px; flex-shrink:0; }
     .project-btn:hover .proj-actions,
     .db-btn:hover .proj-actions { opacity:1; }
+    /* GitHub link sits outside .proj-actions (below) so it isn't subject to
+       that div's hover-only opacity — it's a pure navigation shortcut people
+       reach for without first hovering to discover it, and previously read
+       as "missing" for exactly that reason (direct user feedback,
+       2026-08-24). Dimmer than a hovered action button, still always
+       readable/clickable. */
+    .proj-gh-btn { opacity:.55; flex-shrink:0; }
+    .proj-gh-btn:hover { opacity:1; }
     /* Server action buttons are always visible (servers are structural, not list items) */
     .srv-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
     .proj-action-btn { position:relative; padding:2px 5px; border-radius:4px; font-size:.65rem; line-height:1; color:#64748b; background:transparent; border:none; cursor:pointer; transition:color .12s,background .12s; }
@@ -496,6 +504,11 @@
            scout" searches/lists, picked from Scouting's Discover sub-tab. -->
       <div id="admin-discovery-sources-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <div id="admin-egeria-links-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Question Catalog view (Admin) — read-only browser over the full
+           docs/dr-egeria/resource_questions.csv catalog (via GET
+           /api/analyses/question-catalog), unscoped to any one project. See
+           loadAdminQuestionCatalogPanel() below. -->
+      <div id="admin-question-catalog-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -2746,9 +2759,9 @@ function _renderProjectRow(p) {
           onclick="event.stopPropagation(); openAssignGroupModal('${_esc(p.slug)}', '${_esc(p.group_slug)}')">🗂</button>
         <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
           onclick="event.stopPropagation(); toggleWorkingSetHidden('repo', '${_esc(p.slug)}', ${!p.working_set_hidden})">${p.working_set_hidden ? '🚫' : '👁'}</button>
-        ${p.github_url ? `<a class="proj-action-btn" href="${_esc(p.github_url)}" target="_blank"
-          data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
       </div>
+      ${p.github_url ? `<a class="proj-action-btn proj-gh-btn" href="${_esc(p.github_url)}" target="_blank"
+        data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
     </div>
     <div class="text-xs ${color}">${p.status} · ${p.collections.length} collections</div>`;
   return btn;
@@ -4841,9 +4854,25 @@ async function loadSurveyDefinitionsPanel() {
     view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to see its Survey Definitions.</div>';
     return;
   }
-  // Discovery has no funnel-stage identity of its own — phase='' means
-  // unscoped (every candidate), narrowed only by the Perspective filter.
-  await _loadSurveyPanel(entityType, slug, '', 'survey-definitions-view', subnav);
+  // Was phase='' (unscoped — every candidate, every stage) through D7a,
+  // 2026-08-14: Discovery "has no funnel-stage identity of its own," so it
+  // deliberately showed everything, narrowed only by Perspective — see
+  // docs/unified-survey-execution-model-plan.md's D7a section for the full
+  // rationale, including a live-confirmed case where Scouting's own
+  // phase-scoped ScopedBy lookup fell back to a full scan because the
+  // Question<->Survey Definition links weren't fully populated in Egeria
+  // yet. Reverted per direct feedback (2026-08-24): showing every stage's
+  // survey types under Discovery read as a bug, not a feature, once
+  // Scouting/Assessment/Analysis all scope themselves and Discovery alone
+  // didn't. Safe to scope now: unlike phase's ScopedBy-link dependency,
+  // survey_kind is a direct Additional Properties match on the Survey
+  // Definition itself (_STAGE_SURVEY_KIND['discovery']='discovery' below),
+  // applied by the backend on *both* the questions-based lookup and its
+  // full-scan fallback — so this doesn't inherit the ScopedBy-incompleteness
+  // risk the D7a writeup was guarding against. Real Discovery-tagged Survey
+  // Definitions already exist in Egeria (confirmed: "Repo Discovery Survey",
+  // "Repo Architecture Discovery Survey"), so this won't empty the panel.
+  await _loadSurveyPanel(entityType, slug, 'discovery', 'survey-definitions-view', subnav);
 }
 
 function _surveyDefEngineBadge(executesAt) {
@@ -4889,7 +4918,21 @@ function _surveyDefEgeriaProducedTypesHtml(step) {
 function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, subnavHtml) {
   schedules = schedules || {};
   const view = document.getElementById(viewElId);
-  const candidates = data.candidates || [];
+  // Oldest-run-first by default (direct feedback, 2026-08-24): a candidate
+  // that's never been run at all is the most overdue of all, so it sorts
+  // ahead of every dated one, not behind — treated as "run at the beginning
+  // of time" rather than excluded from the sort. Errored candidates (no
+  // last_run_at to compare, may not even be runnable) keep whatever order
+  // the backend returned them in, at the end, past every real candidate.
+  const candidates = [...(data.candidates || [])].sort((a, b) => {
+    if (a.error || b.error) return 0;
+    const at = a.last_run_at || '';
+    const bt = b.last_run_at || '';
+    if (!at && !bt) return 0;
+    if (!at) return -1;
+    if (!bt) return 1;
+    return at < bt ? -1 : at > bt ? 1 : 0;
+  });
   // Candidate objects (author-written descriptions, Egeria-sourced annotation
   // text) can contain apostrophes/quotes that break inline onclick='...'
   // attribute embedding via JSON.stringify — keep them in memory rather than
@@ -4930,12 +4973,35 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
     // list is behind the toggle. Plain <summary>/<details> — no JS state
     // to track, survives a re-render collapsed (matching how a freshly
     // loaded panel should look) without extra bookkeeping.
+    // Last-run/last-published badges (direct feedback, 2026-08-24) — never
+    // run at all reads as "not yet run" in amber, distinct from a genuine
+    // run whose age is just informational (cyan), so the most-overdue cards
+    // (sorted to the top, see candidates.sort() above) are visually obvious
+    // too, not just first in list order.
+    // last_run_via (2026-08-24): set when this candidate has never itself
+    // been run directly, but a superset survey whose steps fully cover this
+    // one's own steps has — e.g. running Scouting Survey also covers Coarse
+    // Profile Survey and Git Statistics Survey, since Scouting's own
+    // description says it's literally their union. Shown distinctly (not
+    // just "Last run") so it's honest about being inherited, not a direct run.
+    const viaCand = c.last_run_via ? candidates.find(x => x.qualified_name === c.last_run_via) : null;
+    const viaLabel = viaCand ? viaCand.display_name : c.last_run_via;
+    const lastRunHtml = c.last_run_at
+      ? c.last_run_via
+        ? `<span class="text-cyan-400" title="Covered by a run of '${_esc(viaLabel)}': ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Covered ${_relTime(c.last_run_at)} (via ${_esc(viaLabel)})</span>`
+        : `<span class="text-cyan-400" title="Last run: ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Last run ${_relTime(c.last_run_at)}</span>`
+      : `<span class="text-amber-400">📅 Never run</span>`;
+    const lastPublishedHtml = c.last_published_at
+      ? `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
+      : '';
+
     return `<div class="analysis-card">
       <div class="flex items-start justify-between gap-2">
         <div class="flex-1 min-w-0">
           <div class="text-xs font-semibold text-slate-200">${_esc(c.display_name || c.qualified_name)}</div>
           <div class="text-xs text-slate-500 mt-0.5">${_esc(c.qualified_name)}</div>
           ${c.description ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(c.description)}</div>` : ''}
+          <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
         </div>
       </div>
       <details class="mt-1.5">
@@ -4972,7 +5038,7 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
           // button is omitted rather than shown disabled/broken for those.
           const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
           if (entityType !== 'repo' || !stepKeys.length) return '';
-          return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)})'
+          return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
               class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
               title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
               ☁ Publish
@@ -6176,11 +6242,12 @@ function showMainView(tab) {
   const adminGroupsView = document.getElementById('admin-groups-view');
   const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
   const adminEgeriaLinksView = document.getElementById('admin-egeria-links-view');
+  const adminQuestionCatalogView = document.getElementById('admin-question-catalog-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6274,6 +6341,10 @@ function showMainView(tab) {
     adminEgeriaLinksView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminEgeriaLinksPanel();
+  } else if (tab === 'admin-question-catalog') {
+    adminQuestionCatalogView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminQuestionCatalogPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -6694,7 +6765,7 @@ function _renderScoutingDispositionView(d, history) {
 // scoped to whichever candidate's own steps the user just ran. Replaces the
 // old per-survey-type hardcoded buttons ("Publish registration only",
 // "Publish this phase's findings") that used to live in renderScoutingOverview.
-async function _publishScopedSteps(slug, steps, btn, label) {
+async function _publishScopedSteps(slug, steps, btn, label, surveyDefinitionRef = '') {
   const orig = btn.textContent;
   btn.textContent = '⟳ Publishing…';
   btn.disabled = true;
@@ -6702,7 +6773,11 @@ async function _publishScopedSteps(slug, steps, btn, label) {
     const res = await fetch(`/api/egeria/${slug}/publish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ steps }),
+      // survey_definition_ref (when this came from a Survey Definition
+      // card's own Publish button) lets the backend attribute the resulting
+      // activity_log entry back to that candidate, for its last-published
+      // badge — see renderSurveyPanel's call site and egeria.py's PublishRequest.
+      body: JSON.stringify({ steps, survey_definition_ref: surveyDefinitionRef }),
     });
     if (_handlePublishContextGate(res, slug)) return;
     const data = await res.json();
@@ -8925,6 +9000,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-groups',     label: '🗂 Groups' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
     { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
+    { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -10203,6 +10279,140 @@ function _egeriaBulkPreviewHtml(kind, data, mode) {
     <div class="text-slate-500 mb-2">${data.succeeded} ${mode === 'preview' ? 'would proceed' : 'succeeded'}, ${data.skipped} skipped, ${data.failed} ${mode === 'preview' ? 'would fail' : 'failed'}.</div>
     ${footer}
   </div>`;
+}
+
+// ── Admin — Question Catalog (read-only) ────────────────────────────────────
+// Browses the full docs/dr-egeria/resource_questions.csv catalog, unscoped
+// to any one project — GET /api/analyses/question-catalog returns every
+// question's stage/perspectives/answering info with no has_data computation
+// (contrast with the per-project, has_data-aware /api/projects/{slug}/
+// scouting-questions used by Scouting's own Questions tab). Reuses
+// _QUESTION_KIND_STATUS (defined above, next to renderScoutingQuestions) for
+// the same kind vocabulary/badge styling, minus the has_data-dependent
+// analysis/partial/mixed branch — this view can't know has_data without a
+// project, so those three kinds get a neutral badge here instead.
+let _adminQuestionCatalogData = null;   // last-loaded, unfiltered
+let _adminQCStageFilter = '';           // '' = all stages
+let _adminQCPerspectiveFilter = new Set();
+let _adminQCSearch = '';
+
+const _ADMIN_QC_NEUTRAL_STATUS = { icon: '•', color: 'text-slate-400', label: 'Depends on the resource — see note' };
+
+function _adminQCStatus(kind) {
+  return _QUESTION_KIND_STATUS[kind] || _ADMIN_QC_NEUTRAL_STATUS;
+}
+
+async function loadAdminQuestionCatalogPanel() {
+  const view = document.getElementById('admin-question-catalog-view');
+  view.innerHTML = _adminSubnavHtml('admin-question-catalog') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading...</div>';
+  try {
+    const res = await fetch('/api/analyses/question-catalog');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _adminQuestionCatalogData = await res.json();
+    renderAdminQuestionCatalogPanel();
+  } catch (e) {
+    view.innerHTML = _adminSubnavHtml('admin-question-catalog') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _adminQCStages() {
+  const set = new Set();
+  (_adminQuestionCatalogData || []).forEach(q => set.add(q.stage));
+  return [...set].filter(Boolean).sort();
+}
+
+function _adminQCPerspectives() {
+  const set = new Set();
+  (_adminQuestionCatalogData || []).forEach(q => (q.perspectives || []).forEach(p => set.add(p)));
+  return [...set].sort();
+}
+
+function _setAdminQCStage(stage) {
+  _adminQCStageFilter = stage === _adminQCStageFilter ? '' : stage;
+  renderAdminQuestionCatalogPanel();
+}
+
+function _toggleAdminQCPerspective(p) {
+  if (_adminQCPerspectiveFilter.has(p)) _adminQCPerspectiveFilter.delete(p);
+  else _adminQCPerspectiveFilter.add(p);
+  renderAdminQuestionCatalogPanel();
+}
+
+function _setAdminQCSearch(value) {
+  _adminQCSearch = value;
+  renderAdminQuestionCatalogPanel();
+}
+
+function renderAdminQuestionCatalogPanel() {
+  const view = document.getElementById('admin-question-catalog-view');
+  const all = _adminQuestionCatalogData || [];
+  const search = _adminQCSearch.trim().toLowerCase();
+
+  const questions = all.filter(q => {
+    if (_adminQCStageFilter && !q.stage.split('/').map(s => s.trim()).includes(_adminQCStageFilter)) return false;
+    if (_adminQCPerspectiveFilter.size && !(q.perspectives || []).some(p => _adminQCPerspectiveFilter.has(p))) return false;
+    if (search && !q.question.toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  const stageChips = _adminQCStages().map(s => `<button onclick="_setAdminQCStage('${_esc(s)}')"
+      class="text-xs px-2.5 py-1 rounded transition-colors ${s === _adminQCStageFilter ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${_esc(s)}</button>`).join('');
+
+  const perspectiveChips = _adminQCPerspectives().map(p => `<button onclick="_toggleAdminQCPerspective('${_esc(p)}')"
+      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_adminQCPerspectiveFilter.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
+
+  const rows = questions.map(q => {
+    const status = _adminQCStatus(q.answering.kind);
+    return `<tr class="border-b border-slate-800/60 align-top hover:bg-slate-800/30 transition-colors">
+        <td class="px-3 py-2 text-xs text-slate-200 max-w-md">${_esc(q.question)}</td>
+        <td class="px-3 py-2 text-[10px] text-slate-400 whitespace-nowrap" title="Funnel Stage">${_esc(q.stage)}</td>
+        <td class="px-3 py-2 text-[10px] text-slate-500">${(q.perspectives || []).map(p => _esc(p)).join(' · ') || '—'}</td>
+        <td class="px-3 py-2 text-xs whitespace-nowrap">
+          <span class="${status.color}" title="${_esc(status.label)}">${status.icon} ${_esc(q.answering.kind)}</span>
+        </td>
+        <td class="px-3 py-2 text-[10px] text-slate-500 whitespace-nowrap">${_esc(q.answering_mechanism || '—')}</td>
+        <td class="px-3 py-2 text-[10px] text-slate-600 max-w-lg" title="${_esc(q.answering.note || '')}">${_esc(q.answering.note || '')}</td>
+      </tr>`;
+  }).join('') || `<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500 text-xs">No questions match this filter.</td></tr>`;
+
+  view.innerHTML = _adminSubnavHtml('admin-question-catalog') + `
+    <div class="p-4">
+      <h1 class="text-lg font-bold text-slate-100 mb-1">&#10067; Question Catalog</h1>
+      <p class="text-xs text-slate-500 mb-3 max-w-3xl">
+        Read-only view of every question authored in
+        <code class="text-slate-400">docs/dr-egeria/resource_questions.csv</code> — the source of
+        truth for both Scouting's Questions checklist and the Question elements published to
+        Egeria. To add, edit, or remove a question, edit that CSV and regenerate; see
+        <code class="text-slate-400">docs/dr-egeria/resource_questions_guide.md</code> for the
+        full column reference and workflow. This screen does not write back to the CSV.
+      </p>
+      <div class="space-y-2 mb-3">
+        <input type="text" placeholder="Search question text…" value="${_esc(_adminQCSearch)}"
+          oninput="_setAdminQCSearch(this.value)"
+          class="w-full max-w-sm bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-700">
+        <div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+          <div class="flex flex-wrap gap-1.5">${stageChips || '<span class="text-xs text-slate-600">—</span>'}</div>
+        </div>
+        ${_adminQCPerspectives().length ? `<div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
+          <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
+        </div>` : ''}
+      </div>
+      <div class="text-[11px] text-slate-500 mb-2">${questions.length} / ${all.length} question(s)</div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">
+        <table class="w-full text-left">
+          <thead><tr class="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
+            <th class="px-3 py-2">Question</th><th class="px-3 py-2">Stage</th>
+            <th class="px-3 py-2">Perspectives</th><th class="px-3 py-2">Kind</th>
+            <th class="px-3 py-2">Mechanism</th><th class="px-3 py-2">Note</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 async function loadAdminDiscoverySourcesPanel() {

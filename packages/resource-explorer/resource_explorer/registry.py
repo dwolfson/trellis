@@ -4030,6 +4030,54 @@ class ProjectRegistry:
         d["annotations"] = json.loads(d.pop("annotations_json") or "[]")
         return d
 
+    def get_survey_definition_last_activity(
+        self, entity_type: str, entity_slug: str, limit: int = 500,
+    ) -> dict[str, dict]:
+        """Latest known run/publish info per Survey Definition qualified_name
+        for this entity, keyed by the `survey_definition_ref` that
+        survey_definitions.py's run route and egeria.py's publish route embed
+        in their activity_log `detail` JSON (added 2026-08-24 — direct
+        feedback: Discovery's Survey Definition cards had no last-run/last-
+        published signal at all). Scans the most recent `limit` rows for this
+        entity — bounded, not a full table scan — ordered ts DESC, so the
+        first hit per ref per operation kind is already the most recent.
+
+        Falls back to `process_qualified_name` when `survey_definition_ref`
+        is absent (added 2026-08-24, found live: monocle2ai/monocle's real,
+        recent Scouting Survey runs showed "Never" despite genuinely having
+        run — their activity_log rows predate/bypass the ref-tagging above
+        and only carry `process_qualified_name`, which SurveyDefinitionExecutor
+        always sets natively and which is the same qualified_name value in
+        practice). Rows with neither key (or from genuinely unrelated
+        operations) are silently skipped — those candidates just show no
+        last-run/last-published data, same as one that's genuinely never
+        run."""
+        result: dict[str, dict] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT operation, ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation IN ('survey', 'catalog') "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit),
+            ).fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            ref = detail.get("survey_definition_ref") or detail.get("process_qualified_name")
+            if not ref:
+                continue
+            entry = result.setdefault(ref, {})
+            if row["operation"] == "survey" and "last_run_at" not in entry:
+                entry["last_run_at"] = row["ts"]
+                entry["last_run_status"] = row["status"]
+            elif row["operation"] == "catalog" and "last_published_at" not in entry:
+                entry["last_published_at"] = row["ts"]
+        return result
+
     def update_activity_status(
         self,
         entry_id: str,
