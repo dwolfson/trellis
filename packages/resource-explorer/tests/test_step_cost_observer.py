@@ -133,3 +133,58 @@ class TestFirstIsAboutTheStepNotTheRepo:
         assert sco.record(reg, "a", obs) == sco.FIRST
         # Same step, different resource — no longer news.
         assert sco.record(reg, "b", obs) == sco.RECORDED
+
+
+class TestATimingNeedsToKnowWhatTheStepSaw:
+    """A duration alone cannot separate "fast because there was nothing to do"
+    from "fast because it did nothing".
+
+    repo_data_profiling measured 0.0s median across 21 repos. That is either a
+    correctly quick scan of an inventory with no data files, or a step never
+    reaching its input — identical numbers, opposite meanings. It is the
+    absence-looks-like-zero shape relocated into the measuring instrument,
+    which is the fourth time on this project that the instrument was the broken
+    part.
+    """
+
+    def test_a_step_that_could_not_look_makes_no_cost_claim(self):
+        """`unverified` means the step did not reach its input, so its speed is
+        not evidence about its declaration."""
+        o = Observation("x", 0.0, 0, "download", "medium",
+                        annotations=1, outcomes=("unverified",))
+        assert o.interpretable is False
+        assert _disagreement(o) == ""
+
+    def test_a_step_that_produced_nothing_makes_no_cost_claim(self):
+        o = Observation("x", 0.0, 0, "download", "medium", annotations=0)
+        assert o.interpretable is False
+        assert _disagreement(o) == ""
+
+    def test_a_provable_zero_IS_interpretable(self):
+        """`no_signal` means it looked and there was nothing — the step ran its
+        real path, so the timing counts."""
+        o = Observation("x", 0.0, 0, "download", "medium",
+                        annotations=1, outcomes=("no_signal",))
+        assert o.interpretable is True
+        assert "over-declar" in _disagreement(o)
+
+    def test_work_is_read_from_annotations_the_caller_already_has(self):
+        """No step has to cooperate for its timing to become interpretable —
+        one that never adopted the outcome vocabulary still contributes a
+        count."""
+        from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+
+        anns = [
+            ResourceMeasureAnnotation(summary="a", analysis_step="s",
+                                      json_properties={"outcome": "no_signal"}),
+            ResourceMeasureAnnotation(summary="b", analysis_step="s"),
+        ]
+        count, outcomes = sco.describe_work(anns)
+        assert count == 2
+        assert outcomes == ("no_signal",)
+
+    def test_no_annotations_captured_is_not_the_same_as_none_produced(self):
+        """-1 is "not captured"; 0 is "produced none". Conflating them would
+        silently disable the check for any caller that doesn't pass work."""
+        assert Observation("x", 0.0, 0, "none", "low").annotations == -1
+        assert Observation("x", 0.0, 0, "none", "low").interpretable is True

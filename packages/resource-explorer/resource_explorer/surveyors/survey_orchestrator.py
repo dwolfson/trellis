@@ -237,6 +237,12 @@ class SurveyOrchestrator:
                 # measured: a step that fails after 90 seconds of network calls
                 # is exactly the case worth having a number for.
                 if _observed:
+                    # Attach what the step produced before judging its speed —
+                    # a duration with no idea whether the step was exercised is
+                    # the absence-looks-like-zero shape inside the instrument.
+                    _observed[0].annotations, _observed[0].outcomes = (
+                        step_cost_observer.describe_work(locals().get("annotations")))
+                    _observed[0].disagreement = step_cost_observer._disagreement(_observed[0])
                     recorded = step_cost_observer.record(
                         self._registry, project.slug, _observed[0], surveyed_at)
                     if recorded == step_cost_observer.NOT_RECORDED:
