@@ -1,9 +1,34 @@
-"""Disposition — turning evidence into an answer (design §5.5d, §5.5d-i).
+"""Suggested action — turning evidence into an answer (design §5.5d, §5.5d-i).
 
 The rest of this package produces *evidence*: what the repo is (`repo_role`),
 where its expected artifacts live (`doc_locations`, `expectations`), and whether
-architecture recovery is worth running. A **disposition** is what a decision
-maker actually wants: *what should I do about this?*
+architecture recovery is worth running. A **suggested action** is what a
+decision maker actually wants: *what should I do about this?*
+
+**Why not called a disposition, which is what §5.5d called it.** Because
+`disposition` is already taken, by a live concept with a different owner:
+`registry.repo_dispositions` holds a **human's decision** about a repo —
+undecided / tracking / investigating / recommended / using / abandoned /
+ignored — with `decided_by`, an append-only history, and a Disposition sub-tab
+rendering its timeline. That is the scouting workflow's word and it has 25
+history rows behind it.
+
+Reusing it here would have put a *derived recommendation* and a *recorded human
+decision* under one name, in a UI that already shows the second. Nobody could
+then tell "Dan marked this investigating" from "the system suggests
+investigating" — one identifier serving two purposes, which is this project's
+most-repeated bug shape.
+
+The two are related, and the relationship is the useful part:
+
+    suggested_action (derived, this module)  →  a human decides  →
+    repo_dispositions.disposition (recorded, registry)
+
+`investigate` is the evidence saying someone should look; `investigating` is a
+person saying they are. `monitor` is the evidence saying nothing needs
+attention now; `tracking` is a person choosing to follow it. A suggestion never
+writes a disposition — it is an input to one, and the arrow only ever points
+that way.
 
 **Deliberately a small vocabulary, and deliberately smaller than §5.5d's list.**
 That list — adopt, avoid, monitor, upgrade, compare, expand — was written from
@@ -12,7 +37,7 @@ what we currently collect, and saying them anyway would be the failure this
 project has spent its whole history avoiding: a confident answer to a question
 the evidence does not reach.
 
-| §5.5d disposition | derivable today? |
+| §5.5d disposition | derivable as a suggested action? |
 |---|---|
 | monitor | **yes** — role + expectations + dates |
 | investigate | **yes** — expected artifacts that are absent |
@@ -27,7 +52,7 @@ oversight — and so nobody adds them from the same evidence later.
 
 **Three constraints, all carried from §5.5:**
 
-* **A recommendation, not a verdict.** Every disposition carries the evidence
+* **A recommendation, not a verdict.** Every suggestion carries the evidence
   that produced it and the reason in prose. It never implies the system decided.
 * **No score, and no ranking.** §5.5a(c): a checklist becomes a score and a score
   punishes deliberate choices. There is no numeric field here and a test asserts
@@ -51,10 +76,10 @@ MONITOR = "monitor"
 INVESTIGATE = "investigate"
 INSUFFICIENT_EVIDENCE = "insufficient-evidence"
 
-DISPOSITIONS = (NOTHING_TO_DO, MONITOR, INVESTIGATE, INSUFFICIENT_EVIDENCE)
+ACTIONS = (NOTHING_TO_DO, MONITOR, INVESTIGATE, INSUFFICIENT_EVIDENCE)
 
 # Named so their absence is a decision on the record rather than a gap.
-# The analysis whose re-run would change a disposition. `monitor` means "watch
+# The analysis whose re-run would change a suggestion. `monitor` means "watch
 # THIS", and naming it is not decoration: a notification subscription only fires
 # if there is an active schedule for the same analysis_id, so a subscription
 # created without one silently never fires — absence indistinguishable from
@@ -74,9 +99,12 @@ NOT_DERIVABLE = {
 
 
 @dataclass
-class Disposition:
-    """One recommendation, with what produced it. No number, by design."""
-    disposition: str
+class SuggestedAction:
+    """One suggestion, with what produced it. No number, by design.
+
+    Not `registry.repo_dispositions` — see the module docstring. That records
+    what a person decided; this derives what the evidence supports."""
+    action: str
     reason: str
     evidence: list[str] = field(default_factory=list)
     # What this leads to, in mechanisms that already exist (§5.5d-i):
@@ -91,8 +119,8 @@ class Disposition:
     notes: list[str] = field(default_factory=list)
 
 
-def from_report(report: ex.ExpectationReport) -> Disposition:
-    """Derive a disposition from an expectation report.
+def from_report(report: ex.ExpectationReport) -> SuggestedAction:
+    """Derive a suggested action from an expectation report.
 
     Ordered, and it stops at the first that fits — the same shape as §5.5b's
     role decision guide, for the same reason: an ordered list of falsifiable
@@ -108,8 +136,8 @@ def from_report(report: ex.ExpectationReport) -> Disposition:
     #    answer — §5.5b's "it is a gate, not a weighting". Rendering it as an
     #    absence would make the system's biggest win look like a failure.
     if report.gate == ex.SKIP:
-        return Disposition(
-            disposition=NOTHING_TO_DO,
+        return SuggestedAction(
+            action=NOTHING_TO_DO,
             reason=f"no further analysis is worthwhile: {report.gate_reason}",
             evidence=[report.gate_reason],
             next_step="",
@@ -119,8 +147,8 @@ def from_report(report: ex.ExpectationReport) -> Disposition:
     # 2. No role determined. Not "nothing to do" — we could not tell, which is a
     #    different statement and must not be dressed as the first.
     if not report.primary_role:
-        return Disposition(
-            disposition=INSUFFICIENT_EVIDENCE,
+        return SuggestedAction(
+            action=INSUFFICIENT_EVIDENCE,
             reason="could not determine what this repository is, so no "
                    "recommendation follows from it",
             evidence=list(report.notes[:3]),
@@ -134,8 +162,8 @@ def from_report(report: ex.ExpectationReport) -> Disposition:
     #    forbids wearing a different hat.
     if report.missing:
         kinds = [m.kind for m in report.missing]
-        return Disposition(
-            disposition=INVESTIGATE,
+        return SuggestedAction(
+            action=INVESTIGATE,
             reason=(f"a {report.primary_role} would normally have "
                     f"{', '.join(kinds)}; not found in this repo, in a sibling "
                     f"repo, or on the project's documentation site"),
@@ -150,8 +178,8 @@ def from_report(report: ex.ExpectationReport) -> Disposition:
     #    Automate subscription, a mechanism that already exists, not a badge.
     located = [f"{f.kind}: {f.outcome}" + (f" ({f.date[:10]})" if f.date else "")
                for f in report.found]
-    return Disposition(
-        disposition=MONITOR,
+    return SuggestedAction(
+        action=MONITOR,
         reason=(f"everything a {report.primary_role} implies was located; "
                 f"nothing needs attention now, so the useful next step is to "
                 f"notice when that changes"),
@@ -162,6 +190,6 @@ def from_report(report: ex.ExpectationReport) -> Disposition:
     )
 
 
-def for_repo(owner_repo: str, client=None) -> Disposition:
-    """Classify, resolve expectations, and recommend."""
+def for_repo(owner_repo: str, client=None) -> SuggestedAction:
+    """Classify, resolve expectations, and suggest."""
     return from_report(ex.build_report(owner_repo, client=client))
