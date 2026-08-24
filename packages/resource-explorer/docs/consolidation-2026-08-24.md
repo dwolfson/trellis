@@ -80,7 +80,7 @@ metadata distinguishes them.
 | `ui/question-catalog-admin` | **146** | egeria-advisor session | clean, pushed, **never merged into the others** |
 | `fix/dr-egeria-template-sync-clean` | 2 | question-catalog session | pushed, deliberately split off |
 
-The shared checkout `.../trellis` is now clean (`7129c9d`) apart from `.claude/launch.json`,
+The shared checkout `.../trellis` is now clean (`341d2f5`) apart from `.claude/launch.json`,
 left visible deliberately as shareable dev-server config — Dan's call whether it belongs in
 the repo.
 
@@ -139,6 +139,60 @@ the repo is what reaches people.)*
   the wrong one.
 - The rest of the spike is cleanly separable: no product code imports it, and it imports no
   product code. 836K tracked across 54 files. Include or exclude on its merits.
+
+---
+
+## 2d. Pre-shutdown sweep: what sessions were holding
+
+Dan began closing sessions to reduce complexity. Every reachable session was asked whether it
+held anything not in the repo — uncommitted work, undocumented decisions, claims now known
+wrong, or anything a successor would otherwise repeat. Asked rather than inferred: session
+ownership was guessed wrongly three times today.
+
+| session | answer |
+|---|---|
+| question-catalog data layer | had **one unpushed commit** — now `341d2f5` (rebased from `7129c9d`). Clean. |
+| architecture recovery / suggested_action | everything committed and pushed |
+| FK-guard session | everything committed and pushed (`d7302fc`) |
+| scheduled export task ×2 | never touched a repo; findings below |
+| egeria-python ×2, egeria-workspaces-fs | asked, pending |
+
+**One unpushed commit was found and would have been lost silently** — `+317/−48` across seven
+files including 128 new lines of `question_catalog.yaml`. It existed only in the shared
+checkout. Nothing else was outstanding anywhere: three worktrees clean, four branches pushed.
+
+### `stash@{0}` in `.../trellis` is orphaned
+
+WIP on `985d485` ("Prometheus scores 0/11"), 13 lines in `scripts/arch-spike/score.py`, created
+2026-08-22. **Four sessions have confirmed it is not theirs.** Its parent commit is
+architecture-recovery work, so the likeliest owner is a session that has already ended. Safe to
+drop, but that is Dan's call — nobody left can judge whether those 13 lines were superseded.
+
+### `.claude/launch.json` is a decision, not an oversight
+
+`.claude/` holds three different kinds of thing: `settings.local.json` is machine-local,
+`worktrees/` is transient, and `launch.json` is dev-server config the preview tooling reads —
+genuinely shareable project config. The first two were gitignored in `6766539`; `launch.json`
+was left visible deliberately so it stays a decision. Ignoring it means every fresh clone
+recreates the dev-server config by hand. Recorded here so that after the session closes it is
+not mistaken for something forgotten.
+
+### Knowledge held outside any repo (session-export task)
+
+Not egeria work and not in git; recorded because it would otherwise be rediscovered from
+scratch. The exporter lives at `~/.claude/scheduled-tasks/export-claude-sessions/`, and its
+`SKILL.md` does **not** reference the script — so a future run may reimplement it. One line in
+`SKILL.md` fixes that.
+
+- `mcp__ccd_session_mgmt__list_sessions` reports 43 sessions where 74 transcripts exist on
+  disk — using it alone silently misses ~40%.
+- Ground truth is `~/.claude/projects/<encoded-cwd>/<cliSessionId>.jsonl`, top level only;
+  files one level deeper under `<id>/subagents/` are sidechains, not sessions.
+- The title↔ID join lives in `~/Library/Application Support/Claude/claude-code-sessions/`,
+  mapping `sessionId` ↔ `cliSessionId`. Nothing in `~/.claude` contains that mapping.
+- **Rejected, so nobody retries it:** exporting tool inputs/results untruncated. 558 MB of
+  jsonl produces an unusable export; capping input at 1500 chars, results at 2000 and thinking
+  at 4000 yields 69 MB and loses nothing that reads as substance.
 
 ---
 
