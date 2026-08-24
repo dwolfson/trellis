@@ -1,6 +1,0 @@
-{
-  "model": "qwen2.5-coder:32b",
-  "elapsed_seconds": 11.54,
-  "prompt_chars": 833,
-  "response": "[\n    {\"name\": \"Milvus Package Utilities\", \"type\": \"Software Library\", \"rationale\": \"Contains utility functions for Milvus, identified as a library package without a main.go entry point.\", \"candidate_slugs\": [\"go::pkg\"]}\n]"
-}

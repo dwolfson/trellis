@@ -297,12 +297,29 @@ class SurveyDefinitionExecutor:
                     errors.append(msg)
                     steps_report.append({"step": step.qualified_name, "status": "error"})
             elif step.executes_at == "egeria":
-                log.info(
-                    "Skipping step %s: executes_at=egeria, no trigger handler registered "
-                    "for this resource type (Egeria's own responsibility)",
-                    step.qualified_name,
+                # Real, live-reported gap (2026-08-24 — "closing the stub"):
+                # this used to log.info and move on with no entry in `errors`
+                # at all, so a mixed Survey whose Egeria-native step has no
+                # registered other_engine_handlers reported "Survey
+                # Definition run complete" — a silent lie, not a warning.
+                # RE's own client-side step-walk is the only thing driving
+                # execution today (per docs/unified-survey-execution-model-
+                # plan.md's D1/D8 — Egeria's MAS doesn't independently create
+                # Engine Actions for any step type yet), so a step that lands
+                # here genuinely never runs anywhere, not "runs elsewhere
+                # without RE watching." That's a real failure of this run's
+                # completeness, not a benign no-op — now counted in `errors`
+                # accordingly, distinct wording from an actual step
+                # exception so it reads as "never executed," not "broke."
+                msg = (
+                    f"Step {step.qualified_name} was not executed: executes_at=egeria but no "
+                    f"other_engine_handlers['egeria'] is registered for entity_type={entity_type!r} "
+                    "(see database/survey_definition_adapter.py's _trigger_egeria_native_survey "
+                    "for the pattern to add one)"
                 )
-                steps_report.append({"step": step.qualified_name, "status": "skipped_egeria"})
+                log.warning(msg)
+                errors.append(msg)
+                steps_report.append({"step": step.qualified_name, "status": "not_executed_no_egeria_handler"})
             else:
                 msg = (
                     f"Skipping step {step.qualified_name}: unrecognized executes_at="

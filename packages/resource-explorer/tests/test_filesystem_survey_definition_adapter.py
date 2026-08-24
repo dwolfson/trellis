@@ -20,6 +20,57 @@ def test_filesystem_adapter_registration():
     info = adapter.re_analysis_step_info["filesystem_inventory"]
     assert "ClassificationAnnotation" in info["annotation_types"]
     assert "RequestForActionAnnotation" in info["annotation_types"]
+    # 2026-08-24 — closing survey_definition_executor.py's Egeria-trigger
+    # stub for this resource type (was the one resource type with no
+    # other_engine_handlers at all; database already had one).
+    assert "egeria" in adapter.other_engine_handlers
+
+
+def test_trigger_egeria_native_survey_requires_cataloged_filesystem():
+    """Mirrors database/survey_definition_adapter.py's identical guard — an
+    uncataloged filesystem must raise, not silently no-op or catalog it as
+    a side effect (trigger_survey_by_guid surveys an *existing* asset)."""
+    import resource_explorer.surveyors.filesystem.survey_definition_adapter as fs_adapter
+
+    fs_entity = FileSystemEntity(
+        slug="uncataloged-fs", display_name="Uncataloged FS",
+        local_mount_point="/tmp/nowhere", canonical_mount_point="file://nowhere",
+    )
+    try:
+        fs_adapter._trigger_egeria_native_survey(fs_entity, MagicMock(), step=MagicMock())
+        assert False, "expected RuntimeError for an uncataloged filesystem"
+    except RuntimeError as exc:
+        assert "no stored Egeria asset guid" in str(exc)
+
+
+def test_trigger_egeria_native_survey_calls_pyegeria_with_confirmed_process_name():
+    """The real, live-confirmed process qualifiedName (FileSurvey::survey-folder,
+    double colon) must be passed explicitly — NOT pyegeria's own
+    initiate_file_folder_survey() default ("FileSurveys:survey-folder",
+    single colon, different prefix), which is the same class of bug already
+    worked around for PostgreSQL. This test would have caught a regression to
+    the (wrong) default."""
+    import resource_explorer.surveyors.filesystem.survey_definition_adapter as fs_adapter
+
+    fs_entity = FileSystemEntity(
+        slug="test-fs", display_name="Test FS",
+        local_mount_point="/tmp/x", canonical_mount_point="file://x",
+        egeria_asset_guid="fs-guid-1",
+    )
+    with patch.object(EgeriaFileSystemSurveyor, "connect", lambda self: None):
+        e = EgeriaFileSystemSurveyor()
+        e._automated_curation = MagicMock()
+        e._automated_curation.initiate_file_folder_survey.return_value = "engine-action-guid-1"
+        with patch(
+            "resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor.EgeriaFileSystemSurveyor",
+            return_value=e,
+        ):
+            result = fs_adapter._trigger_egeria_native_survey(fs_entity, MagicMock(), step=MagicMock())
+
+    assert result == {"engine_action_guid": "engine-action-guid-1"}
+    e._automated_curation.initiate_file_folder_survey.assert_called_once_with(
+        file_folder_guid="fs-guid-1", survey_name="FileSurvey::survey-folder",
+    )
 
 
 def test_run_filesystem_inventory_and_publish_roundtrip():

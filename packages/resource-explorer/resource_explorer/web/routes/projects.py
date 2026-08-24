@@ -631,6 +631,8 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
     )
     if catalog_entry and catalog_entry.get("action") == "ingest":
+        from resource_explorer.activity_logger import log_analysis_run
+
         def _run_ingest():
             from resource_explorer.ingestion.incremental import IncrementalIndexer
             from resource_explorer.query_cache import QueryCache
@@ -640,7 +642,9 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         try:
             await asyncio.to_thread(_run_ingest)
         except Exception as exc:
+            log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
             return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+        log_analysis_run(registry, "repo", slug, project.display_name, "ok", "Re-ingested into pgvector.", analysis_id)
         return AnalysisRunResult(status="ok", slug=slug, analysis_id=analysis_id, message="Re-ingested into pgvector.")
 
     steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
@@ -654,19 +658,73 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     def _run():
         return SurveyOrchestrator(registry).run(slug, steps=steps)
 
+    # Real, live-reported gap (2026-08-24): this route never wrote to
+    # activity_log at all, so Analyses cards had no last-run signal —
+    # unlike Survey Definition cards, which do (survey_definitions.py's
+    # run route). log_analysis_run below closes that; see
+    # registry.get_analysis_last_run()'s docstring for the read side.
+    from resource_explorer.activity_logger import log_analysis_run
+
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:
+        log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
         return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
 
     if result.errors:
-        return AnalysisRunResult(
-            status="error", slug=slug, analysis_id=analysis_id, error="; ".join(result.errors),
-        )
+        error = "; ".join(result.errors)
+        log_analysis_run(registry, "repo", slug, project.display_name, "error", error, analysis_id)
+        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=error)
+    summary = f"{len(result.annotations)} annotation(s)."
+    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id)
     return AnalysisRunResult(
         status="ok", slug=slug, analysis_id=analysis_id,
-        message=f"{len(result.annotations)} annotation(s).",
+        message=summary,
     )
+
+
+@router.get("/{slug}/analyses/last-activity")
+async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
+    every local AnalysisKind — the Analyses cards' equivalent of Survey
+    Definitions' /candidates endpoint already returning last_run_at/
+    last_published_at inline. Kept as its own lightweight endpoint rather
+    than folded into GET /api/analyses/{resource_type} (analyses.py):
+    that route is resource-type-wide and shared/cached across every repo of
+    the same type (see its own module docstring) — deliberately has no repo
+    slug at all. The frontend fetches this alongside GET /api/schedules/...
+    in _loadAnalysisCatalogPanel() and merges both client-side into each
+    card, same pattern that route already used for per-card schedule state.
+
+    last_published_at is real per-analysis-id data even though this route
+    is new: get_last_published_annotation_types() (added earlier the same
+    day for the Survey Results dashboards) already has everything needed —
+    each analysis_id's own annotation_types (analysis_catalog.yaml) is the
+    same join key used there, just applied per-analysis instead of
+    per-dashboard-of-several-analyses."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    last_run = registry.get_analysis_last_run("repo", slug)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+
+    result: dict[str, dict] = {}
+    for a in get_analyses("repo", include_egeria_live=False):
+        run = last_run.get(a["id"], {})
+        pub_at = max(
+            (published_by_type[t] for t in (a.get("annotation_types") or []) if t in published_by_type),
+            default="",
+        )
+        result[a["id"]] = {
+            "last_run_at": run.get("last_run_at", ""),
+            "last_run_status": run.get("last_run_status", ""),
+            "last_published_at": pub_at,
+        }
+    return result
 
 
 @router.get("/{slug}/analyses/{analysis_id}/results")
@@ -787,6 +845,7 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
         REPO_ANALYSIS_RESULTS_MAP,
         SURVEY_RESULT_DASHBOARDS,
+        get_dashboard_annotation_types,
         get_dashboard_perspectives,
         get_dashboard_stages,
     )
@@ -795,6 +854,12 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # {annotation_type: latest published_at} — one query for the whole repo,
+    # joined per-dashboard below against each dashboard's own annotation_types
+    # (get_dashboard_annotation_types). Real Egeria publish history, not a
+    # guess — see EgeriaPublisher.publish()'s record_published_annotation_types call.
+    published_by_type = registry.get_last_published_annotation_types(slug)
 
     dashboards = []
     for dashboard in SURVEY_RESULT_DASHBOARDS.values():
@@ -827,6 +892,17 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
         if not has_results and not include_empty:
             continue
 
+        # Real per-dashboard publish signal (2026-08-24), not a repo-wide
+        # guess: the latest of this dashboard's own annotation_types' known
+        # publish times. Blank when has_results is true but nothing in it
+        # has ever actually been published — an honest, common state (ran
+        # locally, never sent to Egeria), distinct from never-run.
+        dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
+        last_published_at = max(
+            (published_by_type[t] for t in dashboard_types if t in published_by_type),
+            default="",
+        )
+
         dashboards.append({
             "id": dashboard.id,
             "title": dashboard.title,
@@ -837,6 +913,12 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
             "stages": stages,
             "has_results": has_results,
             "analyses": analyses,
+            "last_published_at": last_published_at,
+            # Repo-wide, not per-dashboard — there's no per-analysis_id run
+            # timestamp to draw on today (unlike last_published_at above,
+            # which genuinely is per-dashboard). Still an honest "as of"
+            # signal: every dashboard's data was current no later than this.
+            "last_surveyed_at": project.last_surveyed_at or "",
         })
     return {"slug": slug, "stage": stage, "dashboards": dashboards}
 
