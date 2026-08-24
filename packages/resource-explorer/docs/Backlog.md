@@ -105,60 +105,12 @@ adopter. Recording only — nothing routes on these labels.
 
    **Still open:** the remaining ~14 steps.
 
-### ~~`project_dependencies` has no survey-step writer~~ — RESOLVED 2026-08-23 by `repo_manifest_parse`
+### ~~`project_dependencies` has no survey-step writer~~ — RESOLVED 2026-08-23
 
-**Closed by `ManifestParseSurveyor`** (`repo_manifest_parse`), which does exactly what the last
-paragraph below proposed, and covers the two sibling tables that turned out to have the same
-gap: `project_analysis_findings` kind=`ci_quality` (silent for 54 of 58 resources) and
-kind=`repo_conventions` (53 of 58). It is in RepoFullSurvey, RepoCoarseProfile and
-RepoScoutingSurvey. Verified end to end: docling went from 0 dependencies to 61, plus 3 CI
-checks and 5 convention checks, from a single zipball extraction.
+Closed by the `repo_manifest_parse` step (`sub_surveyors/manifest_parse.py`), which writes
+`project_dependencies` from DependencyParser/CiWorkflowParser/RepoConventionsParser.
 
-The original entry is kept below because the measurements in it are the evidence for why the
-step exists, and because the shape it describes — a table only the ingestion pipeline writes,
-read by survey steps that report silence — is worth recognising again.
-
-Found 2026-08-22 while adopting the outcome vocabulary in `repo_dependency`, and not fixed at
-the time — a new step rather than a labelling change, so it was logged rather than smuggled in.
-
-`upsert_dependencies()` is called from exactly one place, `ingestion/pipeline.py`. No survey
-step writes it. That is precisely the gap `repo_file_inventory` (D-whatever) and
-`repo_symbol_extraction` (D5) were added to close for their tables, and dependencies were
-left out of both passes.
-
-Measured across the live registry: **3 of 58 registered resources have any dependency row at
-all**, and the repos with none demonstrably ship manifests — docling a `pyproject.toml`,
-milvus `Cargo.toml` + `go.mod` + `requirements.txt`, trellis `package.json` +
-`pyproject.toml`, egeria_git a `build.gradle`. So `dependency_analysis` — a headline Analysis
-card with a results view and a trend — has been reporting nothing for ~95% of the corpus.
-
-The fix is the same self-contained microflow shape as `repo_symbol_extraction`: acquire the
-shared `zipball_root` resource, parse the manifests, write `project_dependencies`, then report
-what it wrote. It costs no extra download in any survey that already contains a zipball step.
-Until it exists, `repo_dependency` at least now says the zero is unverified rather than
-returning silently.
-6. **Converging with arch-recovery's `run_scope`/`partial`.** That session already emits
-   `partial` on scoped runs (`ca34edf`) and offered a walkthrough of where `StepInfo` /
-   `requires_resources` / `resolve_resources` would need to change. Not started; deliberately
-   not touching their plumbing.
-7. **pyegeria ISSUE-70** — `ActionAuthor.update_next_action_process_step()` always raises
-   `AttributeError` (calls a method that does not exist). Logged in
-   `/Users/dwolfson/localGit/egeria-python/PYEGERIA_ISSUES.md`, **not fixed**, per the standing
-   rule. Not blocking: guards are authored through Dr.Egeria. It blocks amending a guard in
-   place, which would be tidier than re-authoring a document and re-running the reconciler.
-8. ~~`repo_arch_detect` / `repo_arch_coupling` are not assigned to a stage`~~ **RESOLVED
-   2026-08-22.** Assigned to Discovery — `analysis_catalog.yaml`'s `architecture_recovery`
-   entry retagged `intent: discovery`, and a new `RepoArchitectureDiscovery` survey_group
-   (`docs/dr-egeria/repo_survey_types.csv`, `repo-survey-definition-architecture-discovery.md`)
-   authored live in Egeria and reconciled. `tests/test_reachability_audit.py`'s
-   `STEPS_NOT_IN_A_STAGE_SURVEY` exemption for both steps is removed;
-   `test_analysis_catalog_reader.py::test_discovery_is_the_zero_fetch_derivation_tier` now
-   carries a named, single exception (`DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery"}`)
-   since — unlike every other Discovery-tier analysis — both steps DO fetch (zipball, and a git
-   clone for co-change), a real tension with CLAUDE.md rule 17 recorded rather than papered
-   over. Egeria's RepoFullSurvey now holds all 24 of `STEP_REGISTRY`'s steps reachable from a
-   stage-specific survey.
-
+---
 
 ### Location-valued artifacts: 31% are NOT in the repo — the corpus number
 
@@ -230,51 +182,14 @@ Two things worth someone's attention:
   Correct behaviour, and the card now says which kind of nothing it is rather than showing a
   blank.
 
-### `repo_classification` declares `fetch_cost="none"` and calls the GitHub API
+### ~~`repo_classification` declares `fetch_cost="none"` and calls the GitHub API~~ — RESOLVED 2026-08-24
 
-Found 2026-08-24 running Repo Discovery Survey across the corpus. The run managed **3 repos in
-10 minutes** and was stopped; at that rate 60 repos is about ten hours.
+The feature was right, the declaration wrong. Cost is now declared from measurement, not the
+dataclass default — see the comment on the `repo_classification` `StepInfo` in
+`surveyors/repo_survey_definition_adapter.py`. `step_cost_observer.py` is what caught it and
+is what stops the next one.
 
-Diagnosed the same way as the other stalls this week — the process sat at **0.5% CPU with an
-established connection to github.com**, which is network-blocked, not computing. The chain is
-`repo_classification` → `github/expectations.py` → `github/doc_locations.py` → PyGithub
-`Github(...)`. It *has* to make those calls: resolving whether an expected artifact lives
-`in-repo`, in a `sibling-repo` or on a `doc-site` means asking GitHub about other
-repositories, and that location-not-boolean answer is the whole value of the step
-(docs/architecture-recovery-design.md §5.5b). **The feature is right; the cost declaration is
-wrong.**
-
-The contrast measured in the same session makes the size of the error concrete — the other
-three Discovery steps, which genuinely fetch nothing:
-
-| steps | corpus | time |
-|---|---|---|
-| `repo_license_classification` + `repo_maturity` + `repo_conventions` | 60 repos | **1 second** |
-| `repo_classification` | 3 repos | **~10 minutes** |
-
-**Why it matters beyond one slow run.** `fetch_cost="none"` is the *defining property* of the
-Discovery tier — CLAUDE.md rule 17: "Discovery is the tier that derives early-headlights
-signals from data Scouting has already collected, with zero new fetch". The declaration also
-drives real behaviour: a `max_fetch_cost="none"` run currently believes this step is free and
-includes it. And `tests/test_analysis_catalog_reader.py::test_discovery_is_the_zero_fetch_
-derivation_tier` exists to stop exactly this, with one named exception for
-`architecture_recovery` — so a fetching Discovery entry is meant to fail until someone adds it
-deliberately. This one did not, which suggests the guard checks the *catalog entry* rather
-than the step's behaviour. Worth confirming: a guard that can be satisfied by declaring the
-right thing while doing another is not a guard.
-
-**Not fixed here — it is another session's step and the change is a judgement call, not a
-typo.** `fetch_cost="api"` understates ten minutes per repo; `api_heavy` is closer. Either
-excludes it from zero-fetch runs, which is correct, and both change which surveys it belongs
-in — §5.5b put it first in Discovery specifically so the gate could run cheaply, and it is not
-cheap.
-
-**Third cost mis-declaration this week**, and they share a cause worth naming: the cost tier is
-a guess made when the step is authored, and nothing measures it afterwards.
-`repo_manifest_parse` was `medium` and measures `low`; the CI job inherited GitHub's 360-minute
-default and would have burned six hours on a hang; this one claims zero-fetch and blocks on the
-network. A cheap measured check at survey time — wall clock and whether a socket was opened —
-would catch all three, and is worth more than another round of careful authoring.
+---
 
 ### `DependencyParser` covers 4 ecosystems; `_MANIFESTS` claims 12
 
@@ -351,41 +266,17 @@ Note it excludes the `*` (Full Survey) sentinel on purpose. That bundle is gener
 STEP_REGISTRY, so it can never be missing anything, and counting it would have declared
 `repo_website_ingestion` reachable on the day it was reachable from nothing.
 
-### BUILT 2026-08-20 — a "no silent success" ratchet (`tests/test_no_silent_success.py`)
+### BUILT 2026-08-20 — a "no silent success" ratchet
 
-`resource_explorer` has 197 broad `except` handlers whose body only logs. Most are legitimate
-best-effort writes; the problem is that nothing distinguishes those from the ones that hide a
-defect. Two did exactly that this session: `EgeriaDatabaseSurveyor.catalog_and_survey`
-returned success while swallowing a stale-GUID 404, and `run_prefect_step` reported "API
-dispatch failed" for an `UnboundLocalError` that made the whole Prefect API path unreachable.
+`tests/test_no_silent_success.py`. Covers one of the four silent-failure classes above.
 
-**Built as a ratchet, not a sweep.** 112 existing sites (the earlier figure of 115 double-counted
-handlers in nested functions) are recorded in `tests/no_silent_success_baseline.json` keyed by
-`path::function` with a count — not line numbers, which churn on unrelated edits. A new site
-fails the test; a baseline entry that no longer exists also fails, so the number can go down
-but never up and the baseline cannot rot. Verified in both directions, and the detector is
-proven against the two real bug shapes plus four near-miss controls (narrow except, re-raise,
-handler that returns, log-only handler in a void function).
+---
 
-Still open, deliberately: fixing the 112. The rule is that a handler that swallows *and whose
-function still reports success* must record something observable — a metric, an error field, a divergence row. That
-is precisely the fix applied to both sites above. Invasive across 197 call sites, so it wants
-a design pass and probably a staged rollout (new code first, then per-module), rather than a
-sweep.
+### BUILT 2026-08-20 — live smoke tier + pinned error payloads
 
-### BUILT 2026-08-20 — live smoke tier (`tests/test_egeria_live_smoke.py`) + pinned error payloads
+`tests/test_egeria_live_smoke.py`.
 
-Several of these were findable *only* against live Egeria: which paths actually consume a
-cached GUID, a divergence swallowed by a non-fatal handler, and the real error codes. The
-live probe corrected two things this backlog had recorded from the original report — the
-outer code is `OMAG-REPOSITORY-HANDLER-404-007`, not `OMRS-REPOSITORY-404-007`, and the
-response self-labels `CLIENT_ERROR_400` while `relatedHTTPCode` is 404.
-
-Two pieces: capture real error payloads verbatim as fixtures (started —
-`tests/test_egeria_linkage_divergence.py`'s `LIVE_ERROR`) rather than paraphrasing them; and
-add a marked live smoke tier that skips when Egeria is unreachable, in the shape of the
-existing `requires_pgvector` tier. No mock would have found the three faults above, so this
-is not a substitute for unit tests but the only cover for that class.
+---
 
 ### Open — grow the repo corpus substantially, as a bug-finding strategy
 
@@ -473,27 +364,11 @@ Related: `docs/approach-portfolio-model.md` §4 proposes recording approach outc
 characteristics — if that is built, this re-check becomes a query rather than an exercise.
 
 
-### ~~HIGH — Suspected bug: filesystem annotations never reach Egeria~~ — FIXED 2026-08-20
+### ~~HIGH — filesystem annotations never reach Egeria~~ — FIXED 2026-08-20
 
-Confirmed real and fixed. `egeria_filesystem_surveyor.py` read `ann.egeria_type_name`,
-which exists on no class in `survey_report.py`, so `_build_annotation_props` raised
-`AttributeError` on every call — swallowed by the broad `except` in `catalog_and_survey`
-(empty SurveyReport, no error surfaced) and fatal in `publish_step_annotations`.
+Suspected in `docs/survey-and-analysis-current-state-2026-08-19.md`, confirmed and closed.
 
-Fixed by consolidating rather than by a one-line attribute rename, because the item
-itself flagged that the real defect was three near-duplicate `_build_annotation_props`
-implementations that had drifted apart (`valueProperties` vs `resourceProperties`,
-`confidenceLevel` vs `confidence`, four missing annotation-type branches, RELATIONSHIP
-absent from `_class_map`). A rename would have left the drift standing and the next
-divergence free to happen. `surveyors/annotation_props.py` is now the single
-implementation; all three surveyors delegate to it, keeping their method names since
-tests and call sites reach for them by name.
-
-**Verified:** all seven annotation classes in `survey_report.py` pass through all three
-publishers without raising. **Not verified:** an end-to-end filesystem publish against a
-live Egeria — no filesystem entity is registered in this deployment, so there was
-nothing to survey. Worth re-running once one exists, since the original failure was
-invisible precisely because it was swallowed.
+---
 
 ### Egeria ↔ RE sync/divergence reconciliation — DETECTION BUILT 2026-08-20, resolution partly open
 
@@ -585,57 +460,18 @@ divergence record — that is what unblocks the resource, and is common to every
   not true, and the one action a user might fear is the wrong place to be imprecise. It now
   names the count it removes and what survives.
 
-### Automate: had never notified anyone — two independent faults, both fixed 2026-08-20
+### ~~Automate had never notified anyone~~ — FIXED 2026-08-20
 
-Its whole value is the notification, and nothing errored while it delivered none.
+Two independent faults, both closed. Detection in `notification_detector.py`, delivery via
+`scheduler.py`'s `_check_subscriptions()`.
 
-1. **Delivery** — every RFA it wrote was invisible in the RFA drawer (see the item below).
-2. **Prerequisite** — detection only runs off a *scheduled* completion, so a subscription
-   with no recurring schedule for the same analysis can never fire. The live state was
-   exactly that: an active `maturity` subscription on `sqlglot`, `last_checked_at` empty,
-   and the only schedule in the deployment belonging to a different entity *and* a
-   different analysis. The warning existed only as a toast at create time and a tooltip on
-   the Notify button — nothing on the subscription row, so one made weeks earlier sat there
-   looking healthy and inert.
-
-`SubscriptionData` now carries `has_schedule`, computed against enabled, non-`manual`
-schedules for the same (entity_type, entity_slug, analysis_id), and the row renders
-"active — but never fires (no schedule)" with a pointer to where to set one. A `manual`
-cadence deliberately does not count: it never recurs, so nothing ever completes for
-detection to compare against.
-
-`tests/test_automate_end_to_end.py` follows the whole chain — scheduled run → detection →
-RFA a human can see — rather than a unit of it, because the two failure modes are
-indistinguishable from outside: a subscription that never fires and one with nothing to
-report both show "never notified".
-
-**Not a fault, found alongside:** the one schedule in this deployment
-(`localhost_docker_coco_ods` / `index_health`) errors on every run with "No Survey
-Definition found matching 'index_health'". `index_health` is not in the database analysis
-catalog (`schema_inventory`, `row_count_snapshot`, `privilege_audit`, `egeria_db_survey`) —
-a stale schedule pointing at an analysis that no longer exists. The scheduler is behaving
-as designed here (D5: report a stale schedule, never silently fall back), and the Schedules
-tab shows the error. It just needs deleting.
+---
 
 ### ~~RFAs written by `log_rfa()` never reached the RFA drawer~~ — FIXED 2026-08-20
 
-`GET /api/activity/rfas`, the feed behind the drawer, keeps only *annotations* whose
-`annotation_type` contains "RequestForAction" — it never looks at `operation="rfa"`.
-`log_rfa()` wrote its entry with an empty annotations list, so every RFA it produced was
-invisible there: the entry existed in the activity log, and the one surface built to act on
-it showed nothing.
+The drawer reads them via `GET /api/activity/rfas`; see `web/routes/activity.py`.
 
-All three producers were affected — Automate's change notifications (`scheduler.py`),
-Enrichment's context requests (`web/routes/context.py`), and Egeria linkage divergences.
-Each is by definition a request for a human action, and no human was shown one. **Automate
-is the one that mattered most**: its entire delivery mechanism is "notify via RFA", so
-subscriptions could fire correctly and still appear to do nothing.
-
-Nothing failed, which is why it lasted: the writes succeeded, the entries were real, and
-only a reader looking for a different shape came up empty. Found while checking whether the
-divergence RFA above actually reached a user. `tests/test_rfa_visibility.py` asserts each
-producer reaches the drawer feed, at its own call site rather than through a mock of
-`log_rfa` — a stubbed test would pass even with the fix reverted.
+---
 
 ### Advanced SQLGlot view analytics
 We can extend our SQL View static analyzer (`sql_analyzer.py`) with further advanced metadata analytics:
@@ -721,17 +557,9 @@ Full context for the Survey Definitions side: `docs/egeria-collaboration-and-sur
 
 ---
 
-### RE locally executing Survey Definitions — IMPLEMENTED (2026-07-07)
+### RE locally executing Survey Definitions — IMPLEMENTED 2026-07-07
 
-Was flagged as the single biggest open design/implementation item, ahead of the A2A work below — now built. RE does not wait for Egeria→RE A2A dispatch to execute a Survey Definition's own `executes_at: resource-explorer` steps; it reads the definition and runs its own steps entirely on its own initiative. A2A remains needed only for the opposite case: Egeria's own automation deciding, unprompted, to trigger an RE step.
-
-**Usage:** `docs/survey-definitions.md`. **Shipped shape:** generic across all three resource types (database, repo, filesystem), not just PostgreSQL as originally scoped — `survey_definition_reader.py` (generic GAP graph fetch/parse) + `survey_definition_executor.py` (generic dispatch loop + `ResourceTypeAdapter` plugin interface) + one adapter per resource type. Publishing uses a new narrow `publish_step_annotations` method for database/filesystem (their existing publish paths had unwanted auto-cataloging/native-survey side effects) and the existing `EgeriaPublisher.publish` unmodified for repos. Three new CLI commands (`survey-definition`, `database survey-definition`, `filesystem survey-definition`). Unit-tested (`tests/test_survey_definition_reader.py`, `tests/test_survey_definition_executor.py`, 219 total tests passing).
-
-**Scope actually shipped, still restricted as planned**: linear step sequences only (branching raises `UnsupportedSurveyDefinitionError`), a small hardcoded `re_analysis_step` → surveyor mapping per resource type (depends on the analysis-step inventory/registration item below for anything beyond the fixed list already wired up).
-
-**Validated live (2026-07-07/08)** for both single-step and two-step chained PostgreSQL Survey Definitions — `PostgreSQL Database` discovery, graph fetch/parse/execute/publish, and correctly skipping an `executes_at: egeria` step, all confirmed end-to-end. The graph-parsing code needed two real fixes once tested against actual data: (1) the response shape is `governanceActionProcess`/`firstProcessStep` top-level keys with step properties under `processStepProperties`, not the originally-guessed `relationshipHeader`-wrapped shape; (2) chaining is a genuine node+edge graph (`nextProcessSteps` flat node list + a separate `processStepLinks` edge list keyed by GUID), not a nested per-step structure — the reader now builds a node/edge index and walks it, rejecting >1 outgoing edge as unsupported branching. **Still outstanding:** `Git Repository` Technology Type string (repo, unconfirmed). **Filesystem confirmed wrong (2026-07-13):** `filesystem/survey_definition_adapter.py` currently guesses `"File Folder"` — the real Egeria Technology Type, confirmed live via `EgeriaTechTypeCatalog`, is `"File System Directory"` (`FileFolder` is the underlying open-metadata type name, not the Technology Type display name). This is likely why no Survey Definition candidates were showing up for filesystems. Fix tracked in `docs/filesystem-survey-analytics-plan.md` §4. Also still outstanding: branching (guard-based) Survey Definitions — the rejection path is unit-tested but not yet exercised against a real branching definition.
-
-Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6.6 and open question A8.
+`surveyors/survey_definition_executor.py` + the per-resource-type adapters.
 
 ---
 
@@ -890,62 +718,16 @@ components. Regression-checked: `trellis` 8/11 and `egeria-workspaces` 18/27 bot
 * **Go cohesion needs recursive rollup subtrees.** Files in one Go package never import each other,
   so `coupling.py`'s `import_cohesion` is structurally ~0 at package granularity.
 
-### (superseded) HIGH — Go support: the component-proposing stack is Python/Java/npm-only
-
-**Correction to the row above.** It previously said Go repos would be fine except that "coupling
-correctly reports `unverified`". Scoring Prometheus disproved that (spike finding 69): **three of the
-four proposers produce nothing on Go.** ast-grep rules are Python/Java, `imports.py` reports
-`0 python files, 0 java files`, and manifest identity is structurally blind on a single-module repo —
-Prometheus's six `go.mod` files include a root module spanning the entire architecture and five
-peripheral ones, none matching a component. Only co-change crossed the seam (18219 pairs), and
-co-change is a *validator*, not a proposer. Result: 4 detected components against 11 declared, all
-four npm packages under `web/ui/`, score 0/11.
-
-The owners' eleven components map essentially 1:1 onto **Go package directories**. So the missing
-capability is not "add a Go ast-grep rule" — it is reading Go package structure at all, which would
-serve identity, imports and code markers together. Blocks Milvus and Kubernetes as well as Prometheus,
-i.e. three of the four ranked ground-truth candidates.
-
 ### DONE (finding 73) — the scorer can now express a partial component match
 
-Implemented as a **reported** measure: the strict-containment headline is unchanged and stays the
-number of record, with partial cover printed beneath it as *REPORTED, not counted above*. No
-threshold — "partial" is simply `0 < coverage < 1`, since a reported fraction beats an invented
-cut-off. Overclaiming nodes are named separately so "we found less than the component" and "we found
-a blob that merged it with something else" are no longer indistinguishable.
+Reported, not counted: strict containment stays the headline, partial cover (`0 < coverage < 1`,
+no invented threshold) prints beneath it, and overclaiming nodes are named separately.
 
-First run surfaced a real defect nobody could previously see: **`trellis.md`'s `Web front-end` is
-unmatchable by construction** — its three missing files are `web/static/vendor/*.min.js`, which
-`exclusion.py` removes as vendored, so no detector can ever claim them. Needs a note in a revision
-file (rule 3 forbids editing the fixture; `trellis-revised.md` already exists as the mechanism).
-`Web backend` likewise misses exactly one real file, `web/app.py` — a chaseable detector gap rather
-than a component-wide failure.
-
-### (superseded) HIGH (was doubly evidenced) — the scorer cannot express a partial component match
-
-**Milvus makes this urgent.** Two of its five components were recovered at **575/576** and
-**259/260** files — 99.8% — each missing exactly one `OWNERS` file, and both score **0**, identical
-to recovering nothing (finding 72). Combined with Prometheus's `Web UI and API` at 325/380, that is
-three near-misses across two independent repos, from two unrelated causes: an unsupported language
-and an orphaned container-level metadata file. `step_outcome.py` has defined `partial` for this state
-since the outcome vocabulary landed and the scorer has never emitted it. Strict containment itself is
-correct and must NOT be loosened — 575 ≠ 576, and a measure that rounds is worse than one that is
-strict. What is missing is the ability to *report* the near-miss alongside it.
-
-### (original entry) HIGH — the scorer cannot express a partial component match
-
-On Prometheus the detector recovered **325 of the 380 files** of the ground-truth component
-`Web UI and API` — every one correctly contained, missing only the 38 Go files of the API server,
-because that component is bilingual and only its TypeScript half is in a supported language. §2a's
-union rule correctly declines (the union is not the full set), so it scores **0 — identical to
-recovering nothing at all**.
-
-§2a established that finding *more* structure must not score worse. This is the neighbouring defect:
-finding *most* of a component must not score the same as finding none of it. `step_outcome.py`
-already defines `partial` for exactly this state and the scorer never emits it. **Fix before the 8–10
-repo measurement re-check**, or that run reports a wall of zeros that conceals real near-misses —
-which is the same class of mistake as the three metrics that silently contradicted design decisions
-they predated.
+**Still open, surfaced by the first run:** `trellis.md`'s `Web front-end` is unmatchable by
+construction — its three missing files are `web/static/vendor/*.min.js`, which `exclusion.py`
+removes as vendored, so no detector can ever claim them. Needs a note in `trellis-revised.md`
+(rule 3 forbids editing the fixture). `Web backend` misses exactly one real file, `web/app.py` —
+a chaseable detector gap, not a component-wide failure.
 
 ---
 
@@ -1143,26 +925,12 @@ moves the weights also shapes what anyone thinks to check.
 
 ---
 
-### HIGH — populate `IR.ports` and `IR.wires` (design §5.5f)
+### ~~HIGH — populate `IR.ports` and `IR.wires`~~ — BUILT 2026-08-24
 
-Verified empty, and **nothing anywhere populates them**: both fields carry `# not in this slice`,
-§5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
-written. `ApiStructureSurveyor` does not cover it — it counts symbols and module structure, which is
-internal shape rather than exposed surface.
-
-**Why it is the biggest gap:** everything black-box we have built reads metadata *about* a resource
-(README, docs, manifests, deployment artifacts), not the interface *of* it. The system can say "an
-application with deployment artifacts" but not "serves these endpoints, consumes this topic, needs
-these ports" — and the second is what "does it fit our infrastructure" means.
-
-**Why it is cheap:** interface evidence is largely black-box observable and often in artifacts
-already fetched — OpenAPI/Swagger, `.proto`, GraphQL schemas, compose `ports:`/`expose:`, Dockerfile
-`EXPOSE`, k8s `Service` manifests, declared entry points, configured topic names. Mostly no source
-parsing, so **Discovery tier by rule 17's own test**.
-
-Check Egeria's existing vocabulary first — `SolutionPortDirection` and `SolutionLinkingWire`'s
-`protocol`/`integrationStyle`/`frequency`/`dataExchanged`/`oneWay` already exist. Third time this
-check has been the right first move, after `SolutionComponentType` and `ResourceUse`.
+`surveyors/arch_recovery/interfaces.py` extracts them from Dockerfile `EXPOSE`, compose
+`ports:`/`expose:`/`depends_on:` and OpenAPI documents; rendered by `_renderDeploymentInterfaces()`.
+Egeria's `SolutionPortDirection`/`SolutionLinkingWire` vocabulary was checked first, as design §5.5f
+asked — the third time that check was the right first move.
 
 ---
 
