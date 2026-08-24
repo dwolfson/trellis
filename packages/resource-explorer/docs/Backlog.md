@@ -574,6 +574,56 @@ adopter. Recording only — nothing routes on these labels.
 
 ---
 
+#### Purpose sets required DEPTH, not just which analyses run — unwritten, and it reframes precision
+
+Raised by Dan 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`
+and `architecture-recovery-design.md` were checked: nothing ties depth or completeness to
+purpose. §3 of the framing design says the opposite for the neighbouring axis — *"changing
+perspective changes how much you see but never what gets run."*
+
+**The claim:** an investigation exists to meet its own objectives. Architecture recovery is
+one analysis among many and is *often not relevant at all*. Where it is relevant, **how much
+recovery, and to what completeness, is itself a function of the purpose.** The same is true
+of every other analysis with a depth dial — documentation, dependencies, security, profiling.
+
+**Why this matters more than it first sounds.** The current framing splits the problem as:
+framing decides *which surveys run* and *what a result means to this engagement*, but does
+nothing about *how many candidates a surveyor emits* — that being a separate precision
+problem. **That split is wrong, or at least too absolute.** If purpose sets the required
+depth, then purpose is a *stopping criterion*, and a stopping criterion changes the output
+size. Concretely: 154 components against a ground truth of 8 (Milvus, finding 99) is a
+useless answer for `Select` — "is there an architecture here, roughly what shape" — while
+possibly a fine one for `Learn` or `Explore`. The number is not wrong in the abstract; it is
+wrong *for a purpose nobody declared*.
+
+**What already exists to build on:**
+
+* **Completeness is already expressible.** Egeria's base annotation type carries
+  `sampleSize` / `samplePercent` / `samplingMethod` — *"how much did we look at"*
+  (`architecture-recovery-design.md` §6.1, which says to reuse them and populate them
+  honestly when a component is only partially analysed). The vocabulary for *reporting*
+  depth exists; nothing *decides* the depth required.
+* **The one measured selection mechanism is a gate, not a weighting.**
+  `expectations.recovery_gate` discriminates across all 60 repos (46 run / 8 skip / 6 none)
+  by keying on evidence containment rather than on a label — the property Perspective was
+  measured to lack. But it is **binary**: run or skip. The natural extension of this entry is
+  a graduated gate — run *to what depth* — rather than a second taxonomy.
+
+**Open questions, none answered yet:**
+
+1. What is the depth dial per analysis? For arch recovery it is plausibly a component-count
+   or granularity target; for others it may be sample percentage, or which sub-checks run.
+2. Does depth-by-purpose belong in the analysis catalog (declared per analysis), on the
+   investigation (declared once), or negotiated at dispatch?
+3. Is "sufficient for this purpose" a *stopping* rule during the run, or a *presentation*
+   rule over a full run? Cheaper is stopping; more reusable is presenting.
+
+**Do not conflate this with ranking.** Purpose ranking questions/analyses (§3) and Purpose
+gating RFA emission (§4) are both established. This is a third role — setting the depth
+contract for a run — and it is the one that touches surveyor output size.
+
+---
+
 #### Build the Investigation tab — nothing tracks this, and the design assumes it
 
 **The goal, in the design's own words** (`docs/investigation-framing-design.md` §Context, §1):
