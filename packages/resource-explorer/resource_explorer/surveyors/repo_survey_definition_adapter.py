@@ -2005,6 +2005,31 @@ def get_dashboard_perspectives(analysis_ids: list[str]) -> list[str]:
     return perspectives
 
 
+def get_dashboard_annotation_types(analysis_ids: list[str]) -> list[str]:
+    """Union of analysis_catalog.yaml's `annotation_types` across a
+    dashboard's analysis_ids — the join key back to real Egeria publish
+    history (registry.get_last_published_annotation_types(), 2026-08-24:
+    "we should already have all of that information if it's been published
+    to Egeria" — this is what makes that true: EgeriaPublisher already knows
+    which annotation_types went into a publish, this just says which
+    analysis_ids/dashboards those types belong to). Same derived-not-hand-
+    authored pattern as get_dashboard_stages/get_dashboard_perspectives
+    above — an analysis_id absent from the catalog, or with no declared
+    annotation_types, simply contributes nothing rather than breaking the
+    card."""
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    wanted = set(analysis_ids)
+    types: list[str] = []
+    for a in get_analyses("repo"):
+        if a["id"] not in wanted:
+            continue
+        for t in a.get("annotation_types") or []:
+            if t not in types:
+                types.append(t)
+    return types
+
+
 def _get_project_entity(registry, slug: str):
     return registry.get(slug)
 

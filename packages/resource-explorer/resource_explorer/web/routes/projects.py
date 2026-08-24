@@ -787,6 +787,7 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
         REPO_ANALYSIS_RESULTS_MAP,
         SURVEY_RESULT_DASHBOARDS,
+        get_dashboard_annotation_types,
         get_dashboard_perspectives,
         get_dashboard_stages,
     )
@@ -795,6 +796,12 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
     project = registry.get(slug)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # {annotation_type: latest published_at} — one query for the whole repo,
+    # joined per-dashboard below against each dashboard's own annotation_types
+    # (get_dashboard_annotation_types). Real Egeria publish history, not a
+    # guess — see EgeriaPublisher.publish()'s record_published_annotation_types call.
+    published_by_type = registry.get_last_published_annotation_types(slug)
 
     dashboards = []
     for dashboard in SURVEY_RESULT_DASHBOARDS.values():
@@ -827,6 +834,17 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
         if not has_results and not include_empty:
             continue
 
+        # Real per-dashboard publish signal (2026-08-24), not a repo-wide
+        # guess: the latest of this dashboard's own annotation_types' known
+        # publish times. Blank when has_results is true but nothing in it
+        # has ever actually been published — an honest, common state (ran
+        # locally, never sent to Egeria), distinct from never-run.
+        dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
+        last_published_at = max(
+            (published_by_type[t] for t in dashboard_types if t in published_by_type),
+            default="",
+        )
+
         dashboards.append({
             "id": dashboard.id,
             "title": dashboard.title,
@@ -837,6 +855,12 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
             "stages": stages,
             "has_results": has_results,
             "analyses": analyses,
+            "last_published_at": last_published_at,
+            # Repo-wide, not per-dashboard — there's no per-analysis_id run
+            # timestamp to draw on today (unlike last_published_at above,
+            # which genuinely is per-dashboard). Still an honest "as of"
+            # signal: every dashboard's data was current no later than this.
+            "last_surveyed_at": project.last_surveyed_at or "",
         })
     return {"slug": slug, "stage": stage, "dashboards": dashboards}
 

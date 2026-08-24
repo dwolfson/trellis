@@ -191,6 +191,14 @@ async def list_candidates(
                 "last_run_at": last_activity.get("last_run_at", ""),
                 "last_run_status": last_activity.get("last_run_status", ""),
                 "last_published_at": last_activity.get("last_published_at", ""),
+                # 'candidate' = a real per-Survey-Definition publish (the ☁
+                # Publish button on this exact card); 'repo' = inferred from
+                # a whole-repo "Publish survey →" that happened after this
+                # candidate's last run — see get_survey_definition_last_
+                # activity's docstring for why that's still honest, not a
+                # precise per-candidate claim. Blank when last_published_at
+                # is blank too.
+                "last_published_scope": last_activity.get("last_published_scope", ""),
             })
 
         # Composite-survey propagation (2026-08-24 — direct feedback: "if a
@@ -231,6 +239,30 @@ async def list_candidates(
                 cand["last_run_at"] = best["last_run_at"]
                 cand["last_run_status"] = best.get("last_run_status", "")
                 cand["last_run_via"] = best["qualified_name"]
+
+        # Extends the registry's own repo-wide-publish fallback (see
+        # get_survey_definition_last_activity's docstring) to candidates that
+        # only got a last_run_at just above, via composite propagation, not a
+        # real activity_log row of their own — e.g. Coarse Profile Survey,
+        # covered by a Scouting Survey run, genuinely had its data included
+        # in a later whole-repo publish too, same as Scouting Survey itself
+        # was. Without this, only the composite *superset* showed the
+        # repo-wide publish badge and every subset it covered stayed blank,
+        # which is exactly the same "we published but it says never" gap
+        # this whole mechanism exists to close. repo_wide_publish_at is
+        # recovered from whichever candidate(s) the registry call already
+        # tagged 'repo' (all share the same timestamp — the most recent
+        # untagged publish for this entity), not recomputed independently.
+        repo_wide_publish_at = next(
+            (c["last_published_at"] for c in detailed if c.get("last_published_scope") == "repo"), "",
+        )
+        if repo_wide_publish_at:
+            for cand in detailed:
+                if cand.get("last_published_at") or not cand.get("last_run_at"):
+                    continue
+                if cand["last_run_at"] <= repo_wide_publish_at:
+                    cand["last_published_at"] = repo_wide_publish_at
+                    cand["last_published_scope"] = "repo"
 
         # Native Egeria processes for this Technology Type (config/technology_
         # type_processes.yaml), shown as informational only — NOT merged into
