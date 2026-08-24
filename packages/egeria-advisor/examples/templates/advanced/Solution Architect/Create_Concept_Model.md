@@ -1,7 +1,7 @@
 ___
 
-## Create Design Pattern
-> Create or updates a design pattern.
+## Create Concept Model
+> Create a Concept Model - a collection of concept model elements (concept beads, attributes, relationships) that describes the concepts for a design or implementation (0571). Required before Link Concept Design can attach an element to it. Created via the generic collection-manager creation path (Collection Manager auto-routing, COLLECTION_SUBTYPES) since no dedicated solution-architect REST endpoint exists for this container type yet.
 
 ### Display Name
 >	**Input Required**: True
@@ -11,14 +11,6 @@ ___
 >	**Description**: The common name of an element.
 
 >	**Alternative Labels**: "Term Name"
-
-
-### Usage
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The usage guidance for this element — how it is intended to be used in context.
 
 
 ### Journal Entry
@@ -63,74 +55,24 @@ ___
 >	**Description**: The unique, text name of an element.
 
 
-### Benefits
+### Content Status
 >	**Input Required**: False
 
->	**Attribute Type**: Simple List
+>	**Attribute Type**: Valid Value
 
->	**Description**: The positive outcomes from using this pattern.
+>	**Description**: The lifecycle status of an element.
 
+>	**Valid Values**: DRAFT,PREPARED,PROPOSED,APPROVED,REJECTED,ACTIVE,DEPRECATED,OTHER
 
-
-### Context
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the situation where this pattern may be useful.
+>	**Default Value**: ACTIVE
 
 
-### Forces
->	**Input Required**: False
-
->	**Attribute Type**: Simple List
-
->	**Description**: Description of the aspects of the situation that make the problem hard to solve.
-
-
-
-### Liabilities
->	**Input Required**: False
-
->	**Attribute Type**: Simple List
-
->	**Description**: The additional issues that need to be considered when using this pattern.
-
-
-
-### Problem Example
+### Purpose
 >	**Input Required**: False
 
 >	**Attribute Type**: Simple
 
->	**Description**: One or more examples of the problem and its consequences.
-
-
-
-### Problem Statement
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the types of problem that this design pattern provides a solution to.
-
-
-### Solution Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of how the solution works.
-
-
-
-### Solution Example
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Illustrations of how the solution resolves the problem examples.
-
+>	**Description**: The purpose of this collection — a short description of why it exists or what it is used for.
 
 
 ### Search Keywords
@@ -169,6 +111,14 @@ ___
 >	**Alternative Labels**: Version
 
 >	**Default Value**: 1.0
+
+
+### Authors
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple List
+
+>	**Description**: The authors.
 
 
 ### Effective From
@@ -465,6 +415,14 @@ ___
 >	**Attribute Type**: Simple List
 
 >	**Description**: Optional security tags for security processing.
+
+
+### User Defined Content Status
+>	**Input Required**: False
+
+>	**Attribute Type**: Simple
+
+>	**Description**: A user defined content status = only valid if content status is OTHER.
 
 
 ### User Defined Status

@@ -1,7 +1,7 @@
 ___
 
-## Create Design Pattern
-> Create or updates a design pattern.
+## Create Concept Bead
+> Creates or updates a Concept Bead (0571 Concept Models).
 
 ### Display Name
 >	**Input Required**: True
@@ -11,14 +11,6 @@ ___
 >	**Description**: The common name of an element.
 
 >	**Alternative Labels**: "Term Name"
-
-
-### Usage
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: The usage guidance for this element — how it is intended to be used in context.
 
 
 ### Journal Entry
@@ -61,76 +53,6 @@ ___
 >	**Attribute Type**: QN
 
 >	**Description**: The unique, text name of an element.
-
-
-### Benefits
->	**Input Required**: False
-
->	**Attribute Type**: Simple List
-
->	**Description**: The positive outcomes from using this pattern.
-
-
-
-### Context
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the situation where this pattern may be useful.
-
-
-### Forces
->	**Input Required**: False
-
->	**Attribute Type**: Simple List
-
->	**Description**: Description of the aspects of the situation that make the problem hard to solve.
-
-
-
-### Liabilities
->	**Input Required**: False
-
->	**Attribute Type**: Simple List
-
->	**Description**: The additional issues that need to be considered when using this pattern.
-
-
-
-### Problem Example
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: One or more examples of the problem and its consequences.
-
-
-
-### Problem Statement
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of the types of problem that this design pattern provides a solution to.
-
-
-### Solution Description
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Description of how the solution works.
-
-
-
-### Solution Example
->	**Input Required**: False
-
->	**Attribute Type**: Simple
-
->	**Description**: Illustrations of how the solution resolves the problem examples.
-
 
 
 ### Search Keywords
