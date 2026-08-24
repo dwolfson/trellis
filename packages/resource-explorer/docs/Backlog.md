@@ -160,6 +160,116 @@ returning silently.
    stage-specific survey.
 
 
+### Location-valued artifacts: 31% are NOT in the repo — the corpus number
+
+Measured 2026-08-24, first full run of `repo_classification` across all 60 registered repos
+(26.7 min, 0 failures, on the post-`fd2e5a7` path). Recorded here because it answers a question
+the architecture-recovery design could previously only answer from five hand-picked projects,
+and because that session asked for it explicitly and has since ended.
+
+```
+artifacts located              140
+located ELSEWHERE               43   (31% of located)
+repos with >= 1 elsewhere       25   of 60
+max elsewhere in one repo        3
+```
+
+**A boolean "does this repo document its architecture?" would answer *no* for 43 artifacts
+that exist and were found.** §5.5b's location-valued design (`in-repo` / `sibling-repo` /
+`doc-site` / `not-found`, only the last an absence) is therefore paying for itself on a corpus
+nobody selected to flatter it — the point being that the spread is unglamorous and even
+(polaris 1, docling_eval 1, docling_java 3, docling_mcp 1) rather than concentrated in the
+famous Kubernetes case. A steady third across 25 repos is a stronger argument than one
+spectacular example.
+
+Corpus shape, first time this has run everywhere:
+
+```
+roles  samples 16 · application 13 · documentation 11 · library 6 · tutorial 5 · middleware 2 · tool 1 · none 6
+gates  run 47 · skip 7 · none 6
+timing min 7.2s · median 25.5s · max 58.6s
+```
+
+Two things worth someone's attention:
+
+- ~~**The gate lets 87% through** (47 run, 7 skip of 54 classified)~~ — **CHECKED, and the
+  ratio is roughly right.** The architecture-recovery session measured it rather than
+  re-running anything (every gate decision persists its own reason string with the signals
+  named): of 32 repos carrying a non-architectural role, 25 were overridden, and
+  `package-manifest` was present in 19 of those but **decisive alone in only 3**. Dropping it
+  entirely moves 7 skips to 10 — 87% to 81%. The gate has containment semantics precisely so a
+  samples repo with compose files still runs, and on a corpus that is mostly real software,
+  that is what happens.
+
+  **Both of us had guessed the wrong mechanism from the right aggregate.** `package-manifest`
+  looked weak because a Python samples repo has a `pyproject.toml`; the aggregate did not
+  contain that story. Reading the n=3 decisive cases *by name* found the actual defect:
+  `OpenLineage/openlineage-site` is 71% doc-shaped with a `docusaurus.config.js`, no Dockerfile
+  or compose — and a `package.json`, **because Docusaurus is a Node program**. So the manifest
+  is not a weak signal; it is the only structural signal a documentation site can produce by
+  itself. Fixed by making the generator config its own `doc-site-generator` signal and
+  discounting `package-manifest` when it is present.
+
+  Recorded because it is the third time the pattern has appeared: aggregate read correctly,
+  mechanism guessed wrongly, small-n cases read by name giving the answer. "25 overrides" is a
+  number; "`openlineage-site` is a Docusaurus site" is what tells you what to change.
+
+- **The 47/7 above is a snapshot, and one repo of it is already known to move.** With
+  `doc-site-generator` in place `openlineage_site` goes run → skip, making it 46/8 on the next
+  classification run. Left as measured rather than edited to 46/8, because 47/7 is what the
+  corpus actually showed when it was run and 46/8 is a prediction — writing the prediction in
+  as a measurement is the substitution this whole file exists to avoid. Re-measure rather than
+  quote either number on a card.
+- **The 6 repos with no role have no file inventory** — never ingested, so nothing to classify.
+  Correct behaviour, and the card now says which kind of nothing it is rather than showing a
+  blank.
+
+### `repo_classification` declares `fetch_cost="none"` and calls the GitHub API
+
+Found 2026-08-24 running Repo Discovery Survey across the corpus. The run managed **3 repos in
+10 minutes** and was stopped; at that rate 60 repos is about ten hours.
+
+Diagnosed the same way as the other stalls this week — the process sat at **0.5% CPU with an
+established connection to github.com**, which is network-blocked, not computing. The chain is
+`repo_classification` → `github/expectations.py` → `github/doc_locations.py` → PyGithub
+`Github(...)`. It *has* to make those calls: resolving whether an expected artifact lives
+`in-repo`, in a `sibling-repo` or on a `doc-site` means asking GitHub about other
+repositories, and that location-not-boolean answer is the whole value of the step
+(docs/architecture-recovery-design.md §5.5b). **The feature is right; the cost declaration is
+wrong.**
+
+The contrast measured in the same session makes the size of the error concrete — the other
+three Discovery steps, which genuinely fetch nothing:
+
+| steps | corpus | time |
+|---|---|---|
+| `repo_license_classification` + `repo_maturity` + `repo_conventions` | 60 repos | **1 second** |
+| `repo_classification` | 3 repos | **~10 minutes** |
+
+**Why it matters beyond one slow run.** `fetch_cost="none"` is the *defining property* of the
+Discovery tier — CLAUDE.md rule 17: "Discovery is the tier that derives early-headlights
+signals from data Scouting has already collected, with zero new fetch". The declaration also
+drives real behaviour: a `max_fetch_cost="none"` run currently believes this step is free and
+includes it. And `tests/test_analysis_catalog_reader.py::test_discovery_is_the_zero_fetch_
+derivation_tier` exists to stop exactly this, with one named exception for
+`architecture_recovery` — so a fetching Discovery entry is meant to fail until someone adds it
+deliberately. This one did not, which suggests the guard checks the *catalog entry* rather
+than the step's behaviour. Worth confirming: a guard that can be satisfied by declaring the
+right thing while doing another is not a guard.
+
+**Not fixed here — it is another session's step and the change is a judgement call, not a
+typo.** `fetch_cost="api"` understates ten minutes per repo; `api_heavy` is closer. Either
+excludes it from zero-fetch runs, which is correct, and both change which surveys it belongs
+in — §5.5b put it first in Discovery specifically so the gate could run cheaply, and it is not
+cheap.
+
+**Third cost mis-declaration this week**, and they share a cause worth naming: the cost tier is
+a guess made when the step is authored, and nothing measures it afterwards.
+`repo_manifest_parse` was `medium` and measures `low`; the CI job inherited GitHub's 360-minute
+default and would have burned six hours on a hang; this one claims zero-fetch and blocks on the
+network. A cheap measured check at survey time — wall clock and whether a socket was opened —
+would catch all three, and is worth more than another round of careful authoring.
+
 ### `DependencyParser` covers 4 ecosystems; `_MANIFESTS` claims 12
 
 Found 2026-08-23 while checking whether the repos reporting zero dependencies genuinely had
