@@ -574,6 +574,59 @@ adopter. Recording only — nothing routes on these labels.
 
 ---
 
+#### Build the Investigation tab — nothing tracks this, and the design assumes it
+
+**The goal, in the design's own words** (`docs/investigation-framing-design.md` §Context, §1):
+
+> RE today has no concept of *the piece of work you are currently doing*. You land on a
+> resource and start surveying it. The eight intents describe **what kind of work is happening
+> to one resource**; Perspectives describe **whose concerns filter what is shown**. Nothing
+> captures **why this set of work exists at all** — and because nothing does, RE cannot decide
+> what to show first, what to run by default, or whether a finding is merely evidence or
+> actually somebody's problem.
+
+An **Investigation** is one body of work — "the thing the new tab creates and the context
+everything else runs inside". It is a framing step *ahead of* Scouting: declare the body of
+work, its purposes and its membership, and everything downstream (which resources are visible,
+which analyses are proposed, whether a failed check raises an RFA) derives from that
+declaration.
+
+**Why this entry exists:** the design was written, measured and committed (`958ac74`), and the
+tab it assumes was never given a work item. The framing entry below lists eight deferred
+pieces; building the tab is not among them, so the central deliverable is the one thing
+nothing tracks. Confirmed 2026-08-24: zero occurrences of `Investigation` in
+`web/static/index.html`, no local investigation table, no routes.
+
+**What already exists** — and is search/bind only, by explicit decision:
+`entity_egeria_project_context` (registry) + `web/routes/project_context.py`
+(`/search/candidates`, GET/POST per entity), from Part 5 of
+`docs/discovery-automate-project-context-plan.md`. `surveyors/egeria_project_finder.py` wraps
+`ProjectManager.find_projects`.
+
+**What is missing, in dependency order:**
+
+1. **The local investigation table** — one row per investigation with a *nullable*
+   `egeria_project_guid`. §1 calls this the single most important structural decision: it makes
+   promotion to Egeria a fill-in rather than a migration. Shape the membership table like the
+   target `ResourceList` relationships from day one for the same reason.
+2. **The create-a-new-Egeria-Project path** — net-new, and the blocker for deferred item 1
+   below (promote a local investigation). Part 5 explicitly did not build it.
+3. **The tab itself** — create/select an investigation, declare Purpose(s), manage membership.
+   Note Purpose **ranks, never excludes** (measured; see the framing entry), so this is
+   ordering, not filtering.
+
+**Sequencing:** 1 is standalone and unblocks everything. 3 is only worth building once 1
+exists, since the tab with no table is a form with nowhere to write. 2 can lag — a local
+investigation is useful before it is promotable.
+
+**Do not start here:** §7's two renames (`Project` → `Repo`/`Resource`,
+`ProjectGroup` → `Owner`) are a separate entry with a live cross-schema tripwire — Egeria
+Advisor reads RE's tables by hardcoded string in six places. Adding an Investigation concept
+while `Project` still means three things is what makes the rename harder later, but it does
+not block this work.
+
+---
+
 #### Investigation framing — the six items deferred out of the 2026-08-24 design
 
 Full design: `docs/investigation-framing-design.md` (design only, nothing built). These are the
