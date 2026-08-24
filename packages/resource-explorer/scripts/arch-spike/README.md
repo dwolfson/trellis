@@ -3293,3 +3293,59 @@ pinned by test to a real `ANALYSIS_KINDS` key, with a second test asserting
 was not visible from inside the module, because from in here the subscription is just a string.
 
 Commit `2fb02d3`. See also §5.5d-i — the Egeria vocabulary check that came back negative.
+
+---
+
+**97. Measuring the gate's 87% pass-through: my hypothesis was wrong, and the real defect was one
+signal being produced by the documentation tooling itself.**
+
+The corpus run (finding in `Backlog.md`, 2026-08-24) showed the recovery gate letting 47 of 54
+classified repos through and flagged the ratio for whoever owns it. I predicted `package-manifest`
+was the culprit — near-universal, therefore unable to discriminate. **Measured, that is false.**
+Every gate decision persists its own reason string with the signals named, so this needed no re-run:
+
+```
+carry a non-architectural role   32 of 54     of those: run 25 · skip 7
+signals firing across the 25 overrides    package-manifest 19 · deployment-artifacts 15 · entry-points 13
+DECISIVE ALONE                            deployment-artifacts 3 · package-manifest 3 · entry-points 1
+counterfactual, drop package-manifest     7 skip -> 10 skip   (87% -> 81%)
+```
+
+`package-manifest` appears in 19 of 25 but is the sole reason in 3. **The 87% is mostly real
+structural evidence and the ratio is approximately right** — the gate was built with containment
+semantics precisely so a samples repo with compose files still runs, and on a corpus that is mostly
+real software that is what happens. The prediction was a plausible mechanism reasoned from the
+aggregate; the aggregate did not contain it.
+
+**But n=3 was worth reading by name, and one of them was wrong.** `OpenLineage/openlineage-site`:
+71% doc-shaped files, `docusaurus.config.js` at root, `absence-as-evidence: no Dockerfile/compose/
+charts` — and a `package.json`, because **Docusaurus is a Node program**. The gate took that one
+manifest as "there is an architecture here" and overrode a skip that the rest of the same
+classification argued for. Worse, the discriminator against `opea-project.github.io`, which
+skipped, is nothing principled: that one was classified by repo-name convention and never acquired
+a `library` role. **Run versus skip came down to Docusaurus rather than Jekyll.**
+
+So the defect is not that `package-manifest` is weak. It is that **`package-manifest` is the only
+structural signal the documentation machinery can produce by itself.** A docs site has no
+Dockerfile and no entry point of its own; it always has a manifest if its generator is a Node
+program. Fix: the site-generator config gets its own signal (`doc-site-generator`) instead of being
+prose inside `documentation-dominance`, and the gate discounts `package-manifest` when it is
+present. Narrow on purpose — no generator, no discount, which keeps the three real samples+library
+repos running.
+
+**A second defect, measured and deliberately not fixed.** `kubernetes/website` — cited in
+`recovery_gate`'s own docstring as a repo the gate skips — **runs, and always did.** It carries a
+root `Dockerfile` plus nine under `content/*/examples/`, which are documentation *content*: sample
+manifests shown to readers. The signal cannot tell an artifact that deploys the repo from one the
+repo is teaching about. Tempting to fix with a path-prefix rule; measured first, and across the 15
+corpus repos overridden by deployment artifacts, exactly **2** have all of theirs under doc paths
+(`docling-serve`, `langchain-opea`) — and both run anyway on entry points and a package manifest.
+**Zero gate outcomes change.** A path-prefix heuristic tuned on n=2 with no measured effect is the
+"rule derived from one context" trap in finding 94's family, so it is recorded here and in the
+docstring, not implemented. The stale docstring claim is corrected, because a rationale that names
+a repo it gets wrong is worse than one that names none.
+
+**The transferable part.** Three times now the aggregate has been read correctly and the mechanism
+guessed wrongly (findings 73, 79, and this one). What worked again was reading the small-n cases by
+name: 25 overrides is a number, but `openlineage-site` is a Docusaurus site, and only the second
+one tells you what to change.

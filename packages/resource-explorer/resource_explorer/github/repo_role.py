@@ -450,25 +450,43 @@ def _name_matches_doc_convention(repo_name: str) -> bool:
     return any(low.endswith(suffix) for suffix in _DOC_NAME_SUFFIXES)
 
 
-def _documentation_dominance_evidence(repo_name: str, tree_paths: list[str]) -> list[str]:
+# A static-site generator config gets its OWN signal name rather than being
+# folded into `documentation-dominance` prose. Measured 2026-08-24 on the
+# 60-repo corpus: `OpenLineage/openlineage-site` is 71% doc-shaped files with
+# `docusaurus.config.js` at root, and the *same* classification finds a
+# `package.json` — Docusaurus's own. The recovery gate read that manifest as
+# "there is an architecture here" and overrode the skip. The generator config
+# is what distinguishes a manifest that belongs to the documented software from
+# one that belongs to the machinery rendering the documentation, so the gate
+# needs it as data, not as a substring of an evidence sentence.
+SIGNAL_DOC_SITE_GENERATOR = "doc-site-generator"
+
+
+def _documentation_dominance_evidence(repo_name: str, tree_paths: list[str]) -> list[tuple[str, str]]:
     """Pure function combining the name-convention check and a content-
     ratio check (mostly markdown/rst/html, or a static-site generator
-    config at root) into a list of evidence strings."""
-    evidence: list[str] = []
+    config at root) into `(signal, detail)` pairs.
+
+    Returns pairs rather than bare strings so the generator config keeps its
+    own signal name — see `SIGNAL_DOC_SITE_GENERATOR` above."""
+    evidence: list[tuple[str, str]] = []
     if _name_matches_doc_convention(repo_name):
-        evidence.append(f"repo name '{repo_name}' matches documentation-repo naming convention")
+        evidence.append(("documentation-dominance",
+                         f"repo name '{repo_name}' matches documentation-repo naming convention"))
 
     names_at_root = {p for p in tree_paths if "/" not in p}
     for cfg in _DOC_SITE_CONFIGS:
         if cfg in names_at_root:
-            evidence.append(f"static-site generator config at root: {cfg}")
+            evidence.append((SIGNAL_DOC_SITE_GENERATOR,
+                             f"static-site generator config at root: {cfg}"))
             break  # one is enough evidence; avoid listing every generator checked
 
     if len(tree_paths) >= _DOC_CONTENT_MIN_FILES:
         doc_count = sum(1 for p in tree_paths if p.lower().endswith(_DOC_CONTENT_EXTENSIONS))
         ratio = doc_count / len(tree_paths)
         if ratio >= _DOC_CONTENT_RATIO_THRESHOLD:
-            evidence.append(f"{doc_count}/{len(tree_paths)} files are doc-shaped content ({ratio:.0%})")
+            evidence.append(("documentation-dominance",
+                             f"{doc_count}/{len(tree_paths)} files are doc-shaped content ({ratio:.0%})"))
 
     return evidence
 
@@ -627,8 +645,8 @@ def classify_repo_role(owner_repo: str, client: Github | None = None,
         _role(ROLE_TUTORIAL).add("ipynb-ratio", ipynb_evidence)
 
     # --- Signal 6: documentation dominance ------------------------------
-    for detail in _documentation_dominance_evidence(repo.name, tree_paths):
-        _role(ROLE_DOCUMENTATION).add("documentation-dominance", detail)
+    for signal, detail in _documentation_dominance_evidence(repo.name, tree_paths):
+        _role(ROLE_DOCUMENTATION).add(signal, detail)
     # Deliberately NOT: "a real (non-tombstone) docs/ dir exists" as its own
     # documentation-role trigger. Live-verified against milvus-io/milvus
     # (Discovery finding, this session): almost every substantial software

@@ -83,6 +83,15 @@ _NON_ARCHITECTURAL_ROLES = frozenset({rr.ROLE_TUTORIAL, rr.ROLE_SAMPLES, rr.ROLE
 # The signals that constitute structural evidence for the gate below.
 _STRUCTURAL_SIGNALS = frozenset({"deployment-artifacts", "entry-points", "package-manifest"})
 
+# `package-manifest` is the only structural signal that the documentation
+# machinery can produce by itself: a Docusaurus site has a `package.json`
+# because Docusaurus is a Node program, not because the documented software
+# lives there. When a static-site generator config sits at the repo root, that
+# manifest is the generator's, so it stops counting as structural evidence.
+# The other two do not have this problem — a docs site has no Dockerfile and no
+# entry point of its own.
+_GENERATOR_OWNED_SIGNALS = frozenset({"package-manifest"})
+
 RUN = "run"
 SKIP = "skip"
 
@@ -137,22 +146,36 @@ def recovery_gate(classification: rr.RepoRoleClassification) -> tuple[str, str]:
     architecture here worth recovering?", and structural evidence answers it.
     So: skip only when a non-architectural role is present AND nothing
     structural was found. `egeria-workspaces` runs on its compose files; a pure
-    notebook workshop does not; `kubernetes/website` does not.
+    notebook workshop does not.
+
+    **`kubernetes/website` was cited here as a repo this gate skips. It never
+    did** — verified live 2026-08-24. It carries a root `Dockerfile` (the site
+    is containerised) plus nine more under `content/*/examples/`, which are
+    documentation *content*: sample manifests shown to readers. The signal
+    cannot tell an artifact that deploys the repo from one the repo is teaching
+    about. Measured across the corpus, that distinction changes no gate outcome
+    — the two repos whose deployment artifacts all sit under doc paths
+    (`docling-serve`, `langchain-opea`) run on entry points and a package
+    manifest anyway — so it is recorded rather than fixed. The stale claim is
+    corrected here because a rationale that names a repo it gets wrong is worse
+    than one that names none.
     """
     roles = {r.role for r in classification.roles}
     non_arch = roles & _NON_ARCHITECTURAL_ROLES
     if not non_arch:
         return RUN, "no tutorial/samples/documentation role present"
 
-    structural = sorted({
-        ev.signal
-        for role in classification.roles
-        for ev in role.evidence
-        if ev.signal in _STRUCTURAL_SIGNALS
-    })
+    signals = {ev.signal for role in classification.roles for ev in role.evidence}
+    discounted = _GENERATOR_OWNED_SIGNALS if rr.SIGNAL_DOC_SITE_GENERATOR in signals else frozenset()
+    structural = sorted((signals & _STRUCTURAL_SIGNALS) - discounted)
     if structural:
         return RUN, (f"{'/'.join(sorted(non_arch))} role present, but structural evidence "
                      f"found ({', '.join(structural)}) — there is an architecture here")
+    if discounted & _STRUCTURAL_SIGNALS & signals:
+        return SKIP, (f"{'/'.join(sorted(non_arch))} role present; a package manifest was found "
+                      f"but a static-site generator config sits at the repo root, so that "
+                      f"manifest belongs to the generator rather than to documented software "
+                      f"— recovering an architecture would be the wrong question")
     return SKIP, (f"{'/'.join(sorted(non_arch))} role present and no structural evidence "
                   f"(deployment artifacts, entry points or a package manifest) — "
                   f"recovering an architecture would be the wrong question")

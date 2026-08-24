@@ -216,11 +216,11 @@ class TestIpynbPresence:
 class TestDocumentationDominance:
     def test_repo_name_matches_docs_suffix(self):
         evidence = rr._documentation_dominance_evidence("egeria-docs", ["a.md"] * 10)
-        assert any("naming convention" in e for e in evidence)
+        assert any("naming convention" in d for _, d in evidence)
 
     def test_repo_name_matches_website(self):
         evidence = rr._documentation_dominance_evidence("website", [])
-        assert any("naming convention" in e for e in evidence)
+        assert any("naming convention" in d for _, d in evidence)
 
     def test_github_io_suffix_matches(self):
         assert rr._name_matches_doc_convention("someorg.github.io") is True
@@ -231,8 +231,19 @@ class TestDocumentationDominance:
     def test_content_ratio_fires_on_markdown_heavy_repo(self):
         paths = [f"content/page{i}.md" for i in range(8)] + ["mkdocs.yml"]
         evidence = rr._documentation_dominance_evidence("somewebsite", paths)
-        assert any("doc-shaped content" in e for e in evidence)
-        assert any("mkdocs.yml" in e for e in evidence)
+        assert any("doc-shaped content" in d for _, d in evidence)
+        assert any("mkdocs.yml" in d for _, d in evidence)
+
+    def test_generator_config_gets_its_own_signal(self):
+        """Not folded into `documentation-dominance` prose: the recovery gate
+        keys on it to discount a `package.json` that belongs to the generator
+        rather than to documented software, and it must read that as data."""
+        paths = [f"content/page{i}.md" for i in range(8)] + ["docusaurus.config.js"]
+        evidence = rr._documentation_dominance_evidence("somewebsite", paths)
+        by_signal = {sig: d for sig, d in evidence}
+        assert rr.SIGNAL_DOC_SITE_GENERATOR in by_signal
+        assert "docusaurus.config.js" in by_signal[rr.SIGNAL_DOC_SITE_GENERATOR]
+        assert by_signal[rr.SIGNAL_DOC_SITE_GENERATOR] != by_signal.get("documentation-dominance")
 
     def test_code_heavy_repo_does_not_fire_content_ratio(self):
         paths = [f"src/f{i}.py" for i in range(10)] + ["README.md"]
