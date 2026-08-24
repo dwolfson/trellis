@@ -10,6 +10,7 @@ from trellis_microflow import resolve_resources
 
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.surveyors import step_cost_observer
 from resource_explorer.surveyors.survey_report import SurveyResult
 
 log = logging.getLogger(__name__)
@@ -205,18 +206,45 @@ class SurveyOrchestrator:
 
             for step_key, surveyor in selected:
                 log.info("Running %s for %s …", surveyor.step_name, project.slug)
-                try:
-                    annotations = surveyor.run()
-                    for ann in annotations:
-                        result.add(ann)
-                    log.info("  → %d annotation(s)", len(annotations))
-                except Exception as exc:
-                    msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
-                    log.exception(msg)
-                    result.add_error(msg)
-                    # Also keyed by step, so a caller running steps on behalf of
-                    # several analyses at once can tell which of them failed.
-                    result.step_errors[step_key] = msg
+                # Measure what the step actually costs, against what its
+                # StepInfo declares. Three mis-declarations surfaced in one week
+                # — a zero-fetch step calling the GitHub API, a `medium` step
+                # measuring `low`, and a timing taken for the wrong function —
+                # and none was catchable by a test, because each was a
+                # declaration disagreeing with behaviour rather than code
+                # disagreeing with itself. See step_cost_observer: it reports
+                # and never corrects, deliberately.
+                info = STEP_REGISTRY.get(step_key)
+                with step_cost_observer.observe(
+                    step_key,
+                    getattr(info, "fetch_cost", ""),
+                    getattr(info, "compute_cost", ""),
+                ) as _observed:
+                    try:
+                        annotations = surveyor.run()
+                        for ann in annotations:
+                            result.add(ann)
+                        log.info("  → %d annotation(s)", len(annotations))
+                    except Exception as exc:
+                        msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
+                        log.exception(msg)
+                        result.add_error(msg)
+                        # Also keyed by step, so a caller running steps on behalf
+                        # of several analyses at once can tell which of them
+                        # failed.
+                        result.step_errors[step_key] = msg
+                # Recorded outside the try so a step that RAISED is still
+                # measured: a step that fails after 90 seconds of network calls
+                # is exactly the case worth having a number for.
+                if _observed:
+                    recorded = step_cost_observer.record(
+                        self._registry, project.slug, _observed[0], surveyed_at)
+                    if recorded == step_cost_observer.NOT_RECORDED:
+                        # Branchable, not just logged: an unwritten observation
+                        # is indistinguishable from a step that was never slow.
+                        result.add_error(
+                            f"step cost for {step_key} could not be recorded — "
+                            "its cost observation is missing, not zero")
 
         log.info(
             "Survey complete for %s: %d annotation(s), %d error(s)",
