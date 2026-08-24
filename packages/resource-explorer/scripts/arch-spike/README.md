@@ -2854,3 +2854,59 @@ The two gates are correct on their own terms and are kept — they remove rules 
 confidently wrong answers outside their scope, which is worth doing whether or not the score moves.
 And the headline from finding 87 is unchanged: **deterministic distillation preserved 18/27 on a
 perspective it was never designed for; adjudication has yet to beat it there.**
+
+**89. "Wired into the IR" was wired into the *spike*. The product computed ports by nobody and
+stored them nowhere.**
+
+Finding 86's commit said *"Wire ports and wires into the IR"* and *"closes gap-list item 3"*. Both
+claims were wrong in the same way, and I repeated them to the presentation session as fact.
+
+Three checks, run to verify their report rather than accept it:
+
+| claim | verified |
+|---|---|
+| the only caller of `interfaces.propose()` is `scripts/arch-spike/detect.py:124` | **yes** — the throwaway harness |
+| `arch_recovery_detect.py` never imports `interfaces` | **yes** — zero matches; the survey step never computed them |
+| `persist_ir()` takes no ports/wires | **yes** — `components` and `evidence` only |
+
+So the 68 ports and 38 wires were real and stable *inside a spike run*. In the product: **computed by
+nobody, stored nowhere, readable by nothing.**
+
+### The failure mode, which is the point
+
+The capability existed, was regression-tested, and was not connected to storage — and **an empty
+result renders identically to a real zero.** Prometheus legitimately yielding one port and zero wires
+is exactly the case that would have hidden this: a topology view built against it would have shown
+nothing, and nobody could have told "nothing to show" from "nothing arrives".
+
+The presentation session named three prior instances of the same shape in this codebase this week —
+`project_dependencies` written only by the ingestion pipeline, `ci_quality` findings likewise,
+`project_analysis_findings` never cleaned by `remove()`. That makes this a **pattern, not an
+incident**: a capability lands, its call site does not, and the gap is invisible because absence and
+zero look alike.
+
+It is also the same family as findings 12/24/51/70 — something silently producing nothing rather than
+failing — one level up. There the defect was inside a function; here it is *between* a function and
+its caller.
+
+### Fixed
+
+- `arch_recovery_detect.py` now calls `interfaces.propose()` and passes the result to `persist_ir`.
+  Deployment artifacts only, so no source parsing and no change to the step's cost tier.
+- `persist_ir()` takes `ports`/`wires` and writes an `architecture_interfaces` finding kind.
+
+**Ports** key on the owning component's `scope_locator`, like every other component-scoped finding.
+**Wires are edges**, which that shape does not fit — so rather than invent an edge table for a view
+nobody has built yet, each wire is attributed to its **source** component, with the target in
+`detail`. That is not an arbitrary tie-break: a compose `depends_on` is *declared by* the depending
+service, so the source is where the evidence actually lives. An edge list is recoverable without
+having committed to a schema before anyone knows what reads it.
+
+Full suite 1877 passed.
+
+### The lesson worth keeping
+
+**"Committed and regression-tested" is not "reachable".** A test that calls a function proves the
+function works; it proves nothing about whether anything calls it in production. Neither does a green
+suite. The check that would have caught this is the one the presentation session actually ran: *who
+calls this, outside its own tests?*

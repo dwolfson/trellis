@@ -113,10 +113,31 @@ class ArchDetectSurveyor(BaseSurveyor):
             else:
                 detect_outcome = None  # persist_ir's ordinary scoped/recovered default
 
+            # Ports and wires (design §5.5f). This was committed and
+            # regression-tested against `interfaces.propose()` but its only
+            # caller was the throwaway spike harness, so in the product they
+            # were computed by nobody and stored nowhere — the capability
+            # existed and nothing wired it to storage. Caught by the
+            # presentation session before a view was built against an
+            #empty reader; recorded as spike finding 89.
+            #
+            # Deployment artifacts only: no source parsing, no clone, so this
+            # does not move the step's cost tier.
+            try:
+                from resource_explorer.surveyors.arch_recovery import interfaces
+                ports, wires, iface_ev, iface_notes = interfaces.propose(
+                    root, first_party, components)
+                evidence.extend(iface_ev)
+                notes.extend(iface_notes)
+            except Exception:
+                log.exception("%s: interface extraction failed", self.project.slug)
+                ports, wires = [], []
+
             persist_ir(
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="detect",
                 run_scope=self._scope_locator, outcome=detect_outcome,
+                ports=ports, wires=wires,
             )
 
             by_type: dict[str, int] = {}

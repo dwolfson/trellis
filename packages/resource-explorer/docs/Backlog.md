@@ -977,6 +977,12 @@ matter; conflating them would be a mistake.
   candidate — which is what the ground truth declares — each such component costs 2–3 slots instead
   of 1.
 
+**Note on gap-list item 3 (finding 89):** it was reported closed when `interfaces.propose()` was
+committed, but its only caller was the spike harness — the survey step never computed ports and
+`persist_ir` never stored them. Now genuinely wired: `arch_recovery_detect` computes them and
+`persist_ir` writes an `architecture_interfaces` finding kind. "Committed and regression-tested" is
+not "reachable".
+
 **Attempted and does not work by import evidence (finding 78).** Strict-majority dominance from entry
 point to package finds the right partner 6 times out of 7 (`pkg/scheduler` share 1.00,
 `pkg/controller` 0.97, `pkg/proxy` 0.97, `pkg/kubelet` 0.83) **and over-reaches every time**, pulling

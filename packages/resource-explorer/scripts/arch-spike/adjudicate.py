@@ -80,6 +80,35 @@ SOLUTION_COMPONENT_TYPES = [
     "Console Command", "Data Distribution", "Publishing", "Insight Model",
 ]
 
+# Area 0 `SoftwareCapability` subtypes — the DEPLOYMENT-perspective vocabulary.
+# Verified against OpenMetadataType.java at egeria-v6 (17 subtypes declaring
+# SOFTWARE_CAPABILITY as their superclass), not invented, and matching the
+# values `egeria-workspaces.md` already uses.
+#
+# §4.2 is explicit that this is a DIFFERENT vocabulary, not a translation:
+# `Application` (a deployed capability) and `Software Service` (a designed
+# component) are one system seen from two layers, joined by `ImplementedBy`.
+# Typing a compose service with `SolutionComponentType` is a category error, and
+# it is what the single-vocabulary adjudicator was doing to every deployment
+# candidate it saw (finding 87/88).
+DEPLOYMENT_CAPABILITY_TYPES = [
+    "Application", "APIManager", "AnalyticsEngine", "CloudService",
+    "ContentCollectionManager", "DataManager", "DatabaseManager", "EventBroker",
+    "EventManager", "FileManager", "FileSystem", "InventoryCatalog",
+    "NetworkGateway", "ReportingEngine", "SoftwareService",
+    "UserAuthenticationManager", "WorkflowEngine",
+]
+
+VOCABULARY_BY_PERSPECTIVE = {
+    "deployment": DEPLOYMENT_CAPABILITY_TYPES,
+}
+
+
+def vocabulary_for(perspective: str) -> list[str]:
+    """The type vocabulary that applies in this perspective (§4.2)."""
+    return VOCABULARY_BY_PERSPECTIVE.get(perspective, SOLUTION_COMPONENT_TYPES)
+
+
 MAX_CANDIDATES_PER_CHUNK = 160  # prometheus (95) fits in one; kubernetes (358) chunks
 
 
@@ -219,8 +248,50 @@ given. Do not invent slugs. Do not include a "files" field — files are derived
 cite, not from you."""
 
 
-def build_prompt(components: list[dict], ev_by_slug: dict[str, list[dict]]) -> str:
-    lines = [
+def build_prompt(components: list[dict], ev_by_slug: dict[str, list[dict]],
+                 perspective: str = "logical") -> str:
+    lines = []
+    if perspective != "logical":
+        # The system prompt is written for the logical perspective and its
+        # 13-value SolutionComponentType vocabulary. §4.2: a DIFFERENT
+        # vocabulary applies elsewhere, and this is not a translation —
+        # `Application` (a deployed capability) and `Software Service` (a
+        # designed component) are one system seen from two layers, joined by
+        # `ImplementedBy`. Stated as an override at the top of the user prompt,
+        # emphatically, because it contradicts what the system prompt just said.
+        vocab = vocabulary_for(perspective)
+        lines += [
+            f"!!! PERSPECTIVE OVERRIDE — these candidates are {perspective.upper()} components.",
+            "",
+            "IGNORE the 13-value SolutionComponentType list in your instructions. It does not apply",
+            f"here. Classify ONLY into these {len(vocab)} values, exactly as spelled:",
+            "  " + ", ".join(vocab),
+            "",
+            ("These are deployed runtime capabilities — containers, servers, brokers, stores — not "
+             "designed code components. A third-party image you run (a database, a queue, a proxy) "
+             "is a first-class component here, and it legitimately owns NO first-party source "
+             "files; absence of files is normal in this perspective, not a reason to skip it."
+             "\n\nThere is NO `Third Party Process` value in this vocabulary, and its absence is "
+             "deliberate rather than an oversight. These 17 values describe **what capability a "
+             "thing provides**, not whose product it is: a third-party Postgres image is a "
+             "`DatabaseManager`, a third-party Kafka is an `EventBroker`, a third-party Nginx is a "
+             "`NetworkGateway`. Being third-party is a property of the component, not its type — "
+             "record it in the rationale, never as the classification. (`Third Party Process` "
+             "belongs to the LOGICAL vocabulary you were told to ignore.)"
+             "\n\nDO NOT MERGE AGGRESSIVELY HERE. Your instructions say a repository typically has "
+             "5-25 real components and that producing nearly as many outputs as inputs means you "
+             "have not done the job. **That is a claim about the LOGICAL perspective and it is "
+             "false here.** A deployment component IS a container: one compose service is one "
+             "component, and an estate of thirty services is thirty components, not five. Merge "
+             "ONLY exact duplicates — the same service declared in several layered compose files, "
+             "or a Dockerfile-directory candidate describing the same container as a compose "
+             "service. Two different services NEVER merge, however similar their roles: two "
+             "databases serving two deployments are two components. If in doubt, do not merge."
+             if perspective == "deployment" else
+             "Classify according to the vocabulary above rather than the one in your instructions."),
+            "",
+        ]
+    lines += [
         f"There are {len(components)} candidate components. For each, you are given its slug, "
         "the detector-proposed name/type (may be absent — '?' means the detector didn't classify "
         "it), its file globs, which detector(s) proposed it, its confidence, and the evidence "
@@ -465,6 +536,11 @@ def split_multi_entrypoint(kept: list[dict], type_by_slug: dict[str, str],
 
 # ── the hard rule: post-validation, not prompting ───────────────────────
 
+def _perspective_of(slugs: list[str], perspective_by_slug: dict[str, str]) -> str:
+    seen = {perspective_by_slug.get(s) for s in slugs if perspective_by_slug.get(s)}
+    return seen.pop() if len(seen) == 1 else "logical"
+
+
 def validate_and_ground(raw_outputs: list[dict], valid_slugs: set[str],
                          files_by_slug: dict[str, list[str]],
                          perspective_by_slug: dict[str, str]) -> tuple[list[dict], list[dict]]:
@@ -493,8 +569,11 @@ def validate_and_ground(raw_outputs: list[dict], valid_slugs: set[str],
             dropped.append({**item, "reason": f"candidate_slugs not in input set: {unknown}"})
             continue
 
-        if ctype not in SOLUTION_COMPONENT_TYPES:
-            dropped.append({**item, "reason": f"type {ctype!r} not in the 13-value SolutionComponentType vocabulary"})
+        item_perspective = _perspective_of(item.get("candidate_slugs") or [], perspective_by_slug)
+        allowed = vocabulary_for(item_perspective)
+        if ctype not in allowed:
+            dropped.append({**item, "reason": f"type {ctype!r} not in the {item_perspective} "
+                                              f"vocabulary ({len(allowed)} values)"})
             continue
 
         if not name or not isinstance(name, str):
@@ -565,23 +644,45 @@ def adjudicate(target: str, root: str | None, model_override: str | None = None,
         model = cfg.llm.anthropic.model
     llm = get_llm(cfg)
 
-    chunks = chunk_candidates(components, MAX_CANDIDATES_PER_CHUNK)
+    # ── one adjudication per PERSPECTIVE ────────────────────────────────
+    #
+    # Finding 88. Adjudicating the whole candidate set at once let the model
+    # merge deployment candidates into logical ones: on `egeria-workspaces` the
+    # distilled IR carried 59 deployment candidates and adjudication left 15,
+    # against a deployment ground truth that needs those 59. Gating the
+    # downstream rules on perspective could not help, because the merge step
+    # consumed the components before any rule saw them.
+    #
+    # §4.2 has said this all along — perspectives are *mapped*, never merged.
+    # Partitioning here makes a cross-perspective merge structurally impossible
+    # rather than merely rejected, and lets each group be prompted with the
+    # vocabulary that actually applies to it (§3.1's 13 values for logical, Area
+    # 0's SoftwareCapability subtypes for deployment).
+    by_perspective: dict[str, list[dict]] = {}
+    for c in components:
+        by_perspective.setdefault(c.get("perspective") or "logical", []).append(c)
 
     all_raw: list[dict] = []
     calls: list[dict] = []
-    for i, chunk in enumerate(chunks):
-        prompt = build_prompt(chunk, ev_by_slug)
-        response, hit = cached_complete(llm, SYSTEM_PROMPT, prompt, model)
-        calls.append({
-            "chunk": i, "candidates": len(chunk), "prompt_chars": len(prompt),
-            "cache_hit": hit,
-        })
-        try:
-            parsed = parse_response(response)
-        except ValueError as exc:
-            calls[-1]["parse_error"] = str(exc)
-            parsed = []
-        all_raw.extend(parsed)
+    i = 0
+    for perspective in sorted(by_perspective):
+        group = by_perspective[perspective]
+        print(f"  perspective {perspective!r}: {len(group)} candidates, "
+              f"{len(vocabulary_for(perspective))}-value vocabulary")
+        for chunk in chunk_candidates(group, MAX_CANDIDATES_PER_CHUNK):
+            prompt = build_prompt(chunk, ev_by_slug, perspective)
+            response, hit = cached_complete(llm, SYSTEM_PROMPT, prompt, model)
+            calls.append({
+                "chunk": i, "perspective": perspective, "candidates": len(chunk),
+                "prompt_chars": len(prompt), "cache_hit": hit,
+            })
+            i += 1
+            try:
+                parsed = parse_response(response)
+            except ValueError as exc:
+                calls[-1]["parse_error"] = str(exc)
+                parsed = []
+            all_raw.extend(parsed)
 
     valid_slugs = {c["slug"] for c in components}
     files_by_slug = {c["slug"]: c.get("files", []) for c in components}

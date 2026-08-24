@@ -95,6 +95,8 @@ def persist_ir(
     *,
     run_label: str = "run",
     run_scope: str = "",
+    ports: list[dict] | None = None,
+    wires: list[dict] | None = None,
     extra_metrics: dict[str, dict[str, float]] | None = None,
     outcome: StepOutcome | None = None,
 ) -> dict[str, str]:
@@ -147,6 +149,7 @@ def persist_ir(
         )
     outcome_row = outcome.as_row()
     slug_to_scope: dict[str, str] = {c.slug: scope_locator_for(c) for c in components}
+
 
     for c in components:
         loc = slug_to_scope[c.slug]
@@ -243,4 +246,55 @@ def persist_ir(
         surveyed_at=surveyed_at, scope_locator="",
     )
 
+    if ports or wires:
+        name_to_scope = {c.name: slug_to_scope.get(c.slug, "") for c in components}
+        _persist_interfaces(registry, slug, surveyed_at, ports or [], wires or [],
+                            name_to_scope)
+
     return slug_to_scope
+
+
+def _persist_interfaces(registry, slug: str, surveyed_at: str,
+                        ports: list[dict], wires: list[dict],
+                        name_to_scope: dict[str, str]) -> None:
+    """Ports and wires as findings (design §5.5f, §3.2/§3.3).
+
+    **Ports** are a property of one component, so they key on that component's
+    `scope_locator` like every other component-scoped finding.
+
+    **Wires are edges**, which the component-keyed finding shape does not
+    naturally fit — and rather than invent a shape for a view that does not
+    exist yet, each wire is attributed to its **source** component. That is not
+    an arbitrary tie-break: a compose `depends_on` is *declared by* the
+    depending service, so the source is where the evidence actually lives. The
+    target travels in `detail`, so an edge list is recoverable without having
+    committed to an edge table before anyone knows what reads it.
+    """
+    findings: list[dict] = []
+    for p in ports:
+        findings.append({
+            "check_name": f"port:{p.get('name')}",
+            "label": p.get("direction") or "Unknown",
+            "summary": f"{p.get('component')} — {p.get('detail', '')}",
+            "confidence": 70,
+            "detail": {"component": p.get("component"), "port": p.get("name"),
+                       "direction": p.get("direction"), "protocol": p.get("protocol", ""),
+                       "evidence": p.get("evidence"), "kind": "port"},
+        })
+    for w in wires:
+        findings.append({
+            "check_name": f"wire:{w.get('target')}",
+            "label": w.get("integrationStyle") or "declared-dependency",
+            "summary": w.get("label") or f"{w.get('source')} -> {w.get('target')}",
+            "confidence": 70,
+            "detail": {"source": w.get("source"), "target": w.get("target"),
+                       "protocol": w.get("protocol", ""), "oneWay": w.get("oneWay"),
+                       "integrationStyle": w.get("integrationStyle", ""),
+                       "frequency": w.get("frequency", ""),
+                       "dataExchanged": w.get("dataExchanged", ""),
+                       "evidence": w.get("evidence"), "kind": "wire"},
+        })
+    if not findings:
+        return
+    registry.upsert_finding(slug, "architecture_interfaces", findings,
+                            surveyed_at=surveyed_at)
