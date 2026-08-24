@@ -389,6 +389,15 @@
 
       <!-- Analysis view — same card-list renderer as Assessment, filtered to intent=analysis -->
       <div id="analysis-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+      <!-- Discovery's analysis cards. Added 2026-08-24: all five discovery-intent
+           analyses (repo_classification, architecture_recovery,
+           license_classification, maturity, repo_conventions) were catalogued,
+           step-mapped and runnable via POST /{slug}/analyses/{id}/run, and had
+           no control anywhere in the UI — _loadAnalysisCatalogPanel was called
+           only for 'assessment' and 'analysis'. The pane rendered Survey
+           Definitions instead and threw nothing, so "I clicked and nothing ran"
+           was indistinguishable from "there was nothing to run". -->
+      <div id="discovery-analyses-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
       <!-- Understanding view — charts, relocated verbatim out of the sidebar (Step 7).
            Same #charts-section/#chart-container/#egeria-panel ids and the same
@@ -1740,7 +1749,7 @@ function _showAnalysisSubTab(tab) {
 // case (confirmed: Discovery still operates over a particular cataloged
 // asset even though it adds no new data of its own, so it has the same
 // per-entity context Scouting/Assessment/Analysis do). ─────────────────────
-let _discoverySubTab = 'survey-definitions';  // 'survey-definitions' | 'questions' | 'disposition'
+let _discoverySubTab = 'survey-definitions';  // 'survey-definitions' | 'analyses' | 'questions' | 'disposition'
 
 function showDiscoveryPane() {
   _showDiscoverySubTab(_discoverySubTab);
@@ -1748,6 +1757,7 @@ function showDiscoveryPane() {
 
 function _discoverySubnavHtml(active) {
   const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
+  tabs.push({ tab: 'analyses', label: '🧪 Analyses' });  // the five discovery-tier analyses
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
@@ -1764,6 +1774,7 @@ function _showDiscoverySubTab(tab) {
   if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'survey-definitions';
   _discoverySubTab = tab;
   if (tab === 'survey-definitions') showMainView('survey-definitions');
+  else if (tab === 'analyses') showMainView('discovery-analyses');
   else if (tab === 'questions') { _questionsDispositionHost = 'discovery'; _questionsPhase = 'discovery'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'discovery'; showMainView('scouting-disposition'); }
 }
@@ -2103,6 +2114,18 @@ async function loadAssessmentPanel() {
 
 async function loadAnalysisPanel() {
   await _loadAnalysisCatalogPanel('analysis', 'analysis-view', 'Analysis', _analysisSubnavHtml('catalog'));
+}
+
+// The backend already returns all five for intent=discovery — this is a call
+// site, not a feature. Deliberately NOT folded into the Survey Definitions
+// panel: conceptually these are steps a Survey Definition ought to chain, but
+// the only repo definition that exists (RepoCoarseScout) chains repo_health +
+// repo_language, so routing them through definitions would make them reachable
+// only after authoring work in Egeria. A card with a Run button makes them
+// usable now; chaining them properly is the better answer and a separate job.
+async function loadDiscoveryAnalysesPanel() {
+  await _loadAnalysisCatalogPanel('discovery', 'discovery-analyses-view', 'Discovery',
+                                  _discoverySubnavHtml('analyses'));
 }
 
 // Shared by Assessment and Analysis — same fetch/filter/render pipeline,
@@ -6468,6 +6491,7 @@ function showMainView(tab) {
   const placeholderView = document.getElementById('intent-placeholder-view');
   const assessmentView = document.getElementById('assessment-view');
   const analysisView   = document.getElementById('analysis-view');
+  const discoveryAnalysesView = document.getElementById('discovery-analyses-view');
   const understandingView = document.getElementById('understanding-view');
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
   const scoutingResultsView = document.getElementById('scouting-results-view');
@@ -6492,7 +6516,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6515,6 +6539,9 @@ function showMainView(tab) {
   } else if (tab === 'analysis') {
     analysisView.classList.remove('hidden');
     loadAnalysisPanel();
+  } else if (tab === 'discovery-analyses') {
+    discoveryAnalysesView.classList.remove('hidden');
+    loadDiscoveryAnalysesPanel();
   } else if (tab === 'understanding') {
     understandingView.classList.remove('hidden');
     loadUnderstandingCharts();
