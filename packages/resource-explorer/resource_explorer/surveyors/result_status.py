@@ -38,6 +38,21 @@ MEASURED = "measured"
 NOTHING_FOUND = "nothing_found"
 NOT_ESTABLISHED = "not_established"
 NEVER_RUN = "never_run"
+#: A gate decided this step would have been the wrong question for this
+#: resource, so it never ran. Added 2026-08-24 for repo_classification's
+#: run/skip gate (docs/architecture-recovery-design.md §5.5b).
+#:
+#: Deliberately NOT a sixth label in step_outcome.py, and that is the whole
+#: point: those five describe what a run ACHIEVED, and a skip is the absence of
+#: a run. `unverified` would be actively wrong for it — that means "we tried and
+#: could not tell", where a skip means "we chose not to try, and that choice was
+#: correct". A funnel's skip is its biggest win; rendering it as a degraded
+#: state would punish the thing working as designed.
+#:
+#: It belongs here instead because this is the reader-facing layer, and a reader
+#: does need to be told — otherwise a skipped step is indistinguishable from a
+#: step that failed to produce anything.
+SKIPPED_BY_DESIGN = "skipped_by_design"
 
 _OUTCOME_TO_STATE = {
     "recovered": MEASURED,
@@ -79,6 +94,22 @@ def _as_dict(detail: Any) -> dict:
         except Exception:
             return {}
     return detail if isinstance(detail, dict) else {}
+
+
+def skipped(reason: str, *, gate: str = "") -> dict:
+    """The status for a step a gate deliberately declined to run.
+
+    Takes the reason as a required argument: a skip with no stated reason is
+    indistinguishable from a failure on the screen, which is exactly what this
+    state exists to prevent.
+    """
+    return {
+        "state": SKIPPED_BY_DESIGN,
+        "outcome": "",
+        "cause": gate,
+        "hint": reason,
+        "known_positive": False,
+    }
 
 
 def status_from_detail(detail: Any) -> dict | None:

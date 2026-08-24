@@ -2485,6 +2485,17 @@ function _renderEmptyResultState(data) {
       <span>${_esc(st.hint || 'Scanned — nothing of this kind found.')}</span>
     </div>`;
   }
+  if (st.state === 'skipped_by_design') {
+    // A gate decided this step would have been the wrong question here. Neutral
+    // slate, not amber: in a funnel a skip is the WIN — it is the expensive tier
+    // correctly declining to run — so rendering it as degraded would punish the
+    // thing working as designed. The reason is always shown; a skip without one
+    // is indistinguishable from a failure.
+    return `<div class="text-xs text-slate-400 flex items-start gap-1.5">
+      <span class="text-slate-500">⊘</span>
+      <span>Not applicable — ${_esc(st.hint || 'a gate determined this analysis does not apply here.')}</span>
+    </div>`;
+  }
   if (st.state === 'not_established') {
     // A prerequisite is missing. Amber, and it names what to run — NOT "Run",
     // which is the button that just failed to produce an answer.

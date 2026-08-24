@@ -87,3 +87,32 @@ class TestAttach:
     def test_attach_adds_nothing_when_undecidable(self):
         out = rs.attach({"total": 0}, None)
         assert "_status" not in out
+
+
+class TestSkippedByDesign:
+    """A gate declining to run is the funnel working, not failing.
+
+    Raised by the session that landed repo_classification: its run/skip gate had
+    no label that fits, and none of step_outcome.py's five does — `unverified`
+    means "we tried and could not tell", where a skip means "we chose not to
+    try, and that choice was correct". It lives here, in the reader-facing
+    layer, rather than becoming a sixth run outcome.
+    """
+
+    def test_a_skip_is_its_own_state(self):
+        st = rs.skipped("Tutorial repos have no architecture to recover.")
+        assert st["state"] == rs.SKIPPED_BY_DESIGN
+
+    def test_a_skip_is_not_confused_with_a_failed_run(self):
+        assert rs.SKIPPED_BY_DESIGN not in (rs.NOT_ESTABLISHED, rs.NOTHING_FOUND, rs.NEVER_RUN)
+
+    def test_a_skip_always_carries_its_reason(self):
+        """A skip with no stated reason renders identically to a failure, which
+        is the whole thing this state exists to prevent."""
+        st = rs.skipped("Gate: classified as documentation, not software.")
+        assert st["hint"]
+
+    def test_no_outcome_label_is_invented_for_it(self):
+        """It must not borrow one of step_outcome's five — a skip had no run to
+        describe."""
+        assert rs.skipped("x")["outcome"] == ""
