@@ -2728,3 +2728,71 @@ model on the strength of finding 81, and would have spent the fixture measuring 
 dev fixture says is inferior. Stopped before it wrote output — the fixture was not spent. **The
 dev-confirm step existed precisely so a settled configuration is settled by measurement rather than
 by the most recent conclusion**, and this is the first time it paid for itself.
+
+---
+
+**87. The held-out run: 18/27 → 0/27. Every adjudicator rule was derived from code-tree repos and
+none of them is valid for the deployment perspective.**
+
+`egeria-workspaces` was spent as the clean holdout for the settled configuration (coder + typing
+guide + both evidence checks), after finding 86's dev-confirm chose the model.
+
+| stage | components | component-set agreement |
+|---|---|---|
+| raw IR | 164 | **18/27** |
+| + deterministic distillation | 141 | **18/27** — no loss |
+| + adjudication | **8** | **0/27** |
+
+**Deterministic distillation transfers to a new perspective without loss. Adjudication destroys it.**
+
+### Three failures, all the same root cause
+
+**1. The grounding rule dropped 15 components for having no files.** `egeria-workspaces.md` states
+the case in its own text: *"deployment components frequently own no first-party files at all —
+`kafka`, `postgres` and `kroki` are third-party images."* Finding 82 already flagged this rule as
+"conservative-but-arguably-too-strict" when it dropped one legitimate component on Milvus. It is not
+arguable any more: on a deployment-perspective target it removes the components wholesale.
+
+**2. `falsify_types` fired on seven real daemons and was wrong every time** — `Egeria Freshstart`,
+`Egeria Quickstart`, `DuckDB Server`, `Unity Catalog Server`, `Autoheal`, `User Code Server`,
+`Airflow Marquez`. All were correctly typed `Long Running Daemon` and all were demoted to
+`Software Library` because no constituent declares `package main`.
+
+**A container running a third-party image is a long-running daemon that has no first-party entry
+point by definition.** Finding 85 called this rule "a falsification, not a preference". It is a
+falsification *in the logical perspective, over first-party code*. Outside that scope the premise
+fails, and the rule confidently produces the opposite of the truth.
+
+**3. Merging collapsed 141 candidates to 8.** With the files-grounding drops and the type demotions
+compounding, what survived was 7 `Software Library` and 1 `Third Party Process` — a description of a
+25-compose-file estate as eight libraries.
+
+### What this actually establishes
+
+Every rule built in findings 79–86 was derived from Prometheus, Milvus and Kubernetes: **three
+code-tree repos, all logical perspective, all Go.** Each rule was principled *within that scope* and
+each was measured. None was tested outside it until now.
+
+> **A rule derived from one perspective is not a rule. It is a rule about that perspective.**
+
+The same lesson as finding 78's `kube-` prefix pairing, which was refused for being fitted to the
+repos already measured — but this time the fitting was to a *perspective* rather than to a repo, and
+it was invisible because every fixture in play shared it.
+
+### The cost, stated plainly
+
+**`egeria-workspaces` is now spent, and it was the only deployment-perspective fixture.** Any fix to
+deployment handling — perspective-gating the grounding rule, scoping `falsify_types` to first-party
+code, or refusing to adjudicate a deployment IR at all — **has no clean fixture left to be validated
+against.** `trellis` remains clean but is logical perspective, so it cannot test this.
+
+That is the honest position: the defect is identified and evidenced, the fix is obvious, and **there
+is currently no way to measure whether the fix works.** A new pre-registered deployment-perspective
+fixture is the prerequisite, not the follow-up.
+
+### And the deterministic half is the quiet result
+
+18/27 preserved through distillation on a target and a perspective it was never designed for. The
+filters — support-only, whole-repo claims, refinements of a classified parent — are stated as claims
+about what a component *is*, and they held. **Cheap, deterministic, perspective-independent, and the
+only part of this pipeline that transferred.**

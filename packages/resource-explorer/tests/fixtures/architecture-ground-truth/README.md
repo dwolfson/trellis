@@ -111,7 +111,7 @@ Prompts, weights, thresholds and filter rules are all the same hazard. So:
 | `milvus.md` | **HELD OUT** | owner-published doc |
 | `kubernetes.md` | **DEV** (moved 2026-08-23) — the entry-point partition check was derived from its failure | owner-published doc |
 | `trellis.md` | **HELD OUT** | maintainer |
-| `egeria-workspaces.md` | **HELD OUT** | maintainer |
+| `egeria-workspaces.md` | **SPENT** 2026-08-23 (finding 87 — settled-configuration holdout run) | maintainer |
 
 **Dev-fixture scores are a development signal, not a result**, and must be labelled as such wherever
 they are quoted. A held-out fixture is run **once**, after the thing being developed is settled, and
