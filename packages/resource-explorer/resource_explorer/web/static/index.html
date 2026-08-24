@@ -2349,7 +2349,12 @@ const _REPO_RESULTS_RENDER_MODE = {
   data_file_profiling: 'custom',
   security_scan: 'findings_list',
   documentation_coverage: 'findings_list',
-  repo_classification: 'findings_list',
+  // 'custom', not 'findings_list': that mode maps label -> pass/gap, and this
+  // analysis has no pass/gap axis at all. Its labels are LOCATIONS (in-repo /
+  // sibling-repo / doc-site / not-found), a role, and a gate decision — three
+  // different kinds of statement that the generic renderer would flatten into
+  // identical grey rows. See _renderRepoClassificationResults.
+  repo_classification: 'custom',
   license_classification: 'findings_list',
   security_features: 'findings_list',
   ci_quality: 'findings_list',
@@ -2546,7 +2551,122 @@ function _renderMetricsResults(data) {
     </div>`).join('');
 }
 
+// Repo classification (docs/architecture-recovery-design.md §5.5b).
+//
+// Three rules this render exists to honour, all of them easy to violate by
+// reaching for a familiar component:
+//
+//  1. An expected artifact resolves to a LOCATION, not a boolean. Asked as a
+//     checkmark, "does Kubernetes document its architecture?" answers no —
+//     its in-repo docs/ is a tombstone untouched ~1400 days — when the truth
+//     is kubernetes/website, updated the same day. So artifacts group BY WHERE
+//     THEY ARE, and `not-found` is the only absence.
+//  2. No score, grade, percentage or completeness bar. §5.5a(c) rules them out
+//     because a checklist becomes a score and a score punishes deliberate
+//     choices: a small stable library documents lightly on purpose. There is
+//     deliberately no "3 of 5" anywhere below, and no progress element.
+//  3. A skip is the funnel working, not a failure — the expensive tier
+//     correctly declining to run. It renders neutral, never amber.
+//
+// Absence is shown plainly but NOT as a fault, for rule 2's reason: not
+// locating an artifact may be a deliberate choice, and the render must not
+// editorialise it into a deficiency.
+const _CLASSIFICATION_LOCATIONS = [
+  ['in-repo',      'In this repo'],
+  ['sibling-repo', 'In a sibling repo'],
+  ['doc-site',     'On the documentation site'],
+  ['not-found',    'Not located'],
+];
+
+function _relDays(iso) {
+  if (!iso) return '';
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (isNaN(d)) return '';
+  if (d <= 0) return 'today';
+  if (d === 1) return 'yesterday';
+  if (d < 60) return `${d}d ago`;
+  return `${Math.floor(d / 30)}mo ago`;
+}
+
+function _renderRepoClassificationResults(data) {
+  const findings = data.findings || [];
+  if (!findings.length) return _renderEmptyResultState(data);
+  const by = {};
+  findings.forEach(f => { by[f.check_name] = f; });
+
+  const err = by['classification_error'];
+  if (err) return `<div class="text-xs text-rose-400">${_esc(err.summary || 'Classification failed')}</div>`;
+
+  const out = [];
+
+  // ── role: multi-valued and ranked, so the secondary roles are shown rather
+  // than hidden behind the primary one. egeria-workspaces is genuinely
+  // tutorial AND application AND library.
+  const role = by['repo_role'];
+  if (role) {
+    const roles = (role.detail && role.detail.roles) || [role.label];
+    out.push(`<div class="flex items-center gap-1.5 flex-wrap">
+      <span class="text-[10px] uppercase tracking-wide text-slate-500">Role</span>
+      ${roles.map((r, i) => `<span class="px-1.5 py-0.5 rounded text-[11px] ${
+        i === 0 ? 'bg-sky-500/15 text-sky-300' : 'bg-slate-700/50 text-slate-400'
+      }">${_esc(r)}</span>`).join('')}
+    </div>`);
+    const notes = (role.detail && role.detail.notes) || [];
+    if (notes.length) {
+      // The classifier's own reasoning about what it declined to conclude —
+      // more useful than the verdict, and the thing a reader argues with.
+      out.push(`<div class="text-[11px] text-slate-500 leading-snug">${
+        notes.map(n => _esc(n)).join('<br>')}</div>`);
+    }
+  }
+
+  // ── the architecture-recovery gate
+  const gate = by['architecture_recovery_gate'];
+  if (gate) {
+    // The surveyor attaches detail.result_status (rs.skipped) ONLY when the
+    // gate declined — a run needs no special state — so prefer its reason and
+    // fall back to the summary. The fallback is not defensive padding: rows
+    // written before that wiring landed carry the reason in `summary` alone,
+    // and a gate whose decision renders without its reason is indistinguishable
+    // from a failure.
+    const skipped = gate.label === 'skip';
+    const st = (gate.detail && gate.detail.result_status) || null;
+    const reason = (st && st.hint) || gate.summary || '';
+    out.push(`<div class="text-xs flex items-start gap-1.5 ${skipped ? 'text-slate-400' : 'text-slate-300'}">
+      <span class="${skipped ? 'text-slate-500' : 'text-emerald-400'}">${skipped ? '⊘' : '→'}</span>
+      <span>${skipped ? 'Architecture recovery not applicable' : 'Architecture recovery will run'}${
+        reason ? ' — ' + _esc(reason) : ''}</span>
+    </div>`);
+  }
+
+  // ── expected artifacts, grouped by WHERE THEY ARE
+  const expected = findings.filter(f => f.check_name.startsWith('expected_'));
+  if (expected.length) {
+    const groups = _CLASSIFICATION_LOCATIONS
+      .map(([loc, heading]) => [heading, loc, expected.filter(f => f.label === loc)])
+      .filter(([, , items]) => items.length);
+    out.push(groups.map(([heading, loc, items]) => `
+      <div class="mt-1">
+        <div class="text-[10px] uppercase tracking-wide ${
+          loc === 'not-found' ? 'text-slate-600' : 'text-slate-500'}">${_esc(heading)}</div>
+        ${items.map(f => {
+          const kind = (f.detail && f.detail.kind) || f.check_name.replace(/^expected_/, '');
+          const ev = f.detail && f.detail.evidence;
+          const when = _relDays(f.detail && f.detail.date);
+          return `<div class="text-xs flex items-baseline gap-1.5">
+            <span class="${loc === 'not-found' ? 'text-slate-500' : 'text-slate-300'}">${_esc(kind)}</span>
+            ${ev ? `<span class="text-slate-500 truncate">${_esc(ev)}</span>` : ''}
+            ${when ? `<span class="text-slate-600 text-[10px] shrink-0">${_esc(when)}</span>` : ''}
+          </div>`;
+        }).join('')}
+      </div>`).join(''));
+  }
+
+  return `<div class="flex flex-col gap-1.5">${out.join('')}</div>`;
+}
+
 function _renderCustomAnalysisResults(analysisId, data) {
+  if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'dependency_analysis') {
     const ecosystems = Object.entries(data.by_ecosystem || {});
     if (!ecosystems.length) return `<div class="text-xs text-slate-500">No dependencies found. Run "Refresh &amp; profile" to re-scan.</div>`;

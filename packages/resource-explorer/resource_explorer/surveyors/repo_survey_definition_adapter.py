@@ -882,15 +882,37 @@ def _license_results(registry, slug: str) -> dict:
     return {"findings": findings}
 
 
+def _as_detail(raw) -> dict:
+    """A finding's detail blob as a dict, whatever the backend handed back."""
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _repo_classification_results(registry, slug: str) -> dict:
-    """Same uniform finding shape the license/security readers use. Note there
-    is deliberately NO headline reader and no trend reader: §5.5b forbids
-    reducing this to a single number, and a role is not a metric that moves
-    run-to-run in a way a sparkline would illuminate."""
+    """Same uniform finding shape the license/security readers use, plus
+    `detail` — which the other readers drop and this one cannot.
+
+    Everything that makes this analysis legible lives in the detail blob: an
+    expected artifact's `evidence` and `date` (a location is only meaningful
+    with the thing that proved it), the ranked `roles` list behind the primary
+    one, and the gate's `result_status` when it declined to run. Without them
+    the card can say "readme: sibling-repo" but not WHICH repo or how recently,
+    which is most of the answer. §5.5b's location-not-boolean point only holds
+    if the location arrives with its evidence.
+    """
     rows = registry.query_findings(slug, "repo_classification")
     findings = [
         {"check_name": r["check_name"], "label": r["label"],
-         "summary": r["summary"], "confidence": r["confidence"]}
+         "summary": r["summary"], "confidence": r["confidence"],
+         # detail_json, not detail: query_findings returns the raw column, and
+         # Postgres hands back JSONB as a dict where SQLite hands back a string
+         # — the same backend split that has bitten this codebase repeatedly,
+         # so it is normalised here rather than in the template.
+         "detail": _as_detail(r.get("detail_json"))}
         for r in rows
     ]
     return {"findings": findings}
