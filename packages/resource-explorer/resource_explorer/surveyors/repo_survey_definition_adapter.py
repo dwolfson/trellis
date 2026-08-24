@@ -1204,6 +1204,88 @@ def _website_ingestion_trend(registry, slug: str) -> list[dict]:
     ]
 
 
+def _deployment_name(path: str) -> str:
+    """A readable name for the deployment an interface fact came from.
+
+    The parent directory, not the filename: `compose-configs/egeria-quickstart/
+    egeria-quickstart.yaml` is "egeria-quickstart", and a bare
+    `docker-compose.yml` under `optional-associated-runtimes/milvus/` is
+    "milvus" rather than a name shared with six other stacks.
+    """
+    parts = (path or "").replace("\\", "/").split("/")
+    if len(parts) >= 2:
+        return parts[-2]
+    return parts[-1] if parts else "(unknown)"
+
+
+def _architecture_interfaces_results(registry, slug: str) -> dict:
+    """Ports and wires, grouped by the deployment that declared them.
+
+    Grouped rather than flat because mixing deployments is meaningless:
+    egeria-workspaces declares a quickstart topology AND a freshstart one AND
+    a dozen optional runtimes, in 26 separate compose files. A single graph
+    over all of them would draw a system nobody ever runs.
+
+    Two things this shape is careful about, both from §5.5f:
+
+      * A wire is a compose `depends_on` — **startup ordering, not traffic**.
+        `oneWay` is always true and `frequency`/`dataExchanged` are
+        deliberately empty rather than invented, so `integration_style` is
+        carried through to be stated on the view. An arrow here means "A
+        declares it depends on B" and nothing about data.
+      * Coverage is partial by construction: these come only from Dockerfile
+        EXPOSE, compose ports/expose/depends_on and OpenAPI documents.
+        `artifact_count` is carried so the view can say so — absence of wires
+        means no deployment artifact declared any, NOT that no dependencies
+        exist. Prometheus yields one port and zero wires and must not read as
+        "simple architecture".
+
+    Protocol is left exactly as found, usually empty: the detector does not
+    infer HTTP from port 8080, because convention dressed as evidence is how an
+    unverifiable claim enters the catalog at the confidence of a measured one.
+    Blank means "nothing said so", and the view must render it as blank rather
+    than as a gap.
+    """
+    rows = registry.query_findings(slug, "architecture_interfaces")
+    deployments: dict[str, dict] = {}
+    for r in rows:
+        d = _as_detail(r.get("detail_json"))
+        path = (d.get("evidence") or {}).get("path", "")
+        name = _deployment_name(path)
+        dep = deployments.setdefault(name, {"name": name, "artifacts": set(),
+                                            "components": {}, "wires": []})
+        dep["artifacts"].add(path)
+        if d.get("kind") == "port":
+            comp = d.get("component", "")
+            dep["components"].setdefault(comp, {"name": comp, "ports": []})
+            dep["components"][comp]["ports"].append({
+                "port": d.get("port", ""), "direction": d.get("direction", ""),
+                "protocol": d.get("protocol", ""), "summary": r.get("summary", ""),
+                "path": path, "line": (d.get("evidence") or {}).get("line"),
+            })
+        elif d.get("kind") == "wire":
+            src, tgt = d.get("source", ""), d.get("target", "")
+            for c in (src, tgt):
+                if c:
+                    dep["components"].setdefault(c, {"name": c, "ports": []})
+            dep["wires"].append({
+                "source": src, "target": tgt,
+                "integration_style": d.get("integrationStyle", ""),
+                "protocol": d.get("protocol", ""),
+                "path": path, "line": (d.get("evidence") or {}).get("line"),
+            })
+    out = []
+    for dep in deployments.values():
+        out.append({
+            "name": dep["name"],
+            "artifact_count": len(dep["artifacts"]),
+            "components": sorted(dep["components"].values(), key=lambda c: c["name"]),
+            "wires": dep["wires"],
+        })
+    out.sort(key=lambda d: (-(len(d["components"]) + len(d["wires"])), d["name"]))
+    return {"deployments": out}
+
+
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
 ) -> dict:
@@ -1351,6 +1433,13 @@ def _architecture_recovery_results(
     )
     return {
         "components": displayed,
+        # Ports and wires live under the same analysis because they are the same
+        # recovery run's output, but in their own key rather than folded into
+        # `components`: they are grouped BY DEPLOYMENT, and a component means
+        # something different in each (egeria-workspaces declares 18 separate
+        # topologies). Flattening them into the component list would merge
+        # stacks nobody runs together.
+        "interfaces": _architecture_interfaces_results(registry, slug)["deployments"],
         "component_count": len(displayed),
         # The full, unprojected count — so a caller/UI can say "13 shown
         # (of 42 total)" rather than a projected view silently looking like

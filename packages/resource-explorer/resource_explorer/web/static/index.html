@@ -2665,6 +2665,67 @@ function _renderRepoClassificationResults(data) {
   return `<div class="flex flex-col gap-1.5">${out.join('')}</div>`;
 }
 
+// Deployment topology from architecture recovery (§5.5f).
+//
+// Three things stated ON the view rather than left to the reader to infer,
+// because each is a way this data invites being over-read:
+//
+//  1. A wire is a compose `depends_on` — startup ordering, NOT traffic. The
+//     label says "declared startup dependencies" in words. Drawing arrowheads
+//     and letting a reader supply "data flows this way" would overclaim, and a
+//     diagram overclaims persuasively because it looks authoritative.
+//  2. Coverage is partial by construction: these come only from deployment
+//     artifacts. "No wires" means none were DECLARED, not that none exist —
+//     Prometheus yields one port and zero wires and must not read as a simple
+//     architecture. The caveat sits under every deployment, not in a tooltip.
+//  3. Deployments are never mixed. egeria-workspaces declares 18 separate
+//     topologies (quickstart, freshstart, and sixteen optional runtimes); one
+//     graph across them would draw a system nobody runs.
+//
+// Protocol renders only when an artifact stated one. The detector does not
+// infer HTTP from port 8080 — blank means "nothing said so", and showing a
+// mostly-blank column would read as missing data rather than as restraint.
+function _renderDeploymentInterfaces(deployments) {
+  if (!deployments || !deployments.length) return '';
+  return `
+    <div class="mt-2 pt-2 border-t border-slate-700/50">
+      <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+        Declared deployment topology
+      </div>
+      <div class="text-[11px] text-slate-500 mb-1.5 leading-snug">
+        From deployment artifacts only (Dockerfile <span class="text-slate-400">EXPOSE</span>,
+        compose <span class="text-slate-400">ports</span>/<span class="text-slate-400">expose</span>/<span class="text-slate-400">depends_on</span>,
+        OpenAPI). Arrows are <span class="text-slate-300">declared startup dependencies</span>, not data flow.
+        Nothing declared means nothing was declared — not that nothing exists.
+      </div>
+      ${deployments.map(dep => `
+        <details class="mb-1">
+          <summary class="text-xs text-slate-300 cursor-pointer hover:text-slate-100">
+            ${_esc(dep.name)}
+            <span class="text-slate-500">— ${dep.components.length} component(s), ${dep.wires.length} declared dependenc${dep.wires.length === 1 ? 'y' : 'ies'}</span>
+          </summary>
+          <div class="pl-3 mt-1 flex flex-col gap-1">
+            ${dep.components.map(c => `
+              <div class="text-xs">
+                <span class="text-slate-300">${_esc(c.name)}</span>
+                ${c.ports.length ? c.ports.map(pt => `
+                  <span class="ml-1 px-1 rounded bg-slate-700/50 text-slate-400 text-[10px]"
+                        title="${_esc(pt.summary || '')}">${_esc(pt.port)}${
+                          pt.protocol ? '/' + _esc(pt.protocol) : ''}</span>`).join('')
+                  : '<span class="ml-1 text-slate-600 text-[10px]">no declared port</span>'}
+              </div>`).join('')}
+            ${dep.wires.length ? `
+              <div class="mt-1 text-[10px] uppercase tracking-wide text-slate-500">Declared startup dependencies</div>
+              ${dep.wires.map(w => `
+                <div class="text-xs text-slate-400" title="${_esc(w.path || '')}">
+                  ${_esc(w.source)} <span class="text-slate-600">depends on</span> ${_esc(w.target)}
+                  ${w.integration_style ? `<span class="text-slate-600 text-[10px] ml-1">${_esc(w.integration_style)}</span>` : ''}
+                </div>`).join('')}` : ''}
+          </div>
+        </details>`).join('')}
+    </div>`;
+}
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'dependency_analysis') {
@@ -2719,7 +2780,13 @@ function _renderCustomAnalysisResults(analysisId, data) {
         </div>`).join('');
   }
   if (analysisId === 'architecture_recovery') {
-    if (!data.components || !data.components.length) return `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`;
+    // Interfaces can exist with no components recovered — a compose file
+    // declares a topology whether or not component detection resolved it — so
+    // the topology renders on its own rather than being gated behind them.
+    if (!data.components || !data.components.length) {
+      return `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
+             + _renderDeploymentInterfaces(data.interfaces);
+    }
     return `<div class="text-xs text-slate-400 mb-1">${data.component_count} component(s)${data.surveyed_at ? ` · last run ${_relTime(data.surveyed_at)}` : ''}</div>` +
       data.components.slice(0, 20).map(c => `
         <div class="text-xs text-slate-300 mb-1">
@@ -2729,7 +2796,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
-        </div>`).join('');
+        </div>`).join('') + _renderDeploymentInterfaces(data.interfaces);
   }
   if (analysisId === 'sub_resource_survey') {
     if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No sub-resource survey run yet.</div>`;
