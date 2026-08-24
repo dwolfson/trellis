@@ -557,7 +557,8 @@ def _fetch_tree_paths(repo, notes: list[str]) -> list[str]:
 # Assembly
 # ---------------------------------------------------------------------------
 
-def classify_repo_role(owner_repo: str, client: Github | None = None) -> RepoRoleClassification:
+def classify_repo_role(owner_repo: str, client: Github | None = None,
+                       locations: DocLocations | None = None) -> RepoRoleClassification:
     """Classify `owner/repo`'s role(s). README-stated intent (signal 1)
     dominates and, when present, decides the primary outright — everything
     else is retained as evidence, never discarded (§5.5b: "outrank
@@ -581,7 +582,11 @@ def classify_repo_role(owner_repo: str, client: Github | None = None) -> RepoRol
     # Reuse doc_locations for doc-dir/sibling/homepage signals rather than
     # re-resolving them — a real (non-tombstone) in-repo doc dir, or a
     # documentation-repo-shaped sibling, corroborates `documentation`.
-    locations: DocLocations = resolve_doc_locations(owner_repo, client=gh)
+    # Accept a pre-resolved DocLocations: resolution is the expensive half and
+    # `expectations.build_report` already has one, so re-resolving here repeated
+    # ~6s of identical work per report.
+    if locations is None:
+        locations = resolve_doc_locations(owner_repo, client=gh)
     notes.extend(locations.notes)
 
     roles: dict[str, RoleResult] = {}

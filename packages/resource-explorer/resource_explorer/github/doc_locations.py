@@ -455,7 +455,8 @@ def _find_root(repo: Repository, keywords: list[str], notes: list[str]) -> str |
     return _find_in_dir(repo, "", keywords, notes)
 
 
-def find_artifact(owner_repo: str, kind: str, client: Github | None = None) -> ArtifactResult:
+def find_artifact(owner_repo: str, kind: str, client: Github | None = None,
+                  locations: DocLocations | None = None) -> ArtifactResult:
     """Resolve one kind of documentation artifact to a LOCATION.
 
     Exactly four outcomes — `in-repo`, `sibling-repo`, `doc-site`,
@@ -482,7 +483,17 @@ def find_artifact(owner_repo: str, kind: str, client: Github | None = None) -> A
     """
     gh = client or _make_client()
     keywords = _ARTIFACT_KEYWORDS.get(kind, [kind.lower()])
-    locations = resolve_doc_locations(owner_repo, client=gh)
+    # Resolution is the expensive half — sibling probes, contents listings, the
+    # README — and it is IDENTICAL for every artifact kind. Re-running it per
+    # kind made a 4-kind report do the same ~6s of work five times: measured at
+    # 57s per repo against 6s for resolution alone, which is the gap the
+    # presentation session saw (41-58s) and I did not, because I had timed
+    # `resolve_doc_locations` rather than the step that calls it.
+    #
+    # Callers resolving several kinds should resolve once and pass it in;
+    # `expectations.build_report` does.
+    if locations is None:
+        locations = resolve_doc_locations(owner_repo, client=gh)
 
     repo = _get_repo(gh, owner_repo, locations.notes)
     if repo is None:
