@@ -3349,3 +3349,51 @@ a repo it gets wrong is worse than one that names none.
 guessed wrongly (findings 73, 79, and this one). What worked again was reading the small-n cases by
 name: 25 overrides is a number, but `openlineage-site` is a Docusaurus site, and only the second
 one tells you what to change.
+
+---
+
+**98. The gate fix was correct, tested, merged, pushed — and unreachable from the UI. Third
+instance of finding 89's rule.**
+
+Finding 97's fix landed and `openlineage_site` re-classified to `skip` on real data, persisted with
+`result_status: skipped_by_design` and the full reason as its hint. Correct end to end. Dan then
+tried to re-run the classification **from the UI** and nothing happened, which is how the next
+defect surfaced.
+
+`repo_classification` has `intent: discovery` in the analysis catalog. The per-card **Run** button
+comes from `_loadAnalysisCatalogPanel`, and that function is called at exactly two sites:
+
+```
+analysis      8  card + Run
+assessment    4  card + Run
+discovery     5  NO CARD ANYWHERE   repo_classification, architecture_recovery,
+                                    license_classification, maturity, repo_conventions
+scouting      3  no card, but the Scouting scan button reaches 2 of them
+```
+
+All five discovery-intent analyses are catalogued, step-mapped in `REPO_ANALYSIS_STEP_MAP`, and
+runnable through `POST /{slug}/analyses/{id}/run` — that exact orchestrator path worked first time
+from a script. Nothing in the UI calls it for them. The Discovery pane renders Survey Definitions /
+Questions / Disposition instead, and the only repo Survey Definition that exists, `RepoCoarseScout`,
+chains `repo_health` + `repo_language`, so it does not reach them either.
+
+**`architecture_recovery` is one of the five.** The subsystem this entire spike exists to build has
+no way to be run from the product's interface.
+
+**Why it stayed invisible.** The pane loads, throws nothing, and renders successfully — it just
+renders something else. "I clicked and nothing ran" is indistinguishable from "there was nothing to
+run", which is the absence-looks-like-zero shape (findings 63, 90, 97) relocated into the UI.
+Scouting is the near-miss that makes it easy to skip past: its analyses are also card-less, but the
+scan button covers them, so the pattern looks handled from one sample.
+
+**Third instance of the rule.** Finding 86 claimed ports/wires were wired into the IR when only the
+spike had them. Finding 89 generalised it: *committed and regression-tested is not reachable*. This
+is the same rule one layer further out — merged, pushed, live-verified against a real repo, and
+still not reachable by the person the feature is for. Unit tests, integration through the
+orchestrator, and a green suite all pass without any of them touching a call site.
+
+The check that would have caught it is mechanical and cheap: **for every entry in the analysis
+catalog, assert some UI call site reaches it.** That is a test over a static map and a set of call
+sites, not a browser test. Not written here — `web/` belongs to the presentation session and the
+fix is theirs — but recorded so the next person asking "why did nothing happen" starts from the
+catalog rather than from the surveyor.
