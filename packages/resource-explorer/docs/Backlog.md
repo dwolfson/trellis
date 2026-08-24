@@ -1313,14 +1313,23 @@ that is about to change is the expensive order to do this in.
 
 ---
 
-### HIGH — architecture recovery is built and has been run on 6% of the corpus
+### HIGH — architecture recovery: coverage is a third of the corpus, and precision is the real blocker
 
-Measured 2026-08-24, straight from the registry:
+**The first version of this entry said "3 of 46, 6% coverage". That was wrong, and wrong in the
+way this project keeps being wrong: the query was `query_findings(slug, kind)`, which defaults to
+`scope_locator=''` — whole-resource. Architecture recovery writes one finding set **per component
+scope**, so a default-scope query sees a repo only if it has a single root-scoped component. It
+found `docling_parse` (1 component) and missed `milvus` (202).** Corrected with
+`query_finding_scopes()`:
 
 ```
 repos the gate approves for recovery          46
-repos with any architecture_recovery result    3   docling_eval, egeria_python_git, sqlglot
+repos WITH architecture_recovery results      16   (15 of them gate=run)
 ```
+
+Fifth instance of the measuring instrument being the broken part, after findings 73, 79, 90 and
+the `resolve_doc_locations`/`build_report` timing confusion. The standing prior holds: **when a
+number about this system looks wrong, suspect the query before the subsystem.**
 
 The whole stack exists and is tested — detectors, import graph, coupling, `interfaces.propose()`
 for ports and wires, the deterministic distiller, the LLM adjudicator, identity-aware scoring, 98
@@ -1342,9 +1351,33 @@ repo_arch_coupling   {'zipball_root': ..., 'git_clone_root': 'history_path'}   d
 So `repo_arch_detect` across 46 repos is 46 zipball downloads — feasible unattended. Coupling is
 materially more expensive and should be a separate decision made after detect has run.
 
-**Run detect as a pilot before committing to the full set.** Three of the open defects below
-(Java marker components all named `src`, Go cohesion ~0 without recursive rollup, the unsolved
-`cmd/X` + `pkg/X` merge) are currently unprioritisable — each is real, and nobody knows whether it
-affects one repo or twenty. A pilot ranks them with evidence instead of intuition, which is the
-move that has worked repeatedly (findings 73, 79, 97: aggregate read right, mechanism guessed
-wrong, small-n read by name giving the answer).
+**PILOT RUN 2026-08-24 — 5 repos, detect only, 0 errors, 4.4s–54.8s each.** Chosen to test the
+three "unprioritisable" language defects rather than for speed. It reprioritised all three:
+
+```
+milvus                 26.5s   202 component scopes   ground truth says 8
+docling_java            4.4s     8 component scopes
+egeria_workspaces_git  38.6s    72 component scopes
+docling_parse          54.8s     1 component scope
+genaicomps             16.9s   311 component scopes
+```
+
+- **"Java marker components are all named `src`" does not reproduce.** `docling_java` yields
+  `docling-bom`, `docling-core`, `docling-serve-api`, `docling-serve-client`,
+  `docling-testcontainers`, `docling-version-tests`, `test-report-aggregation`, `docs` — real
+  Maven module names, zero scopes ending in `src`. The defect was observed on Kafka (Gradle) and
+  is either Gradle-specific or was fixed by the Gradle module expansion work. **Downgrade; re-test
+  on Kafka before spending anything on it.**
+- **The `cmd/X` + `pkg/X` merge is not the live Go problem.** Milvus has **one** `cmd` scope and
+  **145** `internal/*` scopes. There is almost nothing to merge. **Downgrade.**
+- **Precision is the live problem, and it is severe.** Milvus proposes **202 components against a
+  published ground truth of 8** ("five core components and three third-party dependencies", the
+  Milvus authors' own words). `genaicomps` proposes 311. Every `internal/*` package becomes a
+  candidate component. This is the same precision gap the spike measured on Kubernetes (3303 →
+  358 deterministic → 93 adjudicated) — **the distiller exists and is not in the product path.**
+
+**So the ranking inverts.** Running detect across the remaining 31 repos would produce thousands of
+component findings at roughly 25:1 over-proposal, which is not coverage, it is noise at scale.
+**Port the distillation and ranking stack into the product path first** (`scripts/arch-spike/`
+`distill.py`, `rank.py`, and optionally `adjudicate.py`), re-run the pilot 5, and only then decide
+on the full corpus. Cost is bounded and known: detect averages ~28s/repo with no clone.
