@@ -1143,27 +1143,42 @@ moves the weights also shapes what anyone thinks to check.
 
 ---
 
-### HIGH — populate `IR.ports` and `IR.wires` (design §5.5f)
+### ~~HIGH — populate `IR.ports` and `IR.wires`~~ — **BUILT 2026-08-23, entry was stale**
 
-Verified empty, and **nothing anywhere populates them**: both fields carry `# not in this slice`,
-§5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
-written. `ApiStructureSurveyor` does not cover it — it counts symbols and module structure, which is
-internal shape rather than exposed surface.
+`interfaces.propose()` populates both. It is called from the product path
+(`sub_surveyors/arch_recovery_detect.py`), and `arch_recovery/persist.py` writes ports and wires
+as findings, wires attributed to the **source** component. `ir.py`'s fields carried a
+`# not in this slice` comment for three weeks after that stopped being true; corrected in place.
 
-**Why it is the biggest gap:** everything black-box we have built reads metadata *about* a resource
-(README, docs, manifests, deployment artifacts), not the interface *of* it. The system can say "an
-application with deployment artifacts" but not "serves these endpoints, consumes this topic, needs
-these ports" — and the second is what "does it fit our infrastructure" means.
+**This entry stayed marked HIGH after the work shipped**, which is worse than a missing entry —
+a stale HIGH sends the next person to build something that exists. Watch for the class: finding
+89 ("committed and regression-tested is not reachable") and finding 98 are the same shape, and
+`recovery_gate`'s docstring citing `kubernetes/website` was a third. Four in one week.
 
-**Why it is cheap:** interface evidence is largely black-box observable and often in artifacts
-already fetched — OpenAPI/Swagger, `.proto`, GraphQL schemas, compose `ports:`/`expose:`, Dockerfile
-`EXPOSE`, k8s `Service` manifests, declared entry points, configured topic names. Mostly no source
-parsing, so **Discovery tier by rule 17's own test**.
+**What is genuinely still open here is coverage, not capability** — see the corpus-coverage entry
+below. Ports and wires exist for the 3 repos architecture recovery has actually been run on.
 
-Check Egeria's existing vocabulary first — `SolutionPortDirection` and `SolutionLinkingWire`'s
-`protocol`/`integrationStyle`/`frequency`/`dataExchanged`/`oneWay` already exist. Third time this
-check has been the right first move, after `SolutionComponentType` and `ResourceUse`.
+The original entry follows, for the reasoning that is still sound:
 
+> Verified empty, and **nothing anywhere populates them**: both fields carry `# not in this slice`,
+> §5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
+> written. `ApiStructureSurveyor` does not cover it — it counts symbols and module structure, which is
+> internal shape rather than exposed surface.
+>
+> **Why it is the biggest gap:** everything black-box we have built reads metadata *about* a resource
+> (README, docs, manifests, deployment artifacts), not the interface *of* it. The system can say "an
+> application with deployment artifacts" but not "serves these endpoints, consumes this topic, needs
+> these ports" — and the second is what "does it fit our infrastructure" means.
+>
+> **Why it is cheap:** interface evidence is largely black-box observable and often in artifacts
+> already fetched — OpenAPI/Swagger, `.proto`, GraphQL schemas, compose `ports:`/`expose:`, Dockerfile
+> `EXPOSE`, k8s `Service` manifests, declared entry points, configured topic names. Mostly no source
+> parsing, so **Discovery tier by rule 17's own test**.
+>
+> Check Egeria's existing vocabulary first — `SolutionPortDirection` and `SolutionLinkingWire`'s
+> `protocol`/`integrationStyle`/`frequency`/`dataExchanged`/`oneWay` already exist. Third time this
+> check has been the right first move, after `SolutionComponentType` and `ResourceUse`.
+>
 ---
 
 ### Investigation framing — the six items deferred out of the 2026-08-24 design
@@ -1295,3 +1310,41 @@ Consequences beyond the empty tab:
 Sequencing note: write these **after** the Purpose subset measurement (item 6 above), not before. If Purpose
 turns out not to discriminate, the CSV schema changes — and authoring two new question sets against a schema
 that is about to change is the expensive order to do this in.
+
+---
+
+### HIGH — architecture recovery is built and has been run on 6% of the corpus
+
+Measured 2026-08-24, straight from the registry:
+
+```
+repos the gate approves for recovery          46
+repos with any architecture_recovery result    3   docling_eval, egeria_python_git, sqlglot
+```
+
+The whole stack exists and is tested — detectors, import graph, coupling, `interfaces.propose()`
+for ports and wires, the deterministic distiller, the LLM adjudicator, identity-aware scoring, 98
+recorded findings. The gate now correctly identifies which 46 repos are worth running it on
+(finding 97, corpus re-measured at 46 run / 8 skip / 6 none). It has been *run* on three.
+
+**This is capability without coverage, and it is the largest single unclaimed benefit in the
+project.** Everything downstream — the Egeria Solution Blueprint projection, the deployment
+topology view, anything that needs more than one repo's architecture to be interesting — is
+waiting on data that nothing is blocking.
+
+**Cost, from `STEP_REGISTRY.requires_resources`:**
+
+```
+repo_arch_detect     {'zipball_root': 'local_path'}                        download, no clone
+repo_arch_coupling   {'zipball_root': ..., 'git_clone_root': 'history_path'}   download AND clone
+```
+
+So `repo_arch_detect` across 46 repos is 46 zipball downloads — feasible unattended. Coupling is
+materially more expensive and should be a separate decision made after detect has run.
+
+**Run detect as a pilot before committing to the full set.** Three of the open defects below
+(Java marker components all named `src`, Go cohesion ~0 without recursive rollup, the unsolved
+`cmd/X` + `pkg/X` merge) are currently unprioritisable — each is real, and nobody knows whether it
+affects one repo or twenty. A pilot ranks them with evidence instead of intuition, which is the
+move that has worked repeatedly (findings 73, 79, 97: aggregate read right, mechanism guessed
+wrong, small-n read by name giving the answer).
