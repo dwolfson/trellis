@@ -105,3 +105,31 @@ class TestMeasurement:
             with sco.observe("s", "none", "low") as out:
                 raise ValueError("boom")
         assert out and out[0].elapsed >= 0
+
+
+class TestFirstIsAboutTheStepNotTheRepo:
+    """Scoped per-slug, the loud first-observation fired for every repo in a
+    corpus run — 189 lines across 21 repos, heading for ~540. A check that
+    shouts on every row gets switched off, which is the failure this module's
+    own docstring warns about. "Nobody has ever measured this step" is a fact
+    about the step."""
+
+    def test_a_never_measured_step_is_first(self, tmp_path):
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.surveyors import step_cost_observer as sco
+
+        reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+        assert sco._step_ever_measured(reg, "some_new_step") is False
+
+    def test_it_does_not_re_announce_for_a_second_repo(self, tmp_path):
+        from resource_explorer.registry import Project, ProjectRegistry
+        from resource_explorer.surveyors import step_cost_observer as sco
+
+        reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+        for slug in ("a", "b"):
+            reg.add(Project(slug=slug, display_name=slug,
+                            github_url=f"https://github.com/t/{slug}", collections=[]))
+        obs = Observation("step_x", 0.1, 0, "none", "low")
+        assert sco.record(reg, "a", obs) == sco.FIRST
+        # Same step, different resource — no longer news.
+        assert sco.record(reg, "b", obs) == sco.RECORDED

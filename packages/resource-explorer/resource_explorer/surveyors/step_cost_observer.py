@@ -169,6 +169,22 @@ FIRST = "first"
 NOT_RECORDED = "not_recorded"
 
 
+def _step_ever_measured(registry, step_key: str) -> bool:
+    """Has this step been measured for ANY resource before now?
+
+    Reads the metrics table directly rather than via query_metrics_history,
+    which is per-slug by design — the question here is about the step.
+    """
+    metric = f"{step_key}_elapsed"
+    with registry._conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM project_analysis_metrics "
+            "WHERE kind = ? AND metric_name = ? LIMIT 1",
+            (KIND, metric),
+        ).fetchone()
+    return row is not None
+
+
 def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None) -> str:
     """Persist one observation. Returns FIRST when this is the first ever for
     this step, RECORDED normally, NOT_RECORDED when persistence failed.
@@ -182,8 +198,13 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
     first = False
     history_read = True
     try:
-        history = registry.query_metrics_history(slug, KIND, f"{obs.step_key}_elapsed")
-        first = not history
+        # Across ALL resources, not just this one. Scoped per-slug it fired for
+        # every repo in a corpus run — 189 "FIRST" lines in 21 repos, on track
+        # for ~540 — and a check that shouts on every row is one that gets
+        # switched off, which this module's own docstring warns about. "Nobody
+        # has ever measured this step" is a fact about the step, not about a
+        # repo, so it should be said once.
+        first = not _step_ever_measured(registry, obs.step_key)
     except Exception as exc:
         # first stays False, so a genuinely-first observation would be reported
         # as routine — the caller needs to know the difference.
