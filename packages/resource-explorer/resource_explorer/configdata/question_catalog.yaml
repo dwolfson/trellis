@@ -18,6 +18,12 @@
 #                   as a literal string match, not split, until that plan is
 #                   built.
 #   perspectives  - Perspective names this question is linked to.
+#   purposes      - Purpose kinds this question serves (added 2026-08-24).
+#                   Purpose is the PRIMARY dispatch axis and Perspective the
+#                   secondary one: Perspective was measured and cannot
+#                   discriminate (no perspective reaches an analysis another
+#                   doesn't also reach). Purpose ORDERS what runs by default;
+#                   it never excludes. See docs/investigation-framing-design.md.
 #   answering:
 #     kind        - "analysis" | "direct" | "registry" | "human" |
 #                   "chart" | "gap" | "partial" | "mixed" | "unknown" —
@@ -50,6 +56,9 @@ repo_questions:
   - Steward
   - Consumer
   - Data Expert
+  purposes:
+  - Select
+  - Maintain
   answering:
     kind: analysis
     analysis_ids:
@@ -63,6 +72,10 @@ repo_questions:
   - Consumer
   - Data Expert
   - Architecture
+  purposes:
+  - Explore
+  - Select
+  - Learn
   answering:
     kind: direct
     analysis_ids: []
@@ -75,6 +88,9 @@ repo_questions:
   - Steward
   - Data Owner
   - Security
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: analysis
     analysis_ids:
@@ -87,6 +103,9 @@ repo_questions:
   perspectives:
   - Consumer
   - Community
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: analysis
     analysis_ids:
@@ -99,6 +118,9 @@ repo_questions:
   perspectives:
   - Governance
   - Steward
+  purposes:
+  - Explore
+  - Maintain
   answering:
     kind: direct
     analysis_ids: []
@@ -111,6 +133,11 @@ repo_questions:
   perspectives:
   - Governance
   - Security
+  purposes:
+  - Select
+  - Assess
+  - Certify
+  - Maintain
   answering:
     kind: gap
     analysis_ids: []
@@ -129,6 +156,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: direct
     analysis_ids: []
@@ -145,6 +175,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: direct
     analysis_ids: []
@@ -157,6 +190,8 @@ repo_questions:
   - Financial
   - Data Expert
   - Architecture
+  purposes:
+  - Select
   answering:
     kind: direct
     analysis_ids: []
@@ -169,6 +204,8 @@ repo_questions:
   - Community
   - Security
   - Admin
+  purposes:
+  - Select
   answering:
     kind: gap
     analysis_ids: []
@@ -181,6 +218,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: direct
     analysis_ids: []
@@ -197,6 +237,10 @@ repo_questions:
   - Data Expert
   - Security
   - Admin
+  purposes:
+  - Select
+  - Assess
+  - Deploy
   answering:
     kind: analysis
     analysis_ids:
@@ -210,6 +254,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: human
     analysis_ids: []
@@ -224,6 +271,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: mixed
     analysis_ids:
@@ -238,6 +288,9 @@ repo_questions:
   perspectives:
   - Financial
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: human
     analysis_ids: []
@@ -249,6 +302,9 @@ repo_questions:
   perspectives:
   - Security
   - Admin
+  purposes:
+  - Assess
+  - Deploy
   answering:
     kind: mixed
     analysis_ids:
@@ -269,6 +325,9 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Maintain
+  - Deploy
   answering:
     kind: gap
     analysis_ids: []
@@ -282,6 +341,9 @@ repo_questions:
   - Consumer
   - Architecture
   - Admin
+  purposes:
+  - Deploy
+  - Maintain
   answering:
     kind: human
     analysis_ids: []
@@ -299,6 +361,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Deploy
   answering:
     kind: human
     analysis_ids:
@@ -313,6 +378,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Maintain
   answering:
     kind: chart
     analysis_ids: []
@@ -328,6 +396,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: gap
     analysis_ids: []
@@ -341,6 +412,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: human
     analysis_ids: []
@@ -354,6 +428,9 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Assess
   answering:
     kind: mixed
     analysis_ids:
@@ -369,6 +446,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Learn
   answering:
     kind: human
     analysis_ids: []
@@ -383,6 +463,10 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Learn
+  - Share
   answering:
     kind: mixed
     analysis_ids:
@@ -403,6 +487,9 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Maintain
   answering:
     kind: mixed
     analysis_ids:
@@ -419,6 +506,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Certify
   answering:
     kind: mixed
     analysis_ids:
@@ -439,6 +529,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Certify
+  - Share
   answering:
     kind: human
     analysis_ids:
@@ -454,6 +547,9 @@ repo_questions:
   - Data Owner
   - App/AI Builder
   - Security
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: analysis
     analysis_ids:
@@ -466,6 +562,9 @@ repo_questions:
   stage: Analysis
   perspectives:
   - Security
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
@@ -479,6 +578,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
@@ -492,6 +594,9 @@ repo_questions:
   - App/AI Builder
   - Privacy
   - Data Expert
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
@@ -504,6 +609,9 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
@@ -515,6 +623,8 @@ repo_questions:
   perspectives:
   - Governance
   - Security
+  purposes:
+  - Certify
   answering:
     kind: unknown
     analysis_ids:
@@ -528,6 +638,9 @@ repo_questions:
   perspectives:
   - App/AI Builder
   - Architecture
+  purposes:
+  - Certify
+  - Deploy
   answering:
     kind: unknown
     analysis_ids:
@@ -542,6 +655,8 @@ repo_questions:
   - Governance
   - Steward
   - Architecture
+  purposes:
+  - Share
   answering:
     kind: unknown
     analysis_ids:
@@ -556,6 +671,9 @@ repo_questions:
   - Steward
   - Data Expert
   - Architecture
+  purposes:
+  - Explore
+  - Maintain
   answering:
     kind: direct
     analysis_ids: []
@@ -569,6 +687,8 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Explore
   answering:
     kind: direct
     analysis_ids: []
@@ -581,6 +701,9 @@ repo_questions:
   - Governance
   - Steward
   - Data Owner
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: direct
     analysis_ids: []
@@ -593,6 +716,8 @@ repo_questions:
   perspectives:
   - Steward
   - Data Expert
+  purposes:
+  - Maintain
   answering:
     kind: direct
     analysis_ids: []
@@ -605,6 +730,9 @@ repo_questions:
   perspectives:
   - Governance
   - Admin
+  purposes:
+  - Explore
+  - Share
   answering:
     kind: direct
     analysis_ids: []

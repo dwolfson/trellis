@@ -123,3 +123,40 @@ def test_check_refs_imply_their_analysis_id():
                 f"question {entry['question']!r} has check {ref!r} but {aid!r} "
                 f"is missing from analysis_ids — regenerate question_catalog.yaml"
             )
+
+
+def test_every_question_carries_at_least_one_purpose():
+    """Purpose is the primary dispatch axis (Perspective was measured and
+    cannot discriminate), so an untagged question is invisible to dispatch
+    rather than merely unlabelled."""
+    questions = yaml.safe_load(QUESTIONS.read_text())["repo_questions"]
+    untagged = [q["question"] for q in questions if not q.get("purposes")]
+    assert not untagged, f"questions with no Purpose: {untagged}"
+
+
+def test_question_purposes_are_in_the_known_vocabulary():
+    """Purpose mirrors Egeria ProjectCharter's `purposes` valid metadata set —
+    controlled so dispatch can key on it. A typo'd value would silently create
+    a purpose nothing else ever matches."""
+    known = {
+        "Explore", "Select", "Assess", "Maintain", "Share",
+        "Learn", "Certify", "Remediate", "Attest", "Deploy",
+    }
+    questions = yaml.safe_load(QUESTIONS.read_text())["repo_questions"]
+    for entry in questions:
+        for purpose in entry.get("purposes") or []:
+            assert purpose in known, (
+                f"question {entry['question']!r} has unknown purpose {purpose!r}"
+            )
+
+
+def test_purposes_did_not_leak_into_perspectives():
+    """Both CSV scripts identify perspective columns BY ELIMINATION, so any
+    column missing from their exclusion lists becomes a phantom Perspective on
+    every row. 'Purposes' is such a column. If this fails, check
+    NON_PERSPECTIVE_COLUMNS and csv_to_dr_egeria_questions.py's
+    OPTIONAL_LEAD_COLUMNS."""
+    questions = yaml.safe_load(QUESTIONS.read_text())["repo_questions"]
+    seen = {p for q in questions for p in q.get("perspectives") or []}
+    assert "Purposes" not in seen and "purposes" not in seen
+    assert len(seen) == 12, f"expected 12 Perspective terms, got {len(seen)}: {sorted(seen)}"

@@ -692,6 +692,49 @@ sets are now sharply distinct, which is what ranking needs.
 should follow the same rule: add a ref only where the CSV already asserts the check, never
 invent one to improve the metric.
 
+### All 41 tagged (2026-08-24) — the subset held, with one caveat
+
+Tagged every question via a new `Purposes` column in
+`docs/dr-egeria/resource_questions.csv`. Measured at check granularity over the
+whole corpus:
+
+| | mean pairwise overlap | nested pairs | passes the exclusivity bar |
+|---|---|---|---|
+| **Purpose** (8 in use) | **0.14** | **5** | 1/8 |
+| Perspective (12) | 0.22 | 9 | 0/12 |
+
+Purpose is ~36% less overlapping and half as nested. The 16-question subset
+result held at full scale, which is the thing that needed checking — the
+sample was representative, not lucky.
+
+**The caveat, stated plainly so 0.14-on-41 is not read as stronger than it is:**
+only 16 of 41 questions have any analysis or check target at all. The other 25
+are `direct` (11), `gap` (8), `human` (5), `chart` (1) and contribute nothing to
+reach. So the numbers are still driven by the same 16 questions. Full tagging
+**confirmed** representativeness and readied the tags for when coverage
+improves; it did **not** add independent evidence.
+
+**Two findings from tagging that are about the corpus, not the axis:**
+
+- **`Remediate` and `Attest` have zero questions.** Nothing asks about fixing
+  what was found, or about publishing an attestation. The question set predates
+  both purposes — they came out of the enterprise-scorecard discussion. Real
+  purposes, currently unserved by any question.
+- **`Select` is tagged on 25 of 41 (60%).** The corpus was authored around
+  "should we use this repo?", so `Select` dominates and therefore discriminates
+  least. The UI should not lean on it as a distinguishing choice.
+
+**Implementation note worth not rediscovering:** both CSV scripts identify
+Perspective columns *by elimination* — anything absent from
+`NON_PERSPECTIVE_COLUMNS` (`csv_to_question_catalog_yaml.py`) or
+`OPTIONAL_LEAD_COLUMNS` (`csv_to_dr_egeria_questions.py`) silently becomes a
+phantom Perspective on every row. That is why Purpose is one semicolon-separated
+column rather than ten X-marked ones in the Perspective style: ten columns would
+be ten chances for a typo'd header to corrupt the Perspective vocabulary.
+`tests/test_check_registry.py` asserts exactly 12 Perspective terms as the
+tripwire. The Dr.Egeria markdown output was diffed before and after and is
+byte-identical.
+
 ### The real limiter, for whoever picks this up
 
 The analysis catalog is coarse relative to the question corpus — 16 questions routing to 10

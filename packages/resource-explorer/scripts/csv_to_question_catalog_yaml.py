@@ -58,6 +58,33 @@ KNOWN_ANALYSIS_IDS = [
 ]
 
 
+# Purpose vocabulary — the controlled kinds from
+# docs/investigation-framing-design.md §2. Mirrors Egeria's ProjectCharter
+# `purposes`, which is a valid metadata set: controlled so dispatch can key on
+# it, extensible without a rebuild. Extend here when the charter vocabulary
+# does.
+KNOWN_PURPOSES = [
+    "Explore",
+    "Select",
+    "Assess",
+    "Maintain",
+    "Share",
+    "Learn",
+    "Certify",
+    "Remediate",
+    "Attest",
+    "Deploy",
+]
+
+# Columns that are NOT perspectives. Perspectives are identified by
+# elimination, so anything missing here silently becomes a phantom Perspective
+# on every row — keep in sync with csv_to_dr_egeria_questions.py's
+# OPTIONAL_LEAD_COLUMNS, which does the same by-elimination trick.
+NON_PERSPECTIVE_COLUMNS = (
+    "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
+    "Answering Analysis", "Answering Mechanism", "Purposes",
+)
+
 _CHECK_REGISTRY_PATH = (
     Path(__file__).parent.parent / "resource_explorer" / "configdata" / "check_registry.yaml"
 )
@@ -104,6 +131,24 @@ def _parse_checks(note: str, known: set[str]) -> tuple[list[str], list[str]]:
     valid = [r for r in dict.fromkeys(found) if r in known]
     unknown = [r for r in dict.fromkeys(found) if r not in known]
     return valid, unknown
+
+
+def _parse_purposes(raw: str) -> list[str]:
+    """Parse the semicolon-separated Purposes column.
+
+    Purposes get one shared column rather than a column each (the shape the
+    Perspective columns use) precisely because of the by-elimination problem
+    above: ten more columns would be ten more chances for a typo'd header to
+    become a phantom Perspective. One column, validated, fails loudly instead."""
+    values = [v.strip() for v in (raw or "").split(";") if v.strip()]
+    unknown = [v for v in values if v not in KNOWN_PURPOSES]
+    if unknown:
+        raise ValueError(
+            f"unknown Purpose(s) {unknown}; valid values are {KNOWN_PURPOSES}. "
+            f"Fix the CSV, or add the purpose to KNOWN_PURPOSES if the "
+            f"ProjectCharter vocabulary genuinely gained one."
+        )
+    return list(dict.fromkeys(values))
 
 
 def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
@@ -159,17 +204,14 @@ def generate(rows: list[dict]) -> str:
         question = (row.get("Question") or "").strip()
         if not question:
             continue
-        perspective_cols = [
-            c for c in row.keys()
-            if c not in ("Question", "Funnel Stage", "Why is this important?",
-                          "Rationale/Source", "Answering Analysis", "Answering Mechanism")
-        ]
+        perspective_cols = [c for c in row if c not in NON_PERSPECTIVE_COLUMNS]
         perspectives = [c for c in perspective_cols if (row.get(c) or "").strip()]
 
         entries.append({
             "question": question,
             "stage": (row.get("Funnel Stage") or "").strip(),
             "perspectives": perspectives,
+            "purposes": _parse_purposes(row.get("Purposes", "")),
             "answering": _parse_answering(row.get("Answering Analysis", ""), known_checks),
             "answering_mechanism": (row.get("Answering Mechanism") or "").strip(),
         })
@@ -195,6 +237,12 @@ def generate(rows: list[dict]) -> str:
         "#                   as a literal string match, not split, until that plan is\n"
         "#                   built.\n"
         "#   perspectives  - Perspective names this question is linked to.\n"
+        "#   purposes      - Purpose kinds this question serves (added 2026-08-24).\n"
+        "#                   Purpose is the PRIMARY dispatch axis and Perspective the\n"
+        "#                   secondary one: Perspective was measured and cannot\n"
+        "#                   discriminate (no perspective reaches an analysis another\n"
+        "#                   doesn't also reach). Purpose ORDERS what runs by default;\n"
+        "#                   it never excludes. See docs/investigation-framing-design.md.\n"
         "#   answering:\n"
         "#     kind        - \"analysis\" | \"direct\" | \"registry\" | \"human\" |\n"
         "#                   \"chart\" | \"gap\" | \"partial\" | \"mixed\" | \"unknown\" —\n"

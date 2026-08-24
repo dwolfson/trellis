@@ -11,6 +11,12 @@ analysis_catalog.yaml analysis), which are gaps, and which need a human via
 Enrichment — filterable by the same Perspective set used elsewhere in the
 UI.
 
+`purposes` carries the Purpose kinds a question serves (2026-08-24). Purpose
+is the PRIMARY dispatch axis, Perspective the secondary one — measured over
+the whole catalog, no Perspective reaches an analysis that another Perspective
+doesn't also reach, so Perspective can rank but cannot select. Purpose orders
+what runs by default; it never excludes.
+
 `answering.checks` carries the finer `analysis_id:check_name` join added
 2026-08-24, alongside `analysis_ids` rather than replacing it. Several
 analyses bundle unrelated checks — `repo_conventions` alone answers 7 of the
@@ -60,6 +66,7 @@ class QuestionCatalogEntry:
     stage: str
     perspectives: list[str]
     answering: QuestionAnswering
+    purposes: list[str] = field(default_factory=list)
     answering_mechanism: str = ""
 
     def to_dict(self) -> dict:
@@ -67,6 +74,7 @@ class QuestionCatalogEntry:
             "question": self.question,
             "stage": self.stage,
             "perspectives": self.perspectives,
+            "purposes": self.purposes,
             "answering": self.answering.to_dict(),
             "answering_mechanism": self.answering_mechanism,
         }
@@ -78,6 +86,7 @@ def _entry_from_yaml(raw: dict) -> QuestionCatalogEntry:
         question=raw["question"],
         stage=raw.get("stage", ""),
         perspectives=list(raw.get("perspectives") or []),
+        purposes=list(raw.get("purposes") or []),
         answering=QuestionAnswering(
             kind=answering_raw.get("kind", "unknown"),
             analysis_ids=list(answering_raw.get("analysis_ids") or []),
