@@ -3397,3 +3397,56 @@ catalog, assert some UI call site reaches it.** That is a test over a static map
 sites, not a browser test. Not written here — `web/` belongs to the presentation session and the
 fix is theirs — but recorded so the next person asking "why did nothing happen" starts from the
 catalog rather than from the surveyor.
+
+---
+
+**99. The distiller ported cleanly and does not transfer. 3303→358 in the spike; 216→154 on
+Milvus, 311→311 on genaicomps.**
+
+Finding 97's pilot established that precision, not coverage, is what blocks architecture recovery:
+Milvus proposes ~216 candidates against a published ground truth of 8. The distiller
+(`scripts/arch-spike/distill.py`, findings 76–80) measured 3303 → 358 on Kubernetes while holding
+6/6 ground truth, so porting it into the product path was the obvious move. Ported, measured
+in-process:
+
+```
+repo                    in  support  whole  refine   kept   cut   ground truth
+milvus                 216       19      0      43    154   29%   8
+docling_java             8        1      0       0      7   12%
+egeria_workspaces_git   74        0      0       3     71    4%   27
+docling_parse            1        0      1       0      0  100%
+genaicomps             311        0      0       0    311    0%
+```
+
+**Milvus is still 19× its ground truth after distillation, and `genaicomps` is untouched.** The
+port is faithful — the filters are the spike's, regression-tested against the same claims — so this
+is not a porting bug. The rules do not generalise off the corpus they were built on.
+
+**Why, and it is visible in the by-perspective split.** `genaicomps` keeps **289 deployment**
+candidates out of 311; Milvus keeps **120 logical**. The three filters all reason about *path
+containment*: support directories, whole-repo roots, and children of classified parents. That is a
+good model for logical/physical candidates derived from a directory tree. **Deployment candidates
+are compose services** — they are siblings by construction, none contains another, and none lives
+under `tests/`. Every filter abstains, and abstaining reads as "nothing to remove". The spike's
+corpus was Go and Python monorepos where the logical perspective dominated; `genaicomps` is 289
+compose services, a shape the spike never measured.
+
+**A precision rule that can empty the set is a recall bug wearing a precision rule's clothes.**
+`docling-parse` yields exactly one candidate, covering the whole repo. `_claims_whole_repo` dropped
+it and left **zero components** — a correct single-component answer turned into an empty result.
+In the spike this branch never misfired because a whole-repo claim always sat among thousands of
+siblings, so there was always something else to keep. Fixed by applying the filter only when
+something survives it, and the sole-candidate case is now recorded in the stats rather than
+silently spared. Two tests pin it, including the general invariant.
+
+**What this says about the next step.** Deterministic filtering is not going to close a 19× gap on
+its own, and the honest reading of the spike's own numbers agrees: Kubernetes went 3303 → 358
+deterministically, then **358 → 93 only with the LLM adjudicator**, which is where 6/6 was held.
+Distillation was never the whole answer there either; it was the cheap tier that made adjudication
+affordable. Porting it was still right — it removes 29% of Milvus's candidates for no marginal cost
+and it is regression-testable where a prompt is not — but the entry claiming precision is now
+solved would be false. **The adjudicator is the unported half, and it is the half that produced the
+result.**
+
+Recorded so the next person does not re-port the distiller expecting the spike's numbers, or
+conclude from `genaicomps`' 0% that the port is broken.

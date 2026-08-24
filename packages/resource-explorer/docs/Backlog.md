@@ -925,13 +925,48 @@ moves the weights also shapes what anyone thinks to check.
 
 ---
 
-### ~~HIGH — populate `IR.ports` and `IR.wires`~~ — BUILT 2026-08-24
+### ~~HIGH — populate `IR.ports` and `IR.wires`~~ — **BUILT 2026-08-23, entry was stale**
 
 `surveyors/arch_recovery/interfaces.py` extracts them from Dockerfile `EXPOSE`, compose
-`ports:`/`expose:`/`depends_on:` and OpenAPI documents; rendered by `_renderDeploymentInterfaces()`.
+`ports:`/`expose:`/`depends_on:` and OpenAPI documents. `propose()` is called from the product path
+(`sub_surveyors/arch_recovery_detect.py`), `arch_recovery/persist.py` writes both as findings with
+wires attributed to the **source** component, and `_renderDeploymentInterfaces()` renders them.
 Egeria's `SolutionPortDirection`/`SolutionLinkingWire` vocabulary was checked first, as design §5.5f
 asked — the third time that check was the right first move.
 
+`ir.py`'s fields carried a `# not in this slice` comment for three weeks after that stopped being
+true; corrected in place.
+
+**This entry stayed marked HIGH after the work shipped**, which is worse than a missing entry — a
+stale HIGH sends the next person to build something that exists. It is a class, not an incident:
+finding 89 ("committed and regression-tested is not reachable"), finding 98 (merged, pushed and
+live-verified is *also* not reachable), `recovery_gate`'s docstring citing `kubernetes/website` as
+a repo it skips when it runs, and `repo_classification`'s declared cost. **The label is not the
+evidence.**
+
+**What is genuinely still open here is coverage and precision, not capability** — see the
+architecture-recovery entry below. Ports and wires exist for the 16 repos recovery has actually
+been run on, of the 46 the gate approves.
+
+> Verified empty, and **nothing anywhere populates them**: both fields carry `# not in this slice`,
+> §5.2's distillation steps 4 and 5 are unbuilt, and §3.2's `SolutionPortDirection` has never been
+> written. `ApiStructureSurveyor` does not cover it — it counts symbols and module structure, which is
+> internal shape rather than exposed surface.
+>
+> **Why it is the biggest gap:** everything black-box we have built reads metadata *about* a resource
+> (README, docs, manifests, deployment artifacts), not the interface *of* it. The system can say "an
+> application with deployment artifacts" but not "serves these endpoints, consumes this topic, needs
+> these ports" — and the second is what "does it fit our infrastructure" means.
+>
+> **Why it is cheap:** interface evidence is largely black-box observable and often in artifacts
+> already fetched — OpenAPI/Swagger, `.proto`, GraphQL schemas, compose `ports:`/`expose:`, Dockerfile
+> `EXPOSE`, k8s `Service` manifests, declared entry points, configured topic names. Mostly no source
+> parsing, so **Discovery tier by rule 17's own test**.
+>
+> Check Egeria's existing vocabulary first — `SolutionPortDirection` and `SolutionLinkingWire`'s
+> `protocol`/`integrationStyle`/`frequency`/`dataExchanged`/`oneWay` already exist. Third time this
+> check has been the right first move, after `SolutionComponentType` and `ResourceUse`.
+>
 ---
 
 ### Investigation framing — the six items deferred out of the 2026-08-24 design
@@ -1077,3 +1112,74 @@ Consequences beyond the empty tab:
 Sequencing note: write these **after** the Purpose subset measurement (item 6 above), not before. If Purpose
 turns out not to discriminate, the CSV schema changes — and authoring two new question sets against a schema
 that is about to change is the expensive order to do this in.
+
+---
+
+### HIGH — architecture recovery: coverage is a third of the corpus, and precision is the real blocker
+
+**The first version of this entry said "3 of 46, 6% coverage". That was wrong, and wrong in the
+way this project keeps being wrong: the query was `query_findings(slug, kind)`, which defaults to
+`scope_locator=''` — whole-resource. Architecture recovery writes one finding set **per component
+scope**, so a default-scope query sees a repo only if it has a single root-scoped component. It
+found `docling_parse` (1 component) and missed `milvus` (202).** Corrected with
+`query_finding_scopes()`:
+
+```
+repos the gate approves for recovery          46
+repos WITH architecture_recovery results      16   (15 of them gate=run)
+```
+
+Fifth instance of the measuring instrument being the broken part, after findings 73, 79, 90 and
+the `resolve_doc_locations`/`build_report` timing confusion. The standing prior holds: **when a
+number about this system looks wrong, suspect the query before the subsystem.**
+
+The whole stack exists and is tested — detectors, import graph, coupling, `interfaces.propose()`
+for ports and wires, the deterministic distiller, the LLM adjudicator, identity-aware scoring, 98
+recorded findings. The gate now correctly identifies which 46 repos are worth running it on
+(finding 97, corpus re-measured at 46 run / 8 skip / 6 none). It has been *run* on three.
+
+**This is capability without coverage, and it is the largest single unclaimed benefit in the
+project.** Everything downstream — the Egeria Solution Blueprint projection, the deployment
+topology view, anything that needs more than one repo's architecture to be interesting — is
+waiting on data that nothing is blocking.
+
+**Cost, from `STEP_REGISTRY.requires_resources`:**
+
+```
+repo_arch_detect     {'zipball_root': 'local_path'}                        download, no clone
+repo_arch_coupling   {'zipball_root': ..., 'git_clone_root': 'history_path'}   download AND clone
+```
+
+So `repo_arch_detect` across 46 repos is 46 zipball downloads — feasible unattended. Coupling is
+materially more expensive and should be a separate decision made after detect has run.
+
+**PILOT RUN 2026-08-24 — 5 repos, detect only, 0 errors, 4.4s–54.8s each.** Chosen to test the
+three "unprioritisable" language defects rather than for speed. It reprioritised all three:
+
+```
+milvus                 26.5s   202 component scopes   ground truth says 8
+docling_java            4.4s     8 component scopes
+egeria_workspaces_git  38.6s    72 component scopes
+docling_parse          54.8s     1 component scope
+genaicomps             16.9s   311 component scopes
+```
+
+- **"Java marker components are all named `src`" does not reproduce.** `docling_java` yields
+  `docling-bom`, `docling-core`, `docling-serve-api`, `docling-serve-client`,
+  `docling-testcontainers`, `docling-version-tests`, `test-report-aggregation`, `docs` — real
+  Maven module names, zero scopes ending in `src`. The defect was observed on Kafka (Gradle) and
+  is either Gradle-specific or was fixed by the Gradle module expansion work. **Downgrade; re-test
+  on Kafka before spending anything on it.**
+- **The `cmd/X` + `pkg/X` merge is not the live Go problem.** Milvus has **one** `cmd` scope and
+  **145** `internal/*` scopes. There is almost nothing to merge. **Downgrade.**
+- **Precision is the live problem, and it is severe.** Milvus proposes **202 components against a
+  published ground truth of 8** ("five core components and three third-party dependencies", the
+  Milvus authors' own words). `genaicomps` proposes 311. Every `internal/*` package becomes a
+  candidate component. This is the same precision gap the spike measured on Kubernetes (3303 →
+  358 deterministic → 93 adjudicated) — **the distiller exists and is not in the product path.**
+
+**So the ranking inverts.** Running detect across the remaining 31 repos would produce thousands of
+component findings at roughly 25:1 over-proposal, which is not coverage, it is noise at scale.
+**Port the distillation and ranking stack into the product path first** (`scripts/arch-spike/`
+`distill.py`, `rank.py`, and optionally `adjudicate.py`), re-run the pilot 5, and only then decide
+on the full corpus. Cost is bounded and known: detect averages ~28s/repo with no clone.

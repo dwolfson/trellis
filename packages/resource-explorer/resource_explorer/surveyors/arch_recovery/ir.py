@@ -111,8 +111,13 @@ class IR:
     checkout: str
     census: dict = field(default_factory=dict)
     components: list[Component] = field(default_factory=list)
-    ports: list[dict] = field(default_factory=list)      # not in this slice
-    wires: list[dict] = field(default_factory=list)      # not in this slice
+    # Populated by `interfaces.propose()` (design §5.5f) — the comment here read
+    # "not in this slice" until 2026-08-24, three weeks after it stopped being
+    # true. Ports are the exposed surface (compose `ports:`/`expose:`,
+    # Dockerfile EXPOSE, k8s Service, declared entry points); wires are the
+    # links between components, attributed to the SOURCE component.
+    ports: list[dict] = field(default_factory=list)
+    wires: list[dict] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)       # things worth reporting
 
