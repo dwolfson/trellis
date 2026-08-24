@@ -3248,3 +3248,48 @@ Java marker components are named `src` (12 of them on Kafka), because attributio
 level that lands on `src` in `module/src/main/java/...`. The Maven/Gradle layout puts real depth
 between the module root and the code, and the subtree rule was written for Python and Go layouts
 where it does not. The components are real and correctly typed; their names are useless.
+
+---
+
+**96. Disposition: the first output that is advice, and the vocabulary had to shrink to hold the
+no-score line.**
+
+§5.5d listed six dispositions, derived from why a user looks at a repo: adopt, avoid, monitor,
+upgrade, compare, expand. Building it, only three survived contact with the evidence, plus one the
+list didn't have.
+
+- **monitor / investigate / nothing-to-do** follow from role + expectations + the gate.
+- **insufficient-evidence** had to be added. Without it, "we could not determine what this is"
+  collapses into "there is nothing to do" — the single substitution that would actively mislead,
+  because one invites a human to look and the other tells them not to bother.
+- **adopt / avoid** need the user's *motivation*. "Should we adopt this" is a different question
+  from "what is this", and no amount of repo evidence closes the gap.
+- **upgrade / replace** need a second corpus that **does not live in the repo being surveyed** —
+  which version we run, which APIs we call, how deeply it is embedded. This is the sharpest of the
+  four: the evidence isn't scarce, it's *elsewhere*, and no better surveying of the target repo
+  will ever produce it.
+- **compare** needs a second resource.
+
+Each undeliverable one is named in `NOT_DERIVABLE` with what it would need. Naming beats omitting:
+an absent entry reads as an oversight and gets filled in later from the same evidence by someone
+who didn't know it had been considered.
+
+**The failure mode this whole feature invites.** Everything before this was description — here is
+what the repo is, here is where its docs are. A disposition is *advice*, and advice attracts
+ranking: "which repos should we adopt first" is a maturity score wearing a verb. The defence is the
+same one that has worked since §5.5a(c) — separately-named lists, no tally, evidence attached to
+each item. `investigate` names the missing artifacts and never counts them, because "3 of 5
+present" is the score with a hat on. A test asserts no field name contains score/grade/rating/
+count/percentage, copied rather than imported from `tests/test_result_status.py` so weakening one
+doesn't weaken the other.
+
+**A recommendation with no target cannot be acted on.** `monitor`'s next step is an Automate
+subscription — a mechanism that already exists, not a badge. But a subscription only fires if
+there is an active schedule for the *same* `analysis_id`, so one created without a target silently
+never fires, and never-firing is indistinguishable from nothing-changed. This is the same family as
+findings 63 and 90: an absence that renders identically to a real zero. Hence `next_step_target`,
+pinned by test to a real `ANALYSIS_KINDS` key, with a second test asserting
+`bool(next_step) == bool(next_step_target)` across every branch. The peer session raised this; it
+was not visible from inside the module, because from in here the subscription is just a string.
+
+Commit `2fb02d3`. See also §5.5d-i — the Egeria vocabulary check that came back negative.
