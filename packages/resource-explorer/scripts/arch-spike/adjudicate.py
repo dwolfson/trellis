@@ -147,6 +147,42 @@ component. Your job has exactly three parts:
 1. CLASSIFY each surviving component into one of these 13 values, exactly as spelled — no others
    are valid:
    {", ".join(SOLUTION_COMPONENT_TYPES)}
+
+   These 13 values encode ONE axis: **how and where the thing is run.** They do NOT describe what
+   it is about, what domain it serves, or how large it is. Two components doing completely
+   different jobs get the same type if they run the same way; a library and the daemon that
+   imports it get different types even though they sit side by side.
+
+   Decide by asking, in this order, and stop at the first that fits:
+
+     - Is it a third-party product we run but do not build (a database image, a broker, a proxy)?
+       -> Third Party Process
+     - Does it have its own entry point (a `main`, a console script, its own binary)?
+         - a human invokes it at a terminal and it runs to completion  -> Console Command
+         - it runs continuously as a process, serving or watching      -> Long Running Daemon
+         - it runs on a schedule or a trigger with no human present    -> Automated Action
+     - Does it serve requests over a network interface (HTTP/gRPC/REST endpoints)?
+       -> Software Service
+     - Does it render something a human looks at or interacts with?    -> User Interface
+     - Does it persist data as its purpose (a store, an index, a TSDB)? -> Data Storage
+     - Does it move or route data between systems (queues, replication, remote write)?
+       -> Data Distribution
+     - Does it emit outputs for downstream consumers (alerts, notifications, feeds)? -> Publishing
+     - Is it a model or analytic whose output is an inference or a score? -> Insight Model
+     - Is it a defined sequence of steps or a workflow?                -> Multi-Step Process
+     - Does it require a person to carry out steps?                    -> Manual Process
+     - None of the above: it is imported by other components and never runs on its own
+       -> Software Library
+
+   `Software Library` is the FALL-THROUGH, not the default. Reaching for it without working down
+   the list is the single most common way to get this wrong: a previous run typed 53 of 56
+   components `Software Library`, which carries almost no information whatever any individual
+   answer's merits. If your output is overwhelmingly one value, you have not used this list.
+
+   Use the evidence you are given. `detector-proposed type: Console Command` means an entry point
+   was actually detected (a package declaring `package main` in its own root) — that is strong,
+   direct evidence, not a suggestion. An exposed port or an OpenAPI document is direct evidence of
+   `Software Service`. Say which evidence decided it in your rationale.
 2. NAME each component in clear human terms (not a raw path or slug).
 3. MERGE at the right grain — not too little, not too much. Two failure modes, both wrong:
      a. UNDER-merging: renaming every candidate 1:1 (or only deduping two candidates that describe

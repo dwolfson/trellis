@@ -2576,3 +2576,62 @@ The second is a *category*, not a single rule. Other evidence we already hold co
 partition checks in the same way — a merge spanning two deployment units, or two modules, or both
 sides of a language boundary. **The pattern is: use detector evidence to falsify the model's
 grouping, not just to license it.**
+
+**84. Typing was a prompt-framing problem: 3 distinct types → 6, and recall 6/11 → 9/11.**
+
+Finding 81 showed two differently-tuned models collapsing the 13-value vocabulary to essentially one
+value, and concluded the fault was framing rather than capability. Confirmed: the prompt listed the
+13 values and **never said what they distinguish.** §3.1 states the axis outright — *"how and where
+is it run"* — and none of it reached the model. Given only a list, `Software Library` looks safest for
+almost anything.
+
+Added an ordered decision guide (third-party product → own entry point, split by terminal /
+continuous / scheduled → serves network requests → renders for a human → persists data → moves data →
+emits outputs → inference → workflow → human steps), named `Software Library` as **the fall-through,
+not the default**, quoted the actual failure back (*"a previous run typed 53 of 56 components
+`Software Library`"*), and pointed at the evidence that already decides it: `detector-proposed type:
+Console Command` means an entry point was genuinely detected (§78's `package main` check), not a hint.
+
+| | v3 prompt | **+ typing guide** |
+|---|---|---|
+| components | 16 | 27 |
+| distinct types used | 3 | **6** |
+| share on one value | 87.5% | **59%** |
+| strict containment | 6/11 | **9/11** |
+
+**Recall improved, which was not predicted.** The guide was aimed at typing; file sets do not change
+when a type changes. It moved 6/11 → 9/11 because the same instruction reduced over-merging — 16 → 27
+components. The clause forcing a distinction between "runs continuously" and "is imported" is also a
+clause about what makes two things different, and the model merged less as a result. **Typing and
+merging were not independent problems.**
+
+Best adjudicated Prometheus result so far: **27 components at 9/11**, against deterministic
+distillation's 95 at 10/11 — 3.5× fewer components for one component of recall.
+
+### What the types actually got right, and wrong
+
+Right, and unambiguously: `cmd/prometheus` → `Long Running Daemon`, `cmd/promtool` → `Console
+Command`, `tsdb/**` → `Data Storage`, `web/**` → `User Interface`. All four match the ground truth
+exactly, and all four are the cases where direct evidence existed.
+
+Wrong, and instructively:
+
+- **`promql/**` → `Long Running Daemon`.** The ground truth says `Software Library`, and Prometheus's
+  own document says the engine *"does not run as its own actor goroutine, but is used as a library."*
+  The model had no access to that sentence — we deliberately do not feed the architecture doc (§5.2
+  step 0 says prose outranks inference, but doing so here would be circular against a fixture
+  transcribed from it). This is the clearest single illustration of both the doc's value and why it
+  cannot be used on these three fixtures.
+- **`scrape/**`, `rules/**` → `Long Running Daemon`** where ground truth says `Automated Action`;
+  **`notifier/**` → `Long Running Daemon`** where it says `Publishing`. In-process managers are being
+  read as daemons.
+- **`model/exemplar/**` → `Insight Model`.** A keyword false positive: `model/` is a *data model*
+  package, nothing to do with inference.
+
+**So the guide fixed diversity, not accuracy.** One over-used value (`Software Library`, 87.5%) was
+replaced by two (`Software Library` 59%, `Long Running Daemon` 22%). That is a real improvement and a
+partial one, and the remaining error has a clear shape: **the model cannot tell "runs as its own
+process" from "runs inside one"**, which is exactly the distinction `Automated Action` and
+`Long Running Daemon` turn on. Evidence we already hold could settle it — a component with no entry
+point of its own is not a daemon — which is another instance of finding 83's pattern: use detector
+evidence to falsify a claim, not merely to license it.
