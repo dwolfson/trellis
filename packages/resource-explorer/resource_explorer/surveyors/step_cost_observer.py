@@ -78,8 +78,31 @@ class Observation:
     connects: int
     declared_fetch: str
     declared_compute: str
+    #: What the step actually produced — WITHOUT this, a duration is
+    #: uninterpretable. repo_data_profiling measured 0.0s median across 21
+    #: repos, and a step that correctly found nothing and a step that never
+    #: reached its input produce exactly that same number. Duration alone
+    #: cannot separate "fast because there was nothing to do" from "fast
+    #: because it did nothing", which is the absence-looks-like-zero shape
+    #: relocated into the measuring instrument.
+    annotations: int = -1          # -1 = not captured
+    #: The step's own StepOutcome labels, when it emits them (step_outcome.py).
+    #: `no_signal` means it looked and there was nothing; `unverified` means it
+    #: could not look. That is exactly the distinction a duration cannot make.
+    outcomes: tuple[str, ...] = ()
     #: Empty when observation and declaration agree.
     disagreement: str = ""
+
+    @property
+    def interpretable(self) -> bool:
+        """Can this timing be reasoned about at all?
+
+        A fast run says nothing about a cost tier unless we know the step had
+        real work to do. `unverified` is the giveaway that it did not.
+        """
+        if "unverified" in self.outcomes:
+            return False
+        return self.annotations != 0
 
     @property
     def agrees(self) -> bool:
@@ -144,6 +167,12 @@ def _disagreement(obs: Observation) -> str:
     # about. Separating fetch time from compute time properly needs
     # instrumentation inside each step; until then this abstains rather than
     # guesses.
+    # An uninterpretable timing is not evidence about a declaration. A step
+    # that reported `unverified`, or produced nothing at all, was not exercised
+    # — flagging its speed would be reading a number taken while the thing
+    # being measured was not happening.
+    if not obs.interpretable:
+        return "; ".join(bits)
     ceiling = _COMPUTE_CEILING.get(obs.declared_compute, float("inf"))
     if obs.connects == 0 and obs.elapsed > ceiling:
         bits.append(
@@ -185,6 +214,23 @@ def _step_ever_measured(registry, step_key: str) -> bool:
     return row is not None
 
 
+def describe_work(annotations) -> tuple[int, tuple[str, ...]]:
+    """What a step produced, as the observer needs it: how many annotations,
+    and any StepOutcome labels they carry.
+
+    Read from the annotations the orchestrator already holds, so no step has to
+    cooperate for its timing to become interpretable — a step that has not
+    adopted the outcome vocabulary still contributes its count.
+    """
+    outcomes = []
+    for ann in annotations or ():
+        props = getattr(ann, "json_properties", None) or {}
+        outcome = props.get("outcome")
+        if outcome:
+            outcomes.append(outcome)
+    return len(annotations or ()), tuple(sorted(set(outcomes)))
+
+
 def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None) -> str:
     """Persist one observation. Returns FIRST when this is the first ever for
     this step, RECORDED normally, NOT_RECORDED when persistence failed.
@@ -220,6 +266,9 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
                     "declared_compute": obs.declared_compute,
                     "observed_connects": obs.connects,
                     "observed_elapsed": round(obs.elapsed, 3),
+                    "observed_annotations": obs.annotations,
+                    "observed_outcomes": list(obs.outcomes),
+                    "interpretable": obs.interpretable,
                     "disagreement": obs.disagreement,
                     "first_observation": first},
             surveyed_at=surveyed_at,
