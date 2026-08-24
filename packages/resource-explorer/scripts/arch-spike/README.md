@@ -3185,3 +3185,66 @@ finding 89's "committed and regression-tested is not reachable".
 The gap itself is smaller than it looks: the marker proposer contributes 5 of 66 components on the
 one target where it runs. It is worth knowing precisely because it has been silently absent, not
 because it was carrying the result.
+
+**95. Go and Java marker rules — and `$$$` does not match Go call arguments.**
+
+Finding 94 found the code-marker proposer Python-only. Seven rules added: `go-http-server`,
+`go-grpc-server`, `go-cli-construction`, `go-client-sql`, `java-spring-service`,
+`java-main-method`, `java-scheduled`.
+
+### Every rule verified before use, and the first four were wrong
+
+Finding 19's discipline earned its keep immediately. The natural patterns —
+`http.ListenAndServe($$$A)`, `grpc.NewServer($$$A)` — returned **zero on files that plainly contain
+those calls**:
+
+| pattern | on a file containing `http.ListenAndServe(":1234", nil)` |
+|---|---|
+| `http.ListenAndServe($$$A)` | **0** |
+| `http.ListenAndServe($A, $B)` | 1 |
+
+**ast-grep's Go support does not match `$$$` against a call's argument list** — not even when
+arguments are present. Arity-specific patterns would then silently miss every other call shape. The
+working form is structural: `kind: call_expression` with a `regex` on the `function` field, which
+matched `grpc.NewServer` 16× in Milvus and `ListenAndServe` 2× in Prometheus, exactly the grep count.
+
+Had these shipped unverified they would have been **eight more silent zeros** — the same failure
+finding 94 was about.
+
+Two rules matched nothing in any real repo (`go-client-sql`, `java-scheduled`), so they were given
+synthetic known-positives rather than shipped untested: a rule that has never fired is
+indistinguishable from a broken one.
+
+### A second silent discard, upstream of the rules
+
+With the rules in place Prometheus still reported **"0 logical components from 8 matches"** — the
+markers matched and were then dropped. Cause: `package_roots` was derived from **Python and Node
+manifests only**. Prometheus has `web/ui/package.json`, so every root sat under `web/ui/`, and all
+eight Go matches fell outside them. Go module roots, Gradle module dirs, and the repo root are now
+package roots too.
+
+### Result
+
+| target | code-marker components | note |
+|---|---|---|
+| `prometheus` | **5 from 8 matches** | 4 merged with `go-subsystem` — *"proposed independently by code, go — confidence raised to 90"* |
+| `kafka` | **12** | first Java markers ever produced |
+| `trellis` | 5 | unchanged |
+
+Scores unchanged: Prometheus 11/11, trellis 8/11. **The markers' value here is corroboration, not new
+components** — independent agreement between two proposers is what the design calls its strongest
+signal, and it is now available outside Python.
+
+### The test that caught the change
+
+`test_marker_languages_is_read_from_the_rule_files` asserted `{"python"}`, with a comment saying it
+*"breaks (correctly) the day a non-Python rule lands rather than silently staying right by
+coincidence."* It did. Updated to `{"go", "java", "python"}` — **not loosened to "any language
+present"**, which would have stopped it catching the next silent change.
+
+### Known limitation, recorded not fixed
+
+Java marker components are named `src` (12 of them on Kafka), because attribution walks to a subtree
+level that lands on `src` in `module/src/main/java/...`. The Maven/Gradle layout puts real depth
+between the module root and the code, and the subtree rule was written for Python and Go layouts
+where it does not. The components are real and correctly typed; their names are useless.

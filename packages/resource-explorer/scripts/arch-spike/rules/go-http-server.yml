@@ -1,0 +1,17 @@
+# design §5.1 "Web framework markers" — Go HTTP server construction ->
+# Software Service, ports Input-Output.
+#
+# VERIFIED before use (finding 19). Note the form: `kind` + a regex on the
+# `function` field, NOT a call pattern. ast-grep's Go support does not match
+# `$$$` against a call's argument list — `http.ListenAndServe($$$A)` returns
+# ZERO on a file that plainly contains `http.ListenAndServe(":1234", nil)`,
+# while `http.ListenAndServe($A, $B)` matches it. Arity-specific patterns would
+# then silently miss every other call shape. Finding 94 exists because
+# marker coverage was assumed rather than checked; this is the checking.
+id: go-http-server
+language: Go
+rule:
+  kind: call_expression
+  has:
+    field: function
+    regex: '(^|\.)(ListenAndServe|ListenAndServeTLS)$'

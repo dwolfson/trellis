@@ -705,7 +705,25 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
     # come from the manifests already found, so markers refine a boundary that
     # was detected, never invent one from nothing.
     from code_markers import propose as _propose_markers
-    package_roots = sorted({m["dir"] for m in manifests}) or ["."]
+    # Package roots for marker attribution. Previously derived from Python and
+    # Node manifests alone, which silently discarded every marker in a repo
+    # whose manifests live elsewhere: Prometheus has `web/ui/package.json`, so
+    # every root sat under `web/ui/` and all 8 Go marker matches fell outside
+    # them and were dropped — "0 logical components from 8 matches". Go module
+    # roots and Gradle module directories are package roots too (findings 70,
+    # 93), and the repo root is the floor rather than only a fallback, since a
+    # single-module Go repo has no other root to offer.
+    package_roots_set = {m["dir"] for m in manifests}
+    try:
+        from . import imports as _imports_mod
+    except ImportError:
+        import imports as _imports_mod
+    for _mod_path, _mod_dir in _imports_mod.go_module_index(root, files):
+        package_roots_set.add(_mod_dir or ".")
+    for _g in gradle_modules(root, files):
+        package_roots_set.add(_g["dir"] or ".")
+    package_roots_set.add(".")
+    package_roots = sorted(package_roots_set)
     mc, me, mn = _propose_markers(root, files, package_roots)
     components.extend(mc)
     evidence.extend(me)

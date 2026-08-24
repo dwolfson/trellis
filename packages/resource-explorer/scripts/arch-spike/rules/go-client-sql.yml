@@ -1,0 +1,8 @@
+# Wire evidence only (no component proposed) — a database client edge.
+id: go-client-sql
+language: Go
+rule:
+  kind: call_expression
+  has:
+    field: function
+    regex: '^(sql|sqlx)\.(Open|Connect|MustConnect)$'

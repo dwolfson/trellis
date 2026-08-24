@@ -55,7 +55,18 @@ MARKER_ROLES: dict[str, tuple[str, int, bool]] = {
     "typer-cli-construction":    ("Console Command",   80, True),
     "textual-app-subclass":      ("User Interface",    80, True),
     "scheduler-worker":          ("Automated Action",  75, True),
+    # Go (finding 94 — the marker proposer was Python-only, so every non-Python
+    # target had been running three proposers rather than four)
+    "go-http-server":            ("Software Service",  85, True),
+    "go-grpc-server":            ("Software Service",  85, True),
+    "go-cli-construction":       ("Console Command",   80, True),
+    # Java. `java-main-method` is the JVM analogue of finding 78's `package main`
+    # entry-point detection: declared, not inferred from a filename.
+    "java-spring-service":       ("Software Service",  85, True),
+    "java-main-method":          ("Console Command",   75, True),
+    "java-scheduled":            ("Automated Action",  75, True),
     # wire evidence only — see module docstring
+    "go-client-sql":             ("",                  0,  False),
     "client-postgres":           ("",                  0,  False),
     "client-kafka":              ("",                  0,  False),
     "client-boto3":              ("",                  0,  False),
