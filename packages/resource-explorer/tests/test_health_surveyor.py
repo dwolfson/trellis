@@ -42,19 +42,32 @@ def _seed_stats(registry, slug, stars=10):
         )
 
 
-class TestHealthSurveyorRefreshesStats:
-    def test_calls_stats_fetcher_before_reading(self, registry, project):
+class TestHealthSurveyorReadsStats:
+    def test_does_not_refresh_stats_itself(self, registry, project):
+        """The refresh moved out to the repo_git_statistics step. It was this
+        surveyor's private side effect, which meant the seven *other* steps
+        reading project_stats were fresh only when repo_health happened to be in
+        the same run and happened to precede them — an ordering nothing declared
+        and nothing enforced."""
+        _seed_stats(registry, "myproj", stars=99)
         with patch("resource_explorer.github.stats_fetcher.StatsFetcher.fetch") as mock_fetch:
-            mock_fetch.side_effect = lambda slug, **_kwargs: _seed_stats(registry, slug, stars=99)
             results = HealthSurveyor(project, registry).run()
 
-        # fast=False (default) -> fetch_diff_stats=True, unchanged prior
-        # behavior — see TestFastFlag below for the fast=True (Coarse
-        # Scout) case, which is the actual slowness fix.
-        mock_fetch.assert_called_once_with("myproj", fetch_diff_stats=True)
+        mock_fetch.assert_not_called()
         assert len(results) == 1
         assert isinstance(results[0], QualityScoreAnnotation)
         assert results[0].json_properties["stars"] == 99
+
+    def test_persists_scores_so_the_results_card_can_populate(self, registry, project):
+        """Previously it produced annotations only, so repository_health had no
+        stored results and its Survey Results card was permanently empty."""
+        _seed_stats(registry, "myproj", stars=99)
+        HealthSurveyor(project, registry).run()
+
+        metrics = registry.query_metrics("myproj", "repository_health")
+        assert metrics.get("overall") is not None
+        for component in ("activity", "community", "release_cadence", "freshness"):
+            assert component in metrics
 
     def test_fetch_failure_falls_back_to_existing_stats(self, registry, project):
         _seed_stats(registry, "myproj", stars=5)
@@ -76,19 +89,8 @@ class TestFastFlag:
     API calls for an active repo's 90-day history, no cap on count or
     elapsed time)."""
 
-    def test_fast_true_requests_no_diff_stats(self, registry, project):
-        with patch("resource_explorer.github.stats_fetcher.StatsFetcher.fetch") as mock_fetch:
-            mock_fetch.side_effect = lambda slug, **_kwargs: _seed_stats(registry, slug, stars=1)
-            HealthSurveyor(project, registry, fast=True).run()
-
-        mock_fetch.assert_called_once_with("myproj", fetch_diff_stats=False)
-
-    def test_fast_false_is_the_default(self, registry, project):
-        with patch("resource_explorer.github.stats_fetcher.StatsFetcher.fetch") as mock_fetch:
-            mock_fetch.side_effect = lambda slug, **_kwargs: _seed_stats(registry, slug, stars=1)
-            HealthSurveyor(project, registry).run()
-
-        mock_fetch.assert_called_once_with("myproj", fetch_diff_stats=True)
+    # The fast=True/False -> fetch_diff_stats assertions moved to
+    # tests/test_git_statistics_surveyor.py along with the fetch itself.
 
     def test_no_stats_ever_and_fetch_fails_warns(self, registry, project):
         with patch(

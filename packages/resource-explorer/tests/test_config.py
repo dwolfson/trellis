@@ -23,6 +23,20 @@ from resource_explorer.config import (
 
 
 def _write_env(tmp_path, monkeypatch, contents: str):
+    """Write a throwaway .env and cd into it — and clear the same keys from the
+    real environment first.
+
+    A real environment variable outranks a .env file in pydantic-settings, so
+    without the delenv below these tests assert against whatever the ambient
+    shell happens to export. Anyone with GITHUB_TOKEN set (common) saw three
+    failures here that had nothing to do with their change; it also made the
+    tests unusable as a check on CI, where the environment is not the
+    developer's. Found while dry-running the CI environment on 2026-08-23.
+    """
+    for line in contents.splitlines():
+        key = line.split("=", 1)[0].strip()
+        if key:
+            monkeypatch.delenv(key, raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(contents)
     monkeypatch.chdir(tmp_path)

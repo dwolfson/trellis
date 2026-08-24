@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import (
     Annotation,
@@ -69,13 +70,22 @@ class SecurityHygieneSurveyor(BaseSurveyor):
         results: list[Annotation] = []
         findings: list[dict] = []
         try:
-            # D2(c) (docs/repo-survey-catalog-completion-plan.md): a
-            # confirmed duplicate of file_structure.py's identical query,
-            # now the named registry accessor.
-            paths = self.registry.get_code_symbol_file_paths(self.project.slug)
-
-            # Normalise paths for prefix/name matching
-            paths = [p.replace("\\", "/") for p in paths]
+            # project_file_inventory — every file in the repo — NOT
+            # project_code_symbols, which is what this read until 2026-08-22.
+            #
+            # That was a real bug, not a style point: project_code_symbols only
+            # ever holds .py/.js/.java/.go source files, so SECURITY.md and
+            # .github/workflows/* could not appear in it by construction. Every
+            # repo therefore failed the security-policy and CI checks
+            # unconditionally, and the RFAs said so with confidence 90 and 85.
+            # Confirmed against live data before changing: docling has
+            # SECURITY.md and 13 workflow files in its inventory and zero of
+            # either in project_code_symbols. documentation.py had already been
+            # moved to the inventory for exactly this reason and left a comment
+            # saying why; this step was missed.
+            inventory = [p.replace("\\", "/")
+                         for p in self.registry.get_file_inventory(self.project.slug)]
+            paths = inventory
             filenames = {p.rsplit("/", 1)[-1] for p in paths}
 
             # Also check project_stats for license field — via the named
@@ -85,6 +95,38 @@ class SecurityHygieneSurveyor(BaseSurveyor):
             # pattern.
             stats_row = self.registry.get_latest_project_stats(self.project.slug)
             license_from_stats = (stats_row["license"] if stats_row else "") or ""
+
+            # An empty inventory cannot produce a gap. Reporting one would raise
+            # three RequestForActions telling the user to add files that may
+            # already be there — the most expensive possible form of this bug,
+            # since an RFA is a request for someone's time.
+            outcome = from_upstream_table(
+                len(inventory), len(inventory),
+                empty_table_cause="empty_file_inventory",
+                no_match_cause="no_hygiene_artifacts")
+            if outcome.outcome == UNVERIFIED:
+                results.append(
+                    ClassificationAnnotation(
+                        summary="Security hygiene not checked — the file inventory is empty",
+                        analysis_step=STEP,
+                        candidate_classifications=[],
+                        confidence=100,
+                        explanation=(
+                            "SECURITY.md, CI configuration and LICENSE are looked up in "
+                            "project_file_inventory, which holds no rows for this repo. "
+                            "Run repo_file_inventory (or a Profile refresh) first — an "
+                            "absent file and an unread repository are not the same finding."
+                        ),
+                        json_properties=outcome.as_row(),
+                    )
+                )
+                findings.append({
+                    "check_name": "inventory_available", "status": "unverified",
+                    "summary": "File inventory empty — hygiene checks not run",
+                    "detail": outcome.as_row(),
+                })
+                self._persist(findings)
+                return results
 
             # ── Security policy ───────────────────────────────────────────────
             has_security = any(
@@ -207,25 +249,32 @@ class SecurityHygieneSurveyor(BaseSurveyor):
                     },
                 })
 
-            try:
-                # Generic findings table (analysis-kind extensibility
-                # redesign) — "status" (pass/gap) here becomes "label" in
-                # the generic schema, since other finding kinds (e.g.
-                # documentation) use "label" for a different kind of value.
-                self.registry.upsert_finding(
-                    self.project.slug, "security_hygiene",
-                    [
-                        {"check_name": f["check_name"], "label": f["status"],
-                         "summary": f["summary"], "detail": f.get("detail")}
-                        for f in findings
-                    ],
-                    surveyed_at=self._surveyed_at,
-                )
-            except Exception as exc:
-                log.warning("Could not persist security hygiene findings for %s: %s", self.project.slug, exc)
+            self._persist(findings)
 
         except Exception as exc:
             log.exception("SecurityHygieneSurveyor failed for %s", self.project.slug)
             self._warn(results, str(exc))
 
         return results
+
+    def _persist(self, findings: list[dict]) -> None:
+        """Write this run's findings. Extracted so the unverified early return
+        persists through exactly the same path as a completed run — otherwise
+        "we could not check" would be the one outcome that left no row."""
+        try:
+            # Generic findings table (analysis-kind extensibility
+            # redesign) — "status" (pass/gap/unverified) here becomes "label"
+            # in the generic schema, since other finding kinds (e.g.
+            # documentation) use "label" for a different kind of value.
+            self.registry.upsert_finding(
+                self.project.slug, "security_hygiene",
+                [
+                    {"check_name": f["check_name"], "label": f["status"],
+                     "summary": f["summary"], "detail": f.get("detail")}
+                    for f in findings
+                ],
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception as exc:
+            log.warning("Could not persist security hygiene findings for %s: %s",
+                        self.project.slug, exc)

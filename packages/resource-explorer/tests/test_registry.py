@@ -755,6 +755,17 @@ class TestScopeLocatorOnFindingsAndMetrics:
     runs under the same `kind`, without disturbing any pre-scope-aware
     caller (default '' everywhere)."""
 
+    @pytest.fixture(autouse=True)
+    def _register_myproj(self, db):
+        # upsert_finding() now rejects an unregistered slug (2026-08-23,
+        # project_analysis_findings_project_slug_fkey incident) — register
+        # "myproj" the same way every other project-bearing test in this
+        # file does via `sample_project`, so this class's findings calls
+        # still exercise the scope_locator behavior under test rather than
+        # the new guard.
+        db.add(Project(slug="myproj", display_name="My Project",
+                        github_url="https://github.com/test/myproj"))
+
     def test_default_scope_locator_is_whole_resource(self, db):
         db.upsert_finding("myproj", "api_structure", [
             {"check_name": "a.py", "label": "ok", "summary": ""},

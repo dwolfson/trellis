@@ -54,6 +54,33 @@ def clear_caches() -> None:
     _candidates_cache.clear()
     _fetch_cache.clear()
 
+
+# pyegeria's lookup helpers signal "nothing matched" by returning a human
+# readable *string* ("No elements found") rather than None/"" — a truthy value
+# that sails straight through an `or None` guard. Left unchecked it comes back
+# as if it were a real GUID: resolve_question_guid() did exactly that, and the
+# sentence then reached ClassificationExplorer.get_scoped_elements() as a URL
+# path segment, producing a 404 that the caller's broad `except Exception`
+# swallowed — so D2's scoped fast path silently degraded to the
+# search_string="*" full scan on *every* call, with no error surfaced anywhere.
+# Found by profiling the Survey tab, not by a failing test: the test fake
+# returned None for a miss, i.e. it was better behaved than the real library.
+#
+# The rule is deliberately "contains no whitespace" rather than a full
+# UUID-shape match. Every one of these sentinels is a human sentence, so
+# whitespace catches the whole class; a stricter UUID regex would additionally
+# risk rejecting a valid-but-unusually-formatted GUID, and that failure would
+# be silent in exactly the same way this one was. Prefer the narrow rule that
+# can only reject things a GUID can never be.
+def _as_guid(value) -> str | None:
+    """Return value if it can be a real Egeria GUID, else None."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or any(ch.isspace() for ch in candidate):
+        return None
+    return candidate
+
 # Real response shape from GovernanceOfficer.get_governance_action_process_graph
 # (renamed from get_governance_process_graph in an upcoming pyegeria release),
 # confirmed against a live qs-view-server for both a single-step and a two-step
@@ -272,6 +299,21 @@ class SurveyDefinitionReader:
                 metadata_element_type="GovernanceActionProcess",
                 output_format="JSON",
                 page_size=1000,
+                # graph_query_depth=0 is the single biggest lever on Survey-tab
+                # load time: pyegeria defaults it to 3, which makes Egeria expand
+                # each returned element's related-element graph 3 hops deep. This
+                # loop reads nothing but element-local fields
+                # (additionalProperties/qualifiedName/displayName + the header
+                # GUID), so every one of those traversals was pure waste.
+                # Measured live against a real server, 406 GovernanceActionProcess
+                # elements: depth 3 = 18.9s, depth 1 = 18.9s, depth 0 = 0.20s
+                # (~94x) — and all three return byte-identical results, same 406
+                # elements and same 4 matching candidates. Note depth 1 costs the
+                # same as 3: the cliff is "any traversal at all," not its depth,
+                # so this must stay 0 rather than merely being lowered.
+                # Per-step detail still costs a graph query, but that's paid
+                # per-candidate in fetch(), only for the handful that matched.
+                graph_query_depth=0,
             )
             if isinstance(results, str):
                 import json as _json
@@ -321,11 +363,11 @@ class SurveyDefinitionReader:
         guid: str | None = None
         try:
             client = self._connect_classification_explorer()
-            guid = client.get_guid_for_name(
+            guid = _as_guid(client.get_guid_for_name(
                 question_display_name,
                 property_name=["displayName"],
                 type_name="GlossaryTerm",
-            ) or None
+            ))
         except Exception as exc:
             log.debug("resolve_question_guid(%r) failed: %s", question_display_name, exc)
 

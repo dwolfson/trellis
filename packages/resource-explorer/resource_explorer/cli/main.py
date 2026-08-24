@@ -1862,5 +1862,177 @@ def prefect_worker(
         raise typer.Exit(1)
 
 
+# ── batch CSV import/export (resource_explorer/batch_io.py) ─────────────────
+
+@app.command(name="export-resources")
+def export_resources(
+    path: str = typer.Argument(help="CSV file to write"),
+):
+    """Export every registered resource as a CSV inventory + scorecard.
+
+    Columns prefixed `status_` are observed state and are ignored if the file is
+    imported again, so an export can be handed straight back to import-resources
+    without editing. See resource_explorer/batch_io.py for why that line exists.
+    """
+    from resource_explorer.batch_io import export_rows, write_csv
+    from resource_explorer.registry import ProjectRegistry
+
+    rows = export_rows(ProjectRegistry())
+    n = write_csv(rows, path)
+    by_type: dict[str, int] = {}
+    for r in rows:
+        by_type[r["resource_type"]] = by_type.get(r["resource_type"], 0) + 1
+    console.print(f"[green]Wrote {n} resource(s) to {path}[/green]")
+    for t, c in sorted(by_type.items()):
+        console.print(f"  {t}: {c}")
+
+
+@app.command(name="import-resources")
+def import_resources(
+    path: str = typer.Argument(help="CSV file to read (see export-resources for the shape)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen, write nothing"),
+    group: Optional[str] = typer.Option(None, "--group", help="Group for rows that name none"),
+):
+    """Register resources listed in a CSV, skipping any already present.
+
+    Registers only — no RAG ingestion, matching the org-import path, so a large
+    batch is cheap. Surveying afterwards is the expensive half.
+    """
+    from resource_explorer.batch_io import describe_skipped, parse_csv, plan_import
+    from resource_explorer.github.org_importer import OrgImporter
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        rows = parse_csv(path)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if not rows:
+        console.print("[yellow]No rows found.[/yellow]")
+        raise typer.Exit(0)
+
+    plan = plan_import(registry, rows)
+    console.print(f"[bold]{plan.total} row(s) in {path}[/bold]")
+    console.print(f"  [green]{len(plan.to_register)}[/green] to register")
+    console.print(f"  [dim]{len(plan.already_registered)} already registered[/dim]")
+    for label, bucket in (("invalid", plan.invalid),
+                          ("duplicate in file", plan.duplicate_in_file),
+                          ("unsupported type", plan.unsupported_type)):
+        if bucket:
+            console.print(f"  [yellow]{len(bucket)} {label}[/yellow]")
+            for r in bucket[:10]:
+                console.print(f"     {describe_skipped(r)}")
+            if len(bucket) > 10:
+                console.print(f"     … and {len(bucket) - 10} more")
+
+    if dry_run:
+        console.print("[dim]--dry-run: nothing written.[/dim]")
+        raise typer.Exit(0)
+    if not plan.to_register:
+        raise typer.Exit(0)
+
+    importer = OrgImporter(registry=registry)
+    registered = failed = 0
+    for row in plan.to_register:
+        try:
+            importer.import_repo(
+                row.address,
+                row.display_name or row.address.rstrip("/").rsplit("/", 1)[-1],
+                row.notes,
+                row.group or group or "",
+            )
+            registered += 1
+        except Exception as exc:
+            # Per-row isolation, like _run_import_batch: one bad repo in a batch
+            # of hundreds must not end the run.
+            failed += 1
+            console.print(f"  [red]line {row.line}: {row.address} — {exc}[/red]")
+
+        # Disposition is intent, so it is applied whether or not registration
+        # succeeded — a candidate can carry one before it is ever registered.
+        if row.disposition:
+            try:
+                registry.set_disposition(row.address, row.disposition,
+                                         reason=row.disposition_reason)
+            except Exception as exc:
+                console.print(f"  [yellow]line {row.line}: disposition not set — {exc}[/yellow]")
+
+    console.print(f"[green]Registered {registered}[/green]"
+                  + (f", [red]{failed} failed[/red]" if failed else ""))
+
+
+@app.command(name="egeria-recheck")
+def egeria_recheck(
+    entity_type: Optional[list[str]] = typer.Option(
+        None, "--entity-type", help="Restrict to repo/database/filesystem (repeatable; default: all)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be recorded, write nothing"),
+):
+    """Proactively re-check every cached Egeria GUID against the live server.
+
+    Reactive divergence detection only marks a linkage stale the next time
+    something actually uses the cached GUID — which can be a long time after
+    Egeria's repository was reset. This asks Egeria about every cached GUID
+    right now, so 'Admin > Egeria Links' reflects reality immediately rather
+    than staying empty until each resource happens to be surveyed again.
+
+    Examples:
+      resource-explorer egeria-recheck
+      resource-explorer egeria-recheck --dry-run
+      resource-explorer egeria-recheck --entity-type repo --entity-type database
+    """
+    from resource_explorer.egeria_linkage import recheck_all_linkages
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    types = list(entity_type) if entity_type else None
+
+    def _progress(checked, total, etype, slug):
+        console.print(f"  [{checked}/{total}] {etype}/{slug}", end="\r")
+
+    console.print("[bold]Rechecking cached Egeria GUIDs...[/bold]"
+                  + (" [dim](dry run)[/dim]" if dry_run else ""))
+    try:
+        result = recheck_all_linkages(registry, entity_types=types, progress=_progress,
+                                      dry_run=dry_run)
+    except Exception as exc:
+        console.print(f"\n[red]Could not connect to Egeria: {exc}[/red]")
+        raise typer.Exit(1)
+
+    console.print()  # clear the progress line
+    console.print(f"  checked: {result['checked']}   "
+                  f"[green]ok: {result['ok']}[/green]   "
+                  f"[red]stale: {result['stale']}[/red]   "
+                  f"[yellow]errors: {result['errors']}[/yellow]   "
+                  f"[dim]skipped (no cached GUID): {result['skipped']}[/dim]")
+
+    stale_rows = [d for d in result["details"] if d["result"] == "stale"]
+    if stale_rows:
+        # Printed as plain lines rather than a rich Table. Rich shrinks columns to
+        # the console width — 80 when output is not a terminal — and *truncates*
+        # rather than wrapping, which cut every GUID to 35 characters. A GUID
+        # missing its last character still looks like a GUID, so a piped or saved
+        # report carried identifiers that were quietly wrong, exactly when the
+        # report is most likely to be kept and acted on later.
+        console.print()
+        console.print("[bold]Stale linkages"
+                      + (" (not recorded — dry run)" if dry_run else " (recorded)")
+                      + ":[/bold]")
+        for row in stale_rows:
+            console.print(f"  {row['entity_type']:<10}  {row['slug']:<28}  {row['guid']}",
+                          highlight=False, soft_wrap=True)
+        console.print(
+            "\n[dim]Resolve from Admin > Egeria Links, or run "
+            "[bold]resource-explorer egeria-reset <slug>[/bold] for repos.[/dim]"
+        )
+
+    error_rows = [d for d in result["details"] if d["result"] == "error"]
+    if error_rows:
+        console.print()
+        console.print("[yellow]Could not verify (not marked stale):[/yellow]")
+        for row in error_rows:
+            console.print(f"  {row['entity_type']}/{row['slug']}: {row['detail'][:200]}")
+
+
 if __name__ == "__main__":
     app()

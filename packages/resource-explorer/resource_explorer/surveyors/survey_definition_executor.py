@@ -159,12 +159,27 @@ class SurveyDefinitionExecutor:
         from resource_explorer.config import get_config
         from resource_explorer.surveyors.prefect_adapter import run_prefect_step
 
+        # Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py)
+        # and have no STEP_REGISTRY entry, so there is nothing local to run them
+        # with. Named here rather than inline so the list is findable from both
+        # sides; they should carry executes_at="prefect" once authored.
+        PREFECT_ONLY_STEPS = ("soda_data_quality", "great_expectations_validation")
+
         def _use_prefect(step) -> bool:
-            if step.executes_at == "prefect" or step.re_analysis_step in ("soda_data_quality", "great_expectations_validation"):
+            """Which engine runs this step.
+
+            executes_at is what the definition asked for, and it is honoured.
+            `prefect.enabled` says Prefect is reachable — it does not re-route a
+            step that named a different engine; `prefect.route_local_steps` is
+            the explicit opt-in for that, because taking RE's own steps to
+            Prefect is a real deployment choice but not one to make silently.
+            """
+            if step.executes_at == "prefect" or step.re_analysis_step in PREFECT_ONLY_STEPS:
                 return True
             if step.executes_at == "resource-explorer":
                 try:
-                    return bool(get_config().prefect.enabled)
+                    cfg = get_config().prefect
+                    return bool(cfg.enabled and getattr(cfg, "route_local_steps", False))
                 except Exception:
                     return False
             return False
@@ -282,12 +297,29 @@ class SurveyDefinitionExecutor:
                     errors.append(msg)
                     steps_report.append({"step": step.qualified_name, "status": "error"})
             elif step.executes_at == "egeria":
-                log.info(
-                    "Skipping step %s: executes_at=egeria, no trigger handler registered "
-                    "for this resource type (Egeria's own responsibility)",
-                    step.qualified_name,
+                # Real, live-reported gap (2026-08-24 — "closing the stub"):
+                # this used to log.info and move on with no entry in `errors`
+                # at all, so a mixed Survey whose Egeria-native step has no
+                # registered other_engine_handlers reported "Survey
+                # Definition run complete" — a silent lie, not a warning.
+                # RE's own client-side step-walk is the only thing driving
+                # execution today (per docs/unified-survey-execution-model-
+                # plan.md's D1/D8 — Egeria's MAS doesn't independently create
+                # Engine Actions for any step type yet), so a step that lands
+                # here genuinely never runs anywhere, not "runs elsewhere
+                # without RE watching." That's a real failure of this run's
+                # completeness, not a benign no-op — now counted in `errors`
+                # accordingly, distinct wording from an actual step
+                # exception so it reads as "never executed," not "broke."
+                msg = (
+                    f"Step {step.qualified_name} was not executed: executes_at=egeria but no "
+                    f"other_engine_handlers['egeria'] is registered for entity_type={entity_type!r} "
+                    "(see database/survey_definition_adapter.py's _trigger_egeria_native_survey "
+                    "for the pattern to add one)"
                 )
-                steps_report.append({"step": step.qualified_name, "status": "skipped_egeria"})
+                log.warning(msg)
+                errors.append(msg)
+                steps_report.append({"step": step.qualified_name, "status": "not_executed_no_egeria_handler"})
             else:
                 msg = (
                     f"Skipping step {step.qualified_name}: unrecognized executes_at="

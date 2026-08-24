@@ -139,7 +139,7 @@ class FileSystemEntity:
 class ActivityEntry:
     id: str
     ts: str
-    operation: str    # 'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh'
+    operation: str    # 'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh' | 'analysis_run'
     intent: str       # 'scouting' | 'assessment' | 'discovery' | 'enrichment'
     entity_type: str  # 'repo' | 'database' | 'server' | 'filesystem' | 'file'
     entity_slug: str
@@ -351,7 +351,32 @@ class ProjectRegistry:
             if path_str and path_str != ":memory:":
                 Path(path_str).parent.mkdir(parents=True, exist_ok=True)
 
-        self.engine = create_engine(self.database_url)
+        # pool_pre_ping: validate a pooled connection before handing it out, and
+        # transparently replace it if the server has gone away. Without it a
+        # connection severed while idle in the pool is discovered only when a
+        # caller tries to use it, as
+        # `psycopg2.OperationalError: server closed the connection unexpectedly`
+        # — which then fails whatever that caller was doing.
+        #
+        # Observed 2026-08-20: a background org-import batch died on exactly
+        # this and failed to register docling-graph. Nothing on the Postgres side
+        # closed it — the container had been up 17 hours without restarting,
+        # idle_session_timeout is 0, and it was at 25 of 1000 connections. This
+        # is known Egeria-side behaviour against the shared instance, being
+        # fixed upstream; RE's job is not to fix it here but to survive it.
+        #
+        # That distinction is the point. An upstream bug RE cannot control turned
+        # into a lost registration because the pool handed out a connection it
+        # had never checked. pre_ping costs one round-trip per checkout against a
+        # local socket and makes the drop a reconnect instead of a failure — so
+        # the upstream fix, whenever it lands, stops being load-bearing for us.
+        #
+        # pool_recycle bounds how long a connection may live regardless, so a
+        # half-open connection that still answers a ping cannot linger forever.
+        # Both are no-ops for SQLite, which is why they are not conditional.
+        self.engine = create_engine(
+            self.database_url, pool_pre_ping=True, pool_recycle=1800,
+        )
         self._init_schema()
 
     @contextmanager
@@ -360,6 +385,23 @@ class ProjectRegistry:
         raw_conn = self.engine.raw_connection()
         if not is_postgres:
             raw_conn.row_factory = sqlite3.Row
+            # SQLite ships with foreign-key enforcement OFF. Production is
+            # Postgres, which enforces — so without this the test backend is a
+            # strictly *weaker* mirror of production, and any write that
+            # violates a FK passes every test and fails live.
+            #
+            # That is not hypothetical. Two comments in this file already
+            # describe deletion-order bugs found exactly this way (see remove()
+            # and remove_database()), and on 2026-08-23 a peer session found
+            # three orphaned project_analysis_findings rows in the live
+            # Postgres for an unregistered slug — inserts that SQLite had
+            # happily accepted in tests, absorbed live by a caller's broad
+            # except+log.warning so nothing surfaced anywhere.
+            #
+            # Measured before adding: with the pragma off an orphan INSERT into
+            # project_analysis_metrics succeeds; with it on the same statement
+            # raises IntegrityError, matching Postgres.
+            raw_conn.execute("PRAGMA foreign_keys=ON")
         conn = ConnectionWrapper(raw_conn, is_postgres)
         try:
             yield conn
@@ -765,6 +807,34 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_egeria_surveys_slug "
                 "ON project_egeria_surveys(project_slug)"
+            )
+            # Per-annotation-type publish history (2026-08-24 — direct
+            # feedback: the Survey Results dashboards had no publish/status
+            # signal per card at all, and "we should already have all of
+            # that information if it's been published to Egeria" is right —
+            # EgeriaPublisher already knows exactly which annotation_types
+            # went into each publish, in-memory, at the moment it happens.
+            # This just persists that instead of discarding it. One row per
+            # distinct annotation_type per publish (not one row per
+            # individual annotation instance — a repo can emit dozens of
+            # QualityScoreAnnotation rows in one survey, only "was this
+            # *type* published, and when" matters for the dashboard badge).
+            # analysis_catalog.yaml's own `annotation_types` field per
+            # analysis_id is the join key back to a specific Results
+            # dashboard — see get_last_published_annotation_types() and
+            # GET /api/projects/{slug}/survey-results's use of it.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_published_annotation_types (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug     TEXT NOT NULL,
+                    annotation_type  TEXT NOT NULL,
+                    published_at     TEXT NOT NULL,
+                    egeria_report_guid TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_published_annotation_types_slug "
+                "ON project_published_annotation_types(project_slug, annotation_type)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_data_profiles (
@@ -1280,6 +1350,33 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug, technology_type)
                 )
             """)
+            # Egeria linkage health, per entity, across all three resource
+            # types. RE caches Egeria GUIDs (egeria_asset_guid, and per-report /
+            # per-file GUIDs beneath them) and trusted them unconditionally: if
+            # Egeria's repository was reset independently of RE's registry, the
+            # next survey or publish failed with an opaque SERVER_ERROR_500 that
+            # reached the UI verbatim and named nothing actionable.
+            #
+            # Its own table rather than a column on each of projects/databases/
+            # filesystems: the condition and its three resolutions are identical
+            # for all three, and each egeria_*_surveyor.py already reimplements
+            # its own GUID caching — one more per-type copy is the direction that
+            # produced the drift in _build_annotation_props.
+            #
+            # A row exists only once a divergence has been detected. No row means
+            # "nothing has gone wrong", which is the overwhelmingly common case
+            # and should cost nothing to represent.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS egeria_linkage_status (
+                    entity_type  TEXT NOT NULL,
+                    entity_slug  TEXT NOT NULL,
+                    status       TEXT NOT NULL DEFAULT 'stale',
+                    stale_guid   TEXT DEFAULT '',
+                    detected_at  TEXT NOT NULL DEFAULT '',
+                    detail       TEXT DEFAULT '',
+                    PRIMARY KEY (entity_type, entity_slug)
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rfa_actions (
                     id                TEXT PRIMARY KEY,
@@ -1377,11 +1474,15 @@ class ProjectRegistry:
                 )
             """)
             # Repo triage disposition — undecided (default) / tracking /
-            # investigating / recommended / abandoned / ignored. `recommended`
-            # is the positive terminal state, sitting alongside the negative
-            # terminal states abandoned/ignored — added once real use showed
+            # investigating / recommended / using / abandoned / ignored.
+            # `recommended` and `using` are both positive terminal states,
+            # sitting alongside the negative terminal states
+            # abandoned/ignored — `recommended` added once real use showed
             # the original four-state vocabulary had no "decided for it"
-            # counterpart to "decided against it." Keyed by github_url (not project_slug)
+            # counterpart to "decided against it"; `using` added later for
+            # the stronger signal that the org is already actively using
+            # the resource or knows of its use elsewhere in the org.
+            # Keyed by github_url (not project_slug)
             # so it covers both a never-imported discovery-search candidate
             # and an already-registered repo with the same row ("Discover
             # repos to scout" plan, D10). One row per github_url — upsert,
@@ -1954,6 +2055,25 @@ class ProjectRegistry:
                 (datetime.utcnow().isoformat(), slug),
             )
 
+    def update_project_homepage(self, slug: str, homepage_url: str) -> None:
+        """Record the project's external website — set by HomepageSurveyor.
+
+        Deliberately writes `projects.homepage_url` rather than the `homepage`
+        column on project_stats: that column is StatsFetcher's, refreshed
+        wholesale from the GitHub API on every stats run, so a value the
+        surveyor *derived* (from pyproject/package.json/README when GitHub's own
+        field is empty) would be silently discarded on the next fetch. Keeping
+        the derived answer on the project row means the two sources coexist —
+        GitHub's declared homepage stays authoritative in stats, and this holds
+        the best answer we have however it was found.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET homepage_url = ? WHERE slug = ?",
+                (homepage_url, slug),
+            )
+
     def update_ingestion_stats(self, slug: str, file_count: int, lines_of_code: int) -> None:
         """Update the most recent project_stats row with counts from actual ingestion."""
         slug = self._normalize_slug(slug)
@@ -2123,6 +2243,30 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_file_inventory WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_egeria_surveys WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_data_profiles WHERE project_slug = ?", (normalized,))
+            # The generic analysis tables (analysis-kind extensibility redesign)
+            # were added after the comment above was written and never added
+            # here — the same omission recurring on the newer tables. Found
+            # 2026-08-23 by the real-Postgres registry tier
+            # (tests/test_integration_registry_pg.py) on its first run: every
+            # project that has ever been surveyed has rows in at least one of
+            # these, so remove() raised ForeignKeyViolation on Postgres for
+            # effectively every real project — including via Admin's bulk
+            # "delete locally". Invisible on SQLite even with the pragma on,
+            # because these two DELETEs were simply missing rather than
+            # mis-ordered. test_remove_deletes_from_every_table_with_a_fk
+            # now enumerates the FKs so a future table cannot be forgotten.
+            conn.execute("DELETE FROM project_analysis_findings WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_analysis_metrics WHERE project_slug = ?", (normalized,))
+            # The four superseded per-kind tables from Phase B. The analysis-kind
+            # redesign (D3) deliberately kept them rather than dropping them, for
+            # a soak period — so they still exist, still carry a FK, and still
+            # hold data (measured 2026-08-23: 6 security-finding rows, 4
+            # documentation-finding rows, 2 api-structure snapshots). Deprecated
+            # is not gone: while the table exists, remove() has to clear it.
+            conn.execute("DELETE FROM project_security_findings WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_documentation_findings WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_data_profile_snapshots WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_api_structure_snapshots WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
 
     # ── alias management ──────────────────────────────────────────────────────
@@ -2596,10 +2740,28 @@ class ProjectRegistry:
         = whole-resource, matching every pre-scope-aware caller unchanged;
         a non-empty value scopes this run's findings to one cataloged
         sub-resource, kept distinct from whole-resource findings under the
-        same `kind` rather than mixed together."""
+        same `kind` rather than mixed together.
+
+        Raises ValueError if `slug` isn't a registered project. Every known
+        caller (SurveyOrchestrator.run(), run_survey_definition()) already
+        validates this upfront the same way (registry.get(slug) is None ->
+        reject), but this is the one choke point every surveyor's _persist()
+        actually reaches — 2026-08-23 incident: an unregistered/stale slug
+        got past whatever called this (bypassing those two guards, or racing
+        a project deletion mid-run) and the plain INSERT below hit
+        project_analysis_findings_project_slug_fkey, which the callers' own
+        broad try/except-and-log-warning (e.g. SecurityHygieneSurveyor.
+        _persist) silently absorbed as a generic warning instead of the
+        actionable message this now gives them."""
         if not findings:
             return
         slug = self._normalize_slug(slug)
+        if self.get(slug) is None:
+            raise ValueError(
+                f"Cannot record '{kind}' analysis findings for project '{slug}' — "
+                "no such project in the registry (it was never added, or was "
+                "removed since this survey run started)."
+            )
         surveyed_at = surveyed_at or datetime.utcnow().isoformat()
         with self._conn() as conn:
             conn.executemany(
@@ -2674,6 +2836,18 @@ class ProjectRegistry:
         if not metrics:
             return
         slug = self._normalize_slug(slug)
+        # Same guard, same reason as upsert_finding above — these two are the
+        # matched pair every surveyor's persistence path reaches, and only one
+        # of them had it. With SQLite's foreign_keys pragma now ON, the missing
+        # guard surfaced immediately as a raw `IntegrityError: FOREIGN KEY
+        # constraint failed` from two notification-detector tests, which is the
+        # vague error the finding-side guard exists to replace.
+        if self.get(slug) is None:
+            raise ValueError(
+                f"Cannot record '{kind}' analysis metrics for project '{slug}' — "
+                "no such project in the registry (it was never added, or was "
+                "removed since this survey run started)."
+            )
         surveyed_at = surveyed_at or datetime.utcnow().isoformat()
         rows = [
             {
@@ -2731,6 +2905,72 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def query_metrics_history_raw(
+        self, slug: str, kind: str, metric_name: str, scope_locator: str = "",
+    ) -> list[dict]:
+        """Like query_metrics_history, but including detail_json — for a
+        reader that needs the per-run detail attached to a metric row (e.g.
+        an outcome stamped on a component-less run's summary row, which has
+        no finding row of its own to carry it — see persist.py's run-summary
+        comment) rather than only its trend value."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, metric_value, detail_json FROM project_analysis_metrics "
+                "WHERE project_slug = ? AND kind = ? AND metric_name = ? AND scope_locator = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug, kind, metric_name, scope_locator),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_finding_scopes(self, slug: str, kind: str, check_name: str = "") -> list[str]:
+        """Distinct `scope_locator`s that currently have at least one
+        finding row for (slug, kind) — optionally narrowed to one
+        check_name. This is the "list every component" query for a
+        many-scope_locator analysis kind like architecture_recovery
+        (design doc §6.0: a component IS a scope_locator/path prefix),
+        where query_findings' single-scope_locator contract has nothing to
+        enumerate against. Ordered for stable UI rendering, not by recency.
+        """
+        slug = self._normalize_slug(slug)
+        sql = "SELECT DISTINCT scope_locator FROM project_analysis_findings WHERE project_slug = ? AND kind = ?"
+        params: list = [slug, kind]
+        if check_name:
+            sql += " AND check_name = ?"
+            params.append(check_name)
+        sql += " ORDER BY scope_locator"
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [r["scope_locator"] for r in rows]
+
+    def query_findings_all_runs(self, slug: str, kind: str, scope_locator: str) -> list[dict]:
+        """Every finding row ever written for one (kind, scope_locator) —
+        deliberately NOT narrowed to the latest surveyed_at the way
+        query_findings() is.
+
+        architecture_recovery is the one analysis kind where this matters:
+        two independent survey steps (repo_arch_detect, repo_arch_coupling)
+        can each contribute evidence for the SAME component (scope_locator)
+        at DIFFERENT times — they are not required to run in the same
+        SurveyOrchestrator batch. query_findings()'s "latest surveyed_at
+        wins" semantics would silently discard whichever step ran earlier,
+        which is exactly the "which approach proposed this" information the
+        results view exists to show (Phase 1 plan §4.4). Every other caller
+        of the generic findings table writes one kind from one step, where
+        "latest run replaces the previous one" is the right reading — this
+        method exists because that assumption doesn't hold here.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
+                "FROM project_analysis_findings "
+                "WHERE project_slug = ? AND kind = ? AND scope_locator = ? "
+                "ORDER BY surveyed_at ASC",
+                (slug, kind, scope_locator),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_file_inventory_with_sizes(self, slug: str) -> list[dict]:
         """Return file paths, sizes, and git mode bits from the inventory for a project.
 
@@ -2775,6 +3015,63 @@ class ProjectRegistry:
                 "UPDATE projects SET egeria_asset_guid = ? WHERE slug = ?",
                 (guid, slug),
             )
+
+    # ── Egeria linkage divergence (see egeria_linkage_status's DDL comment) ──
+
+    def mark_egeria_linkage_stale(
+        self, entity_type: str, entity_slug: str, stale_guid: str = "", detail: str = "",
+    ) -> None:
+        """Record that this entity's cached Egeria GUIDs can no longer be trusted.
+
+        Deliberately does not clear the GUIDs. A stale root GUID means the whole
+        Egeria-side lineage RE cached beneath it is *unverifiable*, not
+        automatically wrong — recreating in place risks duplicating Egeria
+        elements and silently discarding catalog history that may still matter.
+        The GUIDs are kept so a human can see what RE had, and so "republish"
+        can report exactly what it is replacing.
+        """
+        from datetime import timezone
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO egeria_linkage_status
+                       (entity_type, entity_slug, status, stale_guid, detected_at, detail)
+                   VALUES (?, ?, 'stale', ?, ?, ?)
+                   ON CONFLICT (entity_type, entity_slug) DO UPDATE SET
+                       status='stale', stale_guid=excluded.stale_guid,
+                       detected_at=excluded.detected_at, detail=excluded.detail""",
+                (entity_type, entity_slug, stale_guid,
+                 datetime.now(timezone.utc).isoformat(), detail),
+            )
+
+    def get_egeria_linkage(self, entity_type: str, entity_slug: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM egeria_linkage_status WHERE entity_type=? AND entity_slug=?",
+                (entity_type, entity_slug),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_stale_egeria_linkages(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM egeria_linkage_status WHERE status='stale' "
+                "ORDER BY detected_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_egeria_linkage_status(self, entity_type: str, entity_slug: str) -> bool:
+        """Drop the divergence record — the linkage is trusted again.
+
+        Deletes rather than setting status='ok': absence already means healthy
+        (see the DDL comment), so an 'ok' row would be a second representation
+        of the same state and something else to keep consistent.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM egeria_linkage_status WHERE entity_type=? AND entity_slug=?",
+                (entity_type, entity_slug),
+            )
+        return cur.rowcount > 0
 
     def clear_egeria_registration(self, slug: str) -> dict:
         """Clear the cached Egeria GUID and all published survey records for a project.
@@ -2835,6 +3132,69 @@ class ProjectRegistry:
         """Return the most recent published Egeria survey record, or None."""
         surveys = self.get_egeria_surveys(slug)
         return surveys[0] if surveys else None
+
+    def record_published_annotation_types(
+        self, slug: str, annotation_types: set[str], report_guid: str = "",
+        published_at: str | None = None,
+    ) -> None:
+        """One row per distinct annotation_type actually published in this
+        publish — called from EgeriaPublisher.publish() right after it
+        creates the real Egeria Annotation elements, so the Survey Results
+        dashboards can show a genuine per-card 'last published' badge
+        (get_last_published_annotation_types()) without re-deriving it from
+        a live Egeria read later. Best-effort by design: the caller wraps
+        this in its own try/except — a bookkeeping failure here must never
+        fail or roll back the real publish that already succeeded.
+
+        published_at: defaults to now (the live-publish call site's use
+        case). scripts/backfill_published_annotation_types.py passes the
+        real historical published_at instead, when backfilling from an
+        already-existing project_egeria_surveys row — the whole point of a
+        backfill is to record what already happened, not to claim it just
+        happened now."""
+        if not annotation_types:
+            return
+        slug = self._normalize_slug(slug)
+        if published_at is None:
+            published_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO project_published_annotation_types
+                   (project_slug, annotation_type, published_at, egeria_report_guid)
+                   VALUES (?, ?, ?, ?)""",
+                [(slug, at, published_at, report_guid) for at in annotation_types],
+            )
+
+    def get_last_published_annotation_types(self, slug: str) -> dict[str, str]:
+        """{annotation_type: latest published_at} for this project — the
+        Survey Results route joins this against each dashboard's own
+        analysis_ids' known annotation_types (analysis_catalog.yaml) to
+        derive a real per-dashboard last-published timestamp."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT annotation_type, MAX(published_at) AS published_at
+                   FROM project_published_annotation_types
+                   WHERE project_slug = ?
+                   GROUP BY annotation_type""",
+                (slug,),
+            ).fetchall()
+        return {r["annotation_type"]: r["published_at"] for r in rows}
+
+    def has_published_annotation_types_for_report(self, slug: str, report_guid: str) -> bool:
+        """True if this exact SurveyReport GUID already has rows —
+        scripts/backfill_published_annotation_types.py's idempotency check,
+        so a rerun skips reports it already backfilled instead of inserting
+        duplicate rows (which would just re-confirm the same timestamp,
+        harmless but wasteful and noisy in query results)."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM project_published_annotation_types
+                   WHERE project_slug = ? AND egeria_report_guid = ? LIMIT 1""",
+                (slug, report_guid),
+            ).fetchone()
+        return row is not None
 
     def get_latest_project_stats(self, slug: str) -> dict | None:
         """Return the most recent project_stats row as a dict, or None."""
@@ -3760,6 +4120,116 @@ class ProjectRegistry:
         d["items"] = json.loads(d.pop("items_json") or "[]")
         d["annotations"] = json.loads(d.pop("annotations_json") or "[]")
         return d
+
+    def get_survey_definition_last_activity(
+        self, entity_type: str, entity_slug: str, limit: int = 500,
+    ) -> dict[str, dict]:
+        """Latest known run/publish info per Survey Definition qualified_name
+        for this entity, keyed by the `survey_definition_ref` that
+        survey_definitions.py's run route and egeria.py's publish route embed
+        in their activity_log `detail` JSON (added 2026-08-24 — direct
+        feedback: Discovery's Survey Definition cards had no last-run/last-
+        published signal at all). Scans the most recent `limit` rows for this
+        entity — bounded, not a full table scan — ordered ts DESC, so the
+        first hit per ref per operation kind is already the most recent.
+
+        Falls back to `process_qualified_name` when `survey_definition_ref`
+        is absent (added 2026-08-24, found live: monocle2ai/monocle's real,
+        recent Scouting Survey runs showed "Never" despite genuinely having
+        run — their activity_log rows predate/bypass the ref-tagging above
+        and only carry `process_qualified_name`, which SurveyDefinitionExecutor
+        always sets natively and which is the same qualified_name value in
+        practice). Rows with neither key (or from genuinely unrelated
+        operations) are silently skipped — those candidates just show no
+        last-run/last-published data, same as one that's genuinely never
+        run.
+
+        Publish attribution has the same "who triggered it" gap `run` did:
+        egeria.py's publish route only tags `survey_definition_ref` when the
+        request came from a Survey Definition candidate's own "☁ Publish"
+        button (renderSurveyPanel) — the far more common whole-repo "Publish
+        survey →" button (publishSurvey()) has no single candidate to
+        attribute to, so its `catalog` row carries no ref at all (found
+        live, 2026-08-24: a genuinely published repo showed every candidate
+        as never-published even though `Project.is_published` was true).
+        Second pass below: the most recent untagged `catalog` row is treated
+        as "the whole repo was published as of this timestamp" and applied
+        to every candidate whose own last run happened at or before it —
+        their findings were necessarily included in that publish, even
+        though it wasn't scoped to them specifically. Marked
+        `last_published_scope: 'repo'` (vs `'candidate'` for a real per-ref
+        match) so the UI can render the distinction honestly rather than
+        implying a precision that isn't there."""
+        result: dict[str, dict] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT operation, ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation IN ('survey', 'catalog') "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit),
+            ).fetchall()
+        repo_wide_publish_at = ""  # most recent catalog row with no ref at all
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            ref = detail.get("survey_definition_ref") or detail.get("process_qualified_name")
+            if not ref:
+                if row["operation"] == "catalog" and not repo_wide_publish_at:
+                    repo_wide_publish_at = row["ts"]
+                continue
+            entry = result.setdefault(ref, {})
+            if row["operation"] == "survey" and "last_run_at" not in entry:
+                entry["last_run_at"] = row["ts"]
+                entry["last_run_status"] = row["status"]
+            elif row["operation"] == "catalog" and "last_published_at" not in entry:
+                entry["last_published_at"] = row["ts"]
+                entry["last_published_scope"] = "candidate"
+        if repo_wide_publish_at:
+            for entry in result.values():
+                if "last_published_at" in entry:
+                    continue
+                if entry.get("last_run_at", "") <= repo_wide_publish_at:
+                    entry["last_published_at"] = repo_wide_publish_at
+                    entry["last_published_scope"] = "repo"
+        return result
+
+    def get_analysis_last_run(
+        self, entity_type: str, entity_slug: str, limit: int = 500,
+    ) -> dict[str, dict]:
+        """{analysis_id: {last_run_at, last_run_status}} for this entity's
+        local AnalysisKind cards — the Analyses-card equivalent of
+        get_survey_definition_last_activity() above, added the same day for
+        the same reason (direct feedback: Analyses cards had no last-run
+        signal at all, unlike Survey Definition cards). Reads
+        activity_logger.log_analysis_run()'s operation='analysis_run' rows,
+        keyed by the `analysis_id` embedded in `detail`. Kept as its own
+        method rather than folded into get_survey_definition_last_activity —
+        different operation value, different ref key, no shared publish-
+        attribution logic to reuse (an Analyses card's 'last published' comes
+        from get_last_published_annotation_types() instead, joined by
+        annotation_types, not by activity_log at all)."""
+        result: dict[str, dict] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation = 'analysis_run' "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit),
+            ).fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            analysis_id = detail.get("analysis_id") if isinstance(detail, dict) else None
+            if not analysis_id or analysis_id in result:
+                continue
+            result[analysis_id] = {"last_run_at": row["ts"], "last_run_status": row["status"]}
+        return result
 
     def update_activity_status(
         self,

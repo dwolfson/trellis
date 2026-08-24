@@ -24,6 +24,7 @@ import logging
 from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
@@ -147,18 +148,39 @@ class SubResourceSurveyor(BaseSurveyor):
         try:
             inventory = self.registry.get_file_inventory_with_sizes(self.project.slug)
             if not inventory:
+                # confidence=50 used to be the only signal that this was a
+                # non-answer, and 50 is not a vocabulary — it reads as a
+                # hedged finding about the repo rather than "could not run".
+                outcome = from_upstream_table(
+                    0, 0, empty_table_cause="empty_file_inventory",
+                    no_match_cause="nothing_worthy")
                 results.append(
                     ClassificationAnnotation(
-                        summary="No file inventory available — run a Profile refresh first",
+                        summary="Sub-resources not surveyed — the file inventory is empty",
                         analysis_step=STEP,
                         candidate_classifications=[],
-                        confidence=50,
+                        confidence=100,
+                        explanation=(
+                            "project_file_inventory holds no rows for this repo, so no "
+                            "candidate sub-resource could be considered. Run "
+                            "repo_file_inventory (or a Profile refresh) first."
+                        ),
+                        json_properties=outcome.as_row(),
                     )
                 )
                 return results
 
             findings = self._build_findings(inventory)
             worthy = [f for f in findings if f["worthy"]]
+            # The inventory had rows, so "nothing worthy" is a real answer about
+            # this repo rather than a failure to look — that is what makes it
+            # no_signal rather than unverified.
+            outcome = from_upstream_table(
+                len(inventory), len(worthy),
+                empty_table_cause="empty_file_inventory",
+                no_match_cause="nothing_worthy",
+                considered=len(findings),
+            )
 
             self.registry.upsert_finding(
                 self.project.slug, "repo_sub_resource_survey",
@@ -191,7 +213,8 @@ class SubResourceSurveyor(BaseSurveyor):
                     analysis_step=STEP,
                     candidate_classifications=[f["path"] or "(root)" for f in worthy],
                     confidence=100,
-                    json_properties={"considered": len(findings), "worthy": len(worthy)},
+                    json_properties={"considered": len(findings), "worthy": len(worthy),
+                                     **outcome.as_row()},
                 )
             )
         except Exception as exc:

@@ -107,6 +107,42 @@ class EgeriaDatabaseSurveyor:
         registry=None,
         survey_after_catalog: bool = True,
     ) -> dict:
+        """Guarded front door — see _catalog_and_survey."""
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        with guard_linkage(registry, "database", db_entity.slug,
+                           db_entity.display_name or db_entity.slug,
+                           db_entity.egeria_asset_guid or ""):
+            return self._catalog_and_survey(
+                db_entity, db_user, db_pwd, registry, survey_after_catalog)
+
+    @staticmethod
+    def _note_stale_guid_if_any(exc, db_entity, guid: str, registry) -> None:
+        """Record a divergence found inside a deliberately non-fatal handler.
+
+        Separate from guard_linkage because the two answer different questions.
+        The guard converts a *fatal* failure into a named one; this reports a
+        failure the caller has decided to continue past. Both must record it —
+        the whole defect being fixed is that an unusable GUID produced no visible
+        signal anywhere.
+        """
+        if registry is None or not guid:
+            return
+        from resource_explorer.egeria_linkage import is_unknown_guid_error, note_divergence
+
+        if not is_unknown_guid_error(exc):
+            return
+        note_divergence(registry, "database", db_entity.slug,
+                        db_entity.display_name or db_entity.slug, guid, exc)
+
+    def _catalog_and_survey(
+        self,
+        db_entity: "DatabaseEntity",
+        db_user: str,
+        db_pwd: str,
+        registry=None,
+        survey_after_catalog: bool = True,
+    ) -> dict:
         """Catalog the PostgreSQL server + database in Egeria, then optionally initiate a native survey.
 
         Egeria's template-based creation stores the connection details (including
@@ -178,6 +214,15 @@ class EgeriaDatabaseSurveyor:
                     log.info(f"Egeria server survey initiated: {server_survey_guid}")
                 except Exception as exc:
                     log.warning(f"Server survey initiation failed (non-fatal): {exc}")
+                    # This is where a stale cached GUID actually surfaces, and it
+                    # was being thrown away at WARNING level. Confirmed live
+                    # 2026-08-20: pointing this at a GUID Egeria cannot have
+                    # returns OMAG-REPOSITORY-HANDLER-404-007 here, and the
+                    # method still returned success with server_survey_guid=''.
+                    # The catalog work above genuinely did succeed, so this stays
+                    # non-fatal — but "non-fatal" must not mean "invisible", or
+                    # every subsequent run silently skips the server survey too.
+                    self._note_stale_guid_if_any(exc, db_entity, server_guid, registry)
 
             # Survey the database (captures schemas, tables, columns, relationships)
             if db_guid:
@@ -186,6 +231,7 @@ class EgeriaDatabaseSurveyor:
                     log.info(f"Egeria database survey initiated: {survey_action_guid}")
                 except Exception as exc:
                     log.warning(f"Cataloged OK but Egeria database survey initiation failed: {exc}")
+                    self._note_stale_guid_if_any(exc, db_entity, db_guid, registry)
 
         return {
             "server_guid": server_guid,
@@ -812,91 +858,17 @@ class EgeriaDatabaseSurveyor:
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:
-        """Convert a dict to map<string, string> as required by Egeria."""
-        import json as _json
-        result: dict[str, str] = {}
-        for k, v in d.items():
-            result[str(k)] = _json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-        return result
+        """Delegates to the shared implementation — see annotation_props.py."""
+        from resource_explorer.surveyors.annotation_props import to_string_map
 
+        return to_string_map(d)
     def _build_annotation_props(self, ann, qualified_name: str) -> dict:
-        """Map a local Annotation dataclass to the correct Egeria properties body."""
-        from resource_explorer.surveyors.survey_report import AnnotationType
-        atype = ann.annotation_type
+        """Delegates to the shared implementation — see annotation_props.py.
 
-        _class_map = {
-            AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
-            AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
-            AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
-            AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
-            AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
-            AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
-            AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
-        }
-        egeria_class = _class_map.get(atype, "AnnotationProperties")
+        Kept as a method because tests and call sites reach for it by name."""
+        from resource_explorer.surveyors.annotation_props import build_annotation_props
 
-        props: dict = {
-            "class": egeria_class,
-            "qualifiedName": qualified_name,
-            "annotationType": atype.value,
-            "summary": ann.summary,
-            "analysisStep": ann.analysis_step,
-            "confidence": ann.confidence,
-        }
-        if ann.explanation:
-            props["explanation"] = ann.explanation
-        if ann.expression:
-            props["expression"] = ann.expression
-        if ann.json_properties:
-            import json as _json
-            props["jsonProperties"] = _json.dumps(ann.json_properties)
-
-        if atype == AnnotationType.RESOURCE_MEASURE:
-            rp = getattr(ann, "resource_properties", {})
-            if rp:
-                props["resourceProperties"] = self._to_string_map(rp)
-
-        elif atype == AnnotationType.CLASSIFICATION:
-            cc = getattr(ann, "candidate_classifications", [])
-            if cc:
-                props["candidateClassifications"] = cc
-
-        elif atype == AnnotationType.QUALITY_SCORE:
-            qs = getattr(ann, "quality_scores", {})
-            if qs:
-                props["qualityScores"] = self._to_string_map(qs)
-
-        elif atype == AnnotationType.DATA_CLASS:
-            dc = getattr(ann, "candidate_data_class_names", [])
-            if dc:
-                props["candidateDataClassGUIDs"] = dc
-
-        elif atype == AnnotationType.REQUEST_FOR_ACTION:
-            action_req = getattr(ann, "action_requested", "")
-            if action_req:
-                props["actionRequested"] = action_req
-            action_target = getattr(ann, "action_target_name", "")
-            if action_target:
-                props["actionProperties"] = {"actionTargetName": action_target}
-
-        elif atype == AnnotationType.SCHEMA_ANALYSIS:
-            sn = getattr(ann, "schema_name", "")
-            st = getattr(ann, "schema_type", "")
-            if sn:
-                props["schemaName"] = sn
-            if st:
-                props["schemaType"] = st
-
-        elif atype == AnnotationType.RELATIONSHIP:
-            ren = getattr(ann, "related_entity_name", "")
-            rtn = getattr(ann, "relationship_type_name", "")
-            if ren:
-                props["relatedEntityName"] = ren
-            if rtn:
-                props["relationshipTypeName"] = rtn
-
-        return props
-
+        return build_annotation_props(ann, qualified_name)
     @staticmethod
     def _safe_int(value, default: int = 0) -> int:
         """Safely convert value to int."""

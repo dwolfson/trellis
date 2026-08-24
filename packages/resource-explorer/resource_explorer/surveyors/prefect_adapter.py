@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import nest_asyncio
 from typing import Any
 from prefect.client import get_client
@@ -67,7 +68,19 @@ def run_prefect_step(
     step_name: str,
     runner_kwargs: dict[str, Any],
 ) -> dict[str, Any]:
-    """Dispatch step execution to Prefect (either via API client or locally in-process)."""
+    """Dispatch step execution to Prefect, via its API when enabled, else in-process.
+
+    The API branch had never executed. It began with `asyncio.get_running_loop()`,
+    while a redundant `import asyncio` further down the same function turned
+    `asyncio` into a closure cell (the lambda below captures it) — so that first
+    line did a LOAD_DEREF on a cell nothing had stored yet and raised
+    UnboundLocalError. The broad `except` read that as "API unreachable", logged a
+    warning and fell through to local execution. Every Prefect step has therefore
+    always run in-process, and _run_prefect_step_api was dead code, while the log
+    line said only that dispatch had "failed".
+
+    The module already imports asyncio at the top; the inner import is gone.
+    """
     config = get_config()
 
     # If Prefect is enabled, attempt to run via the API (distributed worker execution)
@@ -80,8 +93,8 @@ def run_prefect_step(
                 loop = None
 
             if loop and loop.is_running():
-                # Run synchronously inside existing event loop
-                import asyncio
+                # Already inside an event loop (a FastAPI request thread): asyncio.run
+                # cannot nest, so hand the coroutine to a worker thread with its own loop.
                 from concurrent.futures import ThreadPoolExecutor
                 with ThreadPoolExecutor() as executor:
                     future = executor.submit(
@@ -91,9 +104,15 @@ def run_prefect_step(
             else:
                 return asyncio.run(_run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
         except Exception as e:
-            # Fall back to local execution if the API server is unreachable/throws
-            import logging
-            logging.warning(f"Prefect API dispatch failed, falling back to local flow execution: {e}")
+            # Falling back is right for an unreachable or failing Prefect server —
+            # the work still gets done locally. But catching everything is what hid
+            # the UnboundLocalError above for the entire life of this integration,
+            # so log the exception type and traceback rather than just str(e): a
+            # bug here is indistinguishable from a connection problem otherwise.
+            logging.warning(
+                "Prefect API dispatch failed (%s), falling back to local flow execution: %s",
+                type(e).__name__, e, exc_info=True,
+            )
 
     # Fallback/Local Run: run flow directly in-process
     # This still records the flow and task runs locally if Prefect is configured.

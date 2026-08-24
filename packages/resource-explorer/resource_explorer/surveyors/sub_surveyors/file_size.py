@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import UNVERIFIED, StepOutcome, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.file_classifier.type_cache import get_cache
 from resource_explorer.surveyors.scoping import path_matches_scope
@@ -62,20 +63,80 @@ class FileSizeSurveyor(BaseSurveyor):
     def step_name(self) -> str:
         return STEP
 
+    def _record_outcome(self, outcome: StepOutcome, *, total_bytes: int,
+                        total_files: int) -> None:
+        """Persist the run's headline numbers together with what they mean.
+
+        This step measured nothing before today — it built annotations and
+        returned. That was survivable while a zero could only mean "no files",
+        but the inventory can be empty for a repo that was never ingested, and
+        an annotation-less return is invisible from every card and every query.
+        One metric row, carrying the outcome, is the smallest thing that makes
+        the difference between "0 bytes" and "we could not tell" legible after
+        the run is over.
+        """
+        try:
+            self.registry.upsert_metric(
+                self.project.slug, "repo_file_size",
+                {"total_size_bytes": total_bytes, "total_files": total_files},
+                detail=outcome.as_row(),
+                scope_locator=self._scope_locator,
+            )
+        except Exception as exc:
+            log.warning("Could not persist file-size outcome for %s: %s",
+                        self.project.slug, exc)
+
+    def _nothing_measured(self, outcome: StepOutcome) -> Annotation:
+        """The annotation for a run that sized nothing, saying which kind of
+        nothing it was — the whole point of the outcome vocabulary."""
+        if outcome.outcome == UNVERIFIED:
+            summary = "File sizes not measured — the file inventory is empty"
+            explanation = (
+                "project_file_inventory holds no rows for this repo, so there was "
+                "nothing to size. This is not a finding about the repository: run "
+                "repo_file_inventory (or a Profile refresh) first, then re-run."
+            )
+        else:
+            summary = f"No files matched the scope '{self._scope_locator}'"
+            explanation = (
+                "The inventory has rows, so the repository was measured — none of "
+                "its files fall under this scope locator."
+            )
+        return ResourceMeasureAnnotation(
+            summary=summary, analysis_step=STEP, confidence=100,
+            explanation=explanation,
+            resource_properties={"total_files": 0, "total_size_bytes": 0},
+            json_properties={"source": "project_file_inventory", **outcome.as_row()},
+        )
+
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
-            rows = self.registry.get_file_inventory_with_sizes(self.project.slug)
+            inventory = self.registry.get_file_inventory_with_sizes(self.project.slug)
+            rows_available = len(inventory)
+            rows = inventory
             if self._scope_locator:
                 rows = [r for r in rows if path_matches_scope(r["file_path"], self._scope_locator)]
+
+            # rows_available is counted before the scope filter on purpose: an
+            # empty inventory and a scope that matched nothing are different
+            # answers, and only the first means this step could not run.
+            outcome = from_upstream_table(
+                rows_available, len(rows),
+                empty_table_cause="empty_file_inventory",
+                no_match_cause="no_files_in_scope",
+                scope_locator=self._scope_locator,
+            )
             if not rows:
-                log.debug("FileSizeSurveyor: no inventory for %s", self.project.slug)
+                self._record_outcome(outcome, total_bytes=0, total_files=0)
+                results.append(self._nothing_measured(outcome))
                 return results
 
             cache = get_cache()
             total_bytes = sum(r["file_size_bytes"] for r in rows)
             total_files = len(rows)
             avg_bytes = total_bytes // total_files if total_files else 0
+            self._record_outcome(outcome, total_bytes=total_bytes, total_files=total_files)
 
             # Group total size by deployedImplementationType label
             size_by_type: dict[str, int] = defaultdict(int)

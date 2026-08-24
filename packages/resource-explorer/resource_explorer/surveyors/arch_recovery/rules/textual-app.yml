@@ -1,0 +1,10 @@
+# Textual full-screen TUI — a User Interface, not the Console Command a bare
+# manifest entry point would suggest (finding 7). Matches the class
+# declaration rather than a call, since Textual apps are defined by
+# subclassing `App`/`textual.app.App`, not by constructing one at import time.
+id: textual-app-subclass
+language: Python
+rule:
+  any:
+    - pattern: class $NAME(App):$$$BODY
+    - pattern: class $NAME(textual.app.App):$$$BODY

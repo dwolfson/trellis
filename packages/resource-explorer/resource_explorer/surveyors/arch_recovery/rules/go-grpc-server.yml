@@ -1,0 +1,9 @@
+# design §5.1 — gRPC server construction -> Software Service.
+# VERIFIED: 7 matches in milvus/internal/distributed.
+id: go-grpc-server
+language: Go
+rule:
+  kind: call_expression
+  has:
+    field: function
+    regex: '^grpc\.NewServer$'

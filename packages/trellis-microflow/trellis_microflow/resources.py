@@ -6,7 +6,7 @@ file/data content, downloaded exactly once regardless of how many)."""
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
 
@@ -31,6 +31,20 @@ class ResourceProvider:
     """
     name: str
     acquire: Callable[[], AbstractContextManager]
+    # Opaque capability labels describing WHAT THIS RESOURCE IS, so a consumer
+    # can state what it needs and be told at wiring time rather than finding
+    # out from an empty result. This package assigns no meaning to the strings
+    # — the app owns the vocabulary — it only carries them.
+    #
+    # Motivating case, and it cost a silent bug: resource-explorer has two
+    # repo resources that both yield "a directory". One is a zipball extract
+    # (files, no history); the other is a `--filter=blob:none --no-checkout`
+    # clone (history, and a root containing *only* `.git`). A step read source
+    # files from the second, scanned an empty tree, produced zero results and
+    # raised nothing — every component it should have proposed simply vanished.
+    # Both resources satisfied "a path exists"; neither type nor test could see
+    # the difference, because the difference was never written down.
+    provides: frozenset[str] = frozenset()
 
 
 def resolve_resources(

@@ -58,22 +58,116 @@ KNOWN_ANALYSIS_IDS = [
 ]
 
 
-def _parse_answering(note: str) -> dict:
+# Purpose vocabulary — the controlled kinds from
+# docs/investigation-framing-design.md §2. Mirrors Egeria's ProjectCharter
+# `purposes`, which is a valid metadata set: controlled so dispatch can key on
+# it, extensible without a rebuild. Extend here when the charter vocabulary
+# does.
+KNOWN_PURPOSES = [
+    "Explore",
+    "Select",
+    "Assess",
+    "Maintain",
+    "Share",
+    "Learn",
+    "Certify",
+    "Remediate",
+    "Attest",
+    "Deploy",
+]
+
+# Columns that are NOT perspectives. Perspectives are identified by
+# elimination, so anything missing here silently becomes a phantom Perspective
+# on every row — keep in sync with csv_to_dr_egeria_questions.py's
+# OPTIONAL_LEAD_COLUMNS, which does the same by-elimination trick.
+NON_PERSPECTIVE_COLUMNS = (
+    "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
+    "Answering Analysis", "Answering Mechanism", "Purposes",
+)
+
+_CHECK_REGISTRY_PATH = (
+    Path(__file__).parent.parent / "resource_explorer" / "configdata" / "check_registry.yaml"
+)
+
+
+def _load_known_checks() -> set[str]:
+    """Valid `analysis_id:check_name` refs, from configdata/check_registry.yaml.
+
+    Read live (unlike KNOWN_ANALYSIS_IDS above, which is a hand-synced literal)
+    because the check vocabulary is ~28 entries and still moving — a stale copy
+    here would silently drop refs rather than fail. Still no import dependency
+    on the resource_explorer package: this reads the YAML directly."""
+    if not _CHECK_REGISTRY_PATH.exists():
+        return set()
+    reg = yaml.safe_load(_CHECK_REGISTRY_PATH.read_text()) or {}
+    return {
+        f"{analysis_id}:{check}"
+        for analysis_id, spec in (reg.get("analyses") or {}).items()
+        for check in (spec.get("checks") or [])
+    }
+
+
+_CHECKS_SUFFIX_RE = re.compile(r"\s*\[checks:[^\]]*\]")
+
+
+def _strip_checks_suffix(note: str) -> str:
+    """Remove the `[checks: ...]` block before prose classification.
+
+    The suffix is structured metadata bolted onto a free-text column. Leaving
+    it in breaks `kind` detection for every row whose note is exactly an
+    analysis id (that test is a whole-string equality), silently downgrading
+    e.g. "license_classification" from kind=analysis to kind=unknown."""
+    return _CHECKS_SUFFIX_RE.sub("", note).strip()
+
+
+def _parse_checks(note: str, known: set[str]) -> tuple[list[str], list[str]]:
+    """Extract `analysis_id:check_name` refs from the CSV note.
+
+    Returns (valid_refs, unknown_refs). Unknown refs are returned rather than
+    dropped so the caller can fail loudly — a typo'd check name that silently
+    vanished would look identical to a question nobody has tagged yet, which is
+    the failure mode this whole join exists to remove."""
+    found = re.findall(r"\b([a-z_]+:[a-z0-9_\-]+)\b", note)
+    valid = [r for r in dict.fromkeys(found) if r in known]
+    unknown = [r for r in dict.fromkeys(found) if r not in known]
+    return valid, unknown
+
+
+def _parse_purposes(raw: str) -> list[str]:
+    """Parse the semicolon-separated Purposes column.
+
+    Purposes get one shared column rather than a column each (the shape the
+    Perspective columns use) precisely because of the by-elimination problem
+    above: ten more columns would be ten more chances for a typo'd header to
+    become a phantom Perspective. One column, validated, fails loudly instead."""
+    values = [v.strip() for v in (raw or "").split(";") if v.strip()]
+    unknown = [v for v in values if v not in KNOWN_PURPOSES]
+    if unknown:
+        raise ValueError(
+            f"unknown Purpose(s) {unknown}; valid values are {KNOWN_PURPOSES}. "
+            f"Fix the CSV, or add the purpose to KNOWN_PURPOSES if the "
+            f"ProjectCharter vocabulary genuinely gained one."
+        )
+    return list(dict.fromkeys(values))
+
+
+def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
     note = (note or "").strip()
-    upper = note.upper()
+    prose = _strip_checks_suffix(note)
+    upper = prose.upper()
     if upper.startswith("GAP:"):
         kind = "gap"
     elif upper.startswith("PARTIAL:"):
         kind = "partial"
     elif upper.startswith("MIXED:"):
         kind = "mixed"
-    elif "human-supplied" in note.lower():
+    elif "human-supplied" in prose.lower():
         kind = "human"
-    elif "trend chart" in note.lower():
+    elif "trend chart" in prose.lower():
         kind = "chart"
-    elif note.upper().startswith("N/A"):
+    elif prose.upper().startswith("N/A"):
         kind = "direct"
-    elif note in KNOWN_ANALYSIS_IDS:
+    elif prose in KNOWN_ANALYSIS_IDS:
         kind = "analysis"
     else:
         # Free text that doesn't match any known convention — surfaced as
@@ -86,27 +180,39 @@ def _parse_answering(note: str) -> dict:
         if re.search(rf"\b{re.escape(aid)}\b", note)
     ]
 
-    return {"kind": kind, "analysis_ids": analysis_ids, "note": note}
+    checks, unknown = _parse_checks(note, known_checks or set())
+    if unknown:
+        raise ValueError(
+            f"unknown check ref(s) {unknown} in Answering Analysis text: {note!r}\n"
+            f"Valid refs are declared in {_CHECK_REGISTRY_PATH.name} "
+            f"(analysis_id:check_name). Fix the CSV or add the check to the registry."
+        )
+
+    # A check ref implies its analysis, so authors don't have to write both.
+    for ref in checks:
+        aid = ref.split(":", 1)[0]
+        if aid not in analysis_ids:
+            analysis_ids.append(aid)
+
+    return {"kind": kind, "analysis_ids": analysis_ids, "checks": checks, "note": note}
 
 
 def generate(rows: list[dict]) -> str:
+    known_checks = _load_known_checks()
     entries = []
     for row in rows:
         question = (row.get("Question") or "").strip()
         if not question:
             continue
-        perspective_cols = [
-            c for c in row.keys()
-            if c not in ("Question", "Funnel Stage", "Why is this important?",
-                          "Rationale/Source", "Answering Analysis", "Answering Mechanism")
-        ]
+        perspective_cols = [c for c in row if c not in NON_PERSPECTIVE_COLUMNS]
         perspectives = [c for c in perspective_cols if (row.get(c) or "").strip()]
 
         entries.append({
             "question": question,
             "stage": (row.get("Funnel Stage") or "").strip(),
             "perspectives": perspectives,
-            "answering": _parse_answering(row.get("Answering Analysis", "")),
+            "purposes": _parse_purposes(row.get("Purposes", "")),
+            "answering": _parse_answering(row.get("Answering Analysis", ""), known_checks),
             "answering_mechanism": (row.get("Answering Mechanism") or "").strip(),
         })
 
@@ -131,12 +237,26 @@ def generate(rows: list[dict]) -> str:
         "#                   as a literal string match, not split, until that plan is\n"
         "#                   built.\n"
         "#   perspectives  - Perspective names this question is linked to.\n"
+        "#   purposes      - Purpose kinds this question serves (added 2026-08-24).\n"
+        "#                   Purpose is the PRIMARY dispatch axis and Perspective the\n"
+        "#                   secondary one: Perspective was measured and cannot\n"
+        "#                   discriminate (no perspective reaches an analysis another\n"
+        "#                   doesn't also reach). Purpose ORDERS what runs by default;\n"
+        "#                   it never excludes. See docs/investigation-framing-design.md.\n"
         "#   answering:\n"
         "#     kind        - \"analysis\" | \"direct\" | \"registry\" | \"human\" |\n"
         "#                   \"chart\" | \"gap\" | \"partial\" | \"mixed\" | \"unknown\" —\n"
         "#                   how (or whether) RE can answer this today.\n"
         "#     analysis_ids - analysis_catalog.yaml repo_analyses ids that answer\n"
         "#                   (fully or partially) this question; may be empty.\n"
+        "#     checks       - finer `analysis_id:check_name` refs, validated against\n"
+        "#                   configdata/check_registry.yaml. Added 2026-08-24 because\n"
+        "#                   analysis-level joins are too coarse to dispatch on (one\n"
+        "#                   analysis, repo_conventions, answers 7 of the 16\n"
+        "#                   analysis-answerable questions). Empty means \"no check\n"
+        "#                   refs authored yet\" — fall back to analysis_ids, do not\n"
+        "#                   read it as \"no checks apply\". A check ref implies its\n"
+        "#                   analysis, which is added to analysis_ids automatically.\n"
         "#     note        - the CSV's \"Answering Analysis\" column, verbatim —\n"
         "#                   human-readable detail (candidate tooling for gaps,\n"
         "#                   which direct field/table, etc.).\n"

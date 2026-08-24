@@ -10,15 +10,19 @@ you already have." Reuses OrgImporter/_run_import_batch
 GitHubClient.search_repos() for the search itself.
 
 Also owns repo triage disposition (undecided/tracking/investigating/
-recommended/abandoned/ignored, registry.py's repo_dispositions table) —
-since a disposition can apply to a repo that was never imported at all,
-it's surfaced here on every search result, not just on already-registered
-projects (see projects.py's ProjectSummary.disposition for the
-registered-repo side of the same data). `recommended` is the positive
-terminal state — deliberately added later than the other four, once real
-use surfaced that the vocabulary had a full "decided against it" branch
-(abandoned/ignored) but nothing for "decided for it" (everything else
-implied "yes" only indirectly, via group membership or survey activity).
+recommended/using/abandoned/ignored, registry.py's repo_dispositions
+table) — since a disposition can apply to a repo that was never imported
+at all, it's surfaced here on every search result, not just on
+already-registered projects (see projects.py's ProjectSummary.disposition
+for the registered-repo side of the same data). `recommended` and `using`
+are both positive terminal states, sitting alongside the negative
+terminal states abandoned/ignored — `recommended` added once real use
+surfaced that the vocabulary had a full "decided against it" branch
+(abandoned/ignored) but nothing for "decided for it"; `using` added later
+still, for the stronger, further-along signal that the org is already
+actively using the resource or knows of its use elsewhere in the org —
+distinct from `recommended`'s "worth pursuing," which doesn't imply
+adoption has actually happened yet.
 
 "Discover repos to scout" plan, D4-D6, D10.
 """
@@ -28,10 +32,17 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+import logging
+
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 router = APIRouter()
+
+# Referenced by discover_from_list's unreachable-URL reporting. Its absence
+# made any load containing a single unfetchable repo raise NameError and
+# fail the whole request — invisible until a list contained one.
+log = logging.getLogger(__name__)
 
 # Curated pre-filter list, loaded from configdata/foundation_prefilters.json —
 # a plain JSON file (not a Python constant) so new entries can be added
@@ -282,6 +293,191 @@ async def _run_list_urls(urls: list[str], registry) -> list[dict]:
     return await asyncio.to_thread(_fetch_all)
 
 
+@router.get("/inventory.csv")
+def export_inventory() -> Response:
+    """Download every registered resource as the CSV inventory + scorecard.
+
+    Paired with "Load from file" on the same pane, because the two halves are
+    the same file: what comes out can be edited and handed straight back in, and
+    the `status_` columns it carries are ignored on the way in (see
+    resource_explorer/batch_io.py).
+
+    Streams from the registry on every request rather than caching — a stale
+    scorecard that looks authoritative is the failure mode this format is most
+    likely to produce.
+    """
+    import csv as _csv
+    import io as _io
+
+    from resource_explorer.batch_io import ALL_COLUMNS, export_rows
+    from resource_explorer.registry import ProjectRegistry
+
+    rows = export_rows(ProjectRegistry())
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=list(ALL_COLUMNS))
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({c: r.get(c, "") for c in ALL_COLUMNS})
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        # Dated filename: the point of the scorecard is diffing one against
+        # another, and "inventory.csv (3)" in a downloads folder makes that
+        # needlessly hard.
+        headers={"Content-Disposition":
+                 f'attachment; filename="re-inventory-{_today()}.csv"'},
+    )
+
+
+def _today() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+class RepoListText(BaseModel):
+    """A pasted or uploaded list of resources.
+
+    Text rather than a file upload: the browser reads the file and posts its
+    contents, which keeps this endpoint free of a multipart dependency and makes
+    it equally usable for a paste, a drag-and-drop, or curl.
+    """
+    text: str
+
+
+# One account can hold thousands of repos; a file of five foundation pages must
+# not become an unbounded fetch. Capped and reported as truncated so a partial
+# expansion is never mistaken for the whole account.
+_ORG_EXPAND_LIMIT = 100
+
+
+async def _expand_org(org: str) -> list[str]:
+    """Repo URLs belonging to a GitHub account, newest-activity first.
+
+    Reuses the same search path as the ad-hoc form (`org:X`), so an expanded
+    account and a typed org search return the same repos in the same order.
+    """
+    import asyncio as _asyncio
+
+    from resource_explorer.github.client import GitHubClient
+
+    def _search():
+        return GitHubClient().search_repos(
+            f"org:{org} fork:false archived:false",
+            sort="updated", limit=_ORG_EXPAND_LIMIT)
+
+    repos = await _asyncio.to_thread(_search)
+    return [r["html_url"] for r in repos]
+
+
+class ListLoadResult(BaseModel):
+    """What the file contained, not just what survived it.
+
+    The first version returned a bare list, so a file of 50 rows that yielded 47
+    results looked identical to a file of 47 — the three that were dropped
+    existed only as a log line nobody reads. Loading a list is precisely the
+    moment a user needs to be told what was accepted, because they are about to
+    act on the result as if it were their file.
+    """
+    repos: list[DiscoveredRepo]
+    rows_read: int = 0          # non-blank, non-comment lines that parsed
+    usable: int = 0             # rows that were valid repo addresses
+    already_registered: int = 0
+    skipped: list[str] = []     # "line 5: no address"
+    unreachable: list[str] = []  # addresses GitHub would not return
+    # Account URLs found in the file and what each expanded to. Reported rather
+    # than silently folded in, because "I gave you 3 lines and got 214 repos"
+    # needs an explanation attached to it.
+    expanded_orgs: list[dict] = []
+
+
+@router.post("/from-list", response_model=ListLoadResult)
+async def discover_from_list(body: RepoListText) -> ListLoadResult:
+    """Turn a CSV or a plain list of URLs into ordinary discovery results.
+
+    Deliberately routed through the same enrichment tail as search, so an
+    uploaded list arrives in the same review table with already_registered
+    dimmed and prior dispositions shown, and is imported by the same button.
+    Nothing is registered here — this endpoint only reads.
+
+    That matters more than the convenience: a bulk import that skips the review
+    step is how a typo'd row, or a repo someone already decided to ignore, ends
+    up in the catalog with nobody having looked at it.
+    """
+    from resource_explorer.batch_io import (
+        describe_skipped,
+        github_org_from_url,
+        parse_csv_text,
+    )
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        rows = parse_csv_text(body.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    candidates = [r.address for r in rows if r.resource_type == "repo" and not r.errors]
+
+    # An account URL ("github.com/apache") names everything those people publish,
+    # not one repo, and fetching it as a repo simply fails — which is how a file
+    # of foundation pages came back empty with nothing explaining why. Expand it
+    # into the same review table instead: that table already *is* the "which of
+    # these do you want" question, so asking it again in a dialog would only add
+    # a step before the same choice.
+    urls: list[str] = []
+    expanded: list[dict] = []
+    for addr in candidates:
+        org = github_org_from_url(addr)
+        if not org:
+            urls.append(addr)
+            continue
+        try:
+            found = await _expand_org(org)
+        except Exception as exc:
+            log.warning("could not expand organisation %s: %s", org, exc)
+            expanded.append({"org": org, "count": 0, "error": str(exc)[:200]})
+            continue
+        urls.extend(found)
+        expanded.append({"org": org, "count": len(found),
+                         "truncated": len(found) >= _ORG_EXPAND_LIMIT})
+
+    if not urls:
+        # An empty result and "nothing in your file was usable" are different
+        # answers; say which.
+        bad = [describe_skipped(r) for r in rows if r.errors][:5]
+        if expanded:
+            bad.append("organisation(s) expanded to no repos: "
+                       + ", ".join(e["org"] for e in expanded))
+        detail = ("No usable repo rows found. "
+                  + ("Problems: " + "; ".join(bad) if bad else
+                     "Expected one GitHub URL per line, or a CSV with an 'address' column."))
+        raise HTTPException(status_code=400, detail=detail)
+
+    repos = await _run_list_urls(urls, registry)
+    # _run_list_urls drops a URL GitHub will not return. Reported rather than
+    # logged: 40 lines quietly becoming 31 results is the failure this endpoint
+    # is most likely to produce, and a log line is not an answer to "did my file
+    # load?".
+    fetched = {r["html_url"].lower().rstrip("/").removesuffix(".git") for r in repos}
+    unreachable = [u for u in urls
+                   if u.lower().rstrip("/").removesuffix(".git") not in fetched]
+    for u in unreachable:
+        log.warning("discovery from-list: could not fetch %s", u)
+
+    enriched = _enrich_repos(repos, registry)
+    return ListLoadResult(
+        repos=enriched,
+        rows_read=len(rows),
+        usable=len(urls),
+        already_registered=sum(1 for r in enriched if r.already_registered),
+        skipped=[describe_skipped(r) for r in rows if r.errors],
+        unreachable=unreachable,
+        expanded_orgs=expanded,
+    )
+
+
 @router.post("/search", response_model=list[DiscoveredRepo])
 async def search_repos(req: RepoSearchRequest) -> list[DiscoveredRepo]:
     """Read-only — does not touch the registry except to read
@@ -347,12 +543,19 @@ async def import_repos(body: ImportRequest) -> ImportResponse:
     return ImportResponse(queued=len(to_queue), skipped=skipped)
 
 
-# undecided -> tracking/investigating -> {abandoned, ignored}. "ignored" =
-# passed on it early/cheaply, never got past scouting; "abandoned" = went
-# further (investigated, maybe surveyed/analyzed) and then decided against
-# it — same hiding-from-sidebar treatment, but the history reads honestly
-# instead of collapsing both into one word (Scouting workflow redesign, D3).
-_VALID_DISPOSITIONS = {"undecided", "tracking", "investigating", "recommended", "abandoned", "ignored"}
+# undecided -> tracking/investigating -> {recommended, using, abandoned, ignored}.
+# "ignored" = passed on it early/cheaply, never got past scouting;
+# "abandoned" = went further (investigated, maybe surveyed/analyzed) and
+# then decided against it — same hiding-from-sidebar treatment, but the
+# history reads honestly instead of collapsing both into one word
+# (Scouting workflow redesign, D3). "recommended" = decided for it, worth
+# pursuing. "using" = a step further than recommended — the org is either
+# already actively using the resource, or knows of its use elsewhere in
+# the org; not hidden, same as recommended (both are positive signals
+# worth surfacing, not states to tuck away).
+_VALID_DISPOSITIONS = {
+    "undecided", "tracking", "investigating", "recommended", "using", "abandoned", "ignored",
+}
 
 
 class DispositionRequest(BaseModel):

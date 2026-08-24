@@ -62,12 +62,19 @@ def test_dispatch_loop_runs_known_step_and_reports_unknown_step():
 
     known_runner.assert_called_once()
     adapter.publish.assert_called_once()
-    assert len(result["errors"]) == 1
+    # Two errors, not one — an executes_at="egeria" step with no registered
+    # other_engine_handlers now counts as a real error too (2026-08-24,
+    # "closing the stub"): it genuinely never executes anywhere, since RE's
+    # own client-side walk is the only thing driving execution today. Used
+    # to be silently swallowed (status "skipped_egeria", nothing in `errors`
+    # at all) — a run with a step that never ran reported "complete."
+    assert len(result["errors"]) == 2
     assert "totally_unknown_step" in result["errors"][0]
+    assert "Step::Egeria" in result["errors"][1]
     statuses = {s["step"]: s["status"] for s in result["steps"]}
     assert statuses["Step::Known"] == "ok"
     assert statuses["Step::Unknown"] == "unknown_step"
-    assert statuses["Step::Egeria"] == "skipped_egeria"
+    assert statuses["Step::Egeria"] == "not_executed_no_egeria_handler"
     assert result["egeria_report_guid"] == "report-guid-1"
 
 

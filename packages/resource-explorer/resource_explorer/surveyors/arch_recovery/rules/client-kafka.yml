@@ -1,0 +1,7 @@
+# design §5.1 "Client libraries" — a Kafka/event-broker wire, Output-Input.
+id: client-kafka
+language: Python
+rule:
+  any:
+    - pattern: KafkaProducer($$$ARGS)
+    - pattern: KafkaConsumer($$$ARGS)

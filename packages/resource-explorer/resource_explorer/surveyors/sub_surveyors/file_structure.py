@@ -5,6 +5,7 @@ import logging
 from collections import Counter
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
@@ -61,6 +62,18 @@ class FileStructureSurveyor(BaseSurveyor):
                     (slug,),
                 ).fetchall()
 
+            # project_code_symbols is populated by repo_symbol_extraction (and,
+            # historically, only by RAG ingestion). An empty table therefore
+            # means "symbols were never extracted" far more often than it means
+            # "this repo has no source files" — so the annotation is emitted
+            # either way, labelled, instead of being silently skipped. A missing
+            # annotation is the least readable of all possible outputs: it is
+            # indistinguishable from the step never having run.
+            lang_outcome = from_upstream_table(
+                len(rows), len(rows),
+                empty_table_cause="empty_code_symbols",
+                no_match_cause="no_recognised_languages",
+            )
             if rows:
                 lang_breakdown = {r["language"]: r["file_count"] for r in rows}
                 results.append(
@@ -68,7 +81,23 @@ class FileStructureSurveyor(BaseSurveyor):
                         summary=f"Indexed source files span {len(lang_breakdown)} language(s)",
                         analysis_step=STEP,
                         resource_properties={"by_language": lang_breakdown},
-                        json_properties={"source": "project_code_symbols"},
+                        json_properties={"source": "project_code_symbols",
+                                         **lang_outcome.as_row()},
+                    )
+                )
+            else:
+                results.append(
+                    ResourceMeasureAnnotation(
+                        summary="Language breakdown unavailable — no code symbols extracted",
+                        analysis_step=STEP,
+                        explanation=(
+                            "project_code_symbols holds no rows for this repo. Run "
+                            "repo_symbol_extraction first; until then this is not "
+                            "evidence that the repo has no source code."
+                        ),
+                        resource_properties={"by_language": {}},
+                        json_properties={"source": "project_code_symbols",
+                                         **lang_outcome.as_row()},
                     )
                 )
 
@@ -77,6 +106,9 @@ class FileStructureSurveyor(BaseSurveyor):
             # query, now the named registry accessor.
             paths = self.registry.get_code_symbol_file_paths(slug)
 
+            # Same table, same reasoning as the language breakdown above — but
+            # left as a skip rather than an emitted zero, because it would
+            # restate what that annotation has already said in the same run.
             if paths:
                 top_dirs: Counter = Counter()
                 for file_path in paths:

@@ -66,17 +66,29 @@ dependencies = [
     # real incompatibility) — `uv lock --upgrade-package pyegeria` already
     # resolves 6.0.18.1 today without a hard constraint.
     #
-    # SurveyDefinitionReader.fetch()/reconcile_step_links() also now require
-    # GovernanceOfficer.get_governance_action_process_graph (renamed from
-    # get_governance_process_graph, PR odpi/egeria-python#275) and
-    # MetadataExpert.delete_related_elements()'s ISSUE-63 fix — same PR, not
-    # released to PyPI yet as of this comment. Bump this floor to the actual
-    # release version once it ships and run `uv lock --upgrade-package
-    # pyegeria`; until then the installed pyegeria must be overridden
-    # manually (e.g. `uv pip install --no-deps
-    # git+https://github.com/dwolfson/egeria-python.git@fix/pyegeria-http-endpoint-audit`)
-    # for RE's Survey Definition reader/reconciler to work at all.
-    "pyegeria>=6.0.16.17",
+    # SurveyDefinitionReader.fetch()/reconcile_step_links() require two
+    # pyegeria fixes, both verified live against the real wheel (not assumed):
+    #
+    #  * GovernanceOfficer.get_governance_action_process_graph — renamed from
+    #    get_governance_process_graph (PR odpi/egeria-python#275), shipped in
+    #    6.0.18.3. Without it the Survey tab renders every candidate as an
+    #    errored card ("object has no attribute ...") with no steps.
+    #  * MetadataExpert.delete_related_elements() routing through
+    #    DeleteRelationshipRequestBody instead of OpenMetadataDeleteRequestBody
+    #    (egeria-python PYEGERIA_ISSUES.md ISSUE-63), shipped in 6.0.18.4. The
+    #    old body had no `deleteMethod` field and silently dropped it via
+    #    PyegeriaModel's extra='ignore', so reconcile_step_links()' deletes were
+    #    a no-op — confirmed live, the reconciler reported removals while the
+    #    duplicates stayed put. This matters because Dr.Egeria's "Link
+    #    First/Next Process Step" commands are NOT idempotent: re-running a
+    #    repo-survey-definition-*.md doc against an already-linked process
+    #    duplicates every edge, which makes each step look "branching" and
+    #    takes the whole Survey Definition out of service until reconciled.
+    #
+    # Hence the 6.0.18.4 floor. Note pyegeria moved MetadataExpert from
+    # pyegeria.omvs.metadata_explorer to pyegeria.omvs.metadata_expert in this
+    # release; RE is unaffected because it imports from the top-level package.
+    "pyegeria>=6.0.18.4",
     "mcp>=0.1.0",
     "nest-asyncio>=1.6.0",
     # Database surveying
@@ -91,6 +103,20 @@ dependencies = [
     # transfer plan) once code intelligence is more than a chunking nicety.
     "tree-sitter>=0.21",
     "tree-sitter-java>=0.21",
+    # Structural code-marker detection engine for architecture recovery
+    # (docs/architecture-recovery-design.md §5.1). A pip dependency rather
+    # than a system prerequisite on purpose: `ast-grep-cli` publishes
+    # prebuilt wheels for macOS arm64/x86_64, manylinux aarch64/x86_64 and
+    # Windows, at version parity with Homebrew, so `uv sync` provisions the
+    # binary and uv.lock pins it. Nobody has to `brew install` anything.
+    #
+    # This is the general answer to §5.7's binary-provisioning gap, not a
+    # one-off: prefer a wheel-distributed or Python-native implementation
+    # (ast-grep-cli here, lizard for complexity) and accept a modest
+    # performance cost, reserving true system binaries for capabilities with
+    # no alternative (syft/trivy) — which are Analysis-tier and optional, and
+    # should declare themselves unavailable rather than fail a survey.
+    "ast-grep-cli>=0.45.1",
 ]
 
 [project.optional-dependencies]
@@ -98,6 +124,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.8.0",
     "black>=24.10.0",
     "mypy>=1.13.0",
@@ -148,3 +175,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hanging test must fail with a name, not stall silently. CI's first full-suite
+# run stopped dead at 46% and was killed by the job timeout 3 minutes later,
+# reporting only "The operation was canceled" — no test name, no traceback, no
+# way to tell a hang from a slow runner. 120s is far above any real test here
+# (the whole suite runs in ~2 minutes locally), so this only ever fires on
+# something genuinely stuck.
+timeout = 120
+timeout_method = "thread"

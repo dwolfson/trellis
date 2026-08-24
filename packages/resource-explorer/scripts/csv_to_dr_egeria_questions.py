@@ -91,7 +91,11 @@ REQUIRED_COLUMNS = ["Question", "Funnel Stage"]
 # not sent to Egeria. Excluded here so the "everything after these is a
 # perspective column" rule in generate() doesn't try to link them as a
 # Perspective.
-OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism"]
+# "Purposes" is RE-internal (see csv_to_question_catalog_yaml.py) and, like the
+# two Answering columns, is excluded from the Dr.Egeria output. It MUST stay in
+# this list: perspective columns are identified by elimination, so any column
+# missing from here silently becomes a phantom Perspective on every question.
+OPTIONAL_LEAD_COLUMNS = ["Why is this important?", "Rationale/Source", "Answering Analysis", "Answering Mechanism", "Purposes"]
 
 
 def _block(command: str, **fields: str) -> str:

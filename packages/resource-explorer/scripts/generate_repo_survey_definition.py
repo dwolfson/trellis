@@ -91,6 +91,14 @@ from resource_explorer.surveyors.repo_survey_definition_adapter import (
 TECHNOLOGY_TYPE = "Git Repository"
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria"
 SPECS_CSV = DOCS_DIR / "repo_survey_types.csv"
+# Generated documents live in the survey-definitions *batch folder*, not at the
+# dr-egeria root: docs/dr-egeria/ is now organised as bootstrap batches (one
+# folder per ordered execution group, each with a _batch.json — see
+# docs/dr-egeria/_folder_order.json and resource_explorer/bootstrap.py). The CSV
+# above deliberately stays at the root: it is a source of truth this script
+# reads, not a Dr.Egeria command document to be executed, and only folders are
+# treated as batches.
+SURVEY_DEFS_DIR = DOCS_DIR / "survey-definitions"
 ALL_STEPS_SENTINEL = "*"
 
 
@@ -233,7 +241,7 @@ MANUAL_EXTRA_SCOPE_QUESTIONS: dict[str, list[str]] = {
 
 
 def main() -> None:
-    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    SURVEY_DEFS_DIR.mkdir(parents=True, exist_ok=True)
     step_key_to_questions = _build_step_key_to_questions()
     for spec in SPECS:
         steps = build_steps(spec.step_keys)
@@ -250,7 +258,7 @@ def main() -> None:
             survey_kind=spec.survey_kind,
             answers_questions=answers_questions,
         )
-        output_path = DOCS_DIR / spec.output_filename
+        output_path = SURVEY_DEFS_DIR / spec.output_filename
         output_path.write_text(markdown)
         print(
             f"[{spec.survey_kind}] wrote {len(steps)} step(s), "

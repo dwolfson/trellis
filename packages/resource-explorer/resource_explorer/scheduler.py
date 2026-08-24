@@ -118,6 +118,90 @@ def _reconcile_rfa_actions() -> None:
     reconcile_rfa_actions(registry)
 
 
+def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], list[str]]:
+    """Run every same-repo due survey in ONE orchestrator call, and return each
+    one's errors keyed by (entity_slug, analysis_id).
+
+    Why this exists: shared resources are deduplicated *within* a
+    SurveyOrchestrator.run() call — `resolve_resources` guarantees one zipball
+    download no matter how many selected steps ask for one — but the scheduler
+    ran each due analysis in its own call. Four of the sixteen repo analyses
+    declare fetch_cost="download" (code_symbol_extraction, data_file_profiling,
+    rag_ingestion, website_ingestion), so a repo with two of them scheduled
+    daily downloaded the same zipball twice a day, every day, to no purpose.
+    Cadences make this the common case rather than a rare one: schedules are
+    picked from a small set of intervals, so they land on the same tick.
+
+    Only analyses dispatched through REPO_ANALYSIS_STEP_MAP are batched. The
+    ingest/profile/publish and Survey-Definition paths each do something other
+    than run orchestrator steps and keep their own dispatch.
+
+    Groups of one are left alone deliberately — a single analysis gains nothing
+    from being routed through here, and leaving it on the existing path keeps
+    the common case running through code that has not changed.
+    """
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_STEP_MAP, STEP_REGISTRY,
+    )
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    by_slug: dict[str, list[dict]] = {}
+    for sched in due:
+        if sched["entity_type"] != "repo":
+            continue
+        analysis_id = sched["analysis_id"]
+        # Same exclusions the per-analysis path applies, checked here so a
+        # publish or an ingest never gets swept into a batch.
+        if analysis_id == "rag_ingestion":
+            continue
+        entry = _catalog_entry("repo", analysis_id)
+        # Not "ingest": website_ingestion carries that action for the UI but is
+        # an ordinary orchestrator step and belongs in the batch. rag_ingestion,
+        # the other ingest, is excluded by name above — the same distinction
+        # that made action the wrong dispatch key in _run_repo_survey.
+        if entry is None or entry.get("action") in ("publish", "profile"):
+            continue
+        if not REPO_ANALYSIS_STEP_MAP.get(analysis_id):
+            continue
+        by_slug.setdefault(sched["entity_slug"], []).append(sched)
+
+    results: dict[tuple[str, str], list[str]] = {}
+    for slug, scheds in by_slug.items():
+        if len(scheds) < 2:
+            continue
+        project = registry.get(slug)
+        if not project:
+            continue
+
+        analysis_ids = [s["analysis_id"] for s in scheds]
+        wanted = {k for aid in analysis_ids for k in REPO_ANALYSIS_STEP_MAP[aid]}
+        # STEP_REGISTRY order, not the order the schedules happened to be read
+        # in. run(steps=[...]) executes in the caller's given order, and the
+        # registry order encodes real prerequisites — repo_file_inventory must
+        # precede everything that reads the inventory, or the batch reports
+        # against the previous extraction while looking like a fresh one.
+        ordered = [k for k in STEP_REGISTRY if k in wanted]
+
+        log.info("Scheduler: coalescing %d due analysis(es) for %s into one run (%d step(s))",
+                 len(scheds), slug, len(ordered))
+        try:
+            result = SurveyOrchestrator(registry).run(slug, steps=ordered)
+        except Exception as exc:
+            # One failure for the whole batch is correct here: nothing ran.
+            for aid in analysis_ids:
+                results[(slug, aid)] = [str(exc)]
+            continue
+
+        # Attribute per analysis, so one broken step fails only the analyses
+        # that actually contain it rather than every analysis in the batch.
+        for aid in analysis_ids:
+            results[(slug, aid)] = [
+                msg for k in REPO_ANALYSIS_STEP_MAP[aid]
+                if (msg := result.step_errors.get(k))
+            ]
+    return results
+
+
 def _run_due() -> None:
     from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
@@ -127,6 +211,17 @@ def _run_due() -> None:
     if not due:
         return
     log.info("Scheduler: %d analysis(es) due", len(due))
+    # Batched first, so several due analyses for one repo share a single
+    # zipball download instead of one each. Everything below is unchanged —
+    # each analysis still gets its own activity entry, its own schedule
+    # bookkeeping and its own subscription check, because those are per-schedule
+    # contracts regardless of how the work was executed.
+    try:
+        batched = _coalesce_repo_surveys(due, registry)
+    except Exception:
+        log.exception("Scheduler: coalescing failed; falling back to per-analysis runs")
+        batched = {}
+
     for sched in due:
         entity_type = sched["entity_type"]
         entity_slug = sched["entity_slug"]
@@ -134,7 +229,14 @@ def _run_due() -> None:
         next_run = sched.get("next_run", "")
         analysis_name = _analysis_display_name(entity_type, analysis_id)
         try:
-            entity_name, entity_location, errors = _execute(entity_type, entity_slug, analysis_id, registry, next_run)
+            batch_key = (entity_slug, analysis_id)
+            if batch_key in batched:
+                project = registry.get(entity_slug)
+                entity_name = project.display_name if project else entity_slug
+                entity_location = project.github_url if project else ""
+                errors = batched[batch_key]
+            else:
+                entity_name, entity_location, errors = _execute(entity_type, entity_slug, analysis_id, registry, next_run)
             status = "error" if errors else "ok"
             detail = "; ".join(errors) if errors else ""
         except Exception as exc:
@@ -284,12 +386,22 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
             "scheduled runs by design. Run it manually when you intend that write."
         ])
 
-    if entry.get("action") == "ingest":
+    if analysis_id == "rag_ingestion":
         # rag_ingestion re-embeds content into pgvector via IncrementalIndexer,
         # not a SurveyOrchestrator step — unlike "publish" this IS schedulable
         # (it's a local re-index, not a new write into Egeria's catalog of
         # record), so it gets its own dispatch branch rather than the
         # step-map lookup below.
+        #
+        # Keyed on analysis_id, NOT on action == "ingest", which is what this
+        # branch tested until website_ingestion arrived and became the second
+        # entry carrying that action. website_ingestion IS an ordinary
+        # SurveyOrchestrator step and belongs in the step-map path below;
+        # dispatching it here would have silently re-indexed the repository
+        # instead — a scheduled run that succeeds while doing something other
+        # than what was scheduled. The action vocabulary describes what an
+        # analysis does for the UI; it was never a dispatch key, and only
+        # worked as one while each value happened to have a single member.
         from resource_explorer.ingestion.incremental import IncrementalIndexer
         from resource_explorer.query_cache import QueryCache
 
@@ -306,9 +418,12 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
         # SurveyOrchestrator step) — schedulable like "ingest", not excluded
         # like "publish". Auto-chains the language_file_classification survey
         # against the freshly refreshed inventory, matching the interactive
-        # Profile tab's own behavior (POST .../profile-scan) — a scheduled
-        # refresh should produce the same displayed result an on-demand one
-        # does, not a data-only update nothing ever reads.
+        # "Coarse Profile Survey" Survey Definition — a scheduled refresh should
+        # produce the same displayed result an on-demand one does, not a
+        # data-only update nothing ever reads. (There is no "Profile tab":
+        # coarse profiling is a Survey Definition, "Coarse Profile Survey", run
+        # from Scouting's Survey sub-tab like any other survey type. The route
+        # remains as an API-level on-demand trigger with no UI caller.)
         from resource_explorer.ingestion.pipeline import IngestionPipeline
         from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
         from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator

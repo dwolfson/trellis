@@ -120,7 +120,19 @@ class PhoenixConfig(BaseSettings):
 class ObservabilityConfig(BaseSettings):
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
     phoenix: PhoenixConfig = Field(default_factory=PhoenixConfig)
+    #: Retained so an explicit sqlite:/// path still resolves, and because
+    #: MetricsCollector's own constructor still honours it — but the default
+    #: store is now the shared Postgres instance (2026-08-23), matching the
+    #: registry and the feedback store. Override METRICS_DATABASE_URL for a
+    #: from-scratch environment without the shared instance.
     metrics_db: str = "data/metrics.db"
+    metrics_database_url: str = Field(
+        default=(
+            "postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor"
+            "?options=-csearch_path%3Dresource_explorer"
+        ),
+        alias="METRICS_DATABASE_URL",
+    )
 
 
 class AgentsConfig(BaseSettings):
@@ -199,6 +211,20 @@ class PrefectConfig(BaseSettings):
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
     enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
+    # Route steps that explicitly declare executes_at="resource-explorer" through
+    # Prefect as well. Off by default, and deliberately its own setting rather
+    # than a second meaning for `enabled`.
+    #
+    # `enabled` used to imply this, so turning Prefect on silently overrode every
+    # definition that had named its engine. executes_at is documented as naming
+    # the execution engine and as being open-ended precisely so engines can be
+    # chosen per step (docs/Backlog.md) — a global flag that overrules it takes
+    # away the only way to say "run this one here", and makes executes_at:
+    # "prefect" redundant into the bargain.
+    #
+    # Wanting RE's own steps run through Prefect for retries and telemetry is a
+    # legitimate deployment choice; it just has to be asked for.
+    route_local_steps: bool = Field(default=False, alias="PREFECT_ROUTE_LOCAL_STEPS")
 
     model_config = _ENV_FILE_CONFIG
 
@@ -235,7 +261,20 @@ class FeedbackConfig(BaseSettings):
     resource_explorer/web/admin_auth.py. Leaving both unset means every
     admin-only feedback endpoint denies all requests (fail closed).
     """
-    database_url: str = Field(default="sqlite:///data/feedback.db", alias="FEEDBACK_DATABASE_URL")
+    #: Defaults to the same shared Postgres instance/schema the registry uses
+    #: (2026-08-23), not a local SQLite file. This store was written to be
+    #: portable from the start — it uses ProjectRegistry's ConnectionWrapper and
+    #: a SQLAlchemy engine, and its own docstring says "nothing here is
+    #: SQLite-specific" — so only the default URL was still pointing at a file.
+    #: Override FEEDBACK_DATABASE_URL (e.g. back to sqlite:///data/feedback.db)
+    #: for a from-scratch environment without the shared instance.
+    database_url: str = Field(
+        default=(
+            "postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor"
+            "?options=-csearch_path%3Dresource_explorer"
+        ),
+        alias="FEEDBACK_DATABASE_URL",
+    )
     admin_users: list[str] = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
     admin_token: str = Field(default="", alias="FEEDBACK_ADMIN_TOKEN")
 

@@ -77,6 +77,41 @@ def log_catalog(
     return entry_id
 
 
+def log_analysis_run(
+    registry: "ProjectRegistry",
+    entity_type: str,
+    entity_slug: str,
+    entity_name: str,
+    status: str,
+    summary: str,
+    analysis_id: str,
+) -> str:
+    """One row per local AnalysisKind run (POST /{slug}/analyses/{analysis_id}
+    /run) — the Analyses cards' equivalent of log_survey's Survey Definition
+    tracking (2026-08-24: direct feedback that Analyses cards had no last-run
+    signal at all, unlike Survey Definition cards). `detail` carries
+    {"analysis_id": ...} as the join key, same convention as
+    survey_definitions.py's survey_definition_ref — see
+    registry.get_analysis_last_run()."""
+    import json
+
+    entry_id = str(uuid.uuid4())
+    registry.write_activity(ActivityEntry(
+        id=entry_id,
+        ts=_now(),
+        operation="analysis_run",
+        intent="assessment",
+        entity_type=entity_type,
+        entity_slug=entity_slug,
+        entity_name=entity_name,
+        entity_location="",
+        status=status,
+        summary=summary,
+        detail=json.dumps({"analysis_id": analysis_id}),
+    ))
+    return entry_id
+
+
 def log_rfa(
     registry: "ProjectRegistry",
     entity_type: str,
@@ -85,7 +120,27 @@ def log_rfa(
     status: str,
     summary: str,
     detail: str = "",
+    analysis_name: str = "",
 ) -> str:
+    """Write an RFA and make sure it actually reaches the RFA drawer.
+
+    The drawer is fed by GET /api/activity/rfas, which flattens activity entries
+    and keeps only *annotations* whose annotation_type contains
+    "RequestForAction". It does not look at operation="rfa" at all. This function
+    wrote the entry with an empty annotations list, so every RFA it produced was
+    invisible there — the entry existed in the activity log, and the surface
+    built to act on it never showed it.
+
+    That affected all three callers: Automate's change notifications
+    (scheduler.py), Enrichment's context requests (web/routes/context.py), and
+    Egeria linkage divergences (egeria_linkage.py). Each is a request for a human
+    action that no human was shown.
+
+    The annotation carries the same summary as the entry rather than a different
+    one: the drawer reads the annotation's, the activity log reads the entry's,
+    and two texts drifting apart for one event would be worse than the
+    duplication.
+    """
     entry_id = str(uuid.uuid4())
     registry.write_activity(ActivityEntry(
         id=entry_id,
@@ -99,6 +154,15 @@ def log_rfa(
         status=status,
         summary=summary,
         detail=detail,
+        annotations=[{
+            # The exact type string GET /api/activity/rfas substring-matches on,
+            # and the same one EgeriaPublisher uses for a published RFA.
+            "annotation_type": "RequestForActionAnnotation",
+            "analysis_name": analysis_name or "Request for action",
+            "count": 1,
+            "summary": summary,
+            "status": status,
+        }],
     ))
     return entry_id
 

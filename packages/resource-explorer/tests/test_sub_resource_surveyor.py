@@ -48,11 +48,19 @@ def _no_codeowners_no_commits():
 
 
 class TestNoInventory:
-    def test_empty_inventory_produces_a_single_low_confidence_annotation(self, registry, project):
+    def test_empty_inventory_is_labelled_unverified_not_hedged_at_50(
+            self, registry, project):
+        """Changed deliberately 2026-08-22 (step-outcome adoption).
+
+        confidence=50 was the only marker that this was a non-answer, and a
+        number is not a vocabulary — it reads as a hedged finding about the
+        repo rather than "this step could not run".
+        """
         results = SubResourceSurveyor(project, registry).run()
         assert len(results) == 1
-        assert "No file inventory" in results[0].summary
-        assert results[0].confidence == 50
+        assert "inventory is empty" in results[0].summary
+        assert results[0].confidence == 100
+        assert results[0].json_properties["outcome"] == "unverified"
 
 
 class TestWellKnownFileHeuristic:

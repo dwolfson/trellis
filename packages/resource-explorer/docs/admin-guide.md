@@ -1,6 +1,6 @@
 # Resource Explorer — Admin Guide
 
-**Last revised:** 2026-06-10
+**Last revised:** 2026-08-21
 
 This guide covers installation, configuration, Egeria integration, scheduled analyses, and troubleshooting.
 
@@ -17,6 +17,7 @@ This guide covers installation, configuration, Egeria integration, scheduled ana
 | Ollama | any | default LLM backend; can use OpenAI/Anthropic instead |
 | Egeria | 5.x | required for catalog/survey; optional for RAG-only use |
 | PostgreSQL (target databases) | 12+ | only needed for surveying *external* databases via the database surveyor — unrelated to RE's own storage backend above |
+| `ast-grep-cli` | ≥0.45.1 | **not** a system prerequisite — a `uv sync` dependency, same as any Python package. It's wheel-distributed with prebuilt binaries for macOS arm64/x86_64, manylinux aarch64/x86_64, and Windows, so `uv sync` provisions the binary and `uv.lock` pins its version; there's nothing to `brew install`. Backs Architecture Recovery's code-marker detection (see below). |
 
 ---
 
@@ -247,6 +248,23 @@ print(r.get_schedules('repo', 'my-repo'))
 print(r.get_due_schedules())
 ```
 
+### Architecture Recovery — two new steps, and a new resource cost
+
+Architecture Recovery (Analysis intent, `configdata/analysis_catalog.yaml`'s `architecture_recovery` entry) runs as two independent survey steps rather than one:
+
+| Step | Reads | What it does |
+|---|---|---|
+| `repo_arch_detect` | a zipball checkout | Package manifests, deployment artifacts (Dockerfile/compose), and `ast-grep` code markers — the deterministic half of the recovery. |
+| `repo_arch_coupling` | a zipball checkout **and** a git clone | Import and co-change coupling — proposes the components manifests and deployment files structurally can't see (shared libraries, orchestrators). Needs real `git log` history, not just a checkout. |
+
+Both are **`fast` tier**, measured at **5.3 seconds per repo** for the whole toolchain — that number is the reason the tier is `fast` rather than `minutes`, not an aspiration. Both write into the existing `project_analysis_findings`/`project_analysis_metrics` tables under `kind="architecture_recovery"` — no new table.
+
+**`repo_arch_coupling` is the first architecture-recovery step that clones.** Every other repo-analysis step in RE works off a zipball download (`_acquire_zipball_root`) — a snapshot of files, no `.git`. Co-change coupling needs real commit history, which a zipball doesn't have, so `repo_arch_coupling` is the first step to pull in a second resource type: `git_clone_root`. That introduces network and disk cost this feature's other step, and every zipball-only step before it, never had.
+
+It's cheaper than a normal clone, but not free. `git_clone_root` does a **treeless clone** — `git clone --filter=blob:none --no-checkout` — which fetches commit and tree metadata but defers file *contents* to on-demand fetches, and skips checking out a working tree entirely. `--no-checkout` matters specifically: without it, a treeless clone still checks out HEAD's working tree, which under `--filter=blob:none` means fetching every blob in HEAD from the remote during clone — silently paying for exactly what the treeless filter exists to avoid. See `clone_git_root()`'s docstring in `resource_explorer/github/client.py` for the full reasoning, including why nothing downstream of this provider should read file contents out of the clone root (that triggers a blob fetch per file and erodes the whole point of treeless).
+
+Practically, this means: sizing a deployment that will run Architecture Recovery at any scale should budget for one treeless clone per repo per `repo_arch_coupling` run, on top of the zipball download every other step already pays for — cheap per repo, but a real, new, per-run cost that wasn't part of RE's resource profile before this feature.
+
 ---
 
 ## Egeria integration
@@ -271,6 +289,10 @@ Results from the Egeria survey appear with a ☁ badge when the survey completes
 ### RFA lifecycle
 
 When a survey produces `RequestForAction` annotations, they appear in the **RFAs** panel. Assign and answer them there. Answers are currently stored locally in `resource_context`; Egeria write-back is planned.
+
+### Question catalog (Scouting "Questions" tab)
+
+The questions shown in Scouting's **Questions** checklist tab, and the corresponding `Question` elements published to Egeria, are both generated from `docs/dr-egeria/resource_questions.csv`. See [`docs/dr-egeria/resource_questions_guide.md`](dr-egeria/resource_questions_guide.md) for the full column reference, editing workflow, and regeneration commands.
 
 ---
 

@@ -1,0 +1,32 @@
+{
+  "$comment": [
+    "Shared vocabulary every other batch references by name: the glossaries, the funnel-stage",
+    "terms, the scope-category terms, and the twelve perspectives. Must run first (see",
+    "../_folder_order.json) — the questions batch links its terms into these glossaries, and",
+    "survey definitions scope themselves against them.",
+    "",
+    "Canary is keyed on qualified_name, which for Perspectives is author-controlled in",
+    "foundations.md itself (no generated org prefix or version, unlike glossary terms — see",
+    "../questions/_batch.json for the contrasting case).",
+    "",
+    "type is 'Perspective', a subtype of Actor (confirmed with Dan; both 'Perspective' and",
+    "'Actor' resolve it, 'ActorProfile' does not). Recorded because it is genuinely non-obvious:",
+    "the type names you would first reach for — GlossaryTerm, ValidValueDefinition, Collection —",
+    "all MISS, and a wrong type_name yields a false 'missing' rather than an error. That is the",
+    "dangerous failure mode here: a false missing triggers a heal, and a spurious heal of the",
+    "survey-definitions batch duplicates step links and takes those definitions out of service.",
+    "The bootstrap therefore treats type as optional and matches on qualified_name alone when it",
+    "is absent, since qualified_name is globally unique by Egeria convention.",
+    "",
+    "'Perspective::Admin' is the LAST element foundations.md creates, so its presence means the",
+    "document ran to completion rather than merely starting."
+  ],
+  "display_name": "Foundations — glossaries, funnel stages, perspectives",
+  "canary": {
+    "type": "Perspective",
+    "qualified_name": "Perspective::Admin"
+  },
+  "files": [
+    "foundations.md"
+  ]
+}

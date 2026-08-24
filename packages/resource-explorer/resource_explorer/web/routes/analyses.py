@@ -120,6 +120,22 @@ def list_perspectives_route() -> list[str]:
     return list_perspectives()
 
 
+@router.get("/question-catalog")
+def list_question_catalog(resource_type: str = "repo") -> list[dict]:
+    """Full, unscoped Question catalog (docs/dr-egeria/resource_questions.csv,
+    via question_catalog_reader.py) — every authored question with its
+    funnel stage, perspectives, and answering info, no project/has_data
+    computation. Backs the read-only Admin > Question Catalog browser.
+    Contrast with GET /api/projects/{slug}/scouting-questions, which is
+    project-scoped and adds a per-question has_data flag; this route is for
+    browsing the catalog itself, not answering it for a specific resource.
+    NOTE: declared before /{resource_type} deliberately — see
+    list_perspectives_route's note above."""
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    return get_questions(resource_type)
+
+
 @router.get("/{resource_type}")
 def list_analyses(
     resource_type: str,
