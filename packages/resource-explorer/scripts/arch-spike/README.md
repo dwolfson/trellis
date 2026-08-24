@@ -2796,3 +2796,61 @@ fixture is the prerequisite, not the follow-up.
 filters — support-only, whole-repo claims, refinements of a classified parent — are stated as claims
 about what a component *is*, and they held. **Cheap, deterministic, perspective-independent, and the
 only part of this pipeline that transferred.**
+
+**88. Perspective-gating the two rules was necessary and not sufficient: the adjudicator has to run
+*within* a perspective.**
+
+Finding 87's fix looked obvious — gate the files-grounding rule and `falsify_types` on perspective.
+Both were applied:
+
+- **files-grounding**: a component whose candidates are all `deployment` may legitimately own no
+  files. Groundedness there is the *slug*, which is what §5.2's rule actually asks for.
+- **cross-perspective merges rejected**: §4.2 says perspectives are *"map, never merge"*. A merge
+  spanning them is a category error, and mixed merges were silently defaulting to
+  `perspective="logical"`, which is why the deployment gate never engaged.
+
+**Survival improved substantially and the score did not move at all.**
+
+| | components | deployment components | agreement |
+|---|---|---|---|
+| distilled | 141 | **59** | **18/27** |
+| adjudicated (finding 87) | 8 | — | 0/27 |
+| + files gate | 14 | — | 0/27 |
+| + cross-perspective rejection | **30** | **15** | **0/27** |
+
+### The real defect, which the gates could only expose
+
+**Adjudication runs over the whole candidate set at once, regardless of perspective.** The distilled
+IR carries 59 deployment candidates; adjudication leaves 15. Forty-four were absorbed into merges
+with logical candidates — and `egeria-workspaces.md` is a *deployment* ground truth, so those 59 are
+exactly what the match needs.
+
+Gating the rules stopped them producing *wrong answers* about deployment components. It could not
+stop the merge step from *consuming* those components before the rules ever saw them.
+
+> **The fix is structural: partition candidates by perspective and adjudicate each separately.**
+> One prompt per perspective, never a merge across them — which is what §4.2 has said all along.
+
+### Why this is recorded rather than built
+
+Three reasons, and the third is the binding one:
+
+1. Each perspective is a separate LLM pass; on this hardware that is roughly an hour of wall time for
+   a target of this size.
+2. Per-perspective prompts would need per-perspective *guidance* — the type decision guide (finding
+   84) is written for logical components and its ordered list barely applies to a compose service.
+3. **There is no clean fixture to validate it against.** `egeria-workspaces` is spent (finding 87)
+   and was the only deployment-perspective ground truth. `trellis` is clean but logical. Building a
+   structural fix with no way to measure whether it worked is how the last five findings' worth of
+   discipline gets thrown away in one step.
+
+**A new pre-registered deployment-perspective fixture is the prerequisite.** Until then the honest
+position is: the defect is diagnosed and evidenced, the fix is known, and it is unbuildable *as a
+measured change*.
+
+### What stands
+
+The two gates are correct on their own terms and are kept — they remove rules that were producing
+confidently wrong answers outside their scope, which is worth doing whether or not the score moves.
+And the headline from finding 87 is unchanged: **deterministic distillation preserved 18/27 on a
+perspective it was never designed for; adjudication has yet to beat it there.**

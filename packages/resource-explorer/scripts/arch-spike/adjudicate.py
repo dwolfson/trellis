@@ -327,6 +327,18 @@ def falsify_types(kept: list[dict], type_by_slug: dict[str, str],
     for item in kept:
         if item.get("type") not in _EXECUTION_TYPES:
             continue
+        # NOT APPLICABLE to the deployment perspective. An entry point is a
+        # first-party *code* signal (`package main` in a component root), and a
+        # container running a third-party image is a long-running daemon that
+        # has no first-party entry point BY DEFINITION. Finding 85 called this
+        # rule "a falsification, not a preference" — true in the logical
+        # perspective over first-party code, and false outside it, where the
+        # premise fails and the rule confidently produces the opposite of the
+        # truth. Finding 87 measured exactly that: seven real daemons
+        # (Egeria Quickstart, DuckDB Server, Unity Catalog Server, ...) demoted
+        # to Software Library.
+        if item.get("perspective") == "deployment":
+            continue
         slugs = item.get("candidate_slugs") or []
         if any(type_by_slug.get(s) == "Console Command" for s in slugs):
             continue                     # an entry point IS present — claim stands
@@ -369,6 +381,53 @@ def falsify_types(kept: list[dict], type_by_slug: dict[str, str],
 # losing the candidates would be a regression.
 
 _ENTRY_POINT_TYPES = frozenset({"Console Command"})
+
+
+def split_multi_perspective(kept: list[dict], perspective_by_slug: dict[str, str],
+                            type_by_slug: dict[str, str], name_by_slug: dict[str, str],
+                            files_by_slug: dict[str, list[str]],
+                            ) -> tuple[list[dict], list[dict]]:
+    """Reject a merge spanning perspectives — §4.2's "map, never merge".
+
+    Design §4.1/§4.2: a Dockerfile-directory component (physical) and the
+    compose service it builds (deployment) are not the same thing counted
+    twice; they are two perspectives on one system, related one-to-many by
+    `ImplementedBy`. Merging across them is a category error, not a granularity
+    choice.
+
+    Found by finding 87's post-mortem rather than reasoned from the design: on
+    `egeria-workspaces` the model merged deployment candidates with logical ones,
+    and because a mixed merge fell back to `perspective="logical"`, the
+    deployment gate on `falsify_types` never engaged and seven real daemons were
+    demoted anyway. Fixing the gate alone would have papered over the merge that
+    caused it.
+
+    Rejection passes the constituents through unmerged, as
+    `split_multi_entrypoint` does — losing a grouping is a cost, losing the
+    candidates would be a regression.
+    """
+    out: list[dict] = []
+    notes: list[dict] = []
+    for item in kept:
+        slugs = item.get("candidate_slugs") or []
+        seen = {perspective_by_slug.get(s) for s in slugs if perspective_by_slug.get(s)}
+        if len(seen) < 2:
+            out.append(item)
+            continue
+        notes.append({"name": item.get("name"),
+                      "reason": f"merge spans perspectives {sorted(seen)} — §4.2 maps between "
+                                f"perspectives, never merges across them"})
+        for sl in slugs:
+            out.append({
+                "slug": sl, "name": name_by_slug.get(sl, sl),
+                "type": type_by_slug.get(sl), "files": files_by_slug.get(sl, []),
+                "perspective": perspective_by_slug.get(sl, "physical"),
+                "confidence": 55, "confidence_level": "Derived",
+                "proposed_by": ["llm-adjudicator", "perspective-split"],
+                "rationale": "passed through unmerged: parent merge spanned perspectives",
+                "candidate_slugs": [sl],
+            })
+    return out, notes
 
 
 def split_multi_entrypoint(kept: list[dict], type_by_slug: dict[str, str],
@@ -447,7 +506,21 @@ def validate_and_ground(raw_outputs: list[dict], valid_slugs: set[str],
             for g in files_by_slug.get(s, []):
                 if g not in files:
                     files.append(g)
-        if not files:
+        # A DEPLOYMENT component may legitimately own no first-party files.
+        # `egeria-workspaces.md` says so in its own text: "deployment components
+        # frequently own no first-party files at all — kafka, postgres and kroki
+        # are third-party images." Finding 82 called this rule
+        # "conservative-but-arguably-too-strict" when it dropped one component
+        # on Milvus; finding 87 measured it dropping fifteen on a
+        # deployment-perspective target, taking 18/27 to 0/27.
+        #
+        # Groundedness there is the SLUG, not the file set: the candidate was
+        # really proposed by a detector, which is what §5.2's rule asks. Only
+        # perspectives whose components are defined by code keep the file
+        # requirement.
+        deployment_only = bool(slugs) and all(
+            perspective_by_slug.get(s) == "deployment" for s in slugs)
+        if not files and not deployment_only:
             dropped.append({**item, "reason": "referenced candidates carry no files — nothing to ground on"})
             continue
 
@@ -518,7 +591,10 @@ def adjudicate(target: str, root: str | None, model_override: str | None = None,
 
     type_by_slug = {c["slug"]: c.get("type") for c in components}
     name_by_slug = {c["slug"]: c.get("name", c["slug"]) for c in components}
+    kept, persp_notes = split_multi_perspective(kept, perspective_by_slug, type_by_slug,
+                                                name_by_slug, files_by_slug)
     kept, split_notes = split_multi_entrypoint(kept, type_by_slug, name_by_slug, files_by_slug)
+    split_notes = persp_notes + split_notes
     kept, type_notes = falsify_types(kept, type_by_slug, files_by_slug)
 
     referenced = {s for item in kept for s in item["candidate_slugs"]}
