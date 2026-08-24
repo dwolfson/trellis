@@ -35,9 +35,25 @@ These are sequential. Each blocks the next.
    no fixed point — the branch moves while you describe it. **This is the actual precondition,
    not a nicety.**
 
-2. **Reconcile `.../trellis`.** It is `ahead 1, behind 10` — `6c0cb2a` (54 EA Curation
-   templates) is committed there and nowhere else. Owned by `egeria-advisor-7a`, who has been
-   told. Nobody else should land it for them.
+2. **~~Reconcile `.../trellis`~~ — done, and it exposed the real problem.** `6c0cb2a` (54 EA
+   Curation templates) is now on origin: Dan instructed a merge that left the commit alone,
+   and it rode along. **Its author still has not chosen to publish it, and it is published.**
+   That is the second commit from the same writer to reach the remote by someone else's push
+   (`c370fa8` was the first).
+
+   **Nobody knows who that writer is, and one confident guess was already wrong.** It was
+   attributed to `egeria-advisor-7a` — including in the first version of this document —
+   because the commit touches `packages/egeria-advisor/`. They checked and it is not theirs.
+   Every session commits under Dan's identity and signs with his key, so **nothing in commit
+   metadata distinguishes sessions**, and topic-to-session mapping is a guess wearing the
+   clothes of identification. The reflog narrows it only to "an EA-template writer committing
+   directly into the shared checkout at 13:50:32 and 13:55:31" — concurrent and active, not a
+   leftover.
+
+   The sharpened version of §2.1: the sessions in worktrees caused each other no trouble all
+   afternoon. **The one writer working directly in the shared checkout is the one whose
+   commits keep being published by other people, and the one nobody can name.** That is the
+   setup to change.
 
 3. **Prune the backlog.** 33 entries read as open; several were closed by today's work and
    never marked (see §4). A reviewer cannot tell a live item from a finished one, and neither
@@ -63,8 +79,8 @@ These are sequential. Each blocks the next.
   threads: the LLM adjudicator at 0/27 on the deployment perspective; `misgrouped` has no
   emitter; `investigate` unexercised against real data.
 - **Question catalog / check registry** (`configdata/`, `question_catalog*`). A session exists
-  and has committed; not in any coordination conversation so far. **Someone should find out
-  who owns this.**
+  and has committed; it is in a worktree and has caused no trouble. Not in any coordination
+  conversation so far, so its plans are unknown rather than conflicting.
 - **Dependency parsing** — `DependencyParser` covers Python/Node/Go/Maven; Gradle and Cargo
   are missing, so `egeria_git` reports zero dependencies while shipping a `build.gradle`. The
   arch session has an independently-tested Gradle `include` parser (~30 lines) offered for
@@ -101,7 +117,8 @@ Checked against today's work. These read as open and are not:
   org-listing and 5x-resolution optimisations: ~10 min/repo → ~25s median).
 
 The pattern: entries are appended when found and rarely struck when closed, so the file grows
-monotonically and its length stops meaning anything. Worth a pass that marks closures in place
+monotonically and its length stops meaning anything. This document is subject to the same
+failure — its own §2.2 was wrong within an hour of being written. Worth a pass that marks closures in place
 — the file already does this well where it has been done (`~~struck~~` with the resolving
 commit named).
 
