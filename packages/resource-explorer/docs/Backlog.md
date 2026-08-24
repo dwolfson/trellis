@@ -186,7 +186,7 @@ Corpus shape, first time this has run everywhere:
 
 ```
 roles  samples 16 · application 13 · documentation 11 · library 6 · tutorial 5 · middleware 2 · tool 1 · none 6
-gates  run 47 · skip 7 · none 6
+gates  run 47 · skip 7 · none 6      <- superseded, see the re-measurement below: 46 · 8 · 6
 timing min 7.2s · median 25.5s · max 58.6s
 ```
 
@@ -214,12 +214,18 @@ Two things worth someone's attention:
   mechanism guessed wrongly, small-n cases read by name giving the answer. "25 overrides" is a
   number; "`openlineage-site` is a Docusaurus site" is what tells you what to change.
 
-- **The 47/7 above is a snapshot, and one repo of it is already known to move.** With
-  `doc-site-generator` in place `openlineage_site` goes run → skip, making it 46/8 on the next
-  classification run. Left as measured rather than edited to 46/8, because 47/7 is what the
-  corpus actually showed when it was run and 46/8 is a prediction — writing the prediction in
-  as a measurement is the substitution this whole file exists to avoid. Re-measure rather than
-  quote either number on a card.
+- ~~**The 47/7 above is a snapshot, and one repo of it is already known to move.**~~
+  **RE-MEASURED 2026-08-24** — `repo_classification` re-run across all 60 repos after the
+  `doc-site-generator` fix: **25.5 min, 0 failures, 46 run · 8 skip · 6 none.** Exactly one
+  repo moved (`openlineage_site`, run → skip, generator-owned package manifest) and the other
+  53 are unchanged, which is what a narrow fix should produce.
+
+  **47/7 was correct when taken; 46/8 is correct now.** The prediction was deliberately NOT
+  written in as a measurement while it was still a prediction — that decision is what this
+  re-run discharges, and the practice is the transferable part: a prediction in the slot where
+  a measurement belongs is the substitution this file exists to avoid, and the cost of holding
+  the line was one 25-minute run. Full breakdown and the named skips in
+  `docs/arch-recovery-handoff-2026-08-24.md`.
 - **The 6 repos with no role have no file inventory** — never ingested, so nothing to classify.
   Correct behaviour, and the card now says which kind of nothing it is rather than showing a
   blank.
