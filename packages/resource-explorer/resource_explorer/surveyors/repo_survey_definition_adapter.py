@@ -1665,8 +1665,14 @@ def _health_results(registry, slug: str) -> dict:
                                     "release_cadence", "freshness")
               if m.get(k) is not None}
     if not scores:
-        return {"metrics": {}, "detail": {}, "surveyed_at": ""}
-    return {"metrics": scores, "detail": detail, "surveyed_at": m.get("surveyed_at", "")}
+        return {"detail": {}, "surveyed_at": ""}
+    # Scores go at the TOP LEVEL, not under a "metrics" key. The "metrics"
+    # render mode (_renderMetricsResults in index.html) iterates the payload's
+    # own entries, filtering out only `detail`/`surveyed_at`/`_status` — so a
+    # nested envelope renders as a single row literally named "metrics" whose
+    # value is an object. The other two metrics-mode readers
+    # (_rag_ingestion_results, _website_ingestion_results) already return flat.
+    return {**scores, "detail": detail, "surveyed_at": m.get("surveyed_at", "")}
 
 
 def _health_trend(registry, slug: str) -> list[dict]:
@@ -1680,7 +1686,7 @@ def _health_trend(registry, slug: str) -> list[dict]:
 
 def _health_headline(registry, slug: str) -> dict | None:
     result = _health_results(registry, slug)
-    overall = (result.get("metrics") or {}).get("overall")
+    overall = result.get("overall")
     if overall is None:
         return None
     # Bands match how the scores are built (0-100, four equally weighted
@@ -1853,7 +1859,7 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     ),
     "repo_classification": AnalysisKind(
         "repo_classification", ["repo_classification"],
-        results=AnalysisKindResults(_repo_classification_results, None, "findings_list",
+        results=AnalysisKindResults(_repo_classification_results, None, "custom",
                                     headline_reader=_repo_classification_headline),
     ),
     "license_classification": AnalysisKind(
