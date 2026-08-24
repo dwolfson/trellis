@@ -1328,6 +1328,57 @@ on current evidence 4b (*evaluate robustness/security/viability*) and 3 (*is thi
 well collapse, and 1 (*general understanding*) may turn out to be the absence of a motivation rather
 than one of them.
 
+### 5.5d-i Disposition — the vocabulary check came back negative, for the first time
+
+§5.5d named **disposition** as the missing top layer: the system produces *evidence*, and a decision
+maker wants an *answer*. It also flagged `ResourceUse` as a strong candidate, on the strength of
+value names like `CERTIFY_RESOURCE`, `WATCH_DOG`, `CHOOSE_PATH` and `UNCATALOG_RESOURCE`.
+
+**Checked, and it is the wrong axis.** Reading the descriptions rather than the names:
+
+| value | Egeria's own description |
+|---|---|
+| `CATALOG_RESOURCE` | *"Extract metadata from the real-world resource and add it to the open metadata repositories"* |
+| `WATCH_DOG` | *"Monitor for changes to a **metadata element** and its related elements"* |
+| `INFORM_STEWARD` | *"Send notification to a steward"* |
+| `UNCATALOG_RESOURCE` | *"Remove asset and associated metadata … from the open metadata repositories"* |
+
+These are **governance operations on metadata**, not judgements about a resource. `UNCATALOG_RESOURCE`
+means "stop cataloguing this", not "don't adopt this". Same mistake as reading it as a role vocabulary
+in §5.5b — the names suggest a decision and the semantics are an operation.
+
+**This is the first negative result from that check**, after `SolutionComponentType` (§3.1),
+`SolutionPortDirection` (§3.2), `SolutionLinkingWire` (§3.3) and the Area 0 `SoftwareCapability`
+subtypes all turned out to exist and be reusable. It was still worth running: it rules out a wrong
+reuse that the value names actively invite, and it located the adjacent concept.
+
+#### What Egeria models is the ACTION, not the RECOMMENDATION
+
+`ToDo`, `Certification` / `CertificationType`, `GovernanceAction`, `ActionTarget` — all real, all
+downstream. A disposition is upstream of every one of them: *"this looks like it should be upgraded"*
+precedes the ToDo that upgrades it.
+
+So disposition is a **small new vocabulary**, and its value is that its consequences map onto
+mechanisms that already exist:
+
+| disposition | what it leads to, all of which exist |
+|---|---|
+| adopt / approve | `Certification` against a `CertificationType` |
+| monitor | an Automate subscription (`notification_subscriptions`), delivered as an RFA |
+| act (upgrade, replace, investigate) | an RFA today, an Egeria `ToDo` when that integration lands |
+| nothing to do | no action — and this must read as a *complete answer*, not an empty one |
+
+#### Three constraints, carried from the rest of §5.5
+
+1. **A recommendation, not a verdict.** It carries the evidence that produced it, and it must never
+   imply the system decided. Same reason §5.5a(c) forbids scoring: a confident-looking output
+   punishes deliberate choices the system cannot see.
+2. **No score, and no ranking of resources by disposition.** "Three repos need attention" is a
+   count of findings; "these repos scored worst" is not something this can support.
+3. **"Nothing to do" is an answer.** For a repo the gate skipped, the disposition is
+   *nothing-to-do*, and it should render like `SKIPPED_BY_DESIGN` does — neutral and complete —
+   rather than as an absence. Reuse that reader-state vocabulary rather than inventing a parallel one.
+
 ### 5.5e Black box / white box — a lens derived from motivation, not a fifth axis
 
 **Maintainer, 2026-08-23.** Some questions are answerable from the outside — *how do I operate this,
