@@ -66,8 +66,18 @@ def _wire_dict(source: str, target: str, protocol: str, integration_style: str,
 
 
 def _owner_of(rel: str, by_path: list[tuple[str, str]]) -> str:
-    """Component owning a file, longest-prefix first."""
+    """Component owning a file, longest-prefix first.
+
+    Whole-repo candidates are skipped. The coupling proposer emits one on every
+    target (root `.`, globbing the entire tree), and because it matches every
+    path it would capture every port — measured on Prometheus, where the root
+    `Dockerfile`'s `EXPOSE 9090` attached to `.` rather than to anything a
+    reader could act on. Same container-not-component rule as `distill.py`'s
+    whole-repo guard and `go_subsystems`' module-root skip.
+    """
     for prefix, name in by_path:
+        if not prefix or prefix == ".":
+            continue
         if rel == prefix or rel.startswith(prefix + "/"):
             return name
     return ""
@@ -88,6 +98,20 @@ def _line_of(text: str, needle: str) -> int:
         if needle in line:
             return n
     return 0
+
+
+def _root_artifact_owner(rel: str, components: list[Component]) -> str:
+    """Who owns a deployment artifact that sits at the repo root?
+
+    A root `Dockerfile` in a single-binary repo describes *that binary*, not the
+    repository. So when exactly one component is an entry point, the artifact is
+    attributed to it; with none or several the claim is ambiguous and the
+    directory is used instead, which is honest rather than a guess.
+    """
+    entry_points = [c.name for c in components if c.type == "Console Command"]
+    if len(entry_points) == 1:
+        return entry_points[0]
+    return os.path.dirname(rel) or "."
 
 
 def _dockerfile_ports(root: str, rel: str, component: str) -> list[dict]:
@@ -188,11 +212,11 @@ def propose(root: str, first_party: list[str], components: list[Component],
         base = os.path.basename(rel)
 
         if base.lower().startswith("dockerfile"):
-            owner = _owner_of(rel, by_path) or os.path.dirname(rel) or "."
+            owner = _owner_of(rel, by_path) or _root_artifact_owner(rel, components)
             ports.extend(_dockerfile_ports(root, rel, owner))
 
         elif base.lower() in _OPENAPI_NAMES:
-            owner = _owner_of(rel, by_path) or os.path.dirname(rel) or "."
+            owner = _owner_of(rel, by_path) or _root_artifact_owner(rel, components)
             # An OpenAPI document is a direct statement that this component
             # SERVES a request-response HTTP interface — the one place a strong
             # `Input-Output` is warranted without inference.
@@ -206,6 +230,18 @@ def propose(root: str, first_party: list[str], components: list[Component],
             p, w = _compose_interfaces(root, rel, names)
             ports.extend(p)
             wires.extend(w)
+
+    # De-duplicate: two Dockerfiles in one component declaring the same port is
+    # one fact about the component, not two.
+    seen: set[tuple] = set()
+    deduped = []
+    for p in ports:
+        key = (p["component"], p["name"], p["direction"], p["protocol"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    ports = deduped
 
     for p in ports:
         evidence.append(Evidence(

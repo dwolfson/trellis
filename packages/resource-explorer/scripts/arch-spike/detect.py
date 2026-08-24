@@ -114,8 +114,24 @@ def run(root: str, target: str, extra_excludes: tuple[str, ...] = ()) -> IR:
 
     components, merge_notes = _merge_agreeing(components)
     notes.extend(merge_notes)
+
+    # Ports and wires (§5.5f). Deliberately AFTER merging, so a port attaches to
+    # the component that survived rather than to one that was merged away.
+    # Deployment artifacts only — no source is read, which is what keeps this at
+    # Discovery tier by rule 17's test.
+    try:
+        from resource_explorer.surveyors.arch_recovery import interfaces
+        ports, wires, iev, inotes = interfaces.propose(
+            census.root, census.first_party, components)
+        evidence.extend(iev)
+        notes.extend(inotes)
+    except Exception as exc:      # graceful absence, same posture as the coupling proposer
+        ports, wires = [], []
+        notes.append(f"interfaces: skipped — {type(exc).__name__}: {exc}")
+
     ir = IR(target=target, checkout=census.root, census=census.as_dict(),
-            components=components, evidence=evidence, notes=notes)
+            components=components, evidence=evidence, notes=notes,
+            ports=ports, wires=wires)
     if census.first_party_ratio < 0.5:
         # plan §3a — make it loud rather than letting a shrunken corpus pass silently
         ir.notes.insert(0, f"WARNING: only {100*census.first_party_ratio:.1f}% of tracked "
