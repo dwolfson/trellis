@@ -9,6 +9,7 @@ from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityH
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
+from resource_explorer.surveyors.sub_surveyors.repo_classification import RepoClassificationSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
 from resource_explorer.surveyors.sub_surveyors.maturity import MaturitySurveyor
 from resource_explorer.surveyors.sub_surveyors.repo_conventions import RepoConventionsSurveyor
@@ -16,7 +17,15 @@ from resource_explorer.surveyors.sub_surveyors.sub_resource_survey import (
     SubResourceSurveyor,
     ancestor_folder_paths,
 )
+from resource_explorer.surveyors.sub_surveyors.git_statistics import GitStatisticsSurveyor
+from resource_explorer.surveyors.sub_surveyors.website_ingestion import WebsiteIngestionSurveyor
+from resource_explorer.surveyors.sub_surveyors.file_inventory import FileInventorySurveyor
+from resource_explorer.surveyors.sub_surveyors.homepage import HomepageSurveyor
 from resource_explorer.surveyors.sub_surveyors.symbol_extraction import SymbolExtractionSurveyor
+from resource_explorer.surveyors.sub_surveyors.manifest_parse import ManifestParseSurveyor
+from resource_explorer.surveyors.sub_surveyors.rag_ingestion import RagIngestionSurveyor
+from resource_explorer.surveyors.sub_surveyors.arch_recovery_detect import ArchDetectSurveyor
+from resource_explorer.surveyors.sub_surveyors.arch_recovery_coupling import ArchCouplingSurveyor
 
 __all__ = [
     "ancestor_folder_paths",
@@ -31,9 +40,18 @@ __all__ = [
     "DataProfilerSurveyor",
     "CiQualitySurveyor",
     "LicenseClassifierSurveyor",
+    "RepoClassificationSurveyor",
     "SecurityFeaturesSurveyor",
     "MaturitySurveyor",
     "RepoConventionsSurveyor",
     "SubResourceSurveyor",
+    "FileInventorySurveyor",
+    "GitStatisticsSurveyor",
+    "WebsiteIngestionSurveyor",
+    "HomepageSurveyor",
     "SymbolExtractionSurveyor",
+    "ManifestParseSurveyor",
+    "RagIngestionSurveyor",
+    "ArchDetectSurveyor",
+    "ArchCouplingSurveyor",
 ]

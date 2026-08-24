@@ -37,9 +37,14 @@ def _symbol(**overrides):
 
 
 class TestApiStructureSurveyor:
-    def test_no_symbols_returns_empty(self, registry, project):
+    def test_no_symbols_says_so_instead_of_returning_empty(self, registry, project):
+        """Changed deliberately 2026-08-22 (step-outcome adoption). An empty
+        annotation list is indistinguishable from the step never having run,
+        and on the live registry 13 of 20 repos hit this path — with populated
+        file inventories, so "no code" was the wrong reading."""
         results = ApiStructureSurveyor(project, registry).run()
-        assert results == []
+        assert len(results) == 1
+        assert results[0].json_properties["outcome"] == "unverified"
 
     def test_complexity_and_inheritance_surfaced(self, registry, project):
         symbols = [

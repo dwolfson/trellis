@@ -66,3 +66,38 @@ technology_types:
       # (mirroring the database one above), but its exact qualifiedName was
       # never confirmed live — add it here once verified via
       # find_governance_definitions, don't guess the string.
+
+  - name: "File System Directory"
+    entity_type: filesystem
+    processes:
+      - qualified_name: "FileSurvey::survey-folder"
+        display_name: "Survey Folder"
+        kind: survey_existing
+        description: >-
+          Egeria's native survey of an already-cataloged FileFolder — file/
+          folder counts, sizes, and classification, without recursing into
+          subfolders. Confirmed live 2026-08-24 via find_governance_definitions
+          (search_string="survey-folder", metadata_element_type=
+          "GovernanceActionType") — one required action target, named
+          "fileToSurvey" (from the element's own supportedActionTarget spec).
+          Egeria's FilesContentPack also registers survey-folder-and-files/
+          survey-all-folders/survey-all-folders-and-files as sibling
+          GovernanceActionTypes — not used here; this is the closest match to
+          "survey exactly the cataloged asset," same granularity as the
+          PostgreSQL entries above, not a scope decision to revisit lightly
+          (recursion behavior differs materially between these siblings).
+      - qualified_name: "FileDirectory:CreateAndSurveyGovernanceActionProcess"
+        display_name: "Catalog and Survey"
+        kind: catalog_and_survey
+        description: >-
+          Creates the FileDirectory/FileFolder entity from a catalog template
+          and runs a survey against it — all as one native Egeria process.
+          Confirmed live 2026-08-24 via find_governance_definitions
+          (search_string="FileDirectory", metadata_element_type=
+          "GovernanceActionProcess"). Not wired for one-click execution from
+          RE, same reason as PostgreSQL's — needs template placeholder
+          parameters, not an existing GUID.
+      - qualified_name: "FileDirectory:DeleteAssetWithTemplateGovernanceActionProcess"
+        display_name: "Delete Directory Asset"
+        kind: delete
+        description: "Deletes the cataloged FileFolder entity. Never expose as runnable."

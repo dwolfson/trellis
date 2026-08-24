@@ -10,9 +10,24 @@ from trellis_microflow import resolve_resources
 
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.surveyors import step_cost_observer
 from resource_explorer.surveyors.survey_report import SurveyResult
 
 log = logging.getLogger(__name__)
+
+# Step-cost-tiers plan (docs/step-cost-tiers-plan.md, D2/D5) — ordinal
+# position, not numeric value, is what run()'s max_fetch_cost/
+# max_compute_cost filter compares against. Keep in sync with the values
+# StepInfo.fetch_cost/compute_cost actually use.
+# Imported, not redeclared — see repo_survey_definition_adapter's own comment
+# on why one copy of the ordinal scale matters. Module-level import would be
+# circular (the adapter imports this module's SurveyOrchestrator), so these are
+# bound lazily at first use.
+def _cost_orders() -> tuple[list[str], list[str]]:
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        COMPUTE_COST_ORDER, FETCH_COST_ORDER,
+    )
+    return FETCH_COST_ORDER, COMPUTE_COST_ORDER
 
 
 class SurveyOrchestrator:
@@ -41,6 +56,7 @@ class SurveyOrchestrator:
     def run(
         self, project_slug: str, steps: list[str] | None = None,
         scope_locator: str = "", fast: bool = False,
+        max_fetch_cost: str | None = None, max_compute_cost: str | None = None,
     ) -> SurveyResult:
         """Survey a single project and return the assembled SurveyResult.
 
@@ -62,6 +78,17 @@ class SurveyOrchestrator:
             only to steps whose StepInfo.accepts_fast is True (repo_health
             today, see HealthSurveyor.__init__). False (default) is every
             existing caller's exact prior behavior, unchanged.
+        max_fetch_cost, max_compute_cost : step-cost-tiers plan
+            (docs/step-cost-tiers-plan.md, D5) — optional ceilings on
+            StepInfo.fetch_cost/compute_cost ("none"/"api"/"api_heavy"/
+            "download" and "low"/"medium"/"high" respectively, compared by
+            ordinal position). A step whose cost exceeds either ceiling is
+            excluded from this run, same as if it had been left out of
+            `steps`. Both None (default) applies no filter — every
+            existing caller's exact prior behavior, unchanged. This is
+            deliberately the only new surface this plan adds — no new
+            survey types, no scheduler changes; see the plan's "Out of
+            scope".
         """
         project = self._registry.get(project_slug)
         if project is None:
@@ -101,6 +128,24 @@ class SurveyOrchestrator:
         step_keys_to_run = (
             set(STEP_REGISTRY.keys()) if steps is None else set(steps) & STEP_REGISTRY.keys()
         )
+
+        # D5 cost-tier filter — applied after the steps=[...] selection
+        # above, same set-narrowing shape. Ordinal comparison via
+        # _FETCH_COST_ORDER/_COMPUTE_COST_ORDER's index, not the string
+        # values themselves.
+        _FETCH_COST_ORDER, _COMPUTE_COST_ORDER = _cost_orders()
+        if max_fetch_cost is not None:
+            ceiling = _FETCH_COST_ORDER.index(max_fetch_cost)
+            step_keys_to_run = {
+                k for k in step_keys_to_run
+                if _FETCH_COST_ORDER.index(STEP_REGISTRY[k].fetch_cost) <= ceiling
+            }
+        if max_compute_cost is not None:
+            ceiling = _COMPUTE_COST_ORDER.index(max_compute_cost)
+            step_keys_to_run = {
+                k for k in step_keys_to_run
+                if _COMPUTE_COST_ORDER.index(STEP_REGISTRY[k].compute_cost) <= ceiling
+            }
 
         # D6 (docs/unified-survey-execution-model-plan.md): resolve every
         # shared resource any selected step needs, once, before
@@ -155,21 +200,57 @@ class SurveyOrchestrator:
                 all_surveyors[step_key] = info.surveyor_cls(project, self._registry, **kwargs)
 
             if steps is None:
-                surveyors = list(all_surveyors.values())
+                selected = list(all_surveyors.items())
             else:
-                surveyors = [all_surveyors[key] for key in steps if key in all_surveyors]
+                selected = [(key, all_surveyors[key]) for key in steps if key in all_surveyors]
 
-            for surveyor in surveyors:
+            for step_key, surveyor in selected:
                 log.info("Running %s for %s …", surveyor.step_name, project.slug)
-                try:
-                    annotations = surveyor.run()
-                    for ann in annotations:
-                        result.add(ann)
-                    log.info("  → %d annotation(s)", len(annotations))
-                except Exception as exc:
-                    msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
-                    log.exception(msg)
-                    result.add_error(msg)
+                # Measure what the step actually costs, against what its
+                # StepInfo declares. Three mis-declarations surfaced in one week
+                # — a zero-fetch step calling the GitHub API, a `medium` step
+                # measuring `low`, and a timing taken for the wrong function —
+                # and none was catchable by a test, because each was a
+                # declaration disagreeing with behaviour rather than code
+                # disagreeing with itself. See step_cost_observer: it reports
+                # and never corrects, deliberately.
+                info = STEP_REGISTRY.get(step_key)
+                with step_cost_observer.observe(
+                    step_key,
+                    getattr(info, "fetch_cost", ""),
+                    getattr(info, "compute_cost", ""),
+                ) as _observed:
+                    try:
+                        annotations = surveyor.run()
+                        for ann in annotations:
+                            result.add(ann)
+                        log.info("  → %d annotation(s)", len(annotations))
+                    except Exception as exc:
+                        msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
+                        log.exception(msg)
+                        result.add_error(msg)
+                        # Also keyed by step, so a caller running steps on behalf
+                        # of several analyses at once can tell which of them
+                        # failed.
+                        result.step_errors[step_key] = msg
+                # Recorded outside the try so a step that RAISED is still
+                # measured: a step that fails after 90 seconds of network calls
+                # is exactly the case worth having a number for.
+                if _observed:
+                    # Attach what the step produced before judging its speed —
+                    # a duration with no idea whether the step was exercised is
+                    # the absence-looks-like-zero shape inside the instrument.
+                    _observed[0].annotations, _observed[0].outcomes = (
+                        step_cost_observer.describe_work(locals().get("annotations")))
+                    _observed[0].disagreement = step_cost_observer._disagreement(_observed[0])
+                    recorded = step_cost_observer.record(
+                        self._registry, project.slug, _observed[0], surveyed_at)
+                    if recorded == step_cost_observer.NOT_RECORDED:
+                        # Branchable, not just logged: an unwritten observation
+                        # is indistinguishable from a step that was never slow.
+                        result.add_error(
+                            f"step cost for {step_key} could not be recorded — "
+                            "its cost observation is missing, not zero")
 
         log.info(
             "Survey complete for %s: %d annotation(s), %d error(s)",

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from resource_explorer.registry import Project, ProjectRegistry
+from resource_explorer.step_outcome import PARTIAL, StepOutcome, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.surveyors.file_classifier.file_classifier import FileClassifier
 from resource_explorer.surveyors.file_classifier.type_cache import get_cache
@@ -151,11 +152,58 @@ class FileClassifierSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
         try:
-            file_paths = self._collect_file_paths()
+            file_paths, complete = self._collect_file_paths()
+            available = len(file_paths)
             if self._scope_locator:
                 file_paths = [p for p in file_paths if path_matches_scope(p, self._scope_locator)]
+
+            # The fallback below is the reason this step needs an outcome at
+            # all. When the inventory is empty it classifies whatever the
+            # partial sources happen to hold — source files, manifests, indexed
+            # documents — and then reports "breakdown across N indexed files"
+            # in exactly the same words it uses for a complete pass. A repo
+            # whose Python files were indexed but whose 900 CSVs were never in
+            # project_code_symbols comes back looking like a pure-Python repo.
+            # That is a `partial`, and saying so is the whole fix.
+            if not complete and file_paths:
+                outcome = StepOutcome(
+                    PARTIAL, cause="inventory_empty_partial_sources",
+                    known_positive=True,
+                    detail={"rows_available": available, "matched": len(file_paths),
+                            "sources": "project_code_symbols + project_dependencies + pgvector"},
+                )
+            else:
+                outcome = from_upstream_table(
+                    available, len(file_paths),
+                    empty_table_cause="no_file_paths",
+                    no_match_cause="no_files_in_scope",
+                    scope_locator=self._scope_locator,
+                )
             if not file_paths:
-                self._warn(results, "No file paths found in registry for this project.")
+                # Deliberately not _warn(): "Survey error in FileClassification"
+                # is what this used to say, and an empty inventory is not an
+                # error in this step — it is a missing prerequisite. Calling it
+                # an error sends the reader to debug the classifier.
+                results.append(
+                    ClassificationAnnotation(
+                        summary=(
+                            f"No files matched the scope '{self._scope_locator}'"
+                            if self._scope_locator and available
+                            else "Files not classified — no file paths available"
+                        ),
+                        analysis_step=self.STEP,
+                        candidate_classifications=[],
+                        confidence=100,
+                        explanation=(
+                            "Neither project_file_inventory nor the partial fallback "
+                            "sources hold any path for this repo. Run repo_file_inventory "
+                            "(or a Profile refresh) first."
+                            if not available else
+                            "The repo has indexed files; none fall under this scope locator."
+                        ),
+                        json_properties=outcome.as_row(),
+                    )
+                )
                 return results
 
             classification = classify_file_paths(
@@ -201,12 +249,17 @@ class FileClassifierSurveyor(BaseSurveyor):
             # One ResourceMeasureAnnotation with full extension breakdown
             results.append(
                 ResourceMeasureAnnotation(
-                    summary=f"File extension breakdown across {len(file_paths)} indexed files",
+                    summary=(
+                        f"File extension breakdown across {len(file_paths)} indexed files"
+                        + ("" if complete else " (partial — file inventory was empty, "
+                                               "classified from indexed sources only)")
+                    ),
                     analysis_step=self.STEP,
                     resource_properties={"by_extension": dict(ext_counter.most_common())},
                     json_properties={
                         "total_files": len(file_paths),
                         "unrecognized_extensions": dict(other_ext_counter.most_common()),
+                        **outcome.as_row(),
                     },
                 )
             )
@@ -231,8 +284,12 @@ class FileClassifierSurveyor(BaseSurveyor):
 
         return results
 
-    def _collect_file_paths(self) -> list[str]:
-        """Return all file paths for this project.
+    def _collect_file_paths(self) -> tuple[list[str], bool]:
+        """Return all file paths for this project, and whether they are complete.
+
+        The bool is the point: a caller that cannot tell the full inventory
+        from the three partial fallbacks will describe both as "indexed
+        files" and be wrong about one of them.
 
         Primary source: project_file_inventory (populated during add/refresh — covers
         every file in the repo).  Falls back to three partial sources for projects
@@ -247,7 +304,7 @@ class FileClassifierSurveyor(BaseSurveyor):
         inventory = self.registry.get_file_inventory(slug)
         if inventory:
             log.debug("_collect_file_paths: %s → %d files from inventory", slug, len(inventory))
-            return inventory
+            return inventory, True
 
         # Fallback for projects indexed before the inventory table existed
         log.debug("_collect_file_paths: %s — no inventory; using partial sources", slug)
@@ -279,4 +336,4 @@ class FileClassifierSurveyor(BaseSurveyor):
             slug, code_count, len(dep_paths),
             len(paths) - code_count - len(dep_paths), len(paths),
         )
-        return list(paths)
+        return list(paths), False

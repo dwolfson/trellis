@@ -1,7 +1,14 @@
 """
 Publishes a SurveyResult to Egeria via pyegeria.
 
-Asset type: SourceControlLibrary (subtype of SoftwareCapability / ResourceManager).
+Element type: SourceControlLibrary — a SoftwareCapability, NOT an Asset.
+Supertypes, confirmed from the server 2026-08-21: ResourceManager,
+SoftwareCapability, Referenceable, OpenMetadataRoot. It therefore does not
+appear in Egeria's Asset Catalog views, and `AssetMaker.get_asset_by_guid`
+correctly cannot retrieve it — a fact that has already produced one bug (see
+resource_explorer/egeria_linkage.py). The method below is still called
+_find_or_create_asset and the registry column is still egeria_asset_guid;
+both names are inherited and both are misleading.
 """
 from __future__ import annotations
 
@@ -60,6 +67,7 @@ class EgeriaPublisher:
         self._asset_maker = None
         self._discovery = None
         self._automated_curation = None
+        self._external_references = None
         # Zone names: caller-supplied > config default > []
         if zone_names is not None:
             self.zone_names = zone_names
@@ -82,9 +90,50 @@ class EgeriaPublisher:
         if zone_names is not None:
             self.zone_names = zone_names
         self._connect()
-        asset_guid = self._find_or_create_asset(result)
-        report_guid = self._create_survey_report(result, asset_guid)
-        self._create_annotations(result, report_guid)
+
+        # Everything below depends on the asset GUID RE cached for this project,
+        # directly or through the report created against it. If Egeria no longer
+        # knows that GUID, this raises a named error and records the divergence
+        # instead of surfacing a 500-word server stack — see egeria_linkage.py.
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        cached_guid = ""
+        if self._registry:
+            try:
+                cached_guid = self._registry.get_egeria_asset_guid(result.project_slug) or ""
+            except Exception:
+                cached_guid = ""
+
+        with guard_linkage(self._registry, "repo", result.project_slug,
+                           result.project_display_name, cached_guid):
+            asset_guid = self._find_or_create_asset(result)
+            # Best-effort and deliberately not fatal — see the method's docstring.
+            self._publish_homepage_reference(result, asset_guid)
+            report_guid = self._create_survey_report(result, asset_guid)
+            self._create_annotations(result, report_guid)
+        # Best-effort, deliberately outside the guard_linkage block above —
+        # this is local bookkeeping for the Survey Results dashboards'
+        # per-card "last published" badge (get_last_published_annotation_
+        # types), not part of the real Egeria write; a failure here must
+        # never raise and make an already-successful publish look failed.
+        # Not silently log-only, though (tests/test_no_silent_success.py's
+        # ratchet caught the first version of this doing exactly that): the
+        # outcome is folded into the log_catalog activity_log entry below —
+        # a real, greppable, user-visible signal (Activity tab), not a debug
+        # line nobody reads. Recoverable either way: a card just shows "Not
+        # published" until the next successful publish, or via
+        # scripts/backfill_published_annotation_types.py.
+        annotation_types_warning = ""
+        if self._registry:
+            try:
+                self._registry.record_published_annotation_types(
+                    result.project_slug,
+                    {a.annotation_type.value for a in result.annotations},
+                    report_guid,
+                )
+            except Exception as exc:
+                annotation_types_warning = f" (⚠ last-published tracking not recorded: {exc})"
+                log.warning("record_published_annotation_types failed (non-fatal): %s", exc)
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.project_slug,
@@ -104,7 +153,7 @@ class EgeriaPublisher:
                     status="ok",
                     summary=(
                         f"Published to Egeria: {len(result.annotations)} annotations"
-                        f" → {(report_guid or 'no-guid')[:12]}…"
+                        f" → {(report_guid or 'no-guid')[:12]}…{annotation_types_warning}"
                     ),
                     items=[
                         {
@@ -159,7 +208,7 @@ class EgeriaPublisher:
                 "Add it to your .env file or pass platform_url= to EgeriaPublisher."
             )
         try:
-            from pyegeria import AssetMaker, AutomatedCuration
+            from pyegeria import AssetMaker, AutomatedCuration, ExternalReferences
             from pyegeria.omvs.data_discovery import DataDiscovery
 
             self._asset_maker = AssetMaker(
@@ -178,6 +227,13 @@ class EgeriaPublisher:
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
             self._automated_curation.create_egeria_bearer_token(self.user_id, self.user_password)
+
+            # Used only by _publish_homepage_reference() — catalogs the
+            # project's external website and links it to the library element.
+            self._external_references = ExternalReferences(
+                self.view_server, self.platform_url, self.user_id, self.user_password
+            )
+            self._external_references.create_egeria_bearer_token(self.user_id, self.user_password)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -261,6 +317,18 @@ class EgeriaPublisher:
             "description": f"GitHub repository: {result.github_url}",
             "deployedImplementationType": "GitHub Repository",
             "libraryType": "GitHub Repository",
+            # The repo's own location, in the attribute Egeria defines for it.
+            # `url` is inherited from Referenceable (confirmed against the live
+            # type system, not assumed — SourceControlLibrary -> ResourceManager
+            # -> SoftwareCapability -> Referenceable, which declares it).
+            # Previously the git URL existed only inside additionalProperties and
+            # interpolated into the description text, so nothing generic could
+            # find it: anything walking the catalog for "where does this live"
+            # looks at `url`, not at a private extension key.
+            #
+            # additionalProperties["github_url"] is kept rather than moved —
+            # existing consumers read it, and the duplication is cheap.
+            "url": result.github_url,
             "additionalProperties": {
                 "github_url": result.github_url,
                 "project_slug": result.project_slug,
@@ -283,6 +351,86 @@ class EgeriaPublisher:
                 self._registry.set_egeria_asset_guid(slug, guid)
             except Exception as exc:
                 log.warning("Could not persist Egeria asset GUID to registry: %s", exc)
+
+    def _publish_homepage_reference(self, result: SurveyResult, asset_guid: str) -> str:
+        """Catalog the project's external website as an ExternalReference linked
+        to its SourceControlLibrary.
+
+        The URL comes from HomepageSurveyor (projects.homepage_url), which tries
+        GitHub's declared homepage, then the packaging manifests, then the README,
+        then the repo URL itself. The repo-URL fallback is deliberately NOT
+        published here: an ExternalReference pointing back at the same repo the
+        library element already describes adds a catalog entry and no
+        information. Scouting still shows it as a link; only Egeria skips it.
+
+        Best-effort throughout. A failure here must not fail the publish — the
+        survey and its annotations are the point, this is an extra.
+
+        Returns the ExternalReference GUID, or "" if nothing was published.
+        """
+        if not self._registry:
+            return ""
+        try:
+            project = self._registry.get(result.project_slug)
+        except Exception:
+            return ""
+        homepage = (getattr(project, "homepage_url", "") or "").strip()
+        if not homepage:
+            return ""
+
+        # Skip the repo-URL fallback (see docstring). Compared host-wise rather
+        # than by string equality so ".git"/trailing-slash variants still match.
+        from urllib.parse import urlparse
+
+        def _same(a: str, b: str) -> bool:
+            pa, pb = urlparse(a), urlparse(b)
+            return (pa.hostname or "").lower() == (pb.hostname or "").lower() and \
+                   pa.path.rstrip("/").removesuffix(".git") == pb.path.rstrip("/").removesuffix(".git")
+
+        if _same(homepage, result.github_url):
+            log.debug("Homepage for %s is the repo itself — not cataloged separately",
+                      result.project_slug)
+            return ""
+
+        qualified_name = f"ExternalReference::{homepage}"
+        try:
+            existing = self._find_element_guid(qualified_name)
+            if existing:
+                ref_guid = existing
+            else:
+                body = {
+                    "class": "NewElementRequestBody",
+                    "properties": {
+                        "class": "ExternalReferenceProperties",
+                        "typeName": "ExternalReference",
+                        "qualifiedName": qualified_name,
+                        "displayName": f"{result.project_display_name} — project website",
+                        "description": (
+                            f"External website for {result.project_display_name}, derived by "
+                            f"Resource Explorer's Homepage survey step."
+                        ),
+                        # `url` is inherited from Referenceable, same as on the
+                        # library element above.
+                        "url": homepage,
+                        "referenceTitle": f"{result.project_display_name} website",
+                    },
+                }
+                ref_guid = self._external_references.create_external_reference(body=body)
+                log.info("Created ExternalReference %s for %s (%s)",
+                         ref_guid, result.project_slug, homepage)
+
+            # Linking is separately guarded: a duplicate link attempt on a
+            # re-publish is harmless to report but must not lose the reference.
+            try:
+                self._external_references.link_external_reference(asset_guid, ref_guid)
+            except Exception as exc:
+                log.debug("Could not link ExternalReference %s to %s: %s",
+                          ref_guid, asset_guid, exc)
+            return ref_guid
+        except Exception as exc:
+            log.warning("Could not publish homepage ExternalReference for %s: %s",
+                        result.project_slug, exc)
+            return ""
 
     # ── survey report ─────────────────────────────────────────────────────────
 
@@ -564,92 +712,14 @@ class EgeriaPublisher:
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:
-        """Convert a dict to map<string, string> as required by Egeria typed map fields.
+        """Delegates to the shared implementation — see annotation_props.py."""
+        from resource_explorer.surveyors.annotation_props import to_string_map
 
-        Nested dicts/lists are JSON-serialised to a string value so no nested
-        structures escape into the wire format.  All scalar values are str()-coerced.
-        """
-        result: dict[str, str] = {}
-        for k, v in d.items():
-            result[str(k)] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-        return result
-
+        return to_string_map(d)
     def _build_annotation_props(self, ann, qualified_name: str) -> dict:
-        """Map an Annotation dataclass to the correct Egeria subtype properties body."""
-        atype = ann.annotation_type
+        """Delegates to the shared implementation — see annotation_props.py.
 
-        # Map our AnnotationType enum to the Egeria Jackson subtype class name.
-        # Note: RequestForActionAnnotationProperties is NOT valid — use RequestForActionProperties.
-        _class_map = {
-            AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
-            AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
-            AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
-            AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
-            AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
-            AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
-            AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
-        }
-        egeria_class = _class_map.get(atype, "AnnotationProperties")
+        Kept as a method because tests and call sites reach for it by name."""
+        from resource_explorer.surveyors.annotation_props import build_annotation_props
 
-        props: dict = {
-            "class": egeria_class,
-            "qualifiedName": qualified_name,
-            "annotationType": atype.value,
-            "summary": ann.summary,
-            "analysisStep": ann.analysis_step,
-            "confidence": ann.confidence,
-        }
-        if ann.explanation:
-            props["explanation"] = ann.explanation
-        if ann.expression:
-            props["expression"] = ann.expression
-        if ann.json_properties:
-            props["jsonProperties"] = json.dumps(ann.json_properties)
-
-        # Subtype-specific fields — native typed fields for registered subtypes;
-        # additionalProperties (map<string,string>) for unregistered types.
-        if atype == AnnotationType.RESOURCE_MEASURE:
-            rp = getattr(ann, "resource_properties", {})
-            if rp:
-                props["resourceProperties"] = self._to_string_map(rp)
-
-        elif atype == AnnotationType.CLASSIFICATION:
-            cc = getattr(ann, "candidate_classifications", [])
-            if cc:
-                props["candidateClassifications"] = cc
-
-        elif atype == AnnotationType.QUALITY_SCORE:
-            qs = getattr(ann, "quality_scores", {})
-            if qs:
-                props["qualityScores"] = self._to_string_map(qs)
-
-        elif atype == AnnotationType.DATA_CLASS:
-            dc = getattr(ann, "candidate_data_class_names", [])
-            if dc:
-                props["candidateDataClassGUIDs"] = dc  # field name per Egeria type
-
-        elif atype == AnnotationType.REQUEST_FOR_ACTION:
-            action_req = getattr(ann, "action_requested", "")
-            if action_req:
-                props["actionRequested"] = action_req
-            action_target = getattr(ann, "action_target_name", "")
-            if action_target:
-                props["actionProperties"] = {"actionTargetName": action_target}
-
-        elif atype == AnnotationType.SCHEMA_ANALYSIS:
-            sn = getattr(ann, "schema_name", "")
-            st = getattr(ann, "schema_type", "")
-            if sn:
-                props["schemaName"] = sn
-            if st:
-                props["schemaType"] = st
-
-        elif atype == AnnotationType.RELATIONSHIP:
-            ren = getattr(ann, "related_entity_name", "")
-            rtn = getattr(ann, "relationship_type_name", "")
-            if ren:
-                props["relatedEntityName"] = ren
-            if rtn:
-                props["relationshipTypeName"] = rtn
-
-        return props
+        return build_annotation_props(ann, qualified_name)

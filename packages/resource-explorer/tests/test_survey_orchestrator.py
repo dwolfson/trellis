@@ -27,6 +27,14 @@ def _fake_zipball_root(*_args, **_kwargs):
     yield "/fake/zipball/root"
 
 
+@contextmanager
+def _fake_git_clone_root(*_args, **_kwargs):
+    """Stand-in for _acquire_git_clone_root — no real clone. Any full-run
+    (steps=None) test now resolves this resource too, because
+    repo_arch_coupling declares requires_resources={"git_clone_root": ...}."""
+    yield "/fake/clone/root"
+
+
 @pytest.fixture
 def registry(tmp_path):
     return ProjectRegistry(db_path=str(tmp_path / "test.db"))
@@ -74,6 +82,14 @@ def _patch_all_surveyors():
     )
     zip_patcher.start()
     patchers.append(zip_patcher)
+    # repo_arch_coupling declares requires_resources={"git_clone_root": ...} —
+    # patch the clone primitive too, same reasoning as the zipball one above.
+    clone_patcher = patch(
+        "resource_explorer.surveyors.repo_survey_definition_adapter._acquire_git_clone_root",
+        _fake_git_clone_root,
+    )
+    clone_patcher.start()
+    patchers.append(clone_patcher)
     return mocks, patchers
 
 
@@ -231,6 +247,127 @@ class TestFastFlag:
             for p in patchers:
                 p.stop()
 
-    def test_only_repo_health_accepts_fast(self):
+    def test_which_steps_accept_fast(self):
+        """fast skips StatsFetcher's per-commit diff-stats calls. It moved with
+        the fetch itself: repo_git_statistics now does the refresh, repo_health
+        keeps the flag because its scoring window is the same 90-day history."""
         accepting = {k for k, info in STEP_REGISTRY.items() if info.accepts_fast}
-        assert accepting == {"repo_health"}
+        assert accepting == {"repo_health", "repo_git_statistics"}
+
+
+class TestCostTierFilter:
+    """Step cost tiers plan (docs/step-cost-tiers-plan.md, D5) —
+    max_fetch_cost/max_compute_cost narrow step_keys_to_run by ordinal
+    position, same set-narrowing shape steps=[...] already has. Both None
+    (the default) must run every step, unchanged."""
+
+    def test_both_none_runs_all_21_steps(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project)
+                for key, m in mocks.items():
+                    m.return_value.run.assert_called_once()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_max_fetch_cost_none_excludes_every_download_and_api_heavy_step(self, registry, project):
+        """Ceiling "none" must exclude the 4 zipball (download) steps and
+        every step that makes its own API calls (repo_git_statistics,
+        repo_sub_resource_survey) — anything above "none" on the fetch
+        axis, regardless of compute_cost."""
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project, max_fetch_cost="none")
+                excluded = {k for k, info in STEP_REGISTRY.items() if info.fetch_cost != "none"}
+                assert excluded == {
+                    # repo_classification (2026-08-23) — declared the dataclass
+                    # default fetch_cost="none" while making a dozen GitHub calls
+                    # per repo. The presentation session measured it at 3 repos in
+                    # 10 minutes against 1 second for the other three Discovery
+                    # steps over 60 repos, and this assertion is the record that
+                    # a "none" ceiling now excludes it.
+                    "repo_classification",
+                    "repo_file_inventory", "repo_homepage", "repo_data_profiling",
+                    "repo_symbol_extraction", "repo_rag_ingestion",
+                    # repo_website_ingestion (2026-08-20) — fetches the project's
+                    # external site over HTTP, so it is not zero-fetch.
+                    "repo_website_ingestion",
+                    "repo_git_statistics", "repo_sub_resource_survey",
+                    # repo_manifest_parse (2026-08-23) — shares the zipball, but
+                    # sharing an extraction does not make a step zero-fetch: the
+                    # download still has to happen for it to run at all.
+                    "repo_manifest_parse",
+                    # repo_arch_detect/repo_arch_coupling (Phase 1 plan §4.2) —
+                    # a zipball and a real git clone respectively, both downloads.
+                    "repo_arch_detect", "repo_arch_coupling",
+                }
+                for key in excluded:
+                    mocks[key].return_value.run.assert_not_called()
+                for key, m in mocks.items():
+                    if key not in excluded:
+                        m.return_value.run.assert_called_once()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_max_compute_cost_low_excludes_medium_and_high_steps(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(project, max_compute_cost="low")
+                excluded = {k for k, info in STEP_REGISTRY.items() if info.compute_cost != "low"}
+                assert excluded == {
+                    "repo_data_profiling", "repo_symbol_extraction", "repo_rag_ingestion",
+                    # repo_website_ingestion (2026-08-20) — embeds the project's
+                    # external site. medium rather than rag_ingestion's high: one
+                    # page, not a whole repo.
+                    "repo_website_ingestion",
+                    # repo_arch_coupling — classify_subtree/cohesion computation
+                    # over the whole import graph, medium not low.
+                    "repo_arch_coupling",
+                    # repo_manifest_parse is deliberately NOT here: it declares
+                    # compute_cost="low" because it measures like
+                    # repo_file_inventory (0.0-0.6s across 359-5,763 files), not
+                    # like the medium steps. It was "medium" on a guess for a
+                    # few hours; see its StepInfo comment for the numbers.
+                }
+                for key in excluded:
+                    mocks[key].return_value.run.assert_not_called()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_both_ceilings_combine_as_an_intersection(self, registry, project):
+        """max_fetch_cost and max_compute_cost each narrow independently —
+        a step must clear both ceilings to run."""
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(
+                    project, max_fetch_cost="none", max_compute_cost="low",
+                )
+                mocks["repo_health"].return_value.run.assert_called_once()
+                for key in (
+                    "repo_git_statistics", "repo_rag_ingestion", "repo_data_profiling",
+                    "repo_symbol_extraction", "repo_sub_resource_survey",
+                ):
+                    mocks[key].return_value.run.assert_not_called()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_cost_ceiling_combines_with_explicit_steps_as_an_intersection(self, registry, project):
+        mocks, patchers = _patch_all_surveyors()
+        try:
+            with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
+                SurveyOrchestrator(registry).run(
+                    project, steps=["repo_health", "repo_rag_ingestion"], max_fetch_cost="none",
+                )
+                mocks["repo_health"].return_value.run.assert_called_once()
+                mocks["repo_rag_ingestion"].return_value.run.assert_not_called()
+        finally:
+            for p in patchers:
+                p.stop()

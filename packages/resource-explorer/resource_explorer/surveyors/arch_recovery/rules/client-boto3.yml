@@ -1,0 +1,7 @@
+# design §5.1 "Client libraries" — an AWS/S3-compatible wire, Output-Input.
+id: client-boto3
+language: Python
+rule:
+  any:
+    - pattern: boto3.client($$$ARGS)
+    - pattern: boto3.resource($$$ARGS)

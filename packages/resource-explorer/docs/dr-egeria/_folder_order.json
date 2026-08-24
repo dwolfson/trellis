@@ -1,0 +1,25 @@
+{
+  "$comment": [
+    "Cross-folder execution order for RE's Dr.Egeria bootstrap (resource_explorer/bootstrap.py).",
+    "Each entry names a sibling directory containing a _batch.json plus one or more .md command",
+    "documents. Order is LOAD-BEARING, not cosmetic — it is why this file exists rather than the",
+    "order being encoded in directory names.",
+    "",
+    "Why the order matters, learned the hard way live on 2026-08-19: a survey-definition document",
+    "processed while the Question glossary terms are absent still succeeds, but its 'Link Element",
+    "To Scope' commands silently create no ScopedBy links. The Survey Definition then looks",
+    "healthy (its own canary is present) while SurveyDefinitionReader's scoped question lookup",
+    "returns nothing for it, so every Survey-tab load silently falls back to a full instance scan.",
+    "Foundations must therefore precede questions, and questions must precede survey-definitions.",
+    "",
+    "A directory present on disk but absent from this list is NOT executed — bootstrap only runs",
+    "what is named here. That is deliberate: adding a folder to the tree should not silently make",
+    "it run against Egeria. Root-level files (the CSV sources of truth, one-off probe/debug",
+    "documents) are never batches, since only directories are considered."
+  ],
+  "folders": [
+    "foundations",
+    "questions",
+    "survey-definitions"
+  ]
+}

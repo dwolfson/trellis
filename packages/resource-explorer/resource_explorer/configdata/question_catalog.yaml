@@ -18,12 +18,26 @@
 #                   as a literal string match, not split, until that plan is
 #                   built.
 #   perspectives  - Perspective names this question is linked to.
+#   purposes      - Purpose kinds this question serves (added 2026-08-24).
+#                   Purpose is the PRIMARY dispatch axis and Perspective the
+#                   secondary one: Perspective was measured and cannot
+#                   discriminate (no perspective reaches an analysis another
+#                   doesn't also reach). Purpose ORDERS what runs by default;
+#                   it never excludes. See docs/investigation-framing-design.md.
 #   answering:
 #     kind        - "analysis" | "direct" | "registry" | "human" |
 #                   "chart" | "gap" | "partial" | "mixed" | "unknown" —
 #                   how (or whether) RE can answer this today.
 #     analysis_ids - analysis_catalog.yaml repo_analyses ids that answer
 #                   (fully or partially) this question; may be empty.
+#     checks       - finer `analysis_id:check_name` refs, validated against
+#                   configdata/check_registry.yaml. Added 2026-08-24 because
+#                   analysis-level joins are too coarse to dispatch on (one
+#                   analysis, repo_conventions, answers 7 of the 16
+#                   analysis-answerable questions). Empty means "no check
+#                   refs authored yet" — fall back to analysis_ids, do not
+#                   read it as "no checks apply". A check ref implies its
+#                   analysis, which is added to analysis_ids automatically.
 #     note        - the CSV's "Answering Analysis" column, verbatim —
 #                   human-readable detail (candidate tooling for gaps,
 #                   which direct field/table, etc.).
@@ -42,10 +56,14 @@ repo_questions:
   - Steward
   - Consumer
   - Data Expert
+  purposes:
+  - Select
+  - Maintain
   answering:
     kind: analysis
     analysis_ids:
     - repository_health
+    checks: []
     note: repository_health
   answering_mechanism: Git Statistics
 - question: What does this repository do?
@@ -54,9 +72,14 @@ repo_questions:
   - Consumer
   - Data Expert
   - Architecture
+  purposes:
+  - Explore
+  - Select
+  - Learn
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (Project.description) This might also be a summary of the top level README.
   answering_mechanism: Direct Field
 - question: Who maintains this repository?
@@ -65,10 +88,14 @@ repo_questions:
   - Steward
   - Data Owner
   - Security
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: analysis
     analysis_ids:
     - repository_health
+    checks: []
     note: repository_health
   answering_mechanism: Git Statistics
 - question: How widely adopted and active is the community around this repository?
@@ -76,10 +103,14 @@ repo_questions:
   perspectives:
   - Consumer
   - Community
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: analysis
     analysis_ids:
     - repository_health
+    checks: []
     note: repository_health
   answering_mechanism: Git Statistics
 - question: Has this repository already been catalogued in Egeria and when?
@@ -87,9 +118,13 @@ repo_questions:
   perspectives:
   - Governance
   - Steward
+  purposes:
+  - Explore
+  - Maintain
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: 'N/A — direct field (is_published/egeria_asset_guid); GAP: known-inventory search across the
       Egeria catalog itself isn''t built (Scouting''s "shop for data" Track 1)'
   answering_mechanism: Egeria Queries
@@ -98,9 +133,15 @@ repo_questions:
   perspectives:
   - Governance
   - Security
+  purposes:
+  - Select
+  - Assess
+  - Certify
+  - Maintain
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: CVE/dependency-vulnerability scan (candidate: OSV.dev, OWASP Dependency-Track, Trivy,
       Grype)'
   answering_mechanism: Gap
@@ -115,9 +156,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — RE registry query (already-registered repos/groups) - probably a set of egeria queries.
   answering_mechanism: Local Registry Query + Egeria Queries
 - question: Any known feedback?
@@ -130,9 +175,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (resource_feedback table) - result from Egeriq queries/report
   answering_mechanism: Local Registry Query + Egeria Queries
 - question: Does it replace or extend something we already have?
@@ -141,9 +190,12 @@ repo_questions:
   - Financial
   - Data Expert
   - Architecture
+  purposes:
+  - Select
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — RE registry query (already-registered repos/groups) - might need RAG support for this.
   answering_mechanism: Local Registry Query + RAG Queries
 - question: What are similar repos/projects? How does this differ?
@@ -152,9 +204,12 @@ repo_questions:
   - Community
   - Security
   - Admin
+  purposes:
+  - Select
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: similarity search over pgvector embeddings (not built) - Agent over RAG'
   answering_mechanism: Agent-Based Analysis
 - question: Are there any restrictions for use?
@@ -163,9 +218,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (GitHub license field) - Also Agent over RAG? Direct field (GitHub license
       field) for a standard license (e.g. Apache 2.0) — the answer for those is itself usually just "citation/attribution
       required". A non-standard license needs the actual license text interpreted, which is where Agent-Based
@@ -178,10 +237,15 @@ repo_questions:
   - Data Expert
   - Security
   - Admin
+  purposes:
+  - Select
+  - Assess
+  - Deploy
   answering:
     kind: analysis
     analysis_ids:
     - dependency_analysis
+    checks: []
     note: dependency_analysis
   answering_mechanism: Code Analysis
 - question: Do we already support these dependencies?
@@ -190,9 +254,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: human
     analysis_ids: []
+    checks: []
     note: N/A — human-supplied via Enrichment Context form - may also be a new Agent over RAG content.
       Cross-reference against Egeria's catalog of already-supported dependencies, validated/completed
       by human input — likely needs a per-dependency answer, not one blanket answer for the whole question.
@@ -203,21 +271,30 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: mixed
     analysis_ids:
     - repo_conventions
+    checks:
+    - repo_conventions:deployment_docker
     note: 'MIXED: repo_conventions (deployment_docker presence signal); GAP: RAG content read for deployment
-      instructions'
+      instructions [checks: repo_conventions:deployment_docker]'
   answering_mechanism: Code Analysis + RAG Queries
 - question: Do we know what the cost to run it is?
   stage: Analysis
   perspectives:
   - Financial
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: human
     analysis_ids: []
+    checks: []
     note: N/A — human-supplied via Enrichment Context form = may also be Agent over RAG content.
   answering_mechanism: Human-Supplied
 - question: Is there a validation / deployment test for it?
@@ -225,15 +302,21 @@ repo_questions:
   perspectives:
   - Security
   - Admin
+  purposes:
+  - Assess
+  - Deploy
   answering:
     kind: mixed
     analysis_ids:
     - ci_quality
     - repo_conventions
+    checks:
+    - ci_quality:ci_runs_tests
+    - repo_conventions:deployment_docker
     note: 'MIXED: ci_quality (CI actually runs tests) + repo_conventions (deployment_docker evidence);
       GAP: real deployment-validation test - May be RAG queries? ci_quality/repo_conventions give structured
       signals; an Agent examining the repo''s actual file/directory structure (test dirs, validation scripts)
-      can find hints beyond those fixed checks.'
+      can find hints beyond those fixed checks. [checks: ci_quality:ci_runs_tests, repo_conventions:deployment_docker]'
   answering_mechanism: Code Analysis + Agent-Based Analysis
 - question: What is the upgrade process?
   stage: Analysis
@@ -242,9 +325,13 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Maintain
+  - Deploy
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: RAG content read (CHANGELOG/release notes) — no structured surveyor'
   answering_mechanism: RAG Queries
 - question: Does it fit into our monitoring infrastructure?
@@ -254,9 +341,13 @@ repo_questions:
   - Consumer
   - Architecture
   - Admin
+  purposes:
+  - Deploy
+  - Maintain
   answering:
     kind: human
     analysis_ids: []
+    checks: []
     note: N/A — human-supplied via Enrichment Context form - We may be able to use targeted Egeria queries
       first - augmented with enrichment.
   answering_mechanism: Egeria Queries + Human-Supplied
@@ -270,10 +361,14 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Deploy
   answering:
     kind: human
     analysis_ids:
     - security_scan
+    checks: []
     note: N/A — human-supplied via Enrichment Context form, informed by security_scan findings and Egeria
       queries.
   answering_mechanism: Code Analysis + Egeria Queries + Human-Supplied
@@ -283,9 +378,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Maintain
   answering:
     kind: chart
     analysis_ids: []
+    checks: []
     note: N/A — Understanding trend chart (stats.py, project_stats history); GAP if SLA-doc content read
       is needed instead. May require RAG search.
   answering_mechanism: Trend Chart
@@ -297,9 +396,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: RAG content read (API docs/integration guides) — no structured surveyor'
   answering_mechanism: RAG Queries
 - question: Does this fit within or need to extend our existing infrastructure estate?
@@ -309,9 +412,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Deploy
   answering:
     kind: human
     analysis_ids: []
+    checks: []
     note: N/A — human-supplied via Enrichment Context form with as fallback from Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
 - question: How mature is it?
@@ -321,12 +428,17 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Assess
   answering:
     kind: mixed
     analysis_ids:
     - maturity
+    checks:
+    - maturity:project_maturity
     note: 'MIXED: maturity (direct classification) + Understanding trend chart (stats.py, project_stats
-      history)'
+      history) [checks: maturity:project_maturity]'
   answering_mechanism: Code Analysis
 - question: Do we have the skills to support its use?
   stage: Analysis/Enrichment
@@ -334,9 +446,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Learn
   answering:
     kind: human
     analysis_ids: []
+    checks: []
     note: N/A — human-supplied via Enrichment Context form - Egeria queries as well
   answering_mechanism: Human-Supplied + Egeria Queries
 - question: How well documented is it?
@@ -347,15 +463,21 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Learn
+  - Share
   answering:
     kind: mixed
     analysis_ids:
     - documentation_coverage
     - repo_conventions
+    checks:
+    - repo_conventions:doc_breadth
     note: 'MIXED: documentation_coverage + repo_conventions (doc_breadth) perhaps also an Agent? documentation_coverage/repo_conventions
       give structured presence signals; an Agent reviewing the whole set (READMEs in every folder, a separate
       docs directory, tutorials, etc.) can judge documentation quality more holistically than presence-checks
-      alone.'
+      alone. [checks: repo_conventions:doc_breadth]'
   answering_mechanism: Code Analysis + Agent-Based Analysis
 - question: How is it supported?
   stage: Analysis
@@ -365,11 +487,15 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Select
+  - Maintain
   answering:
     kind: mixed
     analysis_ids:
     - repository_health
     - documentation_coverage
+    checks: []
     note: 'MIXED: repository_health (community responsiveness) + documentation_coverage; GAP: formal support-docs
       RAG read'
   answering_mechanism: Git Statistics + Code Analysis
@@ -380,14 +506,21 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Certify
   answering:
     kind: mixed
     analysis_ids:
     - security_scan
     - security_features
     - repo_conventions
+    checks:
+    - repo_conventions:security_policy_content
+    - security_scan:security_policy
     note: 'MIXED: security_scan + security_features + repo_conventions (security_policy_content); GAP:
-      real deep scan (candidate: OpenSSF Scorecard, CHAOSS GrimoireLab/Augur)'
+      real deep scan (candidate: OpenSSF Scorecard, CHAOSS GrimoireLab/Augur) [checks: repo_conventions:security_policy_content,
+      security_scan:security_policy]'
   answering_mechanism: Code Analysis
 - question: Does it fit into our governance frameworks?
   stage: Analysis/Enrichment
@@ -396,10 +529,14 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Certify
+  - Share
   answering:
     kind: human
     analysis_ids:
     - egeria_publish
+    checks: []
     note: N/A — human-supplied via Enrichment Context form, plus Curate zone/catalog membership (egeria_publish),
       plus Egeria queries.
   answering_mechanism: Human-Supplied + Egeria Queries
@@ -410,19 +547,28 @@ repo_questions:
   - Data Owner
   - App/AI Builder
   - Security
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: analysis
     analysis_ids:
     - license_classification
-    note: license_classification
+    checks:
+    - license_classification:license_risk_tier
+    note: 'license_classification [checks: license_classification:license_risk_tier]'
   answering_mechanism: Code Analysis
 - question: Is intellectual property (IP) provenance managed via CLA or DCO?
   stage: Analysis
   perspectives:
   - Security
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: RAG content read (CONTRIBUTING.md/CLA-bot config detection)'
   answering_mechanism: RAG Queries
 - question: Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
@@ -432,9 +578,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: code-content telemetry/phone-home scan'
   answering_mechanism: Gap
 - question: For AI/ML assets, what licensing or usage constraints apply to models, weights, or datasets?
@@ -444,9 +594,13 @@ repo_questions:
   - App/AI Builder
   - Privacy
   - Data Expert
+  purposes:
+  - Select
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: model-card/dataset-file detection (AI Governance tooling category)'
   answering_mechanism: Gap
 - question: How does the repository handle secrets, credentials, and sensitive configurations?
@@ -455,9 +609,13 @@ repo_questions:
   - Security
   - Architecture
   - Admin
+  purposes:
+  - Assess
+  - Certify
   answering:
     kind: gap
     analysis_ids: []
+    checks: []
     note: 'GAP: secret-scanning (OSPO/DevSecOps tool category)'
   answering_mechanism: Gap
 - question: Does the repository publish a clear process for reporting security vulnerabilities?
@@ -465,22 +623,31 @@ repo_questions:
   perspectives:
   - Governance
   - Security
+  purposes:
+  - Certify
   answering:
     kind: unknown
     analysis_ids:
     - repo_conventions
-    note: repo_conventions - RAG read?
+    checks:
+    - repo_conventions:security_policy_content
+    note: 'repo_conventions - RAG read? [checks: repo_conventions:security_policy_content]'
   answering_mechanism: Code Analysis
 - question: Does the repository have automated build tooling in place?
   stage: Analysis
   perspectives:
   - App/AI Builder
   - Architecture
+  purposes:
+  - Certify
+  - Deploy
   answering:
     kind: unknown
     analysis_ids:
     - repo_conventions
-    note: repo_conventions - RAG read?
+    checks:
+    - repo_conventions:automated_build
+    note: 'repo_conventions - RAG read? [checks: repo_conventions:automated_build]'
   answering_mechanism: Code Analysis
 - question: Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
   stage: Assessment
@@ -488,11 +655,15 @@ repo_questions:
   - Governance
   - Steward
   - Architecture
+  purposes:
+  - Share
   answering:
     kind: unknown
     analysis_ids:
     - repo_conventions
-    note: repo_conventions - RAG read?
+    checks:
+    - repo_conventions:catalog_info
+    note: 'repo_conventions - RAG read? [checks: repo_conventions:catalog_info]'
   answering_mechanism: Code Analysis
 - question: Has this resource already been surveyed at any tier, and what did earlier signals reveal?
   stage: Discovery
@@ -500,9 +671,13 @@ repo_questions:
   - Steward
   - Data Expert
   - Architecture
+  purposes:
+  - Explore
+  - Maintain
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (last_surveyed_at/egeria_asset_guid; scoped analysis-history queries)
   answering_mechanism: Direct Field
 - question: Which Survey Definition should I run — a quick coarse check or the full deep survey?
@@ -512,9 +687,12 @@ repo_questions:
   - Data Expert
   - Architecture
   - Admin
+  purposes:
+  - Explore
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (Survey Definition candidates list, step/survey_kind detail)
   answering_mechanism: Direct Field
 - question: Based on what's already known, is this worth investigating further, or should it be deprioritized?
@@ -523,9 +701,13 @@ repo_questions:
   - Governance
   - Steward
   - Data Owner
+  purposes:
+  - Explore
+  - Select
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (repo_dispositions) - there is some heuristic we might need to compute to
       recommend a disposition
   answering_mechanism: Direct Field
@@ -534,9 +716,12 @@ repo_questions:
   perspectives:
   - Steward
   - Data Expert
+  purposes:
+  - Maintain
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — Automate subscription (notification_detector's change comparison)
   answering_mechanism: Automate Change Detection
 - question: Is there a Survey Definition authored for this resource's technology type at all, or is that
@@ -545,8 +730,12 @@ repo_questions:
   perspectives:
   - Governance
   - Admin
+  purposes:
+  - Explore
+  - Share
   answering:
     kind: direct
     analysis_ids: []
+    checks: []
     note: N/A — direct field (Survey Definition candidates list, empty-result case)
   answering_mechanism: Direct Field

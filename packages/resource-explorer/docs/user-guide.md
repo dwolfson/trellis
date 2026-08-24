@@ -1,8 +1,8 @@
 # Resource Explorer — User Guide
 
-**Last revised:** 2026-06-10
+**Last revised:** 2026-08-21
 
-Resource Explorer discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide covers the web UI, the four user intents, and how to get the most out of each workflow.
+Resource Explorer discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide covers the web UI, the eight user intents, and how to get the most out of each workflow.
 
 ---
 
@@ -24,7 +24,9 @@ The web UI has three zones:
 
 ---
 
-## Four Intents
+## Eight User Intents
+
+The intent tab strip has eight tabs: **Scouting**, **Discovery**, **Assessment**, **Analysis**, **Enrichment**, **Understanding**, **Curate**, **Automate**. This section covers each in turn; Scouting, Assessment, Discovery, and Enrichment are the original four and are documented in the most depth below, Analysis is covered separately (it's where Architecture Recovery lives), and Understanding, Curate, and Automate get a short pointer each.
 
 ### Scouting
 *Goal: broad inventory across many resources, fast*
@@ -48,6 +50,29 @@ Select a resource, open **Analyses**, and choose Assessment intent. Run individu
 - **Catalog & Survey in Egeria** — register in Egeria and trigger native survey
 
 Assessment analyses are marked ⏱ (minutes) or ⏳ (async for Egeria-native). Results appear in the Survey Report with a ☁ or 🏠 source badge indicating where the data came from.
+
+### Analysis
+*Goal: structural/quantitative analysis of a specific resource — fast, not scored*
+
+Select a resource, open **Analyses**, and choose the Analysis intent. Unlike Assessment, these analyses don't evaluate the resource against criteria — they extract and report structure. This is where **Architecture Recovery** lives.
+
+#### Architecture Recovery
+
+Architecture Recovery reads a repository and proposes a **candidate component partition**: a set of components (each a path prefix within the repo), where the evidence for each one came from, and how confident the tool is. It draws on four kinds of signal — package manifests (`pyproject.toml`, `package.json`), deployment artifacts (`Dockerfile`, `docker-compose*.yml`), code markers found by scanning the source (web-framework routes, entry points, scheduler/worker decorators, and similar), and coupling between modules (who imports whom, what tends to change together).
+
+**This is a proposal, not a published blueprint.** It is one tool's best current read of the repo's structure, with confidence and evidence attached to every claim — not an authoritative statement of what the architecture *is*. Treat a low-confidence or single-source component as a suggestion worth checking, not a fact to build on. If a component looks wrong, that's useful information about the repo (or about the detector), not a bug report waiting to happen.
+
+**Results can be partial.** You can run Architecture Recovery scoped to just one cataloged sub-resource (via the "Cataloged Sub-Resources — Scoped Analysis" row on a repo's report) instead of the whole repo. A scoped run only ever sees the files under that path, so its component set is incomplete *by construction* — not because the detectors missed anything. A whole-repo run of a large monorepo might report 27 components; the same detectors scoped to one package inside it might reasonably report 3. If a component count looks surprisingly small for the size of the repo, check whether the run was scoped to a subtree before concluding the rest of the repo has no structure worth finding.
+
+**Component "shapes."** Components proposed from import and co-change coupling (as opposed to a manifest or a deployment file) are labeled with a shape that explains why the tool believes they're a real boundary:
+
+- **cohesive** — the files in this component mostly import each other and rarely reach outside it. The intuitive case.
+- **connective-library** — internal cohesion is low, but that's because many *other* components depend on it, evenly. A shared library legitimately has almost no internal cohesion of its own — it's a hub, not a cluster — and this shape is how the tool tells that apart from noise. (Resource Explorer's own `Core` module is a real example: 27 internal edges against 238 incoming edges from 14 different callers.)
+- **connective-orchestrator** — the mirror image: this component reaches out to many others rather than being reached into. Typical of a CLI, a web front end, or anything whose job is to coordinate the rest of the system.
+
+**`proposed_by` tells you how a component was found**, and by how many independent approaches: `manifest` (a package declares an entry point or build system), `deployment` (a Dockerfile or compose service names it), `code marker` (a structural scan found a framework or entry-point signature), or `coupling` (import/co-change analysis inferred a boundary the other three couldn't see, with the shape noted above). A component that shows up under two or more approaches has stronger, independently corroborated evidence than one that shows up under only one — even though the confidence number itself doesn't currently rise just from agreement, so read the `proposed_by` list, not only the percentage, when judging how solid a component is.
+
+**Confidence** is an integer from 0 to 100, shown per component. It reflects how directly the evidence establishes the claim, not how important the component is: a Dockerfile with a declared, human-chosen container name scores higher than one inferred from a bare service key; a manifest with an explicit console entry point scores higher than a package that's merely installable with no entry point; a coupling-derived shape (cohesive, connective-library, connective-orchestrator) generally scores lower than a component backed by a stated deployment or manifest artifact, because it's inferred rather than declared.
 
 ### Discovery
 *Goal: find resources by what surveys revealed*
@@ -77,6 +102,21 @@ The **Context** panel lets you fill in resource context proactively:
 | Purpose | What this resource is used for |
 | Geographic location | Compliance and data residency |
 | Backup status | Recovery planning |
+
+### Understanding
+*Goal: visualize trends over time*
+
+Charts for a resource's history — stars, commits, schema growth, and similar — rendered from the **Survey History** data described below. Fast, read-only.
+
+### Curate
+*Goal: make a resource easier to find and more trustworthy to reuse*
+
+Ongoing curatorial work distinct from Enrichment's one-time/periodic context form: search tags, resource-level feedback, and curator notes, so the next person to find this resource can tell it's been looked at and vouched for.
+
+### Automate
+*Goal: get notified when an analysis's results change on a future run*
+
+Subscribe to an analysis from its card; when a scheduled re-run produces a materially different result, an RFA shows up in the drawer. Has its own **⏱ Schedules** and **🔔 Subscriptions** sub-tabs.
 
 ---
 
@@ -124,7 +164,7 @@ Below the main report, a **Survey History** chart shows key metrics over time.
 ## Analyses Panel
 
 The Analyses panel lists all available analyses for the selected resource type, filterable by:
-- **Intent**: All / Scouting / Assessment / Discovery / Enrichment  *(separate row)*
+- **Intent**: All / Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate / Automate  *(separate row)*
 - **Perspective**: All / DBA / Data Scientist / Steward / Security  *(separate row)*
 
 ★ Recommended analyses are highlighted. Each card shows the intent tag, speed (⚡ fast / ⏱ minutes / ⏳ async), and the annotation count from the last survey run.

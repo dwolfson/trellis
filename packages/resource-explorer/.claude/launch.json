@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "resource-explorer-web",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "resource-explorer", "web", "--port", "8810"],
+      "port": 8810
+    }
+  ]
+}

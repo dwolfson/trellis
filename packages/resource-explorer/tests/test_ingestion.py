@@ -177,8 +177,18 @@ class TestIngestionPipelineDispatch:
         from resource_explorer.registry import ProjectRegistry
         from resource_explorer.vector_store_pg import MultiCollectionStore
 
+        from resource_explorer.registry import Project
+
         pipeline = IngestionPipeline.__new__(IngestionPipeline)
         pipeline.registry = ProjectRegistry(db_path=str(tmp_path / "test.db"))
+        # 'proj' has to actually exist: _ingest_code writes project_code_symbols,
+        # which has a real FK to projects.slug. The test passed only because
+        # SQLite ignored that FK by default — on Postgres this same call has
+        # always been an IntegrityError. Registering it here makes the fixture
+        # match what production guarantees, rather than what SQLite tolerated.
+        pipeline.registry.add(Project(
+            slug="proj", display_name="Proj",
+            github_url="https://github.com/test/proj", collections=[]))
         pipeline.store = MagicMock()
         pipeline.store.insert.return_value = 5
         pipeline.console = MagicMock()

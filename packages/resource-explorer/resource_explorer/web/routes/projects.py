@@ -278,6 +278,13 @@ class ScoutingOverview(BaseModel):
     latest_deployment_at: str = ""
     latest_deployment_environment: str = ""
     latest_deployment_ref: str = ""
+    # Set when this repo's cached Egeria GUID was found not to exist
+    # (resource_explorer/egeria_linkage.py). Carried here because this card is
+    # where the "Published to Egeria" badge is shown, and that badge is actively
+    # misleading while the link is broken — it reports a catalog entry RE can no
+    # longer reach.
+    egeria_link_stale: bool = False
+    egeria_link_stale_guid: str = ""
 
 
 @router.get("/{slug}/scouting-overview", response_model=ScoutingOverview)
@@ -307,7 +314,11 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
     except (TypeError, ValueError):
         security_and_analysis = {}
 
+    linkage = registry.get_egeria_linkage("repo", project.slug) or {}
+
     return ScoutingOverview(
+        egeria_link_stale=linkage.get("status") == "stale",
+        egeria_link_stale_guid=linkage.get("stale_guid", ""),
         slug=project.slug,
         display_name=project.display_name,
         github_url=project.github_url,
@@ -325,7 +336,12 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         disposition=disp.get("disposition", "undecided"),
         disposition_reason=disp.get("reason", ""),
         lifecycle_state=lifecycle_state,
-        homepage=stats.get("homepage") or "",
+        # Prefer the surveyed answer over GitHub's raw field. HomepageSurveyor
+        # writes projects.homepage_url having tried GitHub's homepage first, then
+        # the packaging manifests, then the README, then the repo URL — so it is
+        # either the same value or a better one. stats.homepage remains the
+        # fallback for repos surveyed before that step existed.
+        homepage=(project.homepage_url or stats.get("homepage") or ""),
         security_and_analysis=security_and_analysis,
         deployments_count=stats.get("deployments_count") or 0,
         latest_deployment_at=stats.get("latest_deployment_at") or "",
@@ -570,90 +586,17 @@ async def get_scouting_questions(
     return QuestionChecklist(phase=phase, perspectives=persp_list, questions=checklist)
 
 
-class ProfileScanRequest(BaseModel):
-    include_symbols: bool = False
-
-
-class ProfileScanResult(BaseModel):
-    status: str  # "ok" | "error"
-    slug: str
-    file_count: int = 0
-    symbol_count: int = 0
-    classified: bool = False
-    classification_error: str | None = None
-    message: str = ""
-    error: str | None = None
-
-
-@router.post("/{slug}/profile-scan", response_model=ProfileScanResult)
-async def run_profile_scan(slug: str, req: ProfileScanRequest | None = None) -> ProfileScanResult:
-    """Scouting's 'Profile' tab: download the zipball once and refresh
-    project_file_inventory (+ project_data_profiles), optionally also
-    project_code_symbols — decoupled from full pgvector re-ingestion.
-    See IngestionPipeline.refresh_profile().
-
-    Auto-chains the language_file_classification survey (repo_language +
-    repo_file_classification + repo_file_structure) against the freshly
-    refreshed file inventory, so "Refresh profile" actually shows a
-    breakdown — previously the data was refreshed but nothing ever read it
-    into a displayed result. Classification is best-effort: a failure here
-    doesn't undo a successful refresh, it's just surfaced separately.
-    """
-    from resource_explorer.registry import ProjectRegistry
-
-    registry = ProjectRegistry()
-    project = registry.get(slug)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-
-    include_symbols = bool(req.include_symbols) if req else False
-
-    def _run():
-        from resource_explorer.ingestion.pipeline import IngestionPipeline
-        return IngestionPipeline().refresh_profile(
-            project.slug,
-            project.github_url,
-            project.collections or [],
-            subproject_path=project.subproject_path or None,
-            include_symbols=include_symbols,
-        )
-
-    try:
-        result = await asyncio.to_thread(_run)
-    except Exception as exc:
-        return ProfileScanResult(status="error", slug=slug, error=str(exc))
-
-    registry.update_project_profiled_at(slug)
-
-    message = f"{result.file_count} file(s) profiled"
-    if include_symbols:
-        message += f", {result.symbol_count} symbol(s) extracted"
-
-    classified = False
-    classification_error = None
-
-    def _classify():
-        from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
-        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
-        steps = REPO_ANALYSIS_STEP_MAP["language_file_classification"]
-        return SurveyOrchestrator(registry).run(slug, steps=steps)
-
-    try:
-        survey_result = await asyncio.to_thread(_classify)
-        if survey_result.errors:
-            classification_error = "; ".join(survey_result.errors)
-        else:
-            classified = True
-            message += " Classification updated."
-    except Exception as exc:
-        classification_error = str(exc)
-
-    return ProfileScanResult(
-        status="ok", slug=slug,
-        file_count=result.file_count, symbol_count=result.symbol_count,
-        classified=classified, classification_error=classification_error,
-        message=message + ("" if message.endswith(".") else "."),
-    )
+# POST /{slug}/profile-scan was retired 2026-08-20. It refreshed
+# project_file_inventory/project_data_profiles from a zipball and auto-chained
+# the language-classification survey — all of which is now done by the
+# repo_file_inventory survey step and the "Coarse Profile Survey" Survey
+# Definition, reachable from Scouting's Survey sub-tab like any other survey.
+#
+# It had no caller: no UI code invoked it, and the scheduler calls
+# IngestionPipeline.refresh_profile() directly rather than going through HTTP.
+# It was also the last thing referring to a "Profile tab" that was never built.
+# refresh_profile() itself is untouched and still used by the scheduler and
+# IncrementalIndexer — only this HTTP surface is gone.
 
 
 class AnalysisRunResult(BaseModel):
@@ -688,6 +631,8 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
     )
     if catalog_entry and catalog_entry.get("action") == "ingest":
+        from resource_explorer.activity_logger import log_analysis_run
+
         def _run_ingest():
             from resource_explorer.ingestion.incremental import IncrementalIndexer
             from resource_explorer.query_cache import QueryCache
@@ -697,7 +642,9 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         try:
             await asyncio.to_thread(_run_ingest)
         except Exception as exc:
+            log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
             return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+        log_analysis_run(registry, "repo", slug, project.display_name, "ok", "Re-ingested into pgvector.", analysis_id)
         return AnalysisRunResult(status="ok", slug=slug, analysis_id=analysis_id, message="Re-ingested into pgvector.")
 
     steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
@@ -711,19 +658,73 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     def _run():
         return SurveyOrchestrator(registry).run(slug, steps=steps)
 
+    # Real, live-reported gap (2026-08-24): this route never wrote to
+    # activity_log at all, so Analyses cards had no last-run signal —
+    # unlike Survey Definition cards, which do (survey_definitions.py's
+    # run route). log_analysis_run below closes that; see
+    # registry.get_analysis_last_run()'s docstring for the read side.
+    from resource_explorer.activity_logger import log_analysis_run
+
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:
+        log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
         return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
 
     if result.errors:
-        return AnalysisRunResult(
-            status="error", slug=slug, analysis_id=analysis_id, error="; ".join(result.errors),
-        )
+        error = "; ".join(result.errors)
+        log_analysis_run(registry, "repo", slug, project.display_name, "error", error, analysis_id)
+        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=error)
+    summary = f"{len(result.annotations)} annotation(s)."
+    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id)
     return AnalysisRunResult(
         status="ok", slug=slug, analysis_id=analysis_id,
-        message=f"{len(result.annotations)} annotation(s).",
+        message=summary,
     )
+
+
+@router.get("/{slug}/analyses/last-activity")
+async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
+    every local AnalysisKind — the Analyses cards' equivalent of Survey
+    Definitions' /candidates endpoint already returning last_run_at/
+    last_published_at inline. Kept as its own lightweight endpoint rather
+    than folded into GET /api/analyses/{resource_type} (analyses.py):
+    that route is resource-type-wide and shared/cached across every repo of
+    the same type (see its own module docstring) — deliberately has no repo
+    slug at all. The frontend fetches this alongside GET /api/schedules/...
+    in _loadAnalysisCatalogPanel() and merges both client-side into each
+    card, same pattern that route already used for per-card schedule state.
+
+    last_published_at is real per-analysis-id data even though this route
+    is new: get_last_published_annotation_types() (added earlier the same
+    day for the Survey Results dashboards) already has everything needed —
+    each analysis_id's own annotation_types (analysis_catalog.yaml) is the
+    same join key used there, just applied per-analysis instead of
+    per-dashboard-of-several-analyses."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    last_run = registry.get_analysis_last_run("repo", slug)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+
+    result: dict[str, dict] = {}
+    for a in get_analyses("repo", include_egeria_live=False):
+        run = last_run.get(a["id"], {})
+        pub_at = max(
+            (published_by_type[t] for t in (a.get("annotation_types") or []) if t in published_by_type),
+            default="",
+        )
+        result[a["id"]] = {
+            "last_run_at": run.get("last_run_at", ""),
+            "last_run_status": run.get("last_run_status", ""),
+            "last_published_at": pub_at,
+        }
+    return result
 
 
 @router.get("/{slug}/analyses/{analysis_id}/results")
@@ -787,9 +788,51 @@ async def get_analysis_trend(slug: str, analysis_id: str) -> dict:
     return {"runs": trend_reader(registry, slug)}
 
 
+def _results_have_data(results) -> bool:
+    """Does a results payload actually contain anything?
+
+    Truthiness is not enough and that is the whole point of this function: the
+    readers return a shaped-but-empty dict when a step has never run for a repo
+    — `{"findings": [], "gap_count": 0}` — which is truthy, so `any(results)`
+    reported five-of-five analyses present for a repo that had never been
+    surveyed for any of them.
+
+    A payload counts as having data when it holds a non-empty collection or a
+    non-zero number. An all-empty, all-zero payload is what "never ran" looks
+    like. A genuinely all-zero result is therefore hidden too, which is the
+    accepted trade: it reads as "nothing to show" either way, and
+    include_empty=true returns everything for anyone who needs the distinction.
+    """
+    if not results:
+        return False
+    if isinstance(results, dict):
+        return any(_results_have_data(v) for v in results.values())
+    if isinstance(results, (list, tuple, set)):
+        return len(results) > 0
+    if isinstance(results, bool):
+        return results
+    if isinstance(results, (int, float)):
+        return results != 0
+    if isinstance(results, str):
+        return bool(results.strip())
+    return True
+
+
 @router.get("/{slug}/survey-results")
-async def get_survey_results(slug: str) -> dict:
-    """Tier 2 — the repo-wide Survey Results dashboard
+async def get_survey_results(slug: str, stage: str = "", include_empty: bool = False) -> dict:
+    """Tier 2 — the Survey Results dashboards for this repo.
+
+    stage (optional): restrict to cards belonging to that funnel stage, so each
+    intent's own Results tab shows only what it is responsible for. Omitted =
+    every stage, the original repo-wide view.
+
+    include_empty (optional): return cards with no stored results too. Off by
+    default — see the has_results comment below for why an empty card is worse
+    than an absent one.
+
+    Original docstring follows.
+
+    Tier 2 — the repo-wide Survey Results dashboard
     (docs/survey-results-dashboard-plan.md). Every SURVEY_RESULT_DASHBOARDS
     entry, with its resolved analysis_ids' latest results attached (reusing
     the exact same results_reader()s the per-analysis_id Analysis/Assessment
@@ -802,7 +845,9 @@ async def get_survey_results(slug: str) -> dict:
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
         REPO_ANALYSIS_RESULTS_MAP,
         SURVEY_RESULT_DASHBOARDS,
+        get_dashboard_annotation_types,
         get_dashboard_perspectives,
+        get_dashboard_stages,
     )
 
     registry = ProjectRegistry()
@@ -810,8 +855,21 @@ async def get_survey_results(slug: str) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
+    # {annotation_type: latest published_at} — one query for the whole repo,
+    # joined per-dashboard below against each dashboard's own annotation_types
+    # (get_dashboard_annotation_types). Real Egeria publish history, not a
+    # guess — see EgeriaPublisher.publish()'s record_published_annotation_types call.
+    published_by_type = registry.get_last_published_annotation_types(slug)
+
     dashboards = []
     for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+        stages = get_dashboard_stages(dashboard.analysis_ids)
+        # Stage filter: a card can legitimately belong to several stages
+        # (health_maturity reports repository_health/scouting *and*
+        # maturity/assessment), so this is membership, not equality.
+        if stage and stage not in stages:
+            continue
+
         analyses = []
         for analysis_id in dashboard.analysis_ids:
             entry = REPO_ANALYSIS_RESULTS_MAP.get(analysis_id)
@@ -823,6 +881,28 @@ async def get_survey_results(slug: str) -> dict:
                 except Exception:
                     results = None
             analyses.append({"analysis_id": analysis_id, "results": results})
+
+        # Only surface a card backed by something that actually ran. Previously
+        # every dashboard was returned unconditionally and a card with no data
+        # rendered as an empty shell, so the Results tab advertised analyses the
+        # repo had never been surveyed for — 6 cards covering 13 analyses when
+        # Scouting only ever runs a handful. `results=None` is what a reader
+        # returns for a step with no stored rows, so it is the honest signal.
+        has_results = any(_results_have_data(a["results"]) for a in analyses)
+        if not has_results and not include_empty:
+            continue
+
+        # Real per-dashboard publish signal (2026-08-24), not a repo-wide
+        # guess: the latest of this dashboard's own annotation_types' known
+        # publish times. Blank when has_results is true but nothing in it
+        # has ever actually been published — an honest, common state (ran
+        # locally, never sent to Egeria), distinct from never-run.
+        dashboard_types = get_dashboard_annotation_types(dashboard.analysis_ids)
+        last_published_at = max(
+            (published_by_type[t] for t in dashboard_types if t in published_by_type),
+            default="",
+        )
+
         dashboards.append({
             "id": dashboard.id,
             "title": dashboard.title,
@@ -830,9 +910,17 @@ async def get_survey_results(slug: str) -> dict:
             "render": dashboard.render,
             "custom_renderer": dashboard.custom_renderer,
             "perspectives": get_dashboard_perspectives(dashboard.analysis_ids),
+            "stages": stages,
+            "has_results": has_results,
             "analyses": analyses,
+            "last_published_at": last_published_at,
+            # Repo-wide, not per-dashboard — there's no per-analysis_id run
+            # timestamp to draw on today (unlike last_published_at above,
+            # which genuinely is per-dashboard). Still an honest "as of"
+            # signal: every dashboard's data was current no later than this.
+            "last_surveyed_at": project.last_surveyed_at or "",
         })
-    return {"slug": slug, "dashboards": dashboards}
+    return {"slug": slug, "stage": stage, "dashboards": dashboards}
 
 
 @router.get("/{slug}/survey-results/summary")

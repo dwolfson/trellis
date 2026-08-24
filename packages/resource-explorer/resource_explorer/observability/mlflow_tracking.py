@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from resource_explorer.config import get_config
+from resource_explorer.observability.reachability import endpoint_reachable
 
 
 def log_query(
@@ -13,7 +14,7 @@ def log_query(
     collections_used: list[str],
 ) -> None:
     cfg = get_config().observability.mlflow
-    if not cfg.enabled:
+    if not cfg.enabled or not endpoint_reachable(cfg.tracking_uri):
         return
     try:
         import mlflow

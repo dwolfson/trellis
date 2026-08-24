@@ -19,20 +19,35 @@ uv run resource-explorer web  # → http://localhost:8810
 
 Start the external services required for RAG and Egeria integration:
 ```bash
-# pgvector — shared with Egeria Advisor's egeria_advisor Postgres database.
-# In a Trellis monorepo checkout this is normally already running, managed
-# by egeria-workspaces-fs's compose-configs/shared-infra/shared-infra.yaml
-# (port 5442). For a from-scratch environment without it:
-docker run -p 5442:5432 -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_advisor -e POSTGRES_PASSWORD=advisor pgvector/pgvector:pg17
+# pgvector — shared with Egeria Advisor's egeria_advisor Postgres database (port 5442).
+#
+# With egeria-workspaces (recommended if you have it): the shared Postgres container
+# (egeria-shared-postgres, from egeria-workspaces-fs's
+# compose-configs/shared-infra/shared-infra.yaml) is normally already running, and its
+# init script already creates the egeria_advisor role/database + vector extension.
+# You still need to create Resource Explorer's own named schema once:
+docker exec egeria-shared-postgres psql -U egeria_advisor -d egeria_advisor -p 5442 \
+  -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer AUTHORIZATION egeria_advisor;'
 
-# Ollama (default LLM backend)
-ollama pull llama3.1:8b && ollama serve
+# Without egeria-workspaces (standalone/from-scratch): create your own container, then
+# the same schema against it:
+docker run -p 5442:5432 -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_advisor -e POSTGRES_PASSWORD=advisor pgvector/pgvector:pg17
+docker exec <container_name_or_id> psql -U egeria_advisor -d egeria_advisor \
+  -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer AUTHORIZATION egeria_advisor;'
+
+# Ollama (default LLM backend) — install from https://ollama.com if not already present
+ollama serve &                # skip if already running as a background service
+ollama pull llama3.1:8b
 ```
 
-No separate migration step is needed beyond creating the database above — Resource Explorer's
-vector tables are per-project (`{project_slug}_{collection_type}`) and provision themselves
-lazily the first time a project is scouted/surveyed (`auto_provision_on_insert=True`), same as
-its registry tables (projects, stats, etc.), which self-create on first use.
+No separate table migration step is needed beyond the schema creation above — Resource
+Explorer's vector tables are per-project (`{project_slug}_{collection_type}`) inside the
+`resource_explorer` schema and provision themselves lazily the first time a project is
+scouted/surveyed (`auto_provision_on_insert=True`), same as its registry tables (projects,
+stats, etc.), which self-create on first use. The *schema* itself is different from those
+tables — `CREATE SCHEMA IF NOT EXISTS` only runs the first time something actually connects
+through `PgVectorStore`, so don't count on it existing before you've triggered real RE usage;
+run the explicit command above so it's there from the start.
 
 ---
 

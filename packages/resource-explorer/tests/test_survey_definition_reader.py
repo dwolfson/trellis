@@ -329,6 +329,26 @@ class TestResolveQuestionGuid:
         reader = _reader_with_fake_classification_explorer(_Raising())
         assert reader.resolve_question_guid("Q") is None
 
+    def test_pyegeria_not_found_sentence_is_not_treated_as_a_guid(self):
+        """Regression: pyegeria signals "no match" by returning the *string*
+        "No elements found", not None — a truthy value that passed straight
+        through the old `or None` guard and was handed onward as if it were a
+        GUID. It then reached get_scoped_elements() as a URL path segment, 404'd,
+        and the caller's broad except swallowed it — silently downgrading the
+        scoped fast path to the full scan on every call.
+
+        This escaped the suite because the fake above returns None on a miss,
+        i.e. it was better behaved than the real library; this test pins the
+        real behavior instead."""
+        fake = _FakeClassificationExplorer(guid_by_name={"Q": "No elements found"})
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.resolve_question_guid("Q") is None
+
+    def test_non_string_lookup_result_is_not_treated_as_a_guid(self):
+        fake = _FakeClassificationExplorer(guid_by_name={"Q": {"guid": "x"}})
+        reader = _reader_with_fake_classification_explorer(fake)
+        assert reader.resolve_question_guid("Q") is None
+
 
 class TestFindCandidateProcessGuidsByQuestions:
     """D2 — scoped candidate lookup via ClassificationExplorer.get_scoped_elements,

@@ -20,3 +20,12 @@ mlruns/
 mlartifacts/
 .phoenix/
 !/CLAUDE.md
+
+# Dr.Egeria runtime byproducts written next to the command documents when
+# `dr_egeria --process` runs from docs/dr-egeria/ — processed-copy archives,
+# per-run logs. Outputs of executing the docs, not source content.
+docs/dr-egeria/egeria-outbox/
+docs/dr-egeria/**/egeria-outbox/
+docs/dr-egeria/**/logs/
+docs/dr-egeria/logs/
+docs/dr-egeria/debug_log.log

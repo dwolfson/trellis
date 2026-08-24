@@ -125,6 +125,32 @@ async def list_candidates(
             except Exception as exc:
                 log.debug("get_produced_annotation_types(%r) failed: %s", adapter.egeria_technology_type_name, exc)
 
+        # Deliberately serial. Parallelising this looks like the obvious next
+        # perf win (it is ~1.3s of the endpoint's ~2.5s cold) and was measured
+        # against a real server on 2026-08-19 — it does not pay off either way:
+        #
+        #   serial                       1.39s   all 4 correct
+        #   ThreadPool, shared reader    0.34s   CORRUPTED — one candidate came
+        #                                        back CLIENT_ERROR_400 that
+        #                                        fetches fine serially
+        #   ThreadPool, reader-per-thread 1.25-1.56s over 3 trials, all correct
+        #
+        # The shared-client speedup is not real: pyegeria's sync wrappers drive
+        # an event loop (nest_asyncio) per client, so concurrent calls on one
+        # client corrupt each other — intermittently, which is the worst way for
+        # this to fail. Giving each thread its own reader is correct but buys
+        # nothing, because the per-reader connect/token handshake costs about
+        # what the concurrency saves.
+        #
+        # So: leave it serial until pyegeria exposes an async client that can be
+        # driven from one loop (then gather() the fetches properly). If the real
+        # problem is a slow/hanging definition rather than throughput, the fix is
+        # a per-fetch deadline here, not threads.
+        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.surveyors.repo_survey_definition_adapter import get_survey_definition_speed_tag
+
+        last_activity_by_ref = ProjectRegistry().get_survey_definition_last_activity(entity_type, slug)
+
         detailed = []
         for c in thin_candidates:
             try:
@@ -159,10 +185,90 @@ async def list_candidates(
                     step_info["egeria_produced_annotation_types"] = produced_annotation_types
                 steps.append(step_info)
 
+            last_activity = last_activity_by_ref.get(c["qualified_name"], {})
             detailed.append({
                 **c, "description": survey_def.description, "error": None, "steps": steps,
                 "survey_kind": survey_def.survey_kind,
+                "last_run_at": last_activity.get("last_run_at", ""),
+                "last_run_status": last_activity.get("last_run_status", ""),
+                "last_published_at": last_activity.get("last_published_at", ""),
+                # 'candidate' = a real per-Survey-Definition publish (the ☁
+                # Publish button on this exact card); 'repo' = inferred from
+                # a whole-repo "Publish survey →" that happened after this
+                # candidate's last run — see get_survey_definition_last_
+                # activity's docstring for why that's still honest, not a
+                # precise per-candidate claim. Blank when last_published_at
+                # is blank too.
+                "last_published_scope": last_activity.get("last_published_scope", ""),
+                # Matches the local Analyses catalog's own run_time field —
+                # see get_survey_definition_speed_tag's docstring for how
+                # it's derived (Survey Definitions have no such field of
+                # their own to read).
+                "run_time": get_survey_definition_speed_tag(steps),
             })
+
+        # Composite-survey propagation (2026-08-24 — direct feedback: "if a
+        # Survey includes all the steps of other surveys and we run it, does
+        # it also mean that the smaller size survey ran?" e.g. Scouting
+        # Survey's own description says it's literally "the union of Git
+        # Statistics Survey and Coarse Profile Survey"). A candidate whose
+        # own re_analysis_step set is a non-empty SUBSET of another
+        # candidate's set inherits that superset's last-run info when it has
+        # none of its own — the smaller survey's steps genuinely did execute
+        # as part of the bigger run, so its badge should say so. Marked via
+        # `last_run_via` (the superset's own ref) so the UI can render this
+        # honestly ("via Scouting Survey") rather than implying a direct run;
+        # a candidate that HAS its own last_run_at is never overwritten, even
+        # if a later superset run exists — its own history takes precedence.
+        # When multiple supersets qualify, the one with the most recent
+        # last_run_at wins (most relevant to "did this run recently").
+        def _step_set(cand: dict) -> set[str]:
+            return {s["re_analysis_step"] for s in cand.get("steps", []) if s.get("re_analysis_step")}
+
+        step_sets = {c["qualified_name"]: _step_set(c) for c in detailed}
+        for cand in detailed:
+            if cand.get("last_run_at"):
+                continue
+            own_steps = step_sets.get(cand["qualified_name"])
+            if not own_steps:
+                continue
+            best = None
+            for other in detailed:
+                if other["qualified_name"] == cand["qualified_name"] or not other.get("last_run_at"):
+                    continue
+                other_steps = step_sets.get(other["qualified_name"])
+                if not other_steps or other_steps == own_steps or not own_steps.issubset(other_steps):
+                    continue
+                if best is None or other["last_run_at"] > best["last_run_at"]:
+                    best = other
+            if best is not None:
+                cand["last_run_at"] = best["last_run_at"]
+                cand["last_run_status"] = best.get("last_run_status", "")
+                cand["last_run_via"] = best["qualified_name"]
+
+        # Extends the registry's own repo-wide-publish fallback (see
+        # get_survey_definition_last_activity's docstring) to candidates that
+        # only got a last_run_at just above, via composite propagation, not a
+        # real activity_log row of their own — e.g. Coarse Profile Survey,
+        # covered by a Scouting Survey run, genuinely had its data included
+        # in a later whole-repo publish too, same as Scouting Survey itself
+        # was. Without this, only the composite *superset* showed the
+        # repo-wide publish badge and every subset it covered stayed blank,
+        # which is exactly the same "we published but it says never" gap
+        # this whole mechanism exists to close. repo_wide_publish_at is
+        # recovered from whichever candidate(s) the registry call already
+        # tagged 'repo' (all share the same timestamp — the most recent
+        # untagged publish for this entity), not recomputed independently.
+        repo_wide_publish_at = next(
+            (c["last_published_at"] for c in detailed if c.get("last_published_scope") == "repo"), "",
+        )
+        if repo_wide_publish_at:
+            for cand in detailed:
+                if cand.get("last_published_at") or not cand.get("last_run_at"):
+                    continue
+                if cand["last_run_at"] <= repo_wide_publish_at:
+                    cand["last_published_at"] = repo_wide_publish_at
+                    cand["last_published_scope"] = "repo"
 
         # Native Egeria processes for this Technology Type (config/technology_
         # type_processes.yaml), shown as informational only — NOT merged into
@@ -250,22 +356,36 @@ def _run_survey_definition_background(
     from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutorError
     from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReaderError
 
+    # Embedded in `detail` on every terminal path (success, reader/executor
+    # error, and unexpected crash) — see registry.get_survey_definition_last_
+    # activity(), which scans activity_log for exactly this key to compute
+    # each candidate's last-run badge. summary alone isn't reliable for this:
+    # it does contain the ref for the *initial* 'running' row (see the route
+    # below), but this call always overwrites summary on the terminal row, so
+    # by the time anything queries a completed run, the ref only survives if
+    # it's also in detail.
+    ref = body.survey_definition_ref
+
     registry = ProjectRegistry()
     try:
         result = _execute_survey_definition_sync(entity_type, slug, body)
     except (SurveyDefinitionExecutorError, SurveyDefinitionReaderError) as exc:
-        registry.update_activity_status(activity_id, "error", summary=str(exc), detail=json.dumps({"errors": [str(exc)]}))
+        registry.update_activity_status(
+            activity_id, "error", summary=str(exc),
+            detail=json.dumps({"errors": [str(exc)], "survey_definition_ref": ref}),
+        )
         return
     except Exception as exc:  # pragma: no cover — genuinely unexpected, not a survey-step error
         log.exception("Survey Definition run background thread crashed for %s/%s", entity_type, slug)
         registry.update_activity_status(
             activity_id, "error", summary=f"Survey Definition run crashed: {exc}",
-            detail=json.dumps({"errors": [str(exc)]}),
+            detail=json.dumps({"errors": [str(exc)], "survey_definition_ref": ref}),
         )
         return
 
     errors = result.get("errors") or []
     summary = f"Completed with {len(errors)} error(s)" if errors else "Survey Definition run complete"
+    result["survey_definition_ref"] = ref
     registry.update_activity_status(activity_id, "error" if errors else "ok", summary=summary, detail=json.dumps(result))
 
 

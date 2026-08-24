@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from resource_explorer.notification_detector import detect_change
-from resource_explorer.registry import ProjectRegistry
+from resource_explorer.registry import Project, ProjectRegistry
 
 
 @pytest.fixture
@@ -15,6 +15,15 @@ def registry(tmp_path):
 
 
 class TestFindingsShapedKinds:
+    @pytest.fixture(autouse=True)
+    def _register_myproj(self, registry):
+        # upsert_finding() now rejects an unregistered slug (2026-08-23,
+        # project_analysis_findings_project_slug_fkey incident) — register
+        # "myproj" so this class's findings calls still exercise
+        # detect_change() rather than the new guard.
+        registry.add(Project(slug="myproj", display_name="My Project",
+                              github_url="https://github.com/test/myproj"))
+
     def test_no_history_is_not_changed(self, registry):
         result = detect_change(registry, "myproj", "license_classification")
         assert result.changed is False
@@ -92,6 +101,17 @@ class TestFindingsShapedKinds:
 
 
 class TestMetricsShapedKinds:
+    @pytest.fixture(autouse=True)
+    def _register_project(self, registry):
+        """Same fixture the sibling findings class needs. Both classes relied on
+        SQLite silently ignoring the FK to projects.slug; with the pragma on
+        (and on Postgres all along) an unregistered slug is rejected."""
+        from resource_explorer.registry import Project
+        if registry.get("myproj") is None:
+            registry.add(Project(slug="myproj", display_name="My Project",
+                                 github_url="https://github.com/test/myproj",
+                                 collections=[]))
+
     def test_no_metrics_history_is_not_changed(self, registry):
         result = detect_change(registry, "myproj", "api_structure")
         assert result.changed is False

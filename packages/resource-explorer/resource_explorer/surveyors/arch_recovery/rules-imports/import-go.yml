@@ -1,0 +1,26 @@
+# design §5.5 signal 1 / plan §0(a), Go extension — added after spike finding 69,
+# where Prometheus scored 0/11 because three of the four proposers are
+# Python/Java/npm-only and a single-module Go repo defeats manifest identity
+# entirely (one `go.mod` spans the whole architecture).
+#
+# Unlike Python and Java, this matches the *spec* rather than the whole
+# declaration. `import_declaration` also works but returns the entire
+# parenthesised block as one node, which would then need re-parsing to split
+# quoted paths out of text that may also contain aliases, blank identifiers and
+# comments. `import_spec` yields exactly one node per imported package, so the
+# re-parse is a single quoted-string extraction with nothing to get wrong.
+#
+# VERIFIED against a real parse tree before use (finding-19 discipline — a rule
+# is never trusted until a known-positive run confirms it). On a file carrying
+# `import "fmt"`, a parenthesised block, an alias (`stdlog "log"`) and a blank
+# side-effect import (`_ "net/http/pprof"`), `import_spec` matched all six
+# imports individually; `import_declaration` matched 2 nodes for the same file.
+#
+# Note what this does NOT need: Go import paths are absolute and
+# module-qualified, so there is no per-file search-path resolution of the kind
+# Python needs, and no global type index of the kind Java needs. The `go.mod`
+# module path plus the import string determines the target directory outright.
+id: go-import
+language: Go
+rule:
+  kind: import_spec

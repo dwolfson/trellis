@@ -1,0 +1,9 @@
+# design §5.1 — scheduled work -> Automated Action.
+id: java-scheduled
+language: Java
+rule:
+  any:
+    - kind: marker_annotation
+      regex: '^@Scheduled$'
+    - kind: annotation
+      regex: '^@Scheduled\('

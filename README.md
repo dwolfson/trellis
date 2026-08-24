@@ -68,25 +68,66 @@ cp packages/egeria-advisor/advisor/configdata/mcp_servers.json.example \
 ### Databases
 
 Both apps share one Postgres/pgvector instance (`egeria_advisor` database, default port `5442`).
-In a Trellis monorepo checkout this is normally already running, managed by
-egeria-workspaces-fs's `compose-configs/shared-infra/shared-infra.yaml`. For a from-scratch
-environment without it:
+Setup differs depending on whether you're working inside a full **egeria-workspaces**
+checkout or standalone:
+
+**With egeria-workspaces (recommended if you have it):** the shared Postgres container is
+already running, managed by egeria-workspaces-fs's
+`compose-configs/shared-infra/shared-infra.yaml` (container name `egeria-shared-postgres`).
+Its init script (`docker-entrypoint-initdb.d/init_egeria.sql`) already creates the
+`egeria_advisor` role/database and runs `CREATE EXTENSION IF NOT EXISTS vector` — but it does
+**not** create Resource Explorer's named Postgres schema. Create it once, explicitly (it's
+not reliably auto-created by the app itself — see note below):
+
+```bash
+docker exec egeria-shared-postgres psql -U egeria_advisor -d egeria_advisor -p 5442 \
+  -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer AUTHORIZATION egeria_advisor;'
+```
+
+**Without egeria-workspaces (standalone/from-scratch):** run your own Postgres+pgvector
+container, then create the same schema against it:
 
 ```bash
 docker run -p 5442:5432 -e POSTGRES_DB=egeria_advisor -e POSTGRES_USER=egeria_advisor \
   -e POSTGRES_PASSWORD=advisor pgvector/pgvector:pg17
+
+docker exec <container_name_or_id> psql -U egeria_advisor -d egeria_advisor \
+  -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer AUTHORIZATION egeria_advisor;'
 ```
 
-Table creation is otherwise automatic and needs no separate migration step, but the two apps
+Table creation beyond that is automatic and needs no separate migration step, but the two apps
 provision differently:
 
 - **Egeria Advisor** has a fixed set of 9 vector collections plus its metrics/symbol-store
-  tables. Starting its web server provisions all of them (`PgVectorStore.provision_schema()` runs
-  on FastAPI startup); a metrics-only table set also self-provisions on first use from the CLI.
-- **Resource Explorer**'s vector collections are per-project (`{project_slug}_{collection_type}`),
-  so there's no fixed set to pre-create — each table is created lazily the first time that
-  project's data is inserted (`auto_provision_on_insert=True`). Its own registry tables (projects,
-  stats, etc.) self-provision on first use the same way.
+  tables, all unqualified in the `public` schema (no named-schema step needed for EA). Starting
+  its web server provisions all of them (`PgVectorStore.provision_schema()` runs on FastAPI
+  startup); the metrics tables also self-provision on first use from the CLI.
+- **Resource Explorer**'s vector collections are per-project (`{project_slug}_{collection_type}`)
+  inside the `resource_explorer` schema created above, so there's no fixed table set to
+  pre-create — each table is created lazily the first time that project's data is inserted
+  (`auto_provision_on_insert=True`). Its own registry tables (projects, stats, etc.)
+  self-provision on first use the same way. The *schema itself* (the namespace, as opposed to
+  the tables inside it) is a separate one-time step from table creation — `CREATE SCHEMA IF NOT
+  EXISTS` runs as part of `PgVectorStore.connect()` too, but only the first time something
+  actually calls it, so don't rely on it firing before you've triggered any real RE usage; run
+  the explicit command above so the schema exists from the start.
+
+### LLM backend (Ollama)
+
+Both apps default to a local [Ollama](https://ollama.com) server for LLM inference.
+
+```bash
+# Install (macOS)
+brew install ollama
+# or download from https://ollama.com/download
+
+# Start the server (skip if installed as a background service)
+ollama serve &
+
+# Pull the models each app needs
+ollama pull llama3.1:8b          # Resource Explorer + Egeria Advisor RAG Q&A
+ollama pull qwen2.5-coder:32b    # Egeria Advisor LGCI planning only
+```
 
 ### Running Resource Explorer
 

@@ -161,11 +161,32 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: repo_classification
+    name: "Repo Classification"
+    description: "What the repo represents (library/application/middleware/tool/tutorial/samples/documentation), where its expected artifacts live, and whether architecture recovery is worth running."
+    resource_types:
+      - repo
+    intent: discovery
+    perspectives:
+      - steward
+      - data_scientist
+      - all
+    annotation_types:
+      - ClassificationAnnotation
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: license_classification
     name: "License Classification"
     description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."
     resource_types: ["repo"]
-    intent: assessment  # is this worth pursuing, given its usage restrictions?
+    intent: discovery  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
     perspectives: ["steward", "security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -213,7 +234,7 @@ repo_analyses:
     name: "Maturity"
     description: "Project age/lifecycle stage (nascent/emerging/established/mature) from repo creation date — a CHAOSS-informed early-headlights signal, distinct from Repository Health's activity/community/release scoring."
     resource_types: ["repo"]
-    intent: assessment
+    intent: discovery  # retagged from 'assessment' 2026-08-20 — see CLAUDE.md rule 17.
     perspectives: ["steward", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -229,7 +250,7 @@ repo_analyses:
     name: "Repo Conventions"
     description: "Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style catalog-info.yaml), documentation breadth."
     resource_types: ["repo"]
-    intent: assessment
+    intent: discovery  # retagged from 'assessment' 2026-08-20 — see CLAUDE.md rule 17.
     perspectives: ["steward", "security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -256,6 +277,26 @@ repo_analyses:
     egeria_registration:
       candidate: false
       native_process_ref: null
+
+  - id: sub_resource_survey
+    name: "Sub-resource Survey"
+    description: "Walk the file inventory to recommend which top-level folders and well-known files are worthy of becoming their own Egeria asset, with size/mode/ownership metadata tiered by cost."
+    resource_types: ["repo"]
+    # analysis, not assessment: it produces a structural recommendation about
+    # what the repo *contains* and how it is shaped, not a scored judgement of
+    # quality. It was absent from this catalog entirely until 2026-08-20, which
+    # meant it carried no intent — and since Survey Results dashboards derive
+    # their stage from the intents of their analyses, data_profile was placed on
+    # the strength of data_file_profiling alone and this analysis was invisible
+    # to stage routing.
+    intent: analysis
+    perspectives: ["steward", "data_scientist", "all"]
+    annotation_types: ["ClassificationAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: corpus
+    native_process_ref: null
 
   - id: api_structure
     name: "API & Symbol Extraction"
@@ -289,6 +330,48 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: manifest_parse
+    name: "Refresh Dependencies & Conventions"
+    description: "Parse dependency manifests, CI workflow content, and repo-convention signals from a fresh zipball, refreshing dependency, CI-quality, and repo-convention data — the self-contained refresh 'Dependency Analysis', 'CI Quality' and 'Repo Conventions' read from. Independently runnable/schedulable so these tables stay current even for repos that skip full ingestion (the org-import/discovery path always does)."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["data_scientist", "steward", "all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: architecture_recovery
+    name: "Architecture Recovery"
+    description: "Recover candidate architecture components from package manifests, deployment units (Dockerfile/compose), ast-grep code markers, and import/co-change coupling — a component partition proposal with confidence and evidence, not a published blueprint (docs/architecture-recovery-phase1-plan.md)."
+    resource_types: ["repo"]
+    # Retagged to discovery 2026-08-22 (maintainer's ruling) — the stored
+    # candidate hierarchy (approach-portfolio-model.md §2a) is comfortably
+    # sufficient for "which subsystem is this?" (a coarse projection, see
+    # projection.py), marginal for component-scoped metrics, and nowhere
+    # near publishable. NOTE the tension this leaves with CLAUDE.md rule
+    # 17's collect-vs-reason axis: both repo_arch_detect (zipball_root) and
+    # repo_arch_coupling (zipball_root + git_clone_root) DO fetch fresh
+    # data, unlike every other discovery-tier analysis, which is zero-fetch
+    # by construction. Recorded rather than quietly reconciled — the
+    # maintainer's call was explicit and is not this comment's to override.
+    intent: discovery
+    perspectives: ["all"]
+    annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: corpus
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: repo_profile_refresh
     name: "Refresh Coarse Profile"
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."
@@ -312,6 +395,22 @@ repo_analyses:
     intent: analysis
     perspectives: ["all"]
     annotation_types: []
+    source: local
+    run_time: minutes
+    action: ingest
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: website_ingestion
+    name: "Ingest Documentation Site"
+    description: "Embed the project's documentation site into pgvector so Chat and Understanding can answer from what the project says about itself, not only from its source tree. Collapses versioned docs to the current release. Skips when the repo builds that site itself — the source is already ingested in a better form."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: minutes
     action: ingest

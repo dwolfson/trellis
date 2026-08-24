@@ -104,6 +104,15 @@ class SurveyResult:
     surveyed_at: datetime = field(default_factory=datetime.utcnow)
     annotations: list[Annotation] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)   # non-fatal issues during survey
+    # Same failures as `errors`, keyed by the step that raised. Needed because a
+    # single run can now carry steps belonging to several different scheduled
+    # analyses (scheduler.py coalesces same-repo due schedules into one run so
+    # the zipball downloads once), and each of those schedules records its own
+    # pass/fail. Without per-step attribution the batch would have to mark every
+    # analysis in it failed because one step raised, which turns one real
+    # failure into several false ones. `errors` stays the flat list every
+    # existing caller reads.
+    step_errors: dict[str, str] = field(default_factory=dict)
 
     def add(self, annotation: Annotation) -> None:
         self.annotations.append(annotation)

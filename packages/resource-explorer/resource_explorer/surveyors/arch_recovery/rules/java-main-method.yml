@@ -1,0 +1,10 @@
+# design §5.1 "CLI markers" -> Console Command. A JVM entry point is a
+# `public static void main(String[])`, the Java analogue of Go's `package main`
+# (finding 78) — declared, not inferred from a filename.
+id: java-main-method
+language: Java
+rule:
+  kind: method_declaration
+  all:
+    - has: { field: name, regex: '^main$' }
+    - has: { kind: modifiers, regex: 'static' }

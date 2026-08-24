@@ -45,10 +45,18 @@ class TestResultsRoute:
         resp = client.get("/api/projects/myproj/analyses/not_a_real_analysis/results")
         assert resp.status_code == 400
 
-    def test_scouting_tier_id_has_no_results_view(self, client):
-        # repository_health/language_file_classification are scouting-tagged,
-        # not in REPO_ANALYSIS_RESULTS_MAP — no results view for them.
+    def test_repository_health_now_has_a_results_view(self, client):
+        """It did not, and that was the bug: HealthSurveyor produced only
+        in-memory annotations, so `repository_health` had no reader, its results
+        were permanently null, and the Survey Results card naming it could never
+        populate however often the survey ran."""
         resp = client.get("/api/projects/myproj/analyses/repository_health/results")
+        assert resp.status_code == 200
+
+    def test_an_id_with_no_results_view_still_400s(self, client):
+        """The guard itself still works — not every analysis has a results
+        view (egeria_publish is an action, not an analysis)."""
+        resp = client.get("/api/projects/myproj/analyses/egeria_publish/results")
         assert resp.status_code == 400
 
     @pytest.mark.parametrize("analysis_id", _ALL_5_ANALYSIS_IDS)

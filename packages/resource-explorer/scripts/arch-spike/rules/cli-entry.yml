@@ -1,0 +1,12 @@
+# design §5.1 "Package entry points" code-marker half — manifests already
+# find the [project.scripts] declaration (identity precedence rung 2), but
+# not what kind of interactive surface the entry point actually is. This
+# distinguishes a Typer/Click CLI from a Textual full-screen TUI from a plain
+# script, which classify() in detectors.py cannot do from a manifest alone
+# (finding 7: "manifests cannot distinguish a service from a CLI").
+id: typer-cli-construction
+language: Python
+rule:
+  any:
+    - pattern: typer.Typer($$$ARGS)
+    - pattern: Typer($$$ARGS)

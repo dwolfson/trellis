@@ -1,0 +1,128 @@
+# Check registry — the individual checks each analysis emits.
+#
+# Why this file exists: questions in question_catalog.yaml join to analyses by
+# `analysis_ids`, which is too coarse to dispatch on. `repo_conventions` alone
+# answers 7 of the 16 analysis-answerable questions because it bundles five
+# unrelated checks. The per-check granularity already exists in the data —
+# `project_analysis_findings.check_name` (registry.py:908-921) stores one row
+# per check — but nothing declared the vocabulary, so nothing could join to it.
+# See docs/investigation-framing-design.md, final section, for the measurement
+# that motivated this.
+#
+# `findings_kind` is NOT always the analysis id. Three analyses write their
+# findings under a different `kind` than their catalog id, which is a live trap
+# for anything building this join naively:
+#
+#     analysis id (catalog)      findings kind (DB)
+#     security_scan          ->  security_hygiene
+#     documentation_coverage ->  documentation
+#     sub_resource_survey    ->  repo_sub_resource_survey
+#
+# Verified 2026-08-24 against the live registry
+# (postgresql://…/egeria_advisor, search_path=resource_explorer):
+#   SELECT kind, check_name, count(*) FROM project_analysis_findings GROUP BY 1,2
+# 255 (kind, check_name) pairs over 60 surveyed repos. Re-verify with that query
+# rather than reading the surveyors, since some check names are built at runtime
+# (see repo_classification below).
+#
+# NOT LISTED, deliberately — `check_name` is overloaded. For `architecture_recovery`
+# (70 distinct values) and `repo_sub_resource_survey` (86), the column holds an
+# *instance key* — a component identity, a coupling shape, a directory path — not
+# a check identifier. Those are not checks and must never be offered as join
+# targets; including them would pollute the vocabulary with directory names.
+
+analyses:
+
+  repo_conventions:
+    findings_kind: repo_conventions
+    source: ingestion/repo_conventions_parser.py:97-179
+    checks:
+      - security_policy_content
+      - automated_build
+      - deployment_docker
+      - catalog_info
+      - doc_breadth
+
+  ci_quality:
+    findings_kind: ci_quality
+    source: ingestion/ci_workflow_parser.py:39-43
+    checks:
+      - ci_runs_tests
+      - ci_runs_lint
+      - ci_runs_build
+
+  security_scan:
+    findings_kind: security_hygiene   # not the analysis id — see header
+    source: surveyors/sub_surveyors/security_hygiene.py:131-250
+    checks:
+      - security_policy
+      - ci_config
+      - license
+
+  security_features:
+    findings_kind: security_features
+    source: surveyors/sub_surveyors/security_features.py:32-36
+    checks:
+      - secret_scanning
+      - secret_scanning_push_protection
+      - secret_scanning_non_provider_patterns
+      - dependabot_security_updates
+
+  documentation_coverage:
+    findings_kind: documentation      # not the analysis id — see header
+    source: surveyors/sub_surveyors/documentation.py:96-201
+    checks:
+      - collection_present
+      - hygiene_files
+      - quality_score
+
+  repo_classification:
+    findings_kind: repo_classification
+    source: surveyors/sub_surveyors/repo_classification.py:150-201
+    # `expected_*` names are built at runtime as f"expected_{item.kind}" from
+    # github/expectations.py's EXPECTED/NOT_EXPECTED doc-type tuples, so this
+    # list tracks that table and must be re-checked when it changes.
+    checks:
+      - repo_role
+      - architecture_recovery_gate
+      - classification_error
+      - expected_readme
+      - expected_architecture
+      - expected_deployment
+      - expected_api-reference
+      - expected_examples
+      - expected_changelog
+
+  license_classification:
+    findings_kind: license_classification
+    source: surveyors/sub_surveyors/license_classifier.py:70-133
+    checks:
+      - license_risk_tier
+
+  maturity:
+    findings_kind: maturity
+    source: surveyors/sub_surveyors/maturity.py:41-108
+    checks:
+      - project_maturity
+
+# Analyses with no per-check decomposition — they answer as a whole, so a
+# question joins to the analysis id directly and there is nothing finer to
+# name. Listed explicitly so "absent from this file" is never ambiguous
+# between "has no checks" and "nobody has looked yet".
+whole_analysis_only:
+  - repository_health
+  - dependency_analysis
+  - language_file_classification
+  - api_structure
+  - code_symbol_extraction
+  - data_file_profiling
+  - manifest_parse
+  - repo_profile_refresh
+  - rag_ingestion
+  - website_ingestion
+  - egeria_publish
+
+# Excluded — `check_name` is an instance key here, not a check. See header.
+instance_keyed_not_checks:
+  - architecture_recovery
+  - sub_resource_survey

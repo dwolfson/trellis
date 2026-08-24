@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -380,6 +381,259 @@ class SurveyOnlyResult(BaseModel):
     error: str | None = None
 
 
+# ── Egeria linkage divergence (docs/Backlog.md; egeria_linkage.py) ───────────
+# Surfaced as its own routes rather than folded into /{slug}/reset because reset
+# is repo-only and, crucially, undiscoverable: it is the right action but nothing
+# ever tells you to take it. These make the condition visible and name the
+# choices. The /{slug}/reset route stays as-is — same clearing, still valid.
+
+class StaleLinkage(BaseModel):
+    entity_type: str
+    entity_slug: str
+    stale_guid: str = ""
+    detected_at: str = ""
+    detail: str = ""
+
+
+class LinkageResolveRequest(BaseModel):
+    # republish — re-publish what RE already holds locally (fast; right when only
+    #             Egeria was reset and the resource itself has not changed)
+    # resurvey  — re-survey from scratch, then publish (right when the resource
+    #             may have changed too, or the local data is old enough to doubt)
+    # discard   — clear the broken link and stop; RE's local survey data is kept
+    action: str
+
+
+class LinkageResolveResult(BaseModel):
+    status: str
+    entity_type: str
+    entity_slug: str
+    action: str
+    asset_guid_cleared: bool = False
+    surveys_deleted: int = 0
+    next_step: str = ""
+
+
+@router.get("/linkage/stale", response_model=list[StaleLinkage])
+def list_stale_linkages() -> list[StaleLinkage]:
+    """Entities whose cached Egeria GUID was found not to exist.
+
+    A row appears only after a real failure — nothing here probes Egeria. The
+    reactive-only choice is deliberate for now: a proactive sweep would have to
+    decide how often to re-check every cataloged entity, and the failure it
+    guards against is rare and already loud once this exists.
+    """
+    return [StaleLinkage(**{k: v for k, v in row.items() if k != "status"})
+            for row in ProjectRegistry().list_stale_egeria_linkages()]
+
+
+class BulkTarget(BaseModel):
+    entity_type: str = "repo"
+    slug: str
+
+
+class BulkRequest(BaseModel):
+    """An explicit list of what to act on, never a server-side "everything stale".
+
+    A sweep result and a work list are different things: `egeria-recheck` reports
+    what it found at that moment, and deriving the target list here would act on
+    something nobody read. The UI sends the rows it displayed, so what is acted on
+    is always what was seen.
+    """
+    targets: list[BulkTarget]
+    dry_run: bool = True   # defaults to the safe direction; the caller opts out
+
+
+class BulkResolveRequest(BulkRequest):
+    action: str = "republish"
+
+
+@router.post("/linkage/resolve-all")
+async def resolve_all_linkages(req: BulkResolveRequest) -> dict:
+    """Apply one resolution to many diverged resources.
+
+    Republish is the usual choice after an Egeria reset — it re-publishes what RE
+    already holds rather than re-scanning. Runs in a thread: a republish is a
+    survey plus a publish per resource, so twenty of them is minutes, not
+    milliseconds.
+    """
+    from resource_explorer.bulk_ops import resolve_all
+
+    registry = ProjectRegistry()
+    targets = [t.model_dump() for t in req.targets]
+    try:
+        result = await asyncio.to_thread(
+            resolve_all, registry, targets, req.action, dry_run=req.dry_run)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result.as_dict()
+
+
+@router.post("/linkage/delete-local")
+async def delete_resources_locally(req: BulkRequest) -> dict:
+    """Remove resources from RE entirely — registry row and pgvector collections.
+
+    Destructive, and the collections are the expensive part to reverse:
+    re-registering means re-ingesting. Egeria is left alone. Defaults to a dry
+    run; the caller has to ask for the real thing.
+    """
+    from resource_explorer.bulk_ops import delete_local
+
+    result = await asyncio.to_thread(
+        delete_local, ProjectRegistry(), [t.model_dump() for t in req.targets],
+        dry_run=req.dry_run)
+    return result.as_dict()
+
+
+@router.post("/linkage/delete-in-egeria")
+async def delete_resources_in_egeria(req: BulkRequest) -> dict:
+    """Delete the Egeria asset RE recorded for each resource.
+
+    Only ever the GUID RE itself stored — never resolved by name, never
+    cascading, and a resource without a cached GUID is skipped rather than
+    searched for. Egeria is the catalog of record and RE otherwise only adds to
+    it; this is the one path that can remove governance history, so it is
+    deliberately the narrowest of the three.
+
+    RE's own data is untouched: registry rows, survey results and collections all
+    survive.
+    """
+    from resource_explorer.bulk_ops import delete_in_egeria
+
+    result = await asyncio.to_thread(
+        delete_in_egeria, ProjectRegistry(), [t.model_dump() for t in req.targets],
+        dry_run=req.dry_run)
+    return result.as_dict()
+
+
+@router.post("/linkage/{entity_type}/{slug}/resolve", response_model=LinkageResolveResult)
+async def resolve_stale_linkage(
+    entity_type: str, slug: str, req: LinkageResolveRequest,
+) -> LinkageResolveResult:
+    """Act on a detected divergence.
+
+    All three actions clear the unusable GUID and the divergence record — that is
+    what unblocks the resource, and it is common to every choice. They differ in
+    what happens next, which is why the caller has to say which one they mean
+    rather than this picking for them.
+
+    Only `republish`/`resurvey` for a repo actually run the follow-up work here.
+    For databases and filesystems the link is cleared and the caller is told which
+    existing action to run: re-publishing those from cached local data needs
+    per-type orchestration (a database publish reconstructs schema_info and fires
+    Egeria's native survey), and there is no registered database or filesystem in
+    this deployment to verify such a path against. Clearing is the part that is
+    genuinely generic; pretending the rest was would be worse than saying so.
+    """
+    if entity_type not in ("repo", "database", "filesystem"):
+        raise HTTPException(status_code=422, detail=f"Unknown entity type '{entity_type}'")
+    if req.action not in ("republish", "resurvey", "discard"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown action '{req.action}'; expected republish, resurvey or discard")
+
+    registry = ProjectRegistry()
+    if not registry.get_egeria_linkage(entity_type, slug):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No stale Egeria linkage recorded for {entity_type} '{slug}'")
+
+    cleared, deleted = False, 0
+    if entity_type == "repo":
+        result = registry.clear_egeria_registration(slug)
+        cleared, deleted = result["asset_guid_cleared"], result["surveys_deleted"]
+    elif entity_type == "database":
+        registry.set_database_egeria_guid(slug, "")
+        cleared = True
+    else:
+        registry.set_filesystem_egeria_guid(slug, "")
+        cleared = True
+
+    registry.clear_egeria_linkage_status(entity_type, slug)
+
+    next_step = ""
+    if req.action == "discard":
+        # Say what was actually removed. For a repo, clearing the registration
+        # also drops project_egeria_surveys — the record of past publishes and
+        # their report GUIDs. Those GUIDs point into the same repository that no
+        # longer has the asset, so keeping them would preserve nothing but stale
+        # pointers; the publish history itself remains in the activity log. But
+        # "untouched", which this said before, was not true of them, and the one
+        # action a user might fear is the wrong place to be imprecise.
+        removed = (f" {deleted} publish record(s) removed;" if deleted else "")
+        next_step = (f"Link cleared.{removed} survey results and annotations are "
+                     "untouched, and past publishes remain in the activity log. "
+                     "Nothing will be written to Egeria until you publish again.")
+    elif entity_type == "repo":
+        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+        try:
+            if req.action == "resurvey":
+                survey = await asyncio.to_thread(
+                    lambda: SurveyOrchestrator(registry).run(slug))
+            else:
+                # republish: re-derive from what RE already holds locally. The
+                # orchestrator reads the stored tables rather than re-fetching,
+                # so this is the "fast, no re-scan" path the choice promises.
+                survey = await asyncio.to_thread(
+                    lambda: SurveyOrchestrator(registry).run(slug, max_fetch_cost="none"))
+            guid = await asyncio.to_thread(lambda: EgeriaPublisher(registry=registry).publish(survey))
+            next_step = f"Re-created in Egeria as SurveyReport {guid}."
+        except Exception as exc:
+            # The link is already cleared, so this is recoverable by retrying the
+            # ordinary publish — say that rather than leaving a bare stack trace.
+            raise HTTPException(
+                status_code=502,
+                detail=(f"Link cleared, but {req.action} failed: {exc}. The stale GUID is "
+                        "gone, so an ordinary publish should now succeed.")) from exc
+    else:
+        verb = "publish" if req.action == "republish" else "survey and publish"
+        next_step = (f"Link cleared. Run {verb} for this {entity_type} from its own panel "
+                     "to re-create it in Egeria.")
+
+    return LinkageResolveResult(
+        status="ok", entity_type=entity_type, entity_slug=slug, action=req.action,
+        asset_guid_cleared=cleared, surveys_deleted=deleted, next_step=next_step,
+    )
+
+
+class RecheckDetail(BaseModel):
+    entity_type: str
+    slug: str
+    guid: str
+    result: str    # "ok" | "stale" | "error"
+    detail: str = ""
+
+
+class RecheckResult(BaseModel):
+    checked: int
+    ok: int
+    stale: int
+    errors: int
+    skipped: int
+    details: list[RecheckDetail]
+
+
+@router.post("/linkage/recheck", response_model=RecheckResult)
+async def recheck_linkages(entity_type: list[str] | None = None) -> RecheckResult:
+    """Proactively probe Egeria for every cached GUID instead of waiting for
+    the reactive path (guard_linkage) to trip over one on next use.
+
+    This is the sweep behind `resource-explorer egeria-recheck` — see
+    egeria_linkage.recheck_all_linkages for why it both records new
+    divergences and clears ones that have since resolved. Runs in a thread:
+    it makes one network call per cataloged resource (~20 in a typical
+    deployment) and pyegeria's sync wrappers are blocking.
+    """
+    from resource_explorer.egeria_linkage import recheck_all_linkages
+
+    registry = ProjectRegistry()
+    result = await asyncio.to_thread(
+        recheck_all_linkages, registry, entity_types=entity_type)
+    return RecheckResult(**result)
+
+
 @router.post("/{slug}/reset", response_model=ResetResult)
 async def reset_egeria(slug: str) -> ResetResult:
     """Clear the cached Egeria asset GUID and all published survey records for a project.
@@ -429,10 +683,18 @@ class PublishRequest(BaseModel):
     # None (default) = full survey, byte-for-byte the existing behavior.
     # A list scopes the survey (and therefore the published SurveyReport) to
     # just those SurveyOrchestrator step keys — lets each phase (Scouting,
-    # the Profile tab, etc.) publish only what it actually knows, as its own
+    # coarse profiling, etc.) publish only what it actually knows, as its own
     # SurveyReport linked to the same asset, rather than one all-or-nothing
     # publish. Same step-key vocabulary as REPO_ANALYSIS_STEP_MAP.
     steps: list[str] | None = None
+    # Optional — set when this publish was triggered from a Survey Definition
+    # candidate's own "☁ Publish" button (renderSurveyPanel), so the resulting
+    # activity_log entry can be attributed back to that candidate for the
+    # last-published badge (registry.get_survey_definition_last_activity).
+    # Blank for every other publish surface (Curate, Profile, etc.) — those
+    # just don't get a last-published badge anywhere, which is correct: they
+    # aren't tied to one Survey Definition.
+    survey_definition_ref: str = ""
 
 
 @router.post("/{slug}/publish", response_model=PublishResult)
@@ -507,6 +769,22 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
             error=str(exc),
             stage="publish",
             surveyed_at=result.surveyed_at.isoformat(),
+        )
+
+    # Separate, minimal activity_log entry (not a change to EgeriaPublisher.
+    # publish()'s own log_catalog call above, which every publish surface
+    # shares) — only written when this publish came from a Survey Definition
+    # candidate's own "☁ Publish" button, so its last-published badge
+    # (registry.get_survey_definition_last_activity) has something to find.
+    if req and req.survey_definition_ref:
+        from resource_explorer.activity_logger import log_catalog
+
+        log_catalog(
+            registry, entity_type="repo", entity_slug=slug,
+            entity_name=project.display_name, entity_location=project.github_url,
+            status="ok",
+            summary=f"Published '{req.survey_definition_ref}' findings ({len(result.annotations)} annotations)",
+            detail=json.dumps({"survey_definition_ref": req.survey_definition_ref}),
         )
 
     return PublishResult(

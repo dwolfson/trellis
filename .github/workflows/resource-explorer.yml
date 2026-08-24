@@ -1,0 +1,130 @@
+# First CI in this repository (2026-08-23). Scoped to packages/resource-explorer
+# deliberately — the monorepo's other packages have their own suites and their
+# own service needs, and one workflow trying to cover all of them would be
+# harder to keep honest than several small ones.
+#
+# The point of this workflow is NOT that the suite is green. The suite was
+# already green on a laptop with no services running, because the integration
+# tier auto-skips when Postgres is unreachable. That is correct for a laptop
+# and dangerous in CI: a job whose service container failed to start would
+# report success having run none of the tests that check real database
+# behaviour. RE_REQUIRE_POSTGRES=1 turns that silence into a hard error (see
+# tests/conftest.py), which is what makes this job mean something.
+name: resource-explorer
+
+on:
+  push:
+    # re/** as well as main: this workflow was added on a long-lived re/*
+    # feature branch, and a workflow that only triggers on main is untested
+    # YAML until the day it is merged — which is the worst moment to discover
+    # that a service container does not come up.
+    branches: [main, "re/**"]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: packages/resource-explorer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # GitHub's default is 360 minutes. The first run sat 20+ minutes on a step
+    # that takes 5 seconds locally (see the embedding-model cache below), and
+    # would have burned six hours before failing. A suite that takes ~3 minutes
+    # locally has no business running for 30.
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # pgvector's own image, not plain postgres: test_integration_pgvector.py
+        # creates real vector columns and an HNSW index, which need the
+        # extension present. pg17 matches the shared dev instance.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: egeria_advisor
+          POSTGRES_PASSWORD: advisor
+          POSTGRES_DB: egeria_advisor
+        ports:
+          - 5442:5432
+        # Without the health check the suite can start before Postgres accepts
+        # connections, and _pgvector_reachable() would report it unreachable —
+        # which, with RE_REQUIRE_POSTGRES set, fails the job for a reason that
+        # has nothing to do with the code.
+        options: >-
+          --health-cmd "pg_isready -U egeria_advisor -d egeria_advisor"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # These mirror config.py's own defaults rather than relying on them, so a
+      # change to a default surfaces here as a failure instead of CI quietly
+      # testing a different database than the one it configured.
+      PGVECTOR_HOST: localhost
+      PGVECTOR_PORT: 5442
+      PGVECTOR_DBNAME: egeria_advisor
+      PGVECTOR_USER: egeria_advisor
+      PGVECTOR_PASSWORD: advisor
+      REGISTRY_DATABASE_URL: postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer
+      FEEDBACK_DATABASE_URL: postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer
+      METRICS_DATABASE_URL: postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor?options=-csearch_path%3Dresource_explorer
+      RE_REQUIRE_POSTGRES: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        # Run from packages/resource-explorer (the workflow default), NOT the
+        # repo root: `dev` is defined in that package's optional-dependencies,
+        # and `uv sync --extra dev` at the root fails outright with
+        # "Extra `dev` is not defined in the project's optional-dependencies
+        # table". uv still resolves the whole workspace from here.
+        run: uv sync --extra dev
+
+      - name: Cache the sentence-transformers model
+        # The pgvector tier calls MultiCollectionStore.insert(), which embeds
+        # its text — so a cold runner downloads all-MiniLM-L6-v2 (~90MB) from
+        # HuggingFace and warms torch before a single assertion runs. That is
+        # what made the first run look hung. Cached by the model name so the
+        # key changes if the model does.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-${{ runner.os }}
+
+      - name: Create the schema and the vector extension
+        run: |
+          PGPASSWORD=advisor psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor \
+            -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer;' \
+            -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+
+      - name: Confirm the integration tier can actually run
+        # Fails fast and unambiguously if the service is misconfigured, before
+        # 1800 unit tests scroll past and bury the reason.
+        run: uv run pytest tests/ -m requires_pgvector -q --no-header
+
+      - name: Full suite
+        # -rs prints the reason for every skip in this same run.
+        #
+        # There used to be a separate "Report what was skipped" step doing
+        # exactly that — by running the ENTIRE suite a second time. It was
+        # affordable when written and stopped being so as the suite grew:
+        # on 2026-08-24 steps 1-10 all passed, including this one, and the job
+        # was killed at the 30-minute ceiling with the duplicate run still
+        # going. Paying twice for a diagnostic that a flag gives away free was
+        # a bad trade the moment it was written; it only became visible when
+        # the second run stopped fitting.
+        #
+        # requires_egeria (22 tests) still has no service here — an Egeria
+        # platform is not something a job can stand up — so those stay skipped,
+        # and their reasons are now printed by the run that already happened.
+        run: uv run pytest tests/ -q --no-header -rs
