@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "resource-explorer",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--package",
+        "resource-explorer",
+        "resource-explorer",
+        "web",
+        "--port",
+        "8810"
+      ],
+      "port": 8810
+    }
+  ]
+}

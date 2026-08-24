@@ -1,6 +1,6 @@
-# Trellis
+# Egeria-Trellis
 
-Trellis is a `uv` workspace monorepo consolidating two sibling Egeria tools that were
+Egeria-Trellis is a `uv` workspace monorepo consolidating two sibling Egeria tools that were
 previously developed as separate repositories:
 
 - **[Resource Explorer](packages/resource-explorer/)** (`resource-explorer`) — discovers,
