@@ -192,9 +192,34 @@ timing min 7.2s · median 25.5s · max 58.6s
 
 Two things worth someone's attention:
 
-- **The gate lets 87% through** (47 run, 7 skip of 54 classified). If its purpose is sparing
-  the expensive tier, that ratio deserves a look — it may simply be right for a corpus that is
-  mostly real software, but nobody has checked.
+- ~~**The gate lets 87% through** (47 run, 7 skip of 54 classified)~~ — **CHECKED, and the
+  ratio is roughly right.** The architecture-recovery session measured it rather than
+  re-running anything (every gate decision persists its own reason string with the signals
+  named): of 32 repos carrying a non-architectural role, 25 were overridden, and
+  `package-manifest` was present in 19 of those but **decisive alone in only 3**. Dropping it
+  entirely moves 7 skips to 10 — 87% to 81%. The gate has containment semantics precisely so a
+  samples repo with compose files still runs, and on a corpus that is mostly real software,
+  that is what happens.
+
+  **Both of us had guessed the wrong mechanism from the right aggregate.** `package-manifest`
+  looked weak because a Python samples repo has a `pyproject.toml`; the aggregate did not
+  contain that story. Reading the n=3 decisive cases *by name* found the actual defect:
+  `OpenLineage/openlineage-site` is 71% doc-shaped with a `docusaurus.config.js`, no Dockerfile
+  or compose — and a `package.json`, **because Docusaurus is a Node program**. So the manifest
+  is not a weak signal; it is the only structural signal a documentation site can produce by
+  itself. Fixed by making the generator config its own `doc-site-generator` signal and
+  discounting `package-manifest` when it is present.
+
+  Recorded because it is the third time the pattern has appeared: aggregate read correctly,
+  mechanism guessed wrongly, small-n cases read by name giving the answer. "25 overrides" is a
+  number; "`openlineage-site` is a Docusaurus site" is what tells you what to change.
+
+- **The 47/7 above is a snapshot, and one repo of it is already known to move.** With
+  `doc-site-generator` in place `openlineage_site` goes run → skip, making it 46/8 on the next
+  classification run. Left as measured rather than edited to 46/8, because 47/7 is what the
+  corpus actually showed when it was run and 46/8 is a prediction — writing the prediction in
+  as a measurement is the substitution this whole file exists to avoid. Re-measure rather than
+  quote either number on a card.
 - **The 6 repos with no role have no file inventory** — never ingested, so nothing to classify.
   Correct behaviour, and the card now says which kind of nothing it is rather than showing a
   blank.
