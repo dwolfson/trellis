@@ -127,6 +127,36 @@ def _fake_repo(full_name="owner/repo", homepage="", owner_login="owner", repo_na
     return r
 
 
+def _with_siblings(gh, main_repo, siblings=None):
+    """Route `gh.get_repo(full_name)` to the main repo or a named sibling.
+
+    Sibling lookup PROBES enumerated names (`gh.get_repo("<owner>/<repo>-docs")`)
+    rather than listing an organisation — listing paged ~2,700 repos on `apache`
+    and made the step 3 repos per 10 minutes. These stubs previously fed
+    `org.get_repos()`, which nothing calls any more; with `gh.get_repo` returning
+    the main repo for every probe, every candidate name appeared to exist.
+    """
+    from github import GithubException
+    table = {main_repo.full_name: main_repo}
+    for r in (siblings or []):
+        # A sibling must declare its owner: probing follows GitHub renames, and
+        # a redirect can land on a different account entirely
+        # (`prometheus/prometheus.github.io` -> `prometheus-junkyard/...`), so
+        # the owner is checked. Mocks without one would be filtered out, which
+        # would make these tests pass for the wrong reason.
+        r.owner.login = r.full_name.split("/")[0]
+        table[r.full_name] = r
+
+    def _get(full_name, *a, **k):
+        try:
+            return table[full_name]
+        except KeyError:
+            raise GithubException(404, {"message": "Not Found"}, None)
+
+    gh.get_repo.side_effect = _get
+    return gh
+
+
 def _fake_gh():
     return MagicMock()
 
@@ -141,6 +171,7 @@ class TestResolveDocLocations:
         repo = _fake_repo(full_name="kubernetes/kubernetes", repo_name="kubernetes",
                            owner_login="kubernetes")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
 
         def get_contents(path):
             if path == "docs":
@@ -158,8 +189,7 @@ class TestResolveDocLocations:
         website.name = "website"
         website.full_name = "kubernetes/website"
         website.pushed_at = datetime(2026, 8, 21, tzinfo=UTC)
-        org.get_repos.return_value = [website]
-        gh.get_organization.return_value = org
+        _with_siblings(gh, repo, [website])
 
         result = dl.resolve_doc_locations("kubernetes/kubernetes", client=gh)
 
@@ -176,6 +206,7 @@ class TestResolveDocLocations:
         repo = _fake_repo(full_name="prometheus/prometheus", repo_name="prometheus",
                            owner_login="prometheus", homepage="https://prometheus.io")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
 
         def get_contents(path):
             if path == "documentation":
@@ -193,8 +224,7 @@ class TestResolveDocLocations:
         docs_repo.name = "docs"
         docs_repo.full_name = "prometheus/docs"
         docs_repo.pushed_at = datetime(2026, 8, 20, tzinfo=UTC)
-        org.get_repos.return_value = [docs_repo]
-        gh.get_organization.return_value = org
+        _with_siblings(gh, repo, [docs_repo])
 
         result = dl.resolve_doc_locations("prometheus/prometheus", client=gh)
 
@@ -209,6 +239,7 @@ class TestResolveDocLocations:
         repo = _fake_repo(full_name="odpi/egeria", repo_name="egeria", owner_login="odpi",
                            homepage="https://egeria-project.org")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
         repo.get_contents.side_effect = GithubException(404, data={"message": "Not Found"})
         repo.get_readme.side_effect = GithubException(404, data={"message": "Not Found"})
 
@@ -217,8 +248,7 @@ class TestResolveDocLocations:
         docs_repo.name = "egeria-docs"
         docs_repo.full_name = "odpi/egeria-docs"
         docs_repo.pushed_at = datetime(2026, 8, 22, tzinfo=UTC)
-        org.get_repos.return_value = [docs_repo]
-        gh.get_organization.return_value = org
+        _with_siblings(gh, repo, [docs_repo])
 
         result = dl.resolve_doc_locations("odpi/egeria", client=gh)
 
@@ -242,9 +272,20 @@ class TestResolveDocLocations:
         gh = _fake_gh()
         repo = _fake_repo(full_name="owner/repo", homepage="https://example.com")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
         repo.get_contents.side_effect = GithubException(404, data={"message": "Not Found"})
         repo.get_readme.side_effect = GithubException(404, data={"message": "Not Found"})
-        gh.get_organization.side_effect = GithubException(403, data={"message": "rate limit"})
+        # Probing, not listing: a rate limit now surfaces on `get_repo` for the
+        # candidate names rather than on `get_organization`, which is no longer
+        # called. The main repo must still resolve — otherwise this would test
+        # "everything fails", not "one signal fails". The property under test is
+        # unchanged: one failed signal must not suppress the others.
+        def _rate_limited(full_name, *a, **k):
+            if full_name == repo.full_name:
+                return repo
+            raise GithubException(403, data={"message": "rate limit"})
+
+        gh.get_repo.side_effect = _rate_limited
         gh.get_user.side_effect = GithubException(403, data={"message": "rate limit"})
 
         result = dl.resolve_doc_locations("owner/repo", client=gh)
@@ -264,6 +305,7 @@ class TestFindArtifact:
         repo = _fake_repo(full_name="prometheus/prometheus", repo_name="prometheus",
                            owner_login="prometheus")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
 
         def get_contents(path):
             if path == "documentation":
@@ -294,7 +336,10 @@ class TestFindArtifact:
         def get_repo(name):
             if name == "kubernetes/kubernetes":
                 return repo
-            website = _fake_repo(full_name="kubernetes/website", repo_name="website")
+            # owner_login matters: probing follows renames, and a redirect can
+            # land on another account, so the owner is checked.
+            website = _fake_repo(full_name="kubernetes/website", repo_name="website",
+                                 owner_login="kubernetes")
             return website
 
         gh.get_repo.side_effect = get_repo
@@ -332,6 +377,7 @@ class TestFindArtifact:
         gh = _fake_gh()
         repo = _fake_repo(full_name="owner/repo", homepage="https://example.com/docs")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
         repo.get_contents.side_effect = GithubException(404, data={"message": "Not Found"})
         repo.get_readme.side_effect = GithubException(404, data={"message": "Not Found"})
         gh.get_organization.side_effect = GithubException(404, data={"message": "Not Found"})
@@ -347,6 +393,7 @@ class TestFindArtifact:
         gh = _fake_gh()
         repo = _fake_repo(full_name="owner/repo", homepage="")
         gh.get_repo.return_value = repo
+        _with_siblings(gh, repo)
         repo.get_contents.side_effect = GithubException(404, data={"message": "Not Found"})
         repo.get_readme.side_effect = GithubException(404, data={"message": "Not Found"})
         gh.get_organization.side_effect = GithubException(404, data={"message": "Not Found"})

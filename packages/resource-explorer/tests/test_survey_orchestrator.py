@@ -283,6 +283,13 @@ class TestCostTierFilter:
                 SurveyOrchestrator(registry).run(project, max_fetch_cost="none")
                 excluded = {k for k, info in STEP_REGISTRY.items() if info.fetch_cost != "none"}
                 assert excluded == {
+                    # repo_classification (2026-08-23) — declared the dataclass
+                    # default fetch_cost="none" while making a dozen GitHub calls
+                    # per repo. The presentation session measured it at 3 repos in
+                    # 10 minutes against 1 second for the other three Discovery
+                    # steps over 60 repos, and this assertion is the record that
+                    # a "none" ceiling now excludes it.
+                    "repo_classification",
                     "repo_file_inventory", "repo_homepage", "repo_data_profiling",
                     "repo_symbol_extraction", "repo_rag_ingestion",
                     # repo_website_ingestion (2026-08-20) — fetches the project's

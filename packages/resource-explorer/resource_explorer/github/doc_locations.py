@@ -317,35 +317,58 @@ def _list_in_repo_dirs(repo: Repository, notes: list[str]) -> list[DocDirResult]
 
 
 def _list_sibling_repos(gh: Github, repo: Repository, notes: list[str]) -> list[SiblingRepo]:
+    """Sibling documentation repos, found by PROBING the enumerated names.
+
+    This listed every repository in the owning organisation and filtered the
+    result. On `apache` that is ~2,700 repos, paged; the presentation session
+    measured the step at **3 repos in 10 minutes**, network-blocked at 0.5% CPU,
+    against 1 second for the other three Discovery steps over 60 repos.
+
+    Probing is **exactly equivalent**, not an approximation: `_match_sibling_names`
+    matches by case-insensitive equality against a small enumerated pattern set,
+    so asking for those names directly can find nothing the listing would have
+    found. Roughly five requests, of which the misses are cheap 404s, instead of
+    paging an entire organisation.
+    """
     owner_login = repo.owner.login
     repo_name = repo.name
-    try:
-        # Organization vs. user account is not knowable in advance; try
-        # the org endpoint first (the common case for the projects this
-        # module targets) and fall back to a user account on 404.
-        try:
-            owner_obj = gh.get_organization(owner_login)
-        except GithubException as exc:
-            if getattr(exc, "status", None) == 404:
-                owner_obj = gh.get_user(owner_login)
-            else:
-                raise
-        all_repos = list(owner_obj.get_repos())
-    except Exception as exc:
-        _degraded(notes, exc, f"could not list repos for owner '{owner_login}'")
-        return []
-
-    candidate_names = [r.name for r in all_repos]
-    matches = _match_sibling_names(repo_name, candidate_names)
-    if not matches:
-        return []
-
-    by_name = {r.name: r for r in all_repos}
     out: list[SiblingRepo] = []
-    for name, pattern in matches.items():
-        r = by_name[name]
-        pushed_at = r.pushed_at.isoformat() if r.pushed_at else None
-        out.append(SiblingRepo(full_name=r.full_name, matched_pattern=pattern, pushed_at=pushed_at))
+    seen: set[str] = set()
+    resolved: set[str] = set()
+    for pattern in _SIBLING_NAME_PATTERNS:
+        candidate = pattern.format(repo=repo_name)
+        if candidate.lower() == repo_name.lower() or candidate.lower() in seen:
+            continue
+        seen.add(candidate.lower())
+        try:
+            sibling = gh.get_repo(f"{owner_login}/{candidate}")
+        except GithubException as exc:
+            if getattr(exc, "status", None) != 404:
+                _degraded(notes, exc, f"probing sibling '{owner_login}/{candidate}'")
+            continue
+        except Exception as exc:
+            _degraded(notes, exc, f"probing sibling '{owner_login}/{candidate}' (network)")
+            continue
+        # GitHub follows renames, and probing exposes two failure modes that
+        # listing an organisation could not — both found live, not reasoned
+        # about:
+        #
+        #  * a redirect can land on a DIFFERENT owner. `prometheus/prometheus`
+        #    probing `prometheus.github.io` resolves to
+        #    `prometheus-junkyard/prometheus.github.io`, an archived repo of
+        #    another account. A sibling of this project must belong to this
+        #    project's owner.
+        #  * two patterns can redirect to the SAME repo.
+        #    `kubernetes/kubernetes.github.io` and `kubernetes/website` are one
+        #    repository, and it was reported twice.
+        if sibling.owner.login.lower() != owner_login.lower():
+            continue
+        if sibling.full_name.lower() in resolved:
+            continue
+        resolved.add(sibling.full_name.lower())
+        pushed_at = sibling.pushed_at.isoformat() if sibling.pushed_at else None
+        out.append(SiblingRepo(full_name=sibling.full_name, matched_pattern=pattern,
+                               pushed_at=pushed_at))
     return out
 
 
