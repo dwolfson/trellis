@@ -3034,3 +3034,46 @@ written *from* `container_name` values. `immich.md` was written from the owners'
 had never been tested against a fixture whose author had not read the compose file**, and it failed
 the first time one existed. That is what a genuinely independent fixture buys, and it is the argument
 for choosing the next one on a dimension nothing in the corpus currently varies.
+
+**92. Why every owner-published fixture is Go: in the JVM world the published architecture and the
+code structure are different decompositions.**
+
+The corpus has a blind spot exactly parallel to the perspective one finding 87 exposed: **all three
+owner-published logical fixtures are Go** (Prometheus, Kubernetes, Milvus), and every rule built from
+them is Go-shaped — `go_subsystems`, the container-directory rule, `package main` entry-point
+detection, entry-point type falsification. So a Java fixture was sought. Three candidates checked,
+all rejected, and the reason is the same each time.
+
+| project | what the docs publish | maps to code? |
+|---|---|---|
+| `apache/kafka` | Motivation, Persistence, The Producer, The Consumer, Replication — **protocol concepts** | no; 2 path mentions in the whole design doc |
+| `apache/flink` | JobManager, TaskManager, Dispatcher — **runtime processes** | no; all three live inside `flink-runtime`, and there is no `flink-jobmanager` module |
+| `apache/pulsar` | architecture docs are in a separate site repo | not checked further |
+
+**The generalisation, which is the useful part.** For the Go projects, the runtime process and the
+code directory *coincide*: `cmd/kubelet` is both a directory and the kubelet binary, and Prometheus's
+`cmd/prometheus` is the server. Owner-published architecture maps onto directories because in Go it
+already is a directory layout.
+
+**In the JVM world it does not.** One `flink-dist` jar runs as a JobManager or a TaskManager
+depending on how you start it. The published architecture is a description of **processes**; the repo
+is organised by **build module**; and those are two different decompositions of the same system —
+which is §4.1's perspective distinction showing up as an ecosystem property rather than a modelling
+choice.
+
+**Consequences for fixture selection:**
+
+1. **A JVM project's published architecture is deployment-perspective evidence, not logical.** If a
+   Java fixture is built from published docs, it should be scored as deployment — where processes do
+   map — not as logical.
+2. **A Java *logical* fixture has to be maintainer-written** at module level, like `trellis.md` and
+   `egeria-workspaces.md`, because no owner publishes the module decomposition as prose.
+3. **The Go corpus was unusually easy, and that has flattered every measurement in it.** Prometheus
+   at 11/11 and Kubernetes at 6/6 are real, but they were scored on the ecosystem where published
+   architecture and directory structure are the same thing. Nothing yet tells us whether the rules
+   survive an ecosystem where they are not.
+
+That third point is the one to carry: **the corpus does not yet contain a case where the published
+architecture and the code layout disagree**, and finding 87 is the precedent for what happens when a
+whole class of case is absent — every rule looks principled until the first fixture that does not
+share the hidden assumption.
