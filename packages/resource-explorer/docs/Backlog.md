@@ -160,6 +160,52 @@ returning silently.
    stage-specific survey.
 
 
+### `repo_classification` declares `fetch_cost="none"` and calls the GitHub API
+
+Found 2026-08-24 running Repo Discovery Survey across the corpus. The run managed **3 repos in
+10 minutes** and was stopped; at that rate 60 repos is about ten hours.
+
+Diagnosed the same way as the other stalls this week — the process sat at **0.5% CPU with an
+established connection to github.com**, which is network-blocked, not computing. The chain is
+`repo_classification` → `github/expectations.py` → `github/doc_locations.py` → PyGithub
+`Github(...)`. It *has* to make those calls: resolving whether an expected artifact lives
+`in-repo`, in a `sibling-repo` or on a `doc-site` means asking GitHub about other
+repositories, and that location-not-boolean answer is the whole value of the step
+(docs/architecture-recovery-design.md §5.5b). **The feature is right; the cost declaration is
+wrong.**
+
+The contrast measured in the same session makes the size of the error concrete — the other
+three Discovery steps, which genuinely fetch nothing:
+
+| steps | corpus | time |
+|---|---|---|
+| `repo_license_classification` + `repo_maturity` + `repo_conventions` | 60 repos | **1 second** |
+| `repo_classification` | 3 repos | **~10 minutes** |
+
+**Why it matters beyond one slow run.** `fetch_cost="none"` is the *defining property* of the
+Discovery tier — CLAUDE.md rule 17: "Discovery is the tier that derives early-headlights
+signals from data Scouting has already collected, with zero new fetch". The declaration also
+drives real behaviour: a `max_fetch_cost="none"` run currently believes this step is free and
+includes it. And `tests/test_analysis_catalog_reader.py::test_discovery_is_the_zero_fetch_
+derivation_tier` exists to stop exactly this, with one named exception for
+`architecture_recovery` — so a fetching Discovery entry is meant to fail until someone adds it
+deliberately. This one did not, which suggests the guard checks the *catalog entry* rather
+than the step's behaviour. Worth confirming: a guard that can be satisfied by declaring the
+right thing while doing another is not a guard.
+
+**Not fixed here — it is another session's step and the change is a judgement call, not a
+typo.** `fetch_cost="api"` understates ten minutes per repo; `api_heavy` is closer. Either
+excludes it from zero-fetch runs, which is correct, and both change which surveys it belongs
+in — §5.5b put it first in Discovery specifically so the gate could run cheaply, and it is not
+cheap.
+
+**Third cost mis-declaration this week**, and they share a cause worth naming: the cost tier is
+a guess made when the step is authored, and nothing measures it afterwards.
+`repo_manifest_parse` was `medium` and measures `low`; the CI job inherited GitHub's 360-minute
+default and would have burned six hours on a hang; this one claims zero-fetch and blocks on the
+network. A cheap measured check at survey time — wall clock and whether a socket was opened —
+would catch all three, and is worth more than another round of careful authoring.
+
 ### `DependencyParser` covers 4 ecosystems; `_MANIFESTS` claims 12
 
 Found 2026-08-23 while checking whether the repos reporting zero dependencies genuinely had
