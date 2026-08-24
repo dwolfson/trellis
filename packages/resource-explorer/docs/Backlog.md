@@ -974,23 +974,37 @@ pieces that design deliberately left out of its own first pass.
    `measurement`/`target` (following the Portal's Governance Metrics pattern) or removal.
    `sql_analyzer.py:145-153`'s `complexity_score` needs the same check.
 
-6. **~~Tag Purpose on a subset and measure~~ — DONE 2026-08-24; what's left is the check-granularity
-   join.** Measured over the 16 analysis-answerable questions: Purpose fails the exclusivity bar
-   (0/8) exactly as Perspective did — but that bar is unachievable by construction (only 6 of 10
-   analyses are reachable from a single question, so at most 6 of 8 purposes could ever pass) and
-   it encodes a false premise, since purposes genuinely overlap. On the fair metric Purpose is
-   clearly the better axis: mean pairwise overlap 0.22 vs Perspective's 0.37, nested pairs 6 vs 18.
-   Conclusion: Purpose **ranks**, never excludes. Remaining work: add `check_name` to the question
-   join — `repo_conventions` alone bundles 5 checks (`ingestion/repo_conventions_parser.py:97-179`)
-   and absorbs 7 of the 16 questions, and `project_analysis_findings` already stores `check_name`
-   per row, so only `question_catalog.yaml` lacks the granularity. See
-   `docs/investigation-framing-design.md`, final section. Original item text follows.
+6. **~~Tag Purpose, and add the check-granularity join~~ — BOTH DONE; entry was stale.**
+   `341d2f5` tagged all 41 questions with Purpose (not the ~10-question pilot this entry
+   proposed — the pilot was skipped and the full set measured directly). `852955f` built the
+   check-granularity join: `configdata/check_registry.yaml` declares the per-check vocabulary
+   for 8 analyses, `question_catalog_reader.py` validates against it, and
+   `tests/test_check_registry.py` guards it (10 tests). The join's own trap is documented in
+   that file's header — three analyses write findings under a different `kind` than their
+   catalog id (`security_scan`→`security_hygiene`, `documentation_coverage`→`documentation`,
+   `sub_resource_survey`→`repo_sub_resource_survey`).
 
-   ~~Tag Purpose on a subset of the question CSV and measure before tagging all 41.~~
-   `question_catalog.yaml` is generated from `docs/dr-egeria/resource_questions.csv` via
-   `scripts/csv_to_question_catalog_yaml.py` (don't hand-edit the YAML). Purpose needs a new column.
-   Before committing to all 41: tag ~10, then check that each Purpose reaches at least one analysis
-   no other Purpose reaches. That is the test Perspective fails. Cheap to learn now, expensive later.
+   **What the measurement settled, and still holds:** Purpose fails the exclusivity bar (0/8)
+   exactly as Perspective did — but that bar is unachievable by construction and encodes a false
+   premise, since purposes genuinely overlap. On the fair metric Purpose is the better axis:
+   mean pairwise overlap 0.22 vs Perspective's 0.37, nested pairs 6 vs 18. Purpose **ranks**,
+   never excludes.
+
+   **What is actually open — the vocabulary is declared, the data is not populated.** Measured
+   2026-08-24: of the questions whose `answering.kind` is `analysis`, only **one of five**
+   carries an explicit check (`license_classification:license_risk_tier`); the rest have
+   `checks: []` and still join at analysis granularity. `repo_conventions` bundling five checks
+   (`ingestion/repo_conventions_parser.py:97-179`) is the case the join was built for and is
+   not yet expressed. Populating it is data entry against a guarded schema, not new mechanism.
+
+   Note the earlier "16 analysis-answerable questions" figure in this entry no longer matches
+   the file: today's `answering.kind` vocabulary is `analysis` 5, `mixed` 6, `direct` 11,
+   `gap` 8, `human` 7, `chart` 1, `unknown` 3. The vocabulary changed after that measurement;
+   the ratio it reported was not re-derived. Re-measure before quoting it.
+
+   Generation path unchanged: `question_catalog.yaml` is generated from
+   `docs/dr-egeria/resource_questions.csv` via `scripts/csv_to_question_catalog_yaml.py` —
+   don't hand-edit the YAML.
 
 7. **`ResearchQuestion` (0430) for per-investigation open questions.** Complementary to the existing
    `GlossaryTerm` + `Question` catalog, not a replacement — no migration. Gives an investigation
