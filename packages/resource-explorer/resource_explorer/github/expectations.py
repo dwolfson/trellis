@@ -174,7 +174,11 @@ def build_report(owner_repo: str, client=None) -> ExpectationReport:
     good for, and what it is *only* good for (see `recovery_gate` for why it
     must not drive the run/skip decision too).
     """
-    classification = rr.classify_repo_role(owner_repo, client=client)
+    try:
+        locations = dl.resolve_doc_locations(owner_repo, client=client)
+    except Exception as exc:
+        locations = None
+    classification = rr.classify_repo_role(owner_repo, client=client, locations=locations)
     primary = classification.primary.role if classification.primary else None
     report = ExpectationReport(
         owner_repo=owner_repo,
@@ -189,10 +193,13 @@ def build_report(owner_repo: str, client=None) -> ExpectationReport:
         report.notes.append("no role determined — no expectation set applied")
         return report
 
+    # Resolved ONCE above and reused for the classification and every artifact
+    # kind. See find_artifact's note: resolution is identical per kind and
+    # dominates the cost.
     for kind in expected + not_expected:
         is_expected = kind in expected
         try:
-            found = dl.find_artifact(owner_repo, kind, client=client)
+            found = dl.find_artifact(owner_repo, kind, client=client, locations=locations)
         except Exception as exc:  # never raise out of this module — doc_locations' posture
             report.notes.append(f"lookup for {kind!r} failed: {type(exc).__name__}: {exc}")
             continue
