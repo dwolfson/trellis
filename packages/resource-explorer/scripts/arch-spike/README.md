@@ -2520,3 +2520,59 @@ first-party files at all."* The rule is too strict for the deployment perspectiv
 10 LLM calls, **$0** (the Anthropic key has no credit; everything ran locally), **~133 minutes** of
 wall time — 11.5s for a one-candidate chunk to 31.6 min for a 177-candidate one. Chunking grouped by
 shallowest shared path prefix so no component's candidates split across a boundary.
+
+---
+
+**83. A partition-level check beside the groundedness check: Kubernetes 0/6 → 6/6.**
+
+Finding 82's conclusion was that `validate_and_ground` proves the model didn't *invent* anything and
+says nothing about whether its merge is *right*. The fix it pointed to needed no new signal: finding
+78 already detects entry points properly (a package declaring `package main` in its own root), and
+`go_subsystems` types those `Console Command`.
+
+**Rule: a merge spanning more than one entry point is rejected.** Twenty-four binaries are
+twenty-four independently deployable things. On rejection the constituents are **passed through
+unmerged** rather than discarded — losing the model's grouping is a cost, losing the candidates would
+be a regression.
+
+| target | deterministic | adjudicator (v3) | **+ entry-point check** |
+|---|---|---|---|
+| `prometheus` | 95 @ 10/11 | 16 @ 6/11 | **17 @ 7/11** |
+| `milvus` | 238 @ 3/5 | 89 @ 3/5 | 89 @ 3/5 |
+| `kubernetes` | 358 @ 6/6 | 70 @ **0/6** | **93 @ 6/6** |
+
+**It fires on exactly the right things.** Kubernetes: *"'CLI Commands' — merge spans 24 entry
+points"*. Prometheus: *"'Prometheus Command Line Interface' — merge spans 2 entry points"* —
+`cmd-prometheus` and `cmd-promtool`, genuinely two binaries, an over-merge nobody had noticed. Milvus:
+no merge rejected, no change. No false positives across three targets.
+
+**And it is the first configuration where adjudication beats distillation on Kubernetes.**
+93 components at 6/6 against 358 at 6/6 — a 3.8× reduction at *identical* recall. That is what the
+whole exercise was for: fewer components, same answer.
+
+Prometheus still favours the deterministic result on recall (10/11 vs 7/11) while the adjudicator
+gives 5.6× fewer components. The tradeoff from finding 81 stands, now with a better exchange rate.
+
+### Bookkeeping: Kubernetes moves to DEV
+
+This check was **derived from the Kubernetes failure**, so measuring it on Kubernetes is a
+development signal, not an independent result — the same reasoning that made Prometheus a dev fixture
+when its prompt was iterated. Recorded in the fixtures README rather than quietly reused.
+
+**`trellis` and `egeria-workspaces` remain the only untouched fixtures.** They are now the entire
+clean holdout for this work, and should be spent once, on a settled configuration — not on the next
+increment.
+
+### The general shape, which is the durable part
+
+Two checks, answering different questions:
+
+| check | question | catches |
+|---|---|---|
+| `validate_and_ground` | did you invent this? | hallucinated slugs (finding 82, Milvus) |
+| `split_multi_entrypoint` | does this contradict evidence we hold? | semantically catastrophic merges |
+
+The second is a *category*, not a single rule. Other evidence we already hold could ground further
+partition checks in the same way — a merge spanning two deployment units, or two modules, or both
+sides of a language boundary. **The pattern is: use detector evidence to falsify the model's
+grouping, not just to license it.**

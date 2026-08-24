@@ -260,6 +260,68 @@ def parse_response(text: str) -> list[dict]:
     return json.loads(text[start:end + 1])
 
 
+# ── the partition check: groundedness is not correctness ────────────────
+#
+# Finding 82. On Kubernetes the model merged 24 independent `cmd/*` binaries —
+# kube-apiserver, kubelet, kube-scheduler, kube-proxy, kube-controller-manager
+# and nineteen others — into one component called "CLI Commands". Every slug was
+# real, every glob grounded, the type valid: it passed `validate_and_ground`
+# perfectly and destroyed all six ground-truth components in a single move,
+# taking the target from 6/6 to 0/6.
+#
+# **Groundedness is not architectural correctness, and no amount of grounding
+# checking will make it so.** §5.2's rule prevents invention; it says nothing
+# about whether a merge is right. So this is a second, different kind of
+# check — not "did you invent this?" but "does this grouping contradict
+# evidence we already hold?"
+#
+# The evidence is already extracted. Finding 78 detects entry points properly
+# (a package declaring `package main` in its own root, not a file named
+# main.go), and `go_subsystems` types those components `Console Command`.
+# **Twenty-four binaries are twenty-four independently deployable things**, and
+# a merge unioning more than one of them is almost certainly wrong.
+#
+# On failure the merge is REJECTED rather than the candidates discarded: each
+# constituent is passed through unmerged, which is exactly the pre-merge
+# (deterministic) state for that group. Losing the model's grouping is a cost;
+# losing the candidates would be a regression.
+
+_ENTRY_POINT_TYPES = frozenset({"Console Command"})
+
+
+def split_multi_entrypoint(kept: list[dict], type_by_slug: dict[str, str],
+                           name_by_slug: dict[str, str],
+                           files_by_slug: dict[str, list[str]],
+                           ) -> tuple[list[dict], list[dict]]:
+    """Reject any merge spanning more than one entry point; return (out, notes)."""
+    out: list[dict] = []
+    notes: list[dict] = []
+    for item in kept:
+        slugs = item.get("candidate_slugs") or []
+        entry_slugs = [s for s in slugs if type_by_slug.get(s) in _ENTRY_POINT_TYPES]
+        if len(entry_slugs) < 2:
+            out.append(item)
+            continue
+        notes.append({
+            "name": item.get("name"),
+            "reason": (f"merge spans {len(entry_slugs)} entry points "
+                       f"({', '.join(sorted(entry_slugs)[:4])}...) — independently "
+                       f"deployable things are not one component"),
+            "candidate_slugs": slugs,
+        })
+        for s in slugs:
+            out.append({
+                "slug": s, "name": name_by_slug.get(s, s),
+                "type": type_by_slug.get(s), "files": files_by_slug.get(s, []),
+                "perspective": item.get("perspective", "physical"),
+                "confidence": 55, "confidence_level": "Derived",
+                "proposed_by": ["llm-adjudicator", "entrypoint-split"],
+                "rationale": "passed through unmerged: parent merge spanned multiple entry points",
+                "candidate_slugs": [s],
+            })
+    return out, notes
+
+
 # ── the hard rule: post-validation, not prompting ───────────────────────
 
 def validate_and_ground(raw_outputs: list[dict], valid_slugs: set[str],
@@ -372,7 +434,13 @@ def adjudicate(target: str, root: str | None, model_override: str | None = None,
 
     kept, dropped = validate_and_ground(all_raw, valid_slugs, files_by_slug, perspective_by_slug)
 
+    type_by_slug = {c["slug"]: c.get("type") for c in components}
+    name_by_slug = {c["slug"]: c.get("name", c["slug"]) for c in components}
+    kept, split_notes = split_multi_entrypoint(kept, type_by_slug, name_by_slug, files_by_slug)
+
     referenced = {s for item in kept for s in item["candidate_slugs"]}
+    for n in split_notes:
+        print(f"  REJECTED MERGE: {n['name']!r} — {n['reason']}")
 
     out_ir = {
         "target": f"{target}-adjudicated",
