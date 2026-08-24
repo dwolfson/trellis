@@ -27,13 +27,22 @@ ones, and *confirmations* (absences that support the role, e.g. a library having
 no deployment artifacts, which `trellis.md` records verbatim). It emits no count,
 percentage or grade.
 
-**Known gap, not ours to close here.** None of `step_outcome.py`'s five labels
-fits "we deliberately did not run because it would have been the wrong question":
-`no_signal` requires `known_positive=True` and nothing ran, while `unverified`
-means *could not* run when in fact we could and chose not to. A skip is the
-funnel's biggest win and currently has no vocabulary that says so. Recorded in
-§5.5b and flagged for that module's owner; this surveyor therefore reports the
-gate as its own finding rather than mislabelling it as a degraded outcome.
+**Resolved: a skip is not a sixth outcome.** This module originally recorded the
+gate as a bare finding because none of `step_outcome.py`'s five labels fits "we
+deliberately did not run because it would have been the wrong question" —
+`no_signal` requires `known_positive=True` and nothing ran, and `unverified`
+means *could not* run when in fact we could and chose not to.
+
+The owner of that module resolved it one layer up rather than by adding a label,
+and the reasoning is worth keeping: the five describe what a run **achieved**,
+and a skip is the absence of a run, so adding it would have weakened the other
+five. `surveyors/result_status.py` carries a reader-facing vocabulary instead —
+a run asks *"is my zero provable?"*, a reader asks *"what should I do about
+it?"*, and those group differently. `rs.skipped(reason, gate=...)` takes the
+reason as a **required** argument, because a skip with no stated reason renders
+identically to a failure. We pass `recovery_gate`'s own reason string through
+verbatim: the whole value of the design is that the card can say *why* this
+repo was skipped, and a generic "gate declined" would waste it.
 """
 from __future__ import annotations
 
@@ -107,6 +116,11 @@ class RepoClassificationSurveyor(BaseSurveyor):
                    + (f" (also {', '.join(roles[1:])})" if len(roles) > 1 else "")
                    + f" — architecture recovery: {report.gate}")
 
+        from resource_explorer.surveyors import result_status as rs
+
+        gate_status = (rs.skipped(report.gate_reason, gate="architecture_recovery")
+                       if report.gate == "skip" else None)
+
         annotation = ClassificationAnnotation(
             summary=summary,
             analysis_step=STEP,
@@ -121,6 +135,7 @@ class RepoClassificationSurveyor(BaseSurveyor):
                 "roles": roles,
                 "recovery_gate": report.gate,
                 "recovery_gate_reason": report.gate_reason,
+                **({"result_status": gate_status} if gate_status else {}),
                 "located": [{"kind": i.kind, "outcome": i.outcome,
                              "evidence": i.evidence, "date": i.date} for i in report.found],
                 "absent_but_expected": [{"kind": i.kind} for i in report.missing],
@@ -144,7 +159,12 @@ class RepoClassificationSurveyor(BaseSurveyor):
             "label": report.gate,
             "summary": report.gate_reason,
             "confidence": 60,
-            "detail": {"primary_role": report.primary_role, "roles": roles},
+            "detail": {"primary_role": report.primary_role, "roles": roles,
+                       # Reader-facing state, carried on the finding so the card
+                       # can render a skip as the funnel working rather than as
+                       # a degraded result. Only set when the gate declined —
+                       # a run needs no special state.
+                       **({"result_status": gate_status} if gate_status else {})},
         }]
         for item in report.missing:
             findings.append({
