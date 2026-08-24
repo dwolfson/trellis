@@ -3248,3 +3248,104 @@ Java marker components are named `src` (12 of them on Kafka), because attributio
 level that lands on `src` in `module/src/main/java/...`. The Maven/Gradle layout puts real depth
 between the module root and the code, and the subtree rule was written for Python and Go layouts
 where it does not. The components are real and correctly typed; their names are useless.
+
+---
+
+**96. Disposition: the first output that is advice, and the vocabulary had to shrink to hold the
+no-score line.**
+
+§5.5d listed six dispositions, derived from why a user looks at a repo: adopt, avoid, monitor,
+upgrade, compare, expand. Building it, only three survived contact with the evidence, plus one the
+list didn't have.
+
+- **monitor / investigate / nothing-to-do** follow from role + expectations + the gate.
+- **insufficient-evidence** had to be added. Without it, "we could not determine what this is"
+  collapses into "there is nothing to do" — the single substitution that would actively mislead,
+  because one invites a human to look and the other tells them not to bother.
+- **adopt / avoid** need the user's *motivation*. "Should we adopt this" is a different question
+  from "what is this", and no amount of repo evidence closes the gap.
+- **upgrade / replace** need a second corpus that **does not live in the repo being surveyed** —
+  which version we run, which APIs we call, how deeply it is embedded. This is the sharpest of the
+  four: the evidence isn't scarce, it's *elsewhere*, and no better surveying of the target repo
+  will ever produce it.
+- **compare** needs a second resource.
+
+Each undeliverable one is named in `NOT_DERIVABLE` with what it would need. Naming beats omitting:
+an absent entry reads as an oversight and gets filled in later from the same evidence by someone
+who didn't know it had been considered.
+
+**The failure mode this whole feature invites.** Everything before this was description — here is
+what the repo is, here is where its docs are. A disposition is *advice*, and advice attracts
+ranking: "which repos should we adopt first" is a maturity score wearing a verb. The defence is the
+same one that has worked since §5.5a(c) — separately-named lists, no tally, evidence attached to
+each item. `investigate` names the missing artifacts and never counts them, because "3 of 5
+present" is the score with a hat on. A test asserts no field name contains score/grade/rating/
+count/percentage, copied rather than imported from `tests/test_result_status.py` so weakening one
+doesn't weaken the other.
+
+**A recommendation with no target cannot be acted on.** `monitor`'s next step is an Automate
+subscription — a mechanism that already exists, not a badge. But a subscription only fires if
+there is an active schedule for the *same* `analysis_id`, so one created without a target silently
+never fires, and never-firing is indistinguishable from nothing-changed. This is the same family as
+findings 63 and 90: an absence that renders identically to a real zero. Hence `next_step_target`,
+pinned by test to a real `ANALYSIS_KINDS` key, with a second test asserting
+`bool(next_step) == bool(next_step_target)` across every branch. The peer session raised this; it
+was not visible from inside the module, because from in here the subscription is just a string.
+
+Commit `2fb02d3`. See also §5.5d-i — the Egeria vocabulary check that came back negative.
+
+---
+
+**97. Measuring the gate's 87% pass-through: my hypothesis was wrong, and the real defect was one
+signal being produced by the documentation tooling itself.**
+
+The corpus run (finding in `Backlog.md`, 2026-08-24) showed the recovery gate letting 47 of 54
+classified repos through and flagged the ratio for whoever owns it. I predicted `package-manifest`
+was the culprit — near-universal, therefore unable to discriminate. **Measured, that is false.**
+Every gate decision persists its own reason string with the signals named, so this needed no re-run:
+
+```
+carry a non-architectural role   32 of 54     of those: run 25 · skip 7
+signals firing across the 25 overrides    package-manifest 19 · deployment-artifacts 15 · entry-points 13
+DECISIVE ALONE                            deployment-artifacts 3 · package-manifest 3 · entry-points 1
+counterfactual, drop package-manifest     7 skip -> 10 skip   (87% -> 81%)
+```
+
+`package-manifest` appears in 19 of 25 but is the sole reason in 3. **The 87% is mostly real
+structural evidence and the ratio is approximately right** — the gate was built with containment
+semantics precisely so a samples repo with compose files still runs, and on a corpus that is mostly
+real software that is what happens. The prediction was a plausible mechanism reasoned from the
+aggregate; the aggregate did not contain it.
+
+**But n=3 was worth reading by name, and one of them was wrong.** `OpenLineage/openlineage-site`:
+71% doc-shaped files, `docusaurus.config.js` at root, `absence-as-evidence: no Dockerfile/compose/
+charts` — and a `package.json`, because **Docusaurus is a Node program**. The gate took that one
+manifest as "there is an architecture here" and overrode a skip that the rest of the same
+classification argued for. Worse, the discriminator against `opea-project.github.io`, which
+skipped, is nothing principled: that one was classified by repo-name convention and never acquired
+a `library` role. **Run versus skip came down to Docusaurus rather than Jekyll.**
+
+So the defect is not that `package-manifest` is weak. It is that **`package-manifest` is the only
+structural signal the documentation machinery can produce by itself.** A docs site has no
+Dockerfile and no entry point of its own; it always has a manifest if its generator is a Node
+program. Fix: the site-generator config gets its own signal (`doc-site-generator`) instead of being
+prose inside `documentation-dominance`, and the gate discounts `package-manifest` when it is
+present. Narrow on purpose — no generator, no discount, which keeps the three real samples+library
+repos running.
+
+**A second defect, measured and deliberately not fixed.** `kubernetes/website` — cited in
+`recovery_gate`'s own docstring as a repo the gate skips — **runs, and always did.** It carries a
+root `Dockerfile` plus nine under `content/*/examples/`, which are documentation *content*: sample
+manifests shown to readers. The signal cannot tell an artifact that deploys the repo from one the
+repo is teaching about. Tempting to fix with a path-prefix rule; measured first, and across the 15
+corpus repos overridden by deployment artifacts, exactly **2** have all of theirs under doc paths
+(`docling-serve`, `langchain-opea`) — and both run anyway on entry points and a package manifest.
+**Zero gate outcomes change.** A path-prefix heuristic tuned on n=2 with no measured effect is the
+"rule derived from one context" trap in finding 94's family, so it is recorded here and in the
+docstring, not implemented. The stale docstring claim is corrected, because a rationale that names
+a repo it gets wrong is worse than one that names none.
+
+**The transferable part.** Three times now the aggregate has been read correctly and the mechanism
+guessed wrongly (findings 73, 79, and this one). What worked again was reading the small-n cases by
+name: 25 overrides is a number, but `openlineage-site` is a Docusaurus site, and only the second
+one tells you what to change.

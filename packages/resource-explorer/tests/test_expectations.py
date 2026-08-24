@@ -39,6 +39,48 @@ class TestRecoveryGate:
         assert gate == ex.SKIP
         assert "wrong question" in reason
 
+    def test_docs_site_package_manifest_does_not_override_the_skip(self):
+        """`OpenLineage/openlineage-site`, measured 2026-08-24. 71% doc-shaped
+        files, `docusaurus.config.js` at root — and a `package.json`, because
+        Docusaurus is a Node program. The gate read that manifest as "there is
+        an architecture here" and ran recovery on a documentation website.
+
+        The manifest belongs to the machinery rendering the docs, not to the
+        software being documented, and the generator config is what says so."""
+        c = _classification(
+            (rr.ROLE_DOCUMENTATION, ["documentation-dominance",
+                                     rr.SIGNAL_DOC_SITE_GENERATOR]),
+            (rr.ROLE_LIBRARY, ["package-manifest"]),
+        )
+        gate, reason = ex.recovery_gate(c)
+        assert gate == ex.SKIP
+        assert "belongs to the generator" in reason
+        assert "wrong question" in reason
+
+    def test_a_real_manifest_still_overrides_without_a_generator(self):
+        """The discount is narrow: no generator config, no discount. Otherwise
+        this would skip every samples-plus-library repo, which is 3 on the
+        corpus and includes real Rust and Python libraries."""
+        c = _classification(
+            (rr.ROLE_SAMPLES, ["tutorial-sample-dirs"]),
+            (rr.ROLE_LIBRARY, ["package-manifest"]),
+        )
+        gate, reason = ex.recovery_gate(c)
+        assert gate == ex.RUN
+        assert "package-manifest" in reason
+
+    def test_a_docs_site_with_real_deployment_artifacts_still_runs(self):
+        """Only `package-manifest` is discountable — a generator produces one
+        by construction. It does not produce a Dockerfile or an entry point, so
+        those keep their full weight even on a documentation site."""
+        c = _classification(
+            (rr.ROLE_DOCUMENTATION, [rr.SIGNAL_DOC_SITE_GENERATOR]),
+            (rr.ROLE_APPLICATION, ["deployment-artifacts"]),
+        )
+        gate, reason = ex.recovery_gate(c)
+        assert gate == ex.RUN
+        assert "deployment-artifacts" in reason
+
     def test_tutorial_PRIMARY_still_runs_when_structural_evidence_exists(self):
         """The `odpi/egeria-workspaces` case, and the whole reason the gate
         does not read the primary role: it ranks `tutorial` first AND is
