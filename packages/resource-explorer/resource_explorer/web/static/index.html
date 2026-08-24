@@ -496,6 +496,11 @@
            scout" searches/lists, picked from Scouting's Discover sub-tab. -->
       <div id="admin-discovery-sources-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <div id="admin-egeria-links-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Question Catalog view (Admin) — read-only browser over the full
+           docs/dr-egeria/resource_questions.csv catalog (via GET
+           /api/analyses/question-catalog), unscoped to any one project. See
+           loadAdminQuestionCatalogPanel() below. -->
+      <div id="admin-question-catalog-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -2457,8 +2462,42 @@ function _renderAnalysisResultsContent(analysisId, data) {
 // Renders any {findings: [{check_name, label, summary, confidence}]} shape —
 // the uniform finding shape every kind's results_reader normalizes to
 // (repo_survey_definition_adapter.py's _security_results/_documentation_results).
+// The empty state a results card shows, given the status its reader attached.
+//
+// Every render mode used to fall back to one string — "No results yet — click
+// Run to scan." — for three different situations, asserting the one that is
+// often false. Measured 2026-08-24: 36 data_profile cards said "click Run to
+// scan" about repos that HAD been scanned and provably contain no data files,
+// and 15 more invited a re-run that could not help because the missing
+// prerequisite was a different step. Sending someone to repeat an action that
+// cannot work is worse than saying nothing.
+//
+// `_status` comes from resource_explorer/surveyors/result_status.py. A kind
+// that has not adopted the outcome vocabulary attaches none, and falls back to
+// the original message — which is then only shown when it is actually true.
+function _renderEmptyResultState(data) {
+  const st = data && data._status;
+  if (!st) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+  if (st.state === 'nothing_found') {
+    // A real, final answer. No call to action: there is nothing to do.
+    return `<div class="text-xs text-slate-400 flex items-start gap-1.5">
+      <span class="text-slate-500">✓</span>
+      <span>${_esc(st.hint || 'Scanned — nothing of this kind found.')}</span>
+    </div>`;
+  }
+  if (st.state === 'not_established') {
+    // A prerequisite is missing. Amber, and it names what to run — NOT "Run",
+    // which is the button that just failed to produce an answer.
+    return `<div class="text-xs text-amber-400/90 flex items-start gap-1.5">
+      <span>⚠</span>
+      <span>Not established — ${_esc(st.hint || 'this run could not determine an answer.')}</span>
+    </div>`;
+  }
+  return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+}
+
 function _renderFindingsListResults(data) {
-  if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+  if (!data.findings || !data.findings.length) return _renderEmptyResultState(data);
   return data.findings.map(f => {
     const ok = f.label === 'pass' || f.label === 'Comprehensive';
     const warn = f.label === 'gap' || f.label === 'Minimal';
@@ -2474,8 +2513,9 @@ function _renderFindingsListResults(data) {
 // Renders any {metric_name: value, ..., surveyed_at, detail?} shape (as
 // returned by registry.query_metrics()) as a small key-value grid.
 function _renderMetricsResults(data) {
-  const entries = Object.entries(data).filter(([k]) => k !== 'surveyed_at' && k !== 'detail');
-  if (!entries.length) return `<div class="text-xs text-slate-500">No results yet — click Run to scan.</div>`;
+  // _status is an envelope, not a metric — it must never render as a row.
+  const entries = Object.entries(data).filter(([k]) => k !== 'surveyed_at' && k !== 'detail' && k !== '_status');
+  if (!entries.length) return _renderEmptyResultState(data);
   return entries.map(([name, value]) => `
     <div class="text-xs text-slate-300 flex justify-between gap-2">
       <span class="text-slate-500">${_esc(name.replace(/_/g, ' '))}</span>
@@ -6176,11 +6216,12 @@ function showMainView(tab) {
   const adminGroupsView = document.getElementById('admin-groups-view');
   const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
   const adminEgeriaLinksView = document.getElementById('admin-egeria-links-view');
+  const adminQuestionCatalogView = document.getElementById('admin-question-catalog-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6274,6 +6315,10 @@ function showMainView(tab) {
     adminEgeriaLinksView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminEgeriaLinksPanel();
+  } else if (tab === 'admin-question-catalog') {
+    adminQuestionCatalogView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminQuestionCatalogPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -8925,6 +8970,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-groups',     label: '🗂 Groups' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
     { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
+    { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -10203,6 +10249,140 @@ function _egeriaBulkPreviewHtml(kind, data, mode) {
     <div class="text-slate-500 mb-2">${data.succeeded} ${mode === 'preview' ? 'would proceed' : 'succeeded'}, ${data.skipped} skipped, ${data.failed} ${mode === 'preview' ? 'would fail' : 'failed'}.</div>
     ${footer}
   </div>`;
+}
+
+// ── Admin — Question Catalog (read-only) ────────────────────────────────────
+// Browses the full docs/dr-egeria/resource_questions.csv catalog, unscoped
+// to any one project — GET /api/analyses/question-catalog returns every
+// question's stage/perspectives/answering info with no has_data computation
+// (contrast with the per-project, has_data-aware /api/projects/{slug}/
+// scouting-questions used by Scouting's own Questions tab). Reuses
+// _QUESTION_KIND_STATUS (defined above, next to renderScoutingQuestions) for
+// the same kind vocabulary/badge styling, minus the has_data-dependent
+// analysis/partial/mixed branch — this view can't know has_data without a
+// project, so those three kinds get a neutral badge here instead.
+let _adminQuestionCatalogData = null;   // last-loaded, unfiltered
+let _adminQCStageFilter = '';           // '' = all stages
+let _adminQCPerspectiveFilter = new Set();
+let _adminQCSearch = '';
+
+const _ADMIN_QC_NEUTRAL_STATUS = { icon: '•', color: 'text-slate-400', label: 'Depends on the resource — see note' };
+
+function _adminQCStatus(kind) {
+  return _QUESTION_KIND_STATUS[kind] || _ADMIN_QC_NEUTRAL_STATUS;
+}
+
+async function loadAdminQuestionCatalogPanel() {
+  const view = document.getElementById('admin-question-catalog-view');
+  view.innerHTML = _adminSubnavHtml('admin-question-catalog') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading...</div>';
+  try {
+    const res = await fetch('/api/analyses/question-catalog');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _adminQuestionCatalogData = await res.json();
+    renderAdminQuestionCatalogPanel();
+  } catch (e) {
+    view.innerHTML = _adminSubnavHtml('admin-question-catalog') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function _adminQCStages() {
+  const set = new Set();
+  (_adminQuestionCatalogData || []).forEach(q => set.add(q.stage));
+  return [...set].filter(Boolean).sort();
+}
+
+function _adminQCPerspectives() {
+  const set = new Set();
+  (_adminQuestionCatalogData || []).forEach(q => (q.perspectives || []).forEach(p => set.add(p)));
+  return [...set].sort();
+}
+
+function _setAdminQCStage(stage) {
+  _adminQCStageFilter = stage === _adminQCStageFilter ? '' : stage;
+  renderAdminQuestionCatalogPanel();
+}
+
+function _toggleAdminQCPerspective(p) {
+  if (_adminQCPerspectiveFilter.has(p)) _adminQCPerspectiveFilter.delete(p);
+  else _adminQCPerspectiveFilter.add(p);
+  renderAdminQuestionCatalogPanel();
+}
+
+function _setAdminQCSearch(value) {
+  _adminQCSearch = value;
+  renderAdminQuestionCatalogPanel();
+}
+
+function renderAdminQuestionCatalogPanel() {
+  const view = document.getElementById('admin-question-catalog-view');
+  const all = _adminQuestionCatalogData || [];
+  const search = _adminQCSearch.trim().toLowerCase();
+
+  const questions = all.filter(q => {
+    if (_adminQCStageFilter && !q.stage.split('/').map(s => s.trim()).includes(_adminQCStageFilter)) return false;
+    if (_adminQCPerspectiveFilter.size && !(q.perspectives || []).some(p => _adminQCPerspectiveFilter.has(p))) return false;
+    if (search && !q.question.toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  const stageChips = _adminQCStages().map(s => `<button onclick="_setAdminQCStage('${_esc(s)}')"
+      class="text-xs px-2.5 py-1 rounded transition-colors ${s === _adminQCStageFilter ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${_esc(s)}</button>`).join('');
+
+  const perspectiveChips = _adminQCPerspectives().map(p => `<button onclick="_toggleAdminQCPerspective('${_esc(p)}')"
+      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_adminQCPerspectiveFilter.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
+
+  const rows = questions.map(q => {
+    const status = _adminQCStatus(q.answering.kind);
+    return `<tr class="border-b border-slate-800/60 align-top hover:bg-slate-800/30 transition-colors">
+        <td class="px-3 py-2 text-xs text-slate-200 max-w-md">${_esc(q.question)}</td>
+        <td class="px-3 py-2 text-[10px] text-slate-400 whitespace-nowrap" title="Funnel Stage">${_esc(q.stage)}</td>
+        <td class="px-3 py-2 text-[10px] text-slate-500">${(q.perspectives || []).map(p => _esc(p)).join(' · ') || '—'}</td>
+        <td class="px-3 py-2 text-xs whitespace-nowrap">
+          <span class="${status.color}" title="${_esc(status.label)}">${status.icon} ${_esc(q.answering.kind)}</span>
+        </td>
+        <td class="px-3 py-2 text-[10px] text-slate-500 whitespace-nowrap">${_esc(q.answering_mechanism || '—')}</td>
+        <td class="px-3 py-2 text-[10px] text-slate-600 max-w-lg" title="${_esc(q.answering.note || '')}">${_esc(q.answering.note || '')}</td>
+      </tr>`;
+  }).join('') || `<tr><td colspan="6" class="px-4 py-6 text-center text-slate-500 text-xs">No questions match this filter.</td></tr>`;
+
+  view.innerHTML = _adminSubnavHtml('admin-question-catalog') + `
+    <div class="p-4">
+      <h1 class="text-lg font-bold text-slate-100 mb-1">&#10067; Question Catalog</h1>
+      <p class="text-xs text-slate-500 mb-3 max-w-3xl">
+        Read-only view of every question authored in
+        <code class="text-slate-400">docs/dr-egeria/resource_questions.csv</code> — the source of
+        truth for both Scouting's Questions checklist and the Question elements published to
+        Egeria. To add, edit, or remove a question, edit that CSV and regenerate; see
+        <code class="text-slate-400">docs/dr-egeria/resource_questions_guide.md</code> for the
+        full column reference and workflow. This screen does not write back to the CSV.
+      </p>
+      <div class="space-y-2 mb-3">
+        <input type="text" placeholder="Search question text…" value="${_esc(_adminQCSearch)}"
+          oninput="_setAdminQCSearch(this.value)"
+          class="w-full max-w-sm bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-700">
+        <div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+          <div class="flex flex-wrap gap-1.5">${stageChips || '<span class="text-xs text-slate-600">—</span>'}</div>
+        </div>
+        ${_adminQCPerspectives().length ? `<div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
+          <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
+        </div>` : ''}
+      </div>
+      <div class="text-[11px] text-slate-500 mb-2">${questions.length} / ${all.length} question(s)</div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">
+        <table class="w-full text-left">
+          <thead><tr class="border-b border-slate-800 text-[10px] text-slate-500 uppercase">
+            <th class="px-3 py-2">Question</th><th class="px-3 py-2">Stage</th>
+            <th class="px-3 py-2">Perspectives</th><th class="px-3 py-2">Kind</th>
+            <th class="px-3 py-2">Mechanism</th><th class="px-3 py-2">Note</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 async function loadAdminDiscoverySourcesPanel() {

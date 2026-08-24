@@ -43,6 +43,7 @@ from typing import Callable
 from trellis_microflow import ResourceProvider
 
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
+from resource_explorer.surveyors.result_status import attach as attach_status
 from resource_explorer.surveyors.arch_recovery import projection as arch_projection
 
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
@@ -809,7 +810,14 @@ def _dependency_trend(registry, slug: str) -> list[dict]:
 
 def _data_profile_results(registry, slug: str) -> dict:
     profiles = registry.get_data_profiles(slug)
-    return {"profiles": profiles, "total": len(profiles)}
+    # The status rides along from the metric row DataProfilerSurveyor writes on
+    # every terminal path, including its zeros. Without it a repo that was
+    # scanned and provably has no data files renders identically to one that was
+    # never scanned — 36 of them, measured 2026-08-24.
+    return attach_status(
+        {"profiles": profiles, "total": len(profiles)},
+        (registry.query_metrics(slug, "data_profile") or {}).get("detail"),
+    )
 
 
 def _data_profile_trend(registry, slug: str) -> list[dict]:
@@ -1160,8 +1168,11 @@ def _website_ingestion_results(registry, slug: str) -> dict:
     # empty descriptive field shows as a label with nothing beside it — which
     # reads as a failed lookup rather than as "not applicable". The counts stay
     # even at zero: there, zero is the answer.
-    return {k: v for k, v in out.items()
-            if v != "" or k in ("chunks", "pages_fetched", "pages_found", "pages_failed")}
+    return attach_status(
+        {k: v for k, v in out.items()
+         if v != "" or k in ("chunks", "pages_fetched", "pages_found", "pages_failed")},
+        detail,
+    )
 
 
 def _website_ingestion_trend(registry, slug: str) -> list[dict]:
