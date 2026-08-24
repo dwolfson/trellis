@@ -160,6 +160,45 @@ returning silently.
    stage-specific survey.
 
 
+### Location-valued artifacts: 31% are NOT in the repo — the corpus number
+
+Measured 2026-08-24, first full run of `repo_classification` across all 60 registered repos
+(26.7 min, 0 failures, on the post-`fd2e5a7` path). Recorded here because it answers a question
+the architecture-recovery design could previously only answer from five hand-picked projects,
+and because that session asked for it explicitly and has since ended.
+
+```
+artifacts located              140
+located ELSEWHERE               43   (31% of located)
+repos with >= 1 elsewhere       25   of 60
+max elsewhere in one repo        3
+```
+
+**A boolean "does this repo document its architecture?" would answer *no* for 43 artifacts
+that exist and were found.** §5.5b's location-valued design (`in-repo` / `sibling-repo` /
+`doc-site` / `not-found`, only the last an absence) is therefore paying for itself on a corpus
+nobody selected to flatter it — the point being that the spread is unglamorous and even
+(polaris 1, docling_eval 1, docling_java 3, docling_mcp 1) rather than concentrated in the
+famous Kubernetes case. A steady third across 25 repos is a stronger argument than one
+spectacular example.
+
+Corpus shape, first time this has run everywhere:
+
+```
+roles  samples 16 · application 13 · documentation 11 · library 6 · tutorial 5 · middleware 2 · tool 1 · none 6
+gates  run 47 · skip 7 · none 6
+timing min 7.2s · median 25.5s · max 58.6s
+```
+
+Two things worth someone's attention:
+
+- **The gate lets 87% through** (47 run, 7 skip of 54 classified). If its purpose is sparing
+  the expensive tier, that ratio deserves a look — it may simply be right for a corpus that is
+  mostly real software, but nobody has checked.
+- **The 6 repos with no role have no file inventory** — never ingested, so nothing to classify.
+  Correct behaviour, and the card now says which kind of nothing it is rather than showing a
+  blank.
+
 ### `repo_classification` declares `fetch_cost="none"` and calls the GitHub API
 
 Found 2026-08-24 running Repo Discovery Survey across the corpus. The run managed **3 repos in
