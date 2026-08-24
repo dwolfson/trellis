@@ -67,6 +67,81 @@ These are sequential. Each blocks the next.
 
 ---
 
+## 2a. Branch inventory and ownership — established, not guessed
+
+Every attribution below was confirmed by the owning session. Earlier guesses in this document
+were wrong; sessions commit under one identity and sign with one key, so nothing in git
+metadata distinguishes them.
+
+| branch | ahead of main | owner | state |
+|---|---|---|---|
+| `re/deferred-cleanup-followups` | 200 | shared — several sessions | clean, in sync |
+| `re/results-presentation` | 200 | presentation session | identical to the above |
+| `ui/question-catalog-admin` | **146** | egeria-advisor session | clean, pushed, **never merged into the others** |
+| `fix/dr-egeria-template-sync-clean` | 2 | question-catalog session | pushed, deliberately split off |
+
+The shared checkout `.../trellis` is now clean (`7129c9d`) apart from `.claude/launch.json`,
+left visible deliberately as shareable dev-server config — Dan's call whether it belongs in
+the repo.
+
+**Question-catalog work has two owners, not one.** The data layer (CSV, `question_catalog.yaml`,
+`check_registry.yaml`, the generator scripts, the reader, tests) belongs to one session and
+touches no frontend; `ui/question-catalog-admin` belongs to another. Adjacent work, two
+owners — a cross-session reconciliation rather than a tidy-up.
+
+`c370fa8` is redundant: an identical blob to a change already on
+`fix/dr-egeria-template-sync-clean` from 24h earlier. It resolves as a no-op on merge and
+explains why one template change appears twice in the history.
+
+---
+
+## 2b. The merge hazard CI cannot catch
+
+**`ui/question-catalog-admin` changes `renderAnalysisCatalogCards`'s signature**, inserting a
+positional parameter at index 1:
+
+```js
+// re/deferred-cleanup-followups
+renderAnalysisCatalogCards(analyses, view, {…})
+// ui/question-catalog-admin
+renderAnalysisCatalogCards(analyses, candidates, view, {…})
+```
+
+Any **new** direct call written on either branch merges cleanly against the other — different
+hunk, no conflict markers — and lands `view` in `candidates`. JavaScript type-checks nothing,
+the call site stays syntactically valid, and CI goes green. The failure appears at runtime, in
+a pane that renders successfully and renders the wrong thing.
+
+There is **exactly one direct call site on each branch**, which is what keeps this cheap.
+Today's Discovery panel (`fb710f0`) was routed through `_loadAnalysisCatalogPanel` — byte
+identical on both branches — specifically to avoid adding a second. **If these become two PRs,
+the second one needs a human read of that function, not a passing build.**
+
+Scale, for the same decision: that branch carries **+745/−190** in `index.html`; today's work
+added **+460/−9** to the same file.
+
+*(This was sent to the owning session as a message and did not arrive — that session had
+ended. Three cross-session messages were lost to turnover today. It is written here because
+the repo is what reaches people.)*
+
+---
+
+## 2c. What to hold out of the PR
+
+- **Remove `scripts/arch-spike/llm_cache/`** — 22 tracked files, 244K, raw model output
+  (`qwen2.5-coder:32b`, elapsed times, full prompt/response bodies). Nothing imports it;
+  `adjudicate.py` regenerates on miss. One cached response contains `"type": "Third Party
+  Process"` — an invalid vocabulary value the guardrail now rejects, i.e. a cached wrong answer
+  from a superseded run. Reviewers should not be reading it.
+- **Keep `scripts/arch-spike/README.md`** despite being the largest file in the spike (204K).
+  Product code cites it by finding number — findings 4, 19, 20, 34, 35, 36, 37 and 44 all
+  appear in `arch_recovery/` comments. Cutting it orphans live references. The obvious cut is
+  the wrong one.
+- The rest of the spike is cleanly separable: no product code imports it, and it imports no
+  product code. 836K tracked across 54 files. Include or exclude on its merits.
+
+---
+
 ## 3. Outstanding threads, and how they may run
 
 ### Can run in parallel — independent, different files
