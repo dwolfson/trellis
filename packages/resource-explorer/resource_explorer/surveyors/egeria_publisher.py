@@ -111,12 +111,20 @@ class EgeriaPublisher:
             self._publish_homepage_reference(result, asset_guid)
             report_guid = self._create_survey_report(result, asset_guid)
             self._create_annotations(result, report_guid)
+        # Best-effort, deliberately outside the guard_linkage block above —
+        # this is local bookkeeping for the Survey Results dashboards'
+        # per-card "last published" badge (get_last_published_annotation_
+        # types), not part of the real Egeria write; a failure here must
+        # never raise and make an already-successful publish look failed.
+        # Not silently log-only, though (tests/test_no_silent_success.py's
+        # ratchet caught the first version of this doing exactly that): the
+        # outcome is folded into the log_catalog activity_log entry below —
+        # a real, greppable, user-visible signal (Activity tab), not a debug
+        # line nobody reads. Recoverable either way: a card just shows "Not
+        # published" until the next successful publish, or via
+        # scripts/backfill_published_annotation_types.py.
+        annotation_types_warning = ""
         if self._registry:
-            # Best-effort, deliberately outside the guard_linkage block above
-            # — this is local bookkeeping for the Survey Results dashboards'
-            # per-card "last published" badge (get_last_published_annotation_
-            # types), not part of the real Egeria write; a failure here must
-            # never look like the publish itself failed.
             try:
                 self._registry.record_published_annotation_types(
                     result.project_slug,
@@ -124,7 +132,8 @@ class EgeriaPublisher:
                     report_guid,
                 )
             except Exception as exc:
-                log.debug("record_published_annotation_types failed (non-fatal): %s", exc)
+                annotation_types_warning = f" (⚠ last-published tracking not recorded: {exc})"
+                log.warning("record_published_annotation_types failed (non-fatal): %s", exc)
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.project_slug,
@@ -144,7 +153,7 @@ class EgeriaPublisher:
                     status="ok",
                     summary=(
                         f"Published to Egeria: {len(result.annotations)} annotations"
-                        f" → {(report_guid or 'no-guid')[:12]}…"
+                        f" → {(report_guid or 'no-guid')[:12]}…{annotation_types_warning}"
                     ),
                     items=[
                         {

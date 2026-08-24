@@ -147,6 +147,7 @@ async def list_candidates(
         # problem is a slow/hanging definition rather than throughput, the fix is
         # a per-fetch deadline here, not threads.
         from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.surveyors.repo_survey_definition_adapter import get_survey_definition_speed_tag
 
         last_activity_by_ref = ProjectRegistry().get_survey_definition_last_activity(entity_type, slug)
 
@@ -199,6 +200,11 @@ async def list_candidates(
                 # precise per-candidate claim. Blank when last_published_at
                 # is blank too.
                 "last_published_scope": last_activity.get("last_published_scope", ""),
+                # Matches the local Analyses catalog's own run_time field —
+                # see get_survey_definition_speed_tag's docstring for how
+                # it's derived (Survey Definitions have no such field of
+                # their own to read).
+                "run_time": get_survey_definition_speed_tag(steps),
             })
 
         # Composite-survey propagation (2026-08-24 — direct feedback: "if a

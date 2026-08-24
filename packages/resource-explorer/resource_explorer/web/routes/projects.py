@@ -631,6 +631,8 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
     )
     if catalog_entry and catalog_entry.get("action") == "ingest":
+        from resource_explorer.activity_logger import log_analysis_run
+
         def _run_ingest():
             from resource_explorer.ingestion.incremental import IncrementalIndexer
             from resource_explorer.query_cache import QueryCache
@@ -640,7 +642,9 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         try:
             await asyncio.to_thread(_run_ingest)
         except Exception as exc:
+            log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
             return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
+        log_analysis_run(registry, "repo", slug, project.display_name, "ok", "Re-ingested into pgvector.", analysis_id)
         return AnalysisRunResult(status="ok", slug=slug, analysis_id=analysis_id, message="Re-ingested into pgvector.")
 
     steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
@@ -654,19 +658,73 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     def _run():
         return SurveyOrchestrator(registry).run(slug, steps=steps)
 
+    # Real, live-reported gap (2026-08-24): this route never wrote to
+    # activity_log at all, so Analyses cards had no last-run signal —
+    # unlike Survey Definition cards, which do (survey_definitions.py's
+    # run route). log_analysis_run below closes that; see
+    # registry.get_analysis_last_run()'s docstring for the read side.
+    from resource_explorer.activity_logger import log_analysis_run
+
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:
+        log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
         return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
 
     if result.errors:
-        return AnalysisRunResult(
-            status="error", slug=slug, analysis_id=analysis_id, error="; ".join(result.errors),
-        )
+        error = "; ".join(result.errors)
+        log_analysis_run(registry, "repo", slug, project.display_name, "error", error, analysis_id)
+        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=error)
+    summary = f"{len(result.annotations)} annotation(s)."
+    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id)
     return AnalysisRunResult(
         status="ok", slug=slug, analysis_id=analysis_id,
-        message=f"{len(result.annotations)} annotation(s).",
+        message=summary,
     )
+
+
+@router.get("/{slug}/analyses/last-activity")
+async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
+    """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
+    every local AnalysisKind — the Analyses cards' equivalent of Survey
+    Definitions' /candidates endpoint already returning last_run_at/
+    last_published_at inline. Kept as its own lightweight endpoint rather
+    than folded into GET /api/analyses/{resource_type} (analyses.py):
+    that route is resource-type-wide and shared/cached across every repo of
+    the same type (see its own module docstring) — deliberately has no repo
+    slug at all. The frontend fetches this alongside GET /api/schedules/...
+    in _loadAnalysisCatalogPanel() and merges both client-side into each
+    card, same pattern that route already used for per-card schedule state.
+
+    last_published_at is real per-analysis-id data even though this route
+    is new: get_last_published_annotation_types() (added earlier the same
+    day for the Survey Results dashboards) already has everything needed —
+    each analysis_id's own annotation_types (analysis_catalog.yaml) is the
+    same join key used there, just applied per-analysis instead of
+    per-dashboard-of-several-analyses."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    registry = ProjectRegistry()
+    if not registry.get(slug):
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    last_run = registry.get_analysis_last_run("repo", slug)
+    published_by_type = registry.get_last_published_annotation_types(slug)
+
+    result: dict[str, dict] = {}
+    for a in get_analyses("repo", include_egeria_live=False):
+        run = last_run.get(a["id"], {})
+        pub_at = max(
+            (published_by_type[t] for t in (a.get("annotation_types") or []) if t in published_by_type),
+            default="",
+        )
+        result[a["id"]] = {
+            "last_run_at": run.get("last_run_at", ""),
+            "last_run_status": run.get("last_run_status", ""),
+            "last_published_at": pub_at,
+        }
+    return result
 
 
 @router.get("/{slug}/analyses/{analysis_id}/results")

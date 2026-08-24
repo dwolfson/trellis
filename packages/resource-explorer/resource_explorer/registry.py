@@ -139,7 +139,7 @@ class FileSystemEntity:
 class ActivityEntry:
     id: str
     ts: str
-    operation: str    # 'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh'
+    operation: str    # 'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh' | 'analysis_run'
     intent: str       # 'scouting' | 'assessment' | 'discovery' | 'enrichment'
     entity_type: str  # 'repo' | 'database' | 'server' | 'filesystem' | 'file'
     entity_slug: str
@@ -4195,6 +4195,40 @@ class ProjectRegistry:
                 if entry.get("last_run_at", "") <= repo_wide_publish_at:
                     entry["last_published_at"] = repo_wide_publish_at
                     entry["last_published_scope"] = "repo"
+        return result
+
+    def get_analysis_last_run(
+        self, entity_type: str, entity_slug: str, limit: int = 500,
+    ) -> dict[str, dict]:
+        """{analysis_id: {last_run_at, last_run_status}} for this entity's
+        local AnalysisKind cards — the Analyses-card equivalent of
+        get_survey_definition_last_activity() above, added the same day for
+        the same reason (direct feedback: Analyses cards had no last-run
+        signal at all, unlike Survey Definition cards). Reads
+        activity_logger.log_analysis_run()'s operation='analysis_run' rows,
+        keyed by the `analysis_id` embedded in `detail`. Kept as its own
+        method rather than folded into get_survey_definition_last_activity —
+        different operation value, different ref key, no shared publish-
+        attribution logic to reuse (an Analyses card's 'last published' comes
+        from get_last_published_annotation_types() instead, joined by
+        annotation_types, not by activity_log at all)."""
+        result: dict[str, dict] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation = 'analysis_run' "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit),
+            ).fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            analysis_id = detail.get("analysis_id") if isinstance(detail, dict) else None
+            if not analysis_id or analysis_id in result:
+                continue
+            result[analysis_id] = {"last_run_at": row["ts"], "last_run_status": row["status"]}
         return result
 
     def update_activity_status(

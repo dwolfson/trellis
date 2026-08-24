@@ -2313,6 +2313,7 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
     // (same one the old Admin Schedules editor used) rather than a new one.
     const slug = _currentSelectedSlug();
     let schedules = {};
+    let lastActivity = {};
     if (slug) {
       try {
         const schedRes = await fetch(`/api/schedules/${resourceType}/${encodeURIComponent(slug)}`);
@@ -2320,24 +2321,40 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
           for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
         }
       } catch { /* non-fatal — cards just show the unscheduled state */ }
+      // Last-run/last-published per local analysis_id (direct feedback,
+      // 2026-08-24 — Analyses cards had neither before). repo-only today,
+      // same scope as the results/schedule machinery above.
+      if (resourceType === 'repo') {
+        try {
+          const laRes = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/last-activity`);
+          if (laRes.ok) lastActivity = await laRes.json();
+        } catch { /* non-fatal — cards just show the never-run state */ }
+      }
     }
-    renderAnalysisCatalogCards(analyses, view, {
+    // Merged into ONE list with the local Analyses above (direct feedback,
+    // 2026-08-24: "two clumps of Surveys... should there be only one?") —
+    // was a separate _loadSurveyPanel() call appended below this panel as
+    // its own "Surveys — X" section; see renderAnalysisCatalogCards for the
+    // normalization. Only fetched with a resource selected — nothing to
+    // scope Survey Definition candidates to otherwise, same as before.
+    let candidates = [];
+    if (slug) {
+      try {
+        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ phase: intent })}`);
+        if (candRes.ok) candidates = (await candRes.json()).candidates || [];
+      } catch { /* non-fatal — local Analyses cards still render on their own */ }
+    }
+    renderAnalysisCatalogCards(analyses, candidates, view, {
       title,
       emptyText: `No ${title}-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
       egeriaStatus,
       entityType: resourceType,
       slug,
       schedules,
+      lastActivity,
       subnavHtml,
+      viewId,
     });
-    // D7a — the generalized Survey panel, scoped to this intent's own phase
-    // (assessment/analysis map directly onto the same funnel-stage vocabulary
-    // Questions/Scouting use), into the placeholder renderAnalysisCatalogCards()
-    // just rendered. Only when a resource is actually selected — nothing to
-    // scope Survey Definition candidates to otherwise.
-    if (slug) {
-      await _loadSurveyPanel(resourceType, slug, intent, `${viewId}-survey-panel`, '');
-    }
   } catch(e) {
     view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -2359,13 +2376,31 @@ async function _fetchEgeriaMergeStatus(resourceType) {
   }
 }
 
-// Shared by Assessment and (Step 4) Analysis — same card shape, different
+// Shared by Assessment and (Step 4) Analysis — same card grid, different
 // intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
-// pattern already established in renderSurveyPanel, rather than
-// inventing a second card style.
-function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, subnavHtml }) {
+// pattern renderSurveyPanel already established.
+//
+// Merges two data sources into ONE grid (2026-08-24 — direct feedback:
+// "two clumps of Surveys... should there be only one?"): local AnalysisKind
+// cards (`analyses`) and Egeria Survey Definition candidates (`candidates`)
+// used to render as two visually separate sections — a header reading
+// "Analysis — Repos" followed by a second one reading "Surveys — X" — a
+// real, known duplication the code even said so ("two data sources, one
+// shared render, not a merge — real future work, not attempted"). This is
+// that merge: local cards render via the inline logic below, Egeria
+// candidates via the extracted _renderSurveyDefCandidateCard() (same full-
+// fidelity card Discovery/Scouting's own Survey Definitions panel uses —
+// see that function's own comment), interleaved into one sorted list, one
+// header, one grid. The two kinds stay visually distinguishable (🏠 Local
+// vs ☁ Egeria Survey tag) — merging the *display* doesn't pretend they're
+// the same underlying system, just stops presenting them as two unrelated
+// sections a user has to separately notice.
+function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, lastActivity, subnavHtml, viewId }) {
   schedules = schedules || {};
+  lastActivity = lastActivity || {};
+  candidates = candidates || [];
   subnavHtml = subnavHtml || '';
+  viewId = viewId || view.id;
   // Only "unavailable" means a live-Egeria merge was actually attempted and
   // failed — "not_applicable" (no Technology Type mapped for this resource
   // type yet) and "ok" say nothing, so the panel doesn't cry wolf.
@@ -2377,28 +2412,34 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
     ${unavailableNote}
   </div>`;
 
-  // D7/D7a (docs/unified-survey-execution-model-plan.md): the generalized,
-  // phase-scoped Survey panel (Egeria Survey Definition candidates) sits
-  // below the local AnalysisKind cards here — "two data sources, one shared
-  // render," not a merge (real future work, not attempted). Populated by
-  // _loadSurveyPanel() right after this render (see _loadAnalysisCatalogPanel),
-  // only when a resource is actually selected — an empty AnalysisKind list
-  // for this intent doesn't mean there's nothing to survey via Egeria.
-  const surveyPanelPlaceholder = `<div id="${_esc(view.id)}-survey-panel" class="pt-2"></div>`;
+  const validCandidates = candidates.filter(c => !c.error);
 
-  if (!analyses.length) {
-    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>` + surveyPanelPlaceholder;
+  if (!analyses.length && !validCandidates.length) {
+    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
     return;
   }
 
   const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
-  const cards = analyses.map(a => {
+  const localCardsHtml = analyses.map(a => {
     const perspTags = (a.perspectives || []).filter(p => p !== 'all')
       .map(p => `<span class="analysis-tag">${_esc(p.replace(/_/g, ' '))}</span>`).join(' ');
     const sourceTag = a.source === 'egeria'
       ? '<span class="analysis-tag tag-egeria">☁ Egeria</span>'
       : '<span class="analysis-tag">🏠 Local</span>';
     const speedTag = `<span class="analysis-tag ${speedTagClass[a.run_time] || ''}">${_esc(a.run_time)}</span>`;
+    // Last-run/last-published (2026-08-24 — direct feedback: Analyses cards
+    // had neither, unlike Survey Definition cards) — same badge convention
+    // _renderSurveyDefCandidateCard uses, so the two card kinds read
+    // identically even though the underlying data comes from different
+    // tables (activity_log's analysis_run rows vs. survey/catalog rows;
+    // see registry.get_analysis_last_run()/get_last_published_annotation_types()).
+    const la = lastActivity[a.id] || {};
+    const lastRunHtml = la.last_run_at
+      ? `<span class="text-cyan-400" title="Last run: ${_esc(la.last_run_at)} (${_esc(la.last_run_status || '')})">📅 Last run ${_relTime(la.last_run_at)}</span>`
+      : `<span class="text-amber-400">📅 Never run</span>`;
+    const lastPublishedHtml = la.last_published_at
+      ? `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>`
+      : `<span class="text-slate-600">☁ Not published</span>`;
     // Scheduling is a cross-cutting, per-analysis action — available from
     // whichever card surfaced it (Assessment, Analysis, or Discovery),
     // rather than a separate admin page. Reuses the same schedules backend
@@ -2433,13 +2474,23 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
            🔔 Notify me
          </button>`
       : '';
+    // No Publish button here (unlike Survey Definition cards): _publishScopedSteps
+    // needs the underlying re_analysis_step *keys* (REPO_ANALYSIS_STEP_MAP's
+    // values, e.g. "repo_language"), not the analysis_id itself, and the
+    // /api/analyses/{resource_type} response this card is built from doesn't
+    // carry that mapping — adding it is a real, separate follow-up (a new
+    // field on AnalysisCatalogEntry or a small resolving endpoint), not
+    // something to fake with the wrong value. last_published_at above still
+    // works today via the whole-repo "Publish survey →" fallback
+    // (get_last_published_annotation_types), same as it did before this merge.
 
-    return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
+    return { key: `local:${a.id}`, lastRunAt: la.last_run_at || '', html: `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
       <div class="flex-1 min-w-0">
         <div class="text-xs font-semibold text-slate-200">${_esc(a.name)}${a.recommended ? ' <span class="text-cyan-400" title="Recommended">★</span>' : ''}</div>
         <div class="text-xs text-slate-400 mt-0.5">${_esc(a.description)}</div>
+        <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
       </div>
-      <div class="flex flex-wrap gap-1">${speedTag}${sourceTag}${perspTags}</div>
+      <div class="flex flex-wrap gap-1 mt-1">${speedTag}${sourceTag}${perspTags}</div>
       <div class="mt-auto pt-1 flex flex-wrap gap-1.5 items-center">
         <button onclick='_runAnalysisCatalogCard(${JSON.stringify(a.id)})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
@@ -2451,10 +2502,27 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
       </div>
       <div id="sched-form-${safeId}" class="hidden mt-1"></div>
       <div id="results-${safeId}" class="hidden mt-2"></div>
-    </div>`;
-  }).join('');
+    </div>` };
+  });
 
-  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>` + surveyPanelPlaceholder;
+  const egeriaCardsHtml = validCandidates.map(c => ({
+    key: `egeria:${c.qualified_name}`,
+    lastRunAt: c.last_run_at || '',
+    html: _renderSurveyDefCandidateCard(c, validCandidates, entityType, slug, schedules, viewId),
+  }));
+
+  // Oldest-run-first, never-run first — same convention Discovery's Survey
+  // Definitions panel already established, now applied across the merged
+  // list so the cards most overdue for a run surface first regardless of
+  // which of the two systems produced them.
+  const cards = [...localCardsHtml, ...egeriaCardsHtml].sort((x, y) => {
+    if (!x.lastRunAt && !y.lastRunAt) return 0;
+    if (!x.lastRunAt) return -1;
+    if (!y.lastRunAt) return 1;
+    return x.lastRunAt < y.lastRunAt ? -1 : x.lastRunAt > y.lastRunAt ? 1 : 0;
+  }).map(c => c.html).join('');
+
+  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
 }
 
 // Automate (Part 4) — "🔔 Notify me" on an analysis card. Creates a local
@@ -5131,6 +5199,136 @@ function _surveyDefEgeriaProducedTypesHtml(step) {
   </div>`;
 }
 
+// Extracted from renderSurveyPanel (2026-08-24) so the same full-fidelity
+// Survey Definition card — step list, last-run/last-published badges, Run/
+// Schedule/Publish actions — can be reused by the merged Analysis/Assessment
+// card grid (renderAnalysisCatalogCards) without duplicating this logic a
+// second time. `allCandidates` is only used to resolve last_run_via's label
+// (the superset survey's own display_name); pass the same array `c` came
+// from.
+function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, schedules, viewElId) {
+  schedules = schedules || {};
+  if (c.error) {
+    return `<div class="analysis-card opacity-60">
+      <div class="text-xs font-semibold text-slate-300">${_esc(c.display_name || c.qualified_name)}</div>
+      <div class="text-xs text-red-400 mt-1">⚠ ${_esc(c.error)}</div>
+    </div>`;
+  }
+  // Numbered, vertically laid-out step list — steps are a *sequence* within
+  // this one survey, not alternative choices of where to run it. That
+  // ambiguity was real user-reported confusion; numbering fixes it.
+  const stepsHtml = (c.steps || []).map((s, idx) => {
+    const anns = (s.annotation_types || []).map(t => `<span class="text-slate-400 text-xs">${_esc(t)}</span>`).join(' ');
+    const desc = _surveyDefFallbackDescription(s);
+    const egeriaTypesHtml = _surveyDefEgeriaProducedTypesHtml(s);
+    return `<div class="pl-2 border-l border-slate-700 mt-1.5">
+      <div class="text-xs text-slate-300 flex items-center gap-1.5 flex-wrap">
+        <span class="text-slate-500 font-mono">${idx + 1}.</span>
+        ${_esc(s.display_name)} ${_surveyDefEngineBadge(s.executes_at)}
+      </div>
+      ${desc ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(desc)}</div>` : ''}
+      ${anns ? `<div class="text-xs text-slate-500 mt-0.5">Produces: ${anns}</div>` : ''}
+      ${egeriaTypesHtml}
+    </div>`;
+  }).join('');
+
+  // D2 (docs/survey-tab-unification-plan.md follow-up) — collapsed by
+  // default so a repo with several survey types (Git Statistics, Coarse
+  // Profile, Repo Full Survey, ...) fits without a wall of scrolling;
+  // title/description/actions stay visible either way, only the step
+  // list is behind the toggle. Plain <summary>/<details> — no JS state
+  // to track, survives a re-render collapsed (matching how a freshly
+  // loaded panel should look) without extra bookkeeping.
+  // Last-run/last-published badges (direct feedback, 2026-08-24) — never
+  // run at all reads as "not yet run" in amber, distinct from a genuine
+  // run whose age is just informational (cyan), so the most-overdue cards
+  // (sorted to the top, see candidates.sort() above) are visually obvious
+  // too, not just first in list order.
+  // last_run_via (2026-08-24): set when this candidate has never itself
+  // been run directly, but a superset survey whose steps fully cover this
+  // one's own steps has — e.g. running Scouting Survey also covers Coarse
+  // Profile Survey and Git Statistics Survey, since Scouting's own
+  // description says it's literally their union. Shown distinctly (not
+  // just "Last run") so it's honest about being inherited, not a direct run.
+  const viaCand = c.last_run_via ? allCandidates.find(x => x.qualified_name === c.last_run_via) : null;
+  const viaLabel = viaCand ? viaCand.display_name : c.last_run_via;
+  const lastRunHtml = c.last_run_at
+    ? c.last_run_via
+      ? `<span class="text-cyan-400" title="Covered by a run of '${_esc(viaLabel)}': ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Covered ${_relTime(c.last_run_at)} (via ${_esc(viaLabel)})</span>`
+      : `<span class="text-cyan-400" title="Last run: ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Last run ${_relTime(c.last_run_at)}</span>`
+    : `<span class="text-amber-400">📅 Never run</span>`;
+  // last_published_scope 'repo' (2026-08-24): this candidate was never
+  // published via its own scoped ☁ Publish button, but a whole-repo
+  // "Publish survey →" happened after its last run — its findings were
+  // necessarily included, just not attributably to this one card. Shown
+  // distinctly (dimmer, "whole-repo" caveat in the tooltip) rather than
+  // claiming the same precision a real per-candidate publish would.
+  const lastPublishedHtml = c.last_published_at
+    ? c.last_published_scope === 'repo'
+      ? `<span class="text-slate-600" title="No candidate-specific publish yet — inferred from a whole-repo publish after this ran: ${_esc(c.last_published_at)}">☁ Repo published ${_relTime(c.last_published_at)}</span>`
+      : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
+    : '';
+  const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
+  const speedTag = c.run_time ? `<span class="analysis-tag ${speedTagClass[c.run_time] || ''}">${_esc(c.run_time)}</span>` : '';
+
+  return `<div class="analysis-card">
+    <div class="flex items-start justify-between gap-2">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-semibold text-slate-200">${_esc(c.display_name || c.qualified_name)}</div>
+        <div class="text-xs text-slate-500 mt-0.5">${_esc(c.qualified_name)}</div>
+        ${c.description ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(c.description)}</div>` : ''}
+        <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-1 mt-1">${speedTag}<span class="analysis-tag tag-egeria">☁ Egeria Survey</span></div>
+    <details class="mt-1.5">
+      <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">${(c.steps || []).length} step(s), in order (click to expand)</summary>
+      <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
+    </details>
+    <div class="mt-auto pt-2 flex flex-wrap gap-3 items-center justify-center">
+      <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(viewElId)}, ${JSON.stringify(c.qualified_name)})'
+        class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
+        Run →
+      </button>
+      ${(() => {
+        // Scheduling this directly against the real Survey Definition
+        // (keyed by qualified_name, not a static catalog id) is exactly
+        // the redesign this section's own comment above has been waiting
+        // on since 2026-07-09 — see the "Schedules editor: hidden for
+        // now" note a few lines up.
+        const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+        const sched = schedules[c.qualified_name];
+        const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
+        return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
+            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
+      })()}
+      ${(() => {
+        // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
+        // action per candidate, replacing the old per-survey-type hardcoded
+        // buttons ("Publish registration only", "Publish this phase's
+        // findings"). Scoped to exactly this candidate's own steps, not a
+        // hand-picked list — so a new Survey Definition gets a working
+        // Publish button for free, no frontend change needed. Only repo
+        // (resource-explorer-executed) steps carry a re_analysis_step —
+        // native/prefect-routed steps have nothing local to publish from
+        // here, and _publishScopedSteps' route is repo-only today, so the
+        // button is omitted rather than shown disabled/broken for those.
+        const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
+        if (entityType !== 'repo' || !stepKeys.length) return '';
+        return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
+            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
+            title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
+            ☁ Publish
+          </button>`;
+      })()}
+    </div>
+    ${(() => {
+      const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+      return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+    })()}
+  </div>`;
+}
+
 function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, subnavHtml) {
   schedules = schedules || {};
   const view = document.getElementById(viewElId);
@@ -5157,124 +5355,7 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
   // panel's — see _surveyDefCandidatesCache's own declaration comment.
   _surveyDefCandidatesCache[viewElId] = candidates;
 
-  let cardsHtml = candidates.map((c, i) => {
-    if (c.error) {
-      return `<div class="analysis-card opacity-60">
-        <div class="text-xs font-semibold text-slate-300">${_esc(c.display_name || c.qualified_name)}</div>
-        <div class="text-xs text-red-400 mt-1">⚠ ${_esc(c.error)}</div>
-      </div>`;
-    }
-    // Numbered, vertically laid-out step list — steps are a *sequence* within
-    // this one survey, not alternative choices of where to run it. That
-    // ambiguity was real user-reported confusion; numbering fixes it.
-    const stepsHtml = (c.steps || []).map((s, idx) => {
-      const anns = (s.annotation_types || []).map(t => `<span class="text-slate-400 text-xs">${_esc(t)}</span>`).join(' ');
-      const desc = _surveyDefFallbackDescription(s);
-      const egeriaTypesHtml = _surveyDefEgeriaProducedTypesHtml(s);
-      return `<div class="pl-2 border-l border-slate-700 mt-1.5">
-        <div class="text-xs text-slate-300 flex items-center gap-1.5 flex-wrap">
-          <span class="text-slate-500 font-mono">${idx + 1}.</span>
-          ${_esc(s.display_name)} ${_surveyDefEngineBadge(s.executes_at)}
-        </div>
-        ${desc ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(desc)}</div>` : ''}
-        ${anns ? `<div class="text-xs text-slate-500 mt-0.5">Produces: ${anns}</div>` : ''}
-        ${egeriaTypesHtml}
-      </div>`;
-    }).join('');
-
-    // D2 (docs/survey-tab-unification-plan.md follow-up) — collapsed by
-    // default so a repo with several survey types (Git Statistics, Coarse
-    // Profile, Repo Full Survey, ...) fits without a wall of scrolling;
-    // title/description/actions stay visible either way, only the step
-    // list is behind the toggle. Plain <summary>/<details> — no JS state
-    // to track, survives a re-render collapsed (matching how a freshly
-    // loaded panel should look) without extra bookkeeping.
-    // Last-run/last-published badges (direct feedback, 2026-08-24) — never
-    // run at all reads as "not yet run" in amber, distinct from a genuine
-    // run whose age is just informational (cyan), so the most-overdue cards
-    // (sorted to the top, see candidates.sort() above) are visually obvious
-    // too, not just first in list order.
-    // last_run_via (2026-08-24): set when this candidate has never itself
-    // been run directly, but a superset survey whose steps fully cover this
-    // one's own steps has — e.g. running Scouting Survey also covers Coarse
-    // Profile Survey and Git Statistics Survey, since Scouting's own
-    // description says it's literally their union. Shown distinctly (not
-    // just "Last run") so it's honest about being inherited, not a direct run.
-    const viaCand = c.last_run_via ? candidates.find(x => x.qualified_name === c.last_run_via) : null;
-    const viaLabel = viaCand ? viaCand.display_name : c.last_run_via;
-    const lastRunHtml = c.last_run_at
-      ? c.last_run_via
-        ? `<span class="text-cyan-400" title="Covered by a run of '${_esc(viaLabel)}': ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Covered ${_relTime(c.last_run_at)} (via ${_esc(viaLabel)})</span>`
-        : `<span class="text-cyan-400" title="Last run: ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Last run ${_relTime(c.last_run_at)}</span>`
-      : `<span class="text-amber-400">📅 Never run</span>`;
-    // last_published_scope 'repo' (2026-08-24): this candidate was never
-    // published via its own scoped ☁ Publish button, but a whole-repo
-    // "Publish survey →" happened after its last run — its findings were
-    // necessarily included, just not attributably to this one card. Shown
-    // distinctly (dimmer, "whole-repo" caveat in the tooltip) rather than
-    // claiming the same precision a real per-candidate publish would.
-    const lastPublishedHtml = c.last_published_at
-      ? c.last_published_scope === 'repo'
-        ? `<span class="text-slate-600" title="No candidate-specific publish yet — inferred from a whole-repo publish after this ran: ${_esc(c.last_published_at)}">☁ Repo published ${_relTime(c.last_published_at)}</span>`
-        : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
-      : '';
-
-    return `<div class="analysis-card">
-      <div class="flex items-start justify-between gap-2">
-        <div class="flex-1 min-w-0">
-          <div class="text-xs font-semibold text-slate-200">${_esc(c.display_name || c.qualified_name)}</div>
-          <div class="text-xs text-slate-500 mt-0.5">${_esc(c.qualified_name)}</div>
-          ${c.description ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(c.description)}</div>` : ''}
-          <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
-        </div>
-      </div>
-      <details class="mt-1.5">
-        <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">${(c.steps || []).length} step(s), in order (click to expand)</summary>
-        <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
-      </details>
-      <div class="mt-auto pt-2 flex flex-wrap gap-3 items-center justify-center">
-        <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(viewElId)}, ${JSON.stringify(c.qualified_name)})'
-          class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
-          Run →
-        </button>
-        ${(() => {
-          // Scheduling this directly against the real Survey Definition
-          // (keyed by qualified_name, not a static catalog id) is exactly
-          // the redesign this section's own comment above has been waiting
-          // on since 2026-07-09 — see the "Schedules editor: hidden for
-          // now" note a few lines up.
-          const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
-          const sched = schedules[c.qualified_name];
-          const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
-          return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
-              class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
-        })()}
-        ${(() => {
-          // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
-          // action per candidate, replacing the old per-survey-type hardcoded
-          // buttons ("Publish registration only", "Publish this phase's
-          // findings"). Scoped to exactly this candidate's own steps, not a
-          // hand-picked list — so a new Survey Definition gets a working
-          // Publish button for free, no frontend change needed. Only repo
-          // (resource-explorer-executed) steps carry a re_analysis_step —
-          // native/prefect-routed steps have nothing local to publish from
-          // here, and _publishScopedSteps' route is repo-only today, so the
-          // button is omitted rather than shown disabled/broken for those.
-          const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
-          if (entityType !== 'repo' || !stepKeys.length) return '';
-          return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
-              class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
-              title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
-              ☁ Publish
-            </button>`;
-        })()}
-      </div>
-      ${(() => {
-        const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
-        return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
-      })()}
-    </div>`;
-  }).join('');
+  let cardsHtml = candidates.map(c => _renderSurveyDefCandidateCard(c, candidates, entityType, slug, schedules, viewElId)).join('');
 
   if (!cardsHtml) {
     cardsHtml = `<div class="text-slate-600 text-xs text-center py-8 col-span-2">
@@ -5719,7 +5800,15 @@ async function submitSurveyDefinitionRun() {
 
     const _statusColor = {
       ok: 'text-emerald-400', triggered: 'text-cyan-400',
-      skipped_egeria: 'text-slate-500', unrecognized_engine: 'text-amber-400',
+      // not_executed_no_egeria_handler replaces the old skipped_egeria
+      // status (2026-08-24 — "closing the stub"): a step with no registered
+      // Egeria trigger handler genuinely never runs anywhere today (RE's
+      // client-side walk is the only thing driving execution — Egeria's own
+      // MAS doesn't independently pick up any step type yet), so this is
+      // now counted as a real error server-side too, not a benign skip —
+      // red, matching every other real per-step failure, not the old
+      // slate-500 "nothing to see here" treatment.
+      not_executed_no_egeria_handler: 'text-red-400', unrecognized_engine: 'text-amber-400',
     };
     const stepsHtml = (data.steps || []).map(s => {
       const color = _statusColor[s.status] || 'text-red-400';
