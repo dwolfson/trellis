@@ -124,6 +124,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.8.0",
     "black>=24.10.0",
     "mypy>=1.13.0",
@@ -174,3 +175,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hanging test must fail with a name, not stall silently. CI's first full-suite
+# run stopped dead at 46% and was killed by the job timeout 3 minutes later,
+# reporting only "The operation was canceled" — no test name, no traceback, no
+# way to tell a hang from a slow runner. 120s is far above any real test here
+# (the whole suite runs in ~2 minutes locally), so this only ever fires on
+# something genuinely stuck.
+timeout = 120
+timeout_method = "thread"
