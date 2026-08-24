@@ -2635,3 +2635,65 @@ process" from "runs inside one"**, which is exactly the distinction `Automated A
 `Long Running Daemon` turn on. Evidence we already hold could settle it — a component with no entry
 point of its own is not a daemon — which is another instance of finding 83's pattern: use detector
 evidence to falsify a claim, not merely to license it.
+
+**85. Falsifying a type with evidence: 4/9 → 5/9 type agreement, and an honest ceiling.**
+
+Finding 84 left the model unable to tell *"runs as its own process"* from *"runs inside one"*. We can
+tell: **a component with no entry point among its constituents is not a daemon and not a console
+command.** Those two types assert a mode of execution the absence of an entry point refutes — a
+falsification, not a preference.
+
+It fired on exactly the five in-process managers finding 84 named: `Notification System`, `PromQL
+Engine`, `Rule Management`, `Scrape Manager`, `Template Management` — all `Long Running Daemon`, none
+with an entry point.
+
+**Type agreement against ground truth, measured directly for the first time** (over the 9 components
+whose file sets match exactly):
+
+| | agreement | recall |
+|---|---|---|
+| typing guide (finding 84) | 4/9 | 9/11 |
+| **+ entry-point falsification** | **5/9** | 9/11 — unchanged |
+
+Recall is untouched, as expected: this is post-processing over a cached response, and a type change
+cannot move a file set. (Finding 84's recall gain came from re-prompting, which also changed merging.
+This one genuinely isolates typing.)
+
+### The honest ceiling, and why the remaining four are different
+
+`PromQL engine` is now correct — and it is the one Prometheus's own doc settles: *"does not run as
+its own actor goroutine, but is used as a library."* We reached the right answer without the doc.
+
+The other four are **not fixed, only made less wrong**:
+
+| component | ground truth | now | was |
+|---|---|---|---|
+| `Scrape manager` | `Automated Action` | `Software Library` | `Long Running Daemon` |
+| `Rule manager` | `Automated Action` | `Software Library` | `Long Running Daemon` |
+| `Notifier` | `Publishing` | `Software Library` | `Long Running Daemon` |
+| `Service discovery` | `Automated Action` | `Software Library` | (unchanged) |
+
+**A false claim was replaced by a weaker one, not a true one**, and that should be stated plainly
+rather than counted as a win. The falsification can prove *"not a separate process"*; it cannot
+distinguish *"runs on a schedule or trigger"* (`Automated Action`) or *"emits outputs to consumers"*
+(`Publishing`) from a plain library — those turn on **behaviour inside the process**, which no
+artifact we currently extract observes.
+
+That is a real ceiling on evidence-based typing, and it is worth naming: **three of the 13 values —
+`Automated Action`, `Publishing`, `Data Distribution` — describe what a component *does at runtime*,
+and every signal we collect is static.** Ports and wires (§5.5f) are the nearest thing we have to
+runtime evidence, and they are not wired into the IR yet. That is the next place this could improve,
+rather than a better prompt.
+
+### The pattern, now three instances deep
+
+| check | question | outcome |
+|---|---|---|
+| `validate_and_ground` | did you invent this? | caught hallucinated slugs (finding 82) |
+| `split_multi_entrypoint` | does this grouping contradict evidence? | Kubernetes 0/6 → 6/6 (finding 83) |
+| `falsify_types` | does this *claim* contradict evidence? | type agreement 4/9 → 5/9 |
+
+Each is cheap, deterministic, regression-testable, and derived from evidence already extracted.
+Cumulatively they have been worth far more than either the model choice (finding 81, +2 components)
+or three rounds of prompt iteration (finding 82, which ended at 0/6 on a held-out target).
+**Constraining the model with evidence has outperformed instructing it, every time.**

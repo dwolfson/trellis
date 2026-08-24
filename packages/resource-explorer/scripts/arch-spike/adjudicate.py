@@ -296,6 +296,52 @@ def parse_response(text: str) -> list[dict]:
     return json.loads(text[start:end + 1])
 
 
+# ── falsifying a type with evidence we already hold ─────────────────────
+#
+# Finding 84. The typing guide moved the vocabulary from 1 effective value to 6,
+# but replaced one over-used value with two: `Long Running Daemon` was applied to
+# `promql/`, `scrape/`, `rules/`, `notifier/` and `template/` — in-process
+# managers, none of which is a separate process. Prometheus's own document says
+# of the PromQL engine that it "does not run as its own actor goroutine, but is
+# used as a library".
+#
+# The model cannot tell "runs as its own process" from "runs inside one". We can:
+# **a component with no entry point among its constituents is not a daemon and
+# not a console command.** That is a falsification, not a preference — those two
+# types assert a mode of execution that the absence of an entry point refutes.
+#
+# The replacement is the detector's own type for the component's largest
+# constituent, falling back to `Software Library` only because §3.1's list makes
+# it the fall-through. Note this does NOT claim the replacement is right —
+# ground truth says `scrape` is an `Automated Action`, and this will say
+# `Software Library`. It claims only that the original was demonstrably wrong.
+# Removing a false claim is progress even when the replacement is merely weaker.
+
+_EXECUTION_TYPES = frozenset({"Long Running Daemon", "Console Command"})
+
+
+def falsify_types(kept: list[dict], type_by_slug: dict[str, str],
+                  files_by_slug: dict[str, list[str]]) -> tuple[list[dict], list[dict]]:
+    """Reject execution-mode types unsupported by any entry-point evidence."""
+    notes: list[dict] = []
+    for item in kept:
+        if item.get("type") not in _EXECUTION_TYPES:
+            continue
+        slugs = item.get("candidate_slugs") or []
+        if any(type_by_slug.get(s) == "Console Command" for s in slugs):
+            continue                     # an entry point IS present — claim stands
+        biggest = max(slugs, key=lambda s: len(files_by_slug.get(s, [])), default=None)
+        replacement = (type_by_slug.get(biggest) if biggest else None) or "Software Library"
+        if replacement in _EXECUTION_TYPES:
+            replacement = "Software Library"
+        notes.append({"name": item.get("name"), "was": item["type"],
+                      "now": replacement,
+                      "reason": "no entry point among its constituents — cannot be a "
+                                "separate process"})
+        item["type"] = replacement
+    return kept, notes
+
+
 # ── the partition check: groundedness is not correctness ────────────────
 #
 # Finding 82. On Kubernetes the model merged 24 independent `cmd/*` binaries —
@@ -473,10 +519,13 @@ def adjudicate(target: str, root: str | None, model_override: str | None = None,
     type_by_slug = {c["slug"]: c.get("type") for c in components}
     name_by_slug = {c["slug"]: c.get("name", c["slug"]) for c in components}
     kept, split_notes = split_multi_entrypoint(kept, type_by_slug, name_by_slug, files_by_slug)
+    kept, type_notes = falsify_types(kept, type_by_slug, files_by_slug)
 
     referenced = {s for item in kept for s in item["candidate_slugs"]}
     for n in split_notes:
         print(f"  REJECTED MERGE: {n['name']!r} — {n['reason']}")
+    for n in type_notes:
+        print(f"  FALSIFIED TYPE: {n['name']!r} {n['was']} -> {n['now']} — {n['reason']}")
 
     out_ir = {
         "target": f"{target}-adjudicated",
