@@ -3077,3 +3077,61 @@ That third point is the one to carry: **the corpus does not yet contain a case w
 architecture and the code layout disagree**, and finding 87 is the precedent for what happens when a
 whole class of case is absent — every rule looks principled until the first fixture that does not
 share the hidden assumption.
+
+**93. Kafka diagnostic: Java is not blind like Go was — but the Gradle parser sees 1 module of 64.**
+
+Run without ground truth (finding 92 established Kafka cannot provide usable owner-published GT), to
+answer one question: **how large is the Java hole?**
+
+**My prediction was wrong, and informatively.** I expected the Go situation — most proposers blind.
+
+| signal | result |
+|---|---|
+| Java imports | **6172 files, 46669 resolved imports, 42822 edges** — works well |
+| coupling proposer | **494 logical components** — consumes the import graph fine |
+| deployment (compose/Dockerfile) | 31 components, 23 ports, 36 wires |
+| code markers | **0** — ast-grep available (imports used it for 93922 matches) but no Java rule matched |
+| **Gradle module identity** | **1 module parsed. Kafka declares 64.** |
+
+So Java's problem is **not** the Go problem. Go had three of four proposers producing nothing.
+Java's import graph is excellent and the coupling proposer works — 528 components total, which is
+over-proposal, the same failure everywhere else, not blindness.
+
+### The real defect: a line-wise parser on a multi-line construct
+
+`gradle_modules()` reads `settings.gradle` line by line. Kafka declares its modules as **one
+`include` statement spanning 64 lines**:
+
+```gradle
+include 'clients',
+    'clients:clients-integration-tests',
+    'connect:api',
+    ...
+```
+
+We parse `'clients'` and stop. **One module of sixty-four**, and the note that follows —
+*"1 Gradle modules — not expanded into components in this slice"* — reads like a deliberate scoping
+decision when it is actually a parse failure. The scoping decision was real, but it is hiding a bug
+underneath it.
+
+**This is finding 5 exactly, in a new file.** There, a line-wise compose reader accumulated three
+silent failure modes on the stated assumption that a real parser would reject real-world files;
+PyYAML parsed all 25 without complaint. Here a line-wise Gradle reader silently loses 98% of the
+modules. The lesson recorded then — *the cheap-parser instinct cost more than it saved, and each
+failure was silent rather than loud* — applies unchanged, and I did not recognise it while writing
+the diagnostic.
+
+### What this makes the Java work
+
+Much smaller than Go support was, and differently shaped:
+
+1. **Fix the Gradle parse** — handle multi-line/comma-continued `include`, and `includeBuild`. Cheap,
+   and it is a bug rather than a feature.
+2. **Expand modules into components** — the direct analogue of `go_subsystems`, and the Gradle module
+   list is a *better* identity source than Go's directory convention because it is declared rather
+   than inferred.
+3. **Java code markers matched nothing** on 6172 Java files, which is worth its own look: the rules
+   exist, ast-grep ran, and zero matched. Per the standing rule from finding 19 — **a zero is a
+   finding, not a pass** — that is a third thing to check, not something to accept.
+
+The import graph, the expensive part, already works.
