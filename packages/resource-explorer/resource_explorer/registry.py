@@ -139,7 +139,7 @@ class FileSystemEntity:
 class ActivityEntry:
     id: str
     ts: str
-    operation: str    # 'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh'
+    operation: str    # 'scout' | 'survey' | 'catalog' | 'publish' | 'discover' | 'rfa' | 'refresh' | 'analysis_run'
     intent: str       # 'scouting' | 'assessment' | 'discovery' | 'enrichment'
     entity_type: str  # 'repo' | 'database' | 'server' | 'filesystem' | 'file'
     entity_slug: str
@@ -807,6 +807,34 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_egeria_surveys_slug "
                 "ON project_egeria_surveys(project_slug)"
+            )
+            # Per-annotation-type publish history (2026-08-24 — direct
+            # feedback: the Survey Results dashboards had no publish/status
+            # signal per card at all, and "we should already have all of
+            # that information if it's been published to Egeria" is right —
+            # EgeriaPublisher already knows exactly which annotation_types
+            # went into each publish, in-memory, at the moment it happens.
+            # This just persists that instead of discarding it. One row per
+            # distinct annotation_type per publish (not one row per
+            # individual annotation instance — a repo can emit dozens of
+            # QualityScoreAnnotation rows in one survey, only "was this
+            # *type* published, and when" matters for the dashboard badge).
+            # analysis_catalog.yaml's own `annotation_types` field per
+            # analysis_id is the join key back to a specific Results
+            # dashboard — see get_last_published_annotation_types() and
+            # GET /api/projects/{slug}/survey-results's use of it.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_published_annotation_types (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug     TEXT NOT NULL,
+                    annotation_type  TEXT NOT NULL,
+                    published_at     TEXT NOT NULL,
+                    egeria_report_guid TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_published_annotation_types_slug "
+                "ON project_published_annotation_types(project_slug, annotation_type)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_data_profiles (
@@ -3105,6 +3133,69 @@ class ProjectRegistry:
         surveys = self.get_egeria_surveys(slug)
         return surveys[0] if surveys else None
 
+    def record_published_annotation_types(
+        self, slug: str, annotation_types: set[str], report_guid: str = "",
+        published_at: str | None = None,
+    ) -> None:
+        """One row per distinct annotation_type actually published in this
+        publish — called from EgeriaPublisher.publish() right after it
+        creates the real Egeria Annotation elements, so the Survey Results
+        dashboards can show a genuine per-card 'last published' badge
+        (get_last_published_annotation_types()) without re-deriving it from
+        a live Egeria read later. Best-effort by design: the caller wraps
+        this in its own try/except — a bookkeeping failure here must never
+        fail or roll back the real publish that already succeeded.
+
+        published_at: defaults to now (the live-publish call site's use
+        case). scripts/backfill_published_annotation_types.py passes the
+        real historical published_at instead, when backfilling from an
+        already-existing project_egeria_surveys row — the whole point of a
+        backfill is to record what already happened, not to claim it just
+        happened now."""
+        if not annotation_types:
+            return
+        slug = self._normalize_slug(slug)
+        if published_at is None:
+            published_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO project_published_annotation_types
+                   (project_slug, annotation_type, published_at, egeria_report_guid)
+                   VALUES (?, ?, ?, ?)""",
+                [(slug, at, published_at, report_guid) for at in annotation_types],
+            )
+
+    def get_last_published_annotation_types(self, slug: str) -> dict[str, str]:
+        """{annotation_type: latest published_at} for this project — the
+        Survey Results route joins this against each dashboard's own
+        analysis_ids' known annotation_types (analysis_catalog.yaml) to
+        derive a real per-dashboard last-published timestamp."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT annotation_type, MAX(published_at) AS published_at
+                   FROM project_published_annotation_types
+                   WHERE project_slug = ?
+                   GROUP BY annotation_type""",
+                (slug,),
+            ).fetchall()
+        return {r["annotation_type"]: r["published_at"] for r in rows}
+
+    def has_published_annotation_types_for_report(self, slug: str, report_guid: str) -> bool:
+        """True if this exact SurveyReport GUID already has rows —
+        scripts/backfill_published_annotation_types.py's idempotency check,
+        so a rerun skips reports it already backfilled instead of inserting
+        duplicate rows (which would just re-confirm the same timestamp,
+        harmless but wasteful and noisy in query results)."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM project_published_annotation_types
+                   WHERE project_slug = ? AND egeria_report_guid = ? LIMIT 1""",
+                (slug, report_guid),
+            ).fetchone()
+        return row is not None
+
     def get_latest_project_stats(self, slug: str) -> dict | None:
         """Return the most recent project_stats row as a dict, or None."""
         slug = self._normalize_slug(slug)
@@ -4029,6 +4120,116 @@ class ProjectRegistry:
         d["items"] = json.loads(d.pop("items_json") or "[]")
         d["annotations"] = json.loads(d.pop("annotations_json") or "[]")
         return d
+
+    def get_survey_definition_last_activity(
+        self, entity_type: str, entity_slug: str, limit: int = 500,
+    ) -> dict[str, dict]:
+        """Latest known run/publish info per Survey Definition qualified_name
+        for this entity, keyed by the `survey_definition_ref` that
+        survey_definitions.py's run route and egeria.py's publish route embed
+        in their activity_log `detail` JSON (added 2026-08-24 — direct
+        feedback: Discovery's Survey Definition cards had no last-run/last-
+        published signal at all). Scans the most recent `limit` rows for this
+        entity — bounded, not a full table scan — ordered ts DESC, so the
+        first hit per ref per operation kind is already the most recent.
+
+        Falls back to `process_qualified_name` when `survey_definition_ref`
+        is absent (added 2026-08-24, found live: monocle2ai/monocle's real,
+        recent Scouting Survey runs showed "Never" despite genuinely having
+        run — their activity_log rows predate/bypass the ref-tagging above
+        and only carry `process_qualified_name`, which SurveyDefinitionExecutor
+        always sets natively and which is the same qualified_name value in
+        practice). Rows with neither key (or from genuinely unrelated
+        operations) are silently skipped — those candidates just show no
+        last-run/last-published data, same as one that's genuinely never
+        run.
+
+        Publish attribution has the same "who triggered it" gap `run` did:
+        egeria.py's publish route only tags `survey_definition_ref` when the
+        request came from a Survey Definition candidate's own "☁ Publish"
+        button (renderSurveyPanel) — the far more common whole-repo "Publish
+        survey →" button (publishSurvey()) has no single candidate to
+        attribute to, so its `catalog` row carries no ref at all (found
+        live, 2026-08-24: a genuinely published repo showed every candidate
+        as never-published even though `Project.is_published` was true).
+        Second pass below: the most recent untagged `catalog` row is treated
+        as "the whole repo was published as of this timestamp" and applied
+        to every candidate whose own last run happened at or before it —
+        their findings were necessarily included in that publish, even
+        though it wasn't scoped to them specifically. Marked
+        `last_published_scope: 'repo'` (vs `'candidate'` for a real per-ref
+        match) so the UI can render the distinction honestly rather than
+        implying a precision that isn't there."""
+        result: dict[str, dict] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT operation, ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation IN ('survey', 'catalog') "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit),
+            ).fetchall()
+        repo_wide_publish_at = ""  # most recent catalog row with no ref at all
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            ref = detail.get("survey_definition_ref") or detail.get("process_qualified_name")
+            if not ref:
+                if row["operation"] == "catalog" and not repo_wide_publish_at:
+                    repo_wide_publish_at = row["ts"]
+                continue
+            entry = result.setdefault(ref, {})
+            if row["operation"] == "survey" and "last_run_at" not in entry:
+                entry["last_run_at"] = row["ts"]
+                entry["last_run_status"] = row["status"]
+            elif row["operation"] == "catalog" and "last_published_at" not in entry:
+                entry["last_published_at"] = row["ts"]
+                entry["last_published_scope"] = "candidate"
+        if repo_wide_publish_at:
+            for entry in result.values():
+                if "last_published_at" in entry:
+                    continue
+                if entry.get("last_run_at", "") <= repo_wide_publish_at:
+                    entry["last_published_at"] = repo_wide_publish_at
+                    entry["last_published_scope"] = "repo"
+        return result
+
+    def get_analysis_last_run(
+        self, entity_type: str, entity_slug: str, limit: int = 500,
+    ) -> dict[str, dict]:
+        """{analysis_id: {last_run_at, last_run_status}} for this entity's
+        local AnalysisKind cards — the Analyses-card equivalent of
+        get_survey_definition_last_activity() above, added the same day for
+        the same reason (direct feedback: Analyses cards had no last-run
+        signal at all, unlike Survey Definition cards). Reads
+        activity_logger.log_analysis_run()'s operation='analysis_run' rows,
+        keyed by the `analysis_id` embedded in `detail`. Kept as its own
+        method rather than folded into get_survey_definition_last_activity —
+        different operation value, different ref key, no shared publish-
+        attribution logic to reuse (an Analyses card's 'last published' comes
+        from get_last_published_annotation_types() instead, joined by
+        annotation_types, not by activity_log at all)."""
+        result: dict[str, dict] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation = 'analysis_run' "
+                "ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit),
+            ).fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            analysis_id = detail.get("analysis_id") if isinstance(detail, dict) else None
+            if not analysis_id or analysis_id in result:
+                continue
+            result[analysis_id] = {"last_run_at": row["ts"], "last_run_status": row["status"]}
+        return result
 
     def update_activity_status(
         self,

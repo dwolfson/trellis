@@ -77,6 +77,41 @@ def log_catalog(
     return entry_id
 
 
+def log_analysis_run(
+    registry: "ProjectRegistry",
+    entity_type: str,
+    entity_slug: str,
+    entity_name: str,
+    status: str,
+    summary: str,
+    analysis_id: str,
+) -> str:
+    """One row per local AnalysisKind run (POST /{slug}/analyses/{analysis_id}
+    /run) — the Analyses cards' equivalent of log_survey's Survey Definition
+    tracking (2026-08-24: direct feedback that Analyses cards had no last-run
+    signal at all, unlike Survey Definition cards). `detail` carries
+    {"analysis_id": ...} as the join key, same convention as
+    survey_definitions.py's survey_definition_ref — see
+    registry.get_analysis_last_run()."""
+    import json
+
+    entry_id = str(uuid.uuid4())
+    registry.write_activity(ActivityEntry(
+        id=entry_id,
+        ts=_now(),
+        operation="analysis_run",
+        intent="assessment",
+        entity_type=entity_type,
+        entity_slug=entity_slug,
+        entity_name=entity_name,
+        entity_location="",
+        status=status,
+        summary=summary,
+        detail=json.dumps({"analysis_id": analysis_id}),
+    ))
+    return entry_id
+
+
 def log_rfa(
     registry: "ProjectRegistry",
     entity_type: str,

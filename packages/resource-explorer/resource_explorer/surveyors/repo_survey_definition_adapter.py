@@ -2160,6 +2160,68 @@ def get_dashboard_perspectives(analysis_ids: list[str]) -> list[str]:
     return perspectives
 
 
+def get_dashboard_annotation_types(analysis_ids: list[str]) -> list[str]:
+    """Union of analysis_catalog.yaml's `annotation_types` across a
+    dashboard's analysis_ids — the join key back to real Egeria publish
+    history (registry.get_last_published_annotation_types(), 2026-08-24:
+    "we should already have all of that information if it's been published
+    to Egeria" — this is what makes that true: EgeriaPublisher already knows
+    which annotation_types went into a publish, this just says which
+    analysis_ids/dashboards those types belong to). Same derived-not-hand-
+    authored pattern as get_dashboard_stages/get_dashboard_perspectives
+    above — an analysis_id absent from the catalog, or with no declared
+    annotation_types, simply contributes nothing rather than breaking the
+    card."""
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    wanted = set(analysis_ids)
+    types: list[str] = []
+    for a in get_analyses("repo"):
+        if a["id"] not in wanted:
+            continue
+        for t in a.get("annotation_types") or []:
+            if t not in types:
+                types.append(t)
+    return types
+
+
+_RUN_TIME_RANK = {"fast": 0, "minutes": 1, "async": 2}
+
+
+def get_survey_definition_speed_tag(steps: list[dict]) -> str:
+    """Derived 'fast'/'minutes'/'async' tag for a Survey Definition
+    candidate, matching the local Analyses catalog's own run_time field
+    (2026-08-24 — direct feedback: the speed tag existed on Analyses cards
+    but not Survey Definition cards, one more field the two card families
+    didn't share). No such field exists on a Survey Definition itself, so
+    this is inferred, not read: each step with a `re_analysis_step` is
+    looked up against REPO_ANALYSIS_STEP_MAP's *analysis_id* (via the
+    reverse step_key -> analysis_id lookup below) to find its catalog
+    run_time; a step with no re_analysis_step (Egeria-native or another
+    engine — no local run_time to consult) is conservatively treated as
+    'minutes', never assumed 'fast'. The candidate's tag is the slowest
+    (highest-rank) tier among all its steps — one slow step makes the
+    whole bundle not-fast, same logic a human would apply. Falls back to
+    'minutes' for a candidate with no steps at all (nothing to be fast
+    about, but nothing confirming speed either)."""
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    step_key_to_run_time = {}
+    for a in get_analyses("repo"):
+        for step_key in REPO_ANALYSIS_STEP_MAP.get(a["id"], []):
+            step_key_to_run_time[step_key] = a.get("run_time", "minutes")
+
+    if not steps:
+        return "minutes"
+    worst = "fast"
+    for s in steps:
+        step_key = s.get("re_analysis_step")
+        tier = step_key_to_run_time.get(step_key, "minutes") if step_key else "minutes"
+        if _RUN_TIME_RANK.get(tier, 1) > _RUN_TIME_RANK.get(worst, 0):
+            worst = tier
+    return worst
+
+
 def _get_project_entity(registry, slug: str):
     return registry.get(slug)
 

@@ -73,6 +73,14 @@
     .proj-actions { opacity:0; transition:opacity .12s; display:flex; align-items:center; gap:2px; flex-shrink:0; }
     .project-btn:hover .proj-actions,
     .db-btn:hover .proj-actions { opacity:1; }
+    /* GitHub link sits outside .proj-actions (below) so it isn't subject to
+       that div's hover-only opacity — it's a pure navigation shortcut people
+       reach for without first hovering to discover it, and previously read
+       as "missing" for exactly that reason (direct user feedback,
+       2026-08-24). Dimmer than a hovered action button, still always
+       readable/clickable. */
+    .proj-gh-btn { opacity:.55; flex-shrink:0; }
+    .proj-gh-btn:hover { opacity:1; }
     /* Server action buttons are always visible (servers are structural, not list items) */
     .srv-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
     .proj-action-btn { position:relative; padding:2px 5px; border-radius:4px; font-size:.65rem; line-height:1; color:#64748b; background:transparent; border:none; cursor:pointer; transition:color .12s,background .12s; }
@@ -223,16 +231,6 @@
     <span class="text-cyan-400 font-bold text-lg">Resource Explorer</span>
     <span id="scope-badge" class="hidden text-xs bg-cyan-900 text-cyan-300 px-2 py-0.5 rounded-full"></span>
     <span id="db-scope-badge" class="hidden text-xs bg-emerald-900 text-emerald-300 px-2 py-0.5 rounded-full"></span>
-    <!-- Egeria Project context (Part 5 — the "uber intent"). Always
-         "Egeria Project" in code/UI — distinct from RE's own Project class
-         (a registered repo), an unrelated concept that shares the word.
-         Cross-cutting identity/context for the selected resource, not "a
-         place you go do work" — header-level, same pattern as the
-         scope badges above and the whoami identity indicator, not a full
-         #intent-nav tab. Hidden until a repo is selected. -->
-    <span id="egeria-project-badge" onclick="_openEgeriaProjectPicker()"
-      class="hidden text-xs bg-slate-800 text-slate-300 hover:bg-slate-700 px-2 py-0.5 rounded-full cursor-pointer transition-colors"
-      title="Click to set which Egeria Project this resource is associated with"></span>
   </div>
   <div class="flex items-center gap-3">
     <button onclick="showMainView('activity')" id="nav-activity-hdr"
@@ -254,6 +252,21 @@
          service-account identity currently configured via .env. Clicking it
          explains how that's configured rather than opening a login form. -->
     <span id="whoami-badge" class="text-xs text-slate-500 cursor-help" onclick="_showWhoamiInfo()" title="Click for how this is configured">⏳ Connecting…</span>
+    <!-- Egeria Project context (Part 5 — the "uber intent"), reworked to a
+         session-wide default (direct feedback, 2026-08-24): pick it once,
+         next to who you're connected as, and it applies to every publish
+         for the rest of the session — not asked again per resource. Stored
+         client-side only (localStorage, see _sessionEgeriaProjectContext) —
+         there's no per-user server session to hang this off (same fixed
+         service-account identity for every request, per whoami's own
+         comment above), so "session" here means "this browser." Each
+         resource still gets its own real context row in the DB (unchanged
+         backend model) — it's silently backfilled from this default the
+         first time that resource is actually published
+         (_ensureEgeriaProjectContext), not eagerly for every resource. -->
+    <span id="session-egeria-project-badge" class="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full"
+      title="The Egeria Project new publishes are associated with, for this browser session"></span>
+    <button onclick="_openSessionEgeriaProjectPicker()" class="text-xs text-cyan-500 hover:text-cyan-400 hover:underline">Change</button>
     <span class="text-xs text-slate-500">Multi-agent RAG · <a href="/docs" target="_blank" class="text-cyan-600 hover:underline">API docs</a></span>
   </div>
 </header>
@@ -311,7 +324,25 @@
 
     <!-- Repos section -->
     <div id="repos-section" class="flex flex-col overflow-y-auto flex-1">
-      <div class="px-2 pt-2 pb-1">
+      <!-- Sidebar filter (direct feedback, 2026-08-24: "there are getting to
+           be a lot of them") — text search + a lifecycle quick-filter, both
+           applied client-side in renderProjectList() against the already-
+           fetched _allProjectSummaries (no round-trip; this list is small
+           enough locally that re-filtering on every keystroke is free). -->
+      <div class="px-3 pt-2 pb-1.5 flex flex-col gap-1.5">
+        <div class="relative">
+          <input id="project-filter-input" type="text" placeholder="Filter repos…"
+            oninput="_setProjectFilterText(this.value)"
+            class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-700">
+        </div>
+        <div class="flex flex-wrap gap-1">
+          <button onclick="_setProjectLifecycleFilter('')" data-lifecycle-filter="" class="filter-chip active">All</button>
+          <button onclick="_setProjectLifecycleFilter('new')" data-lifecycle-filter="new" class="filter-chip">🆕 New</button>
+          <button onclick="_setProjectLifecycleFilter('surveyed')" data-lifecycle-filter="surveyed" class="filter-chip">📊 Surveyed</button>
+          <button onclick="_setProjectLifecycleFilter('published')" data-lifecycle-filter="published" class="filter-chip">☁ Published</button>
+        </div>
+      </div>
+      <div class="px-2 pb-1">
         <button onclick="selectProject(null)"
           class="project-btn w-full text-left px-3 py-1.5 rounded text-sm text-slate-300 hover:bg-slate-700 transition-colors"
           data-slug="">
@@ -1303,6 +1334,10 @@ const _SCOUT_LICENSES = [
 let _allProjectSummaries = [];  // full ProjectSummary list (incl. ignored), populated by loadProjects()
 let _adminDiscoverySources = [];  // list of DiscoverySource from GET /api/discovery/sources
 let _showIgnoredRepos = false;  // sidebar "Show ignored (N)" toggle state
+// Sidebar repo filter (direct feedback, 2026-08-24) — text search + a
+// lifecycle quick-filter, applied together (AND) in renderProjectList().
+let _projectFilterText = '';
+let _projectLifecycleFilter = '';  // '' | 'new' | 'surveyed' | 'published'
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
 let _activityUnread  = 0;   // count of entries since activity tab was last viewed
 let _srvMap          = {};  // slug → ServerSummary
@@ -1449,6 +1484,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshRfaBadgeCount();  // header RFA-drawer badge count, without rendering/opening the drawer
   loadPerspectiveChips();
   loadWhoami();
+  _renderSessionEgeriaProjectBadge();  // restores whatever was picked earlier this browser session (localStorage)
   _startBootstrapBannerPoll();
   appendMessage('assistant', 'Welcome to **Resource Explorer**! Select a project, database, or filesystem in the sidebar, or ask a question.');
   // Restore chat panel open/collapsed state (defaults to open)
@@ -1909,50 +1945,121 @@ function _showWhoamiInfo() {
 
 // ── Egeria Project context (Part 5 — the "uber intent") ────────────────────
 // Always "Egeria Project" — see the header badge's own HTML comment for the
-// naming-collision note against RE's own Project class. Header badge shows
-// the currently-selected resource's context and is clickable at any time;
-// the picker also opens automatically when the publish gate (HTTP 428 from
-// POST /api/egeria/{slug}/publish) reports nothing has been decided yet.
+// naming-collision note against RE's own Project class.
+//
+// Reworked to a session-wide default (direct feedback, 2026-08-24): was
+// per-resource, asked again (via the publish-gate's 428) for every
+// individual repo/db/fs the first time it published — real, live-reported
+// friction once someone was working across several resources under the
+// same actual Egeria Project. Now: pick it once (header "Change" button, or
+// the first publish-gate prompt of the session), it's remembered for the
+// rest of the browser session, and every subsequent publish silently reuses
+// it — no repeat prompts. See _sessionEgeriaProjectContext/
+// _ensureEgeriaProjectContext below for the mechanism; the per-resource
+// backend model (registry.project_context, one row per entity) is
+// unchanged — each resource's row is just silently backfilled from this
+// default the first time it's actually needed, not written eagerly upfront.
+//
+// The modal (#egeria-project-modal) is shared by two distinct scopes,
+// tracked by _egeriaProjectPickerScope:
+//   'session'  — opened via the header Change button. No specific resource
+//                involved; a choice here only updates the session default
+//                (localStorage), no backend write.
+//   'resource' — opened via the publish gate's first-ever prompt (no
+//                session default existed yet to silently apply). A choice
+//                here writes that one resource's real context row AND
+//                becomes the new session default, so it's not asked again.
+let _egeriaProjectPickerScope = 'session';
 let _egeriaProjectEntityType = null;
 let _egeriaProjectEntitySlug = null;
 
+const _SESSION_EGERIA_PROJECT_KEY = 're_session_egeria_project';
+
+// {status, egeria_project_guid, egeria_project_qualified_name, free_text_name}
+// status 'unset' (or missing entirely) = no session default chosen yet.
+let _sessionEgeriaProjectContext = { status: 'unset' };
+try {
+  const saved = JSON.parse(localStorage.getItem(_SESSION_EGERIA_PROJECT_KEY) || 'null');
+  if (saved && saved.status) _sessionEgeriaProjectContext = saved;
+} catch (e) { /* corrupt localStorage value — fall back to unset */ }
+
 const _EGERIA_PROJECT_STATUS_LABEL = {
-  unset:    () => '📁 Egeria Project: unset',
+  unset:    () => '📁 No project set',
   personal: () => '👤 Personal exploration',
   declined: () => '🚫 Not associated',
-  linked:   (ctx) => `📁 ${ctx.egeria_project_qualified_name ? ctx.egeria_project_qualified_name.split('::')[1] || ctx.egeria_project_qualified_name : 'Linked'}`,
+  linked:   (ctx) => `📁 ${ctx.egeria_project_qualified_name ? ctx.egeria_project_qualified_name.split('::')[0] || ctx.egeria_project_qualified_name : 'Linked'}`,
   deferred: (ctx) => `⏳ ${ctx.free_text_name || 'Deferred'}`,
 };
 
-async function loadEgeriaProjectBadge(entityType, slug) {
-  const badge = document.getElementById('egeria-project-badge');
-  if (!slug) {
-    badge.classList.add('hidden');
-    _egeriaProjectEntityType = null;
-    _egeriaProjectEntitySlug = null;
-    return;
-  }
-  _egeriaProjectEntityType = entityType;
-  _egeriaProjectEntitySlug = slug;
-  badge.classList.remove('hidden');
-  badge.textContent = '📁 …';
+function _renderSessionEgeriaProjectBadge() {
+  const badge = document.getElementById('session-egeria-project-badge');
+  const labelFn = _EGERIA_PROJECT_STATUS_LABEL[_sessionEgeriaProjectContext.status] || _EGERIA_PROJECT_STATUS_LABEL.unset;
+  badge.textContent = labelFn(_sessionEgeriaProjectContext);
+}
+
+function _setSessionEgeriaProjectContext(ctx) {
+  _sessionEgeriaProjectContext = ctx;
+  localStorage.setItem(_SESSION_EGERIA_PROJECT_KEY, JSON.stringify(ctx));
+  _renderSessionEgeriaProjectBadge();
+}
+
+// Called before every Egeria publish (see the two POST /api/egeria/{slug}/
+// publish call sites) — silently backfills this one resource's real context
+// row from the session default when possible, so the 428 gate (and its
+// modal) is only ever hit once per browser session, not once per resource.
+// Returns true once this resource has *some* decided context (already did,
+// or was just backfilled) — false only when nothing is known yet at all,
+// in which case the caller proceeds to publish as before and lets the
+// reactive 428 gate handle the true first-time case.
+async function _ensureEgeriaProjectContext(entityType, slug) {
   try {
     const res = await fetch(`/api/project-context/${entityType}/${encodeURIComponent(slug)}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const ctx = await res.json();
-    const labelFn = _EGERIA_PROJECT_STATUS_LABEL[ctx.status] || _EGERIA_PROJECT_STATUS_LABEL.unset;
-    badge.textContent = labelFn(ctx);
-  } catch(e) {
-    badge.textContent = '📁 Egeria Project: unset';
+    if (ctx.status && ctx.status !== 'unset') return true;
+  } catch (e) { /* fail open — an unreachable context check shouldn't block the publish attempt itself */ }
+
+  if (_sessionEgeriaProjectContext.status === 'unset') return false;
+
+  try {
+    const res = await fetch(`/api/project-context/${entityType}/${encodeURIComponent(slug)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_sessionEgeriaProjectContext),
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
   }
+}
+
+function _openSessionEgeriaProjectPicker() {
+  _egeriaProjectPickerScope = 'session';
+  document.getElementById('egeria-project-modal-intro').innerHTML =
+    'Which Egeria Project should <em>this browser session\'s</em> publishes be associated with? ' +
+    'Applies to every repo/database/filesystem you publish from now on, until you change it here again — ' +
+    'separate from RE\'s own tracking.';
+  document.getElementById('egeria-project-search').value = '';
+  document.getElementById('egeria-project-search-results').innerHTML = '';
+  document.getElementById('egeria-project-deferred-name').value = '';
+  document.getElementById('egeria-project-deferred-check').innerHTML = '';
+  const cur = document.getElementById('egeria-project-modal-current');
+  const labelFn = _EGERIA_PROJECT_STATUS_LABEL[_sessionEgeriaProjectContext.status] || _EGERIA_PROJECT_STATUS_LABEL.unset;
+  cur.textContent = _sessionEgeriaProjectContext.status !== 'unset' ? `Currently: ${labelFn(_sessionEgeriaProjectContext)}` : '';
+  document.getElementById('egeria-project-modal').classList.remove('hidden');
 }
 
 function _openEgeriaProjectPicker() {
   if (!_egeriaProjectEntitySlug) return;
-  document.getElementById('egeria-project-modal-slug').textContent = _egeriaProjectEntitySlug;
+  _egeriaProjectPickerScope = 'resource';
+  document.getElementById('egeria-project-modal-intro').innerHTML =
+    `Is this <span style="font-family:monospace;">${_esc(_egeriaProjectEntitySlug)}</span> exploration part of a ` +
+    'larger Egeria Project? This is separate from RE\'s own tracking — it\'s about which ' +
+    '<em>Egeria</em> Project (if any) this work should be associated with. Whatever you pick here also ' +
+    'becomes this browser session\'s default for every other publish, so you won\'t be asked again.';
   document.getElementById('egeria-project-search').value = '';
   document.getElementById('egeria-project-search-results').innerHTML = '';
   document.getElementById('egeria-project-deferred-name').value = '';
+  document.getElementById('egeria-project-deferred-check').innerHTML = '';
   const cur = document.getElementById('egeria-project-modal-current');
   cur.textContent = '';
   fetch(`/api/project-context/${_egeriaProjectEntityType}/${encodeURIComponent(_egeriaProjectEntitySlug)}`)
@@ -1996,6 +2103,18 @@ async function _searchEgeriaProjectCandidates() {
 }
 
 async function _postEgeriaProjectContext(body) {
+  // 'session' scope (header Change button) — no specific resource, nothing
+  // to write server-side; just remember it as the new session default.
+  if (_egeriaProjectPickerScope === 'session') {
+    _setSessionEgeriaProjectContext(body);
+    closeEgeriaProjectModal();
+    showToast('success', 'Egeria Project set for this session — every publish will use it until you change it.', 4000);
+    return;
+  }
+
+  // 'resource' scope (the true first-time publish-gate prompt) — write this
+  // one resource's real context row AND adopt the same choice as the new
+  // session default, so it isn't asked again for any other resource.
   if (!_egeriaProjectEntitySlug) return;
   try {
     const res = await fetch(`/api/project-context/${_egeriaProjectEntityType}/${encodeURIComponent(_egeriaProjectEntitySlug)}`, {
@@ -2007,9 +2126,9 @@ async function _postEgeriaProjectContext(body) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${res.status}`);
     }
+    _setSessionEgeriaProjectContext(body);
     closeEgeriaProjectModal();
-    loadEgeriaProjectBadge(_egeriaProjectEntityType, _egeriaProjectEntitySlug);
-    showToast('success', 'Egeria Project context saved.', 3000);
+    showToast('success', 'Egeria Project set — this and every future publish this session will use it.', 4000);
   } catch(e) {
     showToast('error', `Failed to save Egeria Project context: ${_esc(e.message)}`, 5000);
   }
@@ -2019,10 +2138,59 @@ function _setEgeriaProjectContext(status) {
   _postEgeriaProjectContext({ status });
 }
 
-function _setEgeriaProjectContextDeferred() {
+// Real, live-reported confusion (2026-08-24): this field's placeholder
+// ("Project name…") sits right next to the *actual* Search field above it
+// with near-identical wording ("Search Egeria Projects…" vs "Project
+// name…") in a visually near-identical box — a user who already knows
+// their Egeria Project's exact name reasonably types it here first, since
+// "type the name, click Save" reads as the simpler/more direct path. But
+// "deferred" is deliberately a pure local free-text note — it never
+// queries Egeria at all, so a real, already-existing, correctly-named
+// project "isn't found" not because search is broken (it isn't — verified
+// live) but because this path never searches in the first place.
+// Fix: check Egeria for an exact/near match on Save, before committing to
+// deferred — if something real is already there, offer to link it instead
+// of silently saving a free-text note that duplicates a real element.
+async function _setEgeriaProjectContextDeferred() {
   const name = document.getElementById('egeria-project-deferred-name').value.trim();
   if (!name) { showToast('error', 'Enter a project name first.', 3000); return; }
-  _postEgeriaProjectContext({ status: 'deferred', free_text_name: name });
+
+  const checkEl = document.getElementById('egeria-project-deferred-check');
+  checkEl.innerHTML = '<div class="text-slate-500" style="font-size:.7rem; margin-top:.3rem;">Checking Egeria for a matching project…</div>';
+  let candidates = [];
+  try {
+    const res = await fetch(`/api/project-context/search/candidates?q=${encodeURIComponent(name)}`);
+    if (res.ok) candidates = await res.json();
+  } catch (e) {
+    // Fail-soft, same spirit as the picker's own search — an unreachable
+    // Egeria shouldn't block the free-text fallback this button exists for.
+  }
+
+  if (!candidates.length) {
+    checkEl.innerHTML = '';
+    _postEgeriaProjectContext({ status: 'deferred', free_text_name: name });
+    return;
+  }
+
+  // Found something real — surface it instead of silently saving a
+  // free-text note that would just duplicate an existing Egeria Project.
+  checkEl.innerHTML = `
+    <div style="font-size:.7rem; color:#fbbf24; margin-top:.4rem;">
+      Found ${candidates.length === 1 ? 'a' : candidates.length} matching Egeria Project${candidates.length === 1 ? '' : 's'} already — link instead of saving just the name?
+    </div>
+    <div style="margin-top:.3rem; display:flex; flex-direction:column; gap:.25rem;">
+      ${candidates.map(c => `
+        <div onclick='_setEgeriaProjectContextLinked(${JSON.stringify(c.guid)}, ${JSON.stringify(c.qualified_name)})'
+          style="padding:.3rem .4rem; border-radius:.25rem; cursor:pointer; font-size:.75rem; background:#1e293b; border:1px solid #475569;"
+          onmouseover="this.style.background='#475569'" onmouseout="this.style.background='#1e293b'">
+          <b>${_esc(c.display_name)}</b>
+          ${c.description ? `<div style="color:#94a3b8;">${_esc(c.description)}</div>` : ''}
+        </div>`).join('')}
+      <button onclick="_postEgeriaProjectContext({status:'deferred', free_text_name:${JSON.stringify(name)}})"
+        style="text-align:left; font-size:.7rem; color:#94a3b8; background:none; border:none; cursor:pointer; padding:.15rem 0;">
+        No, just save "${_esc(name)}" as a name to correlate later →
+      </button>
+    </div>`;
 }
 
 function _setEgeriaProjectContextLinked(guid, qualifiedName) {
@@ -2031,14 +2199,18 @@ function _setEgeriaProjectContextLinked(guid, qualifiedName) {
 
 // Shared by every POST /api/egeria/{slug}/publish caller — the route
 // returns HTTP 428 when this resource's Egeria Project context is still
-// "unset" (or was never decided at all), rather than silently publishing.
-// Returns true if the gate fired (caller should stop, the picker is now
-// open) so the caller's own error/loading UI can be reset appropriately.
+// "unset" (or was never decided at all). With _ensureEgeriaProjectContext
+// called before every publish attempt (see both call sites), this should
+// only ever actually fire once per browser session — the true first-time
+// case, when no session default exists yet to silently apply. Returns true
+// if the gate fired (caller should stop, the picker is now open) so the
+// caller's own error/loading UI can be reset appropriately.
 function _handlePublishContextGate(res, slug) {
   if (res.status !== 428) return false;
-  loadEgeriaProjectBadge('repo', slug);
+  _egeriaProjectEntityType = 'repo';
+  _egeriaProjectEntitySlug = slug;
   _openEgeriaProjectPicker();
-  showToast('info', 'Set this repo\'s Egeria Project context before publishing — then click Publish again.', 6000);
+  showToast('info', 'Set the Egeria Project for this session before publishing — then click Publish again. You won\'t be asked again this session.', 6000);
   return true;
 }
 
@@ -2164,6 +2336,7 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
     // (same one the old Admin Schedules editor used) rather than a new one.
     const slug = _currentSelectedSlug();
     let schedules = {};
+    let lastActivity = {};
     if (slug) {
       try {
         const schedRes = await fetch(`/api/schedules/${resourceType}/${encodeURIComponent(slug)}`);
@@ -2171,24 +2344,40 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
           for (const r of await schedRes.json()) schedules[r.analysis_id] = r;
         }
       } catch { /* non-fatal — cards just show the unscheduled state */ }
+      // Last-run/last-published per local analysis_id (direct feedback,
+      // 2026-08-24 — Analyses cards had neither before). repo-only today,
+      // same scope as the results/schedule machinery above.
+      if (resourceType === 'repo') {
+        try {
+          const laRes = await fetch(`/api/projects/${encodeURIComponent(slug)}/analyses/last-activity`);
+          if (laRes.ok) lastActivity = await laRes.json();
+        } catch { /* non-fatal — cards just show the never-run state */ }
+      }
     }
-    renderAnalysisCatalogCards(analyses, view, {
+    // Merged into ONE list with the local Analyses above (direct feedback,
+    // 2026-08-24: "two clumps of Surveys... should there be only one?") —
+    // was a separate _loadSurveyPanel() call appended below this panel as
+    // its own "Surveys — X" section; see renderAnalysisCatalogCards for the
+    // normalization. Only fetched with a resource selected — nothing to
+    // scope Survey Definition candidates to otherwise, same as before.
+    let candidates = [];
+    if (slug) {
+      try {
+        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ phase: intent })}`);
+        if (candRes.ok) candidates = (await candRes.json()).candidates || [];
+      } catch { /* non-fatal — local Analyses cards still render on their own */ }
+    }
+    renderAnalysisCatalogCards(analyses, candidates, view, {
       title,
       emptyText: `No ${title}-tagged analyses for ${_resourceTypeFacetLabel()}${activePerspectives.size ? ' matching the active perspective filter' : ''}.`,
       egeriaStatus,
       entityType: resourceType,
       slug,
       schedules,
+      lastActivity,
       subnavHtml,
+      viewId,
     });
-    // D7a — the generalized Survey panel, scoped to this intent's own phase
-    // (assessment/analysis map directly onto the same funnel-stage vocabulary
-    // Questions/Scouting use), into the placeholder renderAnalysisCatalogCards()
-    // just rendered. Only when a resource is actually selected — nothing to
-    // scope Survey Definition candidates to otherwise.
-    if (slug) {
-      await _loadSurveyPanel(resourceType, slug, intent, `${viewId}-survey-panel`, '');
-    }
   } catch(e) {
     view.innerHTML = subnavHtml + `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -2210,13 +2399,31 @@ async function _fetchEgeriaMergeStatus(resourceType) {
   }
 }
 
-// Shared by Assessment and (Step 4) Analysis — same card shape, different
+// Shared by Assessment and (Step 4) Analysis — same card grid, different
 // intent= filter feeding it. Mirrors the .analysis-card/.analysis-tag visual
-// pattern already established in renderSurveyPanel, rather than
-// inventing a second card style.
-function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, subnavHtml }) {
+// pattern renderSurveyPanel already established.
+//
+// Merges two data sources into ONE grid (2026-08-24 — direct feedback:
+// "two clumps of Surveys... should there be only one?"): local AnalysisKind
+// cards (`analyses`) and Egeria Survey Definition candidates (`candidates`)
+// used to render as two visually separate sections — a header reading
+// "Analysis — Repos" followed by a second one reading "Surveys — X" — a
+// real, known duplication the code even said so ("two data sources, one
+// shared render, not a merge — real future work, not attempted"). This is
+// that merge: local cards render via the inline logic below, Egeria
+// candidates via the extracted _renderSurveyDefCandidateCard() (same full-
+// fidelity card Discovery/Scouting's own Survey Definitions panel uses —
+// see that function's own comment), interleaved into one sorted list, one
+// header, one grid. The two kinds stay visually distinguishable (🏠 Local
+// vs ☁ Egeria Survey tag) — merging the *display* doesn't pretend they're
+// the same underlying system, just stops presenting them as two unrelated
+// sections a user has to separately notice.
+function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyText, egeriaStatus, entityType, slug, schedules, lastActivity, subnavHtml, viewId }) {
   schedules = schedules || {};
+  lastActivity = lastActivity || {};
+  candidates = candidates || [];
   subnavHtml = subnavHtml || '';
+  viewId = viewId || view.id;
   // Only "unavailable" means a live-Egeria merge was actually attempted and
   // failed — "not_applicable" (no Technology Type mapped for this resource
   // type yet) and "ok" say nothing, so the panel doesn't cry wolf.
@@ -2228,28 +2435,34 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
     ${unavailableNote}
   </div>`;
 
-  // D7/D7a (docs/unified-survey-execution-model-plan.md): the generalized,
-  // phase-scoped Survey panel (Egeria Survey Definition candidates) sits
-  // below the local AnalysisKind cards here — "two data sources, one shared
-  // render," not a merge (real future work, not attempted). Populated by
-  // _loadSurveyPanel() right after this render (see _loadAnalysisCatalogPanel),
-  // only when a resource is actually selected — an empty AnalysisKind list
-  // for this intent doesn't mean there's nothing to survey via Egeria.
-  const surveyPanelPlaceholder = `<div id="${_esc(view.id)}-survey-panel" class="pt-2"></div>`;
+  const validCandidates = candidates.filter(c => !c.error);
 
-  if (!analyses.length) {
-    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>` + surveyPanelPlaceholder;
+  if (!analyses.length && !validCandidates.length) {
+    view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
     return;
   }
 
   const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
-  const cards = analyses.map(a => {
+  const localCardsHtml = analyses.map(a => {
     const perspTags = (a.perspectives || []).filter(p => p !== 'all')
       .map(p => `<span class="analysis-tag">${_esc(p.replace(/_/g, ' '))}</span>`).join(' ');
     const sourceTag = a.source === 'egeria'
       ? '<span class="analysis-tag tag-egeria">☁ Egeria</span>'
       : '<span class="analysis-tag">🏠 Local</span>';
     const speedTag = `<span class="analysis-tag ${speedTagClass[a.run_time] || ''}">${_esc(a.run_time)}</span>`;
+    // Last-run/last-published (2026-08-24 — direct feedback: Analyses cards
+    // had neither, unlike Survey Definition cards) — same badge convention
+    // _renderSurveyDefCandidateCard uses, so the two card kinds read
+    // identically even though the underlying data comes from different
+    // tables (activity_log's analysis_run rows vs. survey/catalog rows;
+    // see registry.get_analysis_last_run()/get_last_published_annotation_types()).
+    const la = lastActivity[a.id] || {};
+    const lastRunHtml = la.last_run_at
+      ? `<span class="text-cyan-400" title="Last run: ${_esc(la.last_run_at)} (${_esc(la.last_run_status || '')})">📅 Last run ${_relTime(la.last_run_at)}</span>`
+      : `<span class="text-amber-400">📅 Never run</span>`;
+    const lastPublishedHtml = la.last_published_at
+      ? `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>`
+      : `<span class="text-slate-600">☁ Not published</span>`;
     // Scheduling is a cross-cutting, per-analysis action — available from
     // whichever card surfaced it (Assessment, Analysis, or Discovery),
     // rather than a separate admin page. Reuses the same schedules backend
@@ -2284,13 +2497,23 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
            🔔 Notify me
          </button>`
       : '';
+    // No Publish button here (unlike Survey Definition cards): _publishScopedSteps
+    // needs the underlying re_analysis_step *keys* (REPO_ANALYSIS_STEP_MAP's
+    // values, e.g. "repo_language"), not the analysis_id itself, and the
+    // /api/analyses/{resource_type} response this card is built from doesn't
+    // carry that mapping — adding it is a real, separate follow-up (a new
+    // field on AnalysisCatalogEntry or a small resolving endpoint), not
+    // something to fake with the wrong value. last_published_at above still
+    // works today via the whole-repo "Publish survey →" fallback
+    // (get_last_published_annotation_types), same as it did before this merge.
 
-    return `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
+    return { key: `local:${a.id}`, lastRunAt: la.last_run_at || '', html: `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
       <div class="flex-1 min-w-0">
         <div class="text-xs font-semibold text-slate-200">${_esc(a.name)}${a.recommended ? ' <span class="text-cyan-400" title="Recommended">★</span>' : ''}</div>
         <div class="text-xs text-slate-400 mt-0.5">${_esc(a.description)}</div>
+        <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
       </div>
-      <div class="flex flex-wrap gap-1">${speedTag}${sourceTag}${perspTags}</div>
+      <div class="flex flex-wrap gap-1 mt-1">${speedTag}${sourceTag}${perspTags}</div>
       <div class="mt-auto pt-1 flex flex-wrap gap-1.5 items-center">
         <button onclick='_runAnalysisCatalogCard(${JSON.stringify(a.id)})'
           class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
@@ -2302,10 +2525,27 @@ function renderAnalysisCatalogCards(analyses, view, { title, emptyText, egeriaSt
       </div>
       <div id="sched-form-${safeId}" class="hidden mt-1"></div>
       <div id="results-${safeId}" class="hidden mt-2"></div>
-    </div>`;
-  }).join('');
+    </div>` };
+  });
 
-  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>` + surveyPanelPlaceholder;
+  const egeriaCardsHtml = validCandidates.map(c => ({
+    key: `egeria:${c.qualified_name}`,
+    lastRunAt: c.last_run_at || '',
+    html: _renderSurveyDefCandidateCard(c, validCandidates, entityType, slug, schedules, viewId),
+  }));
+
+  // Oldest-run-first, never-run first — same convention Discovery's Survey
+  // Definitions panel already established, now applied across the merged
+  // list so the cards most overdue for a run surface first regardless of
+  // which of the two systems produced them.
+  const cards = [...localCardsHtml, ...egeriaCardsHtml].sort((x, y) => {
+    if (!x.lastRunAt && !y.lastRunAt) return 0;
+    if (!x.lastRunAt) return -1;
+    if (!y.lastRunAt) return 1;
+    return x.lastRunAt < y.lastRunAt ? -1 : x.lastRunAt > y.lastRunAt ? 1 : 0;
+  }).map(c => c.html).join('');
+
+  view.innerHTML = subnavHtml + header + `<div class="p-4 grid grid-cols-2 gap-3" style="align-items:start">${cards}</div>`;
 }
 
 // Automate (Part 4) — "🔔 Notify me" on an analysis card. Creates a local
@@ -3039,6 +3279,15 @@ function _groupDisplayName(slug) {
   return _groups.find(g => g.slug === slug)?.display_name || slug;
 }
 
+// Shared with the sidebar lifecycle filter (_matchesProjectFilter) so the
+// filter chips (🆕/📊/☁) mean exactly what the badge on each row means —
+// one source of truth for "which lifecycle state is this repo in."
+function _projectLifecycleKind(p) {
+  if (p.is_published) return 'published';
+  if (p.last_surveyed_at) return 'surveyed';
+  return 'new';
+}
+
 function _renderProjectRow(p) {
   const colors = { active: 'text-green-400', indexing: 'text-yellow-400', error: 'text-red-400', paused: 'text-slate-500' };
   const color = colors[p.status] || 'text-slate-400';
@@ -3051,14 +3300,11 @@ function _renderProjectRow(p) {
   // Lifecycle badge — survey/catalog state, distinct from `status` above
   // (RAG-ingestion state). "Registered" is a real, common state now that
   // GitHub-org discovery can bulk-add repos with no survey yet.
-  let lifecycleBadge, lifecycleTitle;
-  if (p.is_published) {
-    lifecycleBadge = '☁'; lifecycleTitle = 'Published to Egeria';
-  } else if (p.last_surveyed_at) {
-    lifecycleBadge = '📊'; lifecycleTitle = `Surveyed ${_relTime(p.last_surveyed_at)} (${p.last_surveyed_at})`;
-  } else {
-    lifecycleBadge = '🆕'; lifecycleTitle = 'Registered, not yet surveyed';
-  }
+  const lifecycleKind = _projectLifecycleKind(p);
+  const lifecycleBadge = { published: '☁', surveyed: '📊', new: '🆕' }[lifecycleKind];
+  const lifecycleTitle = lifecycleKind === 'published' ? 'Published to Egeria'
+    : lifecycleKind === 'surveyed' ? `Surveyed ${_relTime(p.last_surveyed_at)} (${p.last_surveyed_at})`
+    : 'Registered, not yet surveyed';
   // Disposition badge — separate axis from the lifecycle badge above:
   // "was this worth pursuing further," decided after scouting.
   // `investigating`, `recommended`, and `using` get a badge here (real
@@ -3080,21 +3326,52 @@ function _renderProjectRow(p) {
           onclick="event.stopPropagation(); openAssignGroupModal('${_esc(p.slug)}', '${_esc(p.group_slug)}')">🗂</button>
         <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
           onclick="event.stopPropagation(); toggleWorkingSetHidden('repo', '${_esc(p.slug)}', ${!p.working_set_hidden})">${p.working_set_hidden ? '🚫' : '👁'}</button>
-        ${p.github_url ? `<a class="proj-action-btn" href="${_esc(p.github_url)}" target="_blank"
-          data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
       </div>
+      ${p.github_url ? `<a class="proj-action-btn proj-gh-btn" href="${_esc(p.github_url)}" target="_blank"
+        data-tip="Open on GitHub" onclick="event.stopPropagation()">↗</a>` : ''}
     </div>
     <div class="text-xs ${color}">${p.status} · ${p.collections.length} collections</div>`;
   return btn;
+}
+
+// Sidebar filter — text search (display_name/github_url/description) AND
+// lifecycle quick-filter, both optional, combined with AND when both are set
+// (direct feedback, 2026-08-24: "there are getting to be a lot of them").
+function _matchesProjectFilter(p) {
+  if (_projectLifecycleFilter && _projectLifecycleKind(p) !== _projectLifecycleFilter) return false;
+  const q = _projectFilterText.trim().toLowerCase();
+  if (!q) return true;
+  return [p.display_name, p.github_url, p.description].some(v => (v || '').toLowerCase().includes(q));
+}
+
+function _setProjectFilterText(value) {
+  _projectFilterText = value;
+  renderProjectList();
+}
+
+function _setProjectLifecycleFilter(kind) {
+  _projectLifecycleFilter = kind;
+  document.querySelectorAll('[data-lifecycle-filter]').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.lifecycleFilter === kind));
+  renderProjectList();
 }
 
 function renderProjectList() {
   const list = document.getElementById('project-list');
   list.innerHTML = '';
   const hiddenCount = _allProjectSummaries.filter(_rowIsHidden).length;
-  const projects = _showIgnoredRepos
+  const visible = _showIgnoredRepos
     ? _allProjectSummaries
     : _allProjectSummaries.filter(p => !_rowIsHidden(p));
+  const filterActive = !!(_projectFilterText.trim() || _projectLifecycleFilter);
+  const projects = visible.filter(_matchesProjectFilter);
+
+  if (filterActive) {
+    const countEl = document.createElement('div');
+    countEl.className = 'px-3 pb-1 text-[10px] text-slate-500';
+    countEl.textContent = `${projects.length} of ${visible.length} match${projects.length === 1 ? 'es' : ''}`;
+    list.appendChild(countEl);
+  }
 
   // Group repos by group_slug — only groups with at least one visible repo
   // get a section; ungrouped repos render flat, above the group sections
@@ -3110,7 +3387,12 @@ function renderProjectList() {
 
   Object.keys(byGroup).sort((a, b) => _groupDisplayName(a).localeCompare(_groupDisplayName(b))).forEach(slug => {
     const members = byGroup[slug];
-    const collapsed = _collapsedGroups().includes(slug);
+    // A filter in effect force-expands every group regardless of its saved
+    // collapse state — otherwise a match sitting inside a collapsed group
+    // would silently disappear from the filtered results, which is worse
+    // than just showing it. Collapse state itself is untouched (still
+    // exactly what it was once the filter clears).
+    const collapsed = !filterActive && _collapsedGroups().includes(slug);
     const header = document.createElement('button');
     header.className = 'w-full text-left px-3 py-1.5 rounded text-xs text-purple-400 font-medium hover:bg-slate-800 transition-colors flex items-center gap-1 mt-1';
     header.innerHTML = `<span class="inline-block transition-transform" style="transform:rotate(${collapsed ? '-90deg' : '0deg'})">▾</span>
@@ -3199,7 +3481,11 @@ function selectProject(slug) {
     document.querySelector(`.project-btn[data-slug="${slug}"]`)?.classList.add('selected');
     document.getElementById('scope-badge').textContent = slug;
     document.getElementById('scope-badge').classList.remove('hidden');
-    loadEgeriaProjectBadge('repo', slug);
+    // Tracked for the publish-gate picker (_openEgeriaProjectPicker) if it's
+    // ever needed for this repo — the header badge itself is session-wide
+    // now, not per-selected-repo, so there's nothing to fetch/render here.
+    _egeriaProjectEntityType = 'repo';
+    _egeriaProjectEntitySlug = slug;
     // Show repo charts
     document.getElementById('charts-section').classList.remove('hidden');
     document.getElementById('repo-chart-tabs').classList.remove('hidden');
@@ -3218,7 +3504,8 @@ function selectProject(slug) {
   } else {
     document.getElementById('charts-section').classList.add('hidden');
     document.querySelectorAll('.project-btn[data-slug=""]').forEach(b => b.classList.add('selected'));
-    loadEgeriaProjectBadge(null, null);
+    _egeriaProjectEntityType = null;
+    _egeriaProjectEntitySlug = null;
     setNavIntent(currentNavIntent);
   }
 }
@@ -3782,6 +4069,11 @@ async function publishSurvey() {
   const zonesRaw = (document.getElementById('publish-zones')?.value || '').trim();
   const zoneNames = zonesRaw ? zonesRaw.split(',').map(z => z.trim()).filter(Boolean) : [];
   try {
+    // Silently backfills this repo's Egeria Project context from the
+    // session default when one exists, so the 428 gate below only ever
+    // fires on the true first publish of the session — see
+    // _ensureEgeriaProjectContext's own comment.
+    await _ensureEgeriaProjectContext('repo', selectedProject);
     const res  = await fetch(`/api/egeria/${selectedProject}/publish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5175,9 +5467,25 @@ async function loadSurveyDefinitionsPanel() {
     view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Select a database, repo, or filesystem to see its Survey Definitions.</div>';
     return;
   }
-  // Discovery has no funnel-stage identity of its own — phase='' means
-  // unscoped (every candidate), narrowed only by the Perspective filter.
-  await _loadSurveyPanel(entityType, slug, '', 'survey-definitions-view', subnav);
+  // Was phase='' (unscoped — every candidate, every stage) through D7a,
+  // 2026-08-14: Discovery "has no funnel-stage identity of its own," so it
+  // deliberately showed everything, narrowed only by Perspective — see
+  // docs/unified-survey-execution-model-plan.md's D7a section for the full
+  // rationale, including a live-confirmed case where Scouting's own
+  // phase-scoped ScopedBy lookup fell back to a full scan because the
+  // Question<->Survey Definition links weren't fully populated in Egeria
+  // yet. Reverted per direct feedback (2026-08-24): showing every stage's
+  // survey types under Discovery read as a bug, not a feature, once
+  // Scouting/Assessment/Analysis all scope themselves and Discovery alone
+  // didn't. Safe to scope now: unlike phase's ScopedBy-link dependency,
+  // survey_kind is a direct Additional Properties match on the Survey
+  // Definition itself (_STAGE_SURVEY_KIND['discovery']='discovery' below),
+  // applied by the backend on *both* the questions-based lookup and its
+  // full-scan fallback — so this doesn't inherit the ScopedBy-incompleteness
+  // risk the D7a writeup was guarding against. Real Discovery-tagged Survey
+  // Definitions already exist in Egeria (confirmed: "Repo Discovery Survey",
+  // "Repo Architecture Discovery Survey"), so this won't empty the panel.
+  await _loadSurveyPanel(entityType, slug, 'discovery', 'survey-definitions-view', subnav);
 }
 
 function _surveyDefEngineBadge(executesAt) {
@@ -5220,10 +5528,154 @@ function _surveyDefEgeriaProducedTypesHtml(step) {
   </div>`;
 }
 
+// Extracted from renderSurveyPanel (2026-08-24) so the same full-fidelity
+// Survey Definition card — step list, last-run/last-published badges, Run/
+// Schedule/Publish actions — can be reused by the merged Analysis/Assessment
+// card grid (renderAnalysisCatalogCards) without duplicating this logic a
+// second time. `allCandidates` is only used to resolve last_run_via's label
+// (the superset survey's own display_name); pass the same array `c` came
+// from.
+function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, schedules, viewElId) {
+  schedules = schedules || {};
+  if (c.error) {
+    return `<div class="analysis-card opacity-60">
+      <div class="text-xs font-semibold text-slate-300">${_esc(c.display_name || c.qualified_name)}</div>
+      <div class="text-xs text-red-400 mt-1">⚠ ${_esc(c.error)}</div>
+    </div>`;
+  }
+  // Numbered, vertically laid-out step list — steps are a *sequence* within
+  // this one survey, not alternative choices of where to run it. That
+  // ambiguity was real user-reported confusion; numbering fixes it.
+  const stepsHtml = (c.steps || []).map((s, idx) => {
+    const anns = (s.annotation_types || []).map(t => `<span class="text-slate-400 text-xs">${_esc(t)}</span>`).join(' ');
+    const desc = _surveyDefFallbackDescription(s);
+    const egeriaTypesHtml = _surveyDefEgeriaProducedTypesHtml(s);
+    return `<div class="pl-2 border-l border-slate-700 mt-1.5">
+      <div class="text-xs text-slate-300 flex items-center gap-1.5 flex-wrap">
+        <span class="text-slate-500 font-mono">${idx + 1}.</span>
+        ${_esc(s.display_name)} ${_surveyDefEngineBadge(s.executes_at)}
+      </div>
+      ${desc ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(desc)}</div>` : ''}
+      ${anns ? `<div class="text-xs text-slate-500 mt-0.5">Produces: ${anns}</div>` : ''}
+      ${egeriaTypesHtml}
+    </div>`;
+  }).join('');
+
+  // D2 (docs/survey-tab-unification-plan.md follow-up) — collapsed by
+  // default so a repo with several survey types (Git Statistics, Coarse
+  // Profile, Repo Full Survey, ...) fits without a wall of scrolling;
+  // title/description/actions stay visible either way, only the step
+  // list is behind the toggle. Plain <summary>/<details> — no JS state
+  // to track, survives a re-render collapsed (matching how a freshly
+  // loaded panel should look) without extra bookkeeping.
+  // Last-run/last-published badges (direct feedback, 2026-08-24) — never
+  // run at all reads as "not yet run" in amber, distinct from a genuine
+  // run whose age is just informational (cyan), so the most-overdue cards
+  // (sorted to the top, see candidates.sort() above) are visually obvious
+  // too, not just first in list order.
+  // last_run_via (2026-08-24): set when this candidate has never itself
+  // been run directly, but a superset survey whose steps fully cover this
+  // one's own steps has — e.g. running Scouting Survey also covers Coarse
+  // Profile Survey and Git Statistics Survey, since Scouting's own
+  // description says it's literally their union. Shown distinctly (not
+  // just "Last run") so it's honest about being inherited, not a direct run.
+  const viaCand = c.last_run_via ? allCandidates.find(x => x.qualified_name === c.last_run_via) : null;
+  const viaLabel = viaCand ? viaCand.display_name : c.last_run_via;
+  const lastRunHtml = c.last_run_at
+    ? c.last_run_via
+      ? `<span class="text-cyan-400" title="Covered by a run of '${_esc(viaLabel)}': ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Covered ${_relTime(c.last_run_at)} (via ${_esc(viaLabel)})</span>`
+      : `<span class="text-cyan-400" title="Last run: ${_esc(c.last_run_at)} (${_esc(c.last_run_status || '')})">📅 Last run ${_relTime(c.last_run_at)}</span>`
+    : `<span class="text-amber-400">📅 Never run</span>`;
+  // last_published_scope 'repo' (2026-08-24): this candidate was never
+  // published via its own scoped ☁ Publish button, but a whole-repo
+  // "Publish survey →" happened after its last run — its findings were
+  // necessarily included, just not attributably to this one card. Shown
+  // distinctly (dimmer, "whole-repo" caveat in the tooltip) rather than
+  // claiming the same precision a real per-candidate publish would.
+  const lastPublishedHtml = c.last_published_at
+    ? c.last_published_scope === 'repo'
+      ? `<span class="text-slate-600" title="No candidate-specific publish yet — inferred from a whole-repo publish after this ran: ${_esc(c.last_published_at)}">☁ Repo published ${_relTime(c.last_published_at)}</span>`
+      : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
+    : '';
+  const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
+  const speedTag = c.run_time ? `<span class="analysis-tag ${speedTagClass[c.run_time] || ''}">${_esc(c.run_time)}</span>` : '';
+
+  return `<div class="analysis-card">
+    <div class="flex items-start justify-between gap-2">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-semibold text-slate-200">${_esc(c.display_name || c.qualified_name)}</div>
+        <div class="text-xs text-slate-500 mt-0.5">${_esc(c.qualified_name)}</div>
+        ${c.description ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(c.description)}</div>` : ''}
+        <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-1 mt-1">${speedTag}<span class="analysis-tag tag-egeria">☁ Egeria Survey</span></div>
+    <details class="mt-1.5">
+      <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">${(c.steps || []).length} step(s), in order (click to expand)</summary>
+      <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
+    </details>
+    <div class="mt-auto pt-2 flex flex-wrap gap-3 items-center justify-center">
+      <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(viewElId)}, ${JSON.stringify(c.qualified_name)})'
+        class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
+        Run →
+      </button>
+      ${(() => {
+        // Scheduling this directly against the real Survey Definition
+        // (keyed by qualified_name, not a static catalog id) is exactly
+        // the redesign this section's own comment above has been waiting
+        // on since 2026-07-09 — see the "Schedules editor: hidden for
+        // now" note a few lines up.
+        const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+        const sched = schedules[c.qualified_name];
+        const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
+        return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
+            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
+      })()}
+      ${(() => {
+        // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
+        // action per candidate, replacing the old per-survey-type hardcoded
+        // buttons ("Publish registration only", "Publish this phase's
+        // findings"). Scoped to exactly this candidate's own steps, not a
+        // hand-picked list — so a new Survey Definition gets a working
+        // Publish button for free, no frontend change needed. Only repo
+        // (resource-explorer-executed) steps carry a re_analysis_step —
+        // native/prefect-routed steps have nothing local to publish from
+        // here, and _publishScopedSteps' route is repo-only today, so the
+        // button is omitted rather than shown disabled/broken for those.
+        const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
+        if (entityType !== 'repo' || !stepKeys.length) return '';
+        return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
+            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
+            title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
+            ☁ Publish
+          </button>`;
+      })()}
+    </div>
+    ${(() => {
+      const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
+      return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+    })()}
+  </div>`;
+}
+
 function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, subnavHtml) {
   schedules = schedules || {};
   const view = document.getElementById(viewElId);
-  const candidates = data.candidates || [];
+  // Oldest-run-first by default (direct feedback, 2026-08-24): a candidate
+  // that's never been run at all is the most overdue of all, so it sorts
+  // ahead of every dated one, not behind — treated as "run at the beginning
+  // of time" rather than excluded from the sort. Errored candidates (no
+  // last_run_at to compare, may not even be runnable) keep whatever order
+  // the backend returned them in, at the end, past every real candidate.
+  const candidates = [...(data.candidates || [])].sort((a, b) => {
+    if (a.error || b.error) return 0;
+    const at = a.last_run_at || '';
+    const bt = b.last_run_at || '';
+    if (!at && !bt) return 0;
+    if (!at) return -1;
+    if (!bt) return 1;
+    return at < bt ? -1 : at > bt ? 1 : 0;
+  });
   // Candidate objects (author-written descriptions, Egeria-sourced annotation
   // text) can contain apostrophes/quotes that break inline onclick='...'
   // attribute embedding via JSON.stringify — keep them in memory rather than
@@ -5232,93 +5684,7 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
   // panel's — see _surveyDefCandidatesCache's own declaration comment.
   _surveyDefCandidatesCache[viewElId] = candidates;
 
-  let cardsHtml = candidates.map((c, i) => {
-    if (c.error) {
-      return `<div class="analysis-card opacity-60">
-        <div class="text-xs font-semibold text-slate-300">${_esc(c.display_name || c.qualified_name)}</div>
-        <div class="text-xs text-red-400 mt-1">⚠ ${_esc(c.error)}</div>
-      </div>`;
-    }
-    // Numbered, vertically laid-out step list — steps are a *sequence* within
-    // this one survey, not alternative choices of where to run it. That
-    // ambiguity was real user-reported confusion; numbering fixes it.
-    const stepsHtml = (c.steps || []).map((s, idx) => {
-      const anns = (s.annotation_types || []).map(t => `<span class="text-slate-400 text-xs">${_esc(t)}</span>`).join(' ');
-      const desc = _surveyDefFallbackDescription(s);
-      const egeriaTypesHtml = _surveyDefEgeriaProducedTypesHtml(s);
-      return `<div class="pl-2 border-l border-slate-700 mt-1.5">
-        <div class="text-xs text-slate-300 flex items-center gap-1.5 flex-wrap">
-          <span class="text-slate-500 font-mono">${idx + 1}.</span>
-          ${_esc(s.display_name)} ${_surveyDefEngineBadge(s.executes_at)}
-        </div>
-        ${desc ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(desc)}</div>` : ''}
-        ${anns ? `<div class="text-xs text-slate-500 mt-0.5">Produces: ${anns}</div>` : ''}
-        ${egeriaTypesHtml}
-      </div>`;
-    }).join('');
-
-    // D2 (docs/survey-tab-unification-plan.md follow-up) — collapsed by
-    // default so a repo with several survey types (Git Statistics, Coarse
-    // Profile, Repo Full Survey, ...) fits without a wall of scrolling;
-    // title/description/actions stay visible either way, only the step
-    // list is behind the toggle. Plain <summary>/<details> — no JS state
-    // to track, survives a re-render collapsed (matching how a freshly
-    // loaded panel should look) without extra bookkeeping.
-    return `<div class="analysis-card">
-      <div class="flex items-start justify-between gap-2">
-        <div class="flex-1 min-w-0">
-          <div class="text-xs font-semibold text-slate-200">${_esc(c.display_name || c.qualified_name)}</div>
-          <div class="text-xs text-slate-500 mt-0.5">${_esc(c.qualified_name)}</div>
-          ${c.description ? `<div class="text-xs text-slate-400 mt-0.5">${_esc(c.description)}</div>` : ''}
-        </div>
-      </div>
-      <details class="mt-1.5">
-        <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">${(c.steps || []).length} step(s), in order (click to expand)</summary>
-        <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
-      </details>
-      <div class="mt-auto pt-2 flex flex-wrap gap-3 items-center justify-center">
-        <button onclick='showSurveyDefinitionRunModal(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(viewElId)}, ${JSON.stringify(c.qualified_name)})'
-          class="text-xs px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors whitespace-nowrap">
-          Run →
-        </button>
-        ${(() => {
-          // Scheduling this directly against the real Survey Definition
-          // (keyed by qualified_name, not a static catalog id) is exactly
-          // the redesign this section's own comment above has been waiting
-          // on since 2026-07-09 — see the "Schedules editor: hidden for
-          // now" note a few lines up.
-          const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
-          const sched = schedules[c.qualified_name];
-          const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
-          return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
-              class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
-        })()}
-        ${(() => {
-          // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
-          // action per candidate, replacing the old per-survey-type hardcoded
-          // buttons ("Publish registration only", "Publish this phase's
-          // findings"). Scoped to exactly this candidate's own steps, not a
-          // hand-picked list — so a new Survey Definition gets a working
-          // Publish button for free, no frontend change needed. Only repo
-          // (resource-explorer-executed) steps carry a re_analysis_step —
-          // native/prefect-routed steps have nothing local to publish from
-          // here, and _publishScopedSteps' route is repo-only today, so the
-          // button is omitted rather than shown disabled/broken for those.
-          const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
-          if (entityType !== 'repo' || !stepKeys.length) return '';
-          return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)})'
-              class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
-              title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
-              ☁ Publish
-            </button>`;
-        })()}
-      </div>
-      ${(() => {
-        const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
-        return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
-      })()}
-    </div>`;
-  }).join('');
+  let cardsHtml = candidates.map(c => _renderSurveyDefCandidateCard(c, candidates, entityType, slug, schedules, viewElId)).join('');
 
   if (!cardsHtml) {
     cardsHtml = `<div class="text-slate-600 text-xs text-center py-8 col-span-2">
@@ -5409,6 +5775,32 @@ function _toggleSurveyResultsPerspective(p) {
   _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml);
 }
 
+// Status/publish line for each Results dashboard card (direct feedback,
+// 2026-08-24: "maybe we should also have the publish and status on each
+// results card too?"). Two different precisions, both honest about it:
+//   last_published_at — real, per-dashboard (registry.get_last_published_
+//     annotation_types(), joined by analysis_catalog.yaml's annotation_types
+//     — see get_dashboard_annotation_types()'s own comment for why "we
+//     should already have that info" turned out to be right).
+//   last_surveyed_at — repo-wide, not per-dashboard (no per-analysis_id run
+//     timestamp exists today, unlike Survey Definitions' last_run_at) —
+//     labeled "Repo surveyed", not "Last run", so it doesn't overclaim
+//     precision it doesn't have.
+function _renderResultsCardStatusHtml(d) {
+  const statusHtml = d.has_results
+    ? `<span class="text-cyan-400">✓ Has data</span>`
+    : `<span class="text-amber-400">○ No data yet</span>`;
+  const surveyedHtml = d.last_surveyed_at
+    ? `<span class="text-slate-500" title="Repo-wide, not specific to this card: ${_esc(d.last_surveyed_at)}">📅 Repo surveyed ${_relTime(d.last_surveyed_at)}</span>`
+    : '';
+  const publishedHtml = d.last_published_at
+    ? `<span class="text-slate-500" title="Last published: ${_esc(d.last_published_at)}">☁ Published ${_relTime(d.last_published_at)}</span>`
+    : d.has_results
+      ? `<span class="text-slate-600">☁ Not published</span>`
+      : '';
+  return `<div class="text-xs mb-1.5 flex flex-wrap gap-2.5">${statusHtml}${surveyedHtml}${publishedHtml}</div>`;
+}
+
 function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) {
   const view = document.getElementById(viewElId);
   const dashboards = data.dashboards || [];
@@ -5449,6 +5841,7 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) 
     return `<div class="analysis-card">
       <div class="text-xs font-semibold text-slate-200">${_esc(d.title)}</div>
       <div class="text-xs text-slate-400 mt-0.5 mb-2">${_esc(d.description)}</div>
+      ${_renderResultsCardStatusHtml(d)}
       ${body}
       ${_renderDashboardTrendPlaceholder(d)}
     </div>`;
@@ -5736,7 +6129,15 @@ async function submitSurveyDefinitionRun() {
 
     const _statusColor = {
       ok: 'text-emerald-400', triggered: 'text-cyan-400',
-      skipped_egeria: 'text-slate-500', unrecognized_engine: 'text-amber-400',
+      // not_executed_no_egeria_handler replaces the old skipped_egeria
+      // status (2026-08-24 — "closing the stub"): a step with no registered
+      // Egeria trigger handler genuinely never runs anywhere today (RE's
+      // client-side walk is the only thing driving execution — Egeria's own
+      // MAS doesn't independently pick up any step type yet), so this is
+      // now counted as a real error server-side too, not a benign skip —
+      // red, matching every other real per-step failure, not the old
+      // slate-500 "nothing to see here" treatment.
+      not_executed_no_egeria_handler: 'text-red-400', unrecognized_engine: 'text-amber-400',
     };
     const stepsHtml = (data.steps || []).map(s => {
       const color = _statusColor[s.status] || 'text-red-400';
@@ -7037,15 +7438,22 @@ function _renderScoutingDispositionView(d, history) {
 // scoped to whichever candidate's own steps the user just ran. Replaces the
 // old per-survey-type hardcoded buttons ("Publish registration only",
 // "Publish this phase's findings") that used to live in renderScoutingOverview.
-async function _publishScopedSteps(slug, steps, btn, label) {
+async function _publishScopedSteps(slug, steps, btn, label, surveyDefinitionRef = '') {
   const orig = btn.textContent;
   btn.textContent = '⟳ Publishing…';
   btn.disabled = true;
   try {
+    // See publishSurvey()'s identical call for why — backfills this repo's
+    // context from the session default before the gate below can fire.
+    await _ensureEgeriaProjectContext('repo', slug);
     const res = await fetch(`/api/egeria/${slug}/publish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ steps }),
+      // survey_definition_ref (when this came from a Survey Definition
+      // card's own Publish button) lets the backend attribute the resulting
+      // activity_log entry back to that candidate, for its last-published
+      // badge — see renderSurveyPanel's call site and egeria.py's PublishRequest.
+      body: JSON.stringify({ steps, survey_definition_ref: surveyDefinitionRef }),
     });
     if (_handlePublishContextGate(res, slug)) return;
     const data = await res.json();
@@ -11261,11 +11669,11 @@ let _feedbackBtnDragged = false;  // declared here so the button's inline onclic
 <div id="egeria-project-modal" class="modal-overlay hidden">
   <div class="modal-box" style="max-width:26rem">
     <h3 style="margin:0 0 .25rem; font-size:1rem;">📁 Egeria Project context</h3>
-    <p style="margin:0 0 .75rem; font-size:.8rem; color:#94a3b8;">
-      Is this <span id="egeria-project-modal-slug" style="font-family:monospace;"></span> exploration part of a
-      larger Egeria Project? This is separate from RE's own tracking — it's about which
-      <em>Egeria</em> Project (if any) this work should be associated with.
-    </p>
+    <p id="egeria-project-modal-intro" style="margin:0 0 .75rem; font-size:.8rem; color:#94a3b8;"></p>
+    <!-- Populated by _openSessionEgeriaProjectPicker()/_openEgeriaProjectPicker() — the two scopes
+         read differently enough (a session-wide default vs. one specific resource) that this is
+         plain text set per-open rather than one fixed sentence with a slug/session-name slot spliced
+         in (that read awkwardly for the session case: "Is this <long session description>..."). -->
     <div id="egeria-project-modal-current" style="font-size:.75rem; color:#67e8f9; margin-bottom:.5rem;"></div>
 
     <div style="display:flex; flex-direction:column; gap:.4rem; margin-bottom:.5rem;">
@@ -11286,12 +11694,14 @@ let _feedbackBtnDragged = false;  // declared here so the button's inline onclic
       </div>
 
       <div style="padding:.5rem .6rem; border-radius:.375rem; background:#334155; border:1px solid #475569;">
-        <b style="font-size:.85rem;">⏳ Type a project name now, correlate later</b>
+        <b style="font-size:.85rem;">⏳ Type a project name now, correlate later</b><br>
+        <span style="font-size:.7rem; color:#94a3b8;">For a project that doesn't exist in Egeria yet. Already created it in Egeria? Use Search above instead — this just saves a note, it does not look Egeria up (checked automatically on Save, just in case).</span>
         <div style="display:flex; gap:.4rem; margin-top:.4rem;">
           <input id="egeria-project-deferred-name" type="text" placeholder="Project name…" class="modal-input" style="margin-bottom:0;">
           <button onclick="_setEgeriaProjectContextDeferred()" style="padding:.4rem .7rem; border-radius:.375rem;
                   background:#0e7490; color:#e2e8f0; border:none; white-space:nowrap;">Save</button>
         </div>
+        <div id="egeria-project-deferred-check"></div>
       </div>
 
       <button onclick="_setEgeriaProjectContext('declined')" style="text-align:left; padding:.5rem .6rem; border-radius:.375rem;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -686,6 +687,14 @@ class PublishRequest(BaseModel):
     # SurveyReport linked to the same asset, rather than one all-or-nothing
     # publish. Same step-key vocabulary as REPO_ANALYSIS_STEP_MAP.
     steps: list[str] | None = None
+    # Optional — set when this publish was triggered from a Survey Definition
+    # candidate's own "☁ Publish" button (renderSurveyPanel), so the resulting
+    # activity_log entry can be attributed back to that candidate for the
+    # last-published badge (registry.get_survey_definition_last_activity).
+    # Blank for every other publish surface (Curate, Profile, etc.) — those
+    # just don't get a last-published badge anywhere, which is correct: they
+    # aren't tied to one Survey Definition.
+    survey_definition_ref: str = ""
 
 
 @router.post("/{slug}/publish", response_model=PublishResult)
@@ -760,6 +769,22 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
             error=str(exc),
             stage="publish",
             surveyed_at=result.surveyed_at.isoformat(),
+        )
+
+    # Separate, minimal activity_log entry (not a change to EgeriaPublisher.
+    # publish()'s own log_catalog call above, which every publish surface
+    # shares) — only written when this publish came from a Survey Definition
+    # candidate's own "☁ Publish" button, so its last-published badge
+    # (registry.get_survey_definition_last_activity) has something to find.
+    if req and req.survey_definition_ref:
+        from resource_explorer.activity_logger import log_catalog
+
+        log_catalog(
+            registry, entity_type="repo", entity_slug=slug,
+            entity_name=project.display_name, entity_location=project.github_url,
+            status="ok",
+            summary=f"Published '{req.survey_definition_ref}' findings ({len(result.annotations)} annotations)",
+            detail=json.dumps({"survey_definition_ref": req.survey_definition_ref}),
         )
 
     return PublishResult(
