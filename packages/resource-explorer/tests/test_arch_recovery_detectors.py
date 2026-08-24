@@ -647,3 +647,73 @@ class TestFinding78EntryPointDetection:
         subs = {s["dir"]: s for s in detectors.go_subsystems(root, _tracked(root))}
 
         assert subs["pkg/lib"]["has_main"] is False
+
+
+class TestFinding93GradleModules:
+    """Finding 93: `gradle_modules` matched one quoted name per line beginning
+    with `include`. Gradle's `include` takes a comma-separated list written
+    across many lines, and on apache/kafka that read 1 module of 64 — while the
+    note it emitted, "not expanded into components in this slice", made a parse
+    failure look like a deliberate scoping decision.
+
+    Finding 5 in a new file: a line-wise reader on a construct that spans lines,
+    failing silently rather than loudly."""
+
+    def test_a_multi_line_include_yields_every_module(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "settings.gradle",
+               "rootProject.name = 'demo'\n"
+               "include 'clients',\n"
+               "    'connect:api',\n"
+               "    'connect:json',\n"
+               "    'storage'\n")
+        _git_init(root)
+        g = detectors.gradle_modules(root, _tracked(root))[0]
+        assert g["modules"] == ["clients", "connect:api", "connect:json", "storage"]
+
+    def test_a_single_line_include_still_works(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "settings.gradle", "include 'core'\ninclude 'tools'\n")
+        _git_init(root)
+        g = detectors.gradle_modules(root, _tracked(root))[0]
+        assert g["modules"] == ["core", "tools"]
+
+    def test_includeBuild_is_not_a_subproject(self, tmp_path):
+        """A composite build is a different project. Conflating it would put
+        another project's modules in this project's component set."""
+        root = str(tmp_path)
+        _write(root, "settings.gradle", "includeBuild 'api-checker'\ninclude 'core'\n")
+        _git_init(root)
+        g = detectors.gradle_modules(root, _tracked(root))[0]
+        assert g["modules"] == ["core"]
+        assert g["included_builds"] == ["api-checker"]
+
+    def test_comments_are_stripped(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "settings.gradle",
+               "include 'core',  // the main one\n    'tools'\n")
+        _git_init(root)
+        g = detectors.gradle_modules(root, _tracked(root))[0]
+        assert g["modules"] == ["core", "tools"]
+
+    def test_module_path_maps_to_a_directory(self):
+        assert detectors.gradle_module_dir("connect:api", ".") == "connect/api"
+        assert detectors.gradle_module_dir(":connect:api", "") == "connect/api"
+        assert detectors.gradle_module_dir("core", "api-checker") == "api-checker/core"
+
+    def test_modules_become_components(self, tmp_path):
+        """Previously reported and not expanded. go_subsystems now expands Go
+        package trees on the same basis, and distillation exists to narrow an
+        over-proposed set — and a declared module list is a BETTER identity
+        source than a directory convention, because the project is telling you
+        what its parts are."""
+        root = str(tmp_path)
+        _write(root, "settings.gradle", "include 'core',\n    'connect:api'\n")
+        _write(root, "core/src/main/java/A.java", "package a;\n")
+        _write(root, "connect/api/src/main/java/B.java", "package b;\n")
+        _git_init(root)
+        comps, _, _ = detectors.build_components(root, _tracked(root))
+        gm = {c.name: c for c in comps if "gradle-module" in (c.proposed_by or [])}
+        assert set(gm) == {"core", "connect:api"}
+        assert gm["connect:api"].files == ["connect/api/**"]
+        assert gm["connect:api"].perspective == "logical"
