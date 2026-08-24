@@ -1624,7 +1624,7 @@ Then the pipeline ran.
 | stage | result |
 |---|---|
 | detectors | **4 components**, all npm packages under `web/ui/` |
-| ast-grep code markers | **0** — rules are Python/Java |
+| ast-grep code markers | **0** — *stated here as "rules are Python/Java"; that was wrong, see finding 94: the code-marker rules are **Python only**, and Python/Java/Go describes the separate `rules-imports/` set* |
 | imports | **0 edges** — `0 python files, 0 java files` |
 | co-change | **18219 pairs over 1030 files** — the only signal that crossed |
 | **score** | **0/11**, precision 0.00, recall 0.00, ARI 0.0 |
@@ -3077,3 +3077,174 @@ That third point is the one to carry: **the corpus does not yet contain a case w
 architecture and the code layout disagree**, and finding 87 is the precedent for what happens when a
 whole class of case is absent — every rule looks principled until the first fixture that does not
 share the hidden assumption.
+
+**93. Kafka diagnostic: Java is not blind like Go was — but the Gradle parser sees 1 module of 64.**
+
+Run without ground truth (finding 92 established Kafka cannot provide usable owner-published GT), to
+answer one question: **how large is the Java hole?**
+
+**My prediction was wrong, and informatively.** I expected the Go situation — most proposers blind.
+
+| signal | result |
+|---|---|
+| Java imports | **6172 files, 46669 resolved imports, 42822 edges** — works well |
+| coupling proposer | **494 logical components** — consumes the import graph fine |
+| deployment (compose/Dockerfile) | 31 components, 23 ports, 36 wires |
+| code markers | **0** — ast-grep available (imports used it for 93922 matches) but no Java rule matched |
+| **Gradle module identity** | **1 module parsed. Kafka declares 64.** |
+
+So Java's problem is **not** the Go problem. Go had three of four proposers producing nothing.
+Java's import graph is excellent and the coupling proposer works — 528 components total, which is
+over-proposal, the same failure everywhere else, not blindness.
+
+### The real defect: a line-wise parser on a multi-line construct
+
+`gradle_modules()` reads `settings.gradle` line by line. Kafka declares its modules as **one
+`include` statement spanning 64 lines**:
+
+```gradle
+include 'clients',
+    'clients:clients-integration-tests',
+    'connect:api',
+    ...
+```
+
+We parse `'clients'` and stop. **One module of sixty-four**, and the note that follows —
+*"1 Gradle modules — not expanded into components in this slice"* — reads like a deliberate scoping
+decision when it is actually a parse failure. The scoping decision was real, but it is hiding a bug
+underneath it.
+
+**This is finding 5 exactly, in a new file.** There, a line-wise compose reader accumulated three
+silent failure modes on the stated assumption that a real parser would reject real-world files;
+PyYAML parsed all 25 without complaint. Here a line-wise Gradle reader silently loses 98% of the
+modules. The lesson recorded then — *the cheap-parser instinct cost more than it saved, and each
+failure was silent rather than loud* — applies unchanged, and I did not recognise it while writing
+the diagnostic.
+
+### What this makes the Java work
+
+Much smaller than Go support was, and differently shaped:
+
+1. **Fix the Gradle parse** — handle multi-line/comma-continued `include`, and `includeBuild`. Cheap,
+   and it is a bug rather than a feature.
+2. **Expand modules into components** — the direct analogue of `go_subsystems`, and the Gradle module
+   list is a *better* identity source than Go's directory convention because it is declared rather
+   than inferred.
+3. **Java code markers matched nothing** on 6172 Java files, which is worth its own look: the rules
+   exist, ast-grep ran, and zero matched. Per the standing rule from finding 19 — **a zero is a
+   finding, not a pass** — that is a third thing to check, not something to accept.
+
+The import graph, the expensive part, already works.
+
+**94. The code-marker proposer is Python-only, and I said otherwise twice.**
+
+Finding 93 ended with *"Java code markers matched nothing across 6172 Java files, which is worth its
+own look: the rules exist, ast-grep ran, and zero matched."* Checked, and **the rules do not exist.**
+
+| rule set | count | languages |
+|---|---|---|
+| `rules/` — **code markers** | 8 | **Python only** |
+| `rules-imports/` — import extraction | 3 | Go, Java, Python |
+
+`code_markers.marker_languages()` returns `{'python'}`. I had conflated the two rule directories:
+Python/Java/Go is the *import* set, and I attributed its coverage to the marker set — in **finding 69**
+(*"rules are Python/Java"*, now corrected in place) and again in finding 93.
+
+### What it actually means
+
+The code-marker pass is §5.1's "code half" — the proposer meant to find logical components that
+manifests and deployment artifacts structurally cannot see. **It has never run on anything but
+Python:**
+
+| target | components | code-marker |
+|---|---|---|
+| `trellis` (Python) | 66 | **5** |
+| `prometheus` (Go) | 212 | 0 |
+| `milvus` (Go) | 609 | 0 |
+| `kafka` (Java) | 595 | 0 |
+| `egeria-workspaces` | 164 | 0 |
+
+So every non-Python target has been running **three proposers, not four**, and every measurement in
+the corpus was taken that way. Prometheus at 11/11 and Kubernetes at 6/6 were achieved without the
+code-marker proposer contributing anything at all.
+
+### Two corrections that matter more than the gap
+
+**Finding 69's diagnosis was right for the wrong reason.** It concluded Go support was missing
+because "three of the four proposers are Python/Java/npm-only". The conclusion held and the fix
+worked — but one of those three was blind on Go not because Go lacked *rules of its kind*, but
+because that proposer has rules for exactly one language. Adding Go marker rules was never on the
+list, because I believed Java ones existed and Go was the exception.
+
+**And this is the same shape as finding 92, one layer in.** There, every fixture shared a hidden
+property (Go, where process and directory coincide). Here, every *proposer* claim I made shared a
+hidden property: I had checked `rules-imports/` and assumed `rules/` matched. **A capability
+described from an adjacent directory listing is not a checked capability** — the same class as
+finding 89's "committed and regression-tested is not reachable".
+
+The gap itself is smaller than it looks: the marker proposer contributes 5 of 66 components on the
+one target where it runs. It is worth knowing precisely because it has been silently absent, not
+because it was carrying the result.
+
+**95. Go and Java marker rules — and `$$$` does not match Go call arguments.**
+
+Finding 94 found the code-marker proposer Python-only. Seven rules added: `go-http-server`,
+`go-grpc-server`, `go-cli-construction`, `go-client-sql`, `java-spring-service`,
+`java-main-method`, `java-scheduled`.
+
+### Every rule verified before use, and the first four were wrong
+
+Finding 19's discipline earned its keep immediately. The natural patterns —
+`http.ListenAndServe($$$A)`, `grpc.NewServer($$$A)` — returned **zero on files that plainly contain
+those calls**:
+
+| pattern | on a file containing `http.ListenAndServe(":1234", nil)` |
+|---|---|
+| `http.ListenAndServe($$$A)` | **0** |
+| `http.ListenAndServe($A, $B)` | 1 |
+
+**ast-grep's Go support does not match `$$$` against a call's argument list** — not even when
+arguments are present. Arity-specific patterns would then silently miss every other call shape. The
+working form is structural: `kind: call_expression` with a `regex` on the `function` field, which
+matched `grpc.NewServer` 16× in Milvus and `ListenAndServe` 2× in Prometheus, exactly the grep count.
+
+Had these shipped unverified they would have been **eight more silent zeros** — the same failure
+finding 94 was about.
+
+Two rules matched nothing in any real repo (`go-client-sql`, `java-scheduled`), so they were given
+synthetic known-positives rather than shipped untested: a rule that has never fired is
+indistinguishable from a broken one.
+
+### A second silent discard, upstream of the rules
+
+With the rules in place Prometheus still reported **"0 logical components from 8 matches"** — the
+markers matched and were then dropped. Cause: `package_roots` was derived from **Python and Node
+manifests only**. Prometheus has `web/ui/package.json`, so every root sat under `web/ui/`, and all
+eight Go matches fell outside them. Go module roots, Gradle module dirs, and the repo root are now
+package roots too.
+
+### Result
+
+| target | code-marker components | note |
+|---|---|---|
+| `prometheus` | **5 from 8 matches** | 4 merged with `go-subsystem` — *"proposed independently by code, go — confidence raised to 90"* |
+| `kafka` | **12** | first Java markers ever produced |
+| `trellis` | 5 | unchanged |
+
+Scores unchanged: Prometheus 11/11, trellis 8/11. **The markers' value here is corroboration, not new
+components** — independent agreement between two proposers is what the design calls its strongest
+signal, and it is now available outside Python.
+
+### The test that caught the change
+
+`test_marker_languages_is_read_from_the_rule_files` asserted `{"python"}`, with a comment saying it
+*"breaks (correctly) the day a non-Python rule lands rather than silently staying right by
+coincidence."* It did. Updated to `{"go", "java", "python"}` — **not loosened to "any language
+present"**, which would have stopped it catching the next silent change.
+
+### Known limitation, recorded not fixed
+
+Java marker components are named `src` (12 of them on Kafka), because attribution walks to a subtree
+level that lands on `src` in `module/src/main/java/...`. The Maven/Gradle layout puts real depth
+between the module root and the code, and the subtree rule was written for Python and Go layouts
+where it does not. The components are real and correctly typed; their names are useless.

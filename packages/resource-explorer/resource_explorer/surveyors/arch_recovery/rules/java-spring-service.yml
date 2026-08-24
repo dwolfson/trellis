@@ -1,0 +1,8 @@
+# design §5.1 "Web framework markers" — Spring/JAX-RS endpoint classes ->
+# Software Service. Annotation-based, which is how JVM web frameworks declare
+# this; the equivalent of FastAPI() construction in the Python rules.
+id: java-spring-service
+language: Java
+rule:
+  kind: marker_annotation
+  regex: '^@(RestController|Controller|SpringBootApplication)$'

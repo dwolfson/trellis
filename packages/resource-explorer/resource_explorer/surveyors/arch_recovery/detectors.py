@@ -228,21 +228,72 @@ def node_manifests(root: str, files: list[str]) -> list[dict]:
     return found
 
 
+_GRADLE_INCLUDE_RE = re.compile(r"^\s*(include(?:Build)?)\s*\(?(.*)$")
+_GRADLE_QUOTED_RE = re.compile(r"['\"]:?([^'\"]+)['\"]")
+
+
+def _strip_gradle_comment(line: str) -> str:
+    i = line.find("//")
+    return line[:i] if i >= 0 else line
+
+
 def gradle_modules(root: str, files: list[str]) -> list[dict]:
-    """Gradle multi-module layout. Reports the module list rather than one
-    component per module — at egeria's 254 modules the partition question is
-    about shape, not leaves (plan §3, T3)."""
+    """Gradle multi-module layout, parsed as STATEMENTS rather than lines.
+
+    The previous version matched one quoted name per line beginning with
+    `include`. Gradle's `include` takes a comma-separated list that is
+    conventionally written across many lines, and on `apache/kafka` that read
+    **1 module of 64** (finding 93) — while the note it emitted, "not expanded
+    into components in this slice", made a parse failure look like a deliberate
+    scoping decision.
+
+    Finding 5 in a new file: a line-wise reader on a construct that spans lines,
+    failing silently rather than loudly. So this consumes the whole statement —
+    a trailing comma continues it — and strips `//` comments first.
+
+    `includeBuild` is captured separately: a composite build is a different
+    thing from a subproject, and conflating them would put another project's
+    modules in this project's component set.
+    """
     found = []
     for rel in (f for f in files if os.path.basename(f) in ("settings.gradle", "settings.gradle.kts")):
         try:
             text = open(os.path.join(root, rel), encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        includes = re.findall(r"^\s*include\s*\(?\s*['\"]:?([^'\"]+)['\"]", text, re.MULTILINE)
-        if includes:
+        lines = text.splitlines()
+        modules: list[str] = []
+        builds: list[str] = []
+        i = 0
+        while i < len(lines):
+            m = _GRADLE_INCLUDE_RE.match(_strip_gradle_comment(lines[i]))
+            if not m:
+                i += 1
+                continue
+            keyword, rest = m.group(1), m.group(2)
+            chunk = [rest]
+            # A trailing comma continues the statement onto the next line.
+            while chunk[-1].rstrip().rstrip(")").rstrip().endswith(","):
+                i += 1
+                if i >= len(lines):
+                    break
+                chunk.append(_strip_gradle_comment(lines[i]))
+            names = _GRADLE_QUOTED_RE.findall(" ".join(chunk))
+            (builds if keyword == "includeBuild" else modules).extend(names)
+            i += 1
+        if modules or builds:
             found.append({"rel": rel, "dir": os.path.dirname(rel) or ".",
-                          "modules": includes, "text": text, "ecosystem": "gradle"})
+                          "modules": modules, "included_builds": builds,
+                          "text": text, "ecosystem": "gradle"})
     return found
+
+
+def gradle_module_dir(module_path: str, settings_dir: str) -> str:
+    """`connect:api` -> `connect/api`, relative to the settings file."""
+    rel = module_path.strip().lstrip(":").replace(":", "/")
+    if settings_dir and settings_dir != ".":
+        return f"{settings_dir.rstrip('/')}/{rel}"
+    return rel
 
 
 # ── assembly ─────────────────────────────────────────────────────────────
@@ -600,10 +651,49 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
     if not go_subsystems(root, files) and any(f.endswith(".go") for f in files):
         notes.append("go files present but no go.mod resolved — no Go components")
 
-    if gradle := gradle_modules(root, files):
-        for g in gradle:
-            notes.append(f"{g['rel']}: {len(g['modules'])} Gradle modules — "
-                         f"not expanded into components in this slice")
+    # Gradle modules ARE components (finding 93). Previously reported and not
+    # expanded, on the reasoning that "at egeria's 254 modules the partition
+    # question is about shape, not leaves". That reasoning has expired twice
+    # over: `go_subsystems` now expands Go package trees on exactly the same
+    # basis (795 candidates on Kubernetes), and deterministic distillation
+    # (finding 79) exists to narrow an over-proposed set. §2a is explicit that
+    # finding more structure must not score worse.
+    #
+    # A declared module list is a BETTER identity source than Go's directory
+    # convention, because it is declared rather than inferred: `include` is the
+    # project telling you what its parts are.
+    seen_gradle_dirs: set[str] = set()
+    for g in gradle_modules(root, files):
+        for module in g["modules"]:
+            mdir = gradle_module_dir(module, g["dir"])
+            if not mdir or mdir in seen_gradle_dirs:
+                continue
+            seen_gradle_dirs.add(mdir)
+            slug = _slug("gradle", module.replace(":", "-"))
+            components.append(Component(
+                slug=slug, name=module,
+                # Honest ceiling, same as classify()'s: a module declaration
+                # says a part exists, not how it runs. Only a main class or an
+                # application plugin would separate Console Command from
+                # Software Library, and neither is read here.
+                type="Software Library",
+                identity=Identity("package-name", module),
+                files=[f"{mdir}/**"],
+                confidence=65, confidence_level="Derived",
+                proposed_by=["gradle-module"],
+                perspective="logical",
+            ))
+            evidence.append(Evidence(
+                subject_kind="component", subject_slug=slug,
+                assertion=f"component identity = package-name:{module}",
+                detector="gradle-module",
+                locations=[Location(g["rel"], 0, f"declared by `include` in {g['rel']}")],
+                confidence=65, confidence_level="Derived",
+            ))
+        if g.get("included_builds"):
+            notes.append(f"{g['rel']}: {len(g['included_builds'])} includeBuild composite "
+                         f"build(s) not expanded — a separate project, not a subproject: "
+                         f"{', '.join(g['included_builds'][:4])}")
 
 
     # Code-marker pass (§5.1's code half) — logical-perspective components the
@@ -611,7 +701,25 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
     # come from the manifests already found, so markers refine a boundary that
     # was detected, never invent one from nothing.
     from .code_markers import propose as _propose_markers
-    package_roots = sorted({m["dir"] for m in manifests}) or ["."]
+    # Package roots for marker attribution. Previously derived from Python and
+    # Node manifests alone, which silently discarded every marker in a repo
+    # whose manifests live elsewhere: Prometheus has `web/ui/package.json`, so
+    # every root sat under `web/ui/` and all 8 Go marker matches fell outside
+    # them and were dropped — "0 logical components from 8 matches". Go module
+    # roots and Gradle module directories are package roots too (findings 70,
+    # 93), and the repo root is the floor rather than only a fallback, since a
+    # single-module Go repo has no other root to offer.
+    package_roots_set = {m["dir"] for m in manifests}
+    try:
+        from . import imports as _imports_mod
+    except ImportError:
+        import imports as _imports_mod
+    for _mod_path, _mod_dir in _imports_mod.go_module_index(root, files):
+        package_roots_set.add(_mod_dir or ".")
+    for _g in gradle_modules(root, files):
+        package_roots_set.add(_g["dir"] or ".")
+    package_roots_set.add(".")
+    package_roots = sorted(package_roots_set)
     mc, me, mn = _propose_markers(root, files, package_roots)
     components.extend(mc)
     evidence.extend(me)

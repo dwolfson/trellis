@@ -1,0 +1,15 @@
+# design §5.1 "CLI markers" -> Console Command. Covers the two dominant Go CLI
+# libraries; `flag.Parse()` is deliberately EXCLUDED — it appears in tests and
+# helpers throughout a codebase and would mark most subtrees as commands.
+id: go-cli-construction
+language: Go
+rule:
+  any:
+    - kind: call_expression
+      has:
+        field: function
+        regex: '^kingpin\.(New|CommandLine)$'
+    - kind: composite_literal
+      has:
+        field: type
+        regex: '^cobra\.Command$'

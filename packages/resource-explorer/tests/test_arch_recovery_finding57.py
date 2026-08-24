@@ -85,11 +85,17 @@ class TestSupportedLanguageIsDerivedNotHardcoded:
         assert imports.languages_present(files) == {"rust": 2}
 
     def test_marker_languages_is_read_from_the_rule_files(self):
-        # Every shipped rule (rules/*.yml) currently declares `language: Python`
-        # — asserted as a fact about the rule files, not hardcoded independently
-        # of them, so this test breaks (correctly) the day a non-Python rule
-        # lands rather than silently staying right by coincidence.
-        assert code_markers.marker_languages() == {"python"}
+        # Asserted as a fact about the rule files rather than hardcoded
+        # independently of them, so it breaks the day the rule set changes
+        # rather than silently staying right by coincidence.
+        #
+        # It did exactly that. Go and Java marker rules landed (finding 94 — the
+        # marker proposer had been Python-only, so every non-Python target was
+        # running three proposers rather than four, and I had twice described it
+        # as covering Java by reading the adjacent `rules-imports/` directory).
+        # Updated to the new fact, not loosened: an assertion that any language
+        # is present would stop catching the next silent change.
+        assert code_markers.marker_languages() == {"go", "java", "python"}
 
 
 class TestCouplingUnverifiedOnUnsupportedLanguage:

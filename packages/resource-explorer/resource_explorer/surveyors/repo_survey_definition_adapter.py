@@ -464,6 +464,13 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "recovery is worth running at all (design §5.5b).",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+        # MEASURED, not guessed: the presentation session clocked this at 3 repos
+        # in 10 minutes, network-blocked, against 1 second for the other three
+        # Discovery steps over 60 repos. It was declaring the dataclass default
+        # `fetch_cost="none"` — the defining property of the tier — while making
+        # a dozen GitHub calls per repo. Declared honestly now; a
+        # `max_fetch_cost="none"` run will correctly exclude it.
+        fetch_cost="api_heavy",
         # requires_resources={} — but it DOES reach GitHub directly (repo tree,
         # README, sibling-repo listing). Declared as a rule-17 exception in
         # tests/test_analysis_catalog_reader.py rather than hidden behind an
