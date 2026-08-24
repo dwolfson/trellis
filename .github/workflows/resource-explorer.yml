@@ -113,11 +113,18 @@ jobs:
         run: uv run pytest tests/ -m requires_pgvector -q --no-header
 
       - name: Full suite
-        run: uv run pytest tests/ -q --no-header
-
-      - name: Report what was skipped
-        # requires_egeria (22 tests) has no service here — an Egeria platform is
-        # not something a job can stand up. Those stay skipped, and this step
-        # says so out loud rather than letting a skip count go unread.
-        if: always()
-        run: uv run pytest tests/ -q --no-header -rs 2>&1 | tail -30
+        # -rs prints the reason for every skip in this same run.
+        #
+        # There used to be a separate "Report what was skipped" step doing
+        # exactly that — by running the ENTIRE suite a second time. It was
+        # affordable when written and stopped being so as the suite grew:
+        # on 2026-08-24 steps 1-10 all passed, including this one, and the job
+        # was killed at the 30-minute ceiling with the duplicate run still
+        # going. Paying twice for a diagnostic that a flag gives away free was
+        # a bad trade the moment it was written; it only became visible when
+        # the second run stopped fitting.
+        #
+        # requires_egeria (22 tests) still has no service here — an Egeria
+        # platform is not something a job can stand up — so those stay skipped,
+        # and their reasons are now printed by the run that already happened.
+        run: uv run pytest tests/ -q --no-header -rs
