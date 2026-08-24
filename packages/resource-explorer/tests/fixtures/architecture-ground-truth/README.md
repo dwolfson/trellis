@@ -112,7 +112,7 @@ Prompts, weights, thresholds and filter rules are all the same hazard. So:
 | `kubernetes.md` | **DEV** (moved 2026-08-23) — the entry-point partition check was derived from its failure | owner-published doc |
 | `trellis.md` | **HELD OUT** | maintainer |
 | `egeria-workspaces.md` | **SPENT** 2026-08-23 (finding 87 — settled-configuration holdout run) | maintainer |
-| `immich.md` | **HELD OUT** — added 2026-08-23 to replace the spent deployment fixture; reserve for the per-perspective adjudication fix (finding 88) | owner-published |
+| `immich.md` | **SPENT** 2026-08-23 (finding 90 — per-perspective fix; found 4/4 by identity, scored 0/4 because component-set matching is exact-string) | owner-published |
 
 **Dev-fixture scores are a development signal, not a result**, and must be labelled as such wherever
 they are quoted. A held-out fixture is run **once**, after the thing being developed is settled, and

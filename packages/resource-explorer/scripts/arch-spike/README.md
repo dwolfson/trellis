@@ -2910,3 +2910,81 @@ Full suite 1877 passed.
 function works; it proves nothing about whether anything calls it in production. Neither does a green
 suite. The check that would have caught this is the one the presentation session actually ran: *who
 calls this, outside its own tests?*
+
+---
+
+**90. The immich holdout: 0/4 by the measure, 4/4 by identity. The instrument failed, not the
+detector — and it was pre-registered.**
+
+`immich.md` was created and pre-registered specifically to measure finding 88's per-perspective fix,
+after `egeria-workspaces` was spent. Four owner-declared deployment components. Spent once.
+
+### The per-perspective fix works
+
+Four dev iterations on the already-spent `egeria-workspaces`, each exposing the same shape — **a rule
+correct in the perspective it came from, applied where its premise fails**:
+
+| iteration | broke | fix |
+|---|---|---|
+| 1 | `SolutionComponentType` applied to containers | 17-value `SoftwareCapability` vocabulary |
+| 2 | *"typically 5-25 components"* merged 59 → 15 | a compose service **is** a component; merge only exact duplicates |
+| 3 | model emitted `Third Party Process` (60 drops) | third-party-ness is a **property, not a type** |
+| 4 | renamed `quickstart-egeria-main` → "Egeria Quickstart" | in deployment a name is a **fact**, not a description |
+
+Result: `egeria-workspaces` **0/27 → 18/27**, parity with deterministic distillation, *plus* correct
+types the deterministic path cannot produce. Prometheus re-confirmed at **9/11** afterwards — no
+regression to the logical path across all four.
+
+### The held-out run
+
+| | components | component-set |
+|---|---|---|
+| deterministic distillation | 30 | **0/4** |
+| adjudicated | 30 | **0/4** |
+
+And yet:
+
+```
+GT (owners' doc): immich-server   immich-machine-learning   postgres          redis
+detected        : immich_server   immich_machine_learning   immich_postgres   immich_redis
+```
+
+**All four were found.** Typed `SoftwareService`, `SoftwareService`, `DatabaseManager`,
+`DatabaseManager`. The score is 0/4 because component-set matching is **exact string**, and the
+differences are a hyphen against an underscore and a `container_name` prefix.
+
+**This was pre-registered**, in `immich.md`, before the run:
+
+> *"the owners' `postgres` and `redis` correspond to compose services named `database` and `redis`,
+> whose `container_name` values are `immich_postgres` and `immich_redis`. A detector naming these
+> `database`/`immich_postgres` rather than `postgres` is describing the same component; scoring
+> should treat that as a naming difference, not a miss."*
+
+Which is the entire value of pre-registration. Said afterwards this is an excuse; said before the run
+it is a prediction that came true, and the fixture is the evidence.
+
+### So the instrument is the problem, for the third time
+
+Findings 61, 70 and 74 each found the measure wrong rather than the detector. This is the fourth, and
+the sharpest: **for the deployment perspective, component-set-by-exact-name is the *only* applicable
+measure** (plan §5a — file-partition scoring cannot apply where components own no files). A broken
+sole measure is worse than a broken one among several.
+
+`egeria-workspaces` scored 18/27 only because its ground truth was written *from* `container_name`
+values, so the strings happened to align. `immich.md`'s came from the owners' prose, where they
+naturally write `postgres`, not `immich_postgres`. **The measure was never testing identity; it was
+testing whether the fixture author had read the compose file.**
+
+### What this actually establishes
+
+- **Detection on a deployment target from owner-published prose: 4/4.** Including both
+  pre-registered traps — `immich-microservices` correctly absent, and the observability containers
+  found but correctly outside the declared set.
+- **One real typing disagreement**: `redis` is typed `DatabaseManager` where the ground truth says
+  `EventBroker`. The owners describe it purely as *"queue management for background jobs"*, so the
+  ground truth is right and the model reached for the more common role of Redis. That is a genuine
+  miss, and the only one.
+- **The measure needs fixing before any further deployment-perspective work**, and it is a
+  measurement change, not a detector change: identity-aware matching that normalises separators and
+  `container_name` prefixes, or matching on the compose service a component was derived from rather
+  than on its display name.

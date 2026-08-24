@@ -278,6 +278,12 @@ def build_prompt(components: list[dict], ev_by_slug: dict[str, list[dict]],
              "`NetworkGateway`. Being third-party is a property of the component, not its type — "
              "record it in the rationale, never as the classification. (`Third Party Process` "
              "belongs to the LOGICAL vocabulary you were told to ignore.)"
+             "\n\nDO NOT RENAME. Your instructions ask you to name each component in clear human "
+             "terms. **In this perspective the name is already the human term and it is a FACT, "
+             "not a description to improve.** A container\'s name is what appears in `docker ps` "
+             "and what an operator types to restart it; `quickstart-egeria-main` renamed to "
+             "\"Egeria Quickstart\" is not clearer, it is a different thing that nobody can find. "
+             "Return the detector-proposed name unchanged, exactly as given."
              "\n\nDO NOT MERGE AGGRESSIVELY HERE. Your instructions say a repository typically has "
              "5-25 real components and that producing nearly as many outputs as inputs means you "
              "have not done the job. **That is a claim about the LOGICAL perspective and it is "
@@ -452,6 +458,36 @@ def falsify_types(kept: list[dict], type_by_slug: dict[str, str],
 # losing the candidates would be a regression.
 
 _ENTRY_POINT_TYPES = frozenset({"Console Command"})
+
+
+def preserve_deployment_names(kept: list[dict], name_by_slug: dict[str, str],
+                              ) -> tuple[list[dict], list[dict]]:
+    """In the deployment perspective the detector's name is authoritative.
+
+    §5.2 step 3 asks the LLM to "name each component in clear human terms". That
+    is a LOGICAL-perspective instruction. A deployment component's name is
+    already the human term — §8.2 chose `container_name` precisely because it is
+    "what the human sees in `docker ps` and what they call it" — so renaming it
+    destroys identity rather than improving legibility.
+
+    Measured: with renaming, adjudication scored 0/27 on `egeria-workspaces`
+    against a deterministic 18/27, with 58 correctly-typed components that no
+    longer matched anything by name. Enforced here rather than left to the
+    prompt, on the same principle as every other check in this file — an
+    instruction the model may ignore is not a rule.
+    """
+    notes: list[dict] = []
+    for item in kept:
+        if item.get("perspective") != "deployment":
+            continue
+        slugs = item.get("candidate_slugs") or []
+        if len(slugs) != 1:
+            continue          # a genuine merge keeps the model's name
+        original = name_by_slug.get(slugs[0])
+        if original and item.get("name") != original:
+            notes.append({"was": item["name"], "now": original})
+            item["name"] = original
+    return kept, notes
 
 
 def split_multi_perspective(kept: list[dict], perspective_by_slug: dict[str, str],
@@ -697,6 +733,10 @@ def adjudicate(target: str, root: str | None, model_override: str | None = None,
     kept, split_notes = split_multi_entrypoint(kept, type_by_slug, name_by_slug, files_by_slug)
     split_notes = persp_notes + split_notes
     kept, type_notes = falsify_types(kept, type_by_slug, files_by_slug)
+    kept, rename_notes = preserve_deployment_names(kept, name_by_slug)
+    if rename_notes:
+        print(f"  RESTORED {len(rename_notes)} deployment name(s) the model rewrote "
+              f"(e.g. {rename_notes[0]['was']!r} -> {rename_notes[0]['now']!r})")
 
     referenced = {s for item in kept for s in item["candidate_slugs"]}
     for n in split_notes:
