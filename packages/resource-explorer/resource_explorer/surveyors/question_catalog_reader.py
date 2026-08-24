@@ -9,7 +9,19 @@ Backs the Scouting "Questions" checklist tab: for a given resource, which
 of the authored Scouting questions are answerable today (and by which
 analysis_catalog.yaml analysis), which are gaps, and which need a human via
 Enrichment — filterable by the same Perspective set used elsewhere in the
-UI. Mirrors analysis_catalog_reader.py's loading convention exactly
+UI.
+
+`answering.checks` carries the finer `analysis_id:check_name` join added
+2026-08-24, alongside `analysis_ids` rather than replacing it. Several
+analyses bundle unrelated checks — `repo_conventions` alone answers 7 of the
+16 analysis-answerable questions across its 5 checks — so an analysis-level
+join loses most of the information the question corpus actually carries.
+Valid check names are declared in configdata/check_registry.yaml; note that
+`findings_kind` there is not always the analysis id. `checks` is empty for
+questions answered by a whole analysis with no per-check decomposition, and
+for every question whose CSV row has not been given check refs yet, so
+consumers must treat empty as "fall back to analysis_ids", never as "no
+checks apply". Mirrors analysis_catalog_reader.py's loading convention exactly
 (frozen dataclass, lru_cache-backed loader, clear_cache() testing hook).
 
 This module does NOT read Egeria live — the YAML (ultimately the CSV) is
@@ -34,10 +46,12 @@ _DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "configdata" / "question_c
 class QuestionAnswering:
     kind: str  # analysis | direct | registry | human | chart | gap | partial | mixed | unknown
     analysis_ids: list[str] = field(default_factory=list)
+    checks: list[str] = field(default_factory=list)
     note: str = ""
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "analysis_ids": self.analysis_ids, "note": self.note}
+        return {"kind": self.kind, "analysis_ids": self.analysis_ids,
+                "checks": self.checks, "note": self.note}
 
 
 @dataclass(frozen=True)
@@ -67,6 +81,7 @@ def _entry_from_yaml(raw: dict) -> QuestionCatalogEntry:
         answering=QuestionAnswering(
             kind=answering_raw.get("kind", "unknown"),
             analysis_ids=list(answering_raw.get("analysis_ids") or []),
+            checks=list(answering_raw.get("checks") or []),
             note=answering_raw.get("note", ""),
         ),
         answering_mechanism=raw.get("answering_mechanism", ""),

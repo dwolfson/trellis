@@ -4,8 +4,10 @@
 `docs/discovery-automate-project-context-plan.md` Part 5 (shipped 2026-08-13), which stays
 as-is — see §1.
 
-**§3's dispatch chain has been measured against the real catalog and it does not work as
-first written.** Read §3 before building anything that depends on Perspective.
+**§3's dispatch chain has been measured against the real catalog.** Perspective cannot drive
+dispatch; Purpose can, but only as a *ranking* axis, not a filter — and the exclusivity bar an
+earlier draft set was itself unachievable. Read §3 and the measurement section at the end
+before building anything that depends on either axis.
 
 ## Context
 
@@ -187,9 +189,11 @@ tags for both was my assumption and it does not survive contact with the data.
 
 **Revised model — Purpose is primary, Perspective is secondary:**
 
-- **Purpose selects** the question set, and therefore the work. It is the discriminating axis.
-- **Perspective ranks and filters** within that set — presentation, ordering, emphasis. It
-  keeps doing exactly the job it already does well.
+- **Purpose orders** the question set, and therefore what runs by default. It is the
+  discriminating axis — measurably so (overlap 0.22 vs Perspective's 0.37; see the measurement
+  section at the end of this doc). It **ranks, it does not exclude**: nothing is hidden.
+- **Perspective ranks within that** — presentation, ordering, emphasis. It keeps doing exactly
+  the job it already does well.
 
 The §2/§3 distinction between the two axes stands unchanged; what changes is that they are
 **not co-equal inputs to dispatch**. Treating them as co-equal would produce a system where
@@ -372,9 +376,30 @@ Summary rule set:
 - **Neither** → an undeclared score computed inline. `documentation.py:151-167` and
   `health.py:118-159` do this today; both are existing violations (backlog).
 
-**Operational trap:** the Portal's seeding script links `GovernanceResults` with no
-existence check, so re-runs duplicate the relationship and manual re-runs are flagged
-unsafe. If RE creates metrics programmatically it must be idempotent from day one.
+### Authoring path and the idempotency constraint
+
+Both confirmed against current code 2026-08-24 by the egeria-workspaces session, not read off
+the docs:
+
+**Follow the Portal's authoring path, do not invent a parallel one.**
+`gen_governance_metrics.py` → one Dr.Egeria document → registered as a Data Initialization
+batch with a canary is still the *only* path (verified via `bootstrap_batches.py`'s
+`_EXTRA_BATCH_ROOTS`). If RE declares its own `GovernanceMetric`s it should take the same
+shape, so they reseed after an Egeria wipe like everything else.
+
+**The duplicate-`GovernanceResults` bug is fixed — but the fix does not automatically cover
+RE.** egeria-python `43758a0` added a pre-existence check before linking (shipped in pyegeria
+6.1.0/6.1.1, live in quickstart); `governance-metrics.md` has been corrected accordingly
+(`1320fa1f`), so the older "manual re-runs are unsafe" warning no longer applies to the Portal.
+
+The catch that matters here: **that guard fires only for the literal
+`object_type == "Governance Results"` branch in `md_processing/v2/governance.py`.** If RE links
+its metrics through a different Dr.Egeria command or a direct pyegeria call, it inherits
+nothing and will happily duplicate relationships.
+
+So the requirement stands, and is sharper than when this doc first stated it: **RE must carry
+its own existence check** unless it links specifically via `Link Governance Results`. "Upstream
+fixed it" is true and irrelevant to any path RE might actually take.
 
 ## 6. Membership lives in Egeria
 
@@ -569,17 +594,108 @@ were resolved in the design session:
 | Do `excluded` decisions pre-seed the successor? | **Yes, with timestamps** — a dated reviewable default, never a permanent verdict | §6a |
 | Does Purpose actually discriminate? | **Unproven — tag a subset and measure first** | below |
 
-## The one thing still unproven
+## Purpose measured (2026-08-24) — it works, but the bar I set was wrong
 
-**Purpose is assumed to discriminate, and that is the same assumption that just failed for
-Perspective** (§3: not one of twelve perspectives reaches a single analysis another does not
-also reach). Perspective looked like a usable dispatch axis right up until it was measured.
+Tagged the 16 of 41 repo questions that have non-empty `analysis_ids` (the only ones that can
+move the metric — a question reaching no analysis cannot make a Purpose reach one). Method
+fixed before looking at any outcome: tag every Purpose that genuinely applies to each question,
+no revision after seeing results. Working file kept out of the repo; the tags are reproduced in
+the backlog item when this is picked up.
 
-Agreed approach: **tag a subset of `docs/dr-egeria/resource_questions.csv` with Purpose and
-measure the discrimination before committing to all 41.** If Purpose produces nested subsets
-the way Perspective does, §3 needs rethinking rather than implementing — and it is far cheaper
-to learn that from 10 tagged questions than from a built UI.
+### The §3 bar fails — and is unachievable by construction
 
-Concretely, the check to run: for each Purpose, the set of analyses reachable through its
-questions; then confirm each Purpose reaches at least one analysis no other Purpose reaches.
-That is the test Perspective fails, and it is the bar §3 has to clear.
+Every one of the 8 purposes reaches **zero** analyses that no other purpose reaches. Identical
+to Perspective's result. But before concluding the axis is wrong, the ceiling:
+
+- `repo_conventions` is reached by **7 of 16** questions; `repository_health` by 4. Two
+  analyses absorb 11 of 16.
+- Only **6 of 10** analyses are reachable from exactly one question. So **at most 6 of 8
+  purposes could ever hold a unique analysis, under any tagging whatsoever.**
+
+The bar — *"each value must reach at least one analysis no other value reaches"* — was invented
+in an earlier draft of this doc and is not satisfiable by this catalog. Worse, it encodes a
+false premise: purposes genuinely overlap. A published security analysis is honestly relevant
+to both `Assess` and `Certify`, and demanding exclusivity demands something untrue of the
+domain. **The bar was wrong, not the axis.**
+
+### On the fair test, Purpose clearly beats Perspective
+
+Both measured over the same 16 questions, same 10 analyses:
+
+| | mean pairwise Jaccard overlap | strict-subset (nested) pairs | median set size |
+|---|---|---|---|
+| **Purpose** (8 values) | **0.22** | **6** | 3.5 of 10 |
+| **Perspective** (11 values) | 0.37 | 18 | 4.0 of 10 |
+
+Purpose sets overlap **40% less** and are nested **three times less often**. That is the
+property dispatch actually needs: not exclusivity, but that changing the axis value changes
+the working set in a way a user would notice.
+
+### What this changes in the design
+
+**Purpose ranks and prioritises; it does not exclude.** Dispatch orders the analysis list and
+picks what runs by default — it never hides an analysis. This is the honest reading of a 0.22
+overlap: the sets differ usefully but share a common core, so the top of the list should change
+with Purpose while the tail stays reachable. A filtering-out model would be over-claiming what
+the data supports, and would hide the shared core that every purpose legitimately needs.
+
+Perspective keeps its existing job (display filtering) and is the secondary ordering key, per §3.
+
+### The check-granularity join — BUILT 2026-08-24
+
+`repo_conventions` was never one check — `ingestion/repo_conventions_parser.py:97-179` emits
+five. The discrimination existed in the question corpus and was destroyed by the mapping.
+The CSV had in fact *already* recorded the checks in prose (`repo_conventions (deployment_docker
+presence signal)`); the pipeline just dropped them on the floor.
+
+What landed:
+
+- **`configdata/check_registry.yaml`** — new. Declares the 28 checks across 8 analyses that
+  were previously undeclared anywhere. Every analysis in `analysis_catalog.yaml` must appear in
+  exactly one of three sections (`analyses` with its checks / `whole_analysis_only` /
+  `instance_keyed_not_checks`), so "absent" is never ambiguous between *has no checks* and
+  *nobody looked*. Validated against the live registry: 255 `(kind, check_name)` pairs over 60
+  surveyed repos, zero live checks missing.
+- **`answering.checks`** on every question entry — `analysis_id:check_name` refs, alongside
+  `analysis_ids` rather than replacing it. A check ref implies its analysis, added automatically.
+- **Generator validation** — an unknown check ref now raises rather than being silently dropped,
+  because a typo'd ref is otherwise indistinguishable from an untagged question, which is the
+  exact failure this join exists to remove.
+- **9 CSV rows tagged**, only where the CSV already asserted the check in prose. Nothing invented.
+- **`tests/test_check_registry.py`** — 7 guards against silent drift.
+
+**Two traps found while building it**, both of which would have produced a plausible-looking
+broken join:
+
+1. **`findings_kind` is not always the analysis id.** `security_scan` writes findings under
+   `security_hygiene`, `documentation_coverage` under `documentation`, `sub_resource_survey`
+   under `repo_sub_resource_survey`. A join built on the natural assumption breaks on exactly
+   the analyses with the most checks. The registry makes it explicit per entry.
+2. **`check_name` is overloaded.** For `architecture_recovery` (70 distinct values) and
+   `repo_sub_resource_survey` (86) the column holds an *instance key* — a component identity, a
+   coupling shape, a directory path — not a check identifier. Treating those as checks would
+   pollute the vocabulary with directory names. They are excluded by name and by test.
+
+**Result of the re-measurement** (same 16 questions, same tags):
+
+| | distinct targets | mean pairwise overlap | nested pairs |
+|---|---|---|---|
+| analysis granularity | 10 | 0.22 | 6 |
+| **check granularity** | **15** | **0.14** | **5** |
+
+Overlap drops by a further **36%** — Purpose sets are now less than half as overlapping as
+Perspective's 0.37. The exclusivity bar still fails 7 of 8, which remains the right outcome:
+that bar was unachievable and encoded a false premise (§ above). What matters is that Purpose's
+sets are now sharply distinct, which is what ranking needs.
+
+**Only 9 of 41 questions carry check refs so far** — the remaining tagging is mechanical and
+should follow the same rule: add a ref only where the CSV already asserts the check, never
+invent one to improve the metric.
+
+### The real limiter, for whoever picks this up
+
+The analysis catalog is coarse relative to the question corpus — 16 questions routing to 10
+analyses, two of which absorb two-thirds of them. Any dispatch axis will be blunt until either
+the join moves to check granularity or the bundled surveyors are split. That is a property of
+the catalog, not of Purpose or Perspective, and no amount of re-tagging will fix it.
+

@@ -1090,7 +1090,19 @@ pieces that design deliberately left out of its own first pass.
    `measurement`/`target` (following the Portal's Governance Metrics pattern) or removal.
    `sql_analyzer.py:145-153`'s `complexity_score` needs the same check.
 
-6. **Tag Purpose on a subset of the question CSV and measure before tagging all 41.**
+6. **~~Tag Purpose on a subset and measure~~ — DONE 2026-08-24; what's left is the check-granularity
+   join.** Measured over the 16 analysis-answerable questions: Purpose fails the exclusivity bar
+   (0/8) exactly as Perspective did — but that bar is unachievable by construction (only 6 of 10
+   analyses are reachable from a single question, so at most 6 of 8 purposes could ever pass) and
+   it encodes a false premise, since purposes genuinely overlap. On the fair metric Purpose is
+   clearly the better axis: mean pairwise overlap 0.22 vs Perspective's 0.37, nested pairs 6 vs 18.
+   Conclusion: Purpose **ranks**, never excludes. Remaining work: add `check_name` to the question
+   join — `repo_conventions` alone bundles 5 checks (`ingestion/repo_conventions_parser.py:97-179`)
+   and absorbs 7 of the 16 questions, and `project_analysis_findings` already stores `check_name`
+   per row, so only `question_catalog.yaml` lacks the granularity. See
+   `docs/investigation-framing-design.md`, final section. Original item text follows.
+
+   ~~Tag Purpose on a subset of the question CSV and measure before tagging all 41.~~
    `question_catalog.yaml` is generated from `docs/dr-egeria/resource_questions.csv` via
    `scripts/csv_to_question_catalog_yaml.py` (don't hand-edit the YAML). Purpose needs a new column.
    Before committing to all 41: tag ~10, then check that each Purpose reaches at least one analysis
