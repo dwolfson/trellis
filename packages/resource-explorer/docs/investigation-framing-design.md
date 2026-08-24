@@ -1,6 +1,6 @@
 # Investigation framing — declaring the body of work before Scouting
 
-**Status: design, nothing built (2026-08-24).** Supersedes nothing; sits above
+**Status: design; two pieces have since been built (2026-08-24).** All 41 questions are tagged with Purpose (`341d2f5`) and the check-granularity join exists and is guarded (`852955f` — `configdata/check_registry.yaml`, `tests/test_check_registry.py`). Everything else here — the Investigation record, the tab, the create-Egeria-Project path — remains unbuilt. This line read "nothing built" after both had already shipped. Supersedes nothing; sits above
 `docs/discovery-automate-project-context-plan.md` Part 5 (shipped 2026-08-13), which stays
 as-is — see §1.
 

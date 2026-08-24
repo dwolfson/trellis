@@ -619,6 +619,23 @@ nothing tracks. Confirmed 2026-08-24: zero occurrences of `Investigation` in
 exists, since the tab with no table is a form with nowhere to write. 2 can lag — a local
 investigation is useful before it is promotable.
 
+**Two constraints that are easy to specify wrongly:**
+
+* **Perspective cannot drive dispatch** (§3, measured 2026-08-24). Two incompatible
+  vocabularies — 12 Title-Case names on questions, 5 snake_case on analyses — and zero
+  discrimination: no perspective reaches an analysis another does not also reach. It is a
+  secondary ranking axis only. A tab offering "filter analyses by Perspective" would specify
+  something the catalog cannot support.
+* **Purpose tagging is NOT a blocker — it is done.** `341d2f5` tagged all 41 questions;
+  verified 2026-08-24 in the CSV source of truth (`docs/dr-egeria/resource_questions.csv`,
+  41/41 `Purposes` filled), not just the generated YAML. The check-granularity join is built
+  and guarded too (`852955f`). What remains is populating checks per question — see the
+  framing entry below.
+
+§8 of the design already lists **`Investigation record + tab`** as net-new work, alongside
+"Create a new Egeria Project — net-new (Part 5 built search/bind only)". The intent was
+tracked in the design; only the backlog entry was missing.
+
 **Do not start here:** §7's two renames (`Project` → `Repo`/`Resource`,
 `ProjectGroup` → `Owner`) are a separate entry with a live cross-schema tripwire — Egeria
 Advisor reads RE's tables by hardcoded string in six places. Adding an Investigation concept
