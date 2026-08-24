@@ -234,3 +234,17 @@ logs/
 
 # Frontend build (bundled Tailwind CSS for resource-explorer's static UI)
 packages/resource-explorer/frontend-build/node_modules/
+
+# macOS
+.DS_Store
+
+# Claude Code: machine-local settings and transient agent worktrees.
+# .claude/launch.json is deliberately NOT ignored — it's the dev-server
+# config for the preview tooling and is shareable project config.
+.claude/settings.local.json
+.claude/worktrees/
+
+# Apple Numbers working spreadsheets. Note the derived CSVs ARE tracked
+# (e.g. packages/resource-explorer/docs/dr-egeria/re-inventory-2026-08-21.csv)
+# — if a .numbers source is worth keeping, commit it deliberately with -f.
+*.numbers
