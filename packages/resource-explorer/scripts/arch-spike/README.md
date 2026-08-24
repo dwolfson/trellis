@@ -2697,3 +2697,34 @@ Each is cheap, deterministic, regression-testable, and derived from evidence alr
 Cumulatively they have been worth far more than either the model choice (finding 81, +2 components)
 or three rounds of prompt iteration (finding 82, which ended at 0/6 on a held-out target).
 **Constraining the model with evidence has outperformed instructing it, every time.**
+
+**86. Finding 81 does not generalise: the better model depends on the prompt.**
+
+Finding 81 measured `qwen2.5:32b` (instruct) beating `qwen2.5-coder:32b` 8/11 to 6/11 on the v3
+prompt, and concluded coder-tuning was costing accuracy. Before spending a held-out fixture, the
+settled configuration — typing guide (finding 84) plus both evidence checks (findings 83, 85) — was
+re-confirmed on the dev fixture with **both** models.
+
+**The ordering reverses.**
+
+| configuration (Prometheus, DEV) | components | recall | distinct types |
+|---|---|---|---|
+| v3 prompt + coder | 16 | 6/11 | 3 |
+| v3 prompt + **instruct** | 16 | **8/11** | 2 |
+| typing guide + checks + **coder** | 27 | **9/11** | **6** |
+| typing guide + checks + instruct | 23 | 8/11 | 3 |
+
+With the v3 prompt, instruct wins by two. With the typing guide, **coder wins by one and gives twice
+the type diversity** — and instruct collapses to a *different* over-used value, `Multi-Step Process`
+(7 of 23), rather than `Software Library`.
+
+**So "which model is better" was never a property of the models.** It is a property of the
+model-and-prompt pair, and the better prompt helped the coder model more. A model comparison measured
+on one prompt does not transfer to another, and finding 81 should be read as *"instruct beat coder on
+the v3 prompt"* — not as a general claim. Corrected here rather than left to be quoted.
+
+**It also nearly cost the holdout.** The `egeria-workspaces` run had been queued with the instruct
+model on the strength of finding 81, and would have spent the fixture measuring a configuration the
+dev fixture says is inferior. Stopped before it wrote output — the fixture was not spent. **The
+dev-confirm step existed precisely so a settled configuration is settled by measurement rather than
+by the most recent conclusion**, and this is the first time it paid for itself.
