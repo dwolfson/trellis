@@ -2988,3 +2988,49 @@ testing whether the fixture author had read the compose file.**
   measurement change, not a detector change: identity-aware matching that normalises separators and
   `container_name` prefixes, or matching on the compose service a component was derived from rather
   than on its display name.
+
+**91. Identity-aware matching: immich 0/4 → 4/4, and the over-match trap held.**
+
+Finding 90 established the detector found all four immich components and scored 0/4 on exact-string
+matching. The fix is in `score.py`, not the detector, and honours a caveat **pre-registered in
+`immich.md` before the run** — which is the only thing separating it from tuning on a holdout.
+
+Two normalisations, both cosmetic, neither able to merge distinct things:
+
+- **separators** — `-` and `_` are interchangeable in Compose naming and carry no meaning;
+- **the project prefix** — Compose derives `container_name` as `<project>_<service>` with the project
+  defaulting to the directory name, so stripping it recovers the service.
+
+**The prefix is taken from the fixture name, not inferred from the data**, so it cannot be tuned.
+(First attempt passed the *target*, which carries run suffixes — `immich-adjudicated` — and scored
+2/4. The two that still missed were exactly the two needing the prefix.)
+
+| | before | after |
+|---|---|---|
+| `immich` adjudicated | 0/4 | **4/4**, recall 1.00 |
+| `immich` deterministic | 0/4 | **4/4** |
+| `egeria-workspaces` | 18/27 | **18/27** — unchanged |
+
+**The over-match trap held**, and it was the real risk: `immich-e2e-postgres` normalises to
+`immich_e2e_postgres` and strips to `e2e_postgres`, which is correctly **not** `postgres`. It stays
+in the spurious list. A substring rule — which is what a careless "fuzzy match" would have been —
+would have matched it and manufactured a false positive while appearing to improve the score.
+
+### What it does and does not establish
+
+**Detection on a deployment target from owner-published prose is genuinely 4/4**, now measurable.
+Adjudication and deterministic distillation **tie** — as they did on `egeria-workspaces` — so
+per-perspective adjudication has reached parity on this perspective without yet beating it.
+
+**Precision remains poor: 0.18, 18 spurious.** Those are e2e test containers, hardware-acceleration
+profiles (`cuda`, `openvino`, `armnn`, `rknn`, `nvenc`) and the observability pair the fixture
+explicitly excludes. The hwaccel entries are real compose services that are not backend components —
+the same over-proposal problem as everywhere else, in a new costume.
+
+### The measurement lesson, fourth instance
+
+`egeria-workspaces` scored 18/27 for two years' worth of confidence only because its ground truth was
+written *from* `container_name` values. `immich.md` was written from the owners' prose. **The measure
+had never been tested against a fixture whose author had not read the compose file**, and it failed
+the first time one existed. That is what a genuinely independent fixture buys, and it is the argument
+for choosing the next one on a dimension nothing in the corpus currently varies.

@@ -150,10 +150,60 @@ def apply_revision(doc: dict, revision: dict | None) -> tuple[dict, list[str]]:
 
 # ── component-set agreement ─────────────────────────────────────────────
 
-def component_set_score(gt_names: set[str], det_names: set[str]) -> dict:
-    hit = gt_names & det_names
-    missed = gt_names - det_names           # false negatives — GT said it exists, detector didn't find it
-    spurious = det_names - gt_names         # false positives — detector invented/found something ungrounded
+def _normalise_name(name: str, project_prefix: str = "") -> tuple[str, str]:
+    """`(normalised, prefix_stripped)` for identity-aware matching.
+
+    Finding 90. The detector found all four of immich's declared components and
+    scored 0/4, because matching was exact string and the differences were a
+    hyphen against an underscore (`immich-server` vs `immich_server`) and a
+    `container_name` prefix (`postgres` vs `immich_postgres`). Both are Compose
+    conventions, not disagreements about what exists.
+
+    Two normalisations, both cosmetic, neither able to merge distinct things:
+
+    * **separators** — `-` and `_` are interchangeable in Compose naming and
+      carry no meaning;
+    * **the project prefix** — Compose derives `container_name` as
+      `<project>_<service>`, and the project defaults to the directory name, so
+      the prefix is the target's own name and stripping it recovers the service.
+
+    The prefix is taken from the TARGET rather than inferred from the data, so
+    it cannot be tuned. That matters for the case this must not break:
+    `immich-e2e-postgres` normalises to `immich_e2e_postgres` and strips to
+    `e2e_postgres`, which is correctly NOT `postgres` — a different container
+    that a looser substring rule would have matched.
+    """
+    n = name.strip().lower().replace("-", "_")
+    stripped = n
+    if project_prefix:
+        pfx = project_prefix.strip().lower().replace("-", "_") + "_"
+        if n.startswith(pfx):
+            stripped = n[len(pfx):]
+    return n, stripped
+
+
+def component_set_score(gt_names: set[str], det_names: set[str],
+                        project_prefix: str = "") -> dict:
+    # Index the detector's names by both normalised forms, so a ground-truth
+    # name matches whichever the detector happened to use.
+    det_index: dict[str, str] = {}
+    for d in det_names:
+        n, stripped = _normalise_name(d, project_prefix)
+        det_index.setdefault(n, d)
+        det_index.setdefault(stripped, d)
+
+    hit: set[str] = set()
+    matched_det: set[str] = set()
+    for g in gt_names:
+        n, stripped = _normalise_name(g, project_prefix)
+        for key in (g, n, stripped):
+            if key in det_index:
+                hit.add(g)
+                matched_det.add(det_index[key])
+                break
+
+    missed = gt_names - hit                 # false negatives — GT said it exists, detector didn't find it
+    spurious = det_names - matched_det      # false positives — detector invented/found something ungrounded
     precision = len(hit) / len(det_names) if det_names else 0.0
     recall = len(hit) / len(gt_names) if gt_names else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
@@ -456,7 +506,13 @@ def score(target: str, gt_name: str, root_override: str | None) -> dict:
         tier_comps = {n: c for n, c in real.items()
                       if tier == "all" or provenance_tier(c) == "maintainer"}
         gt_names = set(tier_comps)
-        cset = component_set_score(gt_names, det_names_all)
+        # The project prefix comes from the TARGET's own name — Compose derives
+        # `container_name` as `<project>_<service>` and the project defaults to
+        # the directory name — so it is a fact about the repo, not a knob.
+        # `gt_name`, not `target`: the target carries run suffixes
+        # (`immich-adjudicated`), while the fixture name is the repository name,
+        # which is what Compose uses as the default project.
+        cset = component_set_score(gt_names, det_names_all, project_prefix=gt_name)
 
         fpart = None
         containment = None

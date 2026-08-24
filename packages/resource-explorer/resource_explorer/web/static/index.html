@@ -2726,8 +2726,53 @@ function _renderDeploymentInterfaces(deployments) {
     </div>`;
 }
 
+// repo_manifest_parse: three sub-parses, three independent answers.
+//
+// This card was declared 'custom' with no branch, so it rendered "No results
+// view for this analysis" while holding real data — 61 dependencies, 3 CI
+// checks and 5 convention signals for docling. Same shape as the rest of this
+// week: the capability existed and nothing connected it to a surface.
+//
+// One row per sub-parse rather than one status for the card, because they
+// genuinely disagree: egeria_git parses its CI and conventions fine and cannot
+// read its build.gradle at all, and "dependencies unverified, CI recovered,
+// conventions recovered" has no honest single summary. A card-level status
+// would have to pick a winner and would be wrong two ways out of three.
+function _renderManifestParseSub(label, sub) {
+  if (!sub) return '';
+  const st = sub.status;
+  const notEstablished = st && st.state === 'not_established';
+  const nothingFound = st && st.state === 'nothing_found';
+  // A count of zero next to an unexplained word is the thing being fixed:
+  // "0 · unverified" reads as a broken parse with no way to tell whose fault
+  // it is. Where a status explains itself, the explanation replaces the count.
+  const value = notEstablished
+    ? '<span class="text-amber-400/90">not established</span>'
+    : (nothingFound ? '<span class="text-slate-400">none</span>' : `<span>${sub.count}</span>`);
+  return `<div class="text-xs">
+      <div class="flex justify-between gap-2">
+        <span class="text-slate-500">${_esc(label)}</span>
+        <span class="text-slate-300">${value}</span>
+      </div>
+      ${st && st.hint ? `<div class="text-[11px] ${
+        notEstablished ? 'text-amber-400/70' : 'text-slate-500'} leading-snug">${_esc(st.hint)}</div>` : ''}
+    </div>`;
+}
+
+function _renderManifestParseResults(data) {
+  const rows = [
+    _renderManifestParseSub('Dependencies', data.dependencies),
+    _renderManifestParseSub('CI quality checks', data.ci_quality),
+    _renderManifestParseSub('Convention signals', data.conventions),
+  ].filter(Boolean);
+  if (!rows.length) return _renderEmptyResultState(data);
+  return `<div class="flex flex-col gap-1.5">${rows.join('')}</div>` +
+    (data.surveyed_at ? `<div class="text-[10px] text-slate-600 mt-1">last run ${_relTime(data.surveyed_at)}</div>` : '');
+}
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
+  if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
   if (analysisId === 'dependency_analysis') {
     const ecosystems = Object.entries(data.by_ecosystem || {});
     if (!ecosystems.length) return `<div class="text-xs text-slate-500">No dependencies found. Run "Refresh &amp; profile" to re-scan.</div>`;
@@ -2780,14 +2825,30 @@ function _renderCustomAnalysisResults(analysisId, data) {
         </div>`).join('');
   }
   if (analysisId === 'architecture_recovery') {
+    // The reader computes run_scope/outcome/completeness_note precisely so a
+    // SCOPED or UNVERIFIED run cannot be mistaken for a complete one, and its
+    // own docstring says "writing a field nobody reads is the same failure as
+    // not writing it". This renderer then read none of them — the same failure
+    // one layer further along, which is exactly how the signal died the first
+    // time. A partial run that presents as complete is the most expensive
+    // wrong answer this card can give: it invites conclusions about an
+    // architecture from a component set that is incomplete by construction.
+    const completeness = (() => {
+      const bits = [];
+      if (data.partial) bits.push('this run covered only part of the repository');
+      if ((data.unverified || []).length) bits.push(`${data.unverified.join(', ')} could not verify this repo`);
+      if (data.completeness_note) bits.push(data.completeness_note);
+      if (!bits.length) return '';
+      return `<div class="text-[11px] text-amber-400/80 mb-1 leading-snug">⚠ ${_esc(bits.join(' — '))}</div>`;
+    })();
     // Interfaces can exist with no components recovered — a compose file
     // declares a topology whether or not component detection resolved it — so
     // the topology renders on its own rather than being gated behind them.
     if (!data.components || !data.components.length) {
-      return `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
+      return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
              + _renderDeploymentInterfaces(data.interfaces);
     }
-    return `<div class="text-xs text-slate-400 mb-1">${data.component_count} component(s)${data.surveyed_at ? ` · last run ${_relTime(data.surveyed_at)}` : ''}</div>` +
+    return completeness + `<div class="text-xs text-slate-400 mb-1">${data.component_count} component(s)${data.surveyed_at ? ` · last run ${_relTime(data.surveyed_at)}` : ''}</div>` +
       data.components.slice(0, 20).map(c => `
         <div class="text-xs text-slate-300 mb-1">
           <div class="flex justify-between gap-2">

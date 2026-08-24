@@ -44,6 +44,7 @@ from trellis_microflow import ResourceProvider
 
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
 from resource_explorer.surveyors.result_status import attach as attach_status
+from resource_explorer.surveyors.result_status import status_from_detail as result_status_from_detail
 from resource_explorer.surveyors.arch_recovery import projection as arch_projection
 
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import FileClassifierSurveyor
@@ -864,7 +865,13 @@ def _documentation_results(registry, slug: str) -> dict:
         {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
         for r in rows
     ]
-    return {"findings": findings}
+    # The status rides on the quality_score row, which is the one
+    # DocumentationSurveyor labels `Unverified` when the file inventory is
+    # empty — the case where "Minimal" would be a confident verdict about a
+    # repo whose files were never read.
+    quality = next((r for r in rows if r["check_name"] == "quality_score"), None)
+    return attach_status({"findings": findings},
+                         _as_detail(quality.get("detail_json")) if quality else None)
 
 
 def _license_results(registry, slug: str) -> dict:
@@ -1120,14 +1127,33 @@ def _manifest_parse_results(registry, slug: str) -> dict:
     deps = registry.query_metrics(slug, "manifest_parse_dependencies")
     ci = registry.query_metrics(slug, "manifest_parse_ci_quality")
     conventions = registry.query_metrics(slug, "manifest_parse_conventions")
+
+    # Three sub-parses, three independent answers — so three statuses, not one.
+    # A single card-level status would have to pick a winner, and "dependencies
+    # unverified, CI recovered, conventions recovered" (egeria_git, whose
+    # build.gradle the parser cannot read) has no honest single summary.
+    def _sub(metrics: dict, count_key: str) -> dict:
+        out = {"count": int(metrics.get("count", 0) or 0)}
+        st = result_status_from_detail(metrics.get("detail"))
+        if st:
+            out["status"] = st
+        return out
+
     return {
+        "dependencies": _sub(deps, "dependency_count"),
+        "ci_quality": _sub(ci, "ci_quality_count"),
+        "conventions": _sub(conventions, "conventions_count"),
+        # Flat keys kept: they are what the trend reader and any existing
+        # consumer read, and removing them to tidy the shape would be a
+        # breaking change for a cosmetic gain.
         "dependency_count": deps.get("count", 0),
         "dependency_outcome": (deps.get("detail") or {}).get("outcome", ""),
         "ci_quality_count": ci.get("count", 0),
         "ci_quality_outcome": (ci.get("detail") or {}).get("outcome", ""),
         "conventions_count": conventions.get("count", 0),
         "conventions_outcome": (conventions.get("detail") or {}).get("outcome", ""),
-        "surveyed_at": deps.get("surveyed_at") or ci.get("surveyed_at") or conventions.get("surveyed_at", ""),
+        "surveyed_at": deps.get("surveyed_at") or ci.get("surveyed_at")
+                       or conventions.get("surveyed_at", ""),
     }
 
 
