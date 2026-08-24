@@ -1047,3 +1047,123 @@ parsing, so **Discovery tier by rule 17's own test**.
 Check Egeria's existing vocabulary first — `SolutionPortDirection` and `SolutionLinkingWire`'s
 `protocol`/`integrationStyle`/`frequency`/`dataExchanged`/`oneWay` already exist. Third time this
 check has been the right first move, after `SolutionComponentType` and `ResourceUse`.
+
+---
+
+### Investigation framing — the six items deferred out of the 2026-08-24 design
+
+Full design: `docs/investigation-framing-design.md` (design only, nothing built). These are the
+pieces that design deliberately left out of its own first pass.
+
+1. **Promote a local investigation to an Egeria Project.** Create the `Project` (+ `ProjectCharter`),
+   then replay each local membership row as a `ResourceList` relationship carrying its `resourceUse`.
+   Design the local membership table shaped like the target relationships from day one so this stays
+   a replay rather than a migration. Requires the "create a new Egeria Project" path, which Part 5
+   of `docs/discovery-automate-project-context-plan.md` explicitly did not build (search/bind only).
+
+2. **Unbind / rebind an investigation from its Egeria Project.** Falls out of the nullable
+   `egeria_project_guid` model but has no answer yet for what happens to relationships already
+   published under the old binding.
+
+3. **Perspective: two vocabularies that cannot be joined, and zero dispatch discrimination.**
+   Questions carry the 12 Title-Case Glossary names; analyses carry 5 snake_case values (`all`,
+   `security`, `steward`, `data_scientist`, `dba`). `data_scientist`/`dba` don't exist in the question
+   vocabulary; `Architecture` and `Admin` (25 questions each) have no analysis counterpart. Worse,
+   measured 2026-08-24: **not one of the twelve perspectives reaches a single analysis another
+   perspective doesn't also reach** — the sets are strictly nested, and `Privacy` reaches none at all.
+   Perspective filters *how much* you see, never *what runs*. Fine for its actual job (display
+   filtering, which is what the tags were assigned for); unusable for dispatch. See
+   `docs/investigation-framing-design.md` §3, which was rewritten around this.
+
+4. **Upstream: a `CertificationType` → checklist relationship.** Egeria has no way to say what checks
+   a certification is composed of. `OpenMetadataTypesArchive5_3.java:736-772` set the precedent with
+   `DataStructureDefinition` (`CertificationType` → `DataStructure`, *"the specification used to
+   certify data"*); the scorecard analogue would point at `GovernanceRule`/`Requirement` definitions.
+   Purely additive, changes no existing semantics — which is why it stands a chance upstream, unlike
+   adding a verdict field to the `Certification` relationship (considered and rejected; see the
+   design doc §4). Not a blocker: nothing in the failure path needs it.
+
+5. **Two undeclared scores.** `documentation.py:151-167` (`score = len(present) + len(found)`, then
+   hardcoded thresholds to a quality label) and `health.py:118-159` ("Overall health score: X/100")
+   both emit numbers RE authored, with no `GovernanceMetric` behind them. Under the rule agreed
+   2026-08-24 — *no metric, no number* — each needs either a declared `GovernanceMetric` with
+   `measurement`/`target` (following the Portal's Governance Metrics pattern) or removal.
+   `sql_analyzer.py:145-153`'s `complexity_score` needs the same check.
+
+6. **Tag Purpose on a subset of the question CSV and measure before tagging all 41.**
+   `question_catalog.yaml` is generated from `docs/dr-egeria/resource_questions.csv` via
+   `scripts/csv_to_question_catalog_yaml.py` (don't hand-edit the YAML). Purpose needs a new column.
+   Before committing to all 41: tag ~10, then check that each Purpose reaches at least one analysis
+   no other Purpose reaches. That is the test Perspective fails. Cheap to learn now, expensive later.
+
+7. **`ResearchQuestion` (0430) for per-investigation open questions.** Complementary to the existing
+   `GlossaryTerm` + `Question` catalog, not a replacement — no migration. Gives an investigation
+   somewhere to record the questions it exists to answer, scoped via `GovernanceDefinitionScope` to
+   the Project. Unmatched ones are the observed growth path for the standing catalog.
+
+8. **Move `scheduler.py` subscriptions onto `watchResource`.** `ResourceList` (0019) already carries
+   `watchResource` — *"whether the parent entity should receive notification about changes to the
+   supporting resource"* — which is exactly what `notification_subscriptions` is doing locally. Once
+   investigations are Egeria-bound, the subscription flag belongs on the relationship. Related to
+   Automate's local-first decision and `docs/automate-notification-manager-pyegeria-spec.md`.
+
+### RFA emission belongs in the orchestrator, not in each surveyor
+
+Every surveyor that finds a gap builds its own `RequestForActionAnnotation` inline —
+`security_hygiene.py:151-160` (missing SECURITY.md), `:196-205` (missing CI config), `:233-242`
+(missing LICENSE), each a near-identical copy inside a hand-written if/else block
+(`security_hygiene.py:131-250`). Two problems: adding a check means copy-pasting a fourth block, and
+the RFA fires regardless of *why* anyone is looking.
+
+An RFA asserts someone must act, which is only true when you own the resource. Evaluating a
+candidate you haven't adopted should produce evidence, not work — otherwise the RFA drawer fills with
+items about repos the user was merely browsing. Surveyors should emit findings; the orchestrator
+should decide what becomes an RFA, gated on the investigation's purpose
+(`docs/investigation-framing-design.md` §4). Worth doing even if framing never lands — the
+copy-paste problem is real on its own.
+
+### `Project` means three different things in `registry.py` (four counting EA's tables)
+
+A single registered repo (`Project`, `projects` — `registry.py:35-58`, `:441-464`), a grouping of
+repos (`ProjectGroup`, `group_slug`, `project_groups` — `:26-31`, `:482-488`), and an intra-repo
+subdivision (`subproject_path`/`parent_slug` — `:52-53`, a genuinely different concept that must not
+be swept up in a rename). The existing workaround is the standing rule to *always* write "Egeria
+Project" and never bare "Project" (`docs/discovery-automate-project-context-plan.md:215-220`).
+
+Proposed: `Project` → `Repo`/`Resource`, `ProjectGroup` → **`Owner`** (not `Org` — GitHub's model is
+an owner of type `User | Organization`, and plenty of repos live under a person). Scope, cost and the
+API-path fix are in `docs/investigation-framing-design.md` §7.
+
+**Tripwire, before anyone runs a regex sweep:** the registry is shared PostgreSQL
+(`config.py:242-248`), not the SQLite `data/registry.db` suggests (0 bytes, stale), and Egeria
+Advisor reads RE's tables cross-schema by hardcoded string — `advisor/re_code_symbol_reader.py:22`,
+`advisor/agents/code_intel_agent.py:34-35`, `advisor/rag_retrieval.py:272-273`,
+`advisor/analytics.py:237`, `advisor/re_code_scope.py`, `advisor/agents/tools.py:90`, all naming
+`resource_explorer.project_code_symbols` / `project_code_relationships`. Renaming those tables leaves
+EA compiling cleanly and failing at runtime. Either leave them alone or fix all six call sites in the
+same commit.
+
+### No database or filesystem questions — the Questions checklist is repo-only, and fails silently
+
+`question_catalog.yaml` has exactly one top-level key, `repo_questions` (41 entries). There is no
+`database_questions` or `filesystem_questions`, and the source CSV `docs/dr-egeria/resource_questions.csv`
+is entirely repo-shaped ("Is this repository actively maintained?", …). Meanwhile the analysis catalog
+*does* cover both: `database_analyses` has 4 (`schema_inventory`, `row_count_snapshot`, `privilege_audit`,
+`egeria_db_survey`) and `filesystem_analyses` has 1 (`filesystem_inventory`) — so there are analyses no
+question can ever reach.
+
+**It fails silently, which is the part worth fixing first.** `question_catalog_reader.py:83-85` builds its
+result dict with `"repo"` hardcoded as the only key, so `get_questions("database")` returns `[]` — the same
+value as "no questions matched your filter". A user on a database's Questions tab sees an empty checklist
+and cannot tell whether nothing applies or nothing exists. Either return an explicit not-authored signal or
+render one in the UI; an empty list should not be the representation of two different states.
+
+Consequences beyond the empty tab:
+- Purpose-driven dispatch (`docs/investigation-framing-design.md` §3) works for repos only. An investigation
+  scoped to databases has no questions to select over, so nothing dispatches.
+- The `stage` skew is repo-derived (Analysis 20 / Discovery 8 / Scouting 4 / Assessment 3 / Automate 1) and
+  shouldn't be assumed to hold for other resource types.
+
+Sequencing note: write these **after** the Purpose subset measurement (item 6 above), not before. If Purpose
+turns out not to discriminate, the CSV schema changes — and authoring two new question sets against a schema
+that is about to change is the expensive order to do this in.
