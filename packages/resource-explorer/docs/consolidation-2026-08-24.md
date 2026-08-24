@@ -177,6 +177,33 @@ was left visible deliberately so it stays a decision. Ignoring it means every fr
 recreates the dev-server config by hand. Recorded here so that after the session closes it is
 not mistaken for something forgotten.
 
+### Orphaned work in OTHER repos, found by the same sweep
+
+Asking every session — not just the Resource Explorer ones — turned up work outside this repo
+that would also have gone quiet. Recorded here because this document is the only durable
+artifact of the sweep; the owning repos are where it should actually be resolved.
+
+**`egeria-python`** (`/Users/dwolfson/localGit/egeria-python`, the canonical checkout):
+
+- A new `hey_egeria` command — a general element-register view over any Open Metadata Type,
+  grouped by real subtype — existed **only as uncommitted working-tree changes**. Its session
+  committed and pushed it on being asked: **PR #301, not yet merged.**
+- **Four pre-existing stashes**, verified, none belonging to any session still running:
+
+  ```
+  stash@{0}  On docs/issue-48-recheck: schema attr def work
+  stash@{1}  On fix/mcp-run-report-reliability: pre-existing uv.lock drift
+  stash@{2}  On fix/mcp-run-report-reliability: tmp
+  stash@{3}  WIP on Dr.E-Refactoring: 461bb56 Updating pyegeria tests
+  ```
+
+- A **staged, uncommitted deletion** of `PR_SUMMARY_2026-08-02.md`, likewise unowned.
+
+Nobody currently running has context on any of it, so none of it should be dropped on a guess
+— but it should be looked at before that environment cycles. Two repos, five stashes and a
+staged deletion between them: stashes are where work goes to be forgotten, and nothing
+surfaces them.
+
 ### A recovery path for ended sessions
 
 **Closed sessions' transcripts are on disk**, which changes the cost of a session ending
