@@ -346,3 +346,35 @@ def test_binding_an_existing_project_also_gets_a_working_set(made, monkeypatch):
     assert res2.collection_guid == "coll-1"
     assert cm.attached == [("existing-proj", "coll-1")], "created a duplicate Collection"
     monkeypatch.setattr(mod.EgeriaInvestigationPublisher, "_managers", real_managers)
+
+
+def test_a_failed_adoption_check_is_reported_because_that_is_when_duplicates_happen(made, monkeypatch):
+    """Caught by the no-silent-success ratchet, on my own code.
+
+    ensure_working_set asks Egeria what is already attached before creating
+    anything. If that lookup fails it still proceeds — a missing working set
+    should not be blocked by an unreadable list — but failing to look is
+    precisely the moment a duplicate Collection gets made, so it cannot be
+    swallowed into a debug log.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import egeria_investigation_publisher as mod
+
+    inv = made(display_name="Blind Adoption")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "proj-x",
+    })
+
+    class _BlindCM(_StubCM):
+        def get_attached_collections(self, parent_guid, **kw):
+            raise RuntimeError("listing unavailable")
+
+    monkeypatch.setattr(mod.EgeriaInvestigationPublisher, "_managers",
+                        lambda self: (_StubPM(), _BlindCM()))
+    res = mod.EgeriaInvestigationPublisher(reg).ensure_working_set(inv["slug"])
+
+    assert res.collection_guid == "coll-1", "should still create the missing working set"
+    assert any("may have created a second" in e for e in res.errors), (
+        "a failed adoption check was not surfaced — that is when duplicates happen"
+    )

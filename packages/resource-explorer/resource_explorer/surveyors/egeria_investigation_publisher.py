@@ -250,9 +250,17 @@ class EgeriaInvestigationPublisher:
                     self._registry.set_working_set_egeria_collection(ws["slug"], guid)
                     return res
         except Exception as exc:
-            # Not fatal: an unreadable attachment list means we cannot ADOPT,
-            # but it must not stop a genuinely missing working set being made.
-            log.debug("could not list attached collections: %s", exc)
+            # Not fatal — an unreadable attachment list must not stop a
+            # genuinely missing working set being made — but NOT silent either.
+            # Failing to look is exactly when a duplicate Collection gets
+            # created, so the caller has to be able to see that the check did
+            # not happen. Recorded on the result, not just logged.
+            res.errors.append(
+                f"could not check for an existing working set "
+                f"({type(exc).__name__}: {exc}) — if one already exists in Egeria "
+                "this may have created a second"
+            )
+            log.warning("could not list attached collections for %s: %s", project_guid, exc)
 
         try:
             res.collection_guid = cm.create_collection(
