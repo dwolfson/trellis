@@ -36,6 +36,7 @@ from resource_explorer.surveyors.result_status import dependency_not_satisfied
 from resource_explorer.surveyors.survey_report import (
     Annotation,
     ClassificationAnnotation,
+    RequestForActionAnnotation,
 )
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,51 @@ LENS_KIND = "architecture_doc_lens"
 GUARD_CONSULTED = "document-consulted"
 GUARD_NO_DOCUMENT = "no-document"
 PRODUCED_GUARDS = (GUARD_CONSULTED, GUARD_NO_DOCUMENT)
+
+
+#: What `repo_website_ingestion` has already done about a site, if anything.
+#: Four states, not two — recommending an ingestion that already happened is as
+#: wrong as never offering one, and two of the four are deliberate refusals the
+#: ingestion step makes on purpose.
+ING_INGESTED = "ingested"            # a collection exists; do not offer
+ING_DECLINED = "declined"            # self_published / code_host — a correct refusal
+ING_ATTEMPTED_EMPTY = "attempted"    # ran, ingested nothing worth having
+ING_NOT_ATTEMPTED = "not-attempted"  # the only state an offer belongs in
+
+
+def ingestion_status(registry, slug: str) -> tuple[str, str]:
+    """`(state, detail)` for this repo's documentation site.
+
+    Read from **metrics**, not findings: `repo_website_ingestion` writes metrics
+    and no findings at all, so a findings query reports nothing for a step that
+    has run six times (finding 105 — the same mistake produced three wrong
+    published numbers in two days).
+
+    `declined` is the interesting state and the reason this is not a boolean.
+    The ingestion step refuses on purpose when the site is `self_published` —
+    the repo builds it, so its source is already ingested in a better form — or
+    when the "site" is just a `code_host` URL. Offering to ingest either would
+    be recommending work the system already correctly decided against.
+    """
+    try:
+        m = registry.query_metrics(slug, "website_ingestion") or {}
+    except Exception:  # noqa: BLE001
+        log.exception("%s: could not read website_ingestion metrics", slug)
+        return ING_NOT_ATTEMPTED, "ingestion status unreadable"
+    if not m:
+        return ING_NOT_ATTEMPTED, ""
+    detail = m.get("detail") or {}
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:  # noqa: BLE001
+            detail = {}
+    if detail.get("ingested"):
+        return ING_INGESTED, str(detail.get("collection") or "")
+    reason = str(detail.get("reason") or "")
+    if reason in ("self_published", "code_host"):
+        return ING_DECLINED, reason
+    return ING_ATTEMPTED_EMPTY, reason
 
 
 class ArchLensSurveyor(BaseSurveyor):
@@ -116,8 +162,12 @@ class ArchLensSurveyor(BaseSurveyor):
 
         if not lens.consulted:
             reason = lens.notes[0] if lens.notes else "document not consulted"
-            return [self._nothing(reason, guard=GUARD_NO_DOCUMENT,
-                                  outcome=lens.outcome, evidence=lens.evidence)]
+            out = [self._nothing(reason, guard=GUARD_NO_DOCUMENT,
+                                 outcome=lens.outcome, evidence=lens.evidence)]
+            rec = self._ingest_recommendation(slug, lens)
+            if rec is not None:
+                out.append(rec)
+            return out
 
         self._persist(slug, components, lens)
 
@@ -151,6 +201,56 @@ class ArchLensSurveyor(BaseSurveyor):
                 "produced_guard": GUARD_CONSULTED,
             },
         )]
+
+    def _ingest_recommendation(self, slug: str, lens):
+        """Offer to ingest the documentation site — but only where that is a
+        real, undone, useful action.
+
+        This is the most actionable negative result the chain produces: we know
+        a document exists, we know its address, and we know we cannot read it
+        from here. `repo_website_ingestion` already ingests a site into pgvector
+        so Chat and Understanding can answer from it; nothing ever suggested
+        running it.
+
+        **Offered only for `not-attempted`.** `ingested` means it is already
+        done — `sqlglot`'s site is 97 chunks in `web_docs_sqlglot_com`, and
+        recommending it again would be noise from the one place a reader most
+        expects signal. `declined` means the ingestion step refused on purpose.
+        `attempted` means it ran and got nothing, which is a different problem
+        from never having run.
+
+        A recommendation, not a question. An interactive session may *render*
+        this as an offer at the point the absence appears; a scheduled survey
+        has nobody to ask and must not block. Both read the same annotation —
+        see the Backlog entry "Doc-site located but unreadable".
+        """
+        sites = [ev for outcome, ev in lens.sources if outcome == "doc-site"]
+        if not sites:
+            return None
+        state, detail = ingestion_status(self.registry, slug)
+        if state != ING_NOT_ATTEMPTED:
+            log.debug("%s: not offering ingestion (%s: %s)", slug, state, detail)
+            return None
+        shown = ", ".join(sites[:3]) + (f" (+{len(sites) - 3} more)" if len(sites) > 3 else "")
+        return RequestForActionAnnotation(
+            summary=f"{len(sites)} documentation site(s) located but not readable — "
+                    f"ingesting would make them answerable",
+            analysis_step=self.step_name,
+            action_requested="Ingest this project's documentation site "
+                             "(repo_website_ingestion) so its architecture can be read",
+            action_target_name=slug,
+            confidence=80,
+            explanation=(
+                f"The architecture document for this project is published at {shown}, "
+                f"which this step can locate but not read. `repo_website_ingestion` "
+                f"loads a documentation site into pgvector so Chat and Understanding "
+                f"can answer from it, and it has not been attempted for this "
+                f"resource. This is an offer, not a finding: nothing is wrong with "
+                f"the repository."
+            ),
+            json_properties={"sites": sites, "ingestion_state": state,
+                             "suggested_step": "repo_website_ingestion"},
+        )
 
     def _persist(self, slug: str, components: list, lens) -> None:
         """One finding per documented component, on that component's own scope.
