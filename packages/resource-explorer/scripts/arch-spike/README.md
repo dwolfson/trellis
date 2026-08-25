@@ -3845,3 +3845,53 @@ more weight, not less.
 remain site-only. Reading more sources raised the ceiling; it did not change that a documentation
 website read as markdown is mostly navigation. The next real gain is ingesting sites, not resolving
 harder.
+
+---
+
+**107. The ingest offer needs four states, not a boolean — and two of them are the system being
+right already.**
+
+`repo_arch_lens` now emits a `RequestForActionAnnotation` when it locates documentation sites it
+cannot read: *"ingesting would make them answerable"*, pointing at `repo_website_ingestion`. It is
+the most actionable negative result the chain produces — we know a document exists, we know its
+address, and we know we cannot read it from here.
+
+**The naive version would have been wrong on a third of the cases it fires for.** "Has this site
+been ingested?" is not a yes/no:
+
+```
+ingested        2 of 60    sqlglot's site is 97 chunks in web_docs_sqlglot_com
+declined        4 of 60    self_published (3) / code_host (1)
+not-attempted  54 of 60
+attempted       0          ran and got nothing — real, just unobserved so far
+```
+
+`declined` is the state worth naming. `repo_website_ingestion` refuses on purpose when a site is
+`self_published` — the repo *builds* it, so its source is already ingested in a better form — and
+when the "site" is only a `code_host` URL. Offering to ingest either would be **re-opening a
+decision the system already made correctly**, which is worse than staying quiet: it teaches a reader
+that the recommendations have not been thought through.
+
+And `ingested` would have been the embarrassing one. `sqlglot` is one of only two repos in the
+corpus whose architecture sources are *all* unreadable sites — precisely the case the offer is for
+— and its site was ingested days ago. The naive rule would have fired hardest exactly where it was
+most wrong.
+
+**Read from metrics, not findings**, and a test asserts `ingestion_status` never calls
+`query_findings`. `repo_website_ingestion` writes metrics and no findings at all, so a findings
+query reports nothing for a step that has run six times. That is finding 105 applied rather than
+re-learned — the presentation session caught my "0 of 60" claim, and this is the first code written
+after it that had to get the same distinction right.
+
+**It is an offer, not a finding, and the prose says so:** *"nothing is wrong with the repository."*
+A project that publishes its documentation on a website has done nothing wrong, and an RFA that
+reads as a defect would make the funnel's most useful signal feel like criticism.
+
+Verified live: `unitycatalog` gets the offer, `sqlglot` gets none.
+
+**What this does not do, deliberately.** It does not ask. An interactive session may *render* it as
+a question at the point the absence appears — the presentation session's better formulation is to
+put the ask where the absence already is, in the empty state, rather than in a prompt. A scheduled
+survey has nobody to ask and must not block. Both read the same annotation; only the rendering
+differs. That constraint is in the Backlog under "Doc-site located but unreadable" and applies to
+every future step that would benefit from a human answer.
