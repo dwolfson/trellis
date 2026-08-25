@@ -3841,6 +3841,87 @@ class ProjectRegistry:
             )
         return self.get_investigation(slug)
 
+    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+        """The Egeria Project binding a resource inherits from its investigation.
+
+        An investigation IS "the context everything else runs inside" (design
+        §1). If a resource is in the working set of an investigation that is
+        bound to an Egeria Project, that binding already answers "which Project
+        does this belong to" — asking again per resource is asking a question
+        that has been answered.
+
+        Returns None when nothing is inheritable, so the caller can fall back to
+        the normal prompt rather than proceeding on a guess. Only `linked`
+        investigations qualify: `personal`, `declined` and `deferred` are
+        deliberate answers about THAT investigation and do not name a Project to
+        inherit.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT i.slug, i.display_name, i.egeria_project_guid,
+                          i.egeria_project_qualified_name
+                   FROM working_set_members m
+                   JOIN investigation_resource_lists rl
+                     ON rl.working_set_slug = m.working_set_slug
+                   JOIN investigations i
+                     ON i.slug = rl.investigation_slug
+                   WHERE m.entity_type = ? AND m.entity_slug = ?
+                     AND m.state <> 'excluded'
+                     AND i.status <> 'closed'
+                     AND i.egeria_project_status = 'linked'
+                     AND i.egeria_project_guid <> ''
+                   ORDER BY i.updated_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        if not row:
+            return None
+        # A resource can legitimately be in several investigations. Inheriting
+        # from the most recently updated one is a guess, so it is reported
+        # rather than hidden — the caller records which investigation supplied
+        # the binding.
+        first = dict(row[0])
+        return {
+            "status": "linked",
+            "egeria_project_guid": first["egeria_project_guid"],
+            "egeria_project_qualified_name": first["egeria_project_qualified_name"] or "",
+            "free_text_name": "",
+            "_inherited_from": first["slug"],
+            "_inherited_from_name": first["display_name"],
+            "_ambiguous": len(row) > 1,
+        }
+
+    def update_investigation(self, slug: str, *, display_name: str | None = None,
+                             description: str | None = None,
+                             purposes: list[str] | None = None) -> dict | None:
+        """Rename or re-describe an investigation. The slug never changes.
+
+        An investigation accumulates members, an Egeria binding and inherited
+        context rows that all reference it, so re-slugging would orphan them —
+        and the slug is an identifier, not a label. Only what a human reads
+        changes here.
+        """
+        import json as _json
+        inv = self.get_investigation(slug)
+        if not inv:
+            return None
+        if purposes is not None:
+            bad = [p for p in purposes if p not in self.VALID_PURPOSES]
+            if bad:
+                raise ValueError(f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}")
+        with self._conn() as conn:
+            if display_name is not None:
+                conn.execute("UPDATE investigations SET display_name = ? WHERE slug = ?",
+                             (display_name, slug))
+            if description is not None:
+                conn.execute("UPDATE investigations SET description = ? WHERE slug = ?",
+                             (description, slug))
+            if purposes is not None:
+                conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?",
+                             (_json.dumps(purposes), slug))
+            conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
+                         (datetime.utcnow().isoformat(), slug))
+        return self.get_investigation(slug)
+
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:
         """Record the Egeria Collection this working set became.

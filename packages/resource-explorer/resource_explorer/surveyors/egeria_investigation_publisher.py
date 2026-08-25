@@ -278,6 +278,68 @@ class EgeriaInvestigationPublisher:
         self._registry.set_working_set_egeria_collection(ws["slug"], res.collection_guid)
         return res
 
+    def sync_project_properties(self, investigation_slug: str) -> PromotionResult:
+        """Push a renamed/re-described investigation to its Egeria Project.
+
+        Without this a rename silently drifts: the local record says one thing
+        and the catalog another, about the same body of work. That is the
+        two-sources-disagree failure this codebase keeps finding, and a rename
+        is exactly when it starts.
+
+        Not called automatically from the PATCH route — that route is a local
+        edit and must not depend on Egeria being reachable to succeed. This is
+        the deliberate follow-up.
+        """
+        res = PromotionResult()
+        inv = self._registry.get_investigation(investigation_slug)
+        if not inv:
+            res.errors.append(f"investigation '{investigation_slug}' not found")
+            return res
+        guid = inv.get("egeria_project_guid") or ""
+        if not guid:
+            res.errors.append("not bound to an Egeria Project — nothing to sync")
+            return res
+        res.project_guid = guid
+        try:
+            pm, _ = self._managers()
+        except Exception as exc:
+            res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
+            return res
+        # Explicit body, NOT the display_name convenience parameter.
+        # pyegeria's _async_update_project sends `name` where ProjectProperties
+        # expects `displayName`, so the convenience path returns cleanly, logs
+        # success, and changes nothing (PYEGERIA_ISSUES.md ISSUE-73, reproduced
+        # live 2026-08-25). Its own create path uses displayName correctly, so
+        # this is a spelling mismatch between the two, not a server behaviour.
+        # pyegeria is not patched here — the body parameter is a supported API.
+        body = {
+            "class": "UpdateElementRequestBody",
+            "properties": {
+                "class": "ProjectProperties",
+                "displayName": inv["display_name"],
+                "description": inv.get("description") or "",
+            },
+        }
+        try:
+            pm.update_project(guid, body=body)
+        except Exception as exc:
+            res.errors.append(f"update_project failed: {type(exc).__name__}: {exc}")
+            return res
+
+        # Read back. A rename that reports success and changes nothing is the
+        # exact failure above, so "no exception" is not evidence here.
+        try:
+            after = pm.get_project_by_guid(guid)
+            props = (after or {}).get("properties", {}) if isinstance(after, dict) else {}
+            if props.get("displayName") != inv["display_name"]:
+                res.errors.append(
+                    "update reported success but Egeria still shows "
+                    f"{props.get('displayName')!r} — the rename did not apply"
+                )
+        except Exception as exc:
+            res.errors.append(f"could not verify the rename applied: {type(exc).__name__}: {exc}")
+        return res
+
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
         if entity_type == "repo":
             return self._registry.get_egeria_asset_guid(entity_slug) or ""

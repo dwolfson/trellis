@@ -719,14 +719,37 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     # all deliberate answers) proceeds.
     context = registry.get_project_context("repo", slug)
     if not context or context.get("status") == "unset":
-        return JSONResponse(
-            status_code=428,
-            content={
-                "detail": "egeria_project_context_required",
-                "entity_type": "repo",
-                "entity_slug": slug,
-            },
-        )
+        # Before prompting, see whether an investigation already answers this.
+        # An investigation is "the context everything else runs inside" (design
+        # §1); if this repo is in the working set of one that is bound to an
+        # Egeria Project, that binding IS the answer, and asking again per
+        # resource asks a question already answered.
+        #
+        # The inherited context is WRITTEN, not just used: an inheritance that
+        # leaves no row would make the resource's context depend on membership
+        # at read time, so removing it from the working set later would silently
+        # un-answer a question the user considers settled. Recorded with the
+        # investigation that supplied it, so it is inspectable rather than
+        # magic.
+        inherited = registry.inherited_egeria_project_context("repo", slug)
+        if inherited:
+            registry.set_project_context(
+                "repo", slug,
+                status="linked",
+                egeria_project_guid=inherited["egeria_project_guid"],
+                egeria_project_qualified_name=inherited["egeria_project_qualified_name"],
+                free_text_name=f"inherited from investigation '{inherited['_inherited_from_name']}'",
+            )
+            context = registry.get_project_context("repo", slug)
+        else:
+            return JSONResponse(
+                status_code=428,
+                content={
+                    "detail": "egeria_project_context_required",
+                    "entity_type": "repo",
+                    "entity_slug": slug,
+                },
+            )
 
     steps = req.steps if req else None
 
