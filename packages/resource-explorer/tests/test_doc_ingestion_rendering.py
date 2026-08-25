@@ -99,29 +99,16 @@ def test_every_live_state_is_one_the_renderer_handles():
     assert not unhandled, f"live states with no render branch: {unhandled}"
 
 
-def test_the_unreadable_sentinel_still_exists_upstream():
-    """A guard on someone else's wording, which is the fragile part.
-
-    `_doc_ingestion_state` distinguishes "nobody read the site" from "we could
-    not tell" by matching the detail string `ingestion_status()` returns on a
-    read failure — because both arrive as `not-attempted`. If that wording
-    changes, the match silently stops working and the card goes back to
-    confidently offering to ingest sites whose status merely failed to load.
-
-    Silently is the problem. This fails loudly instead, and should be deleted
-    the day `ingestion_status()` returns a distinct state for the two — an offer
-    already made to that effect.
-    """
-    import inspect
-
-    from resource_explorer.surveyors.sub_surveyors import arch_lens
-
-    src = inspect.getsource(arch_lens.ingestion_status)
-    assert "ingestion status unreadable" in src, (
-        "the sentinel _doc_ingestion_state matches on has changed. Either update "
-        "that match, or better, switch to a distinct state if ingestion_status() "
-        "now provides one."
-    )
+# The sentinel test that used to sit here is deleted, as its own docstring said
+# it should be: it guarded a match on ingestion_status()'s DETAIL STRING, which
+# was only ever a stand-in for a distinction the state could not express.
+# `ING_UNKNOWN` now exists, the wrapper keys on it, and
+# test_the_unknown_state_is_what_the_wrapper_keys_on asserts the contract as a
+# VALUE — which fails loudly if renamed, where the wording failed silently when
+# reworded. Keeping both would guard a dependency that no longer exists.
+#
+# It earned its keep first: it went red on the very commit that changed the
+# wording, in the same run, before the behaviour drifted.
 
 
 def test_an_unreadable_status_never_produces_an_offer():

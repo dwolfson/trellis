@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "RE's own GovernanceMetrics. Design §5: RE may emit a number only if a",
+    "declared GovernanceMetric exists for it, with measurement and target filled",
+    "in. Every metric here was already being computed and published undeclared;",
+    "this is the declaration catching up with the code, not new measurement.",
+    "",
+    "IDEMPOTENT, unlike the survey-definitions batch. 'Create Governance Metric'",
+    "creates one element per document and links nothing, so re-running produces",
+    "no duplicate edges — the non-idempotency warning that governs",
+    "survey-definitions does NOT apply here. Do not copy its post_heal or its",
+    "canary-only-when-missing caution across without checking; they exist for",
+    "Link First/Next Process Step, which this batch does not use.",
+    "",
+    "Ordering: after foundations (valid value sets), before or after questions —",
+    "it depends on neither. Placed last because nothing else depends on it,",
+    "so a failure here cannot cascade.",
+    "",
+    "The canary is the headline metric rather than the first in the file: if",
+    "Overall Repository Health exists, the components it averages were created",
+    "too, since Dr.Egeria processes a document top to bottom and that one is",
+    "last of the five health metrics."
+  ],
+  "display_name": "Resource Explorer governance metrics",
+  "idempotent": true,
+  "canary": {
+    "qualified_name": "GovernanceMetric::ResourceExplorer::OverallRepositoryHealth::1.0"
+  },
+  "files": ["re-governance-metrics.md"]
+}

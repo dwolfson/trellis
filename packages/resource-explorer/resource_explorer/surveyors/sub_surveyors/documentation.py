@@ -148,6 +148,11 @@ class DocumentationSurveyor(BaseSurveyor):
                 no_match_cause="no_hygiene_files",
                 doc_collections=len(present_doc_types),
             )
+            # DECLARED (design §5): GovernanceMetric::ResourceExplorer::
+            # DocumentationSignalCount::1.0, whose declaration states plainly
+            # that this counts KINDS of documentation and not quality — one
+            # excellent guide scores below five stubs. That limitation belongs
+            # in the declaration rather than in a reader's assumption.
             score = len(present_doc_types) + len(found_hygiene)
             if score >= 5:
                 quality = "Comprehensive"
