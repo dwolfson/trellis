@@ -165,6 +165,14 @@ class EgeriaInvestigationPublisher:
             res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")
             return res
 
+        # Record it: a Collection created and then forgotten is an orphan the
+        # next promotion cannot see.
+        ws_slug = self._registry.investigation_working_set_slug(investigation_slug)
+        if not ws_slug:
+            ws_slug = (self._registry.get_or_create_working_set(investigation_slug) or {}).get("slug", "")
+        if ws_slug and res.collection_guid:
+            self._registry.set_working_set_egeria_collection(ws_slug, res.collection_guid)
+
         # 3. ResourceList: Project -> Collection
         try:
             cm.attach_collection(res.project_guid, res.collection_guid)
@@ -189,6 +197,77 @@ class EgeriaInvestigationPublisher:
                 res.members_unlinkable.append({
                     **m, "reason": f"add_to_collection failed: {type(exc).__name__}: {exc}",
                 })
+        return res
+
+    def ensure_working_set(self, investigation_slug: str) -> PromotionResult:
+        """Give an already-bound investigation its Egeria working set.
+
+        Binding to an EXISTING Project (§1's second starting mode) previously
+        recorded the GUID and stopped there — leaving the investigation with a
+        Project but no Collection, so its membership had nowhere to go in
+        Egeria. Creating the Project and creating the working set are the same
+        need arriving by two different routes, so both routes now run this.
+
+        Idempotent by the recorded collection GUID: called twice it does
+        nothing the second time, rather than creating a second Collection and
+        orphaning the first.
+        """
+        res = PromotionResult()
+        inv = self._registry.get_investigation(investigation_slug)
+        if not inv:
+            res.errors.append(f"investigation '{investigation_slug}' not found")
+            return res
+        project_guid = inv.get("egeria_project_guid") or ""
+        if not project_guid:
+            res.errors.append("not bound to an Egeria Project — nothing to attach a working set to")
+            return res
+        res.project_guid = project_guid
+
+        ws = self._registry.get_or_create_working_set(investigation_slug)
+        if ws and ws.get("egeria_collection_guid"):
+            res.collection_guid = ws["egeria_collection_guid"]
+            res.resource_list_linked = True
+            return res
+
+        try:
+            _, cm = self._managers()
+        except Exception as exc:
+            res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
+            return res
+
+        # Idempotent against EGERIA, not just against our own record. An
+        # investigation promoted before the GUID was persisted has a real
+        # Collection in Egeria and a blank column here; creating another would
+        # orphan the first and silently split its membership across two. Ask
+        # Egeria what is already attached before making anything.
+        try:
+            attached = cm.get_attached_collections(project_guid) or []
+            for entry in attached if isinstance(attached, list) else []:
+                guid = ((entry or {}).get("elementHeader") or {}).get("guid", "")
+                if guid:
+                    res.collection_guid = guid
+                    res.resource_list_linked = True
+                    self._registry.set_working_set_egeria_collection(ws["slug"], guid)
+                    return res
+        except Exception as exc:
+            # Not fatal: an unreadable attachment list means we cannot ADOPT,
+            # but it must not stop a genuinely missing working set being made.
+            log.debug("could not list attached collections: %s", exc)
+
+        try:
+            res.collection_guid = cm.create_collection(
+                display_name=f"{inv['display_name']} working set",
+                description="Resources in scope for this investigation.",
+            ) or ""
+        except Exception as exc:
+            res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")
+            return res
+        try:
+            cm.attach_collection(project_guid, res.collection_guid)
+            res.resource_list_linked = True
+        except Exception as exc:
+            res.errors.append(f"attach_collection failed: {type(exc).__name__}: {exc}")
+        self._registry.set_working_set_egeria_collection(ws["slug"], res.collection_guid)
         return res
 
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:

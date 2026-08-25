@@ -158,7 +158,34 @@ async def bind_egeria_project(slug: str, req: EgeriaProjectBinding) -> dict:
     reg = _registry()
     if not reg.get_investigation(slug):
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
-    return reg.set_investigation_egeria_project(slug, req.model_dump())
+    result = reg.set_investigation_egeria_project(slug, req.model_dump())
+
+    # Binding to an existing Project is one of the two ways to end up with one,
+    # and both need the same thing next: somewhere in Egeria for the membership
+    # to live. Without this, binding produced a Project with no working-set
+    # Collection and the membership had nowhere to go — a gap promotion did not
+    # have, purely because it happened to create both.
+    #
+    # Best-effort and off the event loop: a working set that cannot be created
+    # right now must not fail the binding itself, which is a local decision and
+    # already valid. ensure_working_set is idempotent, so the next attempt
+    # completes it rather than duplicating.
+    if req.status == "linked" and req.egeria_project_guid:
+        import asyncio
+
+        from resource_explorer.surveyors.egeria_investigation_publisher import (
+            EgeriaInvestigationPublisher,
+        )
+
+        ws = await asyncio.to_thread(
+            EgeriaInvestigationPublisher(reg).ensure_working_set, slug
+        )
+        result["working_set"] = {
+            "collection_guid": ws.collection_guid,
+            "resource_list_linked": ws.resource_list_linked,
+            "errors": ws.errors,
+        }
+    return result
 
 
 @router.post("/{slug}/promote")

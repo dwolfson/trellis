@@ -3841,6 +3841,23 @@ class ProjectRegistry:
             )
         return self.get_investigation(slug)
 
+    def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
+                                         qualified_name: str = "") -> dict | None:
+        """Record the Egeria Collection this working set became.
+
+        Without this the GUID returned by create_collection is discarded the
+        moment it is used, so a second promotion cannot tell that a Collection
+        already exists and would create another — orphaning the first.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE working_sets
+                   SET egeria_collection_guid = ?, egeria_collection_qualified_name = ?
+                   WHERE slug = ?""",
+                (guid, qualified_name, ws_slug),
+            )
+        return self.get_working_set(ws_slug)
+
     def close_investigation(self, slug: str) -> dict | None:
         with self._conn() as conn:
             conn.execute(

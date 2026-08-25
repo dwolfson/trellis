@@ -308,3 +308,41 @@ def test_a_qualified_name_collision_is_explained_not_dumped(made):
     joined = " ".join(res.errors)
     assert "already" in joined and "Bind to the existing" in joined
     assert "OMAG-COMMON" not in joined, "raw Egeria payload leaked to the user"
+
+
+def test_binding_an_existing_project_also_gets_a_working_set(made, monkeypatch):
+    """Both routes to a Project need the same next thing.
+
+    Promotion created a Project AND a Collection, so it worked by accident.
+    Binding to an existing Project recorded the GUID and stopped, leaving the
+    investigation with nowhere in Egeria for its membership to live — the gap
+    only existed because one path happened to do both.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import egeria_investigation_publisher as mod
+
+    inv = made(display_name="Bind And Set")
+    reg = ProjectRegistry()
+    cm = _StubCM()
+
+    real_managers = mod.EgeriaInvestigationPublisher._managers
+    monkeypatch.setattr(mod.EgeriaInvestigationPublisher, "_managers",
+                        lambda self: (_StubPM(), cm))
+
+    res = mod.EgeriaInvestigationPublisher(reg).ensure_working_set(inv["slug"])
+    assert not res.ok  # unbound: refuses rather than inventing a Project
+    assert any("not bound" in e for e in res.errors)
+
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "existing-proj",
+    })
+    res = mod.EgeriaInvestigationPublisher(reg).ensure_working_set(inv["slug"])
+    assert res.collection_guid == "coll-1"
+    assert res.resource_list_linked
+    assert cm.attached == [("existing-proj", "coll-1")]
+
+    # Idempotent: a second call must not create a second Collection.
+    res2 = mod.EgeriaInvestigationPublisher(reg).ensure_working_set(inv["slug"])
+    assert res2.collection_guid == "coll-1"
+    assert cm.attached == [("existing-proj", "coll-1")], "created a duplicate Collection"
+    monkeypatch.setattr(mod.EgeriaInvestigationPublisher, "_managers", real_managers)
