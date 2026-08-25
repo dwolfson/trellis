@@ -29,13 +29,6 @@ class InvestigationCreate(BaseModel):
     egeria_project_qualified_name: str = ""
 
 
-class MemberSpec(BaseModel):
-    entity_type: str
-    entity_slug: str
-    resource_use: str = ""
-    state: str = "in-scope"
-
-
 class EgeriaProjectBinding(BaseModel):
     """The same context shape the publish path already speaks, so folding the
     session-wide control into the investigation teaches nothing downstream a
@@ -46,8 +39,11 @@ class EgeriaProjectBinding(BaseModel):
     free_text_name: str = ""
 
 
-class MembersUpdate(BaseModel):
-    members: list[MemberSpec] = Field(default_factory=list)
+class MemberAdd(BaseModel):
+    entity_type: str
+    entity_slug: str
+    membership_rationale: str = ""
+    state: str = "in-scope"
 
 
 def _registry():
@@ -99,18 +95,47 @@ async def get_investigation(slug: str) -> dict:
 
 @router.get("/{slug}/members")
 async def get_members(slug: str) -> list[dict]:
+    """What is in scope for this investigation.
+
+    Flattened deliberately: storage is the two-hop Egeria shape (Project
+    --ResourceList--> WorkingSet --CollectionMembership--> resource), but every
+    caller only wants "what is in scope", so they should not have to walk it.
+    """
     reg = _registry()
     if not reg.get_investigation(slug):
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
     return reg.list_investigation_members(slug)
 
 
-@router.put("/{slug}/members")
-async def set_members(slug: str, req: MembersUpdate) -> list[dict]:
+@router.post("/{slug}/members")
+async def add_member(slug: str, req: MemberAdd) -> list[dict]:
+    """Add one resource to this investigation's working set.
+
+    The working set is created lazily here rather than at investigation
+    creation, so a brand-new investigation genuinely has none — which is what
+    makes the empty sidebar an honest prompt to go and scout rather than an
+    empty shell that looks broken.
+    """
     reg = _registry()
     if not reg.get_investigation(slug):
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
-    return reg.set_investigation_members(slug, [m.model_dump() for m in req.members])
+    ws = reg.get_or_create_working_set(slug)
+    reg.add_working_set_member(
+        ws["slug"], req.entity_type, req.entity_slug,
+        membership_rationale=req.membership_rationale, state=req.state,
+    )
+    return reg.list_investigation_members(slug)
+
+
+@router.delete("/{slug}/members/{entity_type}/{entity_slug}")
+async def remove_member(slug: str, entity_type: str, entity_slug: str) -> list[dict]:
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    ws_slug = reg.investigation_working_set_slug(slug)
+    if ws_slug:
+        reg.remove_working_set_member(ws_slug, entity_type, entity_slug)
+    return reg.list_investigation_members(slug)
 
 
 @router.post("/{slug}/close")

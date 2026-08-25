@@ -251,11 +251,12 @@
          (§1). Header-level rather than an intent, and shown always, because a
          result read without knowing which body of work it belongs to is the
          ambiguity this whole frame exists to remove. -->
-    <button onclick="showMainView('investigations')" id="nav-investigation-hdr"
-      class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700"
+    <!-- The tab in the nav strip is now the way in; this stays as a read-only
+         indicator so the current investigation is visible from every screen. -->
+    <span id="nav-investigation-hdr" class="text-xs text-slate-400 px-2 py-1"
       title="The investigation this work belongs to">
       🧭 <span id="current-investigation-label">No investigation</span>
-    </button>
+    </span>
     <!-- Read-only identity indicator — RE has no per-user login yet (see
          egeria.py::whoami's comment); this just surfaces the fixed Egeria
          service-account identity currently configured via .env. Clicking it
@@ -288,7 +289,15 @@
 
 <!-- Intent navigation (primary nav — replaces the old resource-type sidebar tabs) -->
 <nav id="intent-nav" class="flex items-center gap-1 px-3 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0 overflow-x-auto">
-  <button onclick="setNavIntent('scouting')"      data-nav-intent="scouting"      class="nav-intent-btn active">🔭 Scouting</button>
+  <!-- Investigation is the FRAME, not one of the eight intents (rule 17) — it
+       leads the strip and is separated by a divider so that reads structurally
+       rather than as a ninth peer. It is also the default landing: you declare
+       the body of work before you go looking for resources, which is what
+       makes an empty working set an honest prompt rather than a broken list. -->
+  <button onclick="showMainView('investigations')" id="nav-investigation-tab"
+          class="nav-intent-btn">🧭 Investigation</button>
+  <span class="mx-1 h-4 w-px bg-slate-600 shrink-0" aria-hidden="true"></span>
+  <button onclick="setNavIntent('scouting')"      data-nav-intent="scouting"      class="nav-intent-btn">🔭 Scouting</button>
   <button onclick="setNavIntent('discovery')"     data-nav-intent="discovery"     class="nav-intent-btn">🔎 Discovery</button>
   <button onclick="setNavIntent('assessment')"    data-nav-intent="assessment"    class="nav-intent-btn">✅ Assessment</button>
   <button onclick="setNavIntent('analysis')"      data-nav-intent="analysis"      class="nav-intent-btn">📈 Analysis</button>
@@ -300,6 +309,7 @@
        Curate's sustained *human* attention. Local-first: see
        notification_subscriptions' table docstring in registry.py for why
        this doesn't create real Egeria NotificationType elements yet. -->
+  <span class="mx-1 h-4 w-px bg-slate-600 shrink-0" aria-hidden="true"></span>
   <button onclick="setNavIntent('automate')"      data-nav-intent="automate"      class="nav-intent-btn">🔔 Automate</button>
   <span class="flex-1"></span>
   <button onclick="toggleRfaDrawer()" id="rfa-drawer-toggle" class="nav-intent-btn">📝 RFAs<span id="rfa-drawer-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
@@ -351,7 +361,11 @@
             class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-700">
         </div>
         <div class="flex flex-wrap gap-1">
-          <button onclick="_setProjectLifecycleFilter('')" data-lifecycle-filter="" class="filter-chip active">All</button>
+          <!-- Working set is the DEFAULT view: what the current investigation is
+               actually about. "All" remains one click away — this narrows the
+               list, it never hides that more exist (the count line says so). -->
+          <button onclick="_setProjectLifecycleFilter('working-set')" data-lifecycle-filter="working-set" class="filter-chip active">🎯 Working set</button>
+          <button onclick="_setProjectLifecycleFilter('')" data-lifecycle-filter="" class="filter-chip">All</button>
           <button onclick="_setProjectLifecycleFilter('new')" data-lifecycle-filter="new" class="filter-chip">🆕 New</button>
           <button onclick="_setProjectLifecycleFilter('surveyed')" data-lifecycle-filter="surveyed" class="filter-chip">📊 Surveyed</button>
           <button onclick="_setProjectLifecycleFilter('published')" data-lifecycle-filter="published" class="filter-chip">☁ Published</button>
@@ -1358,7 +1372,12 @@ let _showIgnoredRepos = false;  // sidebar "Show ignored (N)" toggle state
 // Sidebar repo filter (direct feedback, 2026-08-24) — text search + a
 // lifecycle quick-filter, applied together (AND) in renderProjectList().
 let _projectFilterText = '';
-let _projectLifecycleFilter = '';  // '' | 'new' | 'surveyed' | 'published'
+// Members of the current investigation's working set, as "type:slug" keys.
+// Empty set + an active working-set filter is a real, meaningful state: a new
+// investigation legitimately contains nothing yet.
+let _workingSetKeys = new Set();
+let _workingSetLoaded = false;
+let _projectLifecycleFilter = 'working-set';  // 'working-set' | '' | 'new' | 'surveyed' | 'published'
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
 let _activityUnread  = 0;   // count of entries since activity tab was last viewed
 let _srvMap          = {};  // slug → ServerSummary
@@ -1514,13 +1533,16 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     document.getElementById('chat-toggle-btn').classList.add('active');
   }
+  // Land on Investigation, not Scouting: the frame comes before the search.
   setNavIntent('scouting');
+  showMainView('investigations');
   // Surface the current investigation immediately — a result read without
   // knowing which body of work it belongs to is the ambiguity this frame exists
   // to remove, so the label must be right before anything else renders.
   fetch('/api/investigations/').then(r => r.json()).then(list => {
     _investigations = Array.isArray(list) ? list : [];
     _refreshInvestigationLabel();
+    _loadWorkingSet();
   }).catch(() => _refreshInvestigationLabel());
   document.getElementById('query-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
@@ -1562,6 +1584,8 @@ const INTENT_PLACEHOLDER_TEXT = {};
 const _PERSPECTIVE_AWARE_INTENTS = new Set(['assessment', 'analysis']);
 
 function setNavIntent(intent) {
+  // Leaving the frame for an intent — drop the Investigation tab's highlight.
+  document.getElementById('nav-investigation-tab')?.classList.remove('active');
   currentNavIntent = intent;
   document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => {
     b.classList.toggle('active', b.dataset.navIntent === intent);
@@ -3422,6 +3446,12 @@ function _renderProjectRow(p) {
 // lifecycle quick-filter, both optional, combined with AND when both are set
 // (direct feedback, 2026-08-24: "there are getting to be a lot of them").
 function _matchesProjectFilter(p) {
+  // The working set is membership, not a lifecycle stage — it asks "is this
+  // part of the body of work I declared", which no lifecycle value can answer.
+  if (_projectLifecycleFilter === 'working-set') {
+    if (!_currentInvestigation()) return false;
+    return _workingSetKeys.has(`repo:${p.slug}`);
+  }
   if (_projectLifecycleFilter && _projectLifecycleKind(p) !== _projectLifecycleFilter) return false;
   const q = _projectFilterText.trim().toLowerCase();
   if (!q) return true;
@@ -3430,6 +3460,21 @@ function _matchesProjectFilter(p) {
 
 function _setProjectFilterText(value) {
   _projectFilterText = value;
+  renderProjectList();
+}
+
+async function _loadWorkingSet() {
+  const inv = _currentInvestigation();
+  _workingSetKeys = new Set();
+  if (inv) {
+    try {
+      const members = await (await fetch(`/api/investigations/${encodeURIComponent(inv)}/members`)).json();
+      if (Array.isArray(members)) {
+        members.forEach(m => _workingSetKeys.add(`${m.entity_type}:${m.entity_slug}`));
+      }
+    } catch (e) { /* leave empty — an unreachable API must not silently look like "nothing in scope" */ }
+  }
+  _workingSetLoaded = true;
   renderProjectList();
 }
 
@@ -3449,6 +3494,24 @@ function renderProjectList() {
     : _allProjectSummaries.filter(p => !_rowIsHidden(p));
   const filterActive = !!(_projectFilterText.trim() || _projectLifecycleFilter);
   const projects = visible.filter(_matchesProjectFilter);
+
+  // An empty working set is the expected state for a new investigation, so it
+  // gets an explanation and a next step rather than a blank column — the whole
+  // point of the frame is that "nothing in scope yet" and "nothing exists" are
+  // different, and must not render the same.
+  if (_projectLifecycleFilter === 'working-set' && projects.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'px-3 py-3 text-xs text-slate-400';
+    empty.innerHTML = _currentInvestigation()
+      ? `<div class="mb-1 text-slate-300">Nothing in this investigation yet.</div>
+         <div class="text-slate-500 mb-2">${visible.length} resource(s) are registered — none is in scope for this body of work.</div>
+         <button onclick="setNavIntent('scouting')" class="text-cyan-400 hover:underline">Go to Scouting to find some →</button>`
+      : `<div class="mb-1 text-slate-300">No investigation selected.</div>
+         <div class="text-slate-500 mb-2">Declare what this work is for, and the list shows what it is about.</div>
+         <button onclick="showMainView('investigations')" class="text-cyan-400 hover:underline">Open Investigation →</button>`;
+    list.appendChild(empty);
+    return;
+  }
 
   if (filterActive) {
     const countEl = document.createElement('div');
@@ -6988,6 +7051,7 @@ function _setCurrentInvestigation(slug) {
     else localStorage.removeItem(_CURRENT_INVESTIGATION_KEY);
   } catch (e) { /* private mode — the label just won't persist */ }
   _refreshInvestigationLabel();
+  _loadWorkingSet();
   if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
     loadInvestigationsPanel();
   }
@@ -7223,6 +7287,11 @@ function showMainView(tab) {
     loadDiscoveryAnalysesPanel();
   } else if (tab === 'investigations') {
     investigationsView.classList.remove('hidden');
+    // Investigation is not an intent, so setNavIntent does not own its active
+    // state — without this the last intent stays lit while the frame is on
+    // screen, which reads as "you are in Scouting" when you are not.
+    document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => b.classList.remove('active'));
+    document.getElementById('nav-investigation-tab')?.classList.add('active');
     loadInvestigationsPanel();
   } else if (tab === 'understanding') {
     understandingView.classList.remove('hidden');
