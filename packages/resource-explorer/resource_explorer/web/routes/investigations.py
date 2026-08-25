@@ -180,7 +180,15 @@ async def promote_to_egeria(slug: str) -> dict:
     if not inv:
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
 
-    result = EgeriaInvestigationPublisher(reg).promote(slug)
+    # In a thread, not inline. pyegeria's synchronous methods drive their own
+    # event loop internally, so calling them from inside FastAPI's running loop
+    # raises "this event loop is already running" — which a CLI test never sees,
+    # because there is no loop running there. Same asyncio.to_thread treatment
+    # every other long-running route here already uses (run_survey,
+    # refresh_project).
+    import asyncio
+
+    result = await asyncio.to_thread(EgeriaInvestigationPublisher(reg).promote, slug)
     if result.project_guid:
         # Record the binding even on partial success — the Project genuinely
         # exists now, and leaving the local row unbound would orphan it.

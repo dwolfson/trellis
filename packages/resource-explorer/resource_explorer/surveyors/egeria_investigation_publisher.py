@@ -132,7 +132,23 @@ class EgeriaInvestigationPublisher:
             ) or ""
             res.project_qualified_name = qualified_name
         except Exception as exc:
-            res.errors.append(f"create_project failed: {type(exc).__name__}: {exc}")
+            # A qualifiedName collision is a specific, actionable situation, not
+            # a generic failure: a Project for this investigation already exists
+            # in Egeria — typically because a previous promotion succeeded and
+            # the local binding was cleared, orphaning it. Egeria signals this as
+            # a 409 wrapped in a large Java error payload; surfacing that raw to
+            # a user is useless, so it is translated once here.
+            detail = str(exc)
+            if "OMAG-COMMON-409-001" in detail or "is not available for use" in detail:
+                res.errors.append(
+                    f"An Egeria Project with qualifiedName '{qualified_name}' already "
+                    "exists. This investigation was promoted before and the local "
+                    "binding was cleared, leaving it orphaned. Bind to the existing "
+                    "Project instead of creating a second one, or delete it in Egeria "
+                    "first."
+                )
+            else:
+                res.errors.append(f"create_project failed: {type(exc).__name__}: {detail}")
             return res
         if not res.project_guid:
             res.errors.append("create_project returned no GUID")
