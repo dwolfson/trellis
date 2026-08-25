@@ -271,3 +271,38 @@ async def sync_egeria_project(slug: str) -> dict:
         EgeriaInvestigationPublisher(reg).sync_project_properties, slug
     )
     return res.as_dict()
+
+
+@router.get("/{slug}/dispositions")
+async def get_dispositions(slug: str) -> dict:
+    """{disposition: [members]} for this investigation.
+
+    Derived from WorkingSet membership rather than stored separately — a
+    resource's disposition within an investigation IS which WorkingSet it sits
+    in, so there is only one place it can disagree with itself: none.
+    """
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return reg.investigation_dispositions(slug)
+
+
+@router.post("/{slug}/dispositions/{entity_type}/{entity_slug}")
+async def set_disposition(slug: str, entity_type: str, entity_slug: str,
+                          disposition: str = "", rationale: str = "") -> dict:
+    """Set (or clear) a resource's disposition within this investigation.
+
+    Clearing leaves it in the Folio — in scope, unjudged — rather than removing
+    it, because "we have not decided yet" is a real state and losing the
+    resource would be the wrong way to express it.
+    """
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    if disposition and disposition != "undecided" and disposition not in reg.WORKING_SET_DISPOSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown disposition '{disposition}'; valid: {list(reg.WORKING_SET_DISPOSITIONS)}",
+        )
+    return reg.set_investigation_disposition(slug, entity_type, entity_slug,
+                                             disposition, rationale=rationale)

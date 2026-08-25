@@ -519,3 +519,41 @@ def test_undecided_is_not_a_working_set(made):
     inv = made(display_name="No Undecided Set")
     with _pytest.raises(ValueError):
         reg.get_or_create_disposition_set(inv["slug"], "undecided")
+
+
+def test_dispositions_route_returns_what_the_filter_needs(client, made):
+    """The left-column chips read this directly, so its shape is a contract."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Chips")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "one", "tracking")
+    reg.set_investigation_disposition(inv["slug"], "repo", "two", "using")
+
+    r = client.get(f"/api/investigations/{inv['slug']}/dispositions")
+    assert r.status_code == 200
+    body = r.json()
+    assert sorted(body) == ["tracking", "using"]
+    assert body["tracking"][0]["entity_slug"] == "one"
+
+
+def test_only_dispositions_in_use_are_returned(client, made):
+    """An investigation where nothing is abandoned must not offer an 'abandoned'
+    chip that always matches nothing — an always-empty filter reads as broken
+    rather than as an empty category."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Sparse")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "solo", "tracking")
+
+    body = client.get(f"/api/investigations/{inv['slug']}/dispositions").json()
+    assert list(body) == ["tracking"]
+    assert len(body) < len(reg.WORKING_SET_DISPOSITIONS)
+
+
+def test_an_unknown_disposition_is_rejected(client, made):
+    inv = made(display_name="Bad Disposition")
+    r = client.post(f"/api/investigations/{inv['slug']}/dispositions/repo/x?disposition=nonsense")
+    assert r.status_code == 400
+    assert "nonsense" in r.json()["detail"]
