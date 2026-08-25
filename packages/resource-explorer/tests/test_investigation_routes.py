@@ -125,8 +125,8 @@ class _StubPM:
     def create_egeria_bearer_token(self):
         pass
 
-    def create_project(self, display_name=None, description=None, **kw):
-        self.calls.append(("create_project", display_name, description))
+    def create_project(self, display_name=None, description=None, body=None, **kw):
+        self.calls.append(("create_project", display_name, description, body))
         if self.fail:
             raise RuntimeError("Egeria unreachable")
         return self.guid
@@ -168,8 +168,13 @@ def test_promotion_replays_the_local_shape_into_egeria(made):
     assert res.project_guid == "proj-1"
     assert res.collection_guid == "coll-1"
     assert res.resource_list_linked
-    # Purposes must survive — losing WHY the work exists defeats the frame.
-    assert "Certify" in pm.calls[0][2]
+    # Purposes must survive, and must land in additionalProperties rather than
+    # being appended to free text: mission/purposes are ProjectCharter (0442)
+    # properties that create_project cannot reach, and Project is a
+    # Referenceable, so additionalProperties is the sanctioned carrier.
+    props = pm.calls[0][3]["properties"]
+    assert "Certify" in props["additionalProperties"]["purposes"]
+    assert "Certify" not in (props.get("description") or "")
 
 
 def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):
