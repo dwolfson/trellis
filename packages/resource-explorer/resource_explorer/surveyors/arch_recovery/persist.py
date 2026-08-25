@@ -327,8 +327,16 @@ def _persist_interfaces(registry, slug: str, surveyed_at: str,
             "label": p.get("direction") or "Unknown",
             "summary": f"{p.get('component')} — {p.get('detail', '')}",
             "confidence": 70,
+            # `additionalProperties` carries `operationCount` (finding 100).
+            # Built explicitly rather than by spreading the port dict, so a new
+            # key is a deliberate act — but that also means a key added upstream
+            # and NOT added here is silently dropped at persistence, which is
+            # exactly what happened to operationCount between finding 100 and
+            # this line. Same shape as finding 89: the capability existed and
+            # nothing wired it to storage.
             "detail": {"component": p.get("component"), "port": p.get("name"),
                        "direction": p.get("direction"), "protocol": p.get("protocol", ""),
+                       "additionalProperties": p.get("additionalProperties") or {},
                        "evidence": p.get("evidence"), "kind": "port"},
         })
     for w in wires:

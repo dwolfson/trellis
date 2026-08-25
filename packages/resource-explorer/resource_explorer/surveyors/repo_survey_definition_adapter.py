@@ -52,6 +52,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     ApiStructureSurveyor,
     ArchCouplingSurveyor,
     ArchDetectSurveyor,
+    ArchSummarySurveyor,
     CiQualitySurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
@@ -610,6 +611,26 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # findings.md §1): 5.3s per repo for the whole toolchain, so "fast"
         # is honest rather than optimistic.
         fetch_cost="download",
+        compute_cost="low",
+    ),
+    "repo_arch_summary": StepInfo(
+        "repo_arch_summary", ArchSummarySurveyor,
+        "Collapses architecture-recovery findings to the depth the question "
+        "asked for — the summarising half nothing owned. Milvus recovers 218 "
+        "candidate components where its own authors describe eight; a "
+        "suitability answer is 'serves gRPC (297 operations), 24 runnable "
+        "units, 31 third-party'.",
+        ["ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        # The first step whose input is another step's OUTPUT rather than an
+        # external resource. Egeria models that as action targets on the
+        # GovernanceActionExecutor (0462); `requires_resources` is RE's
+        # mechanism for SHARING an expensive external resource across steps in
+        # one run and is deliberately empty here — a summary needs no zipball
+        # and no clone, which puts it at Discovery tier by rule 17's own test
+        # and makes it cheap enough to recompute whenever its inputs change.
+        requires_resources={},
+        fetch_cost="none",
         compute_cost="low",
     ),
     "repo_arch_coupling": StepInfo(
@@ -1987,6 +2008,9 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # view, over both repo_arch_detect's and repo_arch_coupling's combined
     # output (grouped by scope_locator, not by which step wrote it — see
     # _architecture_recovery_results' docstring).
+    "architecture_summary": AnalysisKind(
+        "architecture_summary", ["repo_arch_summary"],
+    ),
     "architecture_recovery": AnalysisKind(
         "architecture_recovery", ["repo_arch_detect", "repo_arch_coupling"],
         results=AnalysisKindResults(

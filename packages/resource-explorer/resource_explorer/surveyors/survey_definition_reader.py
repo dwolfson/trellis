@@ -134,6 +134,30 @@ class UnsupportedSurveyDefinitionError(SurveyDefinitionReaderError):
 
 
 @dataclass
+class StepLink:
+    """One `NextGovernanceActionProcessStep` edge, with the routing values that
+    were previously read and thrown away.
+
+    Egeria's model routes on guards: a completing governance service *"optionally
+    supplies one or more guards and a list of action targets for the subsequent
+    governance action(s) to process"*. The coordinator of the run — a real engine
+    host, or RE acting as a pseudo one — reads the step graph, runs a step, takes
+    the guard it produced, and picks the next viable step. **Nothing needs to be
+    persisted for that**; the guard is a routing signal held for the duration of
+    the run, not an artifact recorded against the process.
+
+    That reframing (Dan, 2026-08-24) retires the open question the backlog
+    carried as "whether a locally-produced guard can be recorded against the
+    process at all, given RE acts as its own engine host". It was the wrong
+    question: recording is optional, coordinating is the point.
+    """
+    previous_guid: str
+    next_guid: str
+    guard: str = ""
+    mandatory_guard: bool = False
+
+
+@dataclass
 class SurveyStep:
     guid: str
     display_name: str
@@ -143,6 +167,23 @@ class SurveyStep:
     re_analysis_step: str | None = None
     supported_technology_type: str | None = None
     description: str = ""  # author-provided, from Egeria's own Description attribute
+    # 0462 attributes on GovernanceActionProcessStep itself. Present in the
+    # payload and previously dropped on the floor — `producedGuards` is the
+    # authored declaration of what this step can emit, which is what a
+    # coordinator needs in order to know a guard is expected at all.
+    produced_guards: list = field(default_factory=list)
+    wait_time: int | None = None
+    ignore_multiple_triggers: bool = False
+    # Data flowing INTO this step. §0462 puts these on the
+    # `GovernanceActionExecutor` relationship (`requestParameters`,
+    # `requestParameterMap`/`Filter`, `actionTargetMap`/`Filter`) rather than on
+    # the step entity, so whether they arrive depends on what the process-graph
+    # API returns. Populated when present; left empty when not — and
+    # `executor_present` says which, so an empty dict is never mistaken for
+    # "this step declares no parameters".
+    request_parameters: dict = field(default_factory=dict)
+    action_targets: list = field(default_factory=list)
+    executor_present: bool = False
 
 
 @dataclass
@@ -152,6 +193,11 @@ class SurveyDefinition:
     qualified_name: str
     supported_technology_type: str | None
     steps: list = field(default_factory=list)  # list[SurveyStep], in execution order
+    # list[StepLink] — the step-to-step edges WITH their guards. `steps` is the
+    # linear execution order v1 runs; `links` is the authored topology, kept
+    # whole so a coordinator can route on guards without re-fetching. Populated
+    # even while the executor only walks a line.
+    links: list = field(default_factory=list)
     description: str = ""  # author-provided, from Egeria's own Description attribute
     # Which UI surface this Survey Definition is meant for — "scouting" |
     # "discovery" | "automate_full" | ... — Additional Properties convention,
@@ -604,12 +650,22 @@ class SurveyDefinitionReader:
             if guid:
                 nodes[guid] = step_element
 
+        # Guards were previously read and discarded here: the payload carries
+        # `guard` and `mandatoryGuard` on every link, a live read of Analysis
+        # Survey returns them on all 9, and only the two GUIDs were kept. They
+        # are what a coordinator routes on, so they are kept now — see StepLink.
         edges: dict = {}
+        links: list = []
         for link in graph.get(_LINKS_KEY) or []:
             prev_guid = (link.get("previousProcessStep") or {}).get("guid")
             next_guid = (link.get("nextProcessStep") or {}).get("guid")
             if prev_guid and next_guid:
                 edges.setdefault(prev_guid, []).append(next_guid)
+                links.append(StepLink(
+                    previous_guid=prev_guid, next_guid=next_guid,
+                    guard=link.get("guard") or "",
+                    mandatory_guard=bool(link.get("mandatoryGuard") or False),
+                ))
 
         steps: list = []
         seen_guids: set = set()
@@ -645,6 +701,7 @@ class SurveyDefinitionReader:
             qualified_name=process_qn,
             supported_technology_type=process_additional.get("supported_technology_type"),
             steps=steps,
+            links=links,
             description=process_props.get("description", ""),
             survey_kind=process_additional.get("survey_kind"),
         )
@@ -665,6 +722,8 @@ class SurveyDefinitionReader:
                 "in its Additional Properties — ambiguous, refusing to guess"
             )
 
+        executor = (element.get("governanceActionExecutor")
+                    or props.get("governanceActionExecutor") or {})
         return SurveyStep(
             guid=header.get("guid", ""),
             display_name=props.get("displayName", qn),
@@ -674,4 +733,11 @@ class SurveyDefinitionReader:
             re_analysis_step=additional.get("re_analysis_step"),
             supported_technology_type=additional.get("supported_technology_type"),
             description=props.get("description", ""),
+            produced_guards=list(props.get("producedGuards") or []),
+            wait_time=props.get("waitTime"),
+            ignore_multiple_triggers=bool(props.get("ignoreMultipleTriggers") or False),
+            request_parameters=dict(executor.get("requestParameters") or {}),
+            action_targets=list(executor.get("actionTargets")
+                                or element.get("actionTargets") or []),
+            executor_present=bool(executor),
         )

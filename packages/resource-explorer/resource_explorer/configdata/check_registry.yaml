@@ -110,6 +110,10 @@ analyses:
 # name. Listed explicitly so "absent from this file" is never ambiguous
 # between "has no checks" and "nobody has looked yet".
 whole_analysis_only:
+  # A summary answers as a whole by construction: its entire purpose is to
+  # collapse per-component findings into one statement. Decomposing it back
+  # into checks would undo the step.
+  - architecture_summary
   - repository_health
   - dependency_analysis
   - language_file_classification

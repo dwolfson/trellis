@@ -114,7 +114,13 @@ class TestFilterByIntent:
 
         analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
-        assert ids == {"license_classification", "maturity", "repo_conventions", "repo_classification"} \
+        # `architecture_summary` is in the ZERO-fetch set deliberately, unlike
+        # `architecture_recovery` beside it: its input is another step's output
+        # rather than an external resource, which is the shape rule 17's
+        # discovery tier describes. It is the first analysis here that consumes
+        # findings instead of collecting anything.
+        assert ids == {"license_classification", "maturity", "repo_conventions",
+                       "repo_classification", "architecture_summary"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):

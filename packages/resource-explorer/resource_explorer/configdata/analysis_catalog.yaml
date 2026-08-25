@@ -372,6 +372,27 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: architecture_summary
+    name: "Architecture Summary"
+    description: "Collapse architecture-recovery findings to the depth the question asked for. Recovery optimises recall and over-proposes — Milvus yields 218 candidate components where its own authors describe eight — so a suitability answer ('serves gRPC (297 operations); 24 runnable units; 31 third-party') is a summarisation level, not a second analysis. Consumes the architecture_recovery findings that already exist; fetches nothing."
+    resource_types: ["repo"]
+    # Zero-fetch by construction, unlike architecture_recovery above: its input
+    # is another step's OUTPUT, which Egeria models as action targets on the
+    # GovernanceActionExecutor (0462). So it sits cleanly inside rule 17's
+    # discovery tier where the recovery steps it consumes do not, and it can be
+    # recomputed whenever those findings change without re-downloading anything.
+    intent: discovery
+    perspectives: ["all"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: repo_profile_refresh
     name: "Refresh Coarse Profile"
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."
