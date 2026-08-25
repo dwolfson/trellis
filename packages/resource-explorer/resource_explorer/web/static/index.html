@@ -7198,7 +7198,8 @@ function _renderInvestigationsPanel() {
           <div class="text-[11px] text-slate-500 mt-0.5">
             ${i.member_count} resource(s) ·
             ${_investigationBindingLabel(i)}
-            ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change' : 'set Egeria Project'}</button>` : ''}
+            ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
+            ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
           </div>
         </div>
         <div class="shrink-0 flex gap-1">
@@ -7287,6 +7288,34 @@ async function _createInvestigation() {
     _setCurrentInvestigation(inv.slug);
     loadInvestigationsPanel();
   } catch (e) { showToast(`Could not create: ${e}`, 'error'); }
+}
+
+// Promote: create the Egeria side — Project, working-set Collection,
+// ResourceList, CollectionMembership. Partial success is reported rather than
+// rounded up, because a member whose repo was never published has no asset to
+// link and the user needs to know which ones those are.
+async function _promoteInvestigation(slug) {
+  if (!confirm('Create an Egeria Project (and working-set Collection) for this investigation?\n\nThis writes to Egeria.')) return;
+  showToast('success', 'Creating in Egeria…', 2000);
+  try {
+    const res = await fetch(`/api/investigations/${encodeURIComponent(slug)}/promote`, {method: 'POST'});
+    const r = await res.json();
+    if (!r.ok && !r.project_guid) {
+      showToast('error', `Could not create: ${(r.errors || ['unknown']).join('; ')}`, 8000);
+      return;
+    }
+    const linked = (r.members_linked || []).length;
+    const missed = (r.members_unlinkable || []).length;
+    let msg = `Egeria Project created${r.resource_list_linked ? ' with its working set' : ''}. ${linked} resource(s) linked`;
+    if (missed) msg += `, ${missed} could not be — publish those repos to Egeria first`;
+    showToast(missed || r.errors?.length ? 'error' : 'success', msg, 8000);
+    await loadInvestigationsPanel();
+    const list = await (await fetch('/api/investigations/')).json();
+    _investigations = Array.isArray(list) ? list : [];
+    _refreshInvestigationLabel();
+  } catch (e) {
+    showToast('error', `Could not create in Egeria: ${e}`, 6000);
+  }
 }
 
 async function _closeInvestigation(slug) {

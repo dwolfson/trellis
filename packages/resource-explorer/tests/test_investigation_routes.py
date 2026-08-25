@@ -116,3 +116,117 @@ def test_membership_goes_through_a_working_set(client, made):
 
 def test_members_on_a_missing_investigation_404s(client):
     assert client.get("/api/investigations/nope/members").status_code == 404
+
+
+class _StubPM:
+    def __init__(self, guid="proj-1", fail=False):
+        self.guid, self.fail, self.calls = guid, fail, []
+
+    def create_egeria_bearer_token(self):
+        pass
+
+    def create_project(self, display_name=None, description=None, **kw):
+        self.calls.append(("create_project", display_name, description))
+        if self.fail:
+            raise RuntimeError("Egeria unreachable")
+        return self.guid
+
+
+class _StubCM:
+    def __init__(self):
+        self.attached, self.members = [], []
+
+    def create_egeria_bearer_token(self):
+        pass
+
+    def create_collection(self, display_name=None, description=None, **kw):
+        return "coll-1"
+
+    def attach_collection(self, parent_guid, collection_guid, body=None):
+        self.attached.append((parent_guid, collection_guid))
+
+    def add_to_collection(self, collection_guid, element_guid, body=None):
+        self.members.append((collection_guid, element_guid))
+
+
+def test_promotion_replays_the_local_shape_into_egeria(made):
+    """Project -> Collection -> ResourceList -> CollectionMembership, in that
+    order, from rows that already had that shape."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Promote Me", purposes=["Certify"])
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "never-published-repo")
+
+    pm, cm = _StubPM(), _StubCM()
+    res = EgeriaInvestigationPublisher(reg, project_manager=pm, collection_manager=cm).promote(inv["slug"])
+
+    assert res.project_guid == "proj-1"
+    assert res.collection_guid == "coll-1"
+    assert res.resource_list_linked
+    # Purposes must survive — losing WHY the work exists defeats the frame.
+    assert "Certify" in pm.calls[0][2]
+
+
+def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):
+    """The honest half. A repo never published to Egeria has no asset GUID; the
+    promotion says so per member rather than silently dropping it or fabricating
+    a link."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Partial Promote")
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "definitely-not-published-xyz")
+
+    cm = _StubCM()
+    res = EgeriaInvestigationPublisher(reg, project_manager=_StubPM(), collection_manager=cm).promote(inv["slug"])
+
+    assert res.members_linked == []
+    assert len(res.members_unlinkable) == 1
+    assert "not published to Egeria yet" in res.members_unlinkable[0]["reason"]
+    assert cm.members == []
+
+
+def test_an_unreachable_egeria_fails_loudly_and_binds_nothing(made):
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="No Egeria")
+    reg = ProjectRegistry()
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=_StubPM(fail=True), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert not res.ok
+    assert res.project_guid == ""
+    assert any("create_project failed" in e for e in res.errors)
+    assert reg.get_investigation(inv["slug"])["egeria_project_guid"] == ""
+
+
+def test_promoting_an_already_bound_investigation_is_refused(made):
+    """Two Projects for one body of work is worse than none."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Already Bound")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "existing-guid",
+    })
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=_StubPM(), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+    assert not res.ok
+    assert any("already bound" in e for e in res.errors)
