@@ -370,6 +370,29 @@
           <button onclick="_setProjectLifecycleFilter('surveyed')" data-lifecycle-filter="surveyed" class="filter-chip">📊 Surveyed</button>
           <button onclick="_setProjectLifecycleFilter('published')" data-lifecycle-filter="published" class="filter-chip">☁ Published</button>
         </div>
+        <!-- Select mode. The sidebar is primarily NAVIGATION — a click selects a
+             repo — so checkboxes are a mode rather than always-on, otherwise
+             "click" means two things at once. Only offered when an investigation
+             is current, since there is nowhere to add to otherwise. -->
+        <div id="ws-select-bar" class="hidden mt-1">
+          <button id="ws-select-toggle" onclick="_toggleSelectMode()"
+                  class="filter-chip">☑ Select</button>
+          <span id="ws-select-actions" class="hidden flex-wrap items-center gap-1 ml-1">
+            <button onclick="_addSelectedToInvestigation()"
+                    class="filter-chip bg-cyan-700 text-white hover:bg-cyan-600"
+                    data-tip="Add to the current investigation's working set">＋ Add <span id="ws-select-count">0</span></button>
+            <button onclick="_removeSelectedFromInvestigation()" class="filter-chip"
+                    data-tip="Remove from the working set — the repo itself is untouched">− Remove</button>
+            <button onclick="_hideSelected(true)" class="filter-chip"
+                    data-tip="Hide from your own list. A personal view preference, not a judgement about the resource">🚫 Hide</button>
+            <button onclick="_deleteSelected()" class="filter-chip text-rose-300 hover:bg-rose-900/40"
+                    data-tip="Unregister entirely and delete all local survey data">🗑 Delete</button>
+            <span class="w-px h-4 bg-slate-600 mx-1"></span>
+            <button onclick="_selectAllVisible()" class="filter-chip">All shown</button>
+            <button onclick="_clearSelection()" class="filter-chip">None</button>
+            <button onclick="_toggleSelectMode()" class="filter-chip">Done</button>
+          </span>
+        </div>
       </div>
       <div class="px-2 pb-1">
         <button onclick="selectProject(null)"
@@ -1543,6 +1566,7 @@ document.addEventListener('DOMContentLoaded', () => {
     _investigations = Array.isArray(list) ? list : [];
     _refreshInvestigationLabel();
     _refreshScoutInvestigationCheckbox();
+    _refreshSelectBarVisibility();
     _loadWorkingSet();
   }).catch(() => _refreshInvestigationLabel());
   document.getElementById('query-input').addEventListener('keydown', e => {
@@ -3428,6 +3452,9 @@ function _renderProjectRow(p) {
   btn.innerHTML = `
     <div class="flex items-center justify-between gap-1 min-w-0">
       <div class="font-medium text-slate-200 truncate flex items-center gap-1">
+        ${_wsSelectMode ? `<input type="checkbox" class="ws-select-cb shrink-0" data-slug="${_esc(p.slug)}"
+             ${_wsSelected.has(p.slug) ? 'checked' : ''}
+             onclick="event.stopPropagation(); _toggleRowSelected('${_esc(p.slug)}')">` : ''}
         <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${dispositionBadge}${_esc(p.display_name)}
       </div>
       <div class="proj-actions">
@@ -3487,6 +3514,145 @@ async function _loadWorkingSet() {
 // Membership is the investigation's, so this writes through the API rather than
 // to a client-side set — the working set is shared state about the body of
 // work, unlike the per-browser "hide this from me" flag next to it.
+// Multi-select for building a working set. Deliberately a MODE: the sidebar's
+// primary job is navigation, and always-on checkboxes would make a click mean
+// two things. Mirrors the checkbox + "Import Selected" idiom Scouting's own
+// results table already uses.
+let _wsSelectMode = false;
+let _wsSelected = new Set();
+
+function _toggleSelectMode() {
+  _wsSelectMode = !_wsSelectMode;
+  _wsSelected = new Set();
+  const toggle = document.getElementById('ws-select-toggle');
+  const actions = document.getElementById('ws-select-actions');
+  toggle?.classList.toggle('active', _wsSelectMode);
+  actions?.classList.toggle('hidden', !_wsSelectMode);
+  actions?.classList.toggle('inline-flex', _wsSelectMode);
+  // Adding is only possible from a view that shows non-members. With the
+  // working-set filter active the list is members-only, so entering select mode
+  // there would offer an empty choice — switch to All and say so.
+  if (_wsSelectMode && _projectLifecycleFilter === 'working-set') {
+    _setProjectLifecycleFilter('');
+    showToast('success', 'Showing all repos so you can pick ones to add', 3000);
+  }
+  _updateSelectCount();
+  renderProjectList();
+}
+
+function _toggleRowSelected(slug) {
+  if (_wsSelected.has(slug)) _wsSelected.delete(slug);
+  else _wsSelected.add(slug);
+  _updateSelectCount();
+}
+
+function _selectAllVisible() {
+  document.querySelectorAll('.ws-select-cb').forEach(cb => {
+    _wsSelected.add(cb.dataset.slug);
+    cb.checked = true;
+  });
+  _updateSelectCount();
+}
+
+function _updateSelectCount() {
+  const el = document.getElementById('ws-select-count');
+  if (el) el.textContent = String(_wsSelected.size);
+}
+
+function _refreshSelectBarVisibility() {
+  // No investigation means nowhere to add to, so the control is not offered
+  // rather than offered-and-failing.
+  const bar = document.getElementById('ws-select-bar');
+  if (bar) bar.classList.toggle('hidden', !_currentInvestigation());
+}
+
+function _clearSelection() {
+  _wsSelected = new Set();
+  document.querySelectorAll('.ws-select-cb').forEach(cb => { cb.checked = false; });
+  _updateSelectCount();
+}
+
+async function _removeSelectedFromInvestigation() {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  const slugs = [..._wsSelected].filter(s => _workingSetKeys.has(`repo:${s}`));
+  if (!slugs.length) { showToast('error', 'None of those are in the working set', 3000); return; }
+  let done = 0;
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(`/api/investigations/${encodeURIComponent(inv)}/members/repo/${encodeURIComponent(slug)}`,
+                            {method: 'DELETE'});
+      if (r.ok) done++;
+    } catch (e) { /* keep going — one failure must not abandon the batch */ }
+  }
+  await _loadWorkingSet();
+  // Removing from a working set does not touch the repo. Saying so matters:
+  // next to a Delete button, "remove" is easily read as destructive.
+  showToast(done === slugs.length ? 'success' : 'error',
+            `${done} of ${slugs.length} removed from ${_investigationName(inv)} — the repos themselves are untouched`, 5000);
+  if (!document.getElementById('investigations-view')?.classList.contains('hidden')) loadInvestigationsPanel();
+  _clearSelection();
+}
+
+async function _hideSelected(hidden) {
+  const slugs = [..._wsSelected];
+  if (!slugs.length) { showToast('error', 'Nothing selected', 3000); return; }
+  let done = 0;
+  for (const slug of slugs) {
+    try {
+      const res = await fetch('/api/discovery/working-set', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entity_type: 'repo', entity_slug: slug, hidden}),
+      });
+      if (res.ok) done++;
+    } catch (e) { /* continue */ }
+  }
+  showToast(done === slugs.length ? 'success' : 'error',
+            `${done} of ${slugs.length} hidden — a personal view preference, reversible from "Show hidden"`, 5000);
+  _clearSelection();
+  await loadProjects();
+}
+
+async function _deleteSelected() {
+  const slugs = [..._wsSelected];
+  if (!slugs.length) { showToast('error', 'Nothing selected', 3000); return; }
+  // Deletion is the one irreversible action here, so it is named in full and
+  // typed to confirm — a misfire costs every survey, finding and annotation
+  // held locally for those repos, not just a list entry.
+  const names = slugs.slice(0, 8).join(', ') + (slugs.length > 8 ? `, and ${slugs.length - 8} more` : '');
+  const typed = prompt(
+    `Permanently unregister ${slugs.length} repo(s) and delete ALL their local survey data?\n\n${names}\n\n` +
+    `This cannot be undone. Anything already published to Egeria stays there.\n\nType DELETE to confirm:`);
+  if (typed !== 'DELETE') { showToast('error', 'Cancelled — nothing deleted', 3000); return; }
+  let done = 0;
+  const failed = [];
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(slug)}`, {method: 'DELETE'});
+      if (r.ok) done++; else failed.push(slug);
+    } catch (e) { failed.push(slug); }
+  }
+  showToast(failed.length ? 'error' : 'success',
+            `${done} deleted${failed.length ? `; failed: ${failed.join(', ')}` : ''}`, 6000);
+  _clearSelection();
+  await loadProjects();
+  await _loadWorkingSet();
+}
+
+async function _addSelectedToInvestigation() {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  const slugs = [..._wsSelected].filter(s => !_workingSetKeys.has(`repo:${s}`));
+  const already = _wsSelected.size - slugs.length;
+  if (!slugs.length) {
+    showToast('error', already ? 'Those are already in the working set' : 'Nothing selected', 3000);
+    return;
+  }
+  await _addManyToInvestigation(slugs);
+  if (already) showToast('success', `${already} were already members and were skipped`, 3000);
+  _toggleSelectMode();
+}
+
 async function _toggleInvestigationMember(entityType, slug) {
   const inv = _currentInvestigation();
   if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
@@ -7130,6 +7296,7 @@ function _setCurrentInvestigation(slug) {
   } catch (e) { /* private mode — the label just won't persist */ }
   _refreshInvestigationLabel();
   _refreshScoutInvestigationCheckbox();
+  _refreshSelectBarVisibility();
   _loadWorkingSet();
   if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
     loadInvestigationsPanel();
