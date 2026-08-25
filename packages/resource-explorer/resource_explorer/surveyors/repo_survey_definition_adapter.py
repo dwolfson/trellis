@@ -613,26 +613,6 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         fetch_cost="download",
         compute_cost="low",
     ),
-    "repo_arch_summary": StepInfo(
-        "repo_arch_summary", ArchSummarySurveyor,
-        "Collapses architecture-recovery findings to the depth the question "
-        "asked for — the summarising half nothing owned. Milvus recovers 218 "
-        "candidate components where its own authors describe eight; a "
-        "suitability answer is 'serves gRPC (297 operations), 24 runnable "
-        "units, 31 third-party'.",
-        ["ResourceMeasureAnnotation"],
-        accepts_surveyed_at=True,
-        # The first step whose input is another step's OUTPUT rather than an
-        # external resource. Egeria models that as action targets on the
-        # GovernanceActionExecutor (0462); `requires_resources` is RE's
-        # mechanism for SHARING an expensive external resource across steps in
-        # one run and is deliberately empty here — a summary needs no zipball
-        # and no clone, which puts it at Discovery tier by rule 17's own test
-        # and makes it cheap enough to recompute whenever its inputs change.
-        requires_resources={},
-        fetch_cost="none",
-        compute_cost="low",
-    ),
     "repo_arch_coupling": StepInfo(
         "repo_arch_coupling", ArchCouplingSurveyor,
         "Proposes additional architecture-component boundaries from import "
@@ -649,6 +629,32 @@ STEP_REGISTRY: dict[str, StepInfo] = {
                         "git_clone_root": VIEW_HISTORY},
         fetch_cost="download",
         compute_cost="medium",
+    ),
+    "repo_arch_summary": StepInfo(
+        "repo_arch_summary", ArchSummarySurveyor,
+        "Collapses architecture-recovery findings to the depth the question "
+        "asked for — the summarising half nothing owned. Milvus recovers 218 "
+        "candidate components where its own authors describe eight; a "
+        "suitability answer is 'serves gRPC (297 operations), 24 runnable "
+        "units, 31 third-party'.",
+        ["ResourceMeasureAnnotation"],
+        # ORDER MATTERS, and registry order is what generates the chain. Placed
+        # after repo_arch_coupling deliberately: a summary that runs before a
+        # step it summarises silently reports a partial answer. First placed
+        # BEFORE coupling, and the reconciler's dry run caught it as a stale
+        # detect->coupling edge in RepoFullSurvey — the chain would have been
+        # detect -> summary -> coupling, summarising only half the components.
+        accepts_surveyed_at=True,
+        # The first step whose input is another step's OUTPUT rather than an
+        # external resource. Egeria models that as action targets on the
+        # GovernanceActionExecutor (0462); `requires_resources` is RE's
+        # mechanism for SHARING an expensive external resource across steps in
+        # one run and is deliberately empty here — a summary needs no zipball
+        # and no clone, which puts it at Discovery tier by rule 17's own test
+        # and makes it cheap enough to recompute whenever its inputs change.
+        requires_resources={},
+        fetch_cost="none",
+        compute_cost="low",
     ),
     "repo_sub_resource_survey": StepInfo(
         "repo_sub_resource_survey", SubResourceSurveyor,
