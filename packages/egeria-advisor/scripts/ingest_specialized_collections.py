@@ -22,7 +22,7 @@ from loguru import logger
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from advisor.ingest_to_milvus import CodeIngester
+from advisor.ingest import CodeIngester
 from advisor.collection_config import (
     get_collection,
     EGERIA_CONCEPTS_COLLECTION,

@@ -23,7 +23,7 @@ from advisor.collection_config import (
 )
 from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
-from advisor.ingest_to_milvus import CodeIngester
+from advisor.ingest import CodeIngester
 from loguru import logger
 
 

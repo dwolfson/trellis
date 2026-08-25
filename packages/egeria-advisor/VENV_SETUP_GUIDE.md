@@ -80,7 +80,8 @@ This is a VSCode Python extension issue. The virtual environment is actually rea
 
 ## Key Dependencies Installed
 
-- pymilvus (vector database)
+- pgvector, psycopg2-binary (vector database — PostgreSQL/pgvector; Milvus was the original
+  backend, fully removed)
 - docling (document processing)
 - sentence-transformers (embeddings)
 - langchain & langchain-community (LLM framework)

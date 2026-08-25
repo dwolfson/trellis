@@ -82,7 +82,7 @@ extraction, not deduplicating existing code — out of scope for an ingestion-pi
 
 | | RE | EA |
 |---|---|---|
-| Chunk unit | Fixed-size token windows with overlap, split on function/class boundaries where possible (`code_parser.py`, `CodeChunk`) | One embedding per semantic unit — one vector per `CodeElement`/`DocumentSection`, no windowing (`ingest_to_milvus.py`'s `DataIngester.ingest_code_elements`/`ingest_documentation`) |
+| Chunk unit | Fixed-size token windows with overlap, split on function/class boundaries where possible (`code_parser.py`, `CodeChunk`) | One embedding per semantic unit — one vector per `CodeElement`/`DocumentSection`, no windowing (`ingest.py`'s `DataIngester.ingest_code_elements`/`ingest_documentation`) |
 
 **Verdict: (c) — leave alone, deliberately.** This is a real design difference in retrieval
 strategy (windowed-chunk RAG vs. semantic-unit RAG), not accidental duplication. Neither app's
@@ -243,9 +243,17 @@ Follow-up below rather than a verdict.
 - Write a real design doc for the "AST-ownership-transfer plan" (currently only exists as
   in-code docstrings scattered across ~15 files in both packages) — the next person to touch
   this area shouldn't have to `grep` for it the way this audit did.
-- `advisor/ingest_to_milvus.py` is still named for the pre-pgvector-migration vector store
-  (mirrors resource-explorer's own historical rule 9 note — same class of drift, unaddressed
-  on the EA side). A rename, not a behavior change.
+- ~~`advisor/ingest_to_milvus.py` is still named for the pre-pgvector-migration vector store~~
+  — **done**, renamed to `advisor/ingest.py` (2026-08-25), alongside removing
+  `packages/egeria-advisor/airflow/dags/incremental_update_dag.py`, an orphaned DAG with live
+  `pymilvus`/`airflow` imports — neither package is a dependency anywhere in the workspace, and
+  nothing else referenced the file. Two operational docs (`TROUBLESHOOTING.md`,
+  `VENV_SETUP_GUIDE.md`) had import-check snippets that still said `import pymilvus`, which
+  would have failed for a new developer following them — corrected to `pgvector`. Historical
+  design docs mentioning Milvus (dozens, under `docs/design/`) and
+  `resource-explorer/scripts/migrate_vectors_milvus_to_pg.py` (the completed migration script
+  itself) were deliberately left alone, same rationale as RE's own rule 9: historical record,
+  not live code.
 - Confirm with the user whether EA's fixed 5-repo catalog should eventually register those
   repos as RE projects (making item 1's extension possible) — that's a product decision, not
   an engineering one, and shouldn't be assumed here.
