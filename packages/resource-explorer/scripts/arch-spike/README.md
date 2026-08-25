@@ -4053,3 +4053,49 @@ allowlist, so `ingested_by` was **dropped silently** and the attribution came ba
 **a curated field list that discards anything added upstream, without saying so.** The list stays
 explicit — an unbounded passthrough would let anything into the record — but the hazard is now named
 at the point it bit.
+
+---
+
+**111. Look before you crawl: 685 seconds becomes 1.7, and the first version of the check would
+have refused a site that works.**
+
+Dan asked what ingestion assumes, and whether content should be staged and profiled before deciding
+how to ingest it. The honest answer was that ingestion **fetched, chunked and embedded in one pass
+with no decision point** — so `milvus` spent **685 seconds finding 400 pages by sitemap and failing
+all 400 fetches**, and nothing could notice until it was over.
+
+`ingestion/site_profile.py` is the cheap tier that gates the expensive one — the shape architecture
+recovery already uses, and the one thing ingestion had no version of. Two questions, because they
+are the two answerable from **one or two fetches**:
+
+```
+milvus.io              1.7s   unreachable            (was 685s)
+sqlglot.com            0.4s   ok, 34659 chars
+polaris.apache.org     0.2s   ok
+docs.unitycatalog.com  0.1s   unreachable
+```
+
+**The first version refused `sqlglot`, which ingests 97 chunks perfectly well.** Its landing page is
+a 138-byte `meta-refresh` stub, `discover_pages` follows it, and my profiler did not — so the
+profile said "no readable text" about a site whose text is one hop away. `follow_meta_refresh`
+already existed for exactly this reason and I did not use it.
+
+**The rule that generalises, and it is not a detail: a profile must model what the crawl actually
+does.** Profiling with a *more* capable fetcher clears sites the crawl then fails on. Profiling with
+a *less* capable one refuses sites the crawl would have managed. Both are worse than not profiling,
+because both are **confident**. The fetcher is passed in by the caller for that reason, and a test
+asserts it.
+
+**What caught it was checking against reality rather than against invented cases.** I profiled every
+site that had actually ingested content — 18 of them — and asked whether any would now be refused.
+The answer after the fix is **zero**; before it, `sqlglot` was one. A unit test written from
+imagination would have used a normal HTML page and passed.
+
+**Two questions, not five.** Reachability and text yield are answerable from one page. What *kind*
+of documentation it is (which should select a chunking profile), how much is boilerplate, and
+whether it duplicates something already held are real and remain in the Backlog — each needs several
+pages and a judgement. Building the cheap half first is the entire point of a cheap tier.
+
+**Reached-and-empty stays distinct from never-reached**, which is what `no_pages_fetched` was split
+out for one finding ago: `no_extractable_text` is a `no_signal` with `known_positive=True` because
+we reached the site and it told us; `unreachable` is `unverified` because we never got to look.

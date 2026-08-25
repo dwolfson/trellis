@@ -137,11 +137,12 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         from resource_explorer.ingestion.site_discovery import (
             discover_pages,
             host_relates_to_project,
-    is_code_host,
-    is_non_doc_host,
+            is_code_host,
+            is_non_doc_host,
             repo_publishes_site,
             site_collection_name,
         )
+        from resource_explorer.ingestion.site_profile import profile_site
 
         url = (self.project.homepage_url or "").strip()
         if not url:
@@ -230,6 +231,30 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                  "owner_repo": owner_repo},
                 outcome=no_signal("unrelated_host", known_positive=True, url=url))
 
+
+        # Look before crawling. One fetch, two at most, against the 400 that
+        # `milvus` spent 685 seconds on before anything could notice they were
+        # all failing. The cheap tier gates the expensive one, which is the
+        # shape architecture recovery already uses (design §5.5b) and the one
+        # thing ingestion had no version of.
+        profile = profile_site(url, self._fetch)
+        if not profile.worth_ingesting:
+            return self._note(
+                f"Not ingested — {profile.verdict.replace('_', ' ')}",
+                profile.reason + " Profiled with the same fetcher the crawl would "
+                "use, so this is what the crawl would have found, one page at a "
+                "time.",
+                {"ingested": False, "reason": profile.verdict, "url": url,
+                 "landing_chars": profile.landing_chars,
+                 "sampled_chars": profile.sampled_chars},
+                # known_positive: we reached the site and it told us this, except
+                # when we could not reach it at all — which is precisely the
+                # distinction `no_pages_fetched` was split out for.
+                outcome=(no_signal(profile.verdict, known_positive=True,
+                                   landing_chars=profile.landing_chars)
+                         if profile.reachable
+                         else StepOutcome(UNVERIFIED, cause="unreachable",
+                                          detail={"url": url})))
 
         try:
             pages, how = discover_pages(url, self._fetch, max_pages=self._max_pages)
