@@ -125,8 +125,8 @@ class _StubPM:
     def create_egeria_bearer_token(self):
         pass
 
-    def create_project(self, display_name=None, description=None, **kw):
-        self.calls.append(("create_project", display_name, description))
+    def create_project(self, display_name=None, description=None, body=None, **kw):
+        self.calls.append(("create_project", display_name, description, body))
         if self.fail:
             raise RuntimeError("Egeria unreachable")
         return self.guid
@@ -168,8 +168,13 @@ def test_promotion_replays_the_local_shape_into_egeria(made):
     assert res.project_guid == "proj-1"
     assert res.collection_guid == "coll-1"
     assert res.resource_list_linked
-    # Purposes must survive — losing WHY the work exists defeats the frame.
-    assert "Certify" in pm.calls[0][2]
+    # Purposes must survive, and must land in additionalProperties rather than
+    # being appended to free text: mission/purposes are ProjectCharter (0442)
+    # properties that create_project cannot reach, and Project is a
+    # Referenceable, so additionalProperties is the sanctioned carrier.
+    props = pm.calls[0][3]["properties"]
+    assert "Certify" in props["additionalProperties"]["purposes"]
+    assert "Certify" not in (props.get("description") or "")
 
 
 def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):
@@ -230,3 +235,76 @@ def test_promoting_an_already_bound_investigation_is_refused(made):
     ).promote(inv["slug"])
     assert not res.ok
     assert any("already bound" in e for e in res.errors)
+
+
+def test_promote_route_does_not_call_pyegeria_on_the_event_loop(client, made, monkeypatch):
+    """Regression for a bug a CLI test structurally cannot catch.
+
+    pyegeria's synchronous methods drive their own event loop internally. Called
+    inline from an async FastAPI route they raise "this event loop is already
+    running" — but exercised from a script, where no loop is running, they work
+    perfectly. So the promoter passed every test and failed the moment a human
+    clicked the button.
+
+    This asserts the work happens off the loop: the stub raises if it finds a
+    running loop, exactly as pyegeria effectively does.
+    """
+    import asyncio
+
+    from resource_explorer.surveyors import egeria_investigation_publisher as mod
+
+    inv = made(display_name="Loop Check")
+
+    class _LoopSensitivePublisher:
+        def __init__(self, registry, **kw):
+            pass
+
+        def promote(self, slug):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                from resource_explorer.surveyors.egeria_investigation_publisher import (
+                    PromotionResult,
+                )
+                return PromotionResult(project_guid="off-loop-ok")
+            raise RuntimeError("this event loop is already running")
+
+    monkeypatch.setattr(mod, "EgeriaInvestigationPublisher", _LoopSensitivePublisher)
+    r = client.post(f"/api/investigations/{inv['slug']}/promote")
+    assert r.status_code == 200, r.text
+    assert r.json()["project_guid"] == "off-loop-ok", (
+        "promote ran on the event loop — pyegeria's sync wrappers cannot be "
+        "called inline from an async route"
+    )
+
+
+def test_a_qualified_name_collision_is_explained_not_dumped(made):
+    """Egeria signals "this qualifiedName is taken" as a 409 inside a large Java
+    error payload. Raw, it tells a user nothing and fills the toast with a stack
+    trace. It is also the single most likely real failure here — it happens
+    whenever a promotion succeeded and the local binding was later cleared,
+    which orphans the Project.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Collision")
+
+    class _CollidingPM(_StubPM):
+        def create_project(self, display_name=None, description=None, body=None, **kw):
+            raise RuntimeError(
+                "PyegeriaAPIException: OMAG-COMMON-409-001 ... qualifiedName is defined "
+                "as a unique property and value Project::Investigation::collision is not "
+                "available for use"
+            )
+
+    res = EgeriaInvestigationPublisher(
+        ProjectRegistry(), project_manager=_CollidingPM(), collection_manager=_StubCM()
+    ).promote(inv["slug"])
+
+    assert not res.ok
+    joined = " ".join(res.errors)
+    assert "already" in joined and "Bind to the existing" in joined
+    assert "OMAG-COMMON" not in joined, "raw Egeria payload leaked to the user"

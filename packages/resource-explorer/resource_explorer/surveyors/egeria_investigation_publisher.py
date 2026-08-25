@@ -94,22 +94,61 @@ class EgeriaInvestigationPublisher:
             res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
             return res
 
-        # 1. the Project itself
+        # 1. the Project itself.
+        #
+        # Purposes go in `additionalProperties`, NOT appended to the description.
+        # `mission` and `purposes` are both `ProjectCharter` (0442) properties,
+        # and a charter is a separate element `create_project` cannot make — so
+        # neither is reachable here. `Project` (0130) is a `Referenceable`
+        # though, and `additionalProperties` is the sanctioned carrier for
+        # exactly this: structured data the type has no dedicated slot for.
+        # Stuffing them into free-text description would make them unreadable
+        # by anything but a human, and would have to be parsed back out when the
+        # charter is eventually written.
+        #
+        # (Corrected after review: the first version did use the description.
+        # Same error the SolutionPort work hit earlier — reading a type's own
+        # attribute list, finding no home, and settling, when the answer was one
+        # inheritance edge away.)
+        purposes = inv.get("purposes") or []
+        qualified_name = f"Project::Investigation::{investigation_slug}"
+        properties: dict = {
+            "class": "ProjectProperties",
+            "typeName": "Project",
+            "qualifiedName": qualified_name,
+            "displayName": inv["display_name"],
+            "description": inv.get("description") or "",
+            "identifier": investigation_slug,
+        }
+        if purposes:
+            properties["additionalProperties"] = {
+                "purposes": ", ".join(purposes),
+                "purposeSource": "ProjectCharter.purposes (pending a real charter)",
+                "createdBy": "resource-explorer",
+            }
         try:
-            purposes = inv.get("purposes") or []
-            description = inv.get("description") or ""
-            if purposes:
-                # Purpose is ProjectCharter.purposes (§2). Until the charter is
-                # written separately, carry them in the description rather than
-                # dropping them — losing WHY the work exists is the one thing
-                # this whole frame exists to prevent.
-                description = (description + "\n\n" if description else "") + \
-                    "Purposes: " + ", ".join(purposes)
             res.project_guid = pm.create_project(
-                display_name=inv["display_name"], description=description,
+                body={"class": "NewElementRequestBody", "properties": properties},
             ) or ""
+            res.project_qualified_name = qualified_name
         except Exception as exc:
-            res.errors.append(f"create_project failed: {type(exc).__name__}: {exc}")
+            # A qualifiedName collision is a specific, actionable situation, not
+            # a generic failure: a Project for this investigation already exists
+            # in Egeria — typically because a previous promotion succeeded and
+            # the local binding was cleared, orphaning it. Egeria signals this as
+            # a 409 wrapped in a large Java error payload; surfacing that raw to
+            # a user is useless, so it is translated once here.
+            detail = str(exc)
+            if "OMAG-COMMON-409-001" in detail or "is not available for use" in detail:
+                res.errors.append(
+                    f"An Egeria Project with qualifiedName '{qualified_name}' already "
+                    "exists. This investigation was promoted before and the local "
+                    "binding was cleared, leaving it orphaned. Bind to the existing "
+                    "Project instead of creating a second one, or delete it in Egeria "
+                    "first."
+                )
+            else:
+                res.errors.append(f"create_project failed: {type(exc).__name__}: {detail}")
             return res
         if not res.project_guid:
             res.errors.append("create_project returned no GUID")
