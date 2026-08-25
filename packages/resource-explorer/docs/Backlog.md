@@ -1189,6 +1189,32 @@ components. Regression-checked: `trellis` 8/11 and `egeria-workspaces` 18/27 bot
 
 ### Corpus, signals & testing
 
+#### The test suite reaches the live GitHub API — a token raises the limit, it does not fix it
+
+Found 2026-08-25 when PR #14's CI failed on odpi. The job has no `GITHUB_TOKEN`,
+so an unauthenticated client hits GitHub's 60-requests/hour limit, `urllib3`
+retries with backoff sleeps, and the 30-minute job dies having produced nothing.
+It passes locally only because a developer has a token — the classic
+works-on-my-machine shape, and it hid until the suite ran somewhere without one.
+
+The reached path is `repo_survey_definition_adapter`'s zipball **resource
+provider** (`client.get_repo(project.github_url)` via `resolve_resources`).
+**Mocking a surveyor does not mock the resource it declares** — that is the
+actual lesson, and it will recur for every `requires_resources` step.
+
+`GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` is now set in CI, which unblocks it
+at 1000 req/hr. That is a mitigation: the suite can still reach the network, so
+it is still slow, still non-deterministic, and still fails differently depending
+on who runs it.
+
+**The fix** is an autouse fixture that fails any test reaching `GitHubClient`
+without an explicit opt-in marker — the same shape as `requires_pgvector`, but
+inverted: network access becomes something a test must ask for rather than
+something it gets by default. Worth doing before the next `requires_resources`
+step lands, since each one adds another way in.
+
+---
+
 #### Testing strategy — four silent-failure classes, one built, three open
 
 Eight faults found on 2026-08-20 shared one shape: **the code ran, reported success, and did

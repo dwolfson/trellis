@@ -29,6 +29,19 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    env:
+      # Unauthenticated GitHub is 60 requests/hour. A test reaches the live API
+      # (repo_survey_definition_adapter's zipball resource provider — mocking a
+      # surveyor does not mock the resource it declares), and with no token that
+      # call rate-limits, urllib3 retries with backoff sleeps, and the 30-minute
+      # job dies having done nothing. It passes locally purely because a
+      # developer has a token.
+      #
+      # This is a MITIGATION, not the fix. The real defect is that the suite can
+      # reach the network at all; a token only raises the limit that hides it.
+      # Tracked in docs/Backlog.md, "the test suite reaches the live GitHub API".
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     # GitHub's default is 360 minutes. The first run sat 20+ minutes on a step
     # that takes 5 seconds locally (see the embedding-model cache below), and
     # would have burned six hours before failing. A suite that takes ~3 minutes
