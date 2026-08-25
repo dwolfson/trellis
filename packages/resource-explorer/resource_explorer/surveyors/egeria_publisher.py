@@ -290,11 +290,35 @@ class EgeriaPublisher:
                 output_format="JSON",
             )
             if isinstance(existing, list) and existing:
-                guid = existing[0].get("elementHeader", {}).get("guid")
+                # EXACT qualifiedName only. The search is starts_with=True, so
+                # a repo whose URL is a PREFIX of another's matches both — and
+                # taking existing[0] adopted the wrong asset. Measured live
+                # 2026-08-25: docling (.../docling) matched docling-eval and
+                # docling-core, and docling + docling_eval ended up sharing one
+                # asset GUID, so one repo's survey reports were attaching to the
+                # other's catalog entry. Nothing errored; the catalog was just
+                # wrong.
+                #
+                # starts_with is kept rather than narrowed, because the search
+                # is also how a legitimately-renamed asset is still found; the
+                # filtering belongs here, on the result.
+                match = next(
+                    (e for e in existing
+                     if (e.get("properties") or {}).get("qualifiedName") == qualified_name),
+                    None,
+                )
+                guid = (match or {}).get("elementHeader", {}).get("guid") if match else None
                 if guid:
                     log.info("Found existing Egeria asset GUID %s for %s", guid, result.project_slug)
                     self._cache_asset_guid(result.project_slug, guid)
                     return guid
+                if existing:
+                    # Prefix matches that are not this asset are the normal case
+                    # for sibling repos; say so rather than silently creating.
+                    log.info(
+                        "%d prefix match(es) for %s but none with an exact qualifiedName — creating",
+                        len(existing), result.project_slug,
+                    )
         except Exception as exc:
             log.debug("Asset search failed (will create): %s", exc)
 
