@@ -129,6 +129,21 @@ ollama pull llama3.1:8b          # Resource Explorer + Egeria Advisor RAG Q&A
 ollama pull qwen2.5-coder:32b    # Egeria Advisor LGCI planning only
 ```
 
+### Convenience commands
+
+A root `Makefile` wraps the common `uv run --package ...` invocations below — run `make help`
+for the full list. The two most useful:
+
+```bash
+make re-web    # Resource Explorer web UI → http://localhost:8810
+make ea-web    # Egeria Advisor web UI    → http://localhost:8880
+make dev       # both, concurrently, in one terminal — Ctrl-C stops both
+```
+
+Anything not covered by a target (arbitrary CLI subcommands) still works via
+`make re CMD="..."` / `make ea CMD="..."`, or the raw `uv run --package ...` form documented
+below.
+
 ### Running Resource Explorer
 
 ```bash
@@ -148,6 +163,7 @@ uv run --package egeria-advisor egeria-advisor-web               # → http://lo
 ```bash
 uv run --package resource-explorer pytest packages/resource-explorer/tests
 uv run --package egeria-advisor --extra dev pytest packages/egeria-advisor/tests
+# or: make test / make test-re / make test-ea
 ```
 
 (Egeria Advisor's test config requires the `dev` extra for `pytest-cov`, which isn't installed
