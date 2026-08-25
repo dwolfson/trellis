@@ -3174,6 +3174,50 @@ function _renderManifestParseResults(data) {
 // withheld rather than abandoned. See Backlog, "Purpose sets required DEPTH".
 const _ARCH_ROW_CAP = 20;
 
+// Documentation-site state on the architecture card.
+//
+// Rendered HERE and not in the RFA drawer, deliberately. The drawer is titled
+// "Open RFAs" with an amber count badge and reads as a work queue — an offer
+// landing there becomes a defect, and worse, a defect COUNT. Text saying
+// "nothing is wrong with the repository" cannot outrun a badge that says 5.
+//
+// Four states, and only one is an offer:
+//   not-attempted  a site nobody has read -> offer to ingest it
+//   declined       refused on purpose (self-published / code host) -> say why,
+//                  never offer; that would re-open a correct decision
+//   ingested       already read -> say so, so nobody re-runs it
+//   attempted      ran and got nothing worth having -> a finding, not an offer
+//
+// It asks nothing. A scheduled run has nobody to ask and must not block; this
+// puts the ask where the absence already is, so an interactive session can act
+// on it and an unattended one can ignore it. Same data, different rendering.
+function _renderDocIngestionState(doc) {
+  if (!doc || !doc.state) return '';
+  const detail = doc.detail ? ` <span class="text-slate-500">(${_esc(doc.detail)})</span>` : '';
+  if (doc.state === 'not-attempted') {
+    return `<div class="mt-2 text-xs border-l-2 border-cyan-600 pl-2">
+      <div class="text-cyan-300">Documentation site not read yet</div>
+      <div class="text-slate-400">This project publishes documentation we have not ingested.
+        Nothing is wrong with the repository — the site simply has not been read, so anything
+        it says about the architecture is invisible here.</div>
+      <div class="text-slate-500 mt-0.5">Run <span class="text-slate-300">Website ingestion</span> to include it.</div>
+    </div>`;
+  }
+  if (doc.state === 'declined') {
+    return `<div class="mt-2 text-[11px] text-slate-500">
+      Documentation site deliberately not ingested${detail} — the repository builds it, so its
+      source is already indexed in a better form. Not a gap.</div>`;
+  }
+  if (doc.state === 'ingested') {
+    return `<div class="mt-2 text-[11px] text-slate-500">Documentation site ingested${detail}.</div>`;
+  }
+  if (doc.state === 'attempted') {
+    return `<div class="mt-2 text-[11px] text-amber-400/80">
+      Documentation site was read and yielded nothing usable${detail}.</div>`;
+  }
+  return '';
+}
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
@@ -3250,6 +3294,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
     // the topology renders on its own rather than being gated behind them.
     if (!data.components || !data.components.length) {
       return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
+             + _renderDocIngestionState(data.documentation)
              + _renderDeploymentInterfaces(data.interfaces);
     }
     // Counts must be honest about BOTH coarsenings: the server-side depth
@@ -3278,7 +3323,9 @@ function _renderCustomAnalysisResults(analysisId, data) {
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
-        </div>`).join('') + _renderDeploymentInterfaces(data.interfaces);
+        </div>`).join('')
+      + _renderDocIngestionState(data.documentation)
+      + _renderDeploymentInterfaces(data.interfaces);
   }
   if (analysisId === 'sub_resource_survey') {
     if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No sub-resource survey run yet.</div>`;

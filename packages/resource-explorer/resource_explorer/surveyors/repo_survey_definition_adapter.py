@@ -1393,6 +1393,35 @@ def _architecture_interfaces_results(registry, slug: str) -> dict:
     return {"deployments": out}
 
 
+def _doc_ingestion_state(registry, slug: str) -> dict:
+    """`{state, detail}` for this repo's documentation site, for rendering.
+
+    Isolated so a failure to read it cannot take out the architecture card it
+    decorates — an unreadable ingestion status is a missing offer, not a missing
+    result.
+    """
+    try:
+        from resource_explorer.surveyors.sub_surveyors.arch_lens import ingestion_status
+
+        state, detail = ingestion_status(registry, slug)
+        # ingestion_status() absorbs its own read failure and returns
+        # `not-attempted` with detail "ingestion status unreadable" — so
+        # "nobody has read the site" and "we could not tell" arrive as the same
+        # state. Rendering keys on state, so without this an unreadable status
+        # would produce a confident offer to ingest a site we know nothing
+        # about. Downgraded to unknown, which renders as nothing.
+        if detail == "ingestion status unreadable":
+            return {"state": "", "detail": ""}
+        return {"state": state, "detail": detail}
+    except Exception:  # noqa: BLE001
+        # No logging call here on purpose: this module defines no logger, and an
+        # earlier version referenced one — so the handler raised NameError and
+        # the guard against a failure taking out the card became the thing that
+        # took out the card. An error handler that can itself error is not a
+        # guard. The empty state is the signal; the renderer shows nothing.
+        return {"state": "", "detail": ""}
+
+
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
 ) -> dict:
@@ -1590,6 +1619,17 @@ def _architecture_recovery_results(
         # discarding the data behind it).
         # Structural nodes are grouping, not recoveries — counting them here
         # would inflate "N recovered" with rows that carry no evidence.
+        # The documentation-site ingestion state, carried on THIS card because
+        # this is where the absence is: a repo whose only architecture sources
+        # are unreadable sites has nothing to show here, and a concrete,
+        # answerable offer belongs in that space rather than a blank.
+        #
+        # Four states, not a flag (sub_surveyors/arch_lens.py) — `declined` is
+        # why: the ingestion step refuses ON PURPOSE for a self-published site,
+        # since the repo builds it and its source is already ingested in better
+        # form. Offering there would re-open a decision the system made
+        # correctly.
+        "documentation": _doc_ingestion_state(registry, slug),
         "raw_component_count": sum(1 for c in all_components if not c.get("structural")),
         "structural_node_count": sum(1 for c in all_components if c.get("structural")),
         "run_outcomes": run_outcomes,
