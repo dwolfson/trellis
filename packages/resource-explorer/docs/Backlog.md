@@ -1547,3 +1547,79 @@ list needing to be correct at 8**, which is a materially cheaper path than the u
 
 **Do NOT** extend this into reading request/response schemas. That is stage two, it is a different
 cost tier, and the driving question explicitly excludes it.
+
+---
+
+### HIGH — summarising microflows: the mechanism is Egeria's, and RE discards it
+
+**The gap** (finding 101a, and the reason both open precision problems look unsolvable): *nothing
+owns summarising up*. Every microflow emits at its own natural granularity and no step collapses it
+to the depth the question asked for. Milvus yields 154 components where its own authors say eight,
+and 296 rpcs where the number a reader wants is `proxy.proto`'s 18.
+
+Dan's framing: *"we can certainly create microflows that aggregate, summarize and transform
+information collected from established results — and include them where needed, or standalone."*
+
+**The correction that matters, and it is the whole point of this entry.** The first version of this
+proposal invented a new `requires_results` declaration to sit alongside `requires_resources`, on the
+claim that "nothing declares a data dependency between steps." **That claim is false**, and the
+proposal would have been a third vocabulary for something Egeria already models. From
+`0462-Governance-Action-Processes`:
+
+```
+GovernanceActionExecutor         requestType, requestParameters,
+                                 requestParameterFilter, requestParameterMap,
+                                 actionTargetFilter, actionTargetMap
+GovernanceActionProcessFlow      guard, requestParameters
+NextGovernanceActionProcessStep  guard, mandatoryGuard
+TargetForGovernanceAction        actionTargetName
+```
+
+A completing governance service *"optionally supplies one or more guards **and a list of action
+targets** for the subsequent governance action(s) to process"* (concepts/governance-action-process).
+So step-to-step data flow is modelled, **named** (`actionTargetName`), **filterable**
+(`actionTargetFilter`, `requestParameterFilter`) and **rebindable** (`actionTargetMap`,
+`requestParameterMap`). Not merely passed — bound.
+
+**So a summarising microflow is not a new kind of step.** It is an ordinary step whose **action
+targets are the findings of prior steps**, with `requestParameters` carrying the depth or
+summarisation level. That also gives Purpose (investigation-framing §3) a real home: depth of
+response is a request parameter on the flow, not another new concept.
+
+**What is genuinely missing is RE-side: it parses the model and throws it away.**
+
+| Mechanism | State in RE |
+|---|---|
+| Additional Properties (`executes_at`, `re_analysis_step`, …) | *"parsed but not interpreted here"* — `survey_definition_reader.py:18` |
+| `guard` / `mandatoryGuard` | round-trip on every link; a live read returns `guard: 'Any'` on all 9 links of Analysis Survey — **"the reader receives them and discards them"** |
+| Branching | `UnsupportedSurveyDefinitionError` — *"v1 only supports linear step sequences"*, deferred by decision 2026-08-21 |
+| Action targets / request parameters | not read at all; `SurveyStep` has no field for either |
+| The specification itself | *"RE consults no Egeria specification at all. `STEP_REGISTRY` is a specification living in Python."* |
+
+`requires_resources` is RE's parallel invention for a *different* problem — sharing an expensive
+external resource (a zipball, a clone) across steps in one run, which is what `trellis-microflow`'s
+`resolve_resources` solves. It is not a data dependency and should not be extended into one.
+
+**Proposed work:**
+
+1. **Read what is already received.** Add action targets and request parameters to `SurveyStep`,
+   and stop discarding guards. No new vocabulary — these are attributes the reader already fetches
+   and drops on the floor. Smallest possible first step, and it makes the rest measurable.
+2. **One summarising microflow, as an ordinary step**, whose action targets are the
+   `architecture_recovery` findings of a prior step and whose request parameter is the depth. Prove
+   the shape on the case that motivated it: 154 components → "N subsystems, M services, one gRPC
+   surface".
+3. **Then decide about branching**, which is the deferred v1 boundary and the real work.
+
+**Two constraints, both from failures already recorded here:**
+
+- **A summariser whose inputs are absent must not emit an empty summary.** It must produce
+  `not_established` / `SKIPPED_BY_DESIGN` with the reason, exactly as `recovery_gate`'s skip does.
+  A confident summary of nothing is the absence-looks-like-zero shape (findings 63, 90, 97, 99, 100)
+  promoted to the composition level, where it is *harder* to see because the output looks like a
+  real answer.
+- **Check the Egeria model before inventing a local one.** This entry exists because that check was
+  skipped once here, having paid off three times and produced one useful negative (`ResourceUse`,
+  §5.5d-i) the same day. The pattern of the miss is worth more than the miss: the vocabulary check
+  was performed for the *port count* an hour earlier and not for *step composition*, because the
+  answer there had already been assumed to be local.
