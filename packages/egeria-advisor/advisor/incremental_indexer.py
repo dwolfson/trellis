@@ -16,7 +16,7 @@ from loguru import logger
 from advisor.config import get_full_config
 from advisor.vector_store import get_vector_store
 from advisor.embeddings import get_embedding_generator
-from advisor.ingest_to_milvus import CodeIngester
+from advisor.ingest import CodeIngester
 from advisor.mlflow_tracking import track_operation
 from advisor.db_consolidated import get_db_manager
 
