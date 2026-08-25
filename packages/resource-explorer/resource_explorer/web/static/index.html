@@ -273,9 +273,15 @@
          backend model) — it's silently backfilled from this default the
          first time that resource is actually published
          (_ensureEgeriaProjectContext), not eagerly for every resource. -->
-    <span id="session-egeria-project-badge" class="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full"
-      title="The Egeria Project new publishes are associated with, for this browser session"></span>
-    <button onclick="_openSessionEgeriaProjectPicker()" class="text-xs text-cyan-500 hover:text-cyan-400 hover:underline">Change</button>
+    <!-- Folded into the Investigation control above (2026-08-24). §1 makes
+         binding to an Egeria Project one of the three ways to START an
+         investigation, so a separate session-wide badge alongside it was two
+         answers to one question — visibly so once both rendered. The binding
+         now lives on the investigation record and its state shows in that
+         label. Kept as a hidden element because _renderSessionEgeriaProjectBadge
+         still writes to it and the publish path still reads the same context
+         shape; only the duplicate control is gone. -->
+    <span id="session-egeria-project-badge" class="hidden"></span>
     <span class="text-xs text-slate-500">Multi-agent RAG · <a href="/docs" target="_blank" class="text-cyan-600 hover:underline">API docs</a></span>
   </div>
 </header>
@@ -2127,6 +2133,21 @@ async function _searchEgeriaProjectCandidates() {
 async function _postEgeriaProjectContext(body) {
   // 'session' scope (header Change button) — no specific resource, nothing
   // to write server-side; just remember it as the new session default.
+  if (_egeriaProjectPickerScope === 'investigation') {
+    // The binding belongs to the investigation record, not to the browser.
+    const slug = _currentInvestigation();
+    if (slug) {
+      await fetch(`/api/investigations/${encodeURIComponent(slug)}/egeria-project`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+      });
+    }
+    _setSessionEgeriaProjectContext(body);
+    closeEgeriaProjectModal();
+    showToast('success', 'Egeria Project set for this investigation.', 4000);
+    loadInvestigationsPanel();
+    return;
+  }
+
   if (_egeriaProjectPickerScope === 'session') {
     _setSessionEgeriaProjectContext(body);
     closeEgeriaProjectModal();
@@ -6977,8 +6998,20 @@ function _refreshInvestigationLabel() {
   if (!el) return;
   const cur = _currentInvestigation();
   const inv = _investigations.find(i => i.slug === cur);
-  el.textContent = inv ? inv.display_name : (cur ? cur : 'No investigation');
+  // The label carries the Egeria binding as well as the name, because the
+  // binding is a property OF the investigation now — a separate badge beside
+  // it was two answers to one question.
+  const bind = inv && inv.egeria_context ? inv.egeria_context.status : 'unset';
+  const bindMark = {linked: ' · 📁', personal: ' · 👤', declined: ' · 🚫', deferred: ' · ⏳'}[bind] || '';
+  el.textContent = (inv ? inv.display_name : (cur ? cur : 'No investigation')) + bindMark;
   el.className = inv ? 'text-cyan-300' : 'text-slate-500';
+  el.title = inv
+    ? (bind === 'unset' ? 'Not associated with an Egeria Project yet' : `Egeria: ${bind}`)
+    : 'No investigation — declare one to say why this work exists';
+  // Keep the publish path's context in step with the current investigation.
+  if (inv && inv.egeria_context && inv.egeria_context.status !== 'unset') {
+    _sessionEgeriaProjectContext = inv.egeria_context;
+  }
 }
 
 async function loadInvestigationsPanel() {
@@ -7021,7 +7054,8 @@ function _renderInvestigationsPanel() {
           </div>
           <div class="text-[11px] text-slate-500 mt-0.5">
             ${i.member_count} resource(s) ·
-            ${i.egeria_project_guid ? 'bound to an Egeria Project' : 'local only — not in Egeria'}
+            ${_investigationBindingLabel(i)}
+            ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change' : 'set Egeria Project'}</button>` : ''}
           </div>
         </div>
         <div class="shrink-0 flex gap-1">
@@ -7060,6 +7094,35 @@ function _renderInvestigationsPanel() {
       </div>
     </div>
   </div>`;
+}
+
+// The binding is a property of the investigation, so it is described here
+// rather than in a separate header badge. "Local only" is stated explicitly:
+// without it, an unbound investigation is indistinguishable from a bound one,
+// which is the same absence-reads-as-presence failure this codebase keeps
+// finding elsewhere.
+function _investigationBindingLabel(inv) {
+  const ctx = inv.egeria_context || {};
+  switch (ctx.status) {
+    case 'linked':   return `📁 ${_esc((ctx.egeria_project_qualified_name || '').split('::')[0] || 'linked to an Egeria Project')}`;
+    case 'personal': return '👤 personal exploration — not catalogued';
+    case 'declined': return '🚫 deliberately not associated';
+    case 'deferred': return `⏳ ${_esc(ctx.free_text_name || 'deferred')}`;
+    default:         return 'local only — not in Egeria';
+  }
+}
+
+function _openInvestigationEgeriaPicker() {
+  _egeriaProjectPickerScope = 'investigation';
+  const intro = document.getElementById('egeria-project-modal-intro');
+  if (intro) {
+    intro.innerHTML =
+      'Which Egeria Project does <em>this investigation</em> belong to? ' +
+      'Binding is one of the three ways to start an investigation — the record already ' +
+      'carries a nullable project GUID, so this is a fill-in, not a migration.';
+  }
+  const modal = document.getElementById('egeria-project-modal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 async function _createInvestigation() {

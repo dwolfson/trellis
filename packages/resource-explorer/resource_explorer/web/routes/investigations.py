@@ -36,6 +36,16 @@ class MemberSpec(BaseModel):
     state: str = "in-scope"
 
 
+class EgeriaProjectBinding(BaseModel):
+    """The same context shape the publish path already speaks, so folding the
+    session-wide control into the investigation teaches nothing downstream a
+    new vocabulary."""
+    status: str = "unset"
+    egeria_project_guid: str = ""
+    egeria_project_qualified_name: str = ""
+    free_text_name: str = ""
+
+
 class MembersUpdate(BaseModel):
     members: list[MemberSpec] = Field(default_factory=list)
 
@@ -109,3 +119,18 @@ async def close_investigation(slug: str) -> dict:
     if not reg.get_investigation(slug):
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
     return reg.close_investigation(slug)
+
+
+@router.put("/{slug}/egeria-project")
+async def bind_egeria_project(slug: str, req: EgeriaProjectBinding) -> dict:
+    """Bind (or clear) this investigation's Egeria Project.
+
+    §1 makes binding to an Egeria Project one of the three ways to START an
+    investigation — so it belongs here rather than as a parallel session-wide
+    setting. Two controls answering "which project does this work belong to"
+    is two answers to one question.
+    """
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return reg.set_investigation_egeria_project(slug, req.model_dump())
