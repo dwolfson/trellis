@@ -77,7 +77,21 @@ PRODUCED_GUARDS = (GUARD_CONSULTED, GUARD_NO_DOCUMENT)
 ING_INGESTED = "ingested"            # a collection exists; do not offer
 ING_DECLINED = "declined"            # self_published / code_host — a correct refusal
 ING_ATTEMPTED_EMPTY = "attempted"    # ran, ingested nothing worth having
-ING_NOT_ATTEMPTED = "not-attempted"  # the only state an offer belongs in
+ING_NOT_ATTEMPTED = "not-attempted"  # the step has never run here — offer belongs here
+ING_UNKNOWN = "unknown"              # we could not find out; offer nothing
+
+#: Split out of `not-attempted` on 2026-08-25, at the presentation session's
+#: request and for a better reason than it not coping: it coped by matching the
+#: DETAIL STRING to tell "nobody read the site" from "we could not tell". That
+#: is their code depending on my wording across a module boundary, with nothing
+#: to notice a reword — and the failure would have been silent and specific,
+#: the card going back to confidently offering to ingest sites whose status
+#: merely failed to load.
+#:
+#: One state carrying two facts, which is the shape this session has met from
+#: five directions. Mine this time.
+ING_STATES = (ING_INGESTED, ING_DECLINED, ING_ATTEMPTED_EMPTY,
+              ING_NOT_ATTEMPTED, ING_UNKNOWN)
 
 
 def ingestion_status(registry, slug: str) -> tuple[str, str]:
@@ -96,9 +110,12 @@ def ingestion_status(registry, slug: str) -> tuple[str, str]:
     """
     try:
         m = registry.query_metrics(slug, "website_ingestion") or {}
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception("%s: could not read website_ingestion metrics", slug)
-        return ING_NOT_ATTEMPTED, "ingestion status unreadable"
+        # NOT `not-attempted`. "The step has never run here" is a fact about the
+        # repository; "we could not find out" is a fact about this lookup, and
+        # only the first is a reason to offer anything.
+        return ING_UNKNOWN, f"ingestion status unreadable: {exc}"
     if not m:
         return ING_NOT_ATTEMPTED, ""
     detail = m.get("detail") or {}

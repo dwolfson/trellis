@@ -1403,14 +1403,16 @@ def _doc_ingestion_state(registry, slug: str) -> dict:
     try:
         from resource_explorer.surveyors.sub_surveyors.arch_lens import ingestion_status
 
+        from resource_explorer.surveyors.sub_surveyors.arch_lens import ING_UNKNOWN
+
         state, detail = ingestion_status(registry, slug)
-        # ingestion_status() absorbs its own read failure and returns
-        # `not-attempted` with detail "ingestion status unreadable" — so
-        # "nobody has read the site" and "we could not tell" arrive as the same
-        # state. Rendering keys on state, so without this an unreadable status
-        # would produce a confident offer to ingest a site we know nothing
-        # about. Downgraded to unknown, which renders as nothing.
-        if detail == "ingestion status unreadable":
+        # `unknown` is now a state of its own (2026-08-25). Until it was, this
+        # told "nobody has read the site" from "we could not tell" by matching
+        # ingestion_status's DETAIL STRING — this module depending on another's
+        # wording, with nothing to notice a reword. It is exactly what happened:
+        # the detail gained an exception suffix and the exact match stopped
+        # firing. The state is the contract; the prose beside it is not.
+        if state == ING_UNKNOWN:
             return {"state": "", "detail": ""}
         return {"state": state, "detail": detail}
     except Exception:  # noqa: BLE001

@@ -112,6 +112,11 @@ zipball-no-clone is a reasonable fit for RE's. Forcing one orchestrator on both 
 highest-risk, lowest-confidence move available here and shouldn't be attempted before EA work
 resumes enough to know what EA's pipeline actually needs to become.
 
+*Narrower correction (measured, not this pass's original claim):* within RE's own orchestrator,
+sibling repos that share a host are genuinely re-doing the same work — see item 8. That's real
+ingestion-pipeline duplication and belongs to this item's scope even though the RE-vs-EA
+orchestrator split above stays as-is.
+
 ### 6. Coverage measurement itself has a trap — a real, concurrently-measured finding
 
 A parallel session auditing `repo_arch_lens`'s website-ingestion trigger (`sub_surveyors/
@@ -156,16 +161,55 @@ correct GUID). Not an ingestion-pipeline duplication issue (items 1–5 don't to
 historical ingestion data pulled from before the fix should be treated as measured against a
 catalog that was, for some repos, genuinely wrong — not just incomplete.
 
+### 8. Within-run duplicate ingestion across sibling repos — real, measured duplication
+
+Also measured today, and squarely in this doc's scope (unlike items 6–7): `egeria-project.org`
+was ingested **three separate times in one run** — once each for `egeria_git`,
+`egeria_python_git`, and `egeria_workspaces_git` — 6018 chunks, 187 pages, ~175 seconds, every
+time. RE's `web_docs` collections are host-keyed by design specifically so sibling repos that
+share a doc site land in one destination collection — but nothing memoizes the *work* within a
+run, only the destination. Three repos in the same run each independently fetch, chunk, and
+embed the same 187 pages into the same collection.
+
+**Verdict: (a) — extract as-is, scoped to RE's own orchestrator.** This isn't an RE-vs-EA
+duplication question (contrast item 5's orchestrator split, which stays); it's RE re-doing its
+own already-done work within a single run because host-keying dedupes the *destination* but not
+the *fetch*. The fix is a run-scoped memoization keyed on the same host used for the collection
+name, inside `IngestionPipeline`/`site_discovery.py` — not a new shared package, and not
+something EA's pipeline needs (EA's fixed ~5-repo catalog has no sibling-host overlap to
+dedupe).
+
+**Also measured, not yet chased down:** a bug where `detail["ingested"]` was hardcoded `True`
+regardless of outcome — `milvus` recorded `ingested: True` after 400/400 sitemap-page fetches
+failed and 685 seconds were spent, while the adjacent `StepOutcome` (`unverified`, from
+`known_positive=bool(fetched)`) was correct the whole time. Since fixed (`ingested` now reads
+`bool(chunks_added)`), by the same concurrent session — noted here because it means any
+ingestion-coverage numbers pulled from before the fix over-report, the same caveat as item 7 but
+for a different field. Current corpus snapshot after a 38-repo bulk run: 25 ingested, 20
+`web_docs` collections; refusals split `self_published` (13) / `non_doc_host` (2) /
+`unrelated_host` (1) / `code_host` (1) — the last two are new guards, one of which caught a real
+bug (a homepage resolving to someone else's documentation site and pulling 3096 chunks of it
+into the wrong collection, before the guard existed).
+
+**Open question, deliberately not answered here:** ingestion currently fetches, chunks, and
+embeds in one pass with no staging/decision point — the dead-site case above (8 unchecked
+assumptions, one bad one costing 685s before anything noticed) is the concrete argument for
+profiling/staging *before* deciding whether and how to ingest. Whether that's worth building is
+a product/design call this audit doesn't have the standing to make on its own — recorded as a
+Follow-up below rather than a verdict.
+
 ## Recommendation
 
 1. **Extend the existing cross-schema-read pattern to Python symbol extraction** (item 1)
    once EA's Python ingestion targets (pyegeria etc.) are also registered as RE projects — ask
    whoever ran the AST-ownership-transfer plan whether that was the actual blocker, rather than
    re-deriving it. This is the only item in this audit with a clear, proven playbook to reuse.
-2. **Don't touch** items 2, 3, or 5 — each is a confirmed, reasonable divergence, not
-   duplication.
+2. **Don't touch** items 2, 3, or 5 (RE-vs-EA orchestrator split) — each is a confirmed,
+   reasonable divergence, not duplication.
 3. **Nothing further on embeddings** (item 4) — already resolved via the `trellis-vectorstore`
    Protocol seam.
+4. **Fix item 8's within-run duplication** — real, measured, scoped entirely inside RE's own
+   orchestrator; the lowest-risk, highest-confidence code change this audit identifies.
 
 ## Follow-ups (not part of this pass)
 
@@ -178,3 +222,12 @@ catalog that was, for some repos, genuinely wrong — not just incomplete.
 - Confirm with the user whether EA's fixed 5-repo catalog should eventually register those
   repos as RE projects (making item 1's extension possible) — that's a product decision, not
   an engineering one, and shouldn't be assumed here.
+- **Stage ingestion instead of fetch-chunk-embed-in-one-pass** (raised alongside item 8):
+  website ingestion currently makes eight unchecked assumptions between "found a homepage" and
+  "chunks are embedded" — the homepage is the docs site, a sitemap finds the pages, a plain
+  client can fetch them, tag-stripping yields text, one chunk size fits everything, every page
+  is worth embedding, the site is one version, the content isn't already held. The dead-site
+  case in item 8 (all 400 fetches failing, 685 seconds spent before anything noticed) is the
+  concrete argument for profiling/staging *before* committing to a full ingest — deciding
+  whether and how, not just whether. Whether that's worth the added complexity is a design call
+  this audit deliberately leaves open rather than assumes.
