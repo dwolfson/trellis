@@ -159,3 +159,34 @@ async def bind_egeria_project(slug: str, req: EgeriaProjectBinding) -> dict:
     if not reg.get_investigation(slug):
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
     return reg.set_investigation_egeria_project(slug, req.model_dump())
+
+
+@router.post("/{slug}/promote")
+async def promote_to_egeria(slug: str) -> dict:
+    """Create the Egeria side of this investigation — Project, working-set
+    Collection, ResourceList and CollectionMembership.
+
+    The local record was shaped for this from the start, so it is a replay
+    rather than a migration. Partial success is a real outcome and is reported
+    as such: a member whose repo has never been published has no asset GUID to
+    link, and inventing one would be worse than saying so.
+    """
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    reg = _registry()
+    inv = reg.get_investigation(slug)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+
+    result = EgeriaInvestigationPublisher(reg).promote(slug)
+    if result.project_guid:
+        # Record the binding even on partial success — the Project genuinely
+        # exists now, and leaving the local row unbound would orphan it.
+        reg.set_investigation_egeria_project(slug, {
+            "status": "linked",
+            "egeria_project_guid": result.project_guid,
+            "egeria_project_qualified_name": result.project_qualified_name,
+        })
+    return result.as_dict()

@@ -1542,6 +1542,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fetch('/api/investigations/').then(r => r.json()).then(list => {
     _investigations = Array.isArray(list) ? list : [];
     _refreshInvestigationLabel();
+    _refreshScoutInvestigationCheckbox();
     _loadWorkingSet();
   }).catch(() => _refreshInvestigationLabel());
   document.getElementById('query-input').addEventListener('keydown', e => {
@@ -3430,6 +3431,9 @@ function _renderProjectRow(p) {
         <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${dispositionBadge}${_esc(p.display_name)}
       </div>
       <div class="proj-actions">
+        ${_currentInvestigation() ? `<button class="proj-action-btn"
+          data-tip="${_workingSetKeys.has('repo:' + p.slug) ? 'Remove from this investigation' : 'Add to this investigation'}"
+          onclick="event.stopPropagation(); _toggleInvestigationMember('repo', '${_esc(p.slug)}')">${_workingSetKeys.has('repo:' + p.slug) ? '🎯' : '＋'}</button>` : ''}
         <button class="proj-action-btn" data-tip="Assign to group"
           onclick="event.stopPropagation(); openAssignGroupModal('${_esc(p.slug)}', '${_esc(p.group_slug)}')">🗂</button>
         <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
@@ -3476,6 +3480,80 @@ async function _loadWorkingSet() {
   }
   _workingSetLoaded = true;
   renderProjectList();
+}
+
+// Scouting -> working set: the loop that makes an investigation accumulate.
+//
+// Membership is the investigation's, so this writes through the API rather than
+// to a client-side set — the working set is shared state about the body of
+// work, unlike the per-browser "hide this from me" flag next to it.
+async function _toggleInvestigationMember(entityType, slug) {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  const key = `${entityType}:${slug}`;
+  const isMember = _workingSetKeys.has(key);
+  try {
+    if (isMember) {
+      await fetch(`/api/investigations/${encodeURIComponent(inv)}/members/${entityType}/${encodeURIComponent(slug)}`,
+                  {method: 'DELETE'});
+      showToast('success', `Removed from ${_investigationName(inv)}`, 2500);
+    } else {
+      await fetch(`/api/investigations/${encodeURIComponent(inv)}/members`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entity_type: entityType, entity_slug: slug}),
+      });
+      showToast('success', `Added to ${_investigationName(inv)}`, 2500);
+    }
+  } catch (e) {
+    showToast('error', `Could not update the working set: ${e}`, 4000);
+    return;
+  }
+  await _loadWorkingSet();
+  // Keep the investigation panel's own count honest if it is on screen — it
+  // renders member_count at load, so without this it silently disagrees with
+  // the sidebar it is supposed to describe.
+  if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
+    loadInvestigationsPanel();
+  }
+}
+
+async function _addManyToInvestigation(slugs) {
+  const inv = _currentInvestigation();
+  if (!inv || !slugs.length) return;
+  let added = 0;
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(`/api/investigations/${encodeURIComponent(inv)}/members`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entity_type: 'repo', entity_slug: slug,
+                              membership_rationale: 'imported from Scouting'}),
+      });
+      if (r.ok) added++;
+    } catch (e) { /* one failure must not abandon the rest of the batch */ }
+  }
+  await _loadWorkingSet();
+  // Say what actually happened, not what was attempted — a partial batch that
+  // reports success is the same class of lie as an empty result that reports none.
+  if (added === slugs.length) {
+    showToast('success', `${added} repo(s) added to ${_investigationName(inv)}`, 4000);
+  } else {
+    showToast('error', `${added} of ${slugs.length} added to ${_investigationName(inv)} — the rest failed`, 6000);
+  }
+}
+
+function _refreshScoutInvestigationCheckbox() {
+  const wrap = document.getElementById('scout-add-to-investigation-wrap');
+  if (!wrap) return;
+  const inv = _currentInvestigation();
+  wrap.classList.toggle('hidden', !inv);
+  wrap.classList.toggle('flex', !!inv);
+  const nameEl = document.getElementById('scout-investigation-name');
+  if (nameEl && inv) nameEl.textContent = _investigationName(inv);
+}
+
+function _investigationName(slug) {
+  const inv = _investigations.find(i => i.slug === slug);
+  return inv ? inv.display_name : slug;
 }
 
 function _setProjectLifecycleFilter(kind) {
@@ -7051,6 +7129,7 @@ function _setCurrentInvestigation(slug) {
     else localStorage.removeItem(_CURRENT_INVESTIGATION_KEY);
   } catch (e) { /* private mode — the label just won't persist */ }
   _refreshInvestigationLabel();
+  _refreshScoutInvestigationCheckbox();
   _loadWorkingSet();
   if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
     loadInvestigationsPanel();
@@ -7119,7 +7198,8 @@ function _renderInvestigationsPanel() {
           <div class="text-[11px] text-slate-500 mt-0.5">
             ${i.member_count} resource(s) ·
             ${_investigationBindingLabel(i)}
-            ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change' : 'set Egeria Project'}</button>` : ''}
+            ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
+            ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
           </div>
         </div>
         <div class="shrink-0 flex gap-1">
@@ -7208,6 +7288,34 @@ async function _createInvestigation() {
     _setCurrentInvestigation(inv.slug);
     loadInvestigationsPanel();
   } catch (e) { showToast(`Could not create: ${e}`, 'error'); }
+}
+
+// Promote: create the Egeria side — Project, working-set Collection,
+// ResourceList, CollectionMembership. Partial success is reported rather than
+// rounded up, because a member whose repo was never published has no asset to
+// link and the user needs to know which ones those are.
+async function _promoteInvestigation(slug) {
+  if (!confirm('Create an Egeria Project (and working-set Collection) for this investigation?\n\nThis writes to Egeria.')) return;
+  showToast('success', 'Creating in Egeria…', 2000);
+  try {
+    const res = await fetch(`/api/investigations/${encodeURIComponent(slug)}/promote`, {method: 'POST'});
+    const r = await res.json();
+    if (!r.ok && !r.project_guid) {
+      showToast('error', `Could not create: ${(r.errors || ['unknown']).join('; ')}`, 8000);
+      return;
+    }
+    const linked = (r.members_linked || []).length;
+    const missed = (r.members_unlinkable || []).length;
+    let msg = `Egeria Project created${r.resource_list_linked ? ' with its working set' : ''}. ${linked} resource(s) linked`;
+    if (missed) msg += `, ${missed} could not be — publish those repos to Egeria first`;
+    showToast(missed || r.errors?.length ? 'error' : 'success', msg, 8000);
+    await loadInvestigationsPanel();
+    const list = await (await fetch('/api/investigations/')).json();
+    _investigations = Array.isArray(list) ? list : [];
+    _refreshInvestigationLabel();
+  } catch (e) {
+    showToast('error', `Could not create in Egeria: ${e}`, 6000);
+  }
 }
 
 async function _closeInvestigation(slug) {
@@ -10859,6 +10967,10 @@ function renderScoutResults() {
           ${groupOptions}
         </select>
         <button onclick="importSelectedScoutRepos()" class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs font-semibold transition-colors">Import Selected</button>
+        <label id="scout-add-to-investigation-wrap" class="hidden items-center gap-1 text-xs text-slate-300 ml-2">
+          <input type="checkbox" id="scout-add-to-investigation" checked>
+          <span>Add to <span id="scout-investigation-name" class="text-cyan-400"></span></span>
+        </label>
       </div>
     </div>
     <div class="bg-slate-950 border border-slate-800 rounded max-h-96 overflow-auto">
@@ -10929,15 +11041,22 @@ async function _setScoutDisposition(i, disposition) {
 }
 
 async function _pollProjectsAfterImport(expectedNewCount) {
+  const baselineSlugs = new Set(_allProjectSummaries.map(p => p.slug));
   const baseline = _allProjectSummaries.length;
   const delaysMs = [2000, 4000, 6000, 8000];  // ~20s total, backing off
   for (const delay of delaysMs) {
     await new Promise(r => setTimeout(r, delay));
     await loadProjects();
-    if (_allProjectSummaries.length >= baseline + expectedNewCount) return;
+    if (_allProjectSummaries.length >= baseline + expectedNewCount) break;
   }
+  // Return what actually appeared rather than what was asked for — the import
+  // runs in a background thread and can partially succeed, so the caller must
+  // act on observed registrations, not on the request.
+  return _allProjectSummaries.map(p => p.slug).filter(s => !baselineSlugs.has(s));
+  // The import controls are built here, so the investigation checkbox can
+  // only be populated once this has run — it does not exist before.
+  _refreshScoutInvestigationCheckbox();
 }
-
 async function importSelectedScoutRepos() {
   const groupSlug = document.getElementById('scout-target-group').value;
   const selected = _scoutResults.filter((r, i) => {
@@ -10969,8 +11088,14 @@ async function importSelectedScoutRepos() {
     // immediate refresh here would almost always race it and still show
     // the old list. Poll a few more times over the next ~20s to pick up
     // newly-registered repos without the user having to reload manually.
-    if (data.queued > 0) _pollProjectsAfterImport(data.queued);
-    else loadProjects();
+    const addToInv = document.getElementById('scout-add-to-investigation')?.checked
+                     && !!_currentInvestigation();
+    if (data.queued > 0) {
+      const newSlugs = await _pollProjectsAfterImport(data.queued);
+      if (addToInv && newSlugs.length) await _addManyToInvestigation(newSlugs);
+    } else {
+      await loadProjects();
+    }
   } catch(e) {
     showToast('error', `Failed to start import: ${_esc(e.message)}`, 6000);
   }
