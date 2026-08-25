@@ -3890,6 +3890,38 @@ class ProjectRegistry:
             "_ambiguous": len(row) > 1,
         }
 
+    def update_investigation(self, slug: str, *, display_name: str | None = None,
+                             description: str | None = None,
+                             purposes: list[str] | None = None) -> dict | None:
+        """Rename or re-describe an investigation. The slug never changes.
+
+        An investigation accumulates members, an Egeria binding and inherited
+        context rows that all reference it, so re-slugging would orphan them —
+        and the slug is an identifier, not a label. Only what a human reads
+        changes here.
+        """
+        import json as _json
+        inv = self.get_investigation(slug)
+        if not inv:
+            return None
+        if purposes is not None:
+            bad = [p for p in purposes if p not in self.VALID_PURPOSES]
+            if bad:
+                raise ValueError(f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}")
+        with self._conn() as conn:
+            if display_name is not None:
+                conn.execute("UPDATE investigations SET display_name = ? WHERE slug = ?",
+                             (display_name, slug))
+            if description is not None:
+                conn.execute("UPDATE investigations SET description = ? WHERE slug = ?",
+                             (description, slug))
+            if purposes is not None:
+                conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?",
+                             (_json.dumps(purposes), slug))
+            conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
+                         (datetime.utcnow().isoformat(), slug))
+        return self.get_investigation(slug)
+
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:
         """Record the Egeria Collection this working set became.

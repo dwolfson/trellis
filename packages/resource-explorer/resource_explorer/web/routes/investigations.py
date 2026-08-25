@@ -29,6 +29,12 @@ class InvestigationCreate(BaseModel):
     egeria_project_qualified_name: str = ""
 
 
+class InvestigationUpdate(BaseModel):
+    display_name: str | None = None
+    description: str | None = None
+    purposes: list[str] | None = None
+
+
 class EgeriaProjectBinding(BaseModel):
     """The same context shape the publish path already speaks, so folding the
     session-wide control into the investigation teaches nothing downstream a
@@ -225,3 +231,43 @@ async def promote_to_egeria(slug: str) -> dict:
             "egeria_project_qualified_name": result.project_qualified_name,
         })
     return result.as_dict()
+
+
+@router.patch("/{slug}")
+async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
+    """Rename or re-describe. The slug is an identifier and never changes —
+    members, the Egeria binding and inherited context rows all reference it."""
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    try:
+        return reg.update_investigation(
+            slug, display_name=req.display_name, description=req.description,
+            purposes=req.purposes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{slug}/sync-egeria")
+async def sync_egeria_project(slug: str) -> dict:
+    """Push this investigation's name/description to its Egeria Project.
+
+    Separate from PATCH deliberately: renaming is a local edit and must not fail
+    because Egeria is unreachable. But leaving the two permanently disagreeing
+    about the same body of work is the drift this frame exists to prevent, so
+    the sync is offered explicitly rather than skipped.
+    """
+    import asyncio
+
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    res = await asyncio.to_thread(
+        EgeriaInvestigationPublisher(reg).sync_project_properties, slug
+    )
+    return res.as_dict()
