@@ -33,8 +33,16 @@ def made(client):
     reg = ProjectRegistry()
     with reg._conn() as conn:
         for slug in created:
-            ws = reg.investigation_working_set_slug(slug)
-            if ws:
+            # EVERY collection this investigation owns, not just its folio. An
+            # investigation now has a Folio plus one WorkingSet per disposition
+            # in use, so a cleanup that hand-lists one leaks the rest into the
+            # next test — which is how these passed alone and failed in suite.
+            rows = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                (slug,),
+            ).fetchall()
+            for r in rows:
+                ws = r["working_set_slug"]
                 conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?", (ws,))
                 conn.execute("DELETE FROM working_sets WHERE slug = ?", (ws,))
             conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?", (slug,))
@@ -440,3 +448,192 @@ def test_an_excluded_member_does_not_inherit(made):
     ws = reg.get_or_create_working_set(inv["slug"])
     reg.add_working_set_member(ws["slug"], "repo", "ruled-out-repo", state="excluded")
     assert reg.inherited_egeria_project_context("repo", "ruled-out-repo") is None
+
+
+def test_a_folio_holds_scope_and_working_sets_hold_dispositions(made):
+    """The correction that prompted this: a WorkingSet carries a SINGLE
+    Disposition, so one per investigation cannot be the membership list.
+
+    Folio = everything in scope. WorkingSet = the resources carrying one
+    disposition. A resource's disposition within an investigation IS which
+    WorkingSet it sits in, so nothing stores it twice.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Folio Model")
+    reg = ProjectRegistry()
+
+    folio = reg.get_or_create_folio(inv["slug"])
+    assert folio["collection_kind"] == "folio"
+    assert folio["disposition"] == ""
+
+    reg.set_investigation_disposition(inv["slug"], "repo", "alpha", "tracking")
+    reg.set_investigation_disposition(inv["slug"], "repo", "beta", "using")
+
+    by_disp = reg.investigation_dispositions(inv["slug"])
+    assert sorted(by_disp) == ["tracking", "using"]
+    # in scope regardless of judgement
+    assert {m["entity_slug"] for m in reg.list_investigation_members(inv["slug"])} == {"alpha", "beta"}
+
+
+def test_changing_a_disposition_moves_rather_than_adds(made):
+    """A WorkingSet carries one disposition, so membership of two would assert
+    two contradictory judgements about the same resource at once."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Moving")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "gamma", "investigating")
+    reg.set_investigation_disposition(inv["slug"], "repo", "gamma", "abandoned")
+
+    by_disp = reg.investigation_dispositions(inv["slug"])
+    holding = [d for d, ms in by_disp.items() if any(m["entity_slug"] == "gamma" for m in ms)]
+    assert holding == ["abandoned"], f"in {len(holding)} sets at once: {holding}"
+    assert reg.disposition_of(inv["slug"], "repo", "gamma") == "abandoned"
+
+
+def test_clearing_a_disposition_leaves_it_in_scope(made):
+    """In scope but unjudged is the normal state straight after scouting, and
+    must be expressible — otherwise clearing a decision would silently remove
+    the resource from the investigation."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Unjudged")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "delta", "tracking")
+    reg.set_investigation_disposition(inv["slug"], "repo", "delta", "")
+
+    assert reg.disposition_of(inv["slug"], "repo", "delta") == ""
+    assert any(m["entity_slug"] == "delta" for m in reg.list_investigation_members(inv["slug"]))
+
+
+def test_undecided_is_not_a_working_set(made):
+    """"Nobody has judged this" is the ABSENCE of a WorkingSet. Creating one for
+    it would make an unjudged resource indistinguishable from one deliberately
+    marked undecided."""
+    from resource_explorer.registry import ProjectRegistry
+    import pytest as _pytest
+
+    reg = ProjectRegistry()
+    assert "undecided" not in reg.WORKING_SET_DISPOSITIONS
+    inv = made(display_name="No Undecided Set")
+    with _pytest.raises(ValueError):
+        reg.get_or_create_disposition_set(inv["slug"], "undecided")
+
+
+def test_dispositions_route_returns_what_the_filter_needs(client, made):
+    """The left-column chips read this directly, so its shape is a contract."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Chips")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "one", "tracking")
+    reg.set_investigation_disposition(inv["slug"], "repo", "two", "using")
+
+    r = client.get(f"/api/investigations/{inv['slug']}/dispositions")
+    assert r.status_code == 200
+    body = r.json()
+    assert sorted(body) == ["tracking", "using"]
+    assert body["tracking"][0]["entity_slug"] == "one"
+
+
+def test_only_dispositions_in_use_are_returned(client, made):
+    """An investigation where nothing is abandoned must not offer an 'abandoned'
+    chip that always matches nothing — an always-empty filter reads as broken
+    rather than as an empty category."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Sparse")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "solo", "tracking")
+
+    body = client.get(f"/api/investigations/{inv['slug']}/dispositions").json()
+    assert list(body) == ["tracking"]
+    assert len(body) < len(reg.WORKING_SET_DISPOSITIONS)
+
+
+def test_an_unknown_disposition_is_rejected(client, made):
+    inv = made(display_name="Bad Disposition")
+    r = client.post(f"/api/investigations/{inv['slug']}/dispositions/repo/x?disposition=nonsense")
+    assert r.status_code == 400
+    assert "nonsense" in r.json()["detail"]
+
+
+def test_a_disposition_member_is_always_in_the_folio(made):
+    """Why the disposition filter can compose with the working-set filter.
+
+    set_investigation_disposition adds to the Folio BEFORE assigning, so a
+    disposition member is in scope by construction. That is what makes
+    "working set AND disposition" safe to combine — the intersection can never
+    be spuriously empty, so the UI must not widen the base filter to compensate
+    for a problem that cannot occur.
+
+    It also matters for intent: disposition exists so an investigation can focus
+    on what matters within it. Widening to every registered repo would discard
+    that focus at the moment the user asked for it.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Composes")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "never-added-first", "tracking")
+
+    in_scope = {(m["entity_type"], m["entity_slug"])
+                for m in reg.list_investigation_members(inv["slug"])}
+    for disposition, members in reg.investigation_dispositions(inv["slug"]).items():
+        for m in members:
+            assert (m["entity_type"], m["entity_slug"]) in in_scope, (
+                f"{m['entity_slug']} is '{disposition}' but not in the Folio — "
+                "the two filters would then disagree"
+            )
+
+
+def test_next_steps_retire_as_the_gaps_close(client, made):
+    """Offers, not a checklist to fill in.
+
+    The creation form asks only what §1 says an investigation IS — a name, why
+    it exists, and what kind of work it is. Everything else surfaces here, where
+    the absence already is, and disappears when it stops being true. A step that
+    lingered after being satisfied would train people to ignore the list.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Retiring", purposes=["Select"])
+    reg = ProjectRegistry()
+    slug = inv["slug"]
+
+    def ids():
+        return [s["id"] for s in client.get(f"/api/investigations/{slug}/next-steps").json()["steps"]]
+
+    assert ids() == ["add_resources", "bind_egeria"]
+
+    ws = reg.get_or_create_folio(slug)
+    reg.add_working_set_member(ws["slug"], "repo", "some-repo")
+    assert ids() == ["set_dispositions", "bind_egeria"], "scope offer should retire once scoped"
+
+    reg.set_investigation_disposition(slug, "repo", "some-repo", "investigating")
+    assert ids() == ["bind_egeria"], "judgement offer should retire once judged"
+
+    reg.set_investigation_egeria_project(slug, {
+        "status": "linked", "egeria_project_guid": "g",
+    })
+    body = client.get(f"/api/investigations/{slug}/next-steps").json()
+    assert body["steps"] == [] and body["complete"] is True
+
+
+def test_a_purposeless_investigation_is_told_so(client, made):
+    """Purpose is the one field that does real work — it ranks what gets
+    proposed — so its absence is worth surfacing rather than defaulting."""
+    inv = made(display_name="No Purpose", purposes=[])
+    ids = [s["id"] for s in client.get(f"/api/investigations/{inv['slug']}/next-steps").json()["steps"]]
+    assert "declare_purpose" in ids
+
+
+def test_classification_is_recorded_and_validated(client, made):
+    """§1 mode 2 carries a classification. Kept even for a local-only
+    investigation, so promoting later does not re-ask something already decided."""
+    inv = made(display_name="Kinded", project_classification="Campaign")
+    assert inv["project_classification"] == "Campaign"
+    bad = client.post("/api/investigations/", json={"display_name": "Bad Kind",
+                                                    "project_classification": "Nonsense"})
+    assert bad.status_code == 400

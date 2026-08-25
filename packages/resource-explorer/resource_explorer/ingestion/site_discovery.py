@@ -85,6 +85,83 @@ def is_code_host(url: str) -> bool:
     return host in _CODE_HOSTS
 
 
+# Hosts that are never a project's documentation, whatever the path.
+#
+# Added 2026-08-25 after a pilot ingested all three deliberately-bad URLs it was
+# given. `repo_homepage` falls back to manifest and README URLs when GitHub
+# declares no homepage, and a README's first link is very often a badge — so
+# `docling_mcp`'s "homepage" was `static.pepy.tech/badge/docling-mcp/month`, a
+# download-count image, and `docling_serve`'s was a quay.io registry page. Both
+# were ingested. `is_code_host` already guards the forge case; these are the
+# same mistake with different hosts.
+_NON_DOC_HOSTS: frozenset[str] = frozenset({
+    # badges and shields
+    "pepy.tech", "static.pepy.tech", "shields.io", "img.shields.io",
+    "badge.fury.io", "codecov.io", "coveralls.io", "app.codacy.com",
+    "circleci.com", "travis-ci.org", "travis-ci.com",
+    # container registries
+    "quay.io", "hub.docker.com", "ghcr.io", "docker.io", "gcr.io",
+    # package registries
+    "pypi.org", "www.npmjs.com", "npmjs.com", "crates.io", "rubygems.org",
+    "mvnrepository.com", "search.maven.org", "packagist.org", "nuget.org",
+    # dataset / model hubs
+    "huggingface.co", "kaggle.com", "zenodo.org",
+})
+
+
+def is_non_doc_host(url: str) -> bool:
+    """True when this URL's host cannot be a documentation site at all.
+
+    Distinct from `is_code_host`, which is about the project's own forge page.
+    This is about hosts that belong to somebody else entirely — a badge service,
+    a registry, a dataset hub — and that a README link scrape picks up readily.
+    """
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    return host in _NON_DOC_HOSTS
+
+
+def _tokens(text: str) -> set:
+    return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(t) > 2}
+
+
+def host_relates_to_project(url: str, owner_repo: str) -> bool:
+    """Does this site plausibly belong to THIS project?
+
+    The hardest case the pilot exposed is not a badge, it is a real
+    documentation site belonging to somebody else: `docling_nlp`'s homepage
+    resolved to `docs.astral.sh/uv/`, and ingesting it pulled **3096 chunks of
+    the uv package manager's documentation** into a collection attributed to
+    docling. No host list catches that, because the host is a perfectly good
+    documentation site — just not this project's.
+
+    So: require a shared token between the site host and the owner or repo name.
+    `kafka` / `kafka.apache.org`, `polaris` / `polaris.apache.org`,
+    `deep_causality` / `deepcausality.com` and `docling` /
+    `docling-project.github.io` all pass; `docling-nlp` / `docs.astral.sh` does
+    not.
+
+    **Deliberately a refusal with a stated reason, not a silent skip.** A
+    project whose documentation genuinely lives on an unrelated domain will be
+    refused here, and that must be visible and correctable rather than looking
+    like an absence — which is the whole failure class this codebase keeps
+    meeting.
+    """
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    host_tokens = _tokens(host.replace(".", " "))
+    # Drop the parts every host has, which would otherwise match anything.
+    host_tokens -= {"com", "org", "net", "io", "dev", "app", "github", "docs",
+                    "www", "readthedocs", "gitlab", "pages"}
+    project_tokens = _tokens(owner_repo.replace("/", " "))
+    if not host_tokens or not project_tokens:
+        return True          # nothing to compare — do not refuse on no evidence
+    if host_tokens & project_tokens:
+        return True
+    # Concatenated forms: `deep_causality` -> `deepcausality`.
+    joined = "".join(sorted(project_tokens))
+    return any(h in "".join(project_tokens) or "".join(project_tokens) in h
+               for h in host_tokens)
+
+
 def repo_publishes_site(file_inventory: list[str]) -> str:
     """If this repo builds a website, return the marker that says so, else "".
 

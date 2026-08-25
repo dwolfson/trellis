@@ -67,6 +67,12 @@ _NORMALISED_STOPWORDS = frozenset()   # populated below, after _normalise exists
 #: unbounded memory for a Discovery-tier labelling pass.
 MAX_DOC_CHARS = 400_000
 
+#: Cap on chunks pulled back from an ingested collection. A site can be
+#: thousands of chunks (egeria-project.org is 6018); the lens only needs enough
+#: emphasised text to recognise component names, and the terms it extracts are
+#: a set, so more chunks stop adding new ones quickly.
+MAX_INGESTED_CHUNKS = 800
+
 #: Cap on FILES read, which is the real cost: each one is an API call.
 #: `milvus-io/milvus`'s `docs/design-docs` holds 80 markdown files one level
 #: down, and reading all of them would put this well outside the tier it claims.
@@ -97,14 +103,26 @@ class DocLens:
     date: str | None = None             # last-commit date of the document
     terms: list = field(default_factory=list)        # candidate names it emphasises
     documented: dict = field(default_factory=dict)   # component slug -> matched term
+    #: `{slug: EVIDENCE_*}` — how each entry in `documented` was established.
+    #: Emphasis in a source document is a stronger claim than a mention in an
+    #: ingested site, and collapsing them would over-state the weaker one.
+    evidence_kind: dict = field(default_factory=dict)
     undetected: list = field(default_factory=list)   # doc names we did NOT propose
     notes: list = field(default_factory=list)
 
     @property
     def consulted(self) -> bool:
-        """Whether a document was actually read. `terms` being empty is not the
-        same as no document — a doc-site URL is a location we cannot read."""
-        return bool(self.terms)
+        """Whether a document was actually read.
+
+        Keys on `read_sources`, not on `terms`. Keying on terms was wrong the
+        moment ingested sites became readable: an ingested site is rendered HTML
+        converted to text, so `extract_terms` — which needs markdown emphasis —
+        finds nothing in it, and `unitycatalog` read 26 chunks and still
+        reported "document not consulted". Extracting nothing from a document is
+        not the same as never opening one, which is the distinction this
+        property exists to make.
+        """
+        return bool(self.read_sources) or bool(self.terms)
 
 
 def _normalise(term: str) -> str:
@@ -145,6 +163,49 @@ def extract_terms(text: str) -> list[str]:
     return list(seen)
 
 
+#: How a component came to be called documented. Not cosmetic: emphasis in a
+#: markdown document is a much stronger claim than a mention in rendered HTML,
+#: and a reader who cannot tell them apart will over-trust the weaker one.
+EVIDENCE_EMPHASISED = "emphasised"   # a heading, bold or code span in the source doc
+EVIDENCE_MENTIONED = "mentioned"     # the name appears in an ingested site's text
+
+#: Words that would match half a corpus. A component legitimately named `index`
+#: is not evidenced by a documentation site containing the word "index".
+_TOO_GENERIC = frozenset({
+    "index", "core", "common", "utils", "util", "main", "src", "lib", "api",
+    "app", "test", "tests", "docs", "doc", "build", "config", "server",
+    "client", "service", "data", "base", "model", "models", "types", "internal",
+})
+
+
+def find_mentions(text: str, components: list) -> dict:
+    """`{slug: name}` for components whose name appears in `text`.
+
+    A deliberately weaker test than `extract_terms`, for a deliberately weaker
+    source. Ingested site content is rendered HTML converted to text, so the
+    markdown emphasis `extract_terms` depends on is gone — running it over
+    `sqlglot`'s ingested site yielded twelve terms, all code fragments.
+
+    So for ingested text the question changes from *"what does this document
+    emphasise"* to *"does this document mention this component"*, which needs no
+    markup. Word-boundary matched, minimum four characters, and generic names
+    excluded — a component called `index` is not evidenced by a site containing
+    the word "index".
+
+    Reported as `EVIDENCE_MENTIONED` so it is never confused with emphasis.
+    """
+    low = text.lower()
+    found: dict = {}
+    for c in components:
+        for key in sorted(_component_keys(c), key=len, reverse=True):
+            if len(key) < 4 or key in _TOO_GENERIC:
+                continue
+            if re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", low):
+                found.setdefault(getattr(c, "slug", key), key)
+                break
+    return found
+
+
 def _component_keys(component) -> set:
     """The names a component could legitimately be called in prose."""
     keys = set()
@@ -181,6 +242,21 @@ def apply(owner_repo: str, components: list, client=None,
         lens.notes.append("no architecture document located — nothing to read")
         return lens
     if not readable:
+        # Before giving up: the site may already be INGESTED. That is the whole
+        # point of ingesting it, and until now the lens could not use it —
+        # `sqlglot`'s site was 97 chunks in pgvector while this reported
+        # "located, not readable".
+        ingested_text, collection = _ingested_text_for(owner_repo, unreadable,
+                                                       lens.notes)
+        if ingested_text:
+            lens.outcome, lens.evidence = "ingested-site", collection
+            lens.terms = extract_terms(ingested_text)
+            mentions = find_mentions(ingested_text, components)
+            lens.documented.update(mentions)
+            for slug in mentions:
+                lens.evidence_kind[slug] = EVIDENCE_MENTIONED
+            lens.read_sources.append(("ingested-site", collection))
+            return lens
         lens.notes.append(
             f"{len(unreadable)} documentation site(s) located and none readable from "
             f"here ({', '.join(a.evidence for a in unreadable[:3])}) — located, not "
@@ -227,10 +303,65 @@ def apply(owner_repo: str, components: list, client=None,
         if hit is not None:
             lens.documented.setdefault(getattr(hit, "slug", term), term)
 
+    for slug in lens.documented:
+        lens.evidence_kind.setdefault(slug, EVIDENCE_EMPHASISED)
     matched_terms = set(lens.documented.values())
     lens.undetected = [t for t in lens.terms if t not in matched_terms
                        and t not in lens.documented]
     return lens
+
+
+def _ingested_text_for(owner_repo: str, unreadable: list, notes: list):
+    """`(text, collection)` if any located site is already in the vector store.
+
+    Collections are keyed on the site's HOST, not the repo — several repos in
+    one project share one site and therefore one collection, which is why this
+    can find a collection ingested on another repo's behalf.
+    """
+    from urllib.parse import urlparse
+    for art in unreadable:
+        host = (urlparse(art.evidence).hostname or "").lower().removeprefix("www.")
+        if not host:
+            continue
+        collection = "web_docs_" + re.sub(r"[^a-z0-9]+", "_", host).strip("_")
+        text = read_ingested_site(collection, notes)
+        if text:
+            return text, collection
+    return "", ""
+
+
+def read_ingested_site(collection: str, notes: list) -> str:
+    """Text of a documentation site already ingested into pgvector.
+
+    **This is the point of ingesting it.** `repo_website_ingestion` loads a
+    documentation site so Chat and Understanding can answer from it, and until
+    now architecture recovery could not touch that — `sqlglot`'s site was 97
+    chunks in `web_docs_sqlglot_com` while the lens still reported "located, not
+    readable". Ingesting made the document available to everything except the
+    step that most needed it.
+
+    The extracted terms then go through exactly the same `extract_terms` as a
+    markdown file. That is deliberate: the extraction is the part with measured
+    behaviour and a regression suite behind it, and a second path with different
+    rules would need its own evidence to be trusted.
+    """
+    try:
+        from resource_explorer.vector_store_pg import PgVectorStore
+        store = PgVectorStore()
+        store.connect()
+        if not store.collection_exists(collection):
+            return ""
+        rows = store.query_by_filter(collection, output_fields=("text",),
+                                     limit=MAX_INGESTED_CHUNKS)
+    except Exception as exc:  # noqa: BLE001 - degraded, never fatal
+        notes.append(f"could not read ingested collection '{collection}': {exc}")
+        return ""
+    texts = [str(r.get("text") or "") for r in rows]
+    if not texts:
+        notes.append(f"ingested collection '{collection}' exists but returned no text")
+        return ""
+    notes.append(f"read {len(texts)} chunk(s) from ingested site '{collection}'")
+    return "\n\n".join(texts)[:MAX_DOC_CHARS]
 
 
 def _read_document(owner_repo: str, art, client, notes: list) -> str:

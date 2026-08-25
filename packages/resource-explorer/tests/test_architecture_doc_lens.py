@@ -192,3 +192,63 @@ class TestDocumentationIsPlural:
         assert len(lens.sources) == 2
         assert lens.consulted is False
         assert "2 documentation site(s) located" in lens.notes[0]
+
+
+class TestAnIngestedSiteIsReadable:
+    """The point of ingesting a documentation site. `sqlglot`'s was 97 chunks
+    in `web_docs_sqlglot_com` while this reported "located, not readable" —
+    ingestion made the document available to everything except the step that
+    most needed it. Now: sqlglot 0 -> 6 documented, openmetadata 0 -> 4."""
+
+    def test_mentions_need_no_markup(self):
+        """Ingested content is rendered HTML converted to text, so the markdown
+        emphasis `extract_terms` depends on is gone — running it over sqlglot's
+        ingested site produced twelve terms, all code fragments. The question
+        changes from 'what does this emphasise' to 'does this mention it'."""
+        text = "The parser hands tokens to the generator, then the optimizer runs."
+        found = ad.find_mentions(text, [_Comp("generator"), _Comp("planner")])
+        assert set(found) == {"generator"}
+
+    def test_generic_names_are_not_evidence(self):
+        """A component legitimately called `index` is not evidenced by a
+        documentation site containing the word "index"."""
+        assert ad.find_mentions("the index is rebuilt nightly", [_Comp("index")]) == {}
+
+    def test_matching_is_word_bounded(self):
+        assert ad.find_mentions("regenerated nightly", [_Comp("generator")]) == {}
+        assert ad.find_mentions("the generator runs", [_Comp("generator")])
+
+    def test_short_names_are_refused(self):
+        """Three characters would match most prose."""
+        assert ad.find_mentions("the tso and the rest", [_Comp("tso")]) == {}
+
+    def test_a_mention_is_labelled_weaker_than_emphasis(self, monkeypatch):
+        """Emphasis in a source document is a stronger claim than a mention in
+        rendered HTML. A reader who cannot tell them apart over-trusts the
+        weaker one."""
+        monkeypatch.setattr(ad.dl, "find_artifacts", lambda *a, **k:
+                            [_Art(outcome="doc-site", evidence="https://sqlglot.com")])
+        monkeypatch.setattr(ad, "_ingested_text_for",
+                            lambda *a, **k: ("the generator runs", "web_docs_x"))
+        lens = ad.apply("o/r", [_Comp("generator")])
+        assert lens.documented == {"generator": "generator"}
+        assert lens.evidence_kind["generator"] == ad.EVIDENCE_MENTIONED
+        assert lens.outcome == "ingested-site"
+
+    def test_emphasis_keeps_its_stronger_label(self, monkeypatch):
+        monkeypatch.setattr(ad.dl, "find_artifacts", lambda *a, **k: [_Art()])
+        monkeypatch.setattr(ad, "_read_document", lambda *a, **k: "# Generator\n")
+        lens = ad.apply("o/r", [_Comp("generator")])
+        assert lens.evidence_kind["generator"] == ad.EVIDENCE_EMPHASISED
+
+    def test_consulted_keys_on_having_read_not_on_extracting(self, monkeypatch):
+        """`unitycatalog` read 26 chunks and reported "not consulted", because
+        `consulted` keyed on `terms` and HTML text yields none. Extracting
+        nothing from a document is not the same as never opening one."""
+        monkeypatch.setattr(ad.dl, "find_artifacts", lambda *a, **k:
+                            [_Art(outcome="doc-site", evidence="https://x")])
+        monkeypatch.setattr(ad, "_ingested_text_for",
+                            lambda *a, **k: ("prose with no markup", "web_docs_x"))
+        lens = ad.apply("o/r", [_Comp("nothingmatches")])
+        assert lens.terms == [], "no markdown emphasis to find"
+        assert lens.consulted is True, "but a document WAS read"

@@ -128,7 +128,9 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         from resource_explorer.ingestion.site_discovery import (
             discover_pages,
-            is_code_host,
+            host_relates_to_project,
+    is_code_host,
+    is_non_doc_host,
             repo_publishes_site,
             site_collection_name,
         )
@@ -158,6 +160,21 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                 # look.
                 outcome=no_signal("code_host", known_positive=True, url=url))
 
+        # A badge, a registry or a dataset hub is not documentation. Measured
+        # 2026-08-25: a pilot fed this step three deliberately-bad homepages and
+        # it ingested all three, because `repo_homepage` falls back to README
+        # links and a README's first link is very often a badge.
+        if is_non_doc_host(url):
+            return self._note(
+                "No documentation site — homepage is not a documentation host",
+                f"{url} is a badge, registry or dataset host, not this project's "
+                f"documentation. `repo_homepage` falls back to manifest and README "
+                f"URLs when GitHub declares no homepage, and those are frequently "
+                f"badges. Ingesting it would embed an image page or a package "
+                f"listing as if it were documentation.",
+                {"ingested": False, "reason": "non_doc_host", "url": url},
+                outcome=no_signal("non_doc_host", known_positive=True, url=url))
+
         # Skip a site whose source we already ingest as a repo (see docstring).
         try:
             marker = repo_publishes_site(self.registry.get_file_inventory(self.project.slug))
@@ -175,6 +192,36 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                 # known-positive: something was found, and it is what rules the
                 # ingest out.
                 outcome=no_signal("self_published", known_positive=True, marker=marker))
+
+        # Ordering matters and an existing test caught it: this runs AFTER the
+        # self-published check, never before. A marker in the repo's own file
+        # inventory is DIRECT evidence that this project publishes this site,
+        # and it outranks a name heuristic — `odpi/egeria` builds
+        # `egeria-project.org`, and a project whose site is named nothing like
+        # its repo would otherwise be refused as somebody else's while we hold
+        # proof that it is theirs.
+        #
+        # A real documentation site belonging to SOMEBODY ELSE is the harder
+        # case, and the one that did real damage in the pilot: `docling-nlp`'s
+        # homepage resolved to `docs.astral.sh/uv/`, and ingesting it pulled
+        # 3096 chunks of the uv package manager's documentation into a
+        # collection attributed to docling. No host list catches that — the host
+        # is a perfectly good documentation site, just not this project's.
+        owner_repo = "/".join(
+            (getattr(self.project, "github_url", "") or "").rstrip("/")
+            .removesuffix(".git").split("/")[-2:])
+        if owner_repo and not host_relates_to_project(url, owner_repo):
+            return self._note(
+                "Homepage does not appear to belong to this project",
+                f"{url} shares no name with {owner_repo}, so it is probably another "
+                f"project's site picked up from a README link rather than this "
+                f"project's documentation. Refused rather than skipped silently: if "
+                f"this project really does publish there, that is worth correcting "
+                f"and this message is where to start.",
+                {"ingested": False, "reason": "unrelated_host", "url": url,
+                 "owner_repo": owner_repo},
+                outcome=no_signal("unrelated_host", known_positive=True, url=url))
+
 
         try:
             pages, how = discover_pages(url, self._fetch, max_pages=self._max_pages)
@@ -249,9 +296,20 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         elif chunks_added:
             outcome = StepOutcome(RECOVERED, cause="",
                                   detail={"chunks": chunks_added, "pages": fetched})
-        else:
-            outcome = no_signal("no_extractable_text", known_positive=bool(fetched),
+        elif fetched:
+            # Reached the site and it yielded no text — the fetch itself is the
+            # known-positive, so this is a provable no_signal.
+            outcome = no_signal("no_extractable_text", known_positive=True,
                                 fetched=fetched, failed=failed)
+        else:
+            # NOTHING was fetched. Distinct from the branch above, and the two
+            # were one `else` until 2026-08-25 even though the comment beside it
+            # already distinguished them. `milvus` is the case: 400 pages found
+            # via sitemap, 400 fetches failed (milvus.io 302-loops for a
+            # non-browser client), 685 seconds spent, and it reported cause
+            # `no_extractable_text` about text it never had the chance to read.
+            outcome = StepOutcome(UNVERIFIED, cause="no_pages_fetched",
+                                  detail={"found": len(pages), "failed": failed})
 
         return self._note(
             f"{chunks_added} chunk(s) from {fetched} page(s) of {url}",
@@ -259,7 +317,13 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             + (f" ({failed} unreachable)" if failed else "")
             + f", embedded into {collection}. The collection is keyed on the site's host rather "
             "than this repo, so every repo sharing this website searches the same copy.",
-            {"ingested": True, "url": url, "collection": collection,
+            # `ingested` reflects what actually landed. It was hardcoded True
+            # on this path regardless of `chunks_added`, so `milvus` reported
+            # `ingested: True` after 400 failed fetches — and downstream code
+            # reads this flag rather than the outcome beside it, which had the
+            # answer right. A redundant boolean that can disagree with the
+            # authoritative field is worse than no boolean.
+            {"ingested": bool(chunks_added), "url": url, "collection": collection,
              "pages_found": len(pages), "pages_fetched": fetched, "pages_failed": failed,
              "chunks": chunks_added, "discovery": how},
             confidence=100 if chunks_added else 50,
