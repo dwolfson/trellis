@@ -3450,3 +3450,57 @@ result.**
 
 Recorded so the next person does not re-port the distiller expecting the spike's numbers, or
 conclude from `genaicomps`' 0% that the port is broken.
+
+---
+
+**100. Milvus is gRPC-first and we could not see it. `.proto`/GraphQL/Thrift recognition, and
+counting without listing.**
+
+Dan's framing (2026-08-24) corrected a model I had wrong: *"if we want to see if a repo is
+something we can use during runtime, we need to know how to interface to it — what kind of API it
+has, maybe language bindings, the number of commands. We don't need the names of every request and
+their payloads/signatures — until we want to actually try to use it."*
+
+**A coarse answer often requires a deeper analysis that is then summarised.** I had been treating
+finding 99's 154-components-for-Milvus as a precision failure. It is better read as a missing
+*summarisation level*: the detail may be needed to compute the answer; it should not *be* the
+answer.
+
+`interfaces.propose()` matched OpenAPI by **filename** from a six-entry tuple and never opened the
+document, and recognised no IDL at all. Measured on Milvus before the change: exposed ports
+recorded, **interface entirely invisible**. After:
+
+```
+milvus   31 ports   gRPC 10 documents   18 services   296 rpcs
+         proxy.proto 18 · root_coord 76 · data_coord 87 · query_coord 74 · streaming 14 · ...
+```
+
+Three facts computed by opening ten documents and discarding them. No signature is retained, and a
+test asserts it — an operation name leaking into a port would mean stage-two work done at
+stage-one cost.
+
+**The vocabulary check came back positive, and my first reading of it was wrong.** I recorded
+0735's `SolutionPort` as having no home for a count — it carries exactly one attribute,
+`direction` — and called that a second negative result after `ResourceUse`. Dan pointed out the
+obvious: `SolutionPort` is a `Referenceable` (§3.3b, settled by `Confidence` being defined against
+`Referenceable` and applying to `SolutionPort` directly), so it carries `additionalProperties` as
+`map<string,string>` — which §6.4 *already* names "the documented extension point ... the interim
+carrier for anything not yet typed". The count rides there as `operationCount`, stringified because
+the map is string-valued, and promoting it to a real attribute later is an upstream type change
+rather than a migration of ours. **Reading a type's own attribute list and stopping is the same
+mistake as reading `ResourceUse`'s names instead of its descriptions** — the answer was one
+inheritance edge away.
+
+Deliberately not `SolutionPortDelegation`, which maps a parent component's ports to its decomposed
+children's. That models operations-as-child-ports well and is very likely right for **stage two**;
+here it would create one entity per operation, which is the listing the coarse question excludes.
+
+**A test caught a limitation the corpus would have hidden.** The rpc regex was line-anchored, so
+`service S { rpc A (Q) returns (R); }` on one line reported 1 service and **0 rpcs** — "an
+interface with no operations", indistinguishable from a real zero. Milvus's files are all
+multi-line, so a corpus run would have looked perfect. De-anchored to word boundaries.
+
+**Honest limitation, recorded not fixed:** the 296 conflates the public API with internal
+coordinator RPCs. For runtime suitability the number a reader wants is `proxy.proto`'s 18. Nothing
+currently distinguishes a client-facing interface from an internal one, and inferring it from a
+filename would be exactly the convention-as-evidence failure §5.5a(b) forbids.
