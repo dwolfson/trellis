@@ -1393,6 +1393,42 @@ def _architecture_recovery_results(
             ],
             "metrics": {k: v for k, v in metrics.items() if k not in ("surveyed_at", "detail")},
         })
+    # Structural nodes (persist.py) — ancestors referenced by a component's
+    # parent_slug that were never emitted as components. They exist so
+    # parent_path resolves and projection has a tree to collapse; without them
+    # every node reads as root-attached and project_rows is an identity
+    # function (measured 2026-08-24: milvus 204 components at every depth).
+    #
+    # They carry no type and no confidence by design — they have no evidence of
+    # their own — so they are marked `structural` and a consumer can render
+    # them as grouping rather than as a recovered component.
+    for scope in registry.query_finding_scopes(
+            slug, "architecture_recovery", check_name="structural_node"):
+        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+                if r["check_name"] == "structural_node"]
+        if not rows:
+            continue
+        latest = max(rows, key=lambda r: r["surveyed_at"])
+        detail = latest.get("detail_json") or {}
+        if isinstance(detail, str):
+            import json as _json
+            detail = _json.loads(detail or "{}")
+        node_slug = detail.get("slug", "")
+        if not node_slug or node_slug in slug_to_path:
+            continue
+        node_path = detail.get("path", scope)
+        slug_to_path[node_slug] = node_path
+        components.append({
+            "name": detail.get("name", node_path), "path": node_path,
+            "slug": node_slug, "type": "", "confidence": 0,
+            "structural": True,
+            "perspective": "", "proposed_by": [], "run_scope": detail.get("run_scope", ""),
+            "outcome": "", "evidence": [], "metrics": {},
+            "depth": detail.get("depth", 0),
+            "parent_slug": detail.get("parent_slug", ""),
+            "surveyed_at": latest.get("surveyed_at", ""),
+        })
+
     for c in components:
         c["parent_path"] = slug_to_path.get(c["parent_slug"], "")
     components.sort(key=lambda c: c["path"])
@@ -1478,7 +1514,10 @@ def _architecture_recovery_results(
         # (of 42 total)" rather than a projected view silently looking like
         # the whole answer (§2a: coarsening a view must never look like
         # discarding the data behind it).
-        "raw_component_count": len(all_components),
+        # Structural nodes are grouping, not recoveries — counting them here
+        # would inflate "N recovered" with rows that carry no evidence.
+        "raw_component_count": sum(1 for c in all_components if not c.get("structural")),
+        "structural_node_count": sum(1 for c in all_components if c.get("structural")),
         "run_outcomes": run_outcomes,
         "partial": partial,
         "unverified": unverified,
