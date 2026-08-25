@@ -107,11 +107,26 @@ def ingestion_status(registry, slug: str) -> tuple[str, str]:
             detail = json.loads(detail)
         except Exception:  # noqa: BLE001
             detail = {}
-    if detail.get("ingested"):
+    # Read the OUTCOME, not the `ingested` flag beside it. Those two could
+    # disagree, and did: `milvus` reported `ingested: True` after 400 failed
+    # fetches while its outcome correctly said the site was never read. This
+    # function believed the flag, so the repo whose lens result would benefit
+    # most would never have been offered an ingest. Both are fixed now; reading
+    # the authoritative field is what stops the next disagreement mattering.
+    #
+    # `chunks` is the second check rather than the first because a run can
+    # legitimately store nothing and still have reached the site.
+    outcome = str(detail.get("outcome") or "")
+    if outcome in ("recovered", "partial") and (m.get("chunks") or 0) > 0:
         return ING_INGESTED, str(detail.get("collection") or "")
-    reason = str(detail.get("reason") or "")
-    if reason in ("self_published", "code_host"):
+
+    reason = str(detail.get("reason") or detail.get("outcome_cause") or "")
+    if reason in ("self_published", "code_host", "non_doc_host", "unrelated_host"):
         return ING_DECLINED, reason
+    if detail.get("ingested") and not (m.get("chunks") or 0):
+        # Belt and braces: an `ingested` flag with nothing stored is a run that
+        # achieved nothing, whatever it called itself.
+        return ING_ATTEMPTED_EMPTY, reason or "ingested flag set with no chunks"
     return ING_ATTEMPTED_EMPTY, reason
 
 

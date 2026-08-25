@@ -3895,3 +3895,114 @@ put the ask where the absence already is, in the empty state, rather than in a p
 survey has nobody to ask and must not block. Both read the same annotation; only the rendering
 differs. That constraint is in the Backlog under "Doc-site located but unreadable" and applies to
 every future step that would benefit from a human answer.
+
+---
+
+**108. Acting on the recommendation ingested three junk sites, including 3096 chunks of another
+project's documentation.**
+
+The offer from finding 107 said "ingest this project's documentation site". Acting on it, on a
+deliberate mix of three real documentation sites and three URLs that looked wrong, **all six were
+ingested**:
+
+```
+GOOD  kafka           1169→ no: 1 chunk / 1 page   kafka.apache.org
+GOOD  polaris         1169 chunks / 16 pages       polaris.apache.org
+GOOD  deep_causality    28 chunks / 1 page         deepcausality.com
+JUNK  docling_mcp        1 chunk                   static.pepy.tech/badge/docling-mcp/month
+JUNK  docling_serve      3 chunks                  quay.io/repository/...
+JUNK  docling_nlp     3096 chunks / 46 pages       docs.astral.sh/uv/        <- the uv package manager's docs
+```
+
+`repo_website_ingestion` had exactly one guard, `is_code_host`, for a homepage pointing back at the
+forge. Nothing else. And `repo_homepage` falls back to manifest and README URLs when GitHub declares
+no homepage — **a README's first link is very often a badge** — so these are not exotic inputs, they
+are what the corpus contains. Of 54 eligible repos, the sample of six contained three bad ones.
+
+**The `docling_nlp` case is the one that matters and no host list catches it.** `docs.astral.sh/uv/`
+is a perfectly good documentation site. It is simply not *this project's*, and 3096 chunks of it
+went into a collection a reader would reach when asking about docling. A blocklist answers "is this
+a documentation host"; the actual question is **"is this documentation site this project's"**, which
+needs a relatedness check: a shared token between the site host and the owner/repo name, with the
+parts every host has (`docs`, `io`, `com`, `github`, `readthedocs`) removed so they cannot carry the
+match. `kafka`/`kafka.apache.org`, `deep_causality`/`deepcausality.com` and
+`docling`/`docling-project.github.io` all pass; `docling-nlp`/`docs.astral.sh` does not.
+
+**Two things that only came out of running it rather than reasoning about it:**
+
+* **The host-keyed collection naming contained the damage.** Junk landed in
+  `web_docs_static_pepy_tech` and `web_docs_docs_astral_sh`, not inside a docling collection — so it
+  is identifiable and separable. That naming decision was made for an unrelated reason (several
+  repos in one project share one site) and paid off here.
+* **An existing test caught an ordering bug in my fix.** I put the relatedness check before the
+  self-published check, and `test_repo_that_publishes_its_own_site_records_the_skip` failed:
+  a marker in the repo's own file inventory is **direct evidence** that this project publishes this
+  site, and it must outrank a name heuristic. A project whose site is named nothing like its repo
+  would otherwise be refused as somebody else's while we hold proof that it is theirs. Final order:
+  `no_homepage → code_host → non_doc_host → self_published → unrelated_host`, pinned by a test that
+  reads the run method — the first version read the whole class and matched `self_published` in its
+  docstring, which sits above every guard and made the assertion meaningless.
+
+**Refusals are stated, never silent.** `unrelated_host` says which URL and which repo, and that if
+the project really does publish there it is worth correcting. A refusal that looked like an absence
+would be this codebase's oldest failure wearing new clothes.
+
+**Left as it is, deliberately:** three junk collections exist in the store from this pilot. They are
+small, host-keyed and obviously named, and deleting from a live store is not something to do without
+asking.
+
+---
+
+**109. Closing the loop: the lens can now read what ingestion stored. 49 → 60 documented, and the
+two site-only repos stopped being permanent zeros.**
+
+Ingestion existed so *Chat and Understanding* could answer from a project's documentation. It made
+that documentation available to everything **except the step that most needed it**: `sqlglot`'s site
+was 97 chunks in `web_docs_sqlglot_com` while `repo_arch_lens` reported *"located, not readable"*.
+
+Bulk-ingested the 38 repos whose homepage passes the finding-108 guards, then taught the lens to
+read a collection when a located site is unreadable:
+
+```
+ingested                25 of 60      refused: self_published 13 · non_doc_host 2
+                                               unrelated_host 1 · code_host 1
+web_docs collections    20
+
+lens, corpus            49 -> 60 documented       11 of 17 repos (was 8)
+   sqlglot               0 -> 6      <- was a permanent zero: site-only, unreadable
+   openmetadata          0 -> 4
+   unitycatalog          0 -> 1
+```
+
+**Ingested text needs a weaker test, and saying so is the point.** Rendered HTML converted to text
+has no markdown emphasis, so `extract_terms` — which keys on headings, bold and code spans — found
+twelve terms in sqlglot's ingested site and every one was a code fragment. The question has to
+change from *"what does this document emphasise"* to *"does this document mention this component"*,
+which needs no markup: word-boundary matched, four characters minimum, generic names excluded (a
+component called `index` is not evidenced by a site containing the word "index").
+
+That is genuinely weaker evidence and is labelled as such — `EVIDENCE_MENTIONED` versus
+`EVIDENCE_EMPHASISED`, carried per component. Collapsing them would let a reader over-trust the
+weaker one, and the whole value of this chain is that its claims can be checked.
+
+**A property keyed on the wrong thing, found by running it.** `DocLens.consulted` returned
+`bool(terms)`. The moment ingested sites became readable that was wrong: `unitycatalog` read 26
+chunks and reported *"document not consulted"*, because HTML text yields no markdown terms.
+**Extracting nothing from a document is not the same as never opening one** — the same distinction
+`consulted` was written to make, broken by the arrival of a source it did not anticipate. Now keys
+on `read_sources`.
+
+**Two ingestion defects found and left recorded, not fixed:**
+
+* **`milvus`: 400 pages fetched, 0 chunks stored, `ingested: True`, after 685 seconds.** A
+  contradiction on its face, and the repo whose lens result would most benefit. `ingested: True`
+  with `chunks: 0` is absence-versus-zero at the ingestion layer.
+* **`egeria-project.org` was ingested three times in one run** — once each for `egeria_git`,
+  `egeria_python_git`, `egeria_workspaces_git`, 6018 chunks and 187 pages every time, ~175 seconds
+  total. Collections are host-keyed precisely so sibling repos share one, but the *work* is not
+  deduplicated across repos within a run.
+
+**And one guard limitation worth knowing before trusting it:** `trellis` → `egeria-project.org` is
+refused as `unrelated_host`, and it probably should not be — trellis *is* an Egeria project. The
+relatedness check compares names and knows nothing about project families. It fails safe (a stated
+refusal, not a silent skip) but it is a real false-positive class.
