@@ -3704,3 +3704,52 @@ zero-fetch derivation tier", after `architecture_recovery` and `repo_classificat
 exceptions is where that description stops being a rule and becomes an intention. Flagged in
 `analysis_catalog.yaml`, in the registry entry, and in the test that enumerates the exceptions —
 the next addition should be a decision about the rule, not a fourth entry.
+
+---
+
+**104. The lens across the corpus: 1108 candidates → 36 documented, and where a document lives
+predicts almost everything.**
+
+`repo_arch_lens` run as a registered step over every repo with recovered components (16), labels
+persisted:
+
+```
+repo                     comps  labelled  doc location
+milvus                     206        15  in-repo
+egeria_workspaces_git       73        12  in-repo
+amundsen                    43         4  in-repo
+docling_java                 8         2  sibling-repo
+genaicomps                 312         2  sibling-repo
+docling_eval                34         1  sibling-repo
+marquez / monocle / openlineage / workshops / trellis / ryoma /
+egeria_python_git / docling_parse / sqlglot / unitycatalog
+                        1-124         0  sibling-repo, doc-site, or none
+
+TOTAL                     1108        36        labelled: 6 of 16
+```
+
+**Every in-repo document fired, and fired well: 3 for 3, 31 of the 36 labels.** Every sibling-repo
+document that fired did so weakly (2, 2, 1) and six produced nothing. Doc-site produced nothing by
+construction — located, unreadable from here.
+
+This confirms finding 102's correction at corpus scale, and the corrected version is worth stating
+plainly because the original claim is the intuitive one: **a document in a sibling repository is
+easy to *locate* and hard to *use*.** `doc_locations` resolves a sibling documentation repo to a
+pointer at the repo, because that is the honest answer to "where are the docs" — but a whole
+documentation website is not an architecture description, so what gets read is navigation. The
+in-repo case wins because `docs/design-docs` is the thing itself.
+
+**The ceiling is recovery coverage, not the lens.** 16 repos have components at all, against 46 the
+gate approves. The lens cannot label what was never recovered, so its reach is bounded by a
+different subsystem's coverage — the honest reading of "1108 → 36" is that it is a strong result on
+a third of the corpus, not a corpus-wide one.
+
+**What would raise it, in order of expected value:**
+
+1. **Resolve to an architecture *page* inside a sibling docs repo**, not to the repo. Nine of
+   thirteen located documents are sibling-repo and six of those yielded nothing; this is where the
+   unclaimed value is, and it is a `doc_locations` change rather than a lens change.
+2. **Run detect on the 30 gate-approved repos that have no components yet** — bounded and known at
+   roughly 28s each, no clone.
+3. Doc-site fetching. Last: it needs an HTTP fetcher for arbitrary sites, a new cost tier, and
+   `doc_locations` already warns that a homepage field is not proof of a page.
