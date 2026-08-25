@@ -606,8 +606,47 @@ function.
    links resolve. Truer to "store the hierarchy, project a level"
    (`approach-portfolio-model.md` §2a), but grows the stored set.
 
-(1) looks right, but the choice depends on why the filtering drops those candidates
-in the first place, which was not investigated.
+**Investigated 2026-08-24 — and the answer reverses that. (1) recovers nothing; (2) is
+the only option that works.**
+
+First, the candidates are not *filtered*. `code_markers` emits a Component per subtree
+in `by_subtree` — subtrees with **marker-rule hits** — while `parent_slug` is read from
+`hierarchy`, which holds **every** candidate subtree (any dir with >=2 first-party
+files). Different sets, and nothing reconciles them. An intermediate directory like
+`internal/distributed` has no markers *of its own* — its children do — so it never
+becomes a Component while its children point at it. Nobody dropped it; it was never a
+candidate for emission in the first place.
+
+That makes the persisted set a **flat frontier with no internal nodes**, which is fatal
+for (1). Measured on milvus's 16 persisted `code::` components:
+
+```
+ancestor/descendant pairs WITHIN the persisted set: 0
+```
+
+Not "few" — **zero**. No persisted component is an ancestor of any other, so
+re-parenting to the nearest surviving ancestor rewrites every link to "" and collapses
+nothing. Projection needs internal nodes and (1) cannot create them.
+
+(2) does, and the shape it produces is the interesting part:
+
+```
+code::internal::distributed        would absorb 6 components
+code::internal                     would absorb 2
+code::internal::querycoordv2       would absorb 2
+```
+
+`internal/distributed` absorbing 6 is precisely the milvus ground-truth grouping —
+`datanode`, `mixcoord`, `proxy`, `querynode`, `streamingnode` are 5 of the 8 published
+components, currently emitted as 5 unrelated siblings with no parent. So persisting
+intermediate candidates is not just what makes projection function; it is what makes
+the coarse level correspond to the answer a human already published.
+
+**Cost and caution:** these ancestors have no marker evidence of their own, so they must
+be persisted as structural nodes, not as typed/scored components — with an honest
+confidence and type, or none. Emitting them as ordinary components would invent
+evidence, which is the failure mode the whole `no metric, no number` rule exists to
+prevent (design §5). Structural-node-only is the constraint to design against.
 
 **Why this is worth doing before any Purpose→depth work:** depth-as-presentation is
 the cheap version of everything in the entry above — one run, re-rendered at several
