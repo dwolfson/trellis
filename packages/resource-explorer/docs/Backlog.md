@@ -1300,3 +1300,63 @@ been run on, of the 46 the gate approves.
 
 ---
 
+
+---
+
+### HIGH — interface extraction answers "does it expose something", not "can I use it"
+
+**The driving question, from Dan 2026-08-24:** *"if we want to see if a repo is something we can
+use during runtime, we need to know how to interface to it — what kind of API it has, maybe
+language bindings, the number of commands. We don't need the names of every request and their
+payloads/signatures — until we want to actually try to use it."*
+
+That is a **suitability** question, and it wants a coarse answer. Measured against what
+`arch_recovery/interfaces.py` extracts today:
+
+| The question | Answerable now? | Why |
+|---|---|---|
+| Does it expose an interface at all? | **yes** | Dockerfile `EXPOSE`, compose `ports:`/`expose:` |
+| What kind of API? | **partly** | an OpenAPI filename ⇒ `HTTP/REST` |
+| Is it gRPC? | **no** | `.proto` is not recognised. Nor GraphQL, nor Thrift |
+| How many operations/commands? | **no** | the OpenAPI document is matched by **filename** and never opened |
+| What language bindings ship with it? | **no** | nothing extracts them |
+
+`propose()`'s own docstring says it works "from deployment artifacts only", and `_OPENAPI_NAMES`
+is a six-entry filename tuple. So for **Milvus** — gRPC-first, SDKs in several languages — we
+record that it exposes ports and miss its actual interface entirely.
+
+**The general principle this exposes, and it is bigger than the gap.** A coarse answer often
+requires a *deeper* analysis that is then summarised. "REST, ~40 operations, Python and Go
+bindings" means opening the OpenAPI document and scanning for binding directories, then reporting
+three facts rather than forty signatures. **Today we do neither half**: no deep read, and no
+summarisation step. What we emit instead is the raw analysis at its own natural granularity —
+154 components for Milvus (finding 99) — which is not a precision failure so much as a missing
+summarisation level.
+
+This reframes the two-stage funnel that already exists. *"First determine if it's suitable; if so,
+later analyse the details to use it properly"* is Discovery → Analysis, and rule 17's
+`fetch_cost`/`compute_cost` already draws the cost boundary. What is missing is that **no step owns
+summarising up to the depth the question asked for.** Every surveyor emits at its own granularity
+and nothing collapses it.
+
+**It also enlarges Purpose's role (§3 of the investigation-framing design).** If Purpose sets the
+required *depth of response*, it selects a summarisation level, not just a question ordering — and
+the same underlying analysis then serves both stages. A summariser over 154 components ("3
+subsystems, 8 services, one gRPC surface") answers the suitability question **without the component
+list needing to be correct at 8**, which is a materially cheaper path than the unported adjudicator.
+
+**Proposed work, cheap first:**
+
+1. **Recognise `.proto`, GraphQL SDL and Thrift IDL** alongside OpenAPI. Filename/extension
+   matching, same tier, no new fetch. Fixes the Milvus-shaped blind spot where the primary
+   interface is invisible.
+2. **Open the interface document and count.** OpenAPI `paths` × methods, `.proto` `service`/`rpc`
+   declarations. A count is a summary, not a listing — the signatures stay unread until stage two,
+   exactly as the driving question asks. Note the existing `_port_dict` has no field for it, so
+   this needs one (`operation_count`, or a `SolutionPort` property if Egeria has one — **check the
+   vocabulary first**, as §5.5f asked and as has paid off three times).
+3. **Language bindings** — conventional directories (`clients/<lang>`, `sdk/<lang>`, `bindings/`)
+   plus per-ecosystem manifests. Weakest evidence of the three; do it last and label it derived.
+
+**Do NOT** extend this into reading request/response schemas. That is stage two, it is a different
+cost tier, and the driving question explicitly excludes it.
