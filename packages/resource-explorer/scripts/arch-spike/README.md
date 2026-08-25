@@ -4099,3 +4099,47 @@ pages and a judgement. Building the cheap half first is the entire point of a ch
 **Reached-and-empty stays distinct from never-reached**, which is what `no_pages_fetched` was split
 out for one finding ago: `no_extractable_text` is a `no_signal` with `known_positive=True` because
 we reached the site and it told us; `unreachable` is `unverified` because we never got to look.
+
+---
+
+**112. What `repo_homepage` actually produces, measured — and "unreachable" was two facts again.**
+
+The homepage field drives site ingestion, and its quality had never been measured; it was only ever
+described as "falls back to manifest/README URLs, which are sometimes wrong". Profiled all 60:
+
+```
+ok                   33      a usable documentation site
+code_host            12  ┐
+non_doc_host          5  ├── refused by URL guards (22)   — finding 108
+unrelated_host        5  ┘
+no_extractable_text   2  ┐
+unreachable           2  ├── refused by profiling (5)     — invisible before finding 111
+host_not_found        1  ┘
+```
+
+**55% of recorded homepages are a usable documentation site.** The other 45% now each have a named
+reason instead of being discovered at embed time, or not at all.
+
+**`unreachable` was carrying two facts, and splitting them took one DNS lookup.** `milvus.io`
+302-loops for **every** user agent tried, including a browser one — curl-like gets a 403 — so it
+actively defends against non-browser clients and is honestly out of scope for a survey step. But
+`docs.unitycatalog.com` **does not resolve at all**, and `unitycatalog_python` still carries it as
+its homepage. Those ask different things of a reader: one is out of everyone's reach, the other is
+**stale data somebody can fix**. `VERDICT_HOST_NOT_FOUND` says so, costs no HTTP request, and its
+prose puts the fault where it belongs — *"worth correcting; nothing about the project is wrong"*.
+
+That is the sixth or seventh instance of the same shape today, and the first one I went looking for
+rather than tripped over: I asked *why* milvus was unreachable rather than recording that it was,
+and the answer was that two unrelated situations shared a label.
+
+**A precheck quietly made a unit path depend on the network.** Adding the DNS lookup turned eight
+passing tests red, because they all use invented hostnames — and the failure mode is worse than red:
+had the tests happened to use resolvable names, they would have gone on *passing while no longer
+testing text extraction at all*, short-circuiting before the fetch. Fixed with an autouse fixture,
+and the tests that are about resolution override it explicitly.
+
+**Two more things the profile caught that no URL guard could.** `kedro_viz`'s homepage is
+`demo.kedro.org`, a demo application rather than documentation. `kedro_starters`' is a **deep link
+into a section of another project's docs** — it passes the relatedness check because "kedro" is
+shared, which is the project-family limitation from finding 109 seen from the other side: relatedness
+is necessary and nowhere near sufficient.

@@ -16,6 +16,18 @@ _THIN = "<html><body><a href='/guide'>Guide</a></body></html>"
 _STUB = '<html><meta http-equiv="refresh" content="0;url=./real.html"></html>'
 
 
+@pytest.fixture(autouse=True)
+def _dns_resolves(monkeypatch):
+    """Every test here uses invented hostnames, and `profile_site` now does a
+    real DNS lookup before fetching. Without this the whole file short-circuits
+    to `host_not_found` and tests about text extraction silently stop testing
+    it — the precheck quietly making a unit path depend on the network.
+
+    Tests that are ABOUT resolution override it explicitly.
+    """
+    monkeypatch.setattr(sp, "host_resolves", lambda url: True)
+
+
 def _fetcher(pages: dict):
     calls = []
 
@@ -111,3 +123,41 @@ class TestARefusalIsAResultNotAFailure:
         f = _fetcher({"https://x": _THIN, "https://x/guide": _PROSE})
         sp.profile_site("https://x", f)
         assert len(f.calls) <= 2, "the point of a cheap tier is that it is cheap"
+
+
+class TestANonExistentDomainIsItsOwnAnswer:
+    """`docs.unitycatalog.com` does not resolve, and `unitycatalog_python` still
+    carries it as its homepage. "The domain does not exist" and "the site would
+    not serve us" ask different things of a reader: the first is stale data
+    somebody can fix, the second is out of everyone's reach. A fetcher returning
+    None for both cannot tell them apart, and a caller should not have to parse
+    an exception string to find out."""
+
+    def test_an_unresolvable_host_is_not_merely_unreachable(self, monkeypatch):
+        monkeypatch.setattr(sp, "host_resolves", lambda url: False)
+        p = sp.profile_site("https://nope.invalid", _fetcher({}))
+        assert p.verdict == sp.VERDICT_HOST_NOT_FOUND
+        assert p.verdict != sp.VERDICT_UNREACHABLE
+
+    def test_it_costs_no_fetch_at_all(self, monkeypatch):
+        """One DNS lookup, before any HTTP. The cheapest question asked first."""
+        monkeypatch.setattr(sp, "host_resolves", lambda url: False)
+        f = _fetcher({})
+        sp.profile_site("https://nope.invalid", f)
+        assert f.calls == []
+
+    def test_the_reason_says_it_is_the_record_that_is_wrong(self):
+        """Not the project. A repo whose recorded homepage rotted has done
+        nothing wrong, and a message that reads as a defect would be the same
+        mistake as rendering a deliberate skip in amber."""
+        import types
+        p = sp.SiteProfile(url="https://nope.invalid",
+                           verdict=sp.VERDICT_HOST_NOT_FOUND)
+        assert "worth correcting" in p.reason
+        assert "nothing about the project is wrong" in p.reason
+
+    def test_a_resolvable_host_still_gets_fetched(self, monkeypatch):
+        monkeypatch.setattr(sp, "host_resolves", lambda url: True)
+        f = _fetcher({"https://x": _PROSE})
+        assert sp.profile_site("https://x", f).worth_ingesting
+        assert f.calls == ["https://x"]

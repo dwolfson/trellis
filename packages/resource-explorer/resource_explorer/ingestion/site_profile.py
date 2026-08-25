@@ -53,6 +53,13 @@ SAMPLE_PAGES = 1
 VERDICT_OK = "ok"
 VERDICT_UNREACHABLE = "unreachable"
 VERDICT_NO_TEXT = "no_extractable_text"
+#: The host does not resolve at all. Split from `unreachable` because the two
+#: ask different things of a reader: a site that defends against non-browser
+#: clients is out of our reach and nobody can do anything about it, while a
+#: recorded homepage whose DOMAIN does not exist is stale data somebody can fix.
+#: Measured 2026-08-25: `docs.unitycatalog.com` does not resolve, and
+#: `unitycatalog_python` still carries it as its homepage.
+VERDICT_HOST_NOT_FOUND = "host_not_found"
 
 
 @dataclass
@@ -73,6 +80,10 @@ class SiteProfile:
     @property
     def reason(self) -> str:
         """One sentence a person can act on, never a bare verdict."""
+        if self.verdict == VERDICT_HOST_NOT_FOUND:
+            return (f"{self.url} does not resolve — there is no such host. This is a "
+                    f"recorded homepage pointing at a domain that does not exist, "
+                    f"which is worth correcting; nothing about the project is wrong.")
         if self.verdict == VERDICT_UNREACHABLE:
             return (f"{self.url} could not be fetched at all — it may require a "
                     f"browser-like client, or be unreachable from here. Crawling it "
@@ -84,6 +95,27 @@ class SiteProfile:
                     + "). It is most likely rendered client-side, so ingesting it "
                       "would embed markup and navigation rather than documentation.")
         return f"{self.url} is reachable and yields readable text."
+
+
+def host_resolves(url: str) -> bool:
+    """Does this URL's host exist in DNS?
+
+    Checked before fetching, because "the domain does not exist" and "the site
+    would not serve us" are different facts and only the first is actionable.
+    A fetcher that returns None for both cannot tell them apart, and the caller
+    should not have to parse an exception string to find out.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname
+    if not host:
+        return False
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return True
 
 
 def _readable_chars(html: str) -> int:
@@ -121,6 +153,15 @@ def profile_site(url: str, fetch) -> SiteProfile:
     at all: it would clear sites the crawl then fails on.
     """
     profile = SiteProfile(url=url)
+
+    # Cheapest possible question first: does the host exist at all? One DNS
+    # lookup, and it separates a stale recorded homepage from a site that will
+    # not serve us — which no amount of fetching distinguishes.
+    if not host_resolves(url):
+        profile.verdict = VERDICT_HOST_NOT_FOUND
+        profile.notes.append(f"DNS lookup for {url} found no such host")
+        return profile
+
     html = fetch(url)
     if not html:
         profile.verdict = VERDICT_UNREACHABLE
