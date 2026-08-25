@@ -3554,3 +3554,36 @@ its own right (findings 65-67: correlate doc version against code version), not 
 
 Recorded here rather than built: it is a design change to the detect step's inputs and it needs its
 own entry, cost estimate, and a decision about staleness handling.
+
+**MEASURED 2026-08-24, after the presentation session objected that "documentation states the
+answer" was n=1 — and the objection was right.** Milvus is the only repo this was argued from, and
+worse, its ground-truth fixture was transcribed *from that same document*, so the doc agreeing with
+the fixture is not independent confirmation. Measured across all 46 gate-approved repos, using the
+architecture-artifact resolution already persisted by `repo_classification`:
+
+```
+gate=run repos                             46
+  architecture doc located                 13     in-repo 4 · sibling-repo 9
+  not-found                                 2
+  never looked — not in the role's set     31
+```
+
+Three things fall out, and they pull in different directions:
+
+- **The claim is not universal.** At most 13 of 46 today. "Documentation states the answer" is a
+  premise that holds for a minority of the corpus, and designing as though it held generally would
+  be the same error as assuming Perspective could drive dispatch.
+- **But 9 of the 13 are `sibling-repo`** — the architecture document lives in a *different
+  repository* from the code. A code-only reader cannot reach those by any amount of better parsing;
+  it is not a precision problem, it is a wrong-corpus problem. This is the strongest form of the
+  argument and it does not depend on Milvus at all.
+- **The 31 are "never looked", not "no doc".** `EXPECTED` lists `architecture` only for
+  `application` and `middleware`; `library`, `tool`, `samples`, `tutorial` and `documentation` do
+  not ask for it. That is defensible for the *expectation report* — a library is not deficient for
+  lacking an architecture doc — but it means the 31 are an unmeasured population, not a measured
+  absence. Reusing an expectation set built to judge completeness as if it were a survey of
+  availability is the one-identifier-two-purposes shape again.
+
+So the honest scope: documentation-as-lens is worth building for the ~13 repos where a document is
+already located, the sibling-repo majority is the case that justifies it, and the 31 need a
+separate cheap probe before anyone claims a corpus-wide number.
