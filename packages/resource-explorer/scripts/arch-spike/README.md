@@ -4006,3 +4006,50 @@ on `read_sources`.
 refused as `unrelated_host`, and it probably should not be — trellis *is* an Egeria project. The
 relatedness check compares names and knows nothing about project families. It fails safe (a stated
 refusal, not a silent skip) but it is a real false-positive class.
+
+---
+
+**110. A site is now ingested once, not once per sibling repo — and the first version of the fix
+re-ingested anyway.**
+
+`site_collection_name`'s own docstring said a site should be *"ingested once and every repo pointing
+at it"* shares the copy. The **naming** did that; nothing enforced it. Measured:
+`egeria-project.org` fetched and embedded **three times in one batch** — 187 pages and 6018 chunks
+each, ~175 seconds — because host-keying dedupes the *destination* and not the *fetch*.
+
+**Keyed on the collection's state, not on a within-run memo**, and that choice matters:
+`SurveyOrchestrator.run()` is per project, so there is no "run" spanning sibling repos to memoise
+against. A state-keyed check also holds when the repos are surveyed days apart, by the scheduler, or
+one at a time from the UI.
+
+```
+before   egeria_git 79s · egeria_python_git 46s · egeria_workspaces_git 49s
+after    0.4s · 0.2s · 0.2s
+```
+
+**The first version excluded the repo itself, and re-ingested in front of me.** Two siblings skipped
+in under a second; the third then spent **103 seconds re-fetching the site its own record said was
+current**. Skipping writes a zero-chunk record over whatever that repo held, so after two skips only
+the third still carried the evidence — and run last, it found nobody else and started fetching. The
+question is *"has this collection been ingested recently"*, not *"did somebody else do it"*.
+
+Worth noting what caught it: not a test, but **running the exact three-repo case that motivated the
+work**. A unit test with two repos would have passed.
+
+**Two conditions the check deliberately does not treat as "done":**
+
+* **A run that stored nothing.** `milvus` recorded a completed ingest with **zero chunks after 400
+  failed fetches**; treating that as already-done would make a bad run permanent.
+* **A stale one.** 24 hours, stated as a constant with its reasoning — a documentation site does not
+  change hourly, and a daily scheduled survey should re-ingest once a day rather than once per repo.
+
+**Skipping the fetch must not skip the wiring.** The query router searches a repo's *own* collection
+list, so the skip still registers the collection on this repo — otherwise the saving costs the
+thing the ingest was for. A test pins it.
+
+**And a third instance of one shape, in one day.** `_note` filters its props through a fixed
+allowlist, so `ingested_by` was **dropped silently** and the attribution came back empty. That is
+`operationCount` in `arch_recovery/persist.py` this morning, and the port/wire `detail` before it:
+**a curated field list that discards anything added upstream, without saying so.** The list stays
+explicit — an unbounded passthrough would let anything into the record — but the hazard is now named
+at the point it bit.

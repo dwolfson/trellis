@@ -35,6 +35,7 @@ when there isn't one rather than following links. Bounded by max_pages.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
@@ -97,9 +98,16 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         indistinguishable from "never run". The reason string is what makes that
         outcome legible as a decision rather than a fault.
         """
+        # A fixed allowlist, so a key added upstream and not added here is
+        # dropped SILENTLY — which is exactly what happened to `ingested_by`
+        # when the dedup skip was written, and to `operationCount` in
+        # arch_recovery/persist.py earlier the same day. The list stays explicit
+        # (an unbounded passthrough would let anything into the record) but the
+        # hazard is worth naming at the point it bites.
         detail = {k: v for k, v in props.items()
                   if k in ("url", "collection", "reason", "marker", "discovery",
-                           "pages_found", "pages_failed", "ingested", "error")}
+                           "pages_found", "pages_failed", "ingested", "error",
+                           "ingested_by", "ingested_at", "owner_repo")}
         if outcome is not None:
             # The shared vocabulary (resource_explorer/step_outcome.py) alongside
             # this step's own `reason`. Both are kept: the outcome is queryable
@@ -234,6 +242,32 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
                                                   detail={"error": str(exc)[:200]}))
 
         collection = site_collection_name(url)
+
+        # Somebody else may already have done this. The collection is keyed on
+        # the site's host precisely so sibling repos share one — sharing the
+        # destination without sharing the work is what made egeria-project.org
+        # cost three full ingests in one batch.
+        owner, when = _already_ingested(self.registry, collection, self.project.slug)
+        if owner:
+            # Still register it HERE, which is the part that matters: the query
+            # router searches a repo's own collection list, so skipping the
+            # fetch must not also skip the wiring, or this repo would be unable
+            # to search a site it points at.
+            cols = list(self.project.collections or [])
+            if collection not in cols:
+                cols.append(collection)
+                self.registry.update_indexed_at(self.project.slug, cols)
+            return self._note(
+                f"Already ingested — {collection} came from {owner}",
+                f"{url} was ingested as {collection} by '{owner}' at {when}, within the "
+                f"{SITE_FRESHNESS_HOURS}h freshness window. The collection is keyed on the "
+                f"site's host so sibling repos share one copy; it is registered on this repo "
+                f"so its questions search it, and re-fetching would embed the same pages "
+                f"again and split retrieval across duplicates.",
+                {"ingested": False, "reason": "already_ingested", "url": url,
+                 "collection": collection, "ingested_by": owner, "ingested_at": when},
+                outcome=no_signal("already_ingested", known_positive=True,
+                                  collection=collection, by=owner))
         chunks_added, fetched, failed = 0, 0, 0
         try:
             from resource_explorer.configdata.collection_config import COLLECTION_TYPES
@@ -328,6 +362,75 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
              "chunks": chunks_added, "discovery": how},
             confidence=100 if chunks_added else 50,
             outcome=outcome)
+
+
+#: How long an ingested site is treated as current. A documentation site does
+#: not change hourly, and the cost of being a day stale is far below the cost of
+#: re-fetching it for every sibling repo. A daily scheduled survey therefore
+#: re-ingests once a day; a batch across 60 repos ingests each site once.
+SITE_FRESHNESS_HOURS = 24
+
+
+def _already_ingested(registry, collection: str, this_slug: str):
+    """`(slug, when)` if `collection` was ingested recently with content in it,
+    by ANY repo including this one. `(None, None)` otherwise.
+
+    `site_collection_name`'s own docstring says a site should be "ingested once
+    and every repo pointing at it" shares the copy — the naming did that, and
+    nothing enforced it. Measured 2026-08-25: `egeria-project.org` was fetched
+    and embedded **three times in one batch**, once each for `egeria_git`,
+    `egeria_python_git` and `egeria_workspaces_git`, 187 pages and 6018 chunks
+    every time, ~175 seconds of the run.
+
+    Keyed on the collection's own state rather than on a within-run memo,
+    deliberately. `SurveyOrchestrator.run()` is per project, so there is no
+    "run" spanning sibling repos to memoise against — and a state-keyed check
+    also holds when the repos are surveyed days apart, or by the scheduler, or
+    one at a time from the UI.
+
+    **A previous run that stored nothing does not count.** `milvus` recorded a
+    completed ingest with zero chunks after 400 failed fetches; treating that as
+    "already done" would make a bad run permanent.
+
+    **This repo counts as "anyone", and the first version excluded it — wrongly.**
+    Skipping writes a zero-chunk record over whatever this repo held, so after
+    two siblings skip, only the third still carries evidence the site is fresh;
+    run last, it re-ingests. Observed immediately: `egeria_git` and
+    `egeria_python_git` skipped in under a second and `egeria_workspaces_git`
+    then spent 103 seconds re-fetching the site its own record said was current.
+    The question is "has this collection been ingested recently", not "did
+    somebody else do it".
+
+    A deliberate re-ingest is therefore a separate concern from this check, and
+    is not built: the step has no force-refresh path today, and adding one on
+    the assumption that somebody wants it would be inventing a requirement.
+    """
+    from datetime import datetime, timedelta
+
+    cutoff = datetime.utcnow() - timedelta(hours=SITE_FRESHNESS_HOURS)
+    for other in registry.list_all():
+        try:
+            m = registry.query_metrics(other.slug, "website_ingestion") or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if not m or not (m.get("chunks") or 0):
+            continue
+        detail = m.get("detail") or {}
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except Exception:  # noqa: BLE001
+                continue
+        if detail.get("collection") != collection:
+            continue
+        when = str(m.get("surveyed_at") or "")
+        try:
+            if datetime.fromisoformat(when) < cutoff:
+                continue
+        except ValueError:
+            continue
+        return other.slug, when
+    return None, None
 
 
 def _extract_text(html: str) -> str:

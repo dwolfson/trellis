@@ -213,3 +213,104 @@ class TestIngestionStatusReadsTheAuthoritativeField:
         for reason in ("self_published", "code_host", "non_doc_host", "unrelated_host"):
             rec = {"chunks": 0.0, "detail": {"ingested": False, "reason": reason}}
             assert AL.ingestion_status(self._R(rec), "x") == (AL.ING_DECLINED, reason)
+
+
+class TestASiteIsIngestedOnceNotOncePerSiblingRepo:
+    """`site_collection_name`'s docstring already said a site should be
+    "ingested once and every repo pointing at it" shares the copy. The naming
+    did that; nothing enforced it. Measured: `egeria-project.org` fetched and
+    embedded three times in one batch — 187 pages and 6018 chunks each, ~175
+    seconds — because host-keying dedupes the DESTINATION and not the FETCH."""
+
+    class _P:
+        def __init__(self, slug, chunks, collection, when, url="https://x"):
+            self.slug, self._c, self._col, self._w = slug, chunks, collection, when
+
+    class _Reg:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def list_all(self):
+            return self._rows
+
+        def query_metrics(self, slug, kind):
+            for r in self._rows:
+                if r.slug == slug:
+                    return {"chunks": r._c, "surveyed_at": r._w,
+                            "detail": {"collection": r._col}}
+            return {}
+
+    @staticmethod
+    def _now(offset_hours=0):
+        from datetime import datetime, timedelta
+        return (datetime.utcnow() - timedelta(hours=offset_hours)).isoformat()
+
+    def _reg(self, *rows):
+        return self._Reg(list(rows))
+
+    def test_a_recent_ingest_by_a_sibling_is_found(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("sibling", 6018.0, "web_docs_x", self._now(1)))
+        owner, when = w._already_ingested(reg, "web_docs_x", "me")
+        assert owner == "sibling"
+
+    def test_this_repos_own_recent_ingest_also_counts(self):
+        """The first version excluded the repo itself, and that was wrong.
+        Skipping writes a zero-chunk record over what this repo held, so after
+        two siblings skip only the third still carries the evidence — run last,
+        it re-ingests. Observed: two skips in under a second, then 103 seconds
+        re-fetching a site the repo's own record said was current."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("me", 6018.0, "web_docs_x", self._now(1)))
+        assert w._already_ingested(reg, "web_docs_x", "me")[0] == "me"
+
+    def test_a_stale_ingest_does_not_count(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("sibling", 6018.0, "web_docs_x",
+                                self._now(w.SITE_FRESHNESS_HOURS + 1)))
+        assert w._already_ingested(reg, "web_docs_x", "me") == (None, None)
+
+    def test_a_run_that_stored_nothing_does_not_count(self):
+        """milvus recorded a completed ingest with zero chunks after 400 failed
+        fetches. Treating that as 'already done' would make a bad run
+        permanent."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("milvus", 0.0, "web_docs_x", self._now(1)))
+        assert w._already_ingested(reg, "web_docs_x", "me") == (None, None)
+
+    def test_a_different_collection_does_not_count(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("other", 99.0, "web_docs_somewhere_else", self._now(1)))
+        assert w._already_ingested(reg, "web_docs_x", "me") == (None, None)
+
+
+class TestTheSkipStillWiresTheRepoToTheCollection:
+    def test_attribution_survives_the_props_allowlist(self):
+        """`_note` filters props through a fixed allowlist, so a key added
+        upstream and not added there is dropped SILENTLY — which is what
+        happened to `ingested_by`, and to `operationCount` in
+        arch_recovery/persist.py the same day."""
+        import inspect
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        src = inspect.getsource(w.WebsiteIngestionSurveyor._note)
+        for key in ("ingested_by", "ingested_at"):
+            assert f'"{key}"' in src, f"{key} would be dropped from the record"
+
+    def test_skipping_the_fetch_must_not_skip_the_registration(self):
+        """The query router searches a repo's OWN collection list. Skipping the
+        fetch without registering would leave this repo unable to search a site
+        it points at — a saving that costs the thing the ingest was for."""
+        import inspect
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        src = inspect.getsource(w.WebsiteIngestionSurveyor.run)
+        skip = src[src.index("already_ingested(self.registry"):src.index("no_signal(\"already_ingested\"")]
+        assert "update_indexed_at" in skip
