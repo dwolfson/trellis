@@ -33,7 +33,11 @@ def made(client):
     reg = ProjectRegistry()
     with reg._conn() as conn:
         for slug in created:
-            conn.execute("DELETE FROM investigation_members WHERE investigation_slug = ?", (slug,))
+            ws = reg.investigation_working_set_slug(slug)
+            if ws:
+                conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?", (ws,))
+                conn.execute("DELETE FROM working_sets WHERE slug = ?", (ws,))
+            conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?", (slug,))
             conn.execute("DELETE FROM investigations WHERE slug = ?", (slug,))
 
 
@@ -72,22 +76,42 @@ def test_an_unknown_purpose_is_rejected_rather_than_stored(client):
     assert "Nonsense" in r.json()["detail"]
 
 
-def test_membership_is_shaped_like_the_relationship_it_becomes(client, made):
-    """Members carry their own resource_use and state, so promotion replays
-    each row as a ResourceList relationship rather than migrating a different
-    shape (§1, §7's candidate/in-scope/excluded)."""
-    inv = made(display_name="With Members")
-    r = client.put(f"/api/investigations/{inv['slug']}/members", json={"members": [
-        {"entity_type": "repo", "entity_slug": "milvus", "resource_use": "candidate"},
-        {"entity_type": "repo", "entity_slug": "sqlglot", "state": "excluded"},
-    ]})
+def test_membership_goes_through_a_working_set(client, made):
+    """Storage mirrors Egeria's real two-hop shape:
+
+        Project --ResourceList--> WorkingSet --CollectionMembership--> resource
+
+    A flat Project->resource link (which an earlier pass here used, and which
+    design §6 itself sketched) has nowhere to put a per-resource rationale and
+    makes the working set unnameable. The API stays flat because every caller
+    only wants "what is in scope"; the two hops are a storage-fidelity decision
+    so promotion to Egeria is a replay rather than a migration.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Two Hop")
+    reg = ProjectRegistry()
+
+    # A brand-new investigation has NO working set — that is what makes the
+    # empty sidebar an honest prompt rather than an empty shell.
+    assert reg.investigation_working_set_slug(inv["slug"]) == ""
+
+    r = client.post(f"/api/investigations/{inv['slug']}/members", json={
+        "entity_type": "repo", "entity_slug": "milvus",
+        "membership_rationale": "already adopted; tracking health",
+    })
     assert r.status_code == 200
-    members = {m["entity_slug"]: m for m in r.json()}
-    assert members["milvus"]["resource_use"] == "candidate"
-    assert members["milvus"]["state"] == "in-scope"
-    assert members["sqlglot"]["state"] == "excluded"
-    refreshed = client.get(f"/api/investigations/{inv['slug']}").json()
-    assert refreshed["member_count"] == 2
+    assert r.json()[0]["membership_rationale"] == "already adopted; tracking health"
+
+    # ...and the working set was created lazily, on first use.
+    ws_slug = reg.investigation_working_set_slug(inv["slug"])
+    assert ws_slug
+    assert reg.get_working_set(ws_slug)["members"][0]["entity_slug"] == "milvus"
+
+    assert client.get(f"/api/investigations/{inv['slug']}").json()["member_count"] == 1
+
+    d = client.delete(f"/api/investigations/{inv['slug']}/members/repo/milvus")
+    assert d.status_code == 200 and d.json() == []
 
 
 def test_members_on_a_missing_investigation_404s(client):

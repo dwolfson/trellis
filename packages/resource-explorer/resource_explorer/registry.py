@@ -1663,22 +1663,57 @@ class ProjectRegistry:
                 if col not in inv_cols:
                     conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
 
-            # Membership is many-to-many (§1) and shaped like the Egeria
-            # relationships it will become: one row per (investigation,
-            # resource) carrying its own `resource_use`, so promotion replays
-            # each row as a ResourceList relationship with its resourceUse
-            # rather than migrating a different shape. `state` carries §7's
-            # candidate/in-scope/excluded, which Remediate needs because its
-            # membership is outcome-driven rather than chosen up front.
+            # Membership follows Egeria's real two-hop shape rather than a flat
+            # link, so promotion stays a replay:
+            #
+            #   Project --ResourceList--> WorkingSet (a Collection)
+            #           --CollectionMembership--> Repo / DB / FS
+            #
+            # An earlier pass here (and design §6's own sketch) linked the
+            # Project straight to each resource. The two-hop form is better and
+            # is what Egeria actually offers: the working set becomes a nameable,
+            # reusable thing in its own right, `ResourceList.resourceUse` describes
+            # how the investigation uses it, and `CollectionMembership` carries a
+            # per-resource rationale that a direct link has nowhere to put.
+            #
+            # All three tables mirror their Egeria counterparts and carry a
+            # nullable GUID, so an investigation works with no Egeria at all and
+            # promotion fills in rather than migrates.
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS investigation_members (
+                CREATE TABLE IF NOT EXISTS working_sets (
+                    slug                              TEXT PRIMARY KEY,
+                    display_name                      TEXT NOT NULL,
+                    egeria_collection_guid            TEXT DEFAULT '',
+                    egeria_collection_qualified_name  TEXT DEFAULT '',
+                    created_at                        TEXT NOT NULL
+                )
+            """)
+            # The ResourceList relationship (0019) itself. `watch_resource`
+            # mirrors its `watchResource` property — the flag Automate's
+            # subscriptions should eventually ride on rather than a separate
+            # local table (see the Backlog entry).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS investigation_resource_lists (
                     investigation_slug  TEXT NOT NULL,
-                    entity_type         TEXT NOT NULL,
-                    entity_slug         TEXT NOT NULL,
+                    working_set_slug    TEXT NOT NULL,
                     resource_use        TEXT DEFAULT '',
-                    state               TEXT NOT NULL DEFAULT 'in-scope',
+                    watch_resource      INTEGER NOT NULL DEFAULT 0,
                     added_at            TEXT NOT NULL,
-                    PRIMARY KEY (investigation_slug, entity_type, entity_slug)
+                    PRIMARY KEY (investigation_slug, working_set_slug)
+                )
+            """)
+            # CollectionMembership (0021) — carries rationale and confidence in
+            # Egeria; `state` keeps §7's candidate/in-scope/excluded, which
+            # Remediate needs because its membership is outcome-driven.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS working_set_members (
+                    working_set_slug      TEXT NOT NULL,
+                    entity_type           TEXT NOT NULL,
+                    entity_slug           TEXT NOT NULL,
+                    membership_rationale  TEXT DEFAULT '',
+                    state                 TEXT NOT NULL DEFAULT 'in-scope',
+                    added_at              TEXT NOT NULL,
+                    PRIMARY KEY (working_set_slug, entity_type, entity_slug)
                 )
             """)
             # Automate — Part 4 of docs/discovery-automate-project-context-plan.md,
@@ -3688,36 +3723,102 @@ class ProjectRegistry:
         out = [self.get_investigation(r["slug"]) for r in rows]
         return [i for i in out if i and (include_closed or i.get("status") != "closed")]
 
-    def set_investigation_members(self, investigation_slug: str,
-                                  members: list[dict]) -> list[dict]:
-        """Replace membership wholesale. Each member is
-        {entity_type, entity_slug, resource_use?, state?} — shaped like the
-        ResourceList relationship it becomes on promotion, so that stays a
-        replay rather than a migration."""
-        now = datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute("DELETE FROM investigation_members WHERE investigation_slug = ?",
-                         (investigation_slug,))
-            for m in members:
-                conn.execute(
-                    """INSERT INTO investigation_members
-                       (investigation_slug, entity_type, entity_slug,
-                        resource_use, state, added_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (investigation_slug, m["entity_type"], m["entity_slug"],
-                     m.get("resource_use", ""), m.get("state", "in-scope"), now),
-                )
-        return self.list_investigation_members(investigation_slug)
+    # Membership goes through a WorkingSet, mirroring
+    # Project --ResourceList--> WorkingSet --CollectionMembership--> resource.
+    # An investigation gets one working set lazily, on first use, so a brand-new
+    # investigation genuinely has none rather than an empty shell.
 
-    def list_investigation_members(self, investigation_slug: str) -> list[dict]:
+    def get_or_create_working_set(self, investigation_slug: str,
+                                  display_name: str = "") -> dict | None:
+        inv = self.get_investigation(investigation_slug)
+        if not inv:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                (investigation_slug,),
+            ).fetchone()
+            if row:
+                ws_slug = row["working_set_slug"]
+            else:
+                ws_slug = f"{investigation_slug}-ws"
+                now = datetime.utcnow().isoformat()
+                conn.execute(
+                    """INSERT INTO working_sets (slug, display_name, created_at)
+                       VALUES (?, ?, ?)""",
+                    (ws_slug, display_name or f"{inv['display_name']} working set", now),
+                )
+                conn.execute(
+                    """INSERT INTO investigation_resource_lists
+                       (investigation_slug, working_set_slug, resource_use, added_at)
+                       VALUES (?, ?, 'working-set', ?)""",
+                    (investigation_slug, ws_slug, now),
+                )
+        return self.get_working_set(ws_slug)
+
+    def get_working_set(self, ws_slug: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM working_sets WHERE slug = ?", (ws_slug,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["members"] = self.list_working_set_members(ws_slug)
+        return d
+
+    def investigation_working_set_slug(self, investigation_slug: str) -> str:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                (investigation_slug,),
+            ).fetchone()
+        return row["working_set_slug"] if row else ""
+
+    def add_working_set_member(self, ws_slug: str, entity_type: str, entity_slug: str,
+                               *, membership_rationale: str = "",
+                               state: str = "in-scope") -> list[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO working_set_members
+                   (working_set_slug, entity_type, entity_slug, membership_rationale, state, added_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (working_set_slug, entity_type, entity_slug)
+                   DO UPDATE SET membership_rationale = EXCLUDED.membership_rationale,
+                                 state = EXCLUDED.state""",
+                (ws_slug, entity_type, entity_slug, membership_rationale, state,
+                 datetime.utcnow().isoformat()),
+            )
+        return self.list_working_set_members(ws_slug)
+
+    def remove_working_set_member(self, ws_slug: str, entity_type: str,
+                                  entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM working_set_members
+                   WHERE working_set_slug = ? AND entity_type = ? AND entity_slug = ?""",
+                (ws_slug, entity_type, entity_slug),
+            )
+        return self.list_working_set_members(ws_slug)
+
+    def list_working_set_members(self, ws_slug: str) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT entity_type, entity_slug, resource_use, state, added_at
-                   FROM investigation_members WHERE investigation_slug = ?
+                """SELECT entity_type, entity_slug, membership_rationale, state, added_at
+                   FROM working_set_members WHERE working_set_slug = ?
                    ORDER BY entity_type, entity_slug""",
-                (investigation_slug,),
+                (ws_slug,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_investigation_members(self, investigation_slug: str) -> list[dict]:
+        """Members of this investigation's working set, flattened.
+
+        Kept under the old name because callers only ever want "what is in
+        scope for this investigation" — the two-hop shape is a fidelity
+        decision about how it is STORED, not something every caller should
+        have to walk.
+        """
+        ws = self.investigation_working_set_slug(investigation_slug)
+        return self.list_working_set_members(ws) if ws else []
 
     def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:
         """Bind (or unbind) an investigation to an Egeria Project.
