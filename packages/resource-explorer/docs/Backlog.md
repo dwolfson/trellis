@@ -574,6 +574,56 @@ adopter. Recording only — nothing routes on these labels.
 
 ---
 
+#### ~~Re-parent / persist ancestors to make depth control work~~ — BUILT, MEASURED, AND IT DOES NOT DELIVER THE COLLAPSE
+
+**Live re-survey of milvus, 2026-08-24 (`repo_arch_detect`, 24.5s):**
+
+```
+before:  204 components, 0 structural, projection identical at every depth
+after:   204 components, 2 structural, 1 of 206 rows has a resolved parent
+         depth 0 -> 205    depth None -> 206
+```
+
+Structural nodes were built exactly as specified (separate row kind, no type, no
+confidence) and they work for what they target — genuinely referenced ancestors now
+resolve, 0 -> 1. **They do not produce the grouping this entry predicted, and the
+prediction was wrong for a reason worth recording.**
+
+`internal/distributed/{datanode,mixcoord,proxy,querynode,streamingnode,…}` carry
+`parent_slug=''`. They reference **no parent at all**, so persisting referenced
+ancestors can never synthesise `internal/distributed`. The earlier "would absorb 6"
+figure in this entry was computed by string-splitting component slugs into
+*hypothetical* parents and was then presented as what persisting referenced ancestors
+would deliver. Those are different mechanisms. Path-prefix grouping is not the stored
+parent hierarchy.
+
+The cause is upstream and by design: `build_hierarchy` makes a directory a candidate
+only if it holds **>=2 first-party files directly**. A pure container directory like
+`internal/distributed` holds only subdirectories, so it is never a candidate, is never
+linked to, and cannot be recovered from the reference graph.
+
+**Path-prefix grouping was then measured as the alternative, and also does not solve it:**
+
+```
+milvus      by 1st path segment: 37 groups   by 2: 93 groups   (from 204)
+genaicomps  by 1st path segment: 290 groups  by 2: 294 groups  (from 311)
+```
+
+Real reduction for milvus, useless for genaicomps — whose components are compose
+service names, not paths, exactly as predicted.
+
+**What this settles.** Depth/grouping over stored structure cannot make architecture
+recovery interpretable, for either repo. The remaining lever is the one already
+recorded elsewhere: distillation and the unported adjudicator (spike: Kubernetes
+3303 -> 358 deterministically, then 358 -> 93 only with the LLM, which is where 6/6
+held). Interpretability here is a precision problem, not a presentation one.
+
+**Kept anyway, deliberately:** the structural-node code is correct, tested, invents no
+evidence, and is what a denser hierarchy would need. It is not load-bearing for
+anything today. `STAGE_PROJECTION_DEPTH` remains unwired and still meaningless.
+
+**Original entry, which the measurement above corrects, follows.**
+
 #### Re-parent components to the nearest SURVIVING ancestor — this is what makes depth control work
 
 Measured 2026-08-24 while prototyping a depth control, and the reason that control
