@@ -995,7 +995,48 @@ def _security_features_results(registry, slug: str) -> dict:
         {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
         for r in rows
     ]
-    return {"findings": findings}
+    if findings:
+        return {"findings": findings}
+
+    # No findings has two very different causes, and an empty list tells them
+    # apart for nobody.
+    #
+    # GitHub returns `security_and_analysis` ONLY to callers with admin access
+    # to the repository. For a third-party repo it comes back empty however many
+    # times this runs — the analysis is not failing, it is structurally
+    # impossible, which is a fact about GitHub's API and not about the run.
+    # Measured 2026-08-25: 2 of 60 repos in this corpus have any findings, and
+    # both are the operator's own. The other 58 rendered as an empty card.
+    #
+    # `skipped_by_design` is the honest state and its reason is required, for
+    # exactly this: a skip with no stated reason is indistinguishable from a
+    # failure on the screen.
+    stats = registry.get_latest_project_stats(slug) or {}
+    if not stats:
+        # No stats at all: the step this reads from has never run for this repo,
+        # which is a third distinct cause and must not be folded into either of
+        # the others. Stated rather than left as a bare empty list.
+        return {
+            "findings": [],
+            "_status": {
+                "state": result_status.NEVER_RUN,
+                "hint": "Repository statistics have not been fetched for this repo yet.",
+            },
+        }
+    raw = stats.get("security_and_analysis_json")
+    visible = bool(raw) and raw not in ("{}", "null")
+    if not visible:
+        return {
+            "findings": [],
+            "_status": result_status.skipped(
+                "GitHub only returns security feature settings to repository "
+                "admins, so these are invisible for a repo you do not own. "
+                "Not a gap in the repository.",
+                gate="github_admin_only",
+            ),
+        }
+    # Visible and genuinely nothing enabled — a real, final answer.
+    return {"findings": []}
 
 
 def _security_features_trend(registry, slug: str) -> list[dict]:
@@ -1769,11 +1810,19 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
     return {"label": f"{n} component(s) recovered", "status": "info" if n else "warn"}
 
 
-def _website_ingestion_headline(results: dict) -> dict | None:
+def _website_ingestion_headline(registry, slug: str) -> dict | None:
     """Survey Results dashboard headline. A skip is reported as its own status
     rather than as zero-with-a-warning — "this repo publishes its own site" is a
     correct, final answer, and flagging it as a shortfall would push someone to
-    "fix" a duplicate ingest we deliberately avoid."""
+    "fix" a duplicate ingest we deliberately avoid.
+
+    Signature is `(registry, slug)` like every other headline reader. It took
+    `(results)` until 2026-08-25, so the uniform call site
+    (`web/routes/projects.py`) raised TypeError on every invocation — 0 of 60
+    repos — and the caller's bare `except Exception: headline = None` swallowed
+    it. The tile never rendered for anyone and nothing was logged.
+    """
+    results = _website_ingestion_results(registry, slug)
     if not results.get("surveyed_at"):
         return None
     reason = results.get("reason", "")
