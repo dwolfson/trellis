@@ -125,3 +125,44 @@ def test_an_unreadable_status_never_produces_an_offer():
     assert rendered["state"] != arch_lens.ING_NOT_ATTEMPTED, (
         f"an unreadable status ({state}/{detail!r}) would render as an offer"
     )
+
+
+def test_every_live_skip_reason_has_an_explanation():
+    """A skip reason with no branch renders as a bare label.
+
+    The website-ingestion card leads with the REASON when nothing was stored,
+    because a zero there is usually the system being right — measured
+    2026-08-25, 20 of 60 repos are in that state. A reason the UI cannot explain
+    reduces to the raw enum value, which is better than a bare 0 but still makes
+    the reader guess whether it is a fault.
+
+    Checked against the reasons actually occurring in the corpus rather than the
+    constants, so a new one added upstream fails here rather than shipping as an
+    unexplained label.
+    """
+    import re
+    from pathlib import Path
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
+
+    reader = ANALYSIS_KINDS["website_ingestion"].results.results_reader
+    reg = ProjectRegistry()
+    live = set()
+    for p in reg.list_all():
+        res = reader(reg, p.slug)
+        if not res.get("chunks") and res.get("reason"):
+            live.add(res["reason"])
+    if not live:
+        pytest.skip("no skipped ingestions in this corpus")
+
+    index = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html"
+    block = index.read_text().split("const _WEBSITE_SKIP_REASON = {")[1].split("};")[0]
+    explained = set(re.findall(r"^\s*(\w+):", block, re.M))
+
+    missing = live - explained
+    assert not missing, (
+        f"skip reason(s) with no explanation in the card: {sorted(missing)}. "
+        "They render as the raw enum value, leaving the reader to guess whether "
+        "a zero is a fault or the system being right."
+    )

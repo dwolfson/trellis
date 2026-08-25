@@ -2066,7 +2066,7 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "website_ingestion": AnalysisKind(
         "website_ingestion", ["repo_website_ingestion"],
         results=AnalysisKindResults(
-            _website_ingestion_results, _website_ingestion_trend, "metrics",
+            _website_ingestion_results, _website_ingestion_trend, "custom",
             headline_reader=_website_ingestion_headline,
         ),
     ),

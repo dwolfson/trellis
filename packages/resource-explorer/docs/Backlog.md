@@ -1415,6 +1415,59 @@ The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-downloa
 
 ---
 
+#### HIGH — extract a shared query cache into a Trellis package; it fixes a live bug in Egeria Advisor
+
+Full detail: `docs/re-ea-consolidation-audit.md` item 1.
+
+RE's `query_cache.py` (124 lines) is genuine LRU (`OrderedDict` + `move_to_end()` on access) with
+TTL and an optional Redis backend. EA's `query_cache.py` (169 lines) is named and documented as
+LRU throughout but **is not** — plain `dict`, no reordering on access, just FIFO eviction of the
+oldest insertion. EA does have hit/miss/`most_popular` telemetry RE lacks.
+
+**Proposed:** a shared `trellis-`package `QueryCache` built from RE's TTL/Redis/invalidation
+design as the base, with EA's stats/`most_popular` reporting layered on top — same shape as
+`trellis-vectorstore`'s extraction (each app keeps a thin adapter over the shared class). Fixes
+EA's eviction bug as a side effect of the extraction, not as separate work.
+
+---
+
+#### HIGH — extract the BeeAI agent base/runner shared by RE and EA
+
+Full detail: `docs/re-ea-consolidation-audit.md` item 2.
+
+RE's `resource_explorer/agents/base.py` (`BaseExplorerAgent`, 200 lines) and EA's
+`advisor/agents/base.py` (`BaseAdvisorAgent`, 83 lines) both hand-roll the same BeeAI
+`RequirementAgent` construction and the same "sync caller in an async context → spawn a thread
+with a fresh event loop" workaround, down to matching inline comments explaining why BeeAI needs
+a fresh event loop in a thread. This is copy-pasted logic, not two teams converging on the same
+idiom independently — same tier of confidence as `trellis-microflow`'s extraction.
+
+**Proposed:** a shared `BeeAIAgentRunner`/`BaseAgent` mixin covering `_build_agent()`/
+`_run_agent()`. RE's slug-inference/clarification helpers and EA's separate (apparently dead)
+"legacy... not using BeeAI" `BaseAgent` scaffolding stay app-specific — check whether that
+second EA class is still referenced anywhere before or alongside this extraction.
+
+---
+
+#### MEDIUM — EA should adopt RE's dual-backend registry connection-management pattern
+
+Full detail: `docs/re-ea-consolidation-audit.md` item 3.
+
+RE's `registry.py` has a mature `ConnectionWrapper` + SQLAlchemy dual-engine abstraction
+(SQLite↔Postgres placeholder/DDL translation, pooling, same-transaction column introspection
+working around a real Postgres visibility bug) that RE already reuses across `registry.py`,
+`observability/metrics_collector.py`, and `feedback_store.py`. EA's `db_consolidated.py`
+(`ConsolidatedDBManager`, 283 lines) reinvents a narrower, Postgres-only version of the same
+idea — same shape as the Java-symbol-extraction finding in the ingestion audit: one app's
+implementation is simply more mature, and the other never adopted it.
+
+**Proposed:** the schemas stay separate (project/resource state vs. metrics/audit/symbol
+tables are genuinely different data) — only the connection-management primitive moves, with EA
+adopting it. Not urgent while EA's Postgres-only assumption holds, but worth doing before EA
+needs a SQLite fallback path RE has already solved.
+
+---
+
 ### Data model & naming
 
 #### `Project` means three different things in `registry.py` (four counting EA's tables)
