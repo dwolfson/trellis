@@ -1861,7 +1861,7 @@ function showAnalysisPane() {
 }
 
 function _analysisSubnavHtml(active) {
-  const tabs = [{ tab: 'catalog', label: '📋 Catalog' }];
+  const tabs = [{ tab: 'catalog', label: '📋 Analyses' }];  // "Analyses", not "Catalog": assessment and discovery call the identical concept — the list of analyses runnable at this stage — by that name, and one stage using a different word for it makes them look like different things.
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
@@ -1895,7 +1895,7 @@ function showDiscoveryPane() {
 
 function _discoverySubnavHtml(active) {
   const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
-  tabs.push({ tab: 'analyses', label: '🧪 Analyses' });  // the five discovery-tier analyses
+  tabs.push({ tab: 'analyses', label: '📋 Analyses' });  // 📋, not 🧪 — same label and same concept as assessment's and analysis's, so it should carry the same glyph; a different icon for the same thing reads as a different kind of thing.
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
@@ -8127,7 +8127,7 @@ async function _loadScoutingOverviewStats(slug) {
         t.status === 'warn' ? 'text-amber-400 border-amber-900' :
         t.status === 'gap' ? 'text-red-400 border-red-900' : 'text-slate-300 border-slate-800';
       return `<span class="text-[11px] px-2 py-0.5 rounded-full border bg-slate-950 ${color}" title="${_esc(t.analysis_name)}">${_esc(t.label)}</span>`;
-    }).join('') : '<span class="text-[11px] text-slate-600">No scouting-tier results yet — run a Scouting Scan.</span>';
+    }).join('') : '<span class="text-[11px] text-slate-600">No Scouting results yet — run a Scouting Scan.</span>';
   } catch(e) {
     el.innerHTML = `<span class="text-[11px] text-slate-600">Signal unavailable.</span>`;
   }
@@ -8228,14 +8228,14 @@ function renderScoutingQuestions(data) {
           ${q.note ? `<div class="text-[10px] text-slate-600 mt-0.5">${_esc(q.note)}</div>` : ''}
         </div>
       </div>`;
-  }).join('') || '<div class="text-xs text-slate-500 py-4 text-center">No questions for this phase/perspective combination.</div>';
+  }).join('') || '<div class="text-xs text-slate-500 py-4 text-center">No questions for this stage and perspective.</div>';
 
   const answeredCount = questions.filter(q => _questionStatus(q).icon === '✓').length;
 
   view.innerHTML = _qdSubnavHtml('questions') + `
     <div class="space-y-3">
       <div>
-        <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+        <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
         <div class="flex flex-wrap gap-1.5">${phaseChips}</div>
       </div>
       ${allPerspectives.length ? `<div>
@@ -12010,7 +12010,7 @@ function renderAdminQuestionCatalogPanel() {
           oninput="_setAdminQCSearch(this.value)"
           class="w-full max-w-sm bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-700">
         <div>
-          <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
           <div class="flex flex-wrap gap-1.5">${stageChips || '<span class="text-xs text-slate-600">—</span>'}</div>
         </div>
         ${_adminQCPerspectives().length ? `<div>
