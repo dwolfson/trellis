@@ -144,6 +144,18 @@ This doesn't change the module-by-module verdicts above (items 1–5 are about d
 *extraction/chunking* code, not this trigger step), but it's a real, measured caution for
 whoever next asks "how much of X is actually ingested?" against this pipeline.
 
+### 7. Catalog identity — a since-fixed bug that changes what "ingested against what" means
+
+A separate, since-fixed bug is worth recording here because it changes the baseline any
+ingestion-coverage audit measures against: `_find_or_create_asset` matched on `qualifiedName`
+with `starts_with=True` and took `existing[0]` — so `docling` matched against `docling_eval`'s
+qualified name and adopted its Egeria asset GUID. Two distinct repos shared one catalog entry;
+one repo's survey/ingestion results were attaching to the other's asset. This was live as of
+this morning and has since been corrected across all 22 affected repos (each now holds its own
+correct GUID). Not an ingestion-pipeline duplication issue (items 1–5 don't touch it), but any
+historical ingestion data pulled from before the fix should be treated as measured against a
+catalog that was, for some repos, genuinely wrong — not just incomplete.
+
 ## Recommendation
 
 1. **Extend the existing cross-schema-read pattern to Python symbol extraction** (item 1)
