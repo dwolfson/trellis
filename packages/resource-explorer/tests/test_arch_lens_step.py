@@ -220,3 +220,59 @@ class TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone:
         (rfa,) = [a for a in self._run_with(monkeypatch, {})
                   if getattr(a, "action_requested", "")]
         assert "nothing is wrong with" in rfa.explanation
+
+
+class TestUnknownIsNotNotAttempted:
+    """Split at the presentation session's request, and for the better of the
+    two reasons available: their renderer coped by matching my DETAIL STRING to
+    tell "nobody read the site" from "we could not tell" — their code depending
+    on my wording across a module boundary, with nothing to notice a reword.
+
+    They wrote two guards against that and asked for them to be deleted the day
+    this split lands. These tests replace them."""
+
+    class _BrokenReg(_Reg):
+        def query_metrics(self, slug, kind):
+            raise RuntimeError("registry unreachable")
+
+    def test_an_unreadable_record_is_unknown_not_not_attempted(self):
+        state, detail = AL.ingestion_status(self._BrokenReg(), "x")
+        assert state == AL.ING_UNKNOWN
+        assert state != AL.ING_NOT_ATTEMPTED, (
+            "'we could not find out' is a fact about the lookup; 'the step has "
+            "never run here' is a fact about the repository"
+        )
+        assert "unreadable" in detail
+
+    def test_an_absent_record_is_still_not_attempted(self):
+        assert AL.ingestion_status(_Reg(), "x")[0] == AL.ING_NOT_ATTEMPTED
+
+    def test_no_offer_is_made_when_the_status_is_unknown(self, monkeypatch):
+        """The specific failure the split prevents: confidently offering to
+        ingest a site whose status merely failed to load."""
+        lens = _Lens(terms=[], outcome="doc-site")
+        lens.sources = [("doc-site", "https://a")]
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k: lens)
+        anns = AL.ArchLensSurveyor(_Proj(), self._BrokenReg(scopes=["x"])).run()
+        assert not [a for a in anns if getattr(a, "action_requested", "")]
+
+    def test_the_state_set_is_declared_so_a_caller_can_switch_on_it(self):
+        """A renderer branching on these should be able to enumerate them
+        rather than discover a new one at runtime."""
+        assert set(AL.ING_STATES) == {
+            AL.ING_INGESTED, AL.ING_DECLINED, AL.ING_ATTEMPTED_EMPTY,
+            AL.ING_NOT_ATTEMPTED, AL.ING_UNKNOWN}
+
+    def test_every_returned_state_is_in_the_declared_set(self):
+        cases = [
+            _Reg(),                                                        # absent
+            self._BrokenReg(),                                             # unreadable
+            TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone._MReg(
+                {"chunks": 97.0, "detail": {"outcome": "recovered"}}),      # ingested
+            TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone._MReg(
+                {"chunks": 0.0, "detail": {"reason": "self_published"}}),   # declined
+            TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone._MReg(
+                {"chunks": 0.0, "detail": {"outcome": "unverified"}}),      # attempted
+        ]
+        for reg in cases:
+            assert AL.ingestion_status(reg, "x")[0] in AL.ING_STATES
