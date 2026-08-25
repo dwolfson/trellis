@@ -161,23 +161,48 @@ correct GUID). Not an ingestion-pipeline duplication issue (items 1–5 don't to
 historical ingestion data pulled from before the fix should be treated as measured against a
 catalog that was, for some repos, genuinely wrong — not just incomplete.
 
-### 8. Within-run duplicate ingestion across sibling repos — real, measured duplication
+### 8. Within-run duplicate ingestion across sibling repos — FIXED
 
-Also measured today, and squarely in this doc's scope (unlike items 6–7): `egeria-project.org`
-was ingested **three separate times in one run** — once each for `egeria_git`,
-`egeria_python_git`, and `egeria_workspaces_git` — 6018 chunks, 187 pages, ~175 seconds, every
-time. RE's `web_docs` collections are host-keyed by design specifically so sibling repos that
-share a doc site land in one destination collection — but nothing memoizes the *work* within a
-run, only the destination. Three repos in the same run each independently fetch, chunk, and
-embed the same 187 pages into the same collection.
+Originally measured as: `egeria-project.org` ingested **three separate times in one run** — once
+each for `egeria_git`, `egeria_python_git`, and `egeria_workspaces_git` — 6018 chunks, 187 pages,
+~175 seconds, every time. RE's `web_docs` collections are host-keyed by design specifically so
+sibling repos that share a doc site land in one destination collection — but nothing memoized
+the *work*, only the destination.
 
-**Verdict: (a) — extract as-is, scoped to RE's own orchestrator.** This isn't an RE-vs-EA
-duplication question (contrast item 5's orchestrator split, which stays); it's RE re-doing its
-own already-done work within a single run because host-keying dedupes the *destination* but not
-the *fetch*. The fix is a run-scoped memoization keyed on the same host used for the collection
-name, inside `IngestionPipeline`/`site_discovery.py` — not a new shared package, and not
-something EA's pipeline needs (EA's fixed ~5-repo catalog has no sibling-host overlap to
-dedupe).
+**Status: fixed** (`sub_surveyors/website_ingestion.py`, same day). Numbers below are historical,
+kept for the before/after:
+
+```
+before   egeria_git 79s · egeria_python_git 46s · egeria_workspaces_git 49s
+after    0.4s · 0.2s · 0.2s
+```
+
+**The shape of the fix corrects this doc's original framing, and is worth recording as the
+better answer.** This audit's recommendation called it "run-scoped memoization." That's not
+what was built, and the person who fixed it explained why: `SurveyOrchestrator.run()` is
+**per project** — there is no run spanning sibling repos to memoize within. The fix is instead
+keyed on the **collection's own state** ("has this collection been ingested recently, with
+content in it") — which also correctly dedupes siblings surveyed days apart, by the scheduler,
+or one at a time from the UI, none of which a within-run cache would ever catch. **"Ingest-once
+semantics on a shared collection" is the accurate name for this, and it's a strictly larger fix
+than what this doc originally proposed.** Filed here as a correction to the audit's own
+recommendation, not just a status update — the general lesson (worth carrying into any future
+audit written before seeing the actual fix) is that "memoize the repeated work" defaults to
+whatever scope the audit happened to be looking at (a run, here), when the right scope is
+usually a property of the data (a collection's staleness), not the caller.
+
+Two conditions the fix deliberately does **not** treat as "already done," both worth an audit
+knowing are handled rather than assuming:
+- **A run that stored nothing** — `milvus` had recorded a *completed* ingest with zero chunks
+  after 400 failed fetches; skipping re-ingestion because a completed record exists would make
+  that failure permanent.
+- **Staleness** — a 24-hour constant, so a daily scheduled survey re-ingests once a day rather
+  than once per sibling repo per day.
+
+And the skip path still registers the collection on the repo being skipped — the query router
+searches a repo's own collection list, so skipping the fetch without that registration would
+leave a repo unable to search a site it points at, which would make the "saving" cost the thing
+the ingest was for.
 
 **Also measured, not yet chased down:** a bug where `detail["ingested"]` was hardcoded `True`
 regardless of outcome — `milvus` recorded `ingested: True` after 400/400 sitemap-page fetches
@@ -208,8 +233,10 @@ Follow-up below rather than a verdict.
    reasonable divergence, not duplication.
 3. **Nothing further on embeddings** (item 4) — already resolved via the `trellis-vectorstore`
    Protocol seam.
-4. **Fix item 8's within-run duplication** — real, measured, scoped entirely inside RE's own
-   orchestrator; the lowest-risk, highest-confidence code change this audit identifies.
+4. ~~Fix item 8's within-run duplication~~ — **done.** Confirms this audit's own method: the
+   item flagged lowest-risk/highest-confidence was the one acted on first, and fixed same-day.
+   The shape that shipped (collection-state-keyed, not run-scoped) corrected this doc's original
+   proposal — see item 8.
 
 ## Follow-ups (not part of this pass)
 
@@ -231,3 +258,11 @@ Follow-up below rather than a verdict.
   concrete argument for profiling/staging *before* committing to a full ingest — deciding
   whether and how, not just whether. Whether that's worth the added complexity is a design call
   this audit deliberately leaves open rather than assumes.
+- **Out of scope for this doc, flagged for tracking elsewhere:** a concurrent session hit the
+  same bug shape three times in one day — a curated field allowlist silently dropping anything
+  added upstream without saying so (`_note`'s prop filter dropping `ingested_by`,
+  `arch_recovery/persist.py`'s `operationCount`, and a `detail` field before that). Each is
+  individually defensible, but three in one day across unrelated code suggests a repeated
+  pattern rather than three accidents. It's a general codebase-hygiene finding, not an RE-vs-EA
+  ingestion-pipeline-duplication one, so it doesn't get its own item in *this* doc — but it's
+  real and worth a tracking issue or backlog entry of its own.
