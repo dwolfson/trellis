@@ -1420,16 +1420,48 @@ def _architecture_doc_lens_results(registry, slug: str) -> dict:
     """Which components the project's own documentation names, and from where.
 
     `evidence_kind` is carried per component and MUST NOT be flattened by a
-    renderer: emphasis in a source document is a stronger claim than a mention
+    renderer — and this docstring asserted that before the persistence provided
+    it, which is how a promise in prose outran the data. 212 rows carried none.
+    `tests/test_persisted_detail_contracts.py` now asserts it against real rows
+    rather than against this sentence: emphasis in a source document is a stronger claim than a mention
     in an ingested site's text, and a reader who cannot tell them apart will
     over-trust the weaker one. Group or mark them structurally rather than
     styling them, which the presentation session's own argument settles — a
     style difference assumes the reader is looking for one.
     """
-    findings = []
+    # `query_findings` returns the latest row PER SCOPE, and a lens run is a
+    # whole-resource event — so a scope that was documented in an earlier run
+    # and is not documented now keeps its old row forever, and reads as current.
+    # Measured 2026-08-25: three such rows survived a full corpus refresh, on
+    # `docling_eval` and `docling_java`, because those scopes stopped matching
+    # and nothing removes a finding that is no longer produced.
+    #
+    # So take the newest timestamp across the whole kind and report only rows
+    # from that run. The stale rows stay in the table — this is a read-side
+    # correction, not a deletion — but they stop being presented as the current
+    # answer, which is the part that misleads.
+    # The run marker is the authority on what "current" means: a run that
+    # documents nothing writes only this, so without it the newest rows are
+    # whatever the last successful run left behind.
+    latest = ""
+    for row in registry.query_findings(slug, "architecture_doc_lens") or []:
+        if (row.get("check_name") or "") == "lens_run":
+            latest = max(latest, str(row.get("surveyed_at") or ""))
+
+    rows_by_scope = {}
     for scope in registry.query_finding_scopes(slug, "architecture_doc_lens") or []:
-        for f in registry.query_findings(slug, "architecture_doc_lens", scope) or []:
-            if (f.get("check_name") or "") != "documented_by":
+        rows = [f for f in (registry.query_findings(slug, "architecture_doc_lens", scope) or [])
+                if (f.get("check_name") or "") == "documented_by"]
+        if not rows:
+            continue
+        rows_by_scope[scope] = rows
+        if not latest:                     # no marker yet (rows predate it)
+            latest = max(latest, max(str(f.get("surveyed_at") or "") for f in rows))
+
+    findings = []
+    for scope, rows in rows_by_scope.items():
+        for f in rows:
+            if str(f.get("surveyed_at") or "") != latest:
                 continue
             detail = f.get("detail_json") or f.get("detail") or {}
             if isinstance(detail, str):
@@ -1442,11 +1474,23 @@ def _architecture_doc_lens_results(registry, slug: str) -> dict:
                 "summary": f.get("summary", ""),
                 "term": detail.get("term", ""), "evidence": detail.get("evidence", ""),
                 "date": detail.get("date", ""),
+                "evidence_kind": detail.get("evidence_kind", ""),
             })
     if not findings:
+        # The run marker is what separates these. "Nobody has run the lens here"
+        # and "the lens ran and the documentation named nothing we recovered"
+        # are different facts about the repository, and the second is a real
+        # answer — the same distinction `never_run` vs `nothing_found` exists to
+        # make, which this reader collapsed until the marker existed to tell
+        # them apart.
+        if latest:
+            return {"state": result_status.NOTHING_FOUND,
+                    "message": "The architecture documentation was consulted and named "
+                               "none of the components recovered here. That is an answer "
+                               "about this project's documentation, not a missing run."}
         return {"state": result_status.NEVER_RUN,
                 "message": "The architecture document has not been consulted for this "
-                           "resource, or named nothing we recovered."}
+                           "resource yet."}
     return {"findings": findings, "count": len(findings)}
 
 

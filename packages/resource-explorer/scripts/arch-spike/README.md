@@ -4180,3 +4180,79 @@ raised `TypeError` into a bare `except Exception` and **never fired for any of 6
 called it with the reader's own signature — so **the test and its subject agreed on a contract the
 caller did not share**, and a bare except at the call site let them stay wrong together. That is not
 a missing test; it is two halves of a broken contract agreeing with each other.
+
+---
+
+**114. Chasing one dropped field found four layers of the same thing.**
+
+The presentation session reported that `evidence_kind` — the field distinguishing a component
+*emphasised* in a source document from one merely *mentioned* in an ingested site — was **computed
+and never stored**: 212 rows across 11 repos, none carrying it. Worse, `_architecture_doc_lens_results`'
+docstring **promised** a renderer it would be there. Had they trusted the prose they would have built
+grouping for an absent field, shipped identical-looking rows, and concluded the distinction did not
+matter in practice.
+
+They named the variant: **documentation asserting a contract the storage does not fulfil.** Distinct
+from `_website_ingestion_headline`, where a test and its subject agreed while the caller disagreed.
+Here prose agreed with intent while data disagreed with both.
+
+Fixing it uncovered three more layers, each hidden by the fix for the one before:
+
+1. **The field was dropped at the persistence boundary.** `detail` carried `kind: "doc-lens"` — a
+   type tag — beside where `evidence_kind` should have been. The names are close enough that the
+   absence read as presence.
+2. **A run that documents nothing wrote nothing at all.** So the newest rows in the table were
+   whatever the last *successful* run left: `docling_eval` and `docling_java` kept 17:02 rows through
+   a full corpus refresh that labelled neither, and both read as current. **Nothing removes a finding
+   that is no longer produced.** A `lens_run` marker is now written on every run, labelled or not —
+   the smallest thing that makes staleness detectable, and it deletes nothing.
+3. **My own reader then returned `never_run` for a repo where the lens had run and found nothing.**
+   One value, two facts, in the code written to fix the previous instance. It returns
+   `nothing_found` now, with a message saying the documentation named none of the recovered
+   components — which is an answer about the project, not a missing run.
+
+**Their generalisation is the durable part**, and it is built: *for any field a reader's docstring
+promises, assert it is present in real persisted rows.* `tests/test_persisted_detail_contracts.py`.
+I moved it to assert **through the reader** rather than against raw rows — raw rows conflate a field
+the persistence never wrote (a bug) with a row left behind by code that predates the field (history),
+and only the first is worth failing on.
+
+**And a test fake that has now lagged its subject four times.** `_Lens` was missing `sources`, then
+turned an explicit `terms=[]` back into a populated list, then lacked `undetected_usable`, then
+lacked `evidence_kind` — and that last one was read inside `_persist`'s `try/except`, so the
+`AttributeError` was **swallowed and the write silently did not happen**, surfacing as an unrelated
+scope assertion failing for no visible reason. A hand-written fake is a duplicate of a shape and
+nothing tells it when the original moves; a swallowing caller turns that into a no-op instead of an
+error.
+
+Corpus after all of it: **88 documented components across 17 repos**, up from 60 across 11.
+
+---
+
+**115. `undetected` earns its place with a comparison, not a threshold.**
+
+`undetected` — terms a document emphasises that nothing proposed — was 506 entries on Milvus and
+therefore useless: section headings from 25 design documents, not components we missed. It needed a
+way to know when emphasis means "this is a component" rather than "this is a heading". Measured:
+
+```
+amundsen       4 terms /  43 components   100% matched   an overview
+sqlglot       12 terms /  11 components    50%           an overview
+milvus      1140 terms / 206 components     2%           25 design documents
+openlineage  713 terms / 124 components     3%           a documentation site
+egeria_ws   1728 terms /  73 components     1%
+```
+
+The rule is `terms <= components`, and it is deliberately a **comparison rather than a threshold**:
+a document emphasising more things than the repository has components is describing its own
+structure, and its unmatched emphasis says nothing about detection. An architecture overview
+emphasises *fewer* things than there are components, because it names the important ones. No
+constant, nothing to quietly tune, and it states the claim it rests on — **emphasis at scale is
+structure, not naming.**
+
+The list is published only when it is meaningful; otherwise the count and the reason are, so
+"1118 undetected" never reads as a detection gap.
+
+**One more default standing for "not computed."** The ingested-site path returns before this runs —
+rendered HTML has no emphasis to extract — so `undetected_usable` was `False` with an empty reason,
+indistinguishable from "we checked and it was not meaningful". It now says which.
