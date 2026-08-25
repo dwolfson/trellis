@@ -37,16 +37,36 @@ class _Boom:
 def test_an_unreadable_status_is_not_rendered_as_an_offer():
     """The subtle one, and the reason this wrapper exists.
 
-    `ingestion_status()` absorbs its own read failure and returns
-    `not-attempted` with detail "ingestion status unreadable" — so "nobody has
-    read the site" and "we could not tell" arrive as the SAME state. Rendering
-    keys on state, so passing it through would produce a confident offer to
-    ingest a site we know nothing about: absence dressed as a finding, again.
+    "Nobody has read the site" and "we could not tell" must not arrive as the
+    same thing: rendering keys on state, so passing the second through as the
+    first would produce a confident offer to ingest a site we know nothing
+    about — absence dressed as a finding, again.
 
-    It also must not take out the card it decorates. A missing offer is not a
-    missing result.
+    They used to arrive as one state, and this told them apart by matching
+    `ingestion_status`'s DETAIL STRING. That coupling is gone: `unknown` is a
+    state of its own, and this asserts the BEHAVIOUR rather than the sentinel,
+    so it survives however the distinction is implemented. It also must not take
+    out the card it decorates — a missing offer is not a missing result.
     """
     assert _doc_ingestion_state(_Boom(), "any") == {"state": "", "detail": ""}
+
+
+def test_the_unknown_state_is_what_the_wrapper_keys_on():
+    """Named explicitly so the contract between these two modules is a value,
+    not a phrase. If `ingestion_status` renames the state, this fails loudly;
+    when it merely reworded the detail, the old sentinel failed silently."""
+    import inspect
+
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        _doc_ingestion_state as f,
+    )
+    from resource_explorer.surveyors.sub_surveyors.arch_lens import ING_STATES, ING_UNKNOWN
+
+    assert ING_UNKNOWN in ING_STATES
+    assert "ING_UNKNOWN" in inspect.getsource(f)
+    assert "ingestion status unreadable" not in inspect.getsource(f), (
+        "the detail-string sentinel is gone; the state is the contract"
+    )
 
 
 def test_the_state_is_carried_on_the_architecture_results():
