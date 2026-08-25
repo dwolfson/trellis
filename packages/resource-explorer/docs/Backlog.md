@@ -1309,6 +1309,35 @@ that is about to change is the expensive order to do this in.
 
 ---
 
+#### A curated field allowlist silently drops anything added upstream — three instances in one day
+
+Found 2026-08-25 while auditing ingestion (`docs/ingestion-pipeline-audit.md`): `_note`'s prop
+filter dropped a newly-added `ingested_by` field with no error, no log line, and no visible
+symptom beyond attribution coming back empty. The same session hit the identical shape twice
+more the same day, in unrelated code: `arch_recovery/persist.py` silently dropping
+`operationCount`, and a `detail` field before either of those. Each instance is individually
+defensible — a hand-written allowlist is a normal way to control what a serialized shape
+exposes — but three unrelated instances of "add a field upstream, watch it vanish downstream
+with nothing to say why" in one day is the same shape this project's silent-failure testing
+strategy (see "four silent-failure classes" above) was built to catch, just not this
+particular one.
+
+**Not yet scoped as a fix — this entry is the "notice it, track it" step**, filed rather than
+guessed at further:
+- Find every hand-maintained field allowlist/filter of this shape (props filters, persisted
+  payload shapes, cross-schema readers like `advisor/re_code_symbol_reader.py`'s aliasing) and
+  check whether each is still correct against its current source shape, not just its shape when
+  written.
+- Decide whether the general fix is procedural (a code-review checklist item: "does this
+  allowlist need a matching entry for that new field?") or structural (a passthrough/explicit-
+  exclude default instead of an explicit-include default, or a test asserting the allowlist's
+  keys are a superset of what upstream actually produces) — that choice needs whoever owns
+  each call site, not a blanket answer here.
+- Out of scope for `docs/ingestion-pipeline-audit.md` itself, since it's a codebase-wide pattern
+  rather than an RE-vs-EA ingestion-pipeline-duplication finding — that doc points here.
+
+---
+
 ### Platform & orchestration
 
 #### Distributed survey orchestration via a flow tool (Prefect) — early prototype, not yet integrated

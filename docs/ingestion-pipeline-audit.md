@@ -265,4 +265,6 @@ Follow-up below rather than a verdict.
   individually defensible, but three in one day across unrelated code suggests a repeated
   pattern rather than three accidents. It's a general codebase-hygiene finding, not an RE-vs-EA
   ingestion-pipeline-duplication one, so it doesn't get its own item in *this* doc — but it's
-  real and worth a tracking issue or backlog entry of its own.
+  real and worth a tracking issue or backlog entry of its own. **Filed:** `docs/Backlog.md`,
+  "Corpus, signals & testing" — "A curated field allowlist silently drops anything added
+  upstream — three instances in one day."
