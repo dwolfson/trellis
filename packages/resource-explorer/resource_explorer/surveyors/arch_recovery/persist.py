@@ -184,6 +184,56 @@ def persist_ir(
             metrics.update(extra_metrics[loc])
         registry.upsert_metric(slug, KIND, metrics, surveyed_at=surveyed_at, scope_locator=loc)
 
+    # Structural nodes — ancestors that are REFERENCED by a component's
+    # `parent_slug` but were never emitted as components themselves.
+    #
+    # Why they exist: `code_markers` emits a component per subtree that has
+    # marker-rule hits, while `parent_slug` comes from `build_hierarchy`, which
+    # holds every candidate subtree. An intermediate directory whose children
+    # carry the markers (milvus's `internal/distributed`) is in the second set
+    # and not the first, so its children pointed at a node nobody stored and
+    # `projection.project_rows` had nothing to collapse — measured 2026-08-24 as
+    # an identity function at every depth, on every repo.
+    #
+    # They are a SEPARATE check_name, not components, and deliberately carry no
+    # type and no confidence. They have no marker evidence of their own; giving
+    # them a type or a score would invent evidence to make a grouping look like
+    # a finding, which is the failure `no metric, no number` (design §5) exists
+    # to prevent. They are grouping structure and say so.
+    present = {c.slug for c in components}
+    referenced = {c.parent_slug for c in components if c.parent_slug}
+    missing = sorted(referenced - present)
+    for anc_slug in missing:
+        ns, _, rest = anc_slug.partition("::")
+        anc_path = rest.replace("::", "/") if rest else ""
+        # Its own parent is the nearest OTHER referenced ancestor, derived from
+        # the slug itself — never fabricated beyond what is already referenced.
+        parts = anc_slug.split("::")
+        anc_parent = ""
+        for i in range(len(parts) - 1, 1, -1):
+            cand = "::".join(parts[:i])
+            if cand in missing or cand in present:
+                anc_parent = cand
+                break
+        registry.upsert_finding(
+            slug, KIND,
+            [{
+                "check_name": "structural_node",
+                "label": "Structural",
+                "summary": f"{anc_path or anc_slug} (grouping only — no evidence of its own)",
+                "confidence": 0,
+                "detail": {
+                    "name": anc_path.rsplit("/", 1)[-1] if anc_path else anc_slug,
+                    "slug": anc_slug, "path": anc_path,
+                    "structural": True,
+                    "parent_slug": anc_parent,
+                    "depth": anc_path.count("/") if anc_path else 0,
+                    "run_scope": run_scope,
+                },
+            }],
+            surveyed_at=surveyed_at, scope_locator=anc_path,
+        )
+
     # Evidence rows: one per Evidence record, joined to its component via
     # subject_slug -> scope_locator. An Evidence record whose subject isn't
     # among this run's components (shouldn't happen — every Evidence in
