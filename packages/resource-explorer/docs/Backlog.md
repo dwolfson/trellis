@@ -1623,3 +1623,60 @@ external resource (a zipball, a clone) across steps in one run, which is what `t
   §5.5d-i) the same day. The pattern of the miss is worth more than the miss: the vocabulary check
   was performed for the *port count* an hour earlier and not for *step composition*, because the
   answer there had already been assumed to be local.
+
+---
+
+### Doc-site located but unreadable → offer to ingest it, and ask while a human is there
+
+**Dan, 2026-08-25:** *"there is an opportunity to ask the user if they want to ingest the
+documentation web site (or portions of it) into the vector store to support deeper analysis — this
+would likely fall into the understanding stage and might surface as a RECOMMENDATION for future
+analysis... Remember that we have the chat interface to design with, and that supports us asking
+questions (as long as we aren't doing a scheduled survey). We shouldn't be too chatty but we do want
+to take advantage of interactive sessions."*
+
+**The capability already exists; the connection does not.** `repo_website_ingestion` ingests a
+project's documentation site into pgvector "so Chat and Understanding can answer from the project's
+own documentation rather than only its source tree" — keyed on the site's host so several repos in
+one project share one collection, and skipping sites the repo builds itself. That is precisely the
+proposal. What is missing is that **nothing ever suggests running it**, and measured:
+
+```
+repos with website_ingestion findings          0 of 60
+repos where repo_arch_lens found a doc-site     2   (sqlglot, unitycatalog)
+   ...both with an empty `homepage`, so the step could not run today anyway
+```
+
+So there are three distinct gaps stacked, and only the first is new work:
+
+1. **No recommendation link.** `repo_arch_lens` produces `doc-site` — located, and explicitly *not
+   readable from here*. That is the single most actionable negative result in the chain: we know a
+   document exists, we know where, and we know we cannot use it. It should surface as a
+   **suggested action** (`github/suggested_action.py`) pointing at `repo_website_ingestion`, not as
+   a note in a JSON blob.
+2. **`homepage` is empty** on both doc-site repos, so `repo_website_ingestion` has nothing to
+   resolve. Whether that is a `repo_homepage` gap or genuinely absent upstream metadata is
+   unmeasured.
+3. **The step has never run anywhere.** Zero of sixty. Another instance of finding 98's family —
+   built, registered, and unexercised — and worth checking before building anything on top of it.
+
+**The interactive-question point is the reusable part, and it is a design constraint we have not
+written down anywhere.** RE has a chat interface, so an interactive session *can* ask. A scheduled
+survey cannot: there is nobody there, and a step that blocks on an answer would hang a cadence.
+Both must be true of the same step. The shape that satisfies both:
+
+- **Interactive** → ask, once, at the point the evidence appears ("this project's architecture
+  documentation is at `<url>` and I cannot read it from here — ingest it?"). One question, at the
+  moment it is answerable, is not chatty; a checklist of them is.
+- **Scheduled / unattended** → emit the recommendation and move on. RFA already exists for exactly
+  this, and `suggested_action`'s `next_step` field already distinguishes `rfa` from `subscription`.
+- **Never** → block, retry, or ask again on the next run. An unanswered recommendation is a
+  standing offer, not an open question.
+
+That distinction is worth stating in the design docs independently of this feature, since every
+future step that would benefit from a human answer meets it. **Understanding is the right stage**
+(Dan's read): the ingested site serves Chat and cross-resource questions, which is what Understanding
+is for — not Discovery, where it would look like another survey step.
+
+**Not started.** Sized as small-but-not-trivial: item 1 is a link between two existing subsystems,
+item 2 needs a measurement first, item 3 is a live-verification pass on a step nobody has run.
