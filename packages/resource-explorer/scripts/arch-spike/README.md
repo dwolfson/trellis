@@ -3753,3 +3753,39 @@ a third of the corpus, not a corpus-wide one.
    roughly 28s each, no clone.
 3. Doc-site fetching. Last: it needs an HTTP fetcher for arbitrary sites, a new cost tier, and
    `doc_locations` already warns that a homepage field is not proof of a page.
+
+---
+
+**105. Three wrong published numbers from the same query mistake, the third while checking the
+second.**
+
+`query_findings(slug, kind)` defaults to `scope_locator=""` — whole-resource — and a step may
+persist **metrics rather than findings**. So a bare findings query answers *"nothing at
+whole-resource scope in the findings table"*. It does not answer *"this never ran"*, and reading it
+as though it did has now produced three wrong numbers in two days:
+
+```
+architecture recovery   published "3 of 46"    actually 16   (scope-keyed; finding 97's entry)
+website_ingestion       published "0 of 60"    actually  6   (writes metrics, not findings)
+architecture_doc_lens   reported  "0"          actually 36   (scope-keyed)
+```
+
+The third is the instructive one. It came from the verification script written to check the
+second — after the presentation session correctly pointed out that a findings-only query cannot
+establish absence. The correction was understood, and the very next query repeated the other half
+of the same mistake.
+
+**A count is not an absence unless the query covers every shape the answer could take.** Findings
+and metrics are two tables; whole-resource and scope-keyed are two addresses. Four combinations, and
+a default query reaches one of them.
+
+**The `website_ingestion` defect underneath was larger than the miscount**, and belongs to the
+presentation session: its reader returned `chunks/pages_fetched/pages_found/pages_failed` as 0 when
+nothing was persisted, and `metrics` render mode lays every key out as a labelled row — so 54 cards
+read "we scanned the site and found nothing" about a site nobody had looked at. `NEVER_RUN` already
+described the right behaviour and nothing emitted it. They wrote the guard for the *class* rather
+than the instance and it immediately found a second case in `rag_ingestion`.
+
+Their framing is worth keeping: this is the exact twin of the render-mode fix made the same morning,
+where a card said "no results" while holding real data. **Same seam, opposite directions, one day
+apart — so the reader/render boundary is where this class lives, not any individual analysis.**

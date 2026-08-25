@@ -1657,8 +1657,31 @@ So there are three distinct gaps stacked, and only the first is new work:
 2. **`homepage` is empty** on both doc-site repos, so `repo_website_ingestion` has nothing to
    resolve. Whether that is a `repo_homepage` gap or genuinely absent upstream metadata is
    unmeasured.
-3. **The step has never run anywhere.** Zero of sixty. Another instance of finding 98's family —
-   built, registered, and unexercised — and worth checking before building anything on top of it.
+3. ~~**The step has never run anywhere.** Zero of sixty.~~ **WRONG, corrected 2026-08-25.** It has
+   run, on 6 of 60. It writes **metrics and never findings**, and the claim came from a
+   findings-only query:
+
+   ```
+   website_ingestion   findings: 0 of 60      <- what was measured
+                       metrics:  6 of 60      <- what exists
+   ```
+
+   The real defect was different and larger, found by the presentation session: on the other 54 the
+   results reader returned `chunks/pages_fetched/pages_found/pages_failed` as 0, and `metrics`
+   render mode lays every key out as a labelled row — so 54 cards read *"we scanned the site and
+   found nothing"* about a site nobody had ever looked at. `result_status.NEVER_RUN` already
+   describes the correct behaviour and nothing was emitting it. Fixed in `eeb5363`, along with a
+   second instance the same guard immediately found in `rag_ingestion`.
+
+   **The transferable error is mine and it is now three-for-three.** `query_findings(slug, kind)`
+   defaults to `scope_locator=""`, and a step may write metrics rather than findings. So a bare
+   findings query establishes *"nothing at whole-resource scope in the findings table"* — never
+   *"this never ran"*. It has produced a wrong published number three times in two days:
+   architecture recovery read as 3 of 46 when it was 16; this entry read as 0 of 60 when it was 6;
+   and the verification script written to check *this very correction* reported
+   `architecture_doc_lens` findings as 0 while 36 labels sat in it, scope-keyed.
+
+   **A count is not an absence unless the query covers every shape the answer could take.**
 
 **The interactive-question point is the reusable part, and it is a design constraint we have not
 written down anywhere.** RE has a chat interface, so an interactive session *can* ask. A scheduled
