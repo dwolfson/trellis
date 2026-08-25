@@ -3504,3 +3504,53 @@ multi-line, so a corpus run would have looked perfect. De-anchored to word bound
 coordinator RPCs. For runtime suitability the number a reader wants is `proxy.proto`'s 18. Nothing
 currently distinguishes a client-facing interface from an internal one, and inferring it from a
 filename would be exactly the convention-as-evidence failure §5.5a(b) forbids.
+
+---
+
+**101. Documentation is the lens, and architecture recovery has never looked through it.**
+
+Dan, closing finding 100: *"you need to look at code through the lens of the documentation — and
+good documentation will guide you towards what code to look at for which purpose. Just looking at
+the code doesn't provide enough context to easily distinguish between internal and external
+communications."*
+
+The Milvus limitation I had recorded as unfixable is the proof. We now report **296 rpcs across 18
+services**; the number a reader wants for runtime suitability is `proxy.proto`'s **18**, because
+`proxy` is the client-facing service and `root_coord`/`data_coord`/`query_coord` are internal.
+Nothing in the code says so. Inferring it from a filename would be convention-as-evidence
+(§5.5a(b), finding 66). **Milvus's own documentation says so plainly**, and the same document is
+the source of the ground truth this spike scores against — "five core components and three
+third-party dependencies", the authors' own words, which is how `milvus.md` was written *by hand*.
+
+**So the system has never done automatically what we did manually to build every fixture.**
+
+And the capability is already here, in the same package:
+
+```
+github/doc_locations.py   find_artifact(owner_repo, "architecture") -> in-repo | sibling-repo | doc-site | not-found
+                          _ARTIFACT_PATTERNS["architecture"] = [architecture, design-docs, design_docs, solution-blueprint]
+surveyors/arch_recovery/  grep for doc_locations / find_artifact  ->  NO MATCHES
+```
+
+Architecture recovery reads manifests, deployment artifacts, code markers, imports and co-change.
+It does not read the architecture document, on any of the 46 repos the gate approves. Measured
+corpus context makes that worse rather than better: **31% of located artifacts are not in the repo
+at all** (43 of 140 across 25 of 60 repos), so a code-only reader is structurally blind to a third
+of what exists, and `doc_locations` is the thing that already solves that.
+
+**Why this outranks the remaining precision work.** The unported adjudicator buys precision by
+asking a model to judge candidates. The documentation states the answer. Finding 92 recorded that
+every owner-published fixture is Go because in the JVM world the published architecture and the
+code diverge — but where a doc exists and is current (findings 65-68's version-correlation
+discipline applies), it is the highest-provenance evidence available and it is free. `provenance:
+owner-published` already exists as a class in the fixture format; nothing in the running system
+can produce it.
+
+**The shape of the work, not yet built:** resolve `architecture` via `find_artifact` during
+recovery, and use it as a *lens* rather than as an oracle — to rank and label what the detectors
+already propose (which of these 216 candidates does the document name? which interface does it call
+the client API?), never to replace them. A document that disagrees with the code is a finding in
+its own right (findings 65-67: correlate doc version against code version), not a silent override.
+
+Recorded here rather than built: it is a design change to the detect step's inputs and it needs its
+own entry, cost estimate, and a decision about staleness handling.
