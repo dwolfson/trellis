@@ -58,6 +58,15 @@ log = logging.getLogger(__name__)
 #: graph — at which point this becomes the default, not the only source.
 SOURCE_KIND = "architecture_recovery"
 
+#: Where this step's own output lands. It had none until 2026-08-25: the
+#: summariser computed a summary, returned it as an annotation, and **persisted
+#: nothing**, so nothing could read it back, no results view was possible, and
+#: every run recomputed from scratch. Found by the presentation session auditing
+#: the end-to-end story, not by me — and it is finding 89's shape ("the
+#: capability existed and nothing wired it to storage") in code written the same
+#: day as the finding that names it.
+KIND = "architecture_summary"
+
 #: Ports and wires persist under their OWN kind, whole-resource scoped — not
 #: alongside the component findings. Discovered while wiring this step up: the
 #: summary reported no protocols at all while `interfaces.propose()` was
@@ -208,6 +217,21 @@ class ArchSummarySurveyor(BaseSurveyor):
 
         summary = self._render(types, protocols, operations, third_party,
                                documented)
+        props = {
+            "depth": self._depth,
+            "source_kind": SOURCE_KIND,
+            "component_scopes": len(scopes),
+            "components": sum(types.values()),
+            "component_types": dict(types),
+            "third_party": third_party,
+            "documented": documented,
+            "protocols": dict(protocols),
+            "operations": operations,
+            "unread_scopes": unread_scopes,
+            "interfaces_unread": interfaces_unread,
+            "complete": unread_scopes == 0 and not interfaces_unread,
+        }
+        self._persist(slug, summary, props)
         if unread_scopes or interfaces_unread:
             missing = []
             if unread_scopes:
@@ -239,6 +263,40 @@ class ArchSummarySurveyor(BaseSurveyor):
                 "complete": unread_scopes == 0 and not interfaces_unread,
             },
         )]
+
+    def _persist(self, slug: str, summary: str, props: dict) -> None:
+        """Write the summary where something can read it back.
+
+        Whole-resource scope: a summary is by definition about the resource, not
+        about one component — and writing it under a component's scope would
+        shadow that component's own findings, which is the trap finding 103
+        records.
+        """
+        try:
+            self.registry.upsert_finding(
+                slug, KIND,
+                [{
+                    "check_name": "architecture_summary",
+                    "label": self._depth,
+                    "summary": summary,
+                    "confidence": 90,
+                    "detail": props,
+                }],
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not persist the architecture summary", slug)
+        try:
+            self.registry.upsert_metric(
+                slug, KIND,
+                {"components": float(props.get("components", 0)),
+                 "documented": float(props.get("documented", 0)),
+                 "third_party": float(props.get("third_party", 0)),
+                 "operations": float(props.get("operations", 0))},
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not persist architecture summary metrics", slug)
 
     def _render(self, types: Counter, protocols: Counter,
                 operations: int, third_party: int, documented: int = 0) -> str:

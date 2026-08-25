@@ -4143,3 +4143,40 @@ and the tests that are about resolution override it explicitly.
 into a section of another project's docs** — it passes the relatedness check because "kedro" is
 shared, which is the project-family limitation from finding 109 seen from the other side: relatedness
 is necessary and nowhere near sufficient.
+
+---
+
+**113. The summariser computed a summary and stored nothing — finding 89's shape, in code written
+the day finding 89 was recorded.**
+
+`ArchSummarySurveyor` produced its summary, returned it as an annotation, and **persisted no row at
+all**. So nothing could read it back, no results view was possible, and every run recomputed from
+scratch. Found by the presentation session's end-to-end audit — *"I could find no rows it writes
+under any kind, so it may be doing nothing at all"* — and they were right.
+
+It is exactly finding 89 (*"the capability existed and nothing wired it to storage"*), which I
+recorded this morning, in a step I wrote this afternoon. **Knowing the shape did not prevent me
+producing another instance of it**, which is worth more as a data point than the fix is.
+
+Why it survived every check: the step returns annotations and the orchestrator reports them, so a
+live run **printed the right answer**. Nothing failed. The tests asserted the returned annotation,
+which was correct. The absence was only visible by asking a question nobody had asked — *does
+anything land in the store?*
+
+Fixed: `KIND = "architecture_summary"`, one whole-resource finding carrying the summary and its
+detail, plus metrics for the counts. Whole-resource deliberately — a summary is about the resource,
+and writing it under a component's scope would shadow that component's findings, which is the trap
+finding 103 records.
+
+**Two contract tests then caught the half-wired feature**, which is the system working:
+`test_every_kind_with_results_has_a_render_mode` and
+`test_headline_reader_exists_for_every_ANALYSIS_KINDS_entry_with_results`. A backend results reader
+with no frontend entry and no headline is a Results button that never appears — the same invisibility
+this finding is about, one layer out. Both readers, both headlines and both render modes are now in.
+
+**And a shape neither session had hit before, from the same audit:**
+`_website_ingestion_headline` declared `(results)` and was called as `(registry, slug)`, so it
+raised `TypeError` into a bare `except Exception` and **never fired for any of 60 repos**. The test
+called it with the reader's own signature — so **the test and its subject agreed on a contract the
+caller did not share**, and a bare except at the call site let them stay wrong together. That is not
+a missing test; it is two halves of a broken contract agreeing with each other.

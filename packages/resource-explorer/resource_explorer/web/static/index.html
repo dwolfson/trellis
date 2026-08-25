@@ -2741,6 +2741,17 @@ const _REPO_RESULTS_RENDER_MODE = {
   maturity: 'findings_list',
   repo_conventions: 'findings_list',
   api_structure: 'custom',
+  // Added with the backend readers (2026-08-25). `findings_list` for the lens
+  // is an interim choice, not a considered rendering: each row is one component
+  // the project's own documentation names, and every row carries an
+  // `evidence_kind` of `emphasised` (a heading or bold span in a source
+  // document) or `mentioned` (the name appearing in an ingested site's text).
+  // Those are NOT equally strong claims and should be grouped or marked
+  // structurally rather than styled — a style difference assumes the reader is
+  // looking for one. Flagged for the presentation session rather than guessed
+  // at here.
+  architecture_doc_lens: 'findings_list',
+  architecture_summary: 'metrics',
   language_file_classification: 'custom',
   // sub_resource_survey has no analysis_catalog.yaml entry of its own (see
   // its AnalysisKind's docstring) so it never gets a card here directly —

@@ -1393,6 +1393,88 @@ def _architecture_interfaces_results(registry, slug: str) -> dict:
     return {"deployments": out}
 
 
+def _architecture_summary_results(registry, slug: str) -> dict:
+    """The architecture summary, read back.
+
+    The step persisted nothing until 2026-08-25 — it computed a summary,
+    returned it as an annotation and wrote no row, so there was nothing for a
+    results view to read and every run recomputed from scratch. Found by the
+    end-to-end audit rather than by the step failing, because it never failed.
+    """
+    rows = registry.query_findings(slug, "architecture_summary") or []
+    if not rows:
+        return {"state": result_status.NEVER_RUN,
+                "message": "No architecture summary yet — run the analysis."}
+    row = rows[-1]
+    detail = row.get("detail_json") or row.get("detail") or {}
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:  # noqa: BLE001
+            detail = {}
+    return {"summary": row.get("summary", ""), "depth": row.get("label", ""),
+            "surveyed_at": row.get("surveyed_at", ""), **detail}
+
+
+def _architecture_doc_lens_results(registry, slug: str) -> dict:
+    """Which components the project's own documentation names, and from where.
+
+    `evidence_kind` is carried per component and MUST NOT be flattened by a
+    renderer: emphasis in a source document is a stronger claim than a mention
+    in an ingested site's text, and a reader who cannot tell them apart will
+    over-trust the weaker one. Group or mark them structurally rather than
+    styling them, which the presentation session's own argument settles — a
+    style difference assumes the reader is looking for one.
+    """
+    findings = []
+    for scope in registry.query_finding_scopes(slug, "architecture_doc_lens") or []:
+        for f in registry.query_findings(slug, "architecture_doc_lens", scope) or []:
+            if (f.get("check_name") or "") != "documented_by":
+                continue
+            detail = f.get("detail_json") or f.get("detail") or {}
+            if isinstance(detail, str):
+                try:
+                    detail = json.loads(detail)
+                except Exception:  # noqa: BLE001
+                    detail = {}
+            findings.append({
+                "component": scope, "label": f.get("label", ""),
+                "summary": f.get("summary", ""),
+                "term": detail.get("term", ""), "evidence": detail.get("evidence", ""),
+                "date": detail.get("date", ""),
+            })
+    if not findings:
+        return {"state": result_status.NEVER_RUN,
+                "message": "The architecture document has not been consulted for this "
+                           "resource, or named nothing we recovered."}
+    return {"findings": findings, "count": len(findings)}
+
+
+def _architecture_summary_headline(registry, slug: str) -> dict | None:
+    r = _architecture_summary_results(registry, slug)
+    if r.get("state"):
+        return None                      # never run — the card's own empty state
+    n, doc = r.get("components", 0), r.get("documented", 0)
+    if not r.get("complete", True):
+        # A summary that lost half its input still reads as a confident answer,
+        # which is why partial-ness has to survive into the one line every
+        # caller sees.
+        return {"label": f"Summary incomplete — {n} candidate(s), some unread",
+                "status": "warn"}
+    return {"label": (f"{doc} documented of {n} candidate component(s)" if doc
+                      else f"{n} candidate component(s), none documented"),
+            "status": "info" if doc else "warn"}
+
+
+def _architecture_doc_lens_headline(registry, slug: str) -> dict | None:
+    r = _architecture_doc_lens_results(registry, slug)
+    if r.get("state"):
+        return None
+    n = r.get("count", 0)
+    return {"label": f"{n} component(s) named by the project's own documentation",
+            "status": "info"}
+
+
 def _doc_ingestion_state(registry, slug: str) -> dict:
     """`{state, detail}` for this repo's documentation site, for rendering.
 
@@ -2105,9 +2187,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # _architecture_recovery_results' docstring).
     "architecture_doc_lens": AnalysisKind(
         "architecture_doc_lens", ["repo_arch_lens"],
+        results=AnalysisKindResults(_architecture_doc_lens_results, None, "findings_list",
+                                    headline_reader=_architecture_doc_lens_headline),
     ),
     "architecture_summary": AnalysisKind(
         "architecture_summary", ["repo_arch_summary"],
+        results=AnalysisKindResults(_architecture_summary_results, None, "metrics",
+                                    headline_reader=_architecture_summary_headline),
     ),
     "architecture_recovery": AnalysisKind(
         "architecture_recovery", ["repo_arch_detect", "repo_arch_coupling"],

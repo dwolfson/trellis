@@ -314,3 +314,53 @@ class TestTheSkipStillWiresTheRepoToTheCollection:
         src = inspect.getsource(w.WebsiteIngestionSurveyor.run)
         skip = src[src.index("already_ingested(self.registry"):src.index("no_signal(\"already_ingested\"")]
         assert "update_indexed_at" in skip
+
+
+class TestProjectFamiliesVouchForAFamilySite:
+    """A name comparison knows nothing about project families, so `trellis` was
+    refused for declaring `egeria-project.org` — and it IS an Egeria project,
+    sitting in the registry's own `egeria` group beside four repos declaring
+    that exact homepage. The evidence was already recorded; the function could
+    not see it."""
+
+    def test_a_sibling_name_can_carry_the_match(self):
+        assert not host_relates_to_project("https://egeria-project.org/", "odpi/trellis")
+        assert host_relates_to_project("https://egeria-project.org/", "odpi/trellis",
+                                       ["odpi/egeria", "odpi/egeria-docs"])
+
+    def test_a_family_does_not_launder_an_unrelated_host(self):
+        """The check that matters. `docling-nlp` and `docling-parse` both point
+        at `docs.astral.sh/uv/` and both sit in a 13-repo docling family — if
+        family membership were enough to wave anything through, the guard would
+        be inert exactly where it did the most good."""
+        siblings = [f"docling-project/docling-{n}" for n in
+                    ("core", "serve", "eval", "java", "mcp", "sdg")]
+        assert not host_relates_to_project("https://docs.astral.sh/uv/",
+                                           "docling-project/docling-nlp", siblings)
+
+    @pytest.mark.parametrize("url,repo", [
+        ("https://community.intel.com/t5/Blogs/x", "opea-project/Enterprise-RAG"),
+        ("https://kubernetes.io/docs/setup/", "opea-project/GenAIInfra"),
+    ])
+    def test_the_other_live_refusals_survive_family_awareness(self, url, repo):
+        siblings = [f"opea-project/{n}" for n in ("GenAIComps", "GenAIExamples", "docs")]
+        assert not host_relates_to_project(url, repo, siblings)
+
+    def test_no_siblings_behaves_exactly_as_before(self):
+        for extra in ((), None, []):
+            assert host_relates_to_project("https://kafka.apache.org/", "apache/kafka", extra)
+            assert not host_relates_to_project("https://docs.astral.sh/uv/", "acme/widget", extra)
+
+    def test_sibling_lookup_failure_does_not_stop_an_ingest(self):
+        """Best-effort by design: a registry that cannot answer must not block
+        the ingest, it must fall back to the name comparison alone."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        class _Broken:
+            def list_groups(self):
+                raise RuntimeError("registry down")
+
+        class _P:
+            slug = "x"
+
+        assert w._group_sibling_names(_Broken(), _P()) == []

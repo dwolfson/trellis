@@ -219,7 +219,12 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         owner_repo = "/".join(
             (getattr(self.project, "github_url", "") or "").rstrip("/")
             .removesuffix(".git").split("/")[-2:])
-        if owner_repo and not host_relates_to_project(url, owner_repo):
+        # Group siblings vouch for a family site. `trellis` declares
+        # `egeria-project.org` and IS an Egeria project — four repos in the
+        # registry's own `egeria` group declare that same homepage — but a name
+        # comparison cannot see a family, so it was refused as somebody else's.
+        siblings = _group_sibling_names(self.registry, self.project)
+        if owner_repo and not host_relates_to_project(url, owner_repo, siblings):
             return self._note(
                 "Homepage does not appear to belong to this project",
                 f"{url} shares no name with {owner_repo}, so it is probably another "
@@ -456,6 +461,33 @@ def _already_ingested(registry, collection: str, this_slug: str):
             continue
         return other.slug, when
     return None, None
+
+
+def _group_sibling_names(registry, project) -> list:
+    """`owner/repo` for every project sharing a group with this one.
+
+    Best-effort: a registry that cannot answer must not stop an ingest, so a
+    failure here yields no siblings and the name comparison stands alone —
+    the behaviour before groups were consulted at all.
+    """
+    try:
+        groups = registry.groups_for_project(project.slug) \
+            if hasattr(registry, "groups_for_project") else None
+        if groups is None:
+            groups = [g for g in registry.list_groups()
+                      if any(m.slug == project.slug
+                             for m in registry.list_projects_in_group(g.slug))]
+        names = []
+        for g in groups:
+            for m in registry.list_projects_in_group(getattr(g, "slug", g)):
+                url = (getattr(m, "github_url", "") or "").rstrip("/").removesuffix(".git")
+                parts = url.split("/")
+                if len(parts) >= 2:
+                    names.append("/".join(parts[-2:]))
+        return names
+    except Exception:  # noqa: BLE001
+        log.debug("could not resolve group siblings for %s", project.slug)
+        return []
 
 
 def _extract_text(html: str) -> str:
