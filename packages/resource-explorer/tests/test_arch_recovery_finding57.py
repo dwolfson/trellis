@@ -59,6 +59,17 @@ def _rust_only_git_repo(tmp_path):
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@example.com", "-c", "user.name=Test",
+             "-c", "commit.gpgsign=false",
+             # Throwaway fixture repo: never sign. The identity is already
+             # overridden here, and inheriting the developer's global
+             # commit.gpgsign couples this test to their signing agent — when
+             # 1Password locked on 2026-08-25 these fixtures failed with
+             # `exit status 128`, which reads as a code fault and is not one.
+             #
+             # NOT a relaxation of the signing rule: that rule is about the
+             # provenance of OUR commits. A scratch repo built inside a tmpdir
+             # and deleted at teardown has no provenance to protect.
+             "-c", "commit.gpgsign=false",
          "commit", "-q", "-m", "initial"],
         cwd=root, check=True,
     )
@@ -132,6 +143,7 @@ class TestCouplingUnverifiedOnUnsupportedLanguage:
         subprocess.run(["git", "add", "-A"], cwd=root, check=True)
         subprocess.run(
             ["git", "-c", "user.email=t@example.com", "-c", "user.name=Test",
+             "-c", "commit.gpgsign=false",
              "commit", "-q", "-m", "initial"],
             cwd=root, check=True,
         )
@@ -189,6 +201,7 @@ class TestDetectUnverifiedOnUnsupportedLanguage:
         subprocess.run(["git", "add", "-A"], cwd=root, check=True)
         subprocess.run(
             ["git", "-c", "user.email=t@example.com", "-c", "user.name=Test",
+             "-c", "commit.gpgsign=false",
              "commit", "-q", "-m", "add dockerfile"],
             cwd=root, check=True,
         )

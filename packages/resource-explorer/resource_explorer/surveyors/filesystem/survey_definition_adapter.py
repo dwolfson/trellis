@@ -16,17 +16,59 @@ environment has no cataloged filesystem to test against).
 """
 from __future__ import annotations
 
+import logging
+
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
 )
 
+log = logging.getLogger(__name__)
+
 
 def _run_filesystem_inventory(fs_entity, registry, **_) -> dict:
+    """Walk the filesystem and PERSIST the result, then return it.
+
+    Persisting here rather than only as a side effect of a successful Egeria
+    publish. Previously this returned the inventory and stored nothing: the only
+    `add_filesystem_survey` call on this path lived inside
+    `_publish_step_annotations`, which raises when the filesystem has no Egeria
+    asset yet — and `SurveyDefinitionExecutor` catches that into `errors`. A
+    freshly-walked inventory was then discarded, with `last_surveyed_at` never
+    touched, so a run that did real work left no trace and the next run had
+    nothing to compare against.
+
+    The local route (`web/routes/filesystems.py`) has always persisted
+    unconditionally before any Egeria involvement, and the DATABASE adapter does
+    the same inside `DatabaseSurveyor.survey()`. Filesystem was the one path
+    where the write was conditional on cataloguing succeeding — a survey is
+    evidence about the resource whether or not Egeria ever hears about it.
+
+    Best-effort on the write: a persistence failure must not discard the
+    inventory from the step output too, so it is reported and the data still
+    flows to the caller.
+    """
     from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
 
     surveyor = LocalFileSystemSurveyor(fs_entity, registry)
-    return {"survey_data": surveyor.run()}
+    survey_data = surveyor.run()
+
+    persisted, persist_error = False, ""
+    try:
+        registry.add_filesystem_survey(
+            fs_slug=fs_entity.slug,
+            surveyed_at=survey_data.get("surveyed_at", ""),
+            survey_data=survey_data,
+            egeria_report_guid="",
+            source="survey-definition",
+        )
+        persisted = True
+    except Exception as exc:  # noqa: BLE001
+        persist_error = f"{type(exc).__name__}: {exc}"
+        log.exception("%s: could not persist filesystem inventory", fs_entity.slug)
+
+    return {"survey_data": survey_data, "persisted": persisted,
+            **({"persist_error": persist_error} if persist_error else {})}
 
 
 def _get_filesystem_entity(registry, slug: str):

@@ -76,7 +76,12 @@ def test_results_reader_surfaces_the_skip_rather_than_a_bare_zero(registry):
     results = kind.results.results_reader(registry, "myproj")
     assert results["reason"] == "self_published"
 
-    headline = kind.results.headline_reader(results)
+    # Called as (registry, slug) — the way web/routes/projects.py calls EVERY
+    # headline reader. This test previously passed `results`, matching the
+    # reader's then-signature, so the test and the reader agreed with each other
+    # and both disagreed with production: the tile raised TypeError into a bare
+    # except and never rendered, for any repo, undetected.
+    headline = kind.results.headline_reader(registry, "myproj")
     # Reported as ok, not as a shortfall: this is a correct final answer.
     assert headline["status"] == "ok"
     assert "repo source" in headline["label"]

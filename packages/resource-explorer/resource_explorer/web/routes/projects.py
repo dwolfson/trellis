@@ -832,7 +832,19 @@ def _results_have_data(results) -> bool:
     if not results:
         return False
     if isinstance(results, dict):
-        return any(_results_have_data(v) for v in results.values())
+        # `_status` is an ENVELOPE, not content — it describes why a payload is
+        # empty, so counting it as data makes every explained emptiness claim to
+        # hold something. That is the opposite of what this function exists for:
+        # a card saying "skipped, here is why" would be reported as having
+        # results and then render as an explanation of nothing.
+        #
+        # `surveyed_at` and `detail` are excluded for the same reason — a
+        # timestamp is evidence a step ran, not evidence it found anything, and
+        # a reader that returns only a timestamp has nothing to show.
+        # (_renderMetricsResults in index.html already filters exactly these
+        # three for the same reason; this is the server-side half of it.)
+        envelope = {"_status", "surveyed_at", "detail"}
+        return any(_results_have_data(v) for k, v in results.items() if k not in envelope)
     if isinstance(results, (list, tuple, set)):
         return len(results) > 0
     if isinstance(results, bool):
