@@ -45,12 +45,129 @@ _EXPOSE_RE = re.compile(r"^\s*EXPOSE\s+(.+?)\s*$", re.I | re.M)
 _OPENAPI_NAMES = ("openapi.json", "openapi.yaml", "openapi.yml",
                   "swagger.json", "swagger.yaml", "swagger.yml")
 
+# Interface definition languages, matched by extension rather than filename —
+# unlike OpenAPI these are conventionally named after the service, not the
+# format. Recognising them closes a blind spot measured on the corpus: Milvus is
+# gRPC-first with SDKs in several languages, and we recorded its exposed ports
+# while missing its actual interface entirely.
+_PROTO_EXT = ".proto"
+_GRAPHQL_EXTS = (".graphql", ".graphqls", ".gql")
+_THRIFT_EXT = ".thrift"
+
+# HTTP methods an OpenAPI path item may carry. Anything else under a path (like
+# `parameters` or `summary`) is not an operation.
+_OPENAPI_METHODS = frozenset({
+    "get", "put", "post", "delete", "options", "head", "patch", "trace"})
+
+# Word-boundary anchored, NOT line anchored. A line anchor looks safer and
+# silently undercounts the compact style — `service S { rpc A (Q) returns (R); }`
+# on one line reported 1 service and 0 rpcs, which reads as "an interface with
+# no operations" rather than as a parse limitation. Caught by a test before it
+# reached real data; Milvus's files happen to be multi-line, so the corpus would
+# not have shown it.
+_PROTO_SERVICE_RE = re.compile(r"\bservice\s+(\w+)\s*\{")
+_PROTO_RPC_RE = re.compile(r"\brpc\s+\w+\s*\(")
+_GRAPHQL_ROOT_RE = re.compile(r"\btype\s+(Query|Mutation|Subscription)\b")
+_THRIFT_SERVICE_RE = re.compile(r"\bservice\s+(\w+)\s*\{")
+
+
+def _read_text(root: str, rel: str, limit: int = 4_000_000) -> str:
+    """Read an interface document, or "" if unreadable. Size-capped: a
+    generated OpenAPI document can be very large, and counting operations does
+    not justify loading an unbounded file into memory."""
+    try:
+        full = os.path.join(root, rel)
+        if os.path.getsize(full) > limit:
+            return ""
+        with open(full, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _count_openapi_operations(root: str, rel: str) -> int | None:
+    """Number of operations an OpenAPI document declares, or None if the
+    document could not be parsed.
+
+    **A count, not a listing.** The driving question (Dan, 2026-08-24) is
+    whether a repo is usable at runtime — "what kind of API it has, maybe
+    language bindings, the number of commands ... not the names of every
+    request and their payloads until we want to actually try to use it". So
+    this opens the document, counts, and discards it. Reading the operation
+    names and schemas is stage two and a different cost tier.
+
+    None and 0 are different answers and are kept apart: None means we could
+    not read it, 0 means a document that declares no operations.
+    """
+    text = _read_text(root, rel)
+    if not text:
+        return None
+    try:
+        doc = yaml.safe_load(text)     # a superset of JSON, so this covers both
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    paths = doc.get("paths")
+    if not isinstance(paths, dict):
+        return None
+    return sum(
+        1
+        for item in paths.values() if isinstance(item, dict)
+        for method in item
+        if isinstance(method, str) and method.lower() in _OPENAPI_METHODS
+    )
+
+
+def _count_proto_rpcs(root: str, rel: str) -> tuple[int | None, int | None]:
+    """`(services, rpcs)` declared in a `.proto` file, or `(None, None)`.
+
+    Regex rather than a protobuf parser: this runs at Discovery tier and must
+    not add a dependency or a compile step. `service X {` and `rpc Y(` are
+    unambiguous enough at line starts that a parser would buy very little.
+    """
+    text = _read_text(root, rel)
+    if not text:
+        return None, None
+    return (len(_PROTO_SERVICE_RE.findall(text)),
+            len(_PROTO_RPC_RE.findall(text)))
+
 
 def _port_dict(component: str, name: str, direction: str, protocol: str,
-               path: str, line: int, detail: str) -> dict:
-    return {"component": component, "name": name, "direction": direction,
+               path: str, line: int, detail: str,
+               operation_count: int | None = None) -> dict:
+    """`operation_count` rides in `additionalProperties`, Egeria's documented
+    extension point — not a bare local field and not an invented attribute.
+
+    Checked the type first, as §5.5f asks. Per 0735, `SolutionPort` carries
+    exactly one attribute of its own — `direction` — so there is no operation
+    count to populate. But `SolutionPort` is a `Referenceable` (§3.3b, settled
+    by the `Confidence` classification being defined against `Referenceable` and
+    applying to `SolutionPort` directly), and `Referenceable` carries
+    `additionalProperties` as a `map<string,string>` which §6.4 already names as
+    "the documented extension point ... the interim carrier for anything not yet
+    typed". So this is the sanctioned place, and promoting `operationCount` to a
+    real attribute later is an upstream type change rather than a migration of
+    ours.
+
+    **Not `SolutionPortDelegation`.** That relationship maps a parent
+    component's port to its decomposed children's ports, and modelling each
+    operation as a child port would fit — for **stage two**, when someone wants
+    the operations individually. It is wrong here: one entity per operation is
+    exactly the listing the coarse suitability question excludes.
+
+    Values are strings because the Egeria map is `map<string,string>`; writing
+    an int here would be a shape that cannot be published unchanged.
+
+    None and 0 stay apart: None is "not counted or not readable", 0 is
+    "counted, and there are none".
+    """
+    port = {"component": component, "name": name, "direction": direction,
             "protocol": protocol, "evidence": {"path": path, "line": line},
             "detail": detail}
+    if operation_count is not None:
+        port["additionalProperties"] = {"operationCount": str(operation_count)}
+    return port
 
 
 def _wire_dict(source: str, target: str, protocol: str, integration_style: str,
@@ -220,10 +337,55 @@ def propose(root: str, first_party: list[str], components: list[Component],
             # An OpenAPI document is a direct statement that this component
             # SERVES a request-response HTTP interface — the one place a strong
             # `Input-Output` is warranted without inference.
+            n_ops = _count_openapi_operations(root, rel)
+            detail = "OpenAPI document — request-response interface provided"
+            if n_ops is not None:
+                detail += f", {n_ops} operation(s)"
+            else:
+                notes.append(f"{rel}: OpenAPI document could not be parsed — "
+                             f"interface recorded, operation count unknown")
             ports.append(_port_dict(
-                owner, base, DIR_INPUT_OUTPUT, "HTTP/REST", rel, 0,
-                "OpenAPI document — request-response interface provided",
+                owner, base, DIR_INPUT_OUTPUT, "HTTP/REST", rel, 0, detail,
+                operation_count=n_ops,
             ))
+
+        elif rel.lower().endswith(_PROTO_EXT):
+            # gRPC. Milvus is the case that made this a gap: gRPC-first, and we
+            # recorded its exposed ports while missing the interface entirely.
+            owner = _owner_of(rel, by_path) or _root_artifact_owner(rel, components)
+            n_svc, n_rpc = _count_proto_rpcs(root, rel)
+            if n_svc:
+                detail = f"protobuf service definition — {n_svc} service(s)"
+                if n_rpc:
+                    detail += f", {n_rpc} rpc(s)"
+                ports.append(_port_dict(
+                    owner, base, DIR_INPUT_OUTPUT, "gRPC", rel, 0, detail,
+                    operation_count=n_rpc,
+                ))
+            # A .proto declaring only messages and no service is a schema, not
+            # an interface. Silently skipping it is correct, not a miss.
+
+        elif rel.lower().endswith(_GRAPHQL_EXTS):
+            owner = _owner_of(rel, by_path) or _root_artifact_owner(rel, components)
+            text = _read_text(root, rel)
+            roots = sorted(set(_GRAPHQL_ROOT_RE.findall(text))) if text else []
+            if roots:
+                # Only a schema declaring Query/Mutation/Subscription is a
+                # served interface; a fragment of type definitions is not.
+                ports.append(_port_dict(
+                    owner, base, DIR_INPUT_OUTPUT, "GraphQL", rel, 0,
+                    f"GraphQL schema — root type(s): {', '.join(roots)}",
+                ))
+
+        elif rel.lower().endswith(_THRIFT_EXT):
+            owner = _owner_of(rel, by_path) or _root_artifact_owner(rel, components)
+            text = _read_text(root, rel)
+            svcs = _THRIFT_SERVICE_RE.findall(text) if text else []
+            if svcs:
+                ports.append(_port_dict(
+                    owner, base, DIR_INPUT_OUTPUT, "Thrift", rel, 0,
+                    f"Thrift IDL — {len(svcs)} service(s)",
+                ))
 
         elif detectors._is_compose(root, rel):
             names = {k: n for k, n, _ in detectors.compose_services(root, rel)}

@@ -1609,6 +1609,113 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Investigations — the framing step ahead of Scouting
+            # (docs/investigation-framing-design.md §1). An Investigation is
+            # one body of work: the context every other analysis runs inside,
+            # and the thing that answers "why does this set of work exist at
+            # all", which neither intent (what kind of work) nor perspective
+            # (whose concerns) can say.
+            #
+            # ONE local row in all three of §1's starting modes — bind to an
+            # existing Egeria Project, create a new one, or purely local with
+            # no Egeria write. `egeria_project_guid` is nullable and that is
+            # the single most important structural decision in the design: it
+            # makes promotion to Egeria a fill-in rather than a migration.
+            #
+            # `purposes` is `ProjectCharter.purposes` (§2) — deliberately NOT
+            # a new RE vocabulary. Stored as a JSON array of the 8 values the
+            # question corpus is already tagged with (Assess, Certify, Deploy,
+            # Explore, Learn, Maintain, Select, Share) so it replays into a
+            # real ProjectCharter unchanged.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS investigations (
+                    slug                           TEXT PRIMARY KEY,
+                    display_name                   TEXT NOT NULL,
+                    description                    TEXT DEFAULT '',
+                    purposes_json                  TEXT DEFAULT '[]',
+                    egeria_project_guid            TEXT DEFAULT '',
+                    egeria_project_qualified_name  TEXT DEFAULT '',
+                    -- The Egeria binding is the investigation's, not a
+                    -- separate session-wide setting. §1 makes binding to an
+                    -- Egeria Project one of the three ways to START an
+                    -- investigation, so a second parallel control would be two
+                    -- answers to one question. Carries the full context shape
+                    -- (unset/personal/declined/linked/deferred + free text) so
+                    -- publishes read it unchanged.
+                    egeria_project_status          TEXT DEFAULT 'unset',
+                    egeria_free_text_name          TEXT DEFAULT '',
+                    status                         TEXT NOT NULL DEFAULT 'open',
+                    created_at                     TEXT NOT NULL,
+                    updated_at                     TEXT DEFAULT ''
+                )
+            """)
+            # Migration: the Egeria binding columns were added when the
+            # session-wide project control was folded into the investigation
+            # (§1 — binding is one of the three ways to START one, so a second
+            # parallel control was two answers to one question). CREATE TABLE
+            # IF NOT EXISTS does nothing for a table that already exists, so a
+            # registry created before that change needs them added here.
+            inv_cols = self._get_table_columns(conn, "investigations")
+            for col, defn in [
+                ("egeria_project_status", "TEXT DEFAULT 'unset'"),
+                ("egeria_free_text_name", "TEXT DEFAULT ''"),
+            ]:
+                if col not in inv_cols:
+                    conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
+
+            # Membership follows Egeria's real two-hop shape rather than a flat
+            # link, so promotion stays a replay:
+            #
+            #   Project --ResourceList--> WorkingSet (a Collection)
+            #           --CollectionMembership--> Repo / DB / FS
+            #
+            # An earlier pass here (and design §6's own sketch) linked the
+            # Project straight to each resource. The two-hop form is better and
+            # is what Egeria actually offers: the working set becomes a nameable,
+            # reusable thing in its own right, `ResourceList.resourceUse` describes
+            # how the investigation uses it, and `CollectionMembership` carries a
+            # per-resource rationale that a direct link has nowhere to put.
+            #
+            # All three tables mirror their Egeria counterparts and carry a
+            # nullable GUID, so an investigation works with no Egeria at all and
+            # promotion fills in rather than migrates.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS working_sets (
+                    slug                              TEXT PRIMARY KEY,
+                    display_name                      TEXT NOT NULL,
+                    egeria_collection_guid            TEXT DEFAULT '',
+                    egeria_collection_qualified_name  TEXT DEFAULT '',
+                    created_at                        TEXT NOT NULL
+                )
+            """)
+            # The ResourceList relationship (0019) itself. `watch_resource`
+            # mirrors its `watchResource` property — the flag Automate's
+            # subscriptions should eventually ride on rather than a separate
+            # local table (see the Backlog entry).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS investigation_resource_lists (
+                    investigation_slug  TEXT NOT NULL,
+                    working_set_slug    TEXT NOT NULL,
+                    resource_use        TEXT DEFAULT '',
+                    watch_resource      INTEGER NOT NULL DEFAULT 0,
+                    added_at            TEXT NOT NULL,
+                    PRIMARY KEY (investigation_slug, working_set_slug)
+                )
+            """)
+            # CollectionMembership (0021) — carries rationale and confidence in
+            # Egeria; `state` keeps §7's candidate/in-scope/excluded, which
+            # Remediate needs because its membership is outcome-driven.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS working_set_members (
+                    working_set_slug      TEXT NOT NULL,
+                    entity_type           TEXT NOT NULL,
+                    entity_slug           TEXT NOT NULL,
+                    membership_rationale  TEXT DEFAULT '',
+                    state                 TEXT NOT NULL DEFAULT 'in-scope',
+                    added_at              TEXT NOT NULL,
+                    PRIMARY KEY (working_set_slug, entity_type, entity_slug)
+                )
+            """)
             # Automate — Part 4 of docs/discovery-automate-project-context-plan.md,
             # the 8th canonical intent (sustained *machine* attention,
             # parallel to Curate's sustained *human* attention). Local-first
@@ -3545,6 +3652,300 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchone()
         return bool(row["hidden"]) if row else False
+
+    # ── Investigations (docs/investigation-framing-design.md §1) ──────────
+    #
+    # The framing step ahead of Scouting. Deliberately local-first with a
+    # nullable egeria_project_guid so an investigation can exist before, or
+    # without, any Egeria write — promotion is then a fill-in, not a migration.
+
+    VALID_PURPOSES = (
+        "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
+    )
+
+    def create_investigation(self, display_name: str, *, description: str = "",
+                             purposes: list[str] | None = None,
+                             egeria_project_guid: str = "",
+                             egeria_project_qualified_name: str = "") -> dict:
+        """Create one investigation. `purposes` is validated against
+        ProjectCharter.purposes' vocabulary rather than accepting free text —
+        an unrecognised purpose would silently fail to rank anything later."""
+        import json as _json
+        import re as _re
+        purposes = purposes or []
+        bad = [p for p in purposes if p not in self.VALID_PURPOSES]
+        if bad:
+            raise ValueError(
+                f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}"
+            )
+        base = _re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "investigation"
+        slug, n = base, 1
+        while self.get_investigation(slug):
+            n += 1
+            slug = f"{base}-{n}"
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO investigations
+                   (slug, display_name, description, purposes_json,
+                    egeria_project_guid, egeria_project_qualified_name,
+                    status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                (slug, display_name, description, _json.dumps(purposes),
+                 egeria_project_guid, egeria_project_qualified_name, now, now),
+            )
+        return self.get_investigation(slug)
+
+    def get_investigation(self, slug: str) -> dict | None:
+        import json as _json
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM investigations WHERE slug = ?", (slug,)
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["purposes"] = _json.loads(d.pop("purposes_json") or "[]")
+        # The shape the publish path already speaks, assembled here so callers
+        # never rebuild it from the individual columns.
+        d["egeria_context"] = {
+            "status": d.get("egeria_project_status") or "unset",
+            "egeria_project_guid": d.get("egeria_project_guid") or "",
+            "egeria_project_qualified_name": d.get("egeria_project_qualified_name") or "",
+            "free_text_name": d.get("egeria_free_text_name") or "",
+        }
+        d["member_count"] = len(self.list_investigation_members(slug))
+        return d
+
+    def list_investigations(self, *, include_closed: bool = False) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT slug FROM investigations ORDER BY created_at DESC").fetchall()
+        out = [self.get_investigation(r["slug"]) for r in rows]
+        return [i for i in out if i and (include_closed or i.get("status") != "closed")]
+
+    # Membership goes through a WorkingSet, mirroring
+    # Project --ResourceList--> WorkingSet --CollectionMembership--> resource.
+    # An investigation gets one working set lazily, on first use, so a brand-new
+    # investigation genuinely has none rather than an empty shell.
+
+    def get_or_create_working_set(self, investigation_slug: str,
+                                  display_name: str = "") -> dict | None:
+        inv = self.get_investigation(investigation_slug)
+        if not inv:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                (investigation_slug,),
+            ).fetchone()
+            if row:
+                ws_slug = row["working_set_slug"]
+            else:
+                ws_slug = f"{investigation_slug}-ws"
+                now = datetime.utcnow().isoformat()
+                conn.execute(
+                    """INSERT INTO working_sets (slug, display_name, created_at)
+                       VALUES (?, ?, ?)""",
+                    (ws_slug, display_name or f"{inv['display_name']} working set", now),
+                )
+                conn.execute(
+                    """INSERT INTO investigation_resource_lists
+                       (investigation_slug, working_set_slug, resource_use, added_at)
+                       VALUES (?, ?, 'working-set', ?)""",
+                    (investigation_slug, ws_slug, now),
+                )
+        return self.get_working_set(ws_slug)
+
+    def get_working_set(self, ws_slug: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM working_sets WHERE slug = ?", (ws_slug,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["members"] = self.list_working_set_members(ws_slug)
+        return d
+
+    def investigation_working_set_slug(self, investigation_slug: str) -> str:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                (investigation_slug,),
+            ).fetchone()
+        return row["working_set_slug"] if row else ""
+
+    def add_working_set_member(self, ws_slug: str, entity_type: str, entity_slug: str,
+                               *, membership_rationale: str = "",
+                               state: str = "in-scope") -> list[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO working_set_members
+                   (working_set_slug, entity_type, entity_slug, membership_rationale, state, added_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (working_set_slug, entity_type, entity_slug)
+                   DO UPDATE SET membership_rationale = EXCLUDED.membership_rationale,
+                                 state = EXCLUDED.state""",
+                (ws_slug, entity_type, entity_slug, membership_rationale, state,
+                 datetime.utcnow().isoformat()),
+            )
+        return self.list_working_set_members(ws_slug)
+
+    def remove_working_set_member(self, ws_slug: str, entity_type: str,
+                                  entity_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM working_set_members
+                   WHERE working_set_slug = ? AND entity_type = ? AND entity_slug = ?""",
+                (ws_slug, entity_type, entity_slug),
+            )
+        return self.list_working_set_members(ws_slug)
+
+    def list_working_set_members(self, ws_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT entity_type, entity_slug, membership_rationale, state, added_at
+                   FROM working_set_members WHERE working_set_slug = ?
+                   ORDER BY entity_type, entity_slug""",
+                (ws_slug,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_investigation_members(self, investigation_slug: str) -> list[dict]:
+        """Members of this investigation's working set, flattened.
+
+        Kept under the old name because callers only ever want "what is in
+        scope for this investigation" — the two-hop shape is a fidelity
+        decision about how it is STORED, not something every caller should
+        have to walk.
+        """
+        ws = self.investigation_working_set_slug(investigation_slug)
+        return self.list_working_set_members(ws) if ws else []
+
+    def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:
+        """Bind (or unbind) an investigation to an Egeria Project.
+
+        Takes the same context shape the publish path already speaks —
+        {status, egeria_project_guid, egeria_project_qualified_name,
+        free_text_name} — so nothing downstream has to learn a new one.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE investigations
+                   SET egeria_project_status = ?, egeria_project_guid = ?,
+                       egeria_project_qualified_name = ?, egeria_free_text_name = ?,
+                       updated_at = ?
+                   WHERE slug = ?""",
+                (ctx.get("status", "unset"), ctx.get("egeria_project_guid", ""),
+                 ctx.get("egeria_project_qualified_name", ""),
+                 ctx.get("free_text_name", ""),
+                 datetime.utcnow().isoformat(), slug),
+            )
+        return self.get_investigation(slug)
+
+    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+        """The Egeria Project binding a resource inherits from its investigation.
+
+        An investigation IS "the context everything else runs inside" (design
+        §1). If a resource is in the working set of an investigation that is
+        bound to an Egeria Project, that binding already answers "which Project
+        does this belong to" — asking again per resource is asking a question
+        that has been answered.
+
+        Returns None when nothing is inheritable, so the caller can fall back to
+        the normal prompt rather than proceeding on a guess. Only `linked`
+        investigations qualify: `personal`, `declined` and `deferred` are
+        deliberate answers about THAT investigation and do not name a Project to
+        inherit.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT i.slug, i.display_name, i.egeria_project_guid,
+                          i.egeria_project_qualified_name
+                   FROM working_set_members m
+                   JOIN investigation_resource_lists rl
+                     ON rl.working_set_slug = m.working_set_slug
+                   JOIN investigations i
+                     ON i.slug = rl.investigation_slug
+                   WHERE m.entity_type = ? AND m.entity_slug = ?
+                     AND m.state <> 'excluded'
+                     AND i.status <> 'closed'
+                     AND i.egeria_project_status = 'linked'
+                     AND i.egeria_project_guid <> ''
+                   ORDER BY i.updated_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        if not row:
+            return None
+        # A resource can legitimately be in several investigations. Inheriting
+        # from the most recently updated one is a guess, so it is reported
+        # rather than hidden — the caller records which investigation supplied
+        # the binding.
+        first = dict(row[0])
+        return {
+            "status": "linked",
+            "egeria_project_guid": first["egeria_project_guid"],
+            "egeria_project_qualified_name": first["egeria_project_qualified_name"] or "",
+            "free_text_name": "",
+            "_inherited_from": first["slug"],
+            "_inherited_from_name": first["display_name"],
+            "_ambiguous": len(row) > 1,
+        }
+
+    def update_investigation(self, slug: str, *, display_name: str | None = None,
+                             description: str | None = None,
+                             purposes: list[str] | None = None) -> dict | None:
+        """Rename or re-describe an investigation. The slug never changes.
+
+        An investigation accumulates members, an Egeria binding and inherited
+        context rows that all reference it, so re-slugging would orphan them —
+        and the slug is an identifier, not a label. Only what a human reads
+        changes here.
+        """
+        import json as _json
+        inv = self.get_investigation(slug)
+        if not inv:
+            return None
+        if purposes is not None:
+            bad = [p for p in purposes if p not in self.VALID_PURPOSES]
+            if bad:
+                raise ValueError(f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}")
+        with self._conn() as conn:
+            if display_name is not None:
+                conn.execute("UPDATE investigations SET display_name = ? WHERE slug = ?",
+                             (display_name, slug))
+            if description is not None:
+                conn.execute("UPDATE investigations SET description = ? WHERE slug = ?",
+                             (description, slug))
+            if purposes is not None:
+                conn.execute("UPDATE investigations SET purposes_json = ? WHERE slug = ?",
+                             (_json.dumps(purposes), slug))
+            conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
+                         (datetime.utcnow().isoformat(), slug))
+        return self.get_investigation(slug)
+
+    def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
+                                         qualified_name: str = "") -> dict | None:
+        """Record the Egeria Collection this working set became.
+
+        Without this the GUID returned by create_collection is discarded the
+        moment it is used, so a second promotion cannot tell that a Collection
+        already exists and would create another — orphaning the first.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE working_sets
+                   SET egeria_collection_guid = ?, egeria_collection_qualified_name = ?
+                   WHERE slug = ?""",
+                (guid, qualified_name, ws_slug),
+            )
+        return self.get_working_set(ws_slug)
+
+    def close_investigation(self, slug: str) -> dict | None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE investigations SET status = 'closed', updated_at = ? WHERE slug = ?",
+                (datetime.utcnow().isoformat(), slug),
+            )
+        return self.get_investigation(slug)
 
     # Egeria Project context (Part 5) — see entity_egeria_project_context's
     # own docstring above for the status vocabulary. get_project_context()

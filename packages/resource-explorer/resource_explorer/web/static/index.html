@@ -247,6 +247,16 @@
       class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700">
       ⚙ Admin
     </button>
+    <!-- The current Investigation — "the context everything else runs inside"
+         (§1). Header-level rather than an intent, and shown always, because a
+         result read without knowing which body of work it belongs to is the
+         ambiguity this whole frame exists to remove. -->
+    <!-- The tab in the nav strip is now the way in; this stays as a read-only
+         indicator so the current investigation is visible from every screen. -->
+    <span id="nav-investigation-hdr" class="text-xs text-slate-400 px-2 py-1"
+      title="The investigation this work belongs to">
+      🧭 <span id="current-investigation-label">No investigation</span>
+    </span>
     <!-- Read-only identity indicator — RE has no per-user login yet (see
          egeria.py::whoami's comment); this just surfaces the fixed Egeria
          service-account identity currently configured via .env. Clicking it
@@ -264,16 +274,30 @@
          backend model) — it's silently backfilled from this default the
          first time that resource is actually published
          (_ensureEgeriaProjectContext), not eagerly for every resource. -->
-    <span id="session-egeria-project-badge" class="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full"
-      title="The Egeria Project new publishes are associated with, for this browser session"></span>
-    <button onclick="_openSessionEgeriaProjectPicker()" class="text-xs text-cyan-500 hover:text-cyan-400 hover:underline">Change</button>
+    <!-- Folded into the Investigation control above (2026-08-24). §1 makes
+         binding to an Egeria Project one of the three ways to START an
+         investigation, so a separate session-wide badge alongside it was two
+         answers to one question — visibly so once both rendered. The binding
+         now lives on the investigation record and its state shows in that
+         label. Kept as a hidden element because _renderSessionEgeriaProjectBadge
+         still writes to it and the publish path still reads the same context
+         shape; only the duplicate control is gone. -->
+    <span id="session-egeria-project-badge" class="hidden"></span>
     <span class="text-xs text-slate-500">Multi-agent RAG · <a href="/docs" target="_blank" class="text-cyan-600 hover:underline">API docs</a></span>
   </div>
 </header>
 
 <!-- Intent navigation (primary nav — replaces the old resource-type sidebar tabs) -->
 <nav id="intent-nav" class="flex items-center gap-1 px-3 py-1.5 bg-slate-800 border-b border-slate-700 shrink-0 overflow-x-auto">
-  <button onclick="setNavIntent('scouting')"      data-nav-intent="scouting"      class="nav-intent-btn active">🔭 Scouting</button>
+  <!-- Investigation is the FRAME, not one of the eight intents (rule 17) — it
+       leads the strip and is separated by a divider so that reads structurally
+       rather than as a ninth peer. It is also the default landing: you declare
+       the body of work before you go looking for resources, which is what
+       makes an empty working set an honest prompt rather than a broken list. -->
+  <button onclick="showMainView('investigations')" id="nav-investigation-tab"
+          class="nav-intent-btn">🧭 Investigation</button>
+  <span class="mx-1 h-4 w-px bg-slate-600 shrink-0" aria-hidden="true"></span>
+  <button onclick="setNavIntent('scouting')"      data-nav-intent="scouting"      class="nav-intent-btn">🔭 Scouting</button>
   <button onclick="setNavIntent('discovery')"     data-nav-intent="discovery"     class="nav-intent-btn">🔎 Discovery</button>
   <button onclick="setNavIntent('assessment')"    data-nav-intent="assessment"    class="nav-intent-btn">✅ Assessment</button>
   <button onclick="setNavIntent('analysis')"      data-nav-intent="analysis"      class="nav-intent-btn">📈 Analysis</button>
@@ -285,6 +309,7 @@
        Curate's sustained *human* attention. Local-first: see
        notification_subscriptions' table docstring in registry.py for why
        this doesn't create real Egeria NotificationType elements yet. -->
+  <span class="mx-1 h-4 w-px bg-slate-600 shrink-0" aria-hidden="true"></span>
   <button onclick="setNavIntent('automate')"      data-nav-intent="automate"      class="nav-intent-btn">🔔 Automate</button>
   <span class="flex-1"></span>
   <button onclick="toggleRfaDrawer()" id="rfa-drawer-toggle" class="nav-intent-btn">📝 RFAs<span id="rfa-drawer-badge" class="hidden ml-1 bg-amber-500 text-slate-900 text-xs rounded-full px-1.5 py-0 font-bold leading-4"></span></button>
@@ -336,10 +361,37 @@
             class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-700">
         </div>
         <div class="flex flex-wrap gap-1">
-          <button onclick="_setProjectLifecycleFilter('')" data-lifecycle-filter="" class="filter-chip active">All</button>
+          <!-- Working set is the DEFAULT view: what the current investigation is
+               actually about. "All" remains one click away — this narrows the
+               list, it never hides that more exist (the count line says so). -->
+          <button onclick="_setProjectLifecycleFilter('working-set')" data-lifecycle-filter="working-set" class="filter-chip active">🎯 Working set</button>
+          <button onclick="_setProjectLifecycleFilter('')" data-lifecycle-filter="" class="filter-chip">All</button>
           <button onclick="_setProjectLifecycleFilter('new')" data-lifecycle-filter="new" class="filter-chip">🆕 New</button>
           <button onclick="_setProjectLifecycleFilter('surveyed')" data-lifecycle-filter="surveyed" class="filter-chip">📊 Surveyed</button>
           <button onclick="_setProjectLifecycleFilter('published')" data-lifecycle-filter="published" class="filter-chip">☁ Published</button>
+        </div>
+        <!-- Select mode. The sidebar is primarily NAVIGATION — a click selects a
+             repo — so checkboxes are a mode rather than always-on, otherwise
+             "click" means two things at once. Only offered when an investigation
+             is current, since there is nowhere to add to otherwise. -->
+        <div id="ws-select-bar" class="hidden mt-1">
+          <button id="ws-select-toggle" onclick="_toggleSelectMode()"
+                  class="filter-chip">☑ Select</button>
+          <span id="ws-select-actions" class="hidden flex-wrap items-center gap-1 ml-1">
+            <button onclick="_addSelectedToInvestigation()"
+                    class="filter-chip bg-cyan-700 text-white hover:bg-cyan-600"
+                    data-tip="Add to the current investigation's working set">＋ Add <span id="ws-select-count">0</span></button>
+            <button onclick="_removeSelectedFromInvestigation()" class="filter-chip"
+                    data-tip="Remove from the working set — the repo itself is untouched">− Remove</button>
+            <button onclick="_hideSelected(true)" class="filter-chip"
+                    data-tip="Hide from your own list. A personal view preference, not a judgement about the resource">🚫 Hide</button>
+            <button onclick="_deleteSelected()" class="filter-chip text-rose-300 hover:bg-rose-900/40"
+                    data-tip="Unregister entirely and delete all local survey data">🗑 Delete</button>
+            <span class="w-px h-4 bg-slate-600 mx-1"></span>
+            <button onclick="_selectAllVisible()" class="filter-chip">All shown</button>
+            <button onclick="_clearSelection()" class="filter-chip">None</button>
+            <button onclick="_toggleSelectMode()" class="filter-chip">Done</button>
+          </span>
         </div>
       </div>
       <div class="px-2 pb-1">
@@ -545,6 +597,12 @@
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
       <div id="curate-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+      <!-- Investigations — the framing step AHEAD of Scouting
+           (investigation-framing-design.md §1). Deliberately not a ninth
+           intent: CLAUDE.md rule 17 fixes the eight, and this is not another
+           kind of work done to a resource, it is the frame the other eight run
+           inside. Header-level, like Activity and Admin. -->
+      <div id="investigations-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
       <!-- Automate view (8th intent) — local-first notification
            subscriptions (see loadAutomatePanel()). Global by default, like
@@ -1337,7 +1395,12 @@ let _showIgnoredRepos = false;  // sidebar "Show ignored (N)" toggle state
 // Sidebar repo filter (direct feedback, 2026-08-24) — text search + a
 // lifecycle quick-filter, applied together (AND) in renderProjectList().
 let _projectFilterText = '';
-let _projectLifecycleFilter = '';  // '' | 'new' | 'surveyed' | 'published'
+// Members of the current investigation's working set, as "type:slug" keys.
+// Empty set + an active working-set filter is a real, meaningful state: a new
+// investigation legitimately contains nothing yet.
+let _workingSetKeys = new Set();
+let _workingSetLoaded = false;
+let _projectLifecycleFilter = 'working-set';  // 'working-set' | '' | 'new' | 'surveyed' | 'published'
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
 let _activityUnread  = 0;   // count of entries since activity tab was last viewed
 let _srvMap          = {};  // slug → ServerSummary
@@ -1493,7 +1556,19 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     document.getElementById('chat-toggle-btn').classList.add('active');
   }
+  // Land on Investigation, not Scouting: the frame comes before the search.
   setNavIntent('scouting');
+  showMainView('investigations');
+  // Surface the current investigation immediately — a result read without
+  // knowing which body of work it belongs to is the ambiguity this frame exists
+  // to remove, so the label must be right before anything else renders.
+  fetch('/api/investigations/').then(r => r.json()).then(list => {
+    _investigations = Array.isArray(list) ? list : [];
+    _refreshInvestigationLabel();
+    _refreshScoutInvestigationCheckbox();
+    _refreshSelectBarVisibility();
+    _loadWorkingSet();
+  }).catch(() => _refreshInvestigationLabel());
   document.getElementById('query-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
   });
@@ -1534,6 +1609,8 @@ const INTENT_PLACEHOLDER_TEXT = {};
 const _PERSPECTIVE_AWARE_INTENTS = new Set(['assessment', 'analysis']);
 
 function setNavIntent(intent) {
+  // Leaving the frame for an intent — drop the Investigation tab's highlight.
+  document.getElementById('nav-investigation-tab')?.classList.remove('active');
   currentNavIntent = intent;
   document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => {
     b.classList.toggle('active', b.dataset.navIntent === intent);
@@ -2105,6 +2182,21 @@ async function _searchEgeriaProjectCandidates() {
 async function _postEgeriaProjectContext(body) {
   // 'session' scope (header Change button) — no specific resource, nothing
   // to write server-side; just remember it as the new session default.
+  if (_egeriaProjectPickerScope === 'investigation') {
+    // The binding belongs to the investigation record, not to the browser.
+    const slug = _currentInvestigation();
+    if (slug) {
+      await fetch(`/api/investigations/${encodeURIComponent(slug)}/egeria-project`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+      });
+    }
+    _setSessionEgeriaProjectContext(body);
+    closeEgeriaProjectModal();
+    showToast('success', 'Egeria Project set for this investigation.', 4000);
+    loadInvestigationsPanel();
+    return;
+  }
+
   if (_egeriaProjectPickerScope === 'session') {
     _setSessionEgeriaProjectContext(body);
     closeEgeriaProjectModal();
@@ -2636,7 +2728,7 @@ const _REPO_RESULTS_RENDER_MODE = {
   // comment above warns about; tests/test_frontend_render_modes.py now
   // fails when this object and ANALYSIS_KINDS disagree, so the mirror can
   // no longer fall behind silently.
-  repository_health: 'findings_list',
+  repository_health: 'metrics',
   code_symbol_extraction: 'custom',
   rag_ingestion: 'metrics',
   website_ingestion: 'metrics',
@@ -3033,6 +3125,30 @@ function _renderManifestParseResults(data) {
     (data.surveyed_at ? `<div class="text-[10px] text-slate-600 mt-1">last run ${_relTime(data.surveyed_at)}</div>` : '');
 }
 
+// Architecture-recovery depth control — NOT configured yet, so not built yet.
+//
+// This is a wiring gap, not a verdict on the idea. The projection mechanism
+// works: given parents that resolve, project_rows collapses a nested input
+// (tests/test_arch_projection_liveness.py proves 3 -> 1). What is missing is
+// its input.
+//
+// Measured against stored results 2026-08-24:
+//   milvus      depth 0/1/2/3/None -> 204 components every time
+//   genaicomps  depth 0/1/2/3/None -> 311 components every time
+//
+// Why: components are linked to their nearest *candidate* ancestor at
+// generation time (code_markers.build_hierarchy, correctly), but persistence
+// writes a filtered subset — 16 of milvus's 213 persisted slugs are code::
+// namespaced — and parent links were never re-pointed at the nearest
+// SURVIVING ancestor. So milvus references 6 parents of which 0 are persisted,
+// every node reads as root-attached, and projection is an identity function.
+//
+// Two ways to configure it, neither done: re-parent to the nearest surviving
+// ancestor at persist time, or persist the ancestors that are referenced.
+// Until one lands a depth selector would move nothing, which is why it is
+// withheld rather than abandoned. See Backlog, "Purpose sets required DEPTH".
+const _ARCH_ROW_CAP = 20;
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
@@ -3111,8 +3227,25 @@ function _renderCustomAnalysisResults(analysisId, data) {
       return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
              + _renderDeploymentInterfaces(data.interfaces);
     }
-    return completeness + `<div class="text-xs text-slate-400 mb-1">${data.component_count} component(s)${data.surveyed_at ? ` · last run ${_relTime(data.surveyed_at)}` : ''}</div>` +
-      data.components.slice(0, 20).map(c => `
+    // Counts must be honest about BOTH coarsenings: the server-side depth
+    // projection AND this list's own cap. The payload has carried
+    // raw_component_count all along, added so a UI could say "13 shown (of 42
+    // total)" rather than let a projected view look like the whole answer —
+    // and nothing read it, while the header printed the projected count as if
+    // it were everything.
+    const _shown = Math.min(data.components.length, _ARCH_ROW_CAP);
+    const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
+    const _projected = (_raw !== null && _raw > data.component_count);
+    const _capped = data.components.length > _ARCH_ROW_CAP;
+    const _countLine = _shown + ' shown'
+      + (_capped ? ' of ' + data.components.length + ' at this depth' : '')
+      + (_projected ? ' · ' + _raw + ' recovered in full' : '')
+      + (data.surveyed_at ? ' · last run ' + _relTime(data.surveyed_at) : '');
+
+    return completeness
+      + `<div class="text-xs text-slate-400 mb-1">${_countLine}</div>`
+      + (_capped ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : '')
+      + data.components.slice(0, _ARCH_ROW_CAP).map(c => `
         <div class="text-xs text-slate-300 mb-1">
           <div class="flex justify-between gap-2">
             <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
@@ -3319,9 +3452,15 @@ function _renderProjectRow(p) {
   btn.innerHTML = `
     <div class="flex items-center justify-between gap-1 min-w-0">
       <div class="font-medium text-slate-200 truncate flex items-center gap-1">
+        ${_wsSelectMode ? `<input type="checkbox" class="ws-select-cb shrink-0" data-slug="${_esc(p.slug)}"
+             ${_wsSelected.has(p.slug) ? 'checked' : ''}
+             onclick="event.stopPropagation(); _toggleRowSelected('${_esc(p.slug)}')">` : ''}
         <span data-tip="${_esc(lifecycleTitle)}">${lifecycleBadge}</span>${dispositionBadge}${_esc(p.display_name)}
       </div>
       <div class="proj-actions">
+        ${_currentInvestigation() ? `<button class="proj-action-btn"
+          data-tip="${_workingSetKeys.has('repo:' + p.slug) ? 'Remove from this investigation' : 'Add to this investigation'}"
+          onclick="event.stopPropagation(); _toggleInvestigationMember('repo', '${_esc(p.slug)}')">${_workingSetKeys.has('repo:' + p.slug) ? '🎯' : '＋'}</button>` : ''}
         <button class="proj-action-btn" data-tip="Assign to group"
           onclick="event.stopPropagation(); openAssignGroupModal('${_esc(p.slug)}', '${_esc(p.group_slug)}')">🗂</button>
         <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
@@ -3338,6 +3477,12 @@ function _renderProjectRow(p) {
 // lifecycle quick-filter, both optional, combined with AND when both are set
 // (direct feedback, 2026-08-24: "there are getting to be a lot of them").
 function _matchesProjectFilter(p) {
+  // The working set is membership, not a lifecycle stage — it asks "is this
+  // part of the body of work I declared", which no lifecycle value can answer.
+  if (_projectLifecycleFilter === 'working-set') {
+    if (!_currentInvestigation()) return false;
+    return _workingSetKeys.has(`repo:${p.slug}`);
+  }
   if (_projectLifecycleFilter && _projectLifecycleKind(p) !== _projectLifecycleFilter) return false;
   const q = _projectFilterText.trim().toLowerCase();
   if (!q) return true;
@@ -3347,6 +3492,234 @@ function _matchesProjectFilter(p) {
 function _setProjectFilterText(value) {
   _projectFilterText = value;
   renderProjectList();
+}
+
+async function _loadWorkingSet() {
+  const inv = _currentInvestigation();
+  _workingSetKeys = new Set();
+  if (inv) {
+    try {
+      const members = await (await fetch(`/api/investigations/${encodeURIComponent(inv)}/members`)).json();
+      if (Array.isArray(members)) {
+        members.forEach(m => _workingSetKeys.add(`${m.entity_type}:${m.entity_slug}`));
+      }
+    } catch (e) { /* leave empty — an unreachable API must not silently look like "nothing in scope" */ }
+  }
+  _workingSetLoaded = true;
+  renderProjectList();
+}
+
+// Scouting -> working set: the loop that makes an investigation accumulate.
+//
+// Membership is the investigation's, so this writes through the API rather than
+// to a client-side set — the working set is shared state about the body of
+// work, unlike the per-browser "hide this from me" flag next to it.
+// Multi-select for building a working set. Deliberately a MODE: the sidebar's
+// primary job is navigation, and always-on checkboxes would make a click mean
+// two things. Mirrors the checkbox + "Import Selected" idiom Scouting's own
+// results table already uses.
+let _wsSelectMode = false;
+let _wsSelected = new Set();
+
+function _toggleSelectMode() {
+  _wsSelectMode = !_wsSelectMode;
+  _wsSelected = new Set();
+  const toggle = document.getElementById('ws-select-toggle');
+  const actions = document.getElementById('ws-select-actions');
+  toggle?.classList.toggle('active', _wsSelectMode);
+  actions?.classList.toggle('hidden', !_wsSelectMode);
+  actions?.classList.toggle('inline-flex', _wsSelectMode);
+  // Adding is only possible from a view that shows non-members. With the
+  // working-set filter active the list is members-only, so entering select mode
+  // there would offer an empty choice — switch to All and say so.
+  if (_wsSelectMode && _projectLifecycleFilter === 'working-set') {
+    _setProjectLifecycleFilter('');
+    showToast('success', 'Showing all repos so you can pick ones to add', 3000);
+  }
+  _updateSelectCount();
+  renderProjectList();
+}
+
+function _toggleRowSelected(slug) {
+  if (_wsSelected.has(slug)) _wsSelected.delete(slug);
+  else _wsSelected.add(slug);
+  _updateSelectCount();
+}
+
+function _selectAllVisible() {
+  document.querySelectorAll('.ws-select-cb').forEach(cb => {
+    _wsSelected.add(cb.dataset.slug);
+    cb.checked = true;
+  });
+  _updateSelectCount();
+}
+
+function _updateSelectCount() {
+  const el = document.getElementById('ws-select-count');
+  if (el) el.textContent = String(_wsSelected.size);
+}
+
+function _refreshSelectBarVisibility() {
+  // No investigation means nowhere to add to, so the control is not offered
+  // rather than offered-and-failing.
+  const bar = document.getElementById('ws-select-bar');
+  if (bar) bar.classList.toggle('hidden', !_currentInvestigation());
+}
+
+function _clearSelection() {
+  _wsSelected = new Set();
+  document.querySelectorAll('.ws-select-cb').forEach(cb => { cb.checked = false; });
+  _updateSelectCount();
+}
+
+async function _removeSelectedFromInvestigation() {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  const slugs = [..._wsSelected].filter(s => _workingSetKeys.has(`repo:${s}`));
+  if (!slugs.length) { showToast('error', 'None of those are in the working set', 3000); return; }
+  let done = 0;
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(`/api/investigations/${encodeURIComponent(inv)}/members/repo/${encodeURIComponent(slug)}`,
+                            {method: 'DELETE'});
+      if (r.ok) done++;
+    } catch (e) { /* keep going — one failure must not abandon the batch */ }
+  }
+  await _loadWorkingSet();
+  // Removing from a working set does not touch the repo. Saying so matters:
+  // next to a Delete button, "remove" is easily read as destructive.
+  showToast(done === slugs.length ? 'success' : 'error',
+            `${done} of ${slugs.length} removed from ${_investigationName(inv)} — the repos themselves are untouched`, 5000);
+  if (!document.getElementById('investigations-view')?.classList.contains('hidden')) loadInvestigationsPanel();
+  _clearSelection();
+}
+
+async function _hideSelected(hidden) {
+  const slugs = [..._wsSelected];
+  if (!slugs.length) { showToast('error', 'Nothing selected', 3000); return; }
+  let done = 0;
+  for (const slug of slugs) {
+    try {
+      const res = await fetch('/api/discovery/working-set', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entity_type: 'repo', entity_slug: slug, hidden}),
+      });
+      if (res.ok) done++;
+    } catch (e) { /* continue */ }
+  }
+  showToast(done === slugs.length ? 'success' : 'error',
+            `${done} of ${slugs.length} hidden — a personal view preference, reversible from "Show hidden"`, 5000);
+  _clearSelection();
+  await loadProjects();
+}
+
+async function _deleteSelected() {
+  const slugs = [..._wsSelected];
+  if (!slugs.length) { showToast('error', 'Nothing selected', 3000); return; }
+  // Deletion is the one irreversible action here, so it is named in full and
+  // typed to confirm — a misfire costs every survey, finding and annotation
+  // held locally for those repos, not just a list entry.
+  const names = slugs.slice(0, 8).join(', ') + (slugs.length > 8 ? `, and ${slugs.length - 8} more` : '');
+  const typed = prompt(
+    `Permanently unregister ${slugs.length} repo(s) and delete ALL their local survey data?\n\n${names}\n\n` +
+    `This cannot be undone. Anything already published to Egeria stays there.\n\nType DELETE to confirm:`);
+  if (typed !== 'DELETE') { showToast('error', 'Cancelled — nothing deleted', 3000); return; }
+  let done = 0;
+  const failed = [];
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(slug)}`, {method: 'DELETE'});
+      if (r.ok) done++; else failed.push(slug);
+    } catch (e) { failed.push(slug); }
+  }
+  showToast(failed.length ? 'error' : 'success',
+            `${done} deleted${failed.length ? `; failed: ${failed.join(', ')}` : ''}`, 6000);
+  _clearSelection();
+  await loadProjects();
+  await _loadWorkingSet();
+}
+
+async function _addSelectedToInvestigation() {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  const slugs = [..._wsSelected].filter(s => !_workingSetKeys.has(`repo:${s}`));
+  const already = _wsSelected.size - slugs.length;
+  if (!slugs.length) {
+    showToast('error', already ? 'Those are already in the working set' : 'Nothing selected', 3000);
+    return;
+  }
+  await _addManyToInvestigation(slugs);
+  if (already) showToast('success', `${already} were already members and were skipped`, 3000);
+  _toggleSelectMode();
+}
+
+async function _toggleInvestigationMember(entityType, slug) {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  const key = `${entityType}:${slug}`;
+  const isMember = _workingSetKeys.has(key);
+  try {
+    if (isMember) {
+      await fetch(`/api/investigations/${encodeURIComponent(inv)}/members/${entityType}/${encodeURIComponent(slug)}`,
+                  {method: 'DELETE'});
+      showToast('success', `Removed from ${_investigationName(inv)}`, 2500);
+    } else {
+      await fetch(`/api/investigations/${encodeURIComponent(inv)}/members`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entity_type: entityType, entity_slug: slug}),
+      });
+      showToast('success', `Added to ${_investigationName(inv)}`, 2500);
+    }
+  } catch (e) {
+    showToast('error', `Could not update the working set: ${e}`, 4000);
+    return;
+  }
+  await _loadWorkingSet();
+  // Keep the investigation panel's own count honest if it is on screen — it
+  // renders member_count at load, so without this it silently disagrees with
+  // the sidebar it is supposed to describe.
+  if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
+    loadInvestigationsPanel();
+  }
+}
+
+async function _addManyToInvestigation(slugs) {
+  const inv = _currentInvestigation();
+  if (!inv || !slugs.length) return;
+  let added = 0;
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(`/api/investigations/${encodeURIComponent(inv)}/members`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entity_type: 'repo', entity_slug: slug,
+                              membership_rationale: 'imported from Scouting'}),
+      });
+      if (r.ok) added++;
+    } catch (e) { /* one failure must not abandon the rest of the batch */ }
+  }
+  await _loadWorkingSet();
+  // Say what actually happened, not what was attempted — a partial batch that
+  // reports success is the same class of lie as an empty result that reports none.
+  if (added === slugs.length) {
+    showToast('success', `${added} repo(s) added to ${_investigationName(inv)}`, 4000);
+  } else {
+    showToast('error', `${added} of ${slugs.length} added to ${_investigationName(inv)} — the rest failed`, 6000);
+  }
+}
+
+function _refreshScoutInvestigationCheckbox() {
+  const wrap = document.getElementById('scout-add-to-investigation-wrap');
+  if (!wrap) return;
+  const inv = _currentInvestigation();
+  wrap.classList.toggle('hidden', !inv);
+  wrap.classList.toggle('flex', !!inv);
+  const nameEl = document.getElementById('scout-investigation-name');
+  if (nameEl && inv) nameEl.textContent = _investigationName(inv);
+}
+
+function _investigationName(slug) {
+  const inv = _investigations.find(i => i.slug === slug);
+  return inv ? inv.display_name : slug;
 }
 
 function _setProjectLifecycleFilter(kind) {
@@ -3365,6 +3738,24 @@ function renderProjectList() {
     : _allProjectSummaries.filter(p => !_rowIsHidden(p));
   const filterActive = !!(_projectFilterText.trim() || _projectLifecycleFilter);
   const projects = visible.filter(_matchesProjectFilter);
+
+  // An empty working set is the expected state for a new investigation, so it
+  // gets an explanation and a next step rather than a blank column — the whole
+  // point of the frame is that "nothing in scope yet" and "nothing exists" are
+  // different, and must not render the same.
+  if (_projectLifecycleFilter === 'working-set' && projects.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'px-3 py-3 text-xs text-slate-400';
+    empty.innerHTML = _currentInvestigation()
+      ? `<div class="mb-1 text-slate-300">Nothing in this investigation yet.</div>
+         <div class="text-slate-500 mb-2">${visible.length} resource(s) are registered — none is in scope for this body of work.</div>
+         <button onclick="setNavIntent('scouting')" class="text-cyan-400 hover:underline">Go to Scouting to find some →</button>`
+      : `<div class="mb-1 text-slate-300">No investigation selected.</div>
+         <div class="text-slate-500 mb-2">Declare what this work is for, and the list shows what it is about.</div>
+         <button onclick="showMainView('investigations')" class="text-cyan-400 hover:underline">Open Investigation →</button>`;
+    list.appendChild(empty);
+    return;
+  }
 
   if (filterActive) {
     const countEl = document.createElement('div');
@@ -6878,6 +7269,231 @@ async function deleteCurateNote(noteId, entityType, slug) {
 
 // ── main view tabs ─────────────────────────────────────────────────────────────
 
+// ── Investigations ────────────────────────────────────────────────────────
+//
+// The framing step ahead of Scouting (investigation-framing-design.md §1): an
+// Investigation is one body of work, and the context the other eight intents
+// run inside. It is NOT a ninth intent — rule 17 fixes the eight, and this is
+// not another kind of work done to a resource.
+//
+// The current investigation is held client-side, matching the session Egeria
+// Project precedent above: there is no per-user server session to hang it off
+// (one fixed service-account identity for every request), so "current" means
+// "this browser".
+const _CURRENT_INVESTIGATION_KEY = 're_current_investigation';
+let _investigations = [];
+let _investigationPurposes = [];
+
+function _currentInvestigation() {
+  try { return localStorage.getItem(_CURRENT_INVESTIGATION_KEY) || ''; }
+  catch (e) { return ''; }
+}
+
+function _setCurrentInvestigation(slug) {
+  try {
+    if (slug) localStorage.setItem(_CURRENT_INVESTIGATION_KEY, slug);
+    else localStorage.removeItem(_CURRENT_INVESTIGATION_KEY);
+  } catch (e) { /* private mode — the label just won't persist */ }
+  _refreshInvestigationLabel();
+  _refreshScoutInvestigationCheckbox();
+  _refreshSelectBarVisibility();
+  _loadWorkingSet();
+  if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
+    loadInvestigationsPanel();
+  }
+}
+
+function _refreshInvestigationLabel() {
+  const el = document.getElementById('current-investigation-label');
+  if (!el) return;
+  const cur = _currentInvestigation();
+  const inv = _investigations.find(i => i.slug === cur);
+  // The label carries the Egeria binding as well as the name, because the
+  // binding is a property OF the investigation now — a separate badge beside
+  // it was two answers to one question.
+  const bind = inv && inv.egeria_context ? inv.egeria_context.status : 'unset';
+  const bindMark = {linked: ' · 📁', personal: ' · 👤', declined: ' · 🚫', deferred: ' · ⏳'}[bind] || '';
+  el.textContent = (inv ? inv.display_name : (cur ? cur : 'No investigation')) + bindMark;
+  el.className = inv ? 'text-cyan-300' : 'text-slate-500';
+  el.title = inv
+    ? (bind === 'unset' ? 'Not associated with an Egeria Project yet' : `Egeria: ${bind}`)
+    : 'No investigation — declare one to say why this work exists';
+  // Keep the publish path's context in step with the current investigation.
+  if (inv && inv.egeria_context && inv.egeria_context.status !== 'unset') {
+    _sessionEgeriaProjectContext = inv.egeria_context;
+  }
+}
+
+async function loadInvestigationsPanel() {
+  const view = document.getElementById('investigations-view');
+  if (!view) return;
+  view.innerHTML = `<div class="p-4 text-sm text-slate-400">Loading investigations…</div>`;
+  try {
+    const [invs, purp] = await Promise.all([
+      fetch('/api/investigations/').then(r => r.json()),
+      fetch('/api/investigations/purposes').then(r => r.json()),
+    ]);
+    _investigations = Array.isArray(invs) ? invs : [];
+    _investigationPurposes = (purp && purp.purposes) || [];
+  } catch (e) {
+    view.innerHTML = `<div class="p-4 text-sm text-rose-400">Could not load investigations: ${_esc(String(e))}</div>`;
+    return;
+  }
+  _refreshInvestigationLabel();
+  view.innerHTML = _renderInvestigationsPanel();
+}
+
+function _renderInvestigationsPanel() {
+  const cur = _currentInvestigation();
+  const purposeBoxes = _investigationPurposes.map(p => `
+    <label class="inline-flex items-center gap-1 text-xs text-slate-300 mr-3">
+      <input type="checkbox" class="inv-purpose" value="${_esc(p)}"> ${_esc(p)}
+    </label>`).join('');
+
+  const rows = _investigations.length ? _investigations.map(i => {
+    const isCur = i.slug === cur;
+    return `<div class="border ${isCur ? 'border-cyan-600' : 'border-slate-700'} rounded p-2 mb-2">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-sm font-medium ${isCur ? 'text-cyan-300' : 'text-slate-200'} truncate">
+            ${_esc(i.display_name)} ${isCur ? '<span class="text-[10px] text-cyan-500">· current</span>' : ''}
+          </div>
+          <div class="text-xs text-slate-500 truncate">${_esc(i.description || 'No description')}</div>
+          <div class="text-xs text-slate-400 mt-0.5">
+            ${(i.purposes || []).map(p => `<span class="bg-slate-700 rounded px-1.5 py-0.5 mr-1">${_esc(p)}</span>`).join('') || '<span class="text-slate-600">no purposes declared</span>'}
+          </div>
+          <div class="text-[11px] text-slate-500 mt-0.5">
+            ${i.member_count} resource(s) ·
+            ${_investigationBindingLabel(i)}
+            ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
+            ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
+          </div>
+        </div>
+        <div class="shrink-0 flex gap-1">
+          ${isCur ? '' : `<button onclick="_setCurrentInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-cyan-600 text-white hover:bg-cyan-500">Use</button>`}
+          <button onclick="_closeInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-300 hover:bg-slate-600">Close</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('') : `<div class="text-xs text-slate-500 mb-2">No investigations yet. Declaring one is what lets everything downstream say why this work exists.</div>`;
+
+  return `<div class="p-4">
+    <div class="mb-3">
+      <h2 class="text-base text-slate-200">🧭 Investigations</h2>
+      <p class="text-xs text-slate-500 mt-0.5 max-w-2xl">
+        One body of work — the context every survey and analysis runs inside. The eight intents
+        describe what kind of work is happening to a resource; Perspective describes whose
+        concerns filter the view. Neither says <em>why this set of work exists at all</em>.
+      </p>
+    </div>
+    ${rows}
+    <div class="border border-slate-700 rounded p-3 mt-4">
+      <div class="text-sm text-slate-300 mb-2">New investigation</div>
+      <input id="inv-name" placeholder="Name (e.g. Pre-adoption review, Q3 certification)"
+             class="w-full mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200">
+      <input id="inv-desc" placeholder="What is this work for? (optional)"
+             class="w-full mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200">
+      <div class="mb-1 text-xs text-slate-500">
+        Purpose — why this work exists. These are ProjectCharter.purposes, the same vocabulary the
+        question catalog is tagged with, so they rank what gets proposed. Purpose ranks; it does not hide.
+      </div>
+      <div class="mb-2">${purposeBoxes}</div>
+      <button onclick="_createInvestigation()" class="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-500">Create</button>
+      <div class="text-[11px] text-slate-500 mt-2">
+        Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
+        the record carries a nullable project GUID so that stays a fill-in rather than a migration.
+      </div>
+    </div>
+  </div>`;
+}
+
+// The binding is a property of the investigation, so it is described here
+// rather than in a separate header badge. "Local only" is stated explicitly:
+// without it, an unbound investigation is indistinguishable from a bound one,
+// which is the same absence-reads-as-presence failure this codebase keeps
+// finding elsewhere.
+function _investigationBindingLabel(inv) {
+  const ctx = inv.egeria_context || {};
+  switch (ctx.status) {
+    case 'linked':   return `📁 ${_esc((ctx.egeria_project_qualified_name || '').split('::')[0] || 'linked to an Egeria Project')}`;
+    case 'personal': return '👤 personal exploration — not catalogued';
+    case 'declined': return '🚫 deliberately not associated';
+    case 'deferred': return `⏳ ${_esc(ctx.free_text_name || 'deferred')}`;
+    default:         return 'local only — not in Egeria';
+  }
+}
+
+function _openInvestigationEgeriaPicker() {
+  _egeriaProjectPickerScope = 'investigation';
+  const intro = document.getElementById('egeria-project-modal-intro');
+  if (intro) {
+    intro.innerHTML =
+      'Which Egeria Project does <em>this investigation</em> belong to? ' +
+      'Binding is one of the three ways to start an investigation — the record already ' +
+      'carries a nullable project GUID, so this is a fill-in, not a migration.';
+  }
+  const modal = document.getElementById('egeria-project-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+async function _createInvestigation() {
+  const name = (document.getElementById('inv-name')?.value || '').trim();
+  if (!name) { showToast('Name is required', 'error'); return; }
+  const purposes = Array.from(document.querySelectorAll('.inv-purpose:checked')).map(c => c.value);
+  try {
+    const resp = await fetch('/api/investigations/', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        display_name: name,
+        description: (document.getElementById('inv-desc')?.value || '').trim(),
+        purposes,
+      }),
+    });
+    if (!resp.ok) { showToast(`Could not create: ${(await resp.json()).detail || resp.status}`, 'error'); return; }
+    const inv = await resp.json();
+    showToast(`Investigation "${inv.display_name}" created`, 'success');
+    _setCurrentInvestigation(inv.slug);
+    loadInvestigationsPanel();
+  } catch (e) { showToast(`Could not create: ${e}`, 'error'); }
+}
+
+// Promote: create the Egeria side — Project, working-set Collection,
+// ResourceList, CollectionMembership. Partial success is reported rather than
+// rounded up, because a member whose repo was never published has no asset to
+// link and the user needs to know which ones those are.
+async function _promoteInvestigation(slug) {
+  if (!confirm('Create an Egeria Project (and working-set Collection) for this investigation?\n\nThis writes to Egeria.')) return;
+  showToast('success', 'Creating in Egeria…', 2000);
+  try {
+    const res = await fetch(`/api/investigations/${encodeURIComponent(slug)}/promote`, {method: 'POST'});
+    const r = await res.json();
+    if (!r.ok && !r.project_guid) {
+      showToast('error', `Could not create: ${(r.errors || ['unknown']).join('; ')}`, 8000);
+      return;
+    }
+    const linked = (r.members_linked || []).length;
+    const missed = (r.members_unlinkable || []).length;
+    let msg = `Egeria Project created${r.resource_list_linked ? ' with its working set' : ''}. ${linked} resource(s) linked`;
+    if (missed) msg += `, ${missed} could not be — publish those repos to Egeria first`;
+    showToast(missed || r.errors?.length ? 'error' : 'success', msg, 8000);
+    await loadInvestigationsPanel();
+    const list = await (await fetch('/api/investigations/')).json();
+    _investigations = Array.isArray(list) ? list : [];
+    _refreshInvestigationLabel();
+  } catch (e) {
+    showToast('error', `Could not create in Egeria: ${e}`, 6000);
+  }
+}
+
+async function _closeInvestigation(slug) {
+  try {
+    await fetch(`/api/investigations/${encodeURIComponent(slug)}/close`, {method: 'POST'});
+    if (_currentInvestigation() === slug) _setCurrentInvestigation('');
+    showToast('Investigation closed', 'success');
+    loadInvestigationsPanel();
+  } catch (e) { showToast(`Could not close: ${e}`, 'error'); }
+}
+
 function showMainView(tab) {
   // NOTE: chat is no longer one of these panes — it's a persistent side panel
   // (#chat-panel) toggled independently via toggleChatPanel(), decoupled from
@@ -6893,6 +7509,7 @@ function showMainView(tab) {
   const assessmentView = document.getElementById('assessment-view');
   const analysisView   = document.getElementById('analysis-view');
   const discoveryAnalysesView = document.getElementById('discovery-analyses-view');
+  const investigationsView = document.getElementById('investigations-view');
   const understandingView = document.getElementById('understanding-view');
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
   const scoutingResultsView = document.getElementById('scouting-results-view');
@@ -6917,7 +7534,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6943,6 +7560,14 @@ function showMainView(tab) {
   } else if (tab === 'discovery-analyses') {
     discoveryAnalysesView.classList.remove('hidden');
     loadDiscoveryAnalysesPanel();
+  } else if (tab === 'investigations') {
+    investigationsView.classList.remove('hidden');
+    // Investigation is not an intent, so setNavIntent does not own its active
+    // state — without this the last intent stays lit while the frame is on
+    // screen, which reads as "you are in Scouting" when you are not.
+    document.querySelectorAll('#intent-nav [data-nav-intent]').forEach(b => b.classList.remove('active'));
+    document.getElementById('nav-investigation-tab')?.classList.add('active');
+    loadInvestigationsPanel();
   } else if (tab === 'understanding') {
     understandingView.classList.remove('hidden');
     loadUnderstandingCharts();
@@ -10509,6 +11134,10 @@ function renderScoutResults() {
           ${groupOptions}
         </select>
         <button onclick="importSelectedScoutRepos()" class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs font-semibold transition-colors">Import Selected</button>
+        <label id="scout-add-to-investigation-wrap" class="hidden items-center gap-1 text-xs text-slate-300 ml-2">
+          <input type="checkbox" id="scout-add-to-investigation" checked>
+          <span>Add to <span id="scout-investigation-name" class="text-cyan-400"></span></span>
+        </label>
       </div>
     </div>
     <div class="bg-slate-950 border border-slate-800 rounded max-h-96 overflow-auto">
@@ -10579,15 +11208,22 @@ async function _setScoutDisposition(i, disposition) {
 }
 
 async function _pollProjectsAfterImport(expectedNewCount) {
+  const baselineSlugs = new Set(_allProjectSummaries.map(p => p.slug));
   const baseline = _allProjectSummaries.length;
   const delaysMs = [2000, 4000, 6000, 8000];  // ~20s total, backing off
   for (const delay of delaysMs) {
     await new Promise(r => setTimeout(r, delay));
     await loadProjects();
-    if (_allProjectSummaries.length >= baseline + expectedNewCount) return;
+    if (_allProjectSummaries.length >= baseline + expectedNewCount) break;
   }
+  // Return what actually appeared rather than what was asked for — the import
+  // runs in a background thread and can partially succeed, so the caller must
+  // act on observed registrations, not on the request.
+  return _allProjectSummaries.map(p => p.slug).filter(s => !baselineSlugs.has(s));
+  // The import controls are built here, so the investigation checkbox can
+  // only be populated once this has run — it does not exist before.
+  _refreshScoutInvestigationCheckbox();
 }
-
 async function importSelectedScoutRepos() {
   const groupSlug = document.getElementById('scout-target-group').value;
   const selected = _scoutResults.filter((r, i) => {
@@ -10619,8 +11255,14 @@ async function importSelectedScoutRepos() {
     // immediate refresh here would almost always race it and still show
     // the old list. Poll a few more times over the next ~20s to pick up
     // newly-registered repos without the user having to reload manually.
-    if (data.queued > 0) _pollProjectsAfterImport(data.queued);
-    else loadProjects();
+    const addToInv = document.getElementById('scout-add-to-investigation')?.checked
+                     && !!_currentInvestigation();
+    if (data.queued > 0) {
+      const newSlugs = await _pollProjectsAfterImport(data.queued);
+      if (addToInv && newSlugs.length) await _addManyToInvestigation(newSlugs);
+    } else {
+      await loadProjects();
+    }
   } catch(e) {
     showToast('error', `Failed to start import: ${_esc(e.message)}`, 6000);
   }

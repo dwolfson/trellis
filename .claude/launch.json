@@ -14,6 +14,20 @@
         "8810"
       ],
       "port": 8810
+    },
+    {
+      "name": "resource-explorer-verify",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--package",
+        "resource-explorer",
+        "resource-explorer",
+        "web",
+        "--port",
+        "8811"
+      ],
+      "port": 8811
     }
   ]
 }

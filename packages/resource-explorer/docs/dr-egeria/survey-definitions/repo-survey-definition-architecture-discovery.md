@@ -36,6 +36,44 @@ Proposes additional architecture-component boundaries from import coupling and c
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Repo Architecture Discovery — Repo Arch Lens
+
+### Qualified Name
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
+
+### Description
+Labels recovered components against the project's own architecture document, wherever it lives — in-repo, a sibling repository, or a documentation site. A LENS: it adds no component, removes none and assigns no type. Milvus goes from 206 candidates to 15 the authors actually name (finding 102).
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_arch_lens |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Repo Architecture Discovery — Repo Arch Summary
+
+### Qualified Name
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary
+
+### Description
+Collapses architecture-recovery findings to the depth the question asked for — the summarising half nothing owned. Milvus recovers 218 candidate components where its own authors describe eight; a suitability answer is 'serves gRPC (297 operations), 24 runnable units, 31 third-party'.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_arch_summary |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Repo Architecture Discovery
@@ -69,6 +107,30 @@ GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_detect
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_coupling
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_coupling
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary
 
 ### Guard
 Any

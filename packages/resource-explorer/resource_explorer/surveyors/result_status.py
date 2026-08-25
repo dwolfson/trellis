@@ -130,6 +130,31 @@ def skipped(reason: str, *, gate: str = "") -> dict:
     }
 
 
+def dependency_not_satisfied(reason: str, *, depends_on: str = "") -> dict:
+    """A step ran, and could not establish a result because the step it consumes
+    has not produced one.
+
+    Deliberately **`not_established`, not a seventh state.** A summarising
+    microflow's input being absent is a real, nameable situation, and the
+    temptation is to add `dependency_missing` alongside the six. It would be
+    wrong: the six describe what a reader is looking at, and what the reader is
+    looking at here is genuinely "we tried and could not tell". Which *upstream*
+    step was missing is a cause, and `cause` is the field for it.
+
+    `reason` is required for the same purpose as in `skipped()` and
+    `misgrouped()`: unexplained, this is indistinguishable from a summary of
+    nothing — and a summary of nothing is worse than most absences, because it
+    reads as a confident answer.
+    """
+    return {
+        "state": NOT_ESTABLISHED,
+        "outcome": "",
+        "cause": depends_on,
+        "hint": reason,
+        "known_positive": False,
+    }
+
+
 def misgrouped(reason: str) -> dict:
     """The right material, the wrong structure.
 

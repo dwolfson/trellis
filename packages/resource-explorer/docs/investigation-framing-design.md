@@ -1,6 +1,6 @@
 # Investigation framing — declaring the body of work before Scouting
 
-**Status: design, nothing built (2026-08-24).** Supersedes nothing; sits above
+**Status: design; two pieces have since been built (2026-08-24).** All 41 questions are tagged with Purpose (`341d2f5`) and the check-granularity join exists and is guarded (`852955f` — `configdata/check_registry.yaml`, `tests/test_check_registry.py`). Everything else here — the Investigation record, the tab, the create-Egeria-Project path — remains unbuilt. This line read "nothing built" after both had already shipped. Supersedes nothing; sits above
 `docs/discovery-automate-project-context-plan.md` Part 5 (shipped 2026-08-13), which stays
 as-is — see §1.
 
@@ -192,6 +192,12 @@ tags for both was my assumption and it does not survive contact with the data.
 - **Purpose orders** the question set, and therefore what runs by default. It is the
   discriminating axis — measurably so (overlap 0.22 vs Perspective's 0.37; see the measurement
   section at the end of this doc). It **ranks, it does not exclude**: nothing is hidden.
+  **Scoped to questions and analyses only.** Purpose *does* exclude on one other axis —
+  §4 gates RFA emission on it, and `Select` emits none at all. Both rules are correct and
+  they are not in tension, but read in isolation this sentence says Purpose never excludes
+  anything. Implementing §4's rule as a ranking produces precisely the flooded RFA drawer
+  §4 exists to prevent, and the failure is silent — it surfaces as drawer noise nobody
+  traces back to here.
 - **Perspective ranks within that** — presentation, ordering, emphasis. It keeps doing exactly
   the job it already does well.
 
@@ -326,6 +332,8 @@ something*, which is only true when you own the resource:
 
 Filing RFAs against every candidate repo browsed while shopping would flood the RFA drawer
 and make it useless. This is the first place Purpose does real work rather than labelling.
+
+**Note the asymmetry against §3**, which states that Purpose ranks and never excludes. That holds for questions and analyses — nothing is hidden from the menu. RFA emission is the one axis Purpose genuinely gates, and it is binary, not an ordering.
 
 **Required change:** RFA emission is currently hardcoded inside each surveyor's branch —
 `security_hygiene.py:151-160` builds a `RequestForActionAnnotation` inline whenever

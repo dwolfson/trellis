@@ -102,7 +102,16 @@ class TestFilterByIntent:
     # rule's actual test is "cheap enough to gate the expensive tiers", which a
     # handful of API calls passes; the honest way to record that is an explicit
     # exception, not silence. Design §5.5b.
-    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification"}
+    #
+    # `architecture_doc_lens` is the THIRD entry here (2026-08-25). It reads the
+    # project's architecture document, which is up to MAX_DOC_FILES GitHub calls
+    # and frequently against a DIFFERENT repository than the one being surveyed.
+    # Three exceptions is the point at which "discovery is the zero-fetch
+    # derivation tier" stops describing the tier and starts describing an
+    # intention — flagged here rather than absorbed, because the next addition
+    # should be a decision about the rule, not another entry in this set.
+    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification",
+                                "architecture_doc_lens"}
 
     def test_discovery_is_the_zero_fetch_derivation_tier(self):
         """Discovery reasons over what Scouting collected rather than fetching:
@@ -114,7 +123,13 @@ class TestFilterByIntent:
 
         analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
-        assert ids == {"license_classification", "maturity", "repo_conventions", "repo_classification"} \
+        # `architecture_summary` is in the ZERO-fetch set deliberately, unlike
+        # `architecture_recovery` beside it: its input is another step's output
+        # rather than an external resource, which is the shape rule 17's
+        # discovery tier describes. It is the first analysis here that consumes
+        # findings instead of collecting anything.
+        assert ids == {"license_classification", "maturity", "repo_conventions",
+                       "repo_classification", "architecture_summary"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):

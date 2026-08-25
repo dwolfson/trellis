@@ -81,8 +81,19 @@ _STUB_ENTRY_NAMES: frozenset[str] = frozenset({
 # owner/org. "{repo}" is substituted with the project's own repo name.
 # Order is priority order for find_artifact()'s "best sibling" pick, not a
 # filter — every match is still reported by resolve_doc_locations().
+# Sibling repositories that plausibly hold a project's documentation.
+#
+# Widened 2026-08-25: documentation does not only live in repos that call
+# themselves documentation. Tutorials, workshops and examples describe a
+# system's shape as directly as a design doc does — often more concretely —
+# and `OpenLineage/workshops` and `odpi/egeria-workspaces` are both in this
+# corpus. A name that turns out to hold nothing costs one shallow search;
+# a name we never try costs the document.
 _SIBLING_NAME_PATTERNS: list[str] = [
     "{repo}-docs", "{repo}-doc", "{repo}.github.io", "docs", "website", "site",
+    "{repo}-website", "{repo}-site", "{repo}-tutorial", "{repo}-tutorials",
+    "{repo}-examples", "{repo}-workshop", "{repo}-workshops",
+    "tutorial", "tutorials", "workshop", "workshops", "examples", "learn",
 ]
 
 # Kind -> filename/dirname substrings (lowercase) that count as a match
@@ -455,6 +466,125 @@ def _find_root(repo: Repository, keywords: list[str], notes: list[str]) -> str |
     return _find_in_dir(repo, "", keywords, notes)
 
 
+def _search_sibling(gh: Github, sibling, keywords: list[str], notes: list[str]):
+    """Find a specific artifact page inside a sibling documentation repo.
+
+    Searches the sibling's ROOT and then its own documentation directories.
+    Root alone was the original behaviour and it is why every sibling answer in
+    the corpus came back as a bare pointer at the repo rather than a page
+    (measured 2026-08-25: marquez, OpenLineage, docling-java, all pointers) —
+    a documentation website keeps its pages under `docs/` or `content/`, not
+    scattered at the top level, so the one place we looked was the one place
+    they are not.
+
+    Returns `(repo, path_or_None)`; the repo comes back so a caller can date
+    the match without fetching it twice.
+    """
+    try:
+        sib_repo = gh.get_repo(sibling.full_name)
+    except Exception as exc:  # noqa: BLE001
+        _degraded(notes, exc, f"could not open sibling '{sibling.full_name}'")
+        return None, None
+
+    match = _find_root(sib_repo, keywords, notes)
+    if match:
+        return sib_repo, match
+    for name in DOC_DIR_NAMES + ["content", "src"]:
+        match = _find_in_dir(sib_repo, name, keywords, notes)
+        if match:
+            return sib_repo, match
+    return sib_repo, None
+
+
+def find_artifacts(owner_repo: str, kind: str, client: Github | None = None,
+                   locations: DocLocations | None = None) -> list[ArtifactResult]:
+    """**Every** location for `kind`, not the best one.
+
+    `find_artifact` returns the first — which was the whole model until
+    2026-08-25, and it discards real answers. Measured on this corpus:
+    `OpenLineage/OpenLineage` has three sibling documentation repos, a declared
+    homepage and two in-repo doc directories — six sources — and the single-
+    answer form picked one, which yielded nothing. Milvus's README links point
+    at `milvus.io/docs/...` pages, including a Tutorials Overview, none of which
+    a repo-shaped answer can express.
+
+    Two things follow, and both were Dan's framing:
+
+    * **Documentation is plural.** `DocLocations` has always been "a bag of
+      findings, not a verdict" (§5.5a(c) point 4); it was `find_artifact` that
+      collapsed it. This restores the bag for one artifact kind.
+    * **A source is often not a repository.** A published documentation site is
+      a first-class location, not a fallback for when no repo was found. It is
+      still returned as `doc-site` and still unreadable from here — but recorded
+      as a source rather than an absence, which is what a recommendation to
+      ingest it can be attached to.
+
+    Ordered cheapest-and-most-specific first, same as `find_artifact`, so
+    `find_artifacts(...)[0]` is that function's answer. Never empty: a genuine
+    absence is a single `not-found`.
+    """
+    gh = client or _make_client()
+    keywords = _ARTIFACT_KEYWORDS.get(kind, [kind.lower()])
+    if locations is None:
+        locations = resolve_doc_locations(owner_repo, client=gh)
+
+    repo = _get_repo(gh, owner_repo, locations.notes)
+    if repo is None:
+        return [ArtifactResult(kind=kind, outcome="not-found", evidence="",
+                               note="repo unreachable; " + "; ".join(locations.notes))]
+
+    out: list[ArtifactResult] = []
+    seen: set = set()
+
+    def _add(result: ArtifactResult) -> None:
+        key = (result.outcome, result.evidence)
+        if result.evidence and key not in seen:
+            seen.add(key)
+            out.append(result)
+
+    for d in locations.real_doc_dirs:
+        match = _find_in_dir(repo, d.path, keywords, locations.notes)
+        if match:
+            _add(ArtifactResult(kind=kind, outcome="in-repo", evidence=match,
+                                date=_dir_last_commit_date(repo, match, locations.notes)))
+
+    root_match = _find_root(repo, keywords, locations.notes)
+    if root_match:
+        _add(ArtifactResult(kind=kind, outcome="in-repo", evidence=root_match,
+                            date=_dir_last_commit_date(repo, root_match, locations.notes)))
+
+    # EVERY sibling, not just the first — three of them on OpenLineage, and
+    # nothing said the first was the one holding the architecture.
+    for sib in locations.sibling_repos:
+        sib_repo, sib_match = _search_sibling(gh, sib, keywords, locations.notes)
+        if sib_match:
+            _add(ArtifactResult(
+                kind=kind, outcome="sibling-repo",
+                evidence=f"{sib.full_name}:{sib_match}",
+                date=_dir_last_commit_date(sib_repo, sib_match, locations.notes)))
+        elif sib_repo is not None:
+            _add(ArtifactResult(
+                kind=kind, outcome="sibling-repo", evidence=sib.full_name,
+                date=sib.pushed_at,
+                note="specific artifact path not located; repo matches a "
+                     "documentation-repo naming convention"))
+
+    if locations.homepage:
+        _add(ArtifactResult(kind=kind, outcome="doc-site", evidence=locations.homepage,
+                            note="declared homepage; existence of a page for this "
+                                 "kind not verified"))
+
+    # Off-site links the README itself offers. Frequently the only pointer at a
+    # documentation site that is not a repository at all.
+    for link in locations.readme_links:
+        _add(ArtifactResult(kind=kind, outcome="doc-site", evidence=link.url,
+                            note=f"linked from README as '{link.text[:60]}'"))
+
+    if not out:
+        out.append(ArtifactResult(kind=kind, outcome="not-found", evidence=""))
+    return out
+
+
 def find_artifact(owner_repo: str, kind: str, client: Github | None = None,
                   locations: DocLocations | None = None) -> ArtifactResult:
     """Resolve one kind of documentation artifact to a LOCATION.
@@ -516,13 +646,7 @@ def find_artifact(owner_repo: str, kind: str, client: Github | None = None,
     # 3. Sibling doc repos.
     if locations.sibling_repos:
         best = locations.sibling_repos[0]
-        try:
-            sib_repo = gh.get_repo(best.full_name)
-            sib_match = _find_root(sib_repo, keywords, locations.notes)
-        except Exception as exc:
-            _degraded(locations.notes, exc, f"could not search sibling '{best.full_name}'")
-            sib_match = None
-
+        sib_repo, sib_match = _search_sibling(gh, best, keywords, locations.notes)
         if sib_match:
             sib_date = _dir_last_commit_date(sib_repo, sib_match, locations.notes)
             return ArtifactResult(

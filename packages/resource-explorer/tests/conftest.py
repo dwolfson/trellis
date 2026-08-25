@@ -19,7 +19,59 @@ import os
 
 import pytest
 
-_TEST_SCHEMA = "resource_explorer_test"
+# Per-process, NOT a single shared name. The fixture below drops this schema
+# CASCADE at session start and teardown, so a fixed name meant any two
+# overlapping pytest runs destroyed each other's data mid-test — one session's
+# startup DROP wiping the other's tables while it was still using them.
+#
+# That produced a flake with no stable signature: whichever test happened to be
+# touching the schema when the DROP landed failed, so it looked like a different
+# problem each time (test_alias_and_group_on_conflict_paths, then
+# test_ingest_then_query..., then a fixture ERROR, then
+# test_metrics_collector_portability) and passed on every re-run in isolation.
+# Reproduced deliberately 2026-08-24 by starting a second run 45s into a full
+# suite. CI runs one session so it never saw this; it is a local-development
+# failure only, which is the kind that gets dismissed as noise.
+_TEST_SCHEMA_PREFIX = "resource_explorer_test"
+_TEST_SCHEMA = f"{_TEST_SCHEMA_PREFIX}_{os.getpid()}"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError, PermissionError) as exc:
+        return isinstance(exc, PermissionError)  # exists, not ours
+    return True
+
+
+def _sweep_orphan_test_schemas(cur) -> list[str]:
+    """Drop `<prefix>_<pid>` schemas whose process is gone.
+
+    Per-process names fix the collision but leak on a hard crash, since the
+    teardown that would drop them never runs. Swept at session start rather
+    than accumulating — and only for dead PIDs, so a concurrent run is never
+    the thing being cleaned up. The bare legacy name is included: it predates
+    the suffix and cannot belong to a live session.
+    """
+    cur.execute(
+        "SELECT schema_name FROM information_schema.schemata "
+        "WHERE schema_name = %s OR schema_name LIKE %s",
+        (_TEST_SCHEMA_PREFIX, f"{_TEST_SCHEMA_PREFIX}\_%"),
+    )
+    dropped = []
+    for (name,) in list(cur.fetchall()):
+        if name == _TEST_SCHEMA:
+            continue
+        suffix = name[len(_TEST_SCHEMA_PREFIX) + 1:]
+        if name != _TEST_SCHEMA_PREFIX and not suffix.isdigit():
+            continue    # not a session schema at all — `..._backup` is someone's
+                        # deliberate copy, and destroying data this fixture does
+                        # not own is precisely the bug being fixed here
+        if suffix.isdigit() and _pid_alive(int(suffix)):
+            continue                       # a live concurrent session — leave it
+        cur.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+        dropped.append(name)
+    return dropped
 
 
 def _pgvector_reachable() -> bool:
@@ -121,6 +173,10 @@ def pg_test_schema():
     )
     conn.autocommit = True
     with conn.cursor() as cur:
+        orphans = _sweep_orphan_test_schemas(cur)
+        if orphans:
+            print(f"\n[conftest] swept {len(orphans)} orphaned test schema(s): "
+                  f"{', '.join(orphans)}")
         cur.execute(f'DROP SCHEMA IF EXISTS "{_TEST_SCHEMA}" CASCADE')
         cur.execute(f'CREATE SCHEMA "{_TEST_SCHEMA}"')
     conn.close()

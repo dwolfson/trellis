@@ -3397,3 +3397,501 @@ catalog, assert some UI call site reaches it.** That is a test over a static map
 sites, not a browser test. Not written here — `web/` belongs to the presentation session and the
 fix is theirs — but recorded so the next person asking "why did nothing happen" starts from the
 catalog rather than from the surveyor.
+
+---
+
+**99. The distiller ported cleanly and does not transfer. 3303→358 in the spike; 216→154 on
+Milvus, 311→311 on genaicomps.**
+
+Finding 97's pilot established that precision, not coverage, is what blocks architecture recovery:
+Milvus proposes ~216 candidates against a published ground truth of 8. The distiller
+(`scripts/arch-spike/distill.py`, findings 76–80) measured 3303 → 358 on Kubernetes while holding
+6/6 ground truth, so porting it into the product path was the obvious move. Ported, measured
+in-process:
+
+```
+repo                    in  support  whole  refine   kept   cut   ground truth
+milvus                 216       19      0      43    154   29%   8
+docling_java             8        1      0       0      7   12%
+egeria_workspaces_git   74        0      0       3     71    4%   27
+docling_parse            1        0      1       0      0  100%
+genaicomps             311        0      0       0    311    0%
+```
+
+**Milvus is still 19× its ground truth after distillation, and `genaicomps` is untouched.** The
+port is faithful — the filters are the spike's, regression-tested against the same claims — so this
+is not a porting bug. The rules do not generalise off the corpus they were built on.
+
+**Why, and it is visible in the by-perspective split.** `genaicomps` keeps **289 deployment**
+candidates out of 311; Milvus keeps **120 logical**. The three filters all reason about *path
+containment*: support directories, whole-repo roots, and children of classified parents. That is a
+good model for logical/physical candidates derived from a directory tree. **Deployment candidates
+are compose services** — they are siblings by construction, none contains another, and none lives
+under `tests/`. Every filter abstains, and abstaining reads as "nothing to remove". The spike's
+corpus was Go and Python monorepos where the logical perspective dominated; `genaicomps` is 289
+compose services, a shape the spike never measured.
+
+**A precision rule that can empty the set is a recall bug wearing a precision rule's clothes.**
+`docling-parse` yields exactly one candidate, covering the whole repo. `_claims_whole_repo` dropped
+it and left **zero components** — a correct single-component answer turned into an empty result.
+In the spike this branch never misfired because a whole-repo claim always sat among thousands of
+siblings, so there was always something else to keep. Fixed by applying the filter only when
+something survives it, and the sole-candidate case is now recorded in the stats rather than
+silently spared. Two tests pin it, including the general invariant.
+
+**What this says about the next step.** Deterministic filtering is not going to close a 19× gap on
+its own, and the honest reading of the spike's own numbers agrees: Kubernetes went 3303 → 358
+deterministically, then **358 → 93 only with the LLM adjudicator**, which is where 6/6 was held.
+Distillation was never the whole answer there either; it was the cheap tier that made adjudication
+affordable. Porting it was still right — it removes 29% of Milvus's candidates for no marginal cost
+and it is regression-testable where a prompt is not — but the entry claiming precision is now
+solved would be false. **The adjudicator is the unported half, and it is the half that produced the
+result.**
+
+Recorded so the next person does not re-port the distiller expecting the spike's numbers, or
+conclude from `genaicomps`' 0% that the port is broken.
+
+---
+
+**100. Milvus is gRPC-first and we could not see it. `.proto`/GraphQL/Thrift recognition, and
+counting without listing.**
+
+Dan's framing (2026-08-24) corrected a model I had wrong: *"if we want to see if a repo is
+something we can use during runtime, we need to know how to interface to it — what kind of API it
+has, maybe language bindings, the number of commands. We don't need the names of every request and
+their payloads/signatures — until we want to actually try to use it."*
+
+**A coarse answer often requires a deeper analysis that is then summarised.** I had been treating
+finding 99's 154-components-for-Milvus as a precision failure. It is better read as a missing
+*summarisation level*: the detail may be needed to compute the answer; it should not *be* the
+answer.
+
+`interfaces.propose()` matched OpenAPI by **filename** from a six-entry tuple and never opened the
+document, and recognised no IDL at all. Measured on Milvus before the change: exposed ports
+recorded, **interface entirely invisible**. After:
+
+```
+milvus   31 ports   gRPC 10 documents   18 services   296 rpcs
+         proxy.proto 18 · root_coord 76 · data_coord 87 · query_coord 74 · streaming 14 · ...
+```
+
+Three facts computed by opening ten documents and discarding them. No signature is retained, and a
+test asserts it — an operation name leaking into a port would mean stage-two work done at
+stage-one cost.
+
+**The vocabulary check came back positive, and my first reading of it was wrong.** I recorded
+0735's `SolutionPort` as having no home for a count — it carries exactly one attribute,
+`direction` — and called that a second negative result after `ResourceUse`. Dan pointed out the
+obvious: `SolutionPort` is a `Referenceable` (§3.3b, settled by `Confidence` being defined against
+`Referenceable` and applying to `SolutionPort` directly), so it carries `additionalProperties` as
+`map<string,string>` — which §6.4 *already* names "the documented extension point ... the interim
+carrier for anything not yet typed". The count rides there as `operationCount`, stringified because
+the map is string-valued, and promoting it to a real attribute later is an upstream type change
+rather than a migration of ours. **Reading a type's own attribute list and stopping is the same
+mistake as reading `ResourceUse`'s names instead of its descriptions** — the answer was one
+inheritance edge away.
+
+Deliberately not `SolutionPortDelegation`, which maps a parent component's ports to its decomposed
+children's. That models operations-as-child-ports well and is very likely right for **stage two**;
+here it would create one entity per operation, which is the listing the coarse question excludes.
+
+**A test caught a limitation the corpus would have hidden.** The rpc regex was line-anchored, so
+`service S { rpc A (Q) returns (R); }` on one line reported 1 service and **0 rpcs** — "an
+interface with no operations", indistinguishable from a real zero. Milvus's files are all
+multi-line, so a corpus run would have looked perfect. De-anchored to word boundaries.
+
+**Honest limitation, recorded not fixed:** the 296 conflates the public API with internal
+coordinator RPCs. For runtime suitability the number a reader wants is `proxy.proto`'s 18. Nothing
+currently distinguishes a client-facing interface from an internal one, and inferring it from a
+filename would be exactly the convention-as-evidence failure §5.5a(b) forbids.
+
+---
+
+**101. Documentation is the lens, and architecture recovery has never looked through it.**
+
+Dan, closing finding 100: *"you need to look at code through the lens of the documentation — and
+good documentation will guide you towards what code to look at for which purpose. Just looking at
+the code doesn't provide enough context to easily distinguish between internal and external
+communications."*
+
+The Milvus limitation I had recorded as unfixable is the proof. We now report **296 rpcs across 18
+services**; the number a reader wants for runtime suitability is `proxy.proto`'s **18**, because
+`proxy` is the client-facing service and `root_coord`/`data_coord`/`query_coord` are internal.
+Nothing in the code says so. Inferring it from a filename would be convention-as-evidence
+(§5.5a(b), finding 66). **Milvus's own documentation says so plainly**, and the same document is
+the source of the ground truth this spike scores against — "five core components and three
+third-party dependencies", the authors' own words, which is how `milvus.md` was written *by hand*.
+
+**So the system has never done automatically what we did manually to build every fixture.**
+
+And the capability is already here, in the same package:
+
+```
+github/doc_locations.py   find_artifact(owner_repo, "architecture") -> in-repo | sibling-repo | doc-site | not-found
+                          _ARTIFACT_PATTERNS["architecture"] = [architecture, design-docs, design_docs, solution-blueprint]
+surveyors/arch_recovery/  grep for doc_locations / find_artifact  ->  NO MATCHES
+```
+
+Architecture recovery reads manifests, deployment artifacts, code markers, imports and co-change.
+It does not read the architecture document, on any of the 46 repos the gate approves. Measured
+corpus context makes that worse rather than better: **31% of located artifacts are not in the repo
+at all** (43 of 140 across 25 of 60 repos), so a code-only reader is structurally blind to a third
+of what exists, and `doc_locations` is the thing that already solves that.
+
+**Why this outranks the remaining precision work.** The unported adjudicator buys precision by
+asking a model to judge candidates. The documentation states the answer. Finding 92 recorded that
+every owner-published fixture is Go because in the JVM world the published architecture and the
+code diverge — but where a doc exists and is current (findings 65-68's version-correlation
+discipline applies), it is the highest-provenance evidence available and it is free. `provenance:
+owner-published` already exists as a class in the fixture format; nothing in the running system
+can produce it.
+
+**The shape of the work, not yet built:** resolve `architecture` via `find_artifact` during
+recovery, and use it as a *lens* rather than as an oracle — to rank and label what the detectors
+already propose (which of these 216 candidates does the document name? which interface does it call
+the client API?), never to replace them. A document that disagrees with the code is a finding in
+its own right (findings 65-67: correlate doc version against code version), not a silent override.
+
+Recorded here rather than built: it is a design change to the detect step's inputs and it needs its
+own entry, cost estimate, and a decision about staleness handling.
+
+**MEASURED 2026-08-24, after the presentation session objected that "documentation states the
+answer" was n=1 — and the objection was right.** Milvus is the only repo this was argued from, and
+worse, its ground-truth fixture was transcribed *from that same document*, so the doc agreeing with
+the fixture is not independent confirmation. Measured across all 46 gate-approved repos, using the
+architecture-artifact resolution already persisted by `repo_classification`:
+
+```
+gate=run repos                             46
+  architecture doc located                 13     in-repo 4 · sibling-repo 9
+  not-found                                 2
+  never looked — not in the role's set     31
+```
+
+Three things fall out, and they pull in different directions:
+
+- **The claim is not universal.** At most 13 of 46 today. "Documentation states the answer" is a
+  premise that holds for a minority of the corpus, and designing as though it held generally would
+  be the same error as assuming Perspective could drive dispatch.
+- **But 9 of the 13 are `sibling-repo`** — the architecture document lives in a *different
+  repository* from the code. A code-only reader cannot reach those by any amount of better parsing;
+  it is not a precision problem, it is a wrong-corpus problem. This is the strongest form of the
+  argument and it does not depend on Milvus at all.
+- **The 31 are "never looked", not "no doc".** `EXPECTED` lists `architecture` only for
+  `application` and `middleware`; `library`, `tool`, `samples`, `tutorial` and `documentation` do
+  not ask for it. That is defensible for the *expectation report* — a library is not deficient for
+  lacking an architecture doc — but it means the 31 are an unmeasured population, not a measured
+  absence. Reusing an expectation set built to judge completeness as if it were a survey of
+  availability is the one-identifier-two-purposes shape again.
+
+So the honest scope: documentation-as-lens is worth building for the ~13 repos where a document is
+already located, the sibling-repo majority is the case that justifies it, and the 31 need a
+separate cheap probe before anyone claims a corpus-wide number.
+
+---
+
+**102. The documentation lens works — and the sibling-repo case I argued was its strongest
+justification is where it performs worst.**
+
+Finding 101 established that architecture recovery never reads the architecture document, and
+argued the sibling-repo majority (9 of 13 located docs live in a *different* repository) was "the
+strongest form of the argument" because no amount of better parsing reaches them. Built it,
+measured it across every gate-approved repo with both a located document and recovered components:
+
+```
+repo                    doc location   comps  documented
+milvus                  in-repo          206          15
+egeria_workspaces_git   in-repo           73          12
+amundsen                in-repo           43           4
+docling_java            sibling-repo       8           2
+genaicomps              sibling-repo     312           2
+docling_eval            sibling-repo      34           1
+ryoma                   in-repo           31           0
+marquez / openlineage / workshops / trellis / egeria_python_git / docling_parse
+                        sibling-repo   11-124           0
+sqlglot / unitycatalog  doc-site       11, 16           0   (located, not readable)
+
+at least one match: 6 of 15
+```
+
+**in-repo: 3 of 4 work, and work well. sibling-repo: 3 of 9, all weakly. My reasoning was
+backwards.** A sibling *documentation repository* is a whole website; `doc_locations` legitimately
+resolves it to a generic pointer at the repo rather than to an architecture page, so what gets read
+is navigation and prose. `openlineage` yielded 2 candidate terms, `marquez` 5, `trellis` 0. The
+in-repo case wins because the located artifact is an actual design-docs directory.
+
+**Where it works, it is the best result this project has produced.** Milvus: 206 candidates → **15
+documented**, and the 15 are the architecture — `proxy`, `rootcoord`, `datacoord`, `querycoord`,
+`indexcoord`, `datanode`, `querynode`, `indexnode`, plus `pulsar` and the shared infrastructure
+(`msgstream`, `tso`, `flowgraph`, `storage`). Against the authors' own "five core components and
+three third-party dependencies", the lens recovered the real partition out of 206 by reading what
+they wrote. Distillation managed 216 → 154 on the same repo; the summariser reported 24 runnable
+units. **The document did in one pass what two deterministic tiers could not.**
+
+**It stays a lens.** It adds no component, removes none, assigns no type, and carries no score — a
+test asserts `DocLens` has no field whose name contains type/confidence/score/rank/grade. A name
+the document uses that nothing proposed is reported as `undetected`, a disagreement, never adopted.
+
+**Three restraints that cost real work and are worth keeping:**
+
+* **Bounded reads, reported.** Milvus's `docs/design-docs` holds 78 markdown files one level down,
+  each an API call. `MAX_DOC_FILES = 25`, overview-shaped filenames first, and the note says what
+  was dropped — because an unread document is not a silent document.
+* **Located ≠ consulted.** `doc-site` outcomes are located and unreadable from here; `consulted` is
+  a separate property from having an outcome. Collapsing them would report "the docs say nothing"
+  for a repo whose docs were never opened.
+* **The date travels.** `OpenLineage`'s architecture document is dated **2023-11-03** — measured.
+  Findings 65-68's version-correlation discipline is not hypothetical here.
+
+**A bug the tests caught that the corpus would have hidden:** `_STOPWORDS` compared raw strings
+against normalised terms, so every multi-word entry in it ("table of contents", "getting started",
+"see also") silently did nothing. The list looked right and half of it was inert.
+
+**`undetected` is not yet usable as a finding.** On Milvus it is 506 terms — section headings from
+25 design documents, not component names. It is meaningful only when the located artifact is an
+architecture *overview* rather than a corpus of design docs, and nothing currently distinguishes
+those. Reported with that caveat rather than presented as a list of things we failed to detect.
+
+---
+
+**103. Wiring the lens found a storage trap: annotating another step's findings under the same kind
+makes them invisible.**
+
+`repo_arch_lens` is now a step, between `repo_arch_coupling` and `repo_arch_summary`. Its own step
+rather than part of detect, for three reasons — its cost is `api` where detect is `download` and
+summary is `none`; the document changes on its own cadence and often lives in another repository;
+and, decisively, **a failed document fetch inside detect would leave detect succeeding with the
+labels quietly absent**, whereas as a step it carries its own reader state and the 33 of 46
+gate-approved repos with no architecture document get an explicit answer instead of a non-event.
+
+**The trap.** The first version wrote its labels back into `architecture_recovery`, on the
+reasonable instinct that a label belongs beside the component it describes. Then:
+
+```
+before wiring   milvus: 218 candidate components, 31 third-party
+after wiring    milvus: 203 candidate components, 22 third-party
+                        ...exactly the 15 scopes the lens had just labelled
+```
+
+`upsert_finding` **appends**, but `query_findings` returns only the rows at `MAX(surveyed_at)` for a
+`(slug, kind, scope)`. Writing a label with a newer timestamp therefore made that scope's
+`component` finding unreadable — `client/index` returned `documented_by` and nothing else. **No row
+was lost; they stopped being visible.** A backup would not have shown a problem, and a reader would
+simply have seen a smaller architecture.
+
+So a step that annotates another step's output must write under **its own kind**, scope-keyed —
+`architecture_doc_lens`. The same shape as ports living in `architecture_interfaces`, which the
+summariser had already tripped over from the other direction (finding 100: reading one kind when
+the subject spans two). **Append-only storage with latest-run reads has both failure modes, and
+neither raises.**
+
+Caught only because the numbers moved by exactly the number of labels written. That is worth
+naming: the check that found it was not a test but a **conservation expectation** — annotating
+should not change a count it does not own.
+
+**Three smaller things the wiring surfaced, all the same family:**
+
+* `_STOPWORDS` compared raw strings to normalised terms, so every multi-word entry ("table of
+  contents", "getting started") was inert. The list looked correct and half of it did nothing.
+* A test fake used `terms or ["proxy"]`, turning an explicit `terms=[]` back into a populated list —
+  so the doc-site case silently asserted the opposite of what it claimed. Empty-versus-absent, in
+  four characters of test helper.
+* A test patched `AL.ad.apply` by bare assignment rather than `monkeypatch`, and leaked into the
+  next test. Same shared-state shape as the conftest schema collision, one layer up.
+
+**Recorded, not resolved:** `repo_arch_lens` is the **third** exception to "discovery is the
+zero-fetch derivation tier", after `architecture_recovery` and `repo_classification`. Three
+exceptions is where that description stops being a rule and becomes an intention. Flagged in
+`analysis_catalog.yaml`, in the registry entry, and in the test that enumerates the exceptions —
+the next addition should be a decision about the rule, not a fourth entry.
+
+---
+
+**104. The lens across the corpus: 1108 candidates → 36 documented, and where a document lives
+predicts almost everything.**
+
+`repo_arch_lens` run as a registered step over every repo with recovered components (16), labels
+persisted:
+
+```
+repo                     comps  labelled  doc location
+milvus                     206        15  in-repo
+egeria_workspaces_git       73        12  in-repo
+amundsen                    43         4  in-repo
+docling_java                 8         2  sibling-repo
+genaicomps                 312         2  sibling-repo
+docling_eval                34         1  sibling-repo
+marquez / monocle / openlineage / workshops / trellis / ryoma /
+egeria_python_git / docling_parse / sqlglot / unitycatalog
+                        1-124         0  sibling-repo, doc-site, or none
+
+TOTAL                     1108        36        labelled: 6 of 16
+```
+
+**Every in-repo document fired, and fired well: 3 for 3, 31 of the 36 labels.** Every sibling-repo
+document that fired did so weakly (2, 2, 1) and six produced nothing. Doc-site produced nothing by
+construction — located, unreadable from here.
+
+This confirms finding 102's correction at corpus scale, and the corrected version is worth stating
+plainly because the original claim is the intuitive one: **a document in a sibling repository is
+easy to *locate* and hard to *use*.** `doc_locations` resolves a sibling documentation repo to a
+pointer at the repo, because that is the honest answer to "where are the docs" — but a whole
+documentation website is not an architecture description, so what gets read is navigation. The
+in-repo case wins because `docs/design-docs` is the thing itself.
+
+**The ceiling is recovery coverage, not the lens.** 16 repos have components at all, against 46 the
+gate approves. The lens cannot label what was never recovered, so its reach is bounded by a
+different subsystem's coverage — the honest reading of "1108 → 36" is that it is a strong result on
+a third of the corpus, not a corpus-wide one.
+
+**What would raise it, in order of expected value:**
+
+1. **Resolve to an architecture *page* inside a sibling docs repo**, not to the repo. Nine of
+   thirteen located documents are sibling-repo and six of those yielded nothing; this is where the
+   unclaimed value is, and it is a `doc_locations` change rather than a lens change.
+2. **Run detect on the 30 gate-approved repos that have no components yet** — bounded and known at
+   roughly 28s each, no clone.
+3. Doc-site fetching. Last: it needs an HTTP fetcher for arbitrary sites, a new cost tier, and
+   `doc_locations` already warns that a homepage field is not proof of a page.
+
+---
+
+**105. Three wrong published numbers from the same query mistake, the third while checking the
+second.**
+
+`query_findings(slug, kind)` defaults to `scope_locator=""` — whole-resource — and a step may
+persist **metrics rather than findings**. So a bare findings query answers *"nothing at
+whole-resource scope in the findings table"*. It does not answer *"this never ran"*, and reading it
+as though it did has now produced three wrong numbers in two days:
+
+```
+architecture recovery   published "3 of 46"    actually 16   (scope-keyed; finding 97's entry)
+website_ingestion       published "0 of 60"    actually  6   (writes metrics, not findings)
+architecture_doc_lens   reported  "0"          actually 36   (scope-keyed)
+```
+
+The third is the instructive one. It came from the verification script written to check the
+second — after the presentation session correctly pointed out that a findings-only query cannot
+establish absence. The correction was understood, and the very next query repeated the other half
+of the same mistake.
+
+**A count is not an absence unless the query covers every shape the answer could take.** Findings
+and metrics are two tables; whole-resource and scope-keyed are two addresses. Four combinations, and
+a default query reaches one of them.
+
+**The `website_ingestion` defect underneath was larger than the miscount**, and belongs to the
+presentation session: its reader returned `chunks/pages_fetched/pages_found/pages_failed` as 0 when
+nothing was persisted, and `metrics` render mode lays every key out as a labelled row — so 54 cards
+read "we scanned the site and found nothing" about a site nobody had looked at. `NEVER_RUN` already
+described the right behaviour and nothing emitted it. They wrote the guard for the *class* rather
+than the instance and it immediately found a second case in `rag_ingestion`.
+
+Their framing is worth keeping: this is the exact twin of the render-mode fix made the same morning,
+where a card said "no results" while holding real data. **Same seam, opposite directions, one day
+apart — so the reader/render boundary is where this class lives, not any individual analysis.**
+
+---
+
+**106. Documentation is plural, and one location was the wrong model. 36 → 49 documented, and the
+repo that motivated the work went 0 → 5.**
+
+Dan, on being told the plan was "resolve sibling-repo to a page": *"there is an assumption that may
+be worth considering — you are assuming that there can only be a single doc page. In practice that
+may not be true... perhaps record doc sites as we find them rather than assume there can only be
+one?"* And then: *"consider not just repos that call themselves documentation but also tutorials
+etc"*, and *"they may not be repos — often just web sites."*
+
+All three were right, and the data was already there. `DocLocations` has always been *"a bag of
+findings, not a verdict"* (§5.5a(c) point 4) — it holds in-repo dirs, a homepage, sibling repos AND
+README links. **`find_artifact` was the thing collapsing it to one**, first match wins.
+
+```
+                        sources found        before -> after
+OpenLineage/OpenLineage   1  ->   6     labelled  0 -> 5
+milvus-io/milvus          1  ->  12     labelled 15 -> 22
+monocle                                 labelled  0 -> 1
+
+corpus                                  36 -> 49 documented, 6 -> 8 repos of 16
+```
+
+Three changes, each traceable to one of Dan's points:
+
+* **`find_artifacts` (plural)** returns every location, ordered as before, so
+  `find_artifacts(...)[0]` is exactly what `find_artifact` returned and no caller changed. The lens
+  now reads *every readable source* rather than the first — "most specific by resolution order"
+  says nothing about which document describes the architecture, and OpenLineage's first sibling of
+  five yielded nothing while its siblings collectively yielded 5.
+* **Sibling repos are searched properly.** The old code tried `sibling_repos[0]` only, and only its
+  ROOT — which is why every sibling answer in the corpus was a bare pointer at a repo. A
+  documentation website keeps pages under `docs/` or `content/`, so the one place we looked was the
+  one place they are not. Now: every sibling, root then its own doc dirs.
+* **Tutorials and workshops count.** `_SIBLING_NAME_PATTERNS` went from 6 entries to 19, adding
+  tutorial/workshop/examples/learn shapes. It immediately found `OpenLineage/workshops`,
+  `milvus-io/milvus-tutorials` and `milvus-io/milvus-workshop`. A name that holds nothing costs one
+  shallow search; a name never tried costs the document.
+
+**And a documentation site is now a first-class source rather than a fallback.** A `doc-site` result
+— a declared homepage, or an off-site link the README itself offers, like Milvus's
+`milvus.io/docs/tutorials-overview.md` — is recorded in `DocLens.sources` even though it cannot be
+read from here. That is the difference between "no documentation" and "documentation we have not
+ingested", and it is precisely what the doc-site ingestion recommendation attaches to.
+
+`sources` and `read_sources` are kept separate for the same reason `consulted` exists: **located and
+consulted are different states**, and now that there are a dozen locations the distinction carries
+more weight, not less.
+
+**What did not move, and is the honest remainder.** `marquez`, `trellis`, `workshops`,
+`ryoma`, `egeria_python_git`, `docling_parse` still yield nothing, and `sqlglot`/`unitycatalog`
+remain site-only. Reading more sources raised the ceiling; it did not change that a documentation
+website read as markdown is mostly navigation. The next real gain is ingesting sites, not resolving
+harder.
+
+---
+
+**107. The ingest offer needs four states, not a boolean — and two of them are the system being
+right already.**
+
+`repo_arch_lens` now emits a `RequestForActionAnnotation` when it locates documentation sites it
+cannot read: *"ingesting would make them answerable"*, pointing at `repo_website_ingestion`. It is
+the most actionable negative result the chain produces — we know a document exists, we know its
+address, and we know we cannot read it from here.
+
+**The naive version would have been wrong on a third of the cases it fires for.** "Has this site
+been ingested?" is not a yes/no:
+
+```
+ingested        2 of 60    sqlglot's site is 97 chunks in web_docs_sqlglot_com
+declined        4 of 60    self_published (3) / code_host (1)
+not-attempted  54 of 60
+attempted       0          ran and got nothing — real, just unobserved so far
+```
+
+`declined` is the state worth naming. `repo_website_ingestion` refuses on purpose when a site is
+`self_published` — the repo *builds* it, so its source is already ingested in a better form — and
+when the "site" is only a `code_host` URL. Offering to ingest either would be **re-opening a
+decision the system already made correctly**, which is worse than staying quiet: it teaches a reader
+that the recommendations have not been thought through.
+
+And `ingested` would have been the embarrassing one. `sqlglot` is one of only two repos in the
+corpus whose architecture sources are *all* unreadable sites — precisely the case the offer is for
+— and its site was ingested days ago. The naive rule would have fired hardest exactly where it was
+most wrong.
+
+**Read from metrics, not findings**, and a test asserts `ingestion_status` never calls
+`query_findings`. `repo_website_ingestion` writes metrics and no findings at all, so a findings
+query reports nothing for a step that has run six times. That is finding 105 applied rather than
+re-learned — the presentation session caught my "0 of 60" claim, and this is the first code written
+after it that had to get the same distinction right.
+
+**It is an offer, not a finding, and the prose says so:** *"nothing is wrong with the repository."*
+A project that publishes its documentation on a website has done nothing wrong, and an RFA that
+reads as a defect would make the funnel's most useful signal feel like criticism.
+
+Verified live: `unitycatalog` gets the offer, `sqlglot` gets none.
+
+**What this does not do, deliberately.** It does not ask. An interactive session may *render* it as
+a question at the point the absence appears — the presentation session's better formulation is to
+put the ask where the absence already is, in the empty state, rather than in a prompt. A scheduled
+survey has nobody to ask and must not block. Both read the same annotation; only the rendering
+differs. That constraint is in the Backlog under "Doc-site located but unreadable" and applies to
+every future step that would benefit from a human answer.

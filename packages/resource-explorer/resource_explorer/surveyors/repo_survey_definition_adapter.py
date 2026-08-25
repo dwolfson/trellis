@@ -43,6 +43,7 @@ from typing import Callable
 from trellis_microflow import ResourceProvider
 
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
+from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.result_status import attach as attach_status
 from resource_explorer.surveyors.result_status import status_from_detail as result_status_from_detail
 from resource_explorer.surveyors.arch_recovery import projection as arch_projection
@@ -52,6 +53,8 @@ from resource_explorer.surveyors.sub_surveyors import (
     ApiStructureSurveyor,
     ArchCouplingSurveyor,
     ArchDetectSurveyor,
+    ArchLensSurveyor,
+    ArchSummarySurveyor,
     CiQualitySurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
@@ -629,6 +632,56 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         fetch_cost="download",
         compute_cost="medium",
     ),
+    "repo_arch_lens": StepInfo(
+        "repo_arch_lens", ArchLensSurveyor,
+        "Labels recovered components against the project's own architecture "
+        "document, wherever it lives — in-repo, a sibling repository, or a "
+        "documentation site. A LENS: it adds no component, removes none and "
+        "assigns no type. Milvus goes from 206 candidates to 15 the authors "
+        "actually name (finding 102).",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # Between coupling and summary: it needs components to label, and the
+        # summary is worth more once it can say "documented" instead of
+        # "candidate". Registry order generates the chain — the ordering defect
+        # caught by the reconciler when repo_arch_summary was first placed
+        # before coupling is the reason that is spelled out here.
+        requires_resources={},
+        # NOT zero-fetch, and that is the third exception in a tier described as
+        # zero-fetch by construction (see analysis_catalog.yaml's note on
+        # architecture_recovery, and repo_classification's). Up to
+        # MAX_DOC_FILES GitHub calls, often against a DIFFERENT repository.
+        # Recorded rather than quietly added: three exceptions is where
+        # "discovery is zero-fetch" stops being a rule and becomes a slogan.
+        fetch_cost="api",
+        compute_cost="low",
+    ),
+    "repo_arch_summary": StepInfo(
+        "repo_arch_summary", ArchSummarySurveyor,
+        "Collapses architecture-recovery findings to the depth the question "
+        "asked for — the summarising half nothing owned. Milvus recovers 218 "
+        "candidate components where its own authors describe eight; a "
+        "suitability answer is 'serves gRPC (297 operations), 24 runnable "
+        "units, 31 third-party'.",
+        ["ResourceMeasureAnnotation"],
+        # ORDER MATTERS, and registry order is what generates the chain. Placed
+        # after repo_arch_coupling deliberately: a summary that runs before a
+        # step it summarises silently reports a partial answer. First placed
+        # BEFORE coupling, and the reconciler's dry run caught it as a stale
+        # detect->coupling edge in RepoFullSurvey — the chain would have been
+        # detect -> summary -> coupling, summarising only half the components.
+        accepts_surveyed_at=True,
+        # The first step whose input is another step's OUTPUT rather than an
+        # external resource. Egeria models that as action targets on the
+        # GovernanceActionExecutor (0462); `requires_resources` is RE's
+        # mechanism for SHARING an expensive external resource across steps in
+        # one run and is deliberately empty here — a summary needs no zipball
+        # and no clone, which puts it at Discovery tier by rule 17's own test
+        # and makes it cheap enough to recompute whenever its inputs change.
+        requires_resources={},
+        fetch_cost="none",
+        compute_cost="low",
+    ),
     "repo_sub_resource_survey": StepInfo(
         "repo_sub_resource_survey", SubResourceSurveyor,
         "Surveys file/folder characteristics to recommend which sub-resources "
@@ -1179,6 +1232,13 @@ def _rag_ingestion_results(registry, slug: str) -> dict:
     time — the number a user wants is "what does my chat index contain as of
     the last time anything checked", not a per-request count query."""
     m = registry.query_metrics(slug, "rag_ingestion")
+    if not m:
+        # Same false zero the website_ingestion reader had: with nothing
+        # persisted this returned total_chunks=0 and collections=0, which the
+        # "metrics" mode renders as measured values — "your chat index is
+        # empty", when the truth is that nothing has ever looked.
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "This analysis has not run for this repo yet."}}
     return {
         "total_chunks": m.get("total_chunks", 0),
         "collections": m.get("collections", 0),
@@ -1205,6 +1265,20 @@ def _website_ingestion_results(registry, slug: str) -> dict:
     card reads the reason, not just the count.
     """
     m = registry.query_metrics(slug, "website_ingestion")
+    if not m:
+        # NEVER RUN is not the same as ran-and-found-nothing, and this reader
+        # used to erase the difference: with no persisted run it still returned
+        # chunks/pages_fetched/pages_found/pages_failed as 0, which the "metrics"
+        # mode lays out as four rows of zeros — indistinguishable from a site
+        # that was scanned and had nothing. Measured 2026-08-25: this step has
+        # never run on ANY of the 60 repos, so every card in the corpus was
+        # showing that false zero.
+        #
+        # Returning nothing lets _renderEmptyResultState say "No results yet —
+        # click Run to scan", which result_status documents as exactly the
+        # never_run message.
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "This analysis has not run for this repo yet."}}
     detail = m.get("detail") or {}
     out = {
         # int(): metric_value is a float column, and "0.0 chunk(s)" on a card
@@ -1393,6 +1467,42 @@ def _architecture_recovery_results(
             ],
             "metrics": {k: v for k, v in metrics.items() if k not in ("surveyed_at", "detail")},
         })
+    # Structural nodes (persist.py) — ancestors referenced by a component's
+    # parent_slug that were never emitted as components. They exist so
+    # parent_path resolves and projection has a tree to collapse; without them
+    # every node reads as root-attached and project_rows is an identity
+    # function (measured 2026-08-24: milvus 204 components at every depth).
+    #
+    # They carry no type and no confidence by design — they have no evidence of
+    # their own — so they are marked `structural` and a consumer can render
+    # them as grouping rather than as a recovered component.
+    for scope in registry.query_finding_scopes(
+            slug, "architecture_recovery", check_name="structural_node"):
+        rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope)
+                if r["check_name"] == "structural_node"]
+        if not rows:
+            continue
+        latest = max(rows, key=lambda r: r["surveyed_at"])
+        detail = latest.get("detail_json") or {}
+        if isinstance(detail, str):
+            import json as _json
+            detail = _json.loads(detail or "{}")
+        node_slug = detail.get("slug", "")
+        if not node_slug or node_slug in slug_to_path:
+            continue
+        node_path = detail.get("path", scope)
+        slug_to_path[node_slug] = node_path
+        components.append({
+            "name": detail.get("name", node_path), "path": node_path,
+            "slug": node_slug, "type": "", "confidence": 0,
+            "structural": True,
+            "perspective": "", "proposed_by": [], "run_scope": detail.get("run_scope", ""),
+            "outcome": "", "evidence": [], "metrics": {},
+            "depth": detail.get("depth", 0),
+            "parent_slug": detail.get("parent_slug", ""),
+            "surveyed_at": latest.get("surveyed_at", ""),
+        })
+
     for c in components:
         c["parent_path"] = slug_to_path.get(c["parent_slug"], "")
     components.sort(key=lambda c: c["path"])
@@ -1478,7 +1588,10 @@ def _architecture_recovery_results(
         # (of 42 total)" rather than a projected view silently looking like
         # the whole answer (§2a: coarsening a view must never look like
         # discarding the data behind it).
-        "raw_component_count": len(all_components),
+        # Structural nodes are grouping, not recoveries — counting them here
+        # would inflate "N recovered" with rows that carry no evidence.
+        "raw_component_count": sum(1 for c in all_components if not c.get("structural")),
+        "structural_node_count": sum(1 for c in all_components if c.get("structural")),
         "run_outcomes": run_outcomes,
         "partial": partial,
         "unverified": unverified,
@@ -1665,8 +1778,14 @@ def _health_results(registry, slug: str) -> dict:
                                     "release_cadence", "freshness")
               if m.get(k) is not None}
     if not scores:
-        return {"metrics": {}, "detail": {}, "surveyed_at": ""}
-    return {"metrics": scores, "detail": detail, "surveyed_at": m.get("surveyed_at", "")}
+        return {"detail": {}, "surveyed_at": ""}
+    # Scores go at the TOP LEVEL, not under a "metrics" key. The "metrics"
+    # render mode (_renderMetricsResults in index.html) iterates the payload's
+    # own entries, filtering out only `detail`/`surveyed_at`/`_status` — so a
+    # nested envelope renders as a single row literally named "metrics" whose
+    # value is an object. The other two metrics-mode readers
+    # (_rag_ingestion_results, _website_ingestion_results) already return flat.
+    return {**scores, "detail": detail, "surveyed_at": m.get("surveyed_at", "")}
 
 
 def _health_trend(registry, slug: str) -> list[dict]:
@@ -1680,7 +1799,7 @@ def _health_trend(registry, slug: str) -> list[dict]:
 
 def _health_headline(registry, slug: str) -> dict | None:
     result = _health_results(registry, slug)
-    overall = (result.get("metrics") or {}).get("overall")
+    overall = result.get("overall")
     if overall is None:
         return None
     # Bands match how the scores are built (0-100, four equally weighted
@@ -1853,7 +1972,7 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     ),
     "repo_classification": AnalysisKind(
         "repo_classification", ["repo_classification"],
-        results=AnalysisKindResults(_repo_classification_results, None, "findings_list",
+        results=AnalysisKindResults(_repo_classification_results, None, "custom",
                                     headline_reader=_repo_classification_headline),
     ),
     "license_classification": AnalysisKind(
@@ -1942,6 +2061,12 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # view, over both repo_arch_detect's and repo_arch_coupling's combined
     # output (grouped by scope_locator, not by which step wrote it — see
     # _architecture_recovery_results' docstring).
+    "architecture_doc_lens": AnalysisKind(
+        "architecture_doc_lens", ["repo_arch_lens"],
+    ),
+    "architecture_summary": AnalysisKind(
+        "architecture_summary", ["repo_arch_summary"],
+    ),
     "architecture_recovery": AnalysisKind(
         "architecture_recovery", ["repo_arch_detect", "repo_arch_coupling"],
         results=AnalysisKindResults(

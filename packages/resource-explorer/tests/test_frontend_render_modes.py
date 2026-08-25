@@ -18,6 +18,7 @@ would cost more than it protects.
 """
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 
@@ -33,6 +34,21 @@ def _js_object_keys(name: str) -> set[str]:
     start = html.index(f"const {name} = {{")
     body = html[start:html.index("};", start)]
     return set(re.findall(r"^\s*(\w+):\s*'", body, re.M))
+
+
+def _js_object_pairs(name: str) -> dict[str, str]:
+    """Same parse as _js_object_keys, but keeping the values.
+
+    The key-only check above was written for a real bug and stopped one step
+    short of it: `repository_health` and `repo_classification` both HAD entries,
+    so every key assertion passed, while their values disagreed with the backend
+    and their cards rendered wrongly. A present-but-wrong entry is invisible to
+    a membership test.
+    """
+    html = INDEX.read_text()
+    start = html.index(f"const {name} = {{")
+    body = html[start:html.index("};", start)]
+    return dict(re.findall(r"^\s*(\w+):\s*'([^']*)'", body, re.M))
 
 
 @pytest.fixture(scope="module")
@@ -77,3 +93,54 @@ def test_every_kind_with_a_trend_has_a_y_axis_label():
         f"analysis kinds with a trend reader but no Y-axis label: {sorted(missing)}. "
         "Add them to _REPO_TREND_LABEL in index.html."
     )
+
+
+def test_render_mode_values_agree_with_the_backend():
+    """A render mode that exists but names the wrong branch is worse than a
+    missing one: the card renders, so nothing looks broken, but it renders the
+    wrong shape and falls through to the empty state.
+
+    Both real instances behaved that way. `repository_health` declared
+    'findings_list' against a payload with no `findings` key, so a repo with
+    genuine scores displayed "No results yet — click Run to scan."
+    `repo_classification` declared 'custom' where the backend said
+    'findings_list'; there the frontend was right and the backend entry was
+    stale. Hence comparing values, not asserting one side is authoritative.
+    """
+    frontend = _js_object_pairs("_REPO_RESULTS_RENDER_MODE")
+    backend = {k: v.results.render for k, v in ANALYSIS_KINDS.items() if v.results}
+
+    mismatched = {
+        k: (frontend[k], backend[k])
+        for k in frontend.keys() & backend.keys()
+        if frontend[k] != backend[k]
+    }
+    assert not mismatched, (
+        "render mode disagrees between index.html and ANALYSIS_KINDS "
+        f"(analysis_id: (frontend, backend)): {mismatched}. "
+        "Decide which side is right — a stale backend declaration and a wrong "
+        "frontend branch both present as an empty results card."
+    )
+
+
+def test_metrics_mode_readers_return_metrics_at_the_top_level():
+    """The 'metrics' branch iterates the payload's own entries and filters out
+    only detail/surveyed_at/_status, so a reader that nests its numbers under
+    an envelope key renders one row named after the envelope.
+
+    _health_results did exactly that. This pins the contract that made the
+    render-mode fix real rather than merely consistent.
+    """
+    from resource_explorer.surveyors import repo_survey_definition_adapter as A
+
+    reserved = {"detail", "surveyed_at", "_status"}
+    for kind, spec in ANALYSIS_KINDS.items():
+        if not spec.results or spec.results.render != "metrics":
+            continue
+        src = inspect.getsource(spec.results.results_reader)
+        assert '"metrics":' not in src and "'metrics':" not in src, (
+            f"{kind}'s reader ({spec.results.results_reader.__name__}) appears to "
+            "nest its numbers under a 'metrics' key, but its render mode is "
+            "'metrics', which reads them from the top level. Flatten the payload "
+            f"(reserved top-level keys: {sorted(reserved)})."
+        )

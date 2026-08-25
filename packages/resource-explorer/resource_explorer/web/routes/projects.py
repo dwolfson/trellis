@@ -728,7 +728,7 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
 
 
 @router.get("/{slug}/analyses/{analysis_id}/results")
-async def get_analysis_results(slug: str, analysis_id: str) -> dict:
+async def get_analysis_results(slug: str, analysis_id: str, depth: str | None = None) -> dict:
     """Latest structured results for one repo analysis — the real
     per-analysis results view (Phase B), replacing "check the full report
     for details." Raw dict, not a Pydantic model — shape genuinely differs
@@ -750,6 +750,32 @@ async def get_analysis_results(slug: str, analysis_id: str) -> dict:
                    "either it's scouting-tier (see Scouting instead) or an unknown id.",
         )
     results_reader, _ = entry
+
+    # `depth` is honoured only by readers that declare a max_depth parameter
+    # (today: architecture_recovery). It was already supported end-to-end in
+    # arch_recovery/projection.py — DEFAULT_PROJECTION_DEPTH, and a
+    # STAGE_PROJECTION_DEPTH table naming the level each stage wants — but no
+    # caller ever passed it, so every consumer silently got depth 1 and had no
+    # way to ask for anything else. Passing it to a reader that does not accept
+    # it would be a TypeError, hence the signature check rather than a blanket
+    # kwarg.
+    if depth is not None:
+        import inspect
+
+        if "max_depth" in inspect.signature(results_reader).parameters:
+            if depth in ("all", "full", "none"):
+                return results_reader(registry, slug, max_depth=None)
+            try:
+                parsed = int(depth)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"depth must be an integer or 'all', got {depth!r}",
+                )
+            if parsed < 0:
+                raise HTTPException(status_code=400, detail="depth must be >= 0")
+            return results_reader(registry, slug, max_depth=parsed)
+
     return results_reader(registry, slug)
 
 

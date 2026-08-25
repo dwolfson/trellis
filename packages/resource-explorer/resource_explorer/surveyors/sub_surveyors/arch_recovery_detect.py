@@ -113,6 +113,37 @@ class ArchDetectSurveyor(BaseSurveyor):
             else:
                 detect_outcome = None  # persist_ir's ordinary scoped/recovered default
 
+            # Distillation (design §5.2 step 1, spike findings 76-80). The
+            # detector optimises recall and over-proposes heavily: measured on
+            # the corpus 2026-08-24, Milvus yields 202 candidates against a
+            # published ground truth of 8, `genaicomps` 311. Persisting that is
+            # noise at scale, not coverage.
+            #
+            # Runs AFTER the zero-check above deliberately. "Nothing was
+            # detected" and "things were detected and every one was support
+            # material or a whole-repo claim" are different statements about the
+            # repo, and collapsing them would lose the more informative one.
+            distill_stats: dict = {}
+            if components:
+                from resource_explorer.surveyors.arch_recovery import distill as _distill
+                kept, dropped, distill_stats = _distill.distill(components)
+                notes.append(f"distillation: {_distill.summarise(distill_stats)}")
+                if not kept:
+                    # Every candidate was filtered. Not `no_signal` — detection
+                    # worked and found things; the filters rejected all of them,
+                    # which is a claim about this repo (all support material, or
+                    # only whole-repo claims) and is worth saying out loud.
+                    notes.append(
+                        "every candidate was filtered — the repo proposed only "
+                        "support-material or whole-repo candidates, which is a "
+                        "statement about the repo, not a failed detection"
+                    )
+                    detect_outcome = no_signal(
+                        "all_candidates_distilled", known_positive=True,
+                        input_candidates=distill_stats.get("input", 0),
+                    )
+                components = kept
+
             # Ports and wires (design §5.5f). This was committed and
             # regression-tested against `interfaces.propose()` but its only
             # caller was the throwaway spike harness, so in the product they
