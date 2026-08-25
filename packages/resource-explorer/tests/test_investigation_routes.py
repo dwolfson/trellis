@@ -586,3 +586,54 @@ def test_a_disposition_member_is_always_in_the_folio(made):
                 f"{m['entity_slug']} is '{disposition}' but not in the Folio — "
                 "the two filters would then disagree"
             )
+
+
+def test_next_steps_retire_as_the_gaps_close(client, made):
+    """Offers, not a checklist to fill in.
+
+    The creation form asks only what §1 says an investigation IS — a name, why
+    it exists, and what kind of work it is. Everything else surfaces here, where
+    the absence already is, and disappears when it stops being true. A step that
+    lingered after being satisfied would train people to ignore the list.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Retiring", purposes=["Select"])
+    reg = ProjectRegistry()
+    slug = inv["slug"]
+
+    def ids():
+        return [s["id"] for s in client.get(f"/api/investigations/{slug}/next-steps").json()["steps"]]
+
+    assert ids() == ["add_resources", "bind_egeria"]
+
+    ws = reg.get_or_create_folio(slug)
+    reg.add_working_set_member(ws["slug"], "repo", "some-repo")
+    assert ids() == ["set_dispositions", "bind_egeria"], "scope offer should retire once scoped"
+
+    reg.set_investigation_disposition(slug, "repo", "some-repo", "investigating")
+    assert ids() == ["bind_egeria"], "judgement offer should retire once judged"
+
+    reg.set_investigation_egeria_project(slug, {
+        "status": "linked", "egeria_project_guid": "g",
+    })
+    body = client.get(f"/api/investigations/{slug}/next-steps").json()
+    assert body["steps"] == [] and body["complete"] is True
+
+
+def test_a_purposeless_investigation_is_told_so(client, made):
+    """Purpose is the one field that does real work — it ranks what gets
+    proposed — so its absence is worth surfacing rather than defaulting."""
+    inv = made(display_name="No Purpose", purposes=[])
+    ids = [s["id"] for s in client.get(f"/api/investigations/{inv['slug']}/next-steps").json()["steps"]]
+    assert "declare_purpose" in ids
+
+
+def test_classification_is_recorded_and_validated(client, made):
+    """§1 mode 2 carries a classification. Kept even for a local-only
+    investigation, so promoting later does not re-ask something already decided."""
+    inv = made(display_name="Kinded", project_classification="Campaign")
+    assert inv["project_classification"] == "Campaign"
+    bad = client.post("/api/investigations/", json={"display_name": "Bad Kind",
+                                                    "project_classification": "Nonsense"})
+    assert bad.status_code == 400

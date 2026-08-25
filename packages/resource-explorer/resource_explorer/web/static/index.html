@@ -7475,6 +7475,7 @@ async function loadInvestigationsPanel() {
   }
   _refreshInvestigationLabel();
   view.innerHTML = _renderInvestigationsPanel();
+  _loadNextSteps(_currentInvestigation());
 }
 
 function _renderInvestigationsPanel() {
@@ -7502,6 +7503,7 @@ function _renderInvestigationsPanel() {
             ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
             ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
           </div>
+          ${isCur ? `<div id="inv-next-steps" class="mt-2"></div>` : ''}
         </div>
         <div class="shrink-0 flex gap-1">
           ${isCur ? '' : `<button onclick="_setCurrentInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-cyan-600 text-white hover:bg-cyan-500">Use</button>`}
@@ -7532,6 +7534,17 @@ function _renderInvestigationsPanel() {
         question catalog is tagged with, so they rank what gets proposed. Purpose ranks; it does not hide.
       </div>
       <div class="mb-2">${purposeBoxes}</div>
+      <div class="mb-1 text-xs text-slate-500">
+        Kind — what shape of work this is. Carried onto the Egeria Project if this is ever
+        promoted, so it does not have to be asked again.
+      </div>
+      <select id="inv-classification" class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+        <option value="StudyProject">Study — investigating something, no commitment yet</option>
+        <option value="Task">Task — one bounded piece of work</option>
+        <option value="PersonalProject">Personal — my own exploration</option>
+        <option value="Campaign">Campaign — a programme spanning several efforts</option>
+      </select>
+      <div></div>
       <button onclick="_createInvestigation()" class="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-500">Create</button>
       <div class="text-[11px] text-slate-500 mt-2">
         Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
@@ -7570,6 +7583,48 @@ function _openInvestigationEgeriaPicker() {
   if (modal) modal.classList.remove('hidden');
 }
 
+// Next steps — the other half of "ask only what an investigation IS".
+//
+// The creation form asks name, why, and kind. Everything else appears HERE,
+// where the absence already is: no resources says so and points at Scouting, no
+// binding offers to make one. Offers, not prompts — nothing blocks, nothing
+// re-asks, and an unanswered offer is a standing offer. That is also what makes
+// the same state safe for a scheduled run, which has nobody to ask.
+const _NEXT_STEP_ACTION = {
+  scouting:    {label: 'Go to Scouting →', fn: "setNavIntent('scouting')"},
+  disposition: {label: 'Select resources to mark →', fn: "_toggleSelectMode()"},
+  egeria:      {label: 'Bind or create →', fn: "_openInvestigationEgeriaPicker()"},
+  edit:        {label: 'Add a purpose →', fn: "_focusInvestigationPurposes()"},
+};
+
+async function _loadNextSteps(slug) {
+  const box = document.getElementById('inv-next-steps');
+  if (!box || !slug) return;
+  let data;
+  try {
+    data = await (await fetch(`/api/investigations/${encodeURIComponent(slug)}/next-steps`)).json();
+  } catch (e) { box.innerHTML = ''; return; }
+  if (!data || data.complete) {
+    // Deliberately says something rather than rendering nothing: an empty area
+    // where offers used to be reads as a failed load.
+    box.innerHTML = `<div class="text-[11px] text-slate-500">✓ Nothing outstanding — scoped, judged and catalogued.</div>`;
+    return;
+  }
+  box.innerHTML = (data.steps || []).map(st => {
+    const act = _NEXT_STEP_ACTION[st.action];
+    return `<div class="text-[11px] text-slate-400 border-l-2 border-slate-600 pl-2 mb-1">
+      <div class="text-slate-300">${_esc(st.title)}</div>
+      <div class="text-slate-500">${_esc(st.detail)}</div>
+      ${act ? `<button onclick="${act.fn}" class="text-cyan-500 hover:underline">${_esc(act.label)}</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function _focusInvestigationPurposes() {
+  const first = document.querySelector('.inv-purpose');
+  if (first) { first.focus(); first.scrollIntoView({block: 'center'}); }
+}
+
 async function _createInvestigation() {
   const name = (document.getElementById('inv-name')?.value || '').trim();
   if (!name) { showToast('Name is required', 'error'); return; }
@@ -7581,6 +7636,7 @@ async function _createInvestigation() {
         display_name: name,
         description: (document.getElementById('inv-desc')?.value || '').trim(),
         purposes,
+        project_classification: document.getElementById('inv-classification')?.value || 'StudyProject',
       }),
     });
     if (!resp.ok) { showToast(`Could not create: ${(await resp.json()).detail || resp.status}`, 'error'); return; }

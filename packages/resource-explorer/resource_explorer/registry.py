@@ -1642,6 +1642,11 @@ class ProjectRegistry:
                     -- answers to one question. Carries the full context shape
                     -- (unset/personal/declined/linked/deferred + free text) so
                     -- publishes read it unchanged.
+                    -- §1's mode 2 carries a classification. Kept on the local
+                    -- row even for a local-only investigation, so promoting one
+                    -- later does not have to ask again for something the user
+                    -- already decided.
+                    project_classification         TEXT DEFAULT 'StudyProject',
                     egeria_project_status          TEXT DEFAULT 'unset',
                     egeria_free_text_name          TEXT DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'open',
@@ -1659,6 +1664,7 @@ class ProjectRegistry:
             for col, defn in [
                 ("egeria_project_status", "TEXT DEFAULT 'unset'"),
                 ("egeria_free_text_name", "TEXT DEFAULT ''"),
+                ("project_classification", "TEXT DEFAULT 'StudyProject'"),
             ]:
                 if col not in inv_cols:
                     conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
@@ -3692,8 +3698,15 @@ class ProjectRegistry:
         "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
     )
 
+    #: §1 mode 2's classifications. StudyProject is the default because it is
+    #: the least committal — an investigation that turns out to be a Campaign
+    #: can be re-classified, but starting everything as a Campaign would assert
+    #: a scale nobody chose.
+    PROJECT_CLASSIFICATIONS = ("PersonalProject", "Task", "StudyProject", "Campaign")
+
     def create_investigation(self, display_name: str, *, description: str = "",
                              purposes: list[str] | None = None,
+                             project_classification: str = "StudyProject",
                              egeria_project_guid: str = "",
                              egeria_project_qualified_name: str = "") -> dict:
         """Create one investigation. `purposes` is validated against
@@ -3707,6 +3720,11 @@ class ProjectRegistry:
             raise ValueError(
                 f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}"
             )
+        if project_classification not in self.PROJECT_CLASSIFICATIONS:
+            raise ValueError(
+                f"unknown classification {project_classification!r}; "
+                f"valid: {list(self.PROJECT_CLASSIFICATIONS)}"
+            )
         base = _re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "investigation"
         slug, n = base, 1
         while self.get_investigation(slug):
@@ -3717,11 +3735,12 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO investigations
                    (slug, display_name, description, purposes_json,
-                    egeria_project_guid, egeria_project_qualified_name,
-                    status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                    project_classification, egeria_project_guid,
+                    egeria_project_qualified_name, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                 (slug, display_name, description, _json.dumps(purposes),
-                 egeria_project_guid, egeria_project_qualified_name, now, now),
+                 project_classification, egeria_project_guid,
+                 egeria_project_qualified_name, now, now),
             )
         return self.get_investigation(slug)
 

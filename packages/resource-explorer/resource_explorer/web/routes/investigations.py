@@ -25,6 +25,7 @@ class InvestigationCreate(BaseModel):
     display_name: str
     description: str = ""
     purposes: list[str] = Field(default_factory=list)
+    project_classification: str = "StudyProject"
     egeria_project_guid: str = ""
     egeria_project_qualified_name: str = ""
 
@@ -82,6 +83,7 @@ async def create_investigation(req: InvestigationCreate) -> dict:
         return _registry().create_investigation(
             req.display_name.strip(), description=req.description,
             purposes=req.purposes,
+            project_classification=req.project_classification,
             egeria_project_guid=req.egeria_project_guid,
             egeria_project_qualified_name=req.egeria_project_qualified_name,
         )
@@ -306,3 +308,57 @@ async def set_disposition(slug: str, entity_type: str, entity_slug: str,
         )
     return reg.set_investigation_disposition(slug, entity_type, entity_slug,
                                              disposition, rationale=rationale)
+
+
+@router.get("/{slug}/next-steps")
+async def next_steps(slug: str) -> dict:
+    """What this investigation still lacks, as offers rather than a form.
+
+    The creation form asks only what §1 says an investigation IS — a name, why
+    it exists, and how it relates to Egeria. Everything else is surfaced here,
+    where the absence already is: an investigation with no resources says so and
+    points at Scouting; one with no Egeria binding offers to make one.
+
+    Deliberately phrased as offers. A scheduled run has nobody to ask and must
+    not block; an interactive session can act on the same list. Neither is
+    prompted, and an unanswered offer is a standing offer, not an open question.
+    """
+    reg = _registry()
+    inv = reg.get_investigation(slug)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+
+    steps: list[dict] = []
+    if not inv.get("purposes"):
+        steps.append({
+            "id": "declare_purpose",
+            "title": "No purpose declared",
+            "detail": "Purpose is why this work exists — it ranks what gets proposed. "
+                      "Without it nothing can be ordered by relevance.",
+            "action": "edit",
+        })
+    if not inv.get("member_count"):
+        steps.append({
+            "id": "add_resources",
+            "title": "Nothing in scope yet",
+            "detail": "Find resources in Scouting and add them to the working set. "
+                      "An investigation with no resources cannot survey anything.",
+            "action": "scouting",
+        })
+    elif not reg.investigation_dispositions(slug):
+        steps.append({
+            "id": "set_dispositions",
+            "title": "Nothing judged yet",
+            "detail": f"{inv['member_count']} resource(s) in scope, none marked. "
+                      "Dispositions are how this investigation says which ones matter.",
+            "action": "disposition",
+        })
+    if inv.get("egeria_project_status") != "linked":
+        steps.append({
+            "id": "bind_egeria",
+            "title": "Local only — not in Egeria",
+            "detail": "Bind to an existing Egeria Project or create one. Resources in "
+                      "scope then inherit that binding instead of each needing its own.",
+            "action": "egeria",
+        })
+    return {"investigation": slug, "steps": steps, "complete": not steps}
