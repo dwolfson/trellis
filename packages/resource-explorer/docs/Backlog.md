@@ -574,6 +574,54 @@ adopter. Recording only — nothing routes on these labels.
 
 ---
 
+#### Re-parent components to the nearest SURVIVING ancestor — this is what makes depth control work
+
+Measured 2026-08-24 while prototyping a depth control, and the reason that control
+is withheld rather than built.
+
+`arch_recovery/projection.py` works — given resolvable parents it collapses a nested
+input (`tests/test_arch_projection_liveness.py`). It has never been given one:
+
+```
+milvus      depth 0/1/2/3/None -> 204 components every time
+genaicomps  depth 0/1/2/3/None -> 311 components every time
+```
+
+**The gap is between generation and persistence, and each half is individually
+correct.** `code_markers.build_hierarchy()` links every candidate subtree to *"the
+nearest ancestor directory that is ALSO a candidate"* — right, and matches `ir.py`'s
+documented contract. But persistence writes a **filtered subset** of candidates: 16
+of milvus's 213 persisted slugs are `code::` namespaced. Parent links still point at
+the pre-filter candidate set, so milvus references 6 parents of which **0 are
+persisted**. Every node reads as root-attached and `project_rows` becomes an identity
+function.
+
+**Two ways to close it:**
+
+1. **Re-parent at persist time** — walk up to the nearest ancestor that actually
+   survives into the persisted set, and rewrite `parent_slug` to that. Keeps the
+   persisted set as-is. Cheaper, and preserves whatever filtering exists for good
+   reasons.
+2. **Persist the referenced ancestors** — emit the intermediate candidates so the
+   links resolve. Truer to "store the hierarchy, project a level"
+   (`approach-portfolio-model.md` §2a), but grows the stored set.
+
+(1) looks right, but the choice depends on why the filtering drops those candidates
+in the first place, which was not investigated.
+
+**Why this is worth doing before any Purpose→depth work:** depth-as-presentation is
+the cheap version of everything in the entry above — one run, re-rendered at several
+levels, no re-survey. It is currently untestable because there is no hierarchy to
+project. Until this lands, "sufficiency is a presentation rule" cannot even be
+evaluated, and the only alternative left standing is the expensive one (depth as a
+generation-time stopping rule).
+
+**Related and unwired:** `STAGE_PROJECTION_DEPTH` in the same module declares the
+level each stage wants (`discovery` 0, `assessment` 1, `analysis` unprojected) and is
+read by nothing. It becomes meaningful the moment projection has real input.
+
+---
+
 #### Purpose sets required DEPTH, not just which analyses run — unwritten, and it reframes precision
 
 Raised by Dan 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`

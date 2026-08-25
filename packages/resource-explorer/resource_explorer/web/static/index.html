@@ -3033,26 +3033,28 @@ function _renderManifestParseResults(data) {
     (data.surveyed_at ? `<div class="text-[10px] text-slate-600 mt-1">last run ${_relTime(data.surveyed_at)}</div>` : '');
 }
 
-// Architecture-recovery depth control — MEASURED INERT 2026-08-24, deliberately not built.
+// Architecture-recovery depth control — NOT configured yet, so not built yet.
 //
-// arch_recovery/projection.py has DEFAULT_PROJECTION_DEPTH and a
-// STAGE_PROJECTION_DEPTH table naming "the level a stage wants" (discovery 0,
-// assessment 1, analysis unprojected). Nothing reads that table; no route passed
-// the parameter. Threading it through looked like the obvious win.
+// This is a wiring gap, not a verdict on the idea. The projection mechanism
+// works: given parents that resolve, project_rows collapses a nested input
+// (tests/test_arch_projection_liveness.py proves 3 -> 1). What is missing is
+// its input.
 //
-// It changes nothing. Measured directly against stored results:
+// Measured against stored results 2026-08-24:
 //   milvus      depth 0/1/2/3/None -> 204 components every time
 //   genaicomps  depth 0/1/2/3/None -> 311 components every time
-// shown == raw at every level, because projection walks parent_slug/depth and
-// the detectors barely populate them: 10 of 154 milvus rows carry a parent,
-// 10 of 311 for genaicomps. Over 93% are siblings at depth 0, so there is no
-// tree to collapse.
 //
-// A depth selector here would be a dial wired to nothing — the exact failure
-// this codebase keeps finding elsewhere. The fix belongs upstream in the
-// detectors (populate parent_slug), or depth has to be a generation-time
-// stopping rule rather than a presentation one. See Backlog, "Purpose sets
-// required DEPTH", open question 3, which this answers.
+// Why: components are linked to their nearest *candidate* ancestor at
+// generation time (code_markers.build_hierarchy, correctly), but persistence
+// writes a filtered subset — 16 of milvus's 213 persisted slugs are code::
+// namespaced — and parent links were never re-pointed at the nearest
+// SURVIVING ancestor. So milvus references 6 parents of which 0 are persisted,
+// every node reads as root-attached, and projection is an identity function.
+//
+// Two ways to configure it, neither done: re-parent to the nearest surviving
+// ancestor at persist time, or persist the ancestors that are referenced.
+// Until one lands a depth selector would move nothing, which is why it is
+// withheld rather than abandoned. See Backlog, "Purpose sets required DEPTH".
 const _ARCH_ROW_CAP = 20;
 
 function _renderCustomAnalysisResults(analysisId, data) {
