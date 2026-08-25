@@ -557,3 +557,32 @@ def test_an_unknown_disposition_is_rejected(client, made):
     r = client.post(f"/api/investigations/{inv['slug']}/dispositions/repo/x?disposition=nonsense")
     assert r.status_code == 400
     assert "nonsense" in r.json()["detail"]
+
+
+def test_a_disposition_member_is_always_in_the_folio(made):
+    """Why the disposition filter can compose with the working-set filter.
+
+    set_investigation_disposition adds to the Folio BEFORE assigning, so a
+    disposition member is in scope by construction. That is what makes
+    "working set AND disposition" safe to combine — the intersection can never
+    be spuriously empty, so the UI must not widen the base filter to compensate
+    for a problem that cannot occur.
+
+    It also matters for intent: disposition exists so an investigation can focus
+    on what matters within it. Widening to every registered repo would discard
+    that focus at the moment the user asked for it.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Composes")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "never-added-first", "tracking")
+
+    in_scope = {(m["entity_type"], m["entity_slug"])
+                for m in reg.list_investigation_members(inv["slug"])}
+    for disposition, members in reg.investigation_dispositions(inv["slug"]).items():
+        for m in members:
+            assert (m["entity_type"], m["entity_slug"]) in in_scope, (
+                f"{m['entity_slug']} is '{disposition}' but not in the Folio — "
+                "the two filters would then disagree"
+            )
