@@ -43,6 +43,7 @@ from typing import Callable
 from trellis_microflow import ResourceProvider
 
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
+from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.result_status import attach as attach_status
 from resource_explorer.surveyors.result_status import status_from_detail as result_status_from_detail
 from resource_explorer.surveyors.arch_recovery import projection as arch_projection
@@ -1231,6 +1232,13 @@ def _rag_ingestion_results(registry, slug: str) -> dict:
     time — the number a user wants is "what does my chat index contain as of
     the last time anything checked", not a per-request count query."""
     m = registry.query_metrics(slug, "rag_ingestion")
+    if not m:
+        # Same false zero the website_ingestion reader had: with nothing
+        # persisted this returned total_chunks=0 and collections=0, which the
+        # "metrics" mode renders as measured values — "your chat index is
+        # empty", when the truth is that nothing has ever looked.
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "This analysis has not run for this repo yet."}}
     return {
         "total_chunks": m.get("total_chunks", 0),
         "collections": m.get("collections", 0),
@@ -1257,6 +1265,20 @@ def _website_ingestion_results(registry, slug: str) -> dict:
     card reads the reason, not just the count.
     """
     m = registry.query_metrics(slug, "website_ingestion")
+    if not m:
+        # NEVER RUN is not the same as ran-and-found-nothing, and this reader
+        # used to erase the difference: with no persisted run it still returned
+        # chunks/pages_fetched/pages_found/pages_failed as 0, which the "metrics"
+        # mode lays out as four rows of zeros — indistinguishable from a site
+        # that was scanned and had nothing. Measured 2026-08-25: this step has
+        # never run on ANY of the 60 repos, so every card in the corpus was
+        # showing that false zero.
+        #
+        # Returning nothing lets _renderEmptyResultState say "No results yet —
+        # click Run to scan", which result_status documents as exactly the
+        # never_run message.
+        return {"_status": {"state": result_status.NEVER_RUN,
+                            "hint": "This analysis has not run for this repo yet."}}
     detail = m.get("detail") or {}
     out = {
         # int(): metric_value is a float column, and "0.0 chunk(s)" on a card
