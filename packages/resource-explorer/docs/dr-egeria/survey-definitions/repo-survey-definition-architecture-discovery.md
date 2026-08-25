@@ -38,6 +38,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Repo Architecture Discovery — Repo Arch Lens
+
+### Qualified Name
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
+
+### Description
+Labels recovered components against the project's own architecture document, wherever it lives — in-repo, a sibling repository, or a documentation site. A LENS: it adds no component, removes none and assigns no type. Milvus goes from 206 candidates to 15 the authors actually name (finding 102).
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_arch_lens |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Repo Architecture Discovery — Repo Arch Summary
 
 ### Qualified Name
@@ -97,6 +116,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_coupling
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary

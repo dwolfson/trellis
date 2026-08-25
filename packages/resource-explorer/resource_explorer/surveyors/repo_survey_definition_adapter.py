@@ -52,6 +52,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     ApiStructureSurveyor,
     ArchCouplingSurveyor,
     ArchDetectSurveyor,
+    ArchLensSurveyor,
     ArchSummarySurveyor,
     CiQualitySurveyor,
     DataProfilerSurveyor,
@@ -629,6 +630,30 @@ STEP_REGISTRY: dict[str, StepInfo] = {
                         "git_clone_root": VIEW_HISTORY},
         fetch_cost="download",
         compute_cost="medium",
+    ),
+    "repo_arch_lens": StepInfo(
+        "repo_arch_lens", ArchLensSurveyor,
+        "Labels recovered components against the project's own architecture "
+        "document, wherever it lives — in-repo, a sibling repository, or a "
+        "documentation site. A LENS: it adds no component, removes none and "
+        "assigns no type. Milvus goes from 206 candidates to 15 the authors "
+        "actually name (finding 102).",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # Between coupling and summary: it needs components to label, and the
+        # summary is worth more once it can say "documented" instead of
+        # "candidate". Registry order generates the chain — the ordering defect
+        # caught by the reconciler when repo_arch_summary was first placed
+        # before coupling is the reason that is spelled out here.
+        requires_resources={},
+        # NOT zero-fetch, and that is the third exception in a tier described as
+        # zero-fetch by construction (see analysis_catalog.yaml's note on
+        # architecture_recovery, and repo_classification's). Up to
+        # MAX_DOC_FILES GitHub calls, often against a DIFFERENT repository.
+        # Recorded rather than quietly added: three exceptions is where
+        # "discovery is zero-fetch" stops being a rule and becomes a slogan.
+        fetch_cost="api",
+        compute_cost="low",
     ),
     "repo_arch_summary": StepInfo(
         "repo_arch_summary", ArchSummarySurveyor,
@@ -2014,6 +2039,9 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # view, over both repo_arch_detect's and repo_arch_coupling's combined
     # output (grouped by scope_locator, not by which step wrote it — see
     # _architecture_recovery_results' docstring).
+    "architecture_doc_lens": AnalysisKind(
+        "architecture_doc_lens", ["repo_arch_lens"],
+    ),
     "architecture_summary": AnalysisKind(
         "architecture_summary", ["repo_arch_summary"],
     ),

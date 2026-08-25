@@ -25,6 +25,7 @@ from resource_explorer.surveyors.sub_surveyors.symbol_extraction import SymbolEx
 from resource_explorer.surveyors.sub_surveyors.manifest_parse import ManifestParseSurveyor
 from resource_explorer.surveyors.sub_surveyors.rag_ingestion import RagIngestionSurveyor
 from resource_explorer.surveyors.sub_surveyors.arch_recovery_detect import ArchDetectSurveyor
+from resource_explorer.surveyors.sub_surveyors.arch_lens import ArchLensSurveyor
 from resource_explorer.surveyors.sub_surveyors.arch_summary import ArchSummarySurveyor
 from resource_explorer.surveyors.sub_surveyors.arch_recovery_coupling import ArchCouplingSurveyor
 
@@ -54,6 +55,7 @@ __all__ = [
     "ManifestParseSurveyor",
     "RagIngestionSurveyor",
     "ArchDetectSurveyor",
+    "ArchLensSurveyor",
     "ArchSummarySurveyor",
     "ArchCouplingSurveyor",
 ]

@@ -102,7 +102,16 @@ class TestFilterByIntent:
     # rule's actual test is "cheap enough to gate the expensive tiers", which a
     # handful of API calls passes; the honest way to record that is an explicit
     # exception, not silence. Design §5.5b.
-    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification"}
+    #
+    # `architecture_doc_lens` is the THIRD entry here (2026-08-25). It reads the
+    # project's architecture document, which is up to MAX_DOC_FILES GitHub calls
+    # and frequently against a DIFFERENT repository than the one being surveyed.
+    # Three exceptions is the point at which "discovery is the zero-fetch
+    # derivation tier" stops describing the tier and starts describing an
+    # intention — flagged here rather than absorbed, because the next addition
+    # should be a decision about the rule, not another entry in this set.
+    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification",
+                                "architecture_doc_lens"}
 
     def test_discovery_is_the_zero_fetch_derivation_tier(self):
         """Discovery reasons over what Scouting collected rather than fetching:

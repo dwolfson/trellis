@@ -122,6 +122,11 @@ class ArchSummarySurveyor(BaseSurveyor):
                 f"step ran, its input step has not")]
 
         types, protocols, operations, third_party = Counter(), Counter(), 0, 0
+        # Components the architecture document names (repo_arch_lens, finding
+        # 102). Counted, never used to FILTER: the undocumented ones are still
+        # recovered evidence, and dropping them would turn a lens into an
+        # oracle in the one place a reader would not see it happen.
+        documented = 0
         # Every partial read is counted, because a summary that quietly lost
         # half its input still reads as a confident answer. `unread_scopes` and
         # `interfaces_unread` go into the annotation so a reader can tell a
@@ -165,6 +170,18 @@ class ArchSummarySurveyor(BaseSurveyor):
                     except (TypeError, ValueError):
                         pass
 
+        # Doc-lens labels live under their own kind, scope-keyed, so that
+        # annotating a component can never hide it — see arch_lens.LENS_KIND.
+        try:
+            from resource_explorer.surveyors.sub_surveyors.arch_lens import LENS_KIND
+            for scope in scopes:
+                for f in self.registry.query_findings(slug, LENS_KIND, scope) or []:
+                    if (f.get("check_name") or "") == "documented_by":
+                        documented += 1
+        except Exception:
+            log.exception("%s: could not read doc-lens labels", slug)
+            interfaces_unread = True
+
         # Ports live under their own kind at whole-resource scope.
         try:
             for f in self.registry.query_findings(slug, INTERFACE_KIND) or []:
@@ -189,7 +206,8 @@ class ArchSummarySurveyor(BaseSurveyor):
             log.exception("%s: could not read %s findings", slug, INTERFACE_KIND)
             interfaces_unread = True
 
-        summary = self._render(types, protocols, operations, third_party)
+        summary = self._render(types, protocols, operations, third_party,
+                               documented)
         if unread_scopes or interfaces_unread:
             missing = []
             if unread_scopes:
@@ -212,6 +230,7 @@ class ArchSummarySurveyor(BaseSurveyor):
                 "components": sum(types.values()),
                 "component_types": dict(types),
                 "third_party": third_party,
+                "documented": documented,
                 "protocols": dict(protocols),
                 "operations": operations,
                 # Observable degradation, not a silent partial result.
@@ -222,7 +241,7 @@ class ArchSummarySurveyor(BaseSurveyor):
         )]
 
     def _render(self, types: Counter, protocols: Counter,
-                operations: int, third_party: int) -> str:
+                operations: int, third_party: int, documented: int = 0) -> str:
         """One line a person can act on at `suitability` depth.
 
         **Deliberately does not lead with the component count.** "204
@@ -244,6 +263,13 @@ class ArchSummarySurveyor(BaseSurveyor):
             if iface:
                 parts.append(f"serves {iface}"
                              + (f" ({operations} operations)" if operations else ""))
+        # Documented components lead when they exist: the project's own authors
+        # naming a component is stronger evidence than any type we derived, and
+        # on Milvus it is 15 against 206 candidates. It never REPLACES the
+        # candidate count below — a lens that silently shrank the answer would
+        # be indistinguishable from a detector that missed things.
+        if documented:
+            parts.append(f"{documented} documented component(s)")
         runnable = sum(n for t, n in types.items() if t in _RUNNABLE_TYPES)
         if runnable:
             parts.append(f"{runnable} runnable unit(s)")

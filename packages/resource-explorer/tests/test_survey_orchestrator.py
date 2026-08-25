@@ -300,6 +300,13 @@ class TestCostTierFilter:
                     # sharing an extraction does not make a step zero-fetch: the
                     # download still has to happen for it to run at all.
                     "repo_manifest_parse",
+                    # repo_arch_lens (2026-08-25) — reads the project's own
+                    # architecture document, up to MAX_DOC_FILES GitHub calls and
+                    # often against a DIFFERENT repository. It needs no shared
+                    # resource (requires_resources={}), which is exactly the trap
+                    # repo_classification fell into: an empty resource
+                    # declaration is not evidence a step is zero-fetch.
+                    "repo_arch_lens",
                     # repo_arch_detect/repo_arch_coupling (Phase 1 plan §4.2) —
                     # a zipball and a real git clone respectively, both downloads.
                     "repo_arch_detect", "repo_arch_coupling",

@@ -3651,3 +3651,56 @@ against normalised terms, so every multi-word entry in it ("table of contents", 
 25 design documents, not component names. It is meaningful only when the located artifact is an
 architecture *overview* rather than a corpus of design docs, and nothing currently distinguishes
 those. Reported with that caveat rather than presented as a list of things we failed to detect.
+
+---
+
+**103. Wiring the lens found a storage trap: annotating another step's findings under the same kind
+makes them invisible.**
+
+`repo_arch_lens` is now a step, between `repo_arch_coupling` and `repo_arch_summary`. Its own step
+rather than part of detect, for three reasons — its cost is `api` where detect is `download` and
+summary is `none`; the document changes on its own cadence and often lives in another repository;
+and, decisively, **a failed document fetch inside detect would leave detect succeeding with the
+labels quietly absent**, whereas as a step it carries its own reader state and the 33 of 46
+gate-approved repos with no architecture document get an explicit answer instead of a non-event.
+
+**The trap.** The first version wrote its labels back into `architecture_recovery`, on the
+reasonable instinct that a label belongs beside the component it describes. Then:
+
+```
+before wiring   milvus: 218 candidate components, 31 third-party
+after wiring    milvus: 203 candidate components, 22 third-party
+                        ...exactly the 15 scopes the lens had just labelled
+```
+
+`upsert_finding` **appends**, but `query_findings` returns only the rows at `MAX(surveyed_at)` for a
+`(slug, kind, scope)`. Writing a label with a newer timestamp therefore made that scope's
+`component` finding unreadable — `client/index` returned `documented_by` and nothing else. **No row
+was lost; they stopped being visible.** A backup would not have shown a problem, and a reader would
+simply have seen a smaller architecture.
+
+So a step that annotates another step's output must write under **its own kind**, scope-keyed —
+`architecture_doc_lens`. The same shape as ports living in `architecture_interfaces`, which the
+summariser had already tripped over from the other direction (finding 100: reading one kind when
+the subject spans two). **Append-only storage with latest-run reads has both failure modes, and
+neither raises.**
+
+Caught only because the numbers moved by exactly the number of labels written. That is worth
+naming: the check that found it was not a test but a **conservation expectation** — annotating
+should not change a count it does not own.
+
+**Three smaller things the wiring surfaced, all the same family:**
+
+* `_STOPWORDS` compared raw strings to normalised terms, so every multi-word entry ("table of
+  contents", "getting started") was inert. The list looked correct and half of it did nothing.
+* A test fake used `terms or ["proxy"]`, turning an explicit `terms=[]` back into a populated list —
+  so the doc-site case silently asserted the opposite of what it claimed. Empty-versus-absent, in
+  four characters of test helper.
+* A test patched `AL.ad.apply` by bare assignment rather than `monkeypatch`, and leaked into the
+  next test. Same shared-state shape as the conftest schema collision, one layer up.
+
+**Recorded, not resolved:** `repo_arch_lens` is the **third** exception to "discovery is the
+zero-fetch derivation tier", after `architecture_recovery` and `repo_classification`. Three
+exceptions is where that description stops being a rule and becomes an intention. Flagged in
+`analysis_catalog.yaml`, in the registry entry, and in the test that enumerates the exceptions —
+the next addition should be a decision about the rule, not a fourth entry.
