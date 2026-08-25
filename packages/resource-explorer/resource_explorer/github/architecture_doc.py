@@ -1,0 +1,273 @@
+"""The architecture document as a LENS over recovered components (finding 101).
+
+Dan, 2026-08-24: *"you need to look at code through the lens of the
+documentation — and good documentation will guide you towards what code to look
+at for which purpose. Just looking at the code doesn't provide enough context to
+easily distinguish between internal and external communications."*
+
+Milvus is the proof. Recovery reports 296 rpcs across 18 gRPC services; the
+number a reader wants for runtime suitability is `proxy.proto`'s 18, because
+`proxy` is the client-facing service and the coord services are internal.
+Nothing in the code says so. Milvus's own documentation says it plainly — and
+that same document is where this project's ground-truth fixture came from,
+transcribed **by hand**. The system has never done automatically what we did
+manually to build every fixture it is scored against.
+
+**A lens, not an oracle.** This module ranks and labels what the detectors
+already proposed. It never adds a component, never removes one, and never
+overrides a type. Two reasons, both learned the hard way:
+
+* The document can be stale. `OpenLineage/OpenLineage`'s architecture doc is
+  dated 2023-11-03 — measured, not hypothesised — and findings 65-68 are
+  entirely about correlating doc version against code version rather than
+  trusting the prose.
+* A document that disagrees with the code is a **finding**, not a correction.
+  "The doc names a component we did not find" is one of the more useful things
+  this system can say, and silently adopting it would destroy exactly that.
+
+**Scope, measured 2026-08-24 across the 46 gate-approved repos:** 13 have an
+architecture document located, 4 in-repo and **9 in a sibling repository**. The
+sibling majority is the real argument — a code-only reader cannot reach those by
+any amount of better parsing, which makes this a wrong-corpus problem rather
+than a precision one. The remaining 31 were never looked at, because `EXPECTED`
+asks for `architecture` only for `application` and `middleware`; they are an
+unmeasured population, not a measured absence.
+
+**Extraction is deliberately dumb.** Headings, bold spans and code spans, in a
+markdown document, under a length cap. No NLP, no model. A term is a candidate
+name only because the author gave it structural emphasis, which is explainable
+and regression-testable where a prompt is not.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from . import doc_locations as dl
+
+#: Structural emphasis a document author uses for a component name.
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.M)
+_BOLD_RE = re.compile(r"\*\*([^*\n]{2,60})\*\*")
+_CODE_RE = re.compile(r"`([^`\n]{2,60})`")
+
+#: Words that are structurally emphasised in every architecture document and
+#: name nothing. Kept short on purpose: an over-eager stop list would silently
+#: drop real component names, and a false candidate merely fails to match.
+_STOPWORDS = frozenset({
+    "overview", "architecture", "introduction", "contents", "summary",
+    "components", "component", "design", "notes", "note", "see also",
+    "references", "reference", "background", "goals", "non-goals",
+    "table of contents", "getting started", "prerequisites", "appendix",
+})
+
+#: Compared in normalised form — see `extract_terms`.
+_NORMALISED_STOPWORDS = frozenset()   # populated below, after _normalise exists
+
+#: Cap on document size read. A generated or book-length doc is not worth
+#: unbounded memory for a Discovery-tier labelling pass.
+MAX_DOC_CHARS = 400_000
+
+#: Cap on FILES read, which is the real cost: each one is an API call.
+#: `milvus-io/milvus`'s `docs/design-docs` holds 80 markdown files one level
+#: down, and reading all of them would put this well outside the tier it claims.
+#: Whatever is dropped is reported — a bounded read that says so is honest; a
+#: bounded read that stays quiet reads as "the document said nothing more".
+MAX_DOC_FILES = 25
+
+#: Filenames that are most likely to describe the system as a whole, read first
+#: when the cap bites. Everything else keeps its natural order behind them.
+_OVERVIEW_HINTS = ("readme", "architecture", "overview", "design", "components",
+                   "system", "introduction")
+
+_DOC_EXTS = (".md", ".mdx", ".rst", ".txt")
+
+
+@dataclass
+class DocLens:
+    """What the document says, and how it lines up with what was proposed."""
+    outcome: str = "not-found"          # dl.Outcome — where the doc was found
+    evidence: str = ""                  # path / owner:path / URL
+    date: str | None = None             # last-commit date of the document
+    terms: list = field(default_factory=list)        # candidate names it emphasises
+    documented: dict = field(default_factory=dict)   # component slug -> matched term
+    undetected: list = field(default_factory=list)   # doc names we did NOT propose
+    notes: list = field(default_factory=list)
+
+    @property
+    def consulted(self) -> bool:
+        """Whether a document was actually read. `terms` being empty is not the
+        same as no document — a doc-site URL is a location we cannot read."""
+        return bool(self.terms)
+
+
+def _normalise(term: str) -> str:
+    """Lowercase, strip markdown/punctuation noise, collapse separators.
+
+    `proxy`, `Proxy`, `**Proxy**`, `proxy/` and `Proxy Node` must all be
+    comparable to a component slugged `proxy`.
+    """
+    t = re.sub(r"[`*_\[\]()<>/\\]+", " ", term).strip().lower()
+    t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+    return t
+
+
+_NORMALISED_STOPWORDS = frozenset(
+    _normalise(w) for w in _STOPWORDS) | frozenset(_STOPWORDS)
+
+
+def extract_terms(text: str) -> list[str]:
+    """Candidate component names from a markdown document, in first-seen order.
+
+    Structural emphasis only. A term that is really prose ("Getting Started")
+    simply fails to match a component later, which costs nothing — whereas a
+    cleverer extractor that dropped a real name would cost recall silently.
+    """
+    seen: dict[str, str] = {}
+    for pattern in (_HEADING_RE, _BOLD_RE, _CODE_RE):
+        for raw in pattern.findall(text[:MAX_DOC_CHARS]):
+            norm = _normalise(raw)
+            # Compare against NORMALISED stopwords. Comparing a normalised term
+            # against raw ones let "table of contents" through as
+            # "table-of-contents" — the stop list looked right and did nothing
+            # for every multi-word entry in it.
+            if not norm or norm in _NORMALISED_STOPWORDS:
+                continue
+            if len(norm) < 3 or norm.isdigit():
+                continue
+            seen.setdefault(norm, raw.strip())
+    return list(seen)
+
+
+def _component_keys(component) -> set:
+    """The names a component could legitimately be called in prose."""
+    keys = set()
+    for value in (getattr(component, "slug", ""), getattr(component, "name", "")):
+        n = _normalise(str(value or ""))
+        if n:
+            keys.add(n)
+            keys.add(n.split("-")[-1])      # `milvus-proxy` also answers to `proxy`
+    return {k for k in keys if len(k) >= 3}
+
+
+def apply(owner_repo: str, components: list, client=None,
+          locations=None) -> DocLens:
+    """Resolve the architecture document and label `components` against it.
+
+    Never mutates `components`. Returns what matched, what the document names
+    that nothing proposed, and where the document came from — all three matter,
+    and the third most: a `sibling-repo` answer is the case that justifies this
+    whole path.
+    """
+    lens = DocLens()
+    try:
+        art = dl.find_artifact(owner_repo, "architecture", client=client,
+                               locations=locations)
+    except Exception as exc:  # noqa: BLE001 - degraded, never fatal
+        lens.notes.append(f"architecture document lookup failed: {exc}")
+        return lens
+
+    lens.outcome, lens.evidence, lens.date = art.outcome, art.evidence, art.date
+    if art.outcome == "not-found":
+        lens.notes.append("no architecture document located — nothing to read")
+        return lens
+    if art.outcome == "doc-site":
+        # A homepage field is not proof of a page (doc_locations' own caveat),
+        # and fetching arbitrary sites is not this tier's job.
+        lens.notes.append(
+            f"architecture document is a doc-site ({art.evidence}) — located but "
+            f"not readable from here, so no terms were extracted")
+        return lens
+
+    text = _read_document(owner_repo, art, client, lens.notes)
+    if not text:
+        lens.notes.append(
+            f"architecture document at {art.evidence} could not be read — "
+            f"located but not consulted")
+        return lens
+
+    lens.terms = extract_terms(text)
+    by_key: dict = {}
+    for c in components:
+        for key in _component_keys(c):
+            by_key.setdefault(key, c)
+
+    for term in lens.terms:
+        hit = by_key.get(term)
+        if hit is not None:
+            lens.documented.setdefault(getattr(hit, "slug", term), term)
+
+    matched_terms = set(lens.documented.values())
+    lens.undetected = [t for t in lens.terms if t not in matched_terms
+                       and t not in lens.documented]
+    return lens
+
+
+def _read_document(owner_repo: str, art, client, notes: list) -> str:
+    """Fetch the located document's text.
+
+    Handles the three readable shapes — a file in this repo, a directory in this
+    repo, and a sibling repository — and descends **one** level into
+    subdirectories, matching `doc_locations._find_in_dir`'s deliberate
+    shallowness. `milvus-io/milvus` is why the descent exists at all: the
+    located artifact is `docs/design-docs`, whose only markdown at the top level
+    is an index, with 80 real documents in `design_docs/` beneath it.
+    """
+    gh = client or dl._make_client()
+    if art.outcome == "sibling-repo":
+        target, _, path = art.evidence.partition(":")
+    else:
+        target, path = owner_repo, art.evidence
+    try:
+        repo = gh.get_repo(target)
+        entry = repo.get_contents(path) if path else repo.get_contents("")
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"could not fetch {target}:{path or '/'} — {exc}")
+        return ""
+
+    entries = entry if isinstance(entry, list) else [entry]
+    files, subdirs = [], []
+    for item in entries:
+        if getattr(item, "type", "") == "dir":
+            subdirs.append(item)
+        elif str(item.path).lower().endswith(_DOC_EXTS):
+            files.append(item)
+
+    for sub in subdirs:
+        try:
+            for item in repo.get_contents(sub.path):
+                if (getattr(item, "type", "") != "dir"
+                        and str(item.path).lower().endswith(_DOC_EXTS)):
+                    files.append(item)
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"could not search '{sub.path}' — {exc}")
+
+    def _priority(item) -> tuple:
+        low = str(item.path).lower()
+        for i, hint in enumerate(_OVERVIEW_HINTS):
+            if hint in low:
+                return (0, i, low)
+        return (1, 0, low)
+
+    files.sort(key=_priority)
+    total = len(files)
+    if total > MAX_DOC_FILES:
+        notes.append(
+            f"{total} document(s) located, read {MAX_DOC_FILES} — "
+            f"overview-shaped filenames first ({', '.join(_OVERVIEW_HINTS[:3])}, "
+            f"...). The remainder were NOT read, so an absent term here is not "
+            f"evidence the documentation is silent about it.")
+        files = files[:MAX_DOC_FILES]
+
+    chunks: list = []
+    for item in files:
+        try:
+            chunks.append(item.decoded_content.decode("utf-8", errors="ignore"))
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"could not decode {item.path} — {exc}")
+        if sum(len(c) for c in chunks) >= MAX_DOC_CHARS:
+            notes.append(
+                f"stopped at {MAX_DOC_CHARS} characters — later documents unread")
+            break
+    if chunks:
+        notes.append(f"read {len(chunks)} of {total} located document(s)")
+    return "\n\n".join(chunks)

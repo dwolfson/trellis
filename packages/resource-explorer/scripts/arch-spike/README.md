@@ -3587,3 +3587,67 @@ Three things fall out, and they pull in different directions:
 So the honest scope: documentation-as-lens is worth building for the ~13 repos where a document is
 already located, the sibling-repo majority is the case that justifies it, and the 31 need a
 separate cheap probe before anyone claims a corpus-wide number.
+
+---
+
+**102. The documentation lens works — and the sibling-repo case I argued was its strongest
+justification is where it performs worst.**
+
+Finding 101 established that architecture recovery never reads the architecture document, and
+argued the sibling-repo majority (9 of 13 located docs live in a *different* repository) was "the
+strongest form of the argument" because no amount of better parsing reaches them. Built it,
+measured it across every gate-approved repo with both a located document and recovered components:
+
+```
+repo                    doc location   comps  documented
+milvus                  in-repo          206          15
+egeria_workspaces_git   in-repo           73          12
+amundsen                in-repo           43           4
+docling_java            sibling-repo       8           2
+genaicomps              sibling-repo     312           2
+docling_eval            sibling-repo      34           1
+ryoma                   in-repo           31           0
+marquez / openlineage / workshops / trellis / egeria_python_git / docling_parse
+                        sibling-repo   11-124           0
+sqlglot / unitycatalog  doc-site       11, 16           0   (located, not readable)
+
+at least one match: 6 of 15
+```
+
+**in-repo: 3 of 4 work, and work well. sibling-repo: 3 of 9, all weakly. My reasoning was
+backwards.** A sibling *documentation repository* is a whole website; `doc_locations` legitimately
+resolves it to a generic pointer at the repo rather than to an architecture page, so what gets read
+is navigation and prose. `openlineage` yielded 2 candidate terms, `marquez` 5, `trellis` 0. The
+in-repo case wins because the located artifact is an actual design-docs directory.
+
+**Where it works, it is the best result this project has produced.** Milvus: 206 candidates → **15
+documented**, and the 15 are the architecture — `proxy`, `rootcoord`, `datacoord`, `querycoord`,
+`indexcoord`, `datanode`, `querynode`, `indexnode`, plus `pulsar` and the shared infrastructure
+(`msgstream`, `tso`, `flowgraph`, `storage`). Against the authors' own "five core components and
+three third-party dependencies", the lens recovered the real partition out of 206 by reading what
+they wrote. Distillation managed 216 → 154 on the same repo; the summariser reported 24 runnable
+units. **The document did in one pass what two deterministic tiers could not.**
+
+**It stays a lens.** It adds no component, removes none, assigns no type, and carries no score — a
+test asserts `DocLens` has no field whose name contains type/confidence/score/rank/grade. A name
+the document uses that nothing proposed is reported as `undetected`, a disagreement, never adopted.
+
+**Three restraints that cost real work and are worth keeping:**
+
+* **Bounded reads, reported.** Milvus's `docs/design-docs` holds 78 markdown files one level down,
+  each an API call. `MAX_DOC_FILES = 25`, overview-shaped filenames first, and the note says what
+  was dropped — because an unread document is not a silent document.
+* **Located ≠ consulted.** `doc-site` outcomes are located and unreadable from here; `consulted` is
+  a separate property from having an outcome. Collapsing them would report "the docs say nothing"
+  for a repo whose docs were never opened.
+* **The date travels.** `OpenLineage`'s architecture document is dated **2023-11-03** — measured.
+  Findings 65-68's version-correlation discipline is not hypothetical here.
+
+**A bug the tests caught that the corpus would have hidden:** `_STOPWORDS` compared raw strings
+against normalised terms, so every multi-word entry in it ("table of contents", "getting started",
+"see also") silently did nothing. The list looked right and half of it was inert.
+
+**`undetected` is not yet usable as a finding.** On Milvus it is 506 terms — section headings from
+25 design documents, not component names. It is meaningful only when the located artifact is an
+architecture *overview* rather than a corpus of design docs, and nothing currently distinguishes
+those. Reported with that caveat rather than presented as a list of things we failed to detect.
