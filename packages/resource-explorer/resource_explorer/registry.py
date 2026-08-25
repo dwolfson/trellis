@@ -1642,6 +1642,11 @@ class ProjectRegistry:
                     -- answers to one question. Carries the full context shape
                     -- (unset/personal/declined/linked/deferred + free text) so
                     -- publishes read it unchanged.
+                    -- §1's mode 2 carries a classification. Kept on the local
+                    -- row even for a local-only investigation, so promoting one
+                    -- later does not have to ask again for something the user
+                    -- already decided.
+                    project_classification         TEXT DEFAULT 'StudyProject',
                     egeria_project_status          TEXT DEFAULT 'unset',
                     egeria_free_text_name          TEXT DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'open',
@@ -1659,6 +1664,7 @@ class ProjectRegistry:
             for col, defn in [
                 ("egeria_project_status", "TEXT DEFAULT 'unset'"),
                 ("egeria_free_text_name", "TEXT DEFAULT ''"),
+                ("project_classification", "TEXT DEFAULT 'StudyProject'"),
             ]:
                 if col not in inv_cols:
                     conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
@@ -1679,15 +1685,44 @@ class ProjectRegistry:
             # All three tables mirror their Egeria counterparts and carry a
             # nullable GUID, so an investigation works with no Egeria at all and
             # promotion fills in rather than migrates.
+            # A Collection per investigation-scoped grouping. TWO kinds, and the
+            # distinction is the whole point:
+            #
+            #   folio        — everything in scope for the investigation. One per
+            #                  investigation. Membership here is "this is part of
+            #                  the body of work", nothing more.
+            #   working_set  — resources carrying ONE disposition. A WorkingSet
+            #                  has a single Disposition, so one per disposition
+            #                  per investigation, created lazily.
+            #
+            # An earlier pass here made a single WorkingSet per investigation and
+            # used it as the membership list. That was a category error: if a
+            # WorkingSet carries one disposition it cannot hold the whole
+            # investigation, and the grouping had no meaning of its own.
+            #
+            # Consequence worth stating: a resource's disposition WITHIN an
+            # investigation is expressed by which working_set it belongs to, so
+            # no separate per-investigation disposition table is needed. The
+            # global repo_dispositions table stays as it is — that is a judgement
+            # about the repo at large, not within a body of work.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS working_sets (
                     slug                              TEXT PRIMARY KEY,
                     display_name                      TEXT NOT NULL,
+                    collection_kind                   TEXT NOT NULL DEFAULT 'folio',
+                    disposition                       TEXT DEFAULT '',
                     egeria_collection_guid            TEXT DEFAULT '',
                     egeria_collection_qualified_name  TEXT DEFAULT '',
                     created_at                        TEXT NOT NULL
                 )
             """)
+            ws_cols = self._get_table_columns(conn, "working_sets")
+            for col, defn in [
+                ("collection_kind", "TEXT NOT NULL DEFAULT 'folio'"),
+                ("disposition", "TEXT DEFAULT ''"),
+            ]:
+                if col not in ws_cols:
+                    conn.execute(f"ALTER TABLE working_sets ADD COLUMN {col} {defn}")
             # The ResourceList relationship (0019) itself. `watch_resource`
             # mirrors its `watchResource` property — the flag Automate's
             # subscriptions should eventually ride on rather than a separate
@@ -3663,8 +3698,15 @@ class ProjectRegistry:
         "Assess", "Certify", "Deploy", "Explore", "Learn", "Maintain", "Select", "Share",
     )
 
+    #: §1 mode 2's classifications. StudyProject is the default because it is
+    #: the least committal — an investigation that turns out to be a Campaign
+    #: can be re-classified, but starting everything as a Campaign would assert
+    #: a scale nobody chose.
+    PROJECT_CLASSIFICATIONS = ("PersonalProject", "Task", "StudyProject", "Campaign")
+
     def create_investigation(self, display_name: str, *, description: str = "",
                              purposes: list[str] | None = None,
+                             project_classification: str = "StudyProject",
                              egeria_project_guid: str = "",
                              egeria_project_qualified_name: str = "") -> dict:
         """Create one investigation. `purposes` is validated against
@@ -3678,6 +3720,11 @@ class ProjectRegistry:
             raise ValueError(
                 f"unknown purpose(s) {bad}; valid: {list(self.VALID_PURPOSES)}"
             )
+        if project_classification not in self.PROJECT_CLASSIFICATIONS:
+            raise ValueError(
+                f"unknown classification {project_classification!r}; "
+                f"valid: {list(self.PROJECT_CLASSIFICATIONS)}"
+            )
         base = _re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "investigation"
         slug, n = base, 1
         while self.get_investigation(slug):
@@ -3688,11 +3735,12 @@ class ProjectRegistry:
             conn.execute(
                 """INSERT INTO investigations
                    (slug, display_name, description, purposes_json,
-                    egeria_project_guid, egeria_project_qualified_name,
-                    status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                    project_classification, egeria_project_guid,
+                    egeria_project_qualified_name, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                 (slug, display_name, description, _json.dumps(purposes),
-                 egeria_project_guid, egeria_project_qualified_name, now, now),
+                 project_classification, egeria_project_guid,
+                 egeria_project_qualified_name, now, now),
             )
         return self.get_investigation(slug)
 
@@ -3728,33 +3776,83 @@ class ProjectRegistry:
     # An investigation gets one working set lazily, on first use, so a brand-new
     # investigation genuinely has none rather than an empty shell.
 
-    def get_or_create_working_set(self, investigation_slug: str,
-                                  display_name: str = "") -> dict | None:
+    #: The dispositions a WorkingSet can carry. Same vocabulary the global
+    #: repo_dispositions uses, minus `undecided` — "no decision yet" is the
+    #: absence of a WorkingSet, not a WorkingSet of its own. Creating one would
+    #: make "nobody has judged this" and "someone judged it as undecided"
+    #: indistinguishable.
+    WORKING_SET_DISPOSITIONS = (
+        "tracking", "investigating", "recommended", "using", "abandoned", "ignored",
+    )
+
+    def get_or_create_folio(self, investigation_slug: str) -> dict | None:
+        """The investigation's Folio — everything in scope, one per investigation."""
+        return self._get_or_create_collection(investigation_slug, "folio", "")
+
+    def get_or_create_disposition_set(self, investigation_slug: str,
+                                      disposition: str) -> dict | None:
+        """The WorkingSet for one disposition within this investigation.
+
+        Created lazily: seven empty Collections per investigation would be noise,
+        and an empty WorkingSet is indistinguishable from one nobody has used.
+        """
+        if disposition not in self.WORKING_SET_DISPOSITIONS:
+            raise ValueError(
+                f"unknown disposition {disposition!r}; valid: {list(self.WORKING_SET_DISPOSITIONS)}"
+            )
+        return self._get_or_create_collection(investigation_slug, "working_set", disposition)
+
+    def _get_or_create_collection(self, investigation_slug: str, kind: str,
+                                  disposition: str) -> dict | None:
         inv = self.get_investigation(investigation_slug)
         if not inv:
             return None
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
-                (investigation_slug,),
+                """SELECT ws.slug FROM working_sets ws
+                   JOIN investigation_resource_lists rl ON rl.working_set_slug = ws.slug
+                   WHERE rl.investigation_slug = ? AND ws.collection_kind = ?
+                     AND COALESCE(ws.disposition, '') = ?""",
+                (investigation_slug, kind, disposition),
             ).fetchone()
             if row:
-                ws_slug = row["working_set_slug"]
+                ws_slug = row["slug"]
             else:
-                ws_slug = f"{investigation_slug}-ws"
+                ws_slug = (f"{investigation_slug}-folio" if kind == "folio"
+                           else f"{investigation_slug}-ws-{disposition}")
+                name = (f"{inv['display_name']}" if kind == "folio"
+                        else f"{inv['display_name']} — {disposition}")
                 now = datetime.utcnow().isoformat()
+                # ON CONFLICT, not a bare INSERT: a working_sets row can outlive
+                # its ResourceList link (an interrupted cleanup, a deleted
+                # investigation), and the slug is derived rather than generated,
+                # so the orphan is hit again the moment the same name recurs.
+                # Adopting it is right — it is the same collection.
                 conn.execute(
-                    """INSERT INTO working_sets (slug, display_name, created_at)
-                       VALUES (?, ?, ?)""",
-                    (ws_slug, display_name or f"{inv['display_name']} working set", now),
+                    """INSERT INTO working_sets
+                       (slug, display_name, collection_kind, disposition, created_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (slug) DO UPDATE
+                         SET display_name = EXCLUDED.display_name,
+                             collection_kind = EXCLUDED.collection_kind,
+                             disposition = EXCLUDED.disposition""",
+                    (ws_slug, name, kind, disposition, now),
                 )
                 conn.execute(
                     """INSERT INTO investigation_resource_lists
                        (investigation_slug, working_set_slug, resource_use, added_at)
-                       VALUES (?, ?, 'working-set', ?)""",
-                    (investigation_slug, ws_slug, now),
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT (investigation_slug, working_set_slug) DO NOTHING""",
+                    (investigation_slug, ws_slug,
+                     "folio" if kind == "folio" else f"disposition:{disposition}", now),
                 )
         return self.get_working_set(ws_slug)
+
+    # Back-compat: everything that asked for "the investigation's working set"
+    # meant "what is in scope", which is now the Folio.
+    def get_or_create_working_set(self, investigation_slug: str,
+                                  display_name: str = "") -> dict | None:
+        return self.get_or_create_folio(investigation_slug)
 
     def get_working_set(self, ws_slug: str) -> dict | None:
         with self._conn() as conn:
@@ -3766,12 +3864,15 @@ class ProjectRegistry:
         return d
 
     def investigation_working_set_slug(self, investigation_slug: str) -> str:
+        """The investigation's FOLIO slug — what "its working set" used to mean."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                """SELECT ws.slug FROM working_sets ws
+                   JOIN investigation_resource_lists rl ON rl.working_set_slug = ws.slug
+                   WHERE rl.investigation_slug = ? AND ws.collection_kind = 'folio'""",
                 (investigation_slug,),
             ).fetchone()
-        return row["working_set_slug"] if row else ""
+        return row["slug"] if row else ""
 
     def add_working_set_member(self, ws_slug: str, entity_type: str, entity_slug: str,
                                *, membership_rationale: str = "",
@@ -3810,96 +3911,84 @@ class ProjectRegistry:
         return [dict(r) for r in rows]
 
     def list_investigation_members(self, investigation_slug: str) -> list[dict]:
-        """Members of this investigation's working set, flattened.
+        """What is in scope for this investigation — the Folio's members.
 
-        Kept under the old name because callers only ever want "what is in
-        scope for this investigation" — the two-hop shape is a fidelity
-        decision about how it is STORED, not something every caller should
-        have to walk.
+        Deliberately the Folio and not a union across WorkingSets: a resource can
+        be in scope without anyone having judged it yet, and that is the normal
+        state right after scouting.
         """
-        ws = self.investigation_working_set_slug(investigation_slug)
-        return self.list_working_set_members(ws) if ws else []
+        folio = self.investigation_working_set_slug(investigation_slug)
+        return self.list_working_set_members(folio) if folio else []
 
-    def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:
-        """Bind (or unbind) an investigation to an Egeria Project.
+    def set_investigation_disposition(self, investigation_slug: str, entity_type: str,
+                                      entity_slug: str, disposition: str,
+                                      *, rationale: str = "") -> dict:
+        """Give a resource a disposition WITHIN this investigation.
 
-        Takes the same context shape the publish path already speaks —
-        {status, egeria_project_guid, egeria_project_qualified_name,
-        free_text_name} — so nothing downstream has to learn a new one.
+        The disposition IS the WorkingSet it belongs to, so this moves it: added
+        to the target set and removed from every other, because a WorkingSet
+        carries a single disposition and membership of two would assert two
+        contradictory judgements at once.
+
+        Passing "" or "undecided" clears the disposition, leaving the resource in
+        the Folio — in scope, unjudged.
         """
+        folio = self.get_or_create_folio(investigation_slug)
+        if not folio:
+            return {}
+        # Anything with a disposition is in scope by definition.
+        self.add_working_set_member(folio["slug"], entity_type, entity_slug,
+                                    membership_rationale=rationale)
         with self._conn() as conn:
-            conn.execute(
-                """UPDATE investigations
-                   SET egeria_project_status = ?, egeria_project_guid = ?,
-                       egeria_project_qualified_name = ?, egeria_free_text_name = ?,
-                       updated_at = ?
-                   WHERE slug = ?""",
-                (ctx.get("status", "unset"), ctx.get("egeria_project_guid", ""),
-                 ctx.get("egeria_project_qualified_name", ""),
-                 ctx.get("free_text_name", ""),
-                 datetime.utcnow().isoformat(), slug),
-            )
-        return self.get_investigation(slug)
-
-    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
-        """The Egeria Project binding a resource inherits from its investigation.
-
-        An investigation IS "the context everything else runs inside" (design
-        §1). If a resource is in the working set of an investigation that is
-        bound to an Egeria Project, that binding already answers "which Project
-        does this belong to" — asking again per resource is asking a question
-        that has been answered.
-
-        Returns None when nothing is inheritable, so the caller can fall back to
-        the normal prompt rather than proceeding on a guess. Only `linked`
-        investigations qualify: `personal`, `declined` and `deferred` are
-        deliberate answers about THAT investigation and do not name a Project to
-        inherit.
-        """
-        with self._conn() as conn:
-            row = conn.execute(
-                """SELECT i.slug, i.display_name, i.egeria_project_guid,
-                          i.egeria_project_qualified_name
-                   FROM working_set_members m
-                   JOIN investigation_resource_lists rl
-                     ON rl.working_set_slug = m.working_set_slug
-                   JOIN investigations i
-                     ON i.slug = rl.investigation_slug
-                   WHERE m.entity_type = ? AND m.entity_slug = ?
-                     AND m.state <> 'excluded'
-                     AND i.status <> 'closed'
-                     AND i.egeria_project_status = 'linked'
-                     AND i.egeria_project_guid <> ''
-                   ORDER BY i.updated_at DESC""",
-                (entity_type, entity_slug),
+            existing = conn.execute(
+                """SELECT ws.slug, ws.disposition FROM working_sets ws
+                   JOIN investigation_resource_lists rl ON rl.working_set_slug = ws.slug
+                   WHERE rl.investigation_slug = ? AND ws.collection_kind = 'working_set'""",
+                (investigation_slug,),
             ).fetchall()
-        if not row:
-            return None
-        # A resource can legitimately be in several investigations. Inheriting
-        # from the most recently updated one is a guess, so it is reported
-        # rather than hidden — the caller records which investigation supplied
-        # the binding.
-        first = dict(row[0])
-        return {
-            "status": "linked",
-            "egeria_project_guid": first["egeria_project_guid"],
-            "egeria_project_qualified_name": first["egeria_project_qualified_name"] or "",
-            "free_text_name": "",
-            "_inherited_from": first["slug"],
-            "_inherited_from_name": first["display_name"],
-            "_ambiguous": len(row) > 1,
-        }
+            for r in existing:
+                conn.execute(
+                    """DELETE FROM working_set_members
+                       WHERE working_set_slug = ? AND entity_type = ? AND entity_slug = ?""",
+                    (r["slug"], entity_type, entity_slug),
+                )
+        if disposition and disposition != "undecided":
+            target = self.get_or_create_disposition_set(investigation_slug, disposition)
+            self.add_working_set_member(target["slug"], entity_type, entity_slug,
+                                        membership_rationale=rationale)
+        return self.investigation_dispositions(investigation_slug)
+
+    def investigation_dispositions(self, investigation_slug: str) -> dict:
+        """{disposition: [members]} for this investigation — what the left-hand
+        filter needs, derived from WorkingSet membership rather than stored twice."""
+        out: dict[str, list[dict]] = {}
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT ws.slug, ws.disposition FROM working_sets ws
+                   JOIN investigation_resource_lists rl ON rl.working_set_slug = ws.slug
+                   WHERE rl.investigation_slug = ? AND ws.collection_kind = 'working_set'
+                   ORDER BY ws.disposition""",
+                (investigation_slug,),
+            ).fetchall()
+        for r in rows:
+            members = self.list_working_set_members(r["slug"])
+            if members:
+                out[r["disposition"]] = members
+        return out
+
+    def disposition_of(self, investigation_slug: str, entity_type: str,
+                       entity_slug: str) -> str:
+        for disp, members in self.investigation_dispositions(investigation_slug).items():
+            if any(m["entity_type"] == entity_type and m["entity_slug"] == entity_slug
+                   for m in members):
+                return disp
+        return ""
 
     def update_investigation(self, slug: str, *, display_name: str | None = None,
                              description: str | None = None,
                              purposes: list[str] | None = None) -> dict | None:
-        """Rename or re-describe an investigation. The slug never changes.
-
-        An investigation accumulates members, an Egeria binding and inherited
-        context rows that all reference it, so re-slugging would orphan them —
-        and the slug is an identifier, not a label. Only what a human reads
-        changes here.
-        """
+        """Rename or re-describe an investigation. The slug never changes —
+        members, the Egeria binding and inherited context rows reference it."""
         import json as _json
         inv = self.get_investigation(slug)
         if not inv:
@@ -3921,6 +4010,64 @@ class ProjectRegistry:
             conn.execute("UPDATE investigations SET updated_at = ? WHERE slug = ?",
                          (datetime.utcnow().isoformat(), slug))
         return self.get_investigation(slug)
+
+    def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:
+        """Bind (or unbind) an investigation to an Egeria Project.
+
+        Takes the same context shape the publish path speaks, so nothing
+        downstream has to learn a new one.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE investigations
+                   SET egeria_project_status = ?, egeria_project_guid = ?,
+                       egeria_project_qualified_name = ?, egeria_free_text_name = ?,
+                       updated_at = ?
+                   WHERE slug = ?""",
+                (ctx.get("status", "unset"), ctx.get("egeria_project_guid", ""),
+                 ctx.get("egeria_project_qualified_name", ""),
+                 ctx.get("free_text_name", ""),
+                 datetime.utcnow().isoformat(), slug),
+            )
+        return self.get_investigation(slug)
+
+    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+        """The Egeria Project binding a resource inherits from its investigation.
+
+        Scoped to the FOLIO — being in scope for a bound investigation is what
+        supplies the binding. A disposition WorkingSet's members are all in the
+        Folio too, so this covers them without double-counting.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT i.slug, i.display_name, i.egeria_project_guid,
+                          i.egeria_project_qualified_name
+                   FROM working_set_members m
+                   JOIN working_sets ws ON ws.slug = m.working_set_slug
+                   JOIN investigation_resource_lists rl
+                     ON rl.working_set_slug = m.working_set_slug
+                   JOIN investigations i ON i.slug = rl.investigation_slug
+                   WHERE m.entity_type = ? AND m.entity_slug = ?
+                     AND m.state <> 'excluded'
+                     AND ws.collection_kind = 'folio'
+                     AND i.status <> 'closed'
+                     AND i.egeria_project_status = 'linked'
+                     AND i.egeria_project_guid <> ''
+                   ORDER BY i.updated_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        if not row:
+            return None
+        first = dict(row[0])
+        return {
+            "status": "linked",
+            "egeria_project_guid": first["egeria_project_guid"],
+            "egeria_project_qualified_name": first["egeria_project_qualified_name"] or "",
+            "free_text_name": "",
+            "_inherited_from": first["slug"],
+            "_inherited_from_name": first["display_name"],
+            "_ambiguous": len(row) > 1,
+        }
 
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:

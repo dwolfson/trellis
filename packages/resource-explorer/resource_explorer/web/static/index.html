@@ -370,6 +370,12 @@
           <button onclick="_setProjectLifecycleFilter('surveyed')" data-lifecycle-filter="surveyed" class="filter-chip">📊 Surveyed</button>
           <button onclick="_setProjectLifecycleFilter('published')" data-lifecycle-filter="published" class="filter-chip">☁ Published</button>
         </div>
+        <!-- Disposition chips, rendered from the current investigation's
+             WorkingSets. Only dispositions actually IN USE get a chip: an
+             investigation where nothing is abandoned should not offer an
+             "abandoned" filter that always returns nothing, which reads as a
+             broken filter rather than an empty category. -->
+        <div id="disposition-chips" class="flex flex-wrap gap-1 mt-1"></div>
         <!-- Select mode. The sidebar is primarily NAVIGATION — a click selects a
              repo — so checkboxes are a mode rather than always-on, otherwise
              "click" means two things at once. Only offered when an investigation
@@ -387,6 +393,19 @@
                     data-tip="Hide from your own list. A personal view preference, not a judgement about the resource">🚫 Hide</button>
             <button onclick="_deleteSelected()" class="filter-chip text-rose-300 hover:bg-rose-900/40"
                     data-tip="Unregister entirely and delete all local survey data">🗑 Delete</button>
+            <span class="w-px h-4 bg-slate-600 mx-1"></span>
+            <select onchange="if(this.value!==''){_setSelectedDisposition(this.value); this.value='';}"
+                    class="filter-chip bg-slate-700 text-slate-200"
+                    data-tip="Mark the selected resources with a disposition in this investigation">
+              <option value="">Mark as…</option>
+              <option value="tracking">👁 tracking</option>
+              <option value="investigating">🔬 investigating</option>
+              <option value="recommended">👍 recommended</option>
+              <option value="using">✅ using</option>
+              <option value="abandoned">🪦 abandoned</option>
+              <option value="ignored">🚫 ignored</option>
+              <option value="undecided">— clear</option>
+            </select>
             <span class="w-px h-4 bg-slate-600 mx-1"></span>
             <button onclick="_selectAllVisible()" class="filter-chip">All shown</button>
             <button onclick="_clearSelection()" class="filter-chip">None</button>
@@ -1400,6 +1419,12 @@ let _projectFilterText = '';
 // investigation legitimately contains nothing yet.
 let _workingSetKeys = new Set();
 let _workingSetLoaded = false;
+// {disposition: Set(entityKey)} for the current investigation, and the chip
+// currently selected. Disposition is per-INVESTIGATION here — it is which
+// WorkingSet a resource sits in — deliberately distinct from the global
+// repo_dispositions judgement the sidebar badge shows.
+let _dispositionMembers = {};
+let _dispositionFilter = '';
 let _projectLifecycleFilter = 'working-set';  // 'working-set' | '' | 'new' | 'surveyed' | 'published'
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
 let _activityUnread  = 0;   // count of entries since activity tab was last viewed
@@ -3479,6 +3504,10 @@ function _renderProjectRow(p) {
 function _matchesProjectFilter(p) {
   // The working set is membership, not a lifecycle stage — it asks "is this
   // part of the body of work I declared", which no lifecycle value can answer.
+  if (_dispositionFilter) {
+    const members = _dispositionMembers[_dispositionFilter];
+    if (!members || !members.has(`repo:${p.slug}`)) return false;
+  }
   if (_projectLifecycleFilter === 'working-set') {
     if (!_currentInvestigation()) return false;
     return _workingSetKeys.has(`repo:${p.slug}`);
@@ -3494,6 +3523,110 @@ function _setProjectFilterText(value) {
   renderProjectList();
 }
 
+// Disposition chips — per-investigation, derived from WorkingSet membership.
+//
+// Distinct from the sidebar's disposition BADGE, which shows the global
+// repo_dispositions judgement about the repo at large. The same repo can be
+// `using` in one investigation and `abandoned` in another; that is the point of
+// scoping it, and the two must not be conflated in the UI either.
+const _DISPOSITION_GLYPH = {
+  tracking: '👁', investigating: '🔬', recommended: '👍',
+  using: '✅', abandoned: '🪦', ignored: '🚫',
+};
+
+async function _loadDispositions() {
+  const inv = _currentInvestigation();
+  _dispositionMembers = {};
+  if (inv) {
+    try {
+      const byDisp = await (await fetch(`/api/investigations/${encodeURIComponent(inv)}/dispositions`)).json();
+      Object.entries(byDisp || {}).forEach(([d, members]) => {
+        _dispositionMembers[d] = new Set((members || []).map(m => `${m.entity_type}:${m.entity_slug}`));
+      });
+    } catch (e) { /* leave empty — an unreachable API must not read as "nothing is judged" */ }
+  }
+  // A filter whose disposition no longer has members would silently show an
+  // empty list, so drop it rather than leave a chip selected that cannot match.
+  if (_dispositionFilter && !_dispositionMembers[_dispositionFilter]) _dispositionFilter = '';
+  _renderDispositionChips();
+  renderProjectList();
+}
+
+function _renderDispositionChips() {
+  const box = document.getElementById('disposition-chips');
+  if (!box) return;
+  const entries = Object.entries(_dispositionMembers).filter(([, s]) => s.size);
+  if (!entries.length) { box.innerHTML = ''; return; }
+  box.innerHTML =
+    `<span class="text-[10px] text-slate-500 self-center mr-0.5">disposition</span>`
+    + entries.sort(([a], [b]) => a.localeCompare(b)).map(([d, set]) => `
+      <button onclick="_setDispositionFilter('${_esc(d)}')"
+              class="filter-chip ${_dispositionFilter === d ? 'active' : ''}"
+              data-tip="${set.size} resource(s) marked '${_esc(d)}' in this investigation">
+        ${_DISPOSITION_GLYPH[d] || '•'} ${_esc(d)} ${set.size}
+      </button>`).join('')
+    + (_dispositionFilter
+        ? `<button onclick="_setDispositionFilter('')" class="filter-chip">clear</button>`
+        : '');
+}
+
+function _setDispositionFilter(d) {
+  _dispositionFilter = (_dispositionFilter === d) ? '' : d;
+  // Deliberately does NOT widen the lifecycle filter.
+  //
+  // An earlier version switched to All on the theory that combining filters
+  // would silently produce empty lists. That cannot happen:
+  // set_investigation_disposition adds to the Folio before assigning a
+  // disposition, so every disposition member is in the working set by
+  // construction — verified against real data, 0 exceptions across 19 members.
+  //
+  // And widening was wrong in intent even where it was safe. Disposition exists
+  // so an investigation can FOCUS on the resources that matter within it; a
+  // filter that quietly expands the list to every registered repo throws that
+  // focus away at the exact moment the user asked for it.
+  _renderDispositionChips();
+  renderProjectList();
+}
+
+async function _setInvestigationDisposition(slug, disposition) {
+  const inv = _currentInvestigation();
+  if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
+  try {
+    const r = await fetch(
+      `/api/investigations/${encodeURIComponent(inv)}/dispositions/repo/${encodeURIComponent(slug)}`
+      + `?disposition=${encodeURIComponent(disposition)}`, {method: 'POST'});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    showToast('success', disposition
+      ? `${slug} marked '${disposition}' in ${_investigationName(inv)}`
+      : `${slug} disposition cleared — still in scope`, 3000);
+  } catch (e) {
+    showToast('error', `Could not set disposition: ${e}`, 4000);
+    return;
+  }
+  await _loadWorkingSet();
+  await _loadDispositions();
+}
+
+async function _setSelectedDisposition(disposition) {
+  const slugs = [..._wsSelected];
+  if (!slugs.length) { showToast('error', 'Nothing selected', 3000); return; }
+  const inv = _currentInvestigation();
+  let done = 0;
+  for (const slug of slugs) {
+    try {
+      const r = await fetch(
+        `/api/investigations/${encodeURIComponent(inv)}/dispositions/repo/${encodeURIComponent(slug)}`
+        + `?disposition=${encodeURIComponent(disposition)}`, {method: 'POST'});
+      if (r.ok) done++;
+    } catch (e) { /* one failure must not abandon the batch */ }
+  }
+  showToast(done === slugs.length ? 'success' : 'error',
+            `${done} of ${slugs.length} marked '${disposition || 'undecided'}'`, 4000);
+  _clearSelection();
+  await _loadWorkingSet();
+  await _loadDispositions();
+}
+
 async function _loadWorkingSet() {
   const inv = _currentInvestigation();
   _workingSetKeys = new Set();
@@ -3507,6 +3640,7 @@ async function _loadWorkingSet() {
   }
   _workingSetLoaded = true;
   renderProjectList();
+  _loadDispositions();
 }
 
 // Scouting -> working set: the loop that makes an investigation accumulate.
@@ -7341,6 +7475,7 @@ async function loadInvestigationsPanel() {
   }
   _refreshInvestigationLabel();
   view.innerHTML = _renderInvestigationsPanel();
+  _loadNextSteps(_currentInvestigation());
 }
 
 function _renderInvestigationsPanel() {
@@ -7368,6 +7503,7 @@ function _renderInvestigationsPanel() {
             ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
             ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
           </div>
+          ${isCur ? `<div id="inv-next-steps" class="mt-2"></div>` : ''}
         </div>
         <div class="shrink-0 flex gap-1">
           ${isCur ? '' : `<button onclick="_setCurrentInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-cyan-600 text-white hover:bg-cyan-500">Use</button>`}
@@ -7398,6 +7534,17 @@ function _renderInvestigationsPanel() {
         question catalog is tagged with, so they rank what gets proposed. Purpose ranks; it does not hide.
       </div>
       <div class="mb-2">${purposeBoxes}</div>
+      <div class="mb-1 text-xs text-slate-500">
+        Kind — what shape of work this is. Carried onto the Egeria Project if this is ever
+        promoted, so it does not have to be asked again.
+      </div>
+      <select id="inv-classification" class="mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+        <option value="StudyProject">Study — investigating something, no commitment yet</option>
+        <option value="Task">Task — one bounded piece of work</option>
+        <option value="PersonalProject">Personal — my own exploration</option>
+        <option value="Campaign">Campaign — a programme spanning several efforts</option>
+      </select>
+      <div></div>
       <button onclick="_createInvestigation()" class="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-500">Create</button>
       <div class="text-[11px] text-slate-500 mt-2">
         Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
@@ -7436,6 +7583,48 @@ function _openInvestigationEgeriaPicker() {
   if (modal) modal.classList.remove('hidden');
 }
 
+// Next steps — the other half of "ask only what an investigation IS".
+//
+// The creation form asks name, why, and kind. Everything else appears HERE,
+// where the absence already is: no resources says so and points at Scouting, no
+// binding offers to make one. Offers, not prompts — nothing blocks, nothing
+// re-asks, and an unanswered offer is a standing offer. That is also what makes
+// the same state safe for a scheduled run, which has nobody to ask.
+const _NEXT_STEP_ACTION = {
+  scouting:    {label: 'Go to Scouting →', fn: "setNavIntent('scouting')"},
+  disposition: {label: 'Select resources to mark →', fn: "_toggleSelectMode()"},
+  egeria:      {label: 'Bind or create →', fn: "_openInvestigationEgeriaPicker()"},
+  edit:        {label: 'Add a purpose →', fn: "_focusInvestigationPurposes()"},
+};
+
+async function _loadNextSteps(slug) {
+  const box = document.getElementById('inv-next-steps');
+  if (!box || !slug) return;
+  let data;
+  try {
+    data = await (await fetch(`/api/investigations/${encodeURIComponent(slug)}/next-steps`)).json();
+  } catch (e) { box.innerHTML = ''; return; }
+  if (!data || data.complete) {
+    // Deliberately says something rather than rendering nothing: an empty area
+    // where offers used to be reads as a failed load.
+    box.innerHTML = `<div class="text-[11px] text-slate-500">✓ Nothing outstanding — scoped, judged and catalogued.</div>`;
+    return;
+  }
+  box.innerHTML = (data.steps || []).map(st => {
+    const act = _NEXT_STEP_ACTION[st.action];
+    return `<div class="text-[11px] text-slate-400 border-l-2 border-slate-600 pl-2 mb-1">
+      <div class="text-slate-300">${_esc(st.title)}</div>
+      <div class="text-slate-500">${_esc(st.detail)}</div>
+      ${act ? `<button onclick="${act.fn}" class="text-cyan-500 hover:underline">${_esc(act.label)}</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function _focusInvestigationPurposes() {
+  const first = document.querySelector('.inv-purpose');
+  if (first) { first.focus(); first.scrollIntoView({block: 'center'}); }
+}
+
 async function _createInvestigation() {
   const name = (document.getElementById('inv-name')?.value || '').trim();
   if (!name) { showToast('Name is required', 'error'); return; }
@@ -7447,6 +7636,7 @@ async function _createInvestigation() {
         display_name: name,
         description: (document.getElementById('inv-desc')?.value || '').trim(),
         purposes,
+        project_classification: document.getElementById('inv-classification')?.value || 'StudyProject',
       }),
     });
     if (!resp.ok) { showToast(`Could not create: ${(await resp.json()).detail || resp.status}`, 'error'); return; }

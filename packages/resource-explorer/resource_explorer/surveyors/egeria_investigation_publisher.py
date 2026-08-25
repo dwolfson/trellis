@@ -24,6 +24,32 @@ from dataclasses import dataclass, field
 log = logging.getLogger(__name__)
 
 
+def _create_typed_collection(cm, type_name: str, display_name: str,
+                             description: str, qualified_name: str = "") -> str:
+    """Create a Collection SUBTYPE (Folio, WorkingSet, ...).
+
+    `create_collection`'s convenience parameters build a plain Collection, so the
+    subtype goes through `body` as `typeName` — the same route the publisher
+    already uses for asset properties. Folio and WorkingSet are subtypes of
+    Collection, not classifications, so this is a typeName rather than an
+    initial_classification.
+    """
+    # qualifiedName is REQUIRED and is not generated for you once you pass an
+    # explicit body — the convenience path supplies one, the body path does not.
+    # Egeria rejects the create with OPEN-METADATA-400-004 otherwise.
+    body = {
+        "class": "NewElementRequestBody",
+        "properties": {
+            "class": "CollectionProperties",
+            "typeName": type_name,
+            "qualifiedName": qualified_name or f"{type_name}::{display_name}",
+            "displayName": display_name,
+            "description": description,
+        },
+    }
+    return cm.create_collection(body=body) or ""
+
+
 @dataclass
 class PromotionResult:
     """What actually happened, step by step."""
@@ -157,10 +183,11 @@ class EgeriaInvestigationPublisher:
         # 2. the working set, as a Collection
         members = self._registry.list_investigation_members(investigation_slug)
         try:
-            res.collection_guid = cm.create_collection(
-                display_name=f"{inv['display_name']} working set",
-                description="Resources in scope for this investigation.",
-            ) or ""
+            res.collection_guid = _create_typed_collection(
+                cm, "Folio", inv["display_name"],
+                "Everything in scope for this investigation.",
+                qualified_name=f"Folio::Investigation::{investigation_slug}",
+            )
         except Exception as exc:
             res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")
             return res
@@ -263,10 +290,11 @@ class EgeriaInvestigationPublisher:
             log.warning("could not list attached collections for %s: %s", project_guid, exc)
 
         try:
-            res.collection_guid = cm.create_collection(
-                display_name=f"{inv['display_name']} working set",
-                description="Resources in scope for this investigation.",
-            ) or ""
+            res.collection_guid = _create_typed_collection(
+                cm, "Folio", inv["display_name"],
+                "Everything in scope for this investigation.",
+                qualified_name=f"Folio::Investigation::{investigation_slug}",
+            )
         except Exception as exc:
             res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")
             return res
@@ -339,6 +367,55 @@ class EgeriaInvestigationPublisher:
         except Exception as exc:
             res.errors.append(f"could not verify the rename applied: {type(exc).__name__}: {exc}")
         return res
+
+    def sync_disposition_sets(self, investigation_slug: str) -> dict:
+        """Create an Egeria WorkingSet per disposition IN USE, and link it.
+
+        Only dispositions that actually have members: a WorkingSet carries a
+        single Disposition, so pre-creating all six per investigation would fill
+        the catalog with empty Collections that cannot be told apart from ones
+        nobody has used.
+
+        Each is a Collection subtype linked to the Project by its own
+        ResourceList, with `resourceUse` naming the disposition — so the catalog
+        answers "what is being tracked here" without reading membership.
+        """
+        out: dict = {"created": [], "skipped": [], "errors": []}
+        inv = self._registry.get_investigation(investigation_slug)
+        if not inv or not inv.get("egeria_project_guid"):
+            out["errors"].append("not bound to an Egeria Project")
+            return out
+        project_guid = inv["egeria_project_guid"]
+        try:
+            _, cm = self._managers()
+        except Exception as exc:
+            out["errors"].append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
+            return out
+
+        for disposition in self._registry.investigation_dispositions(investigation_slug):
+            ws = self._registry.get_or_create_disposition_set(investigation_slug, disposition)
+            if not ws:
+                continue
+            if ws.get("egeria_collection_guid"):
+                out["skipped"].append(disposition)
+                continue
+            try:
+                guid = _create_typed_collection(
+                    cm, "WorkingSet", ws["display_name"],
+                    f"Resources in this investigation with disposition '{disposition}'.",
+                    # Slug-based, NOT derived from display_name. A qualifiedName
+                    # built from a mutable label breaks the moment someone
+                    # renames the investigation — which happened today — leaving
+                    # an orphan whose name no longer matches anything, or a
+                    # collision with the new one.
+                    qualified_name=f"WorkingSet::Investigation::{investigation_slug}::{disposition}",
+                )
+                cm.attach_collection(project_guid, guid)
+                self._registry.set_working_set_egeria_collection(ws["slug"], guid)
+                out["created"].append({"disposition": disposition, "guid": guid})
+            except Exception as exc:
+                out["errors"].append(f"{disposition}: {type(exc).__name__}: {exc}")
+        return out
 
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
         if entity_type == "repo":
