@@ -33,8 +33,16 @@ def made(client):
     reg = ProjectRegistry()
     with reg._conn() as conn:
         for slug in created:
-            ws = reg.investigation_working_set_slug(slug)
-            if ws:
+            # EVERY collection this investigation owns, not just its folio. An
+            # investigation now has a Folio plus one WorkingSet per disposition
+            # in use, so a cleanup that hand-lists one leaks the rest into the
+            # next test — which is how these passed alone and failed in suite.
+            rows = conn.execute(
+                "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+                (slug,),
+            ).fetchall()
+            for r in rows:
+                ws = r["working_set_slug"]
                 conn.execute("DELETE FROM working_set_members WHERE working_set_slug = ?", (ws,))
                 conn.execute("DELETE FROM working_sets WHERE slug = ?", (ws,))
             conn.execute("DELETE FROM investigation_resource_lists WHERE investigation_slug = ?", (slug,))
@@ -440,3 +448,74 @@ def test_an_excluded_member_does_not_inherit(made):
     ws = reg.get_or_create_working_set(inv["slug"])
     reg.add_working_set_member(ws["slug"], "repo", "ruled-out-repo", state="excluded")
     assert reg.inherited_egeria_project_context("repo", "ruled-out-repo") is None
+
+
+def test_a_folio_holds_scope_and_working_sets_hold_dispositions(made):
+    """The correction that prompted this: a WorkingSet carries a SINGLE
+    Disposition, so one per investigation cannot be the membership list.
+
+    Folio = everything in scope. WorkingSet = the resources carrying one
+    disposition. A resource's disposition within an investigation IS which
+    WorkingSet it sits in, so nothing stores it twice.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Folio Model")
+    reg = ProjectRegistry()
+
+    folio = reg.get_or_create_folio(inv["slug"])
+    assert folio["collection_kind"] == "folio"
+    assert folio["disposition"] == ""
+
+    reg.set_investigation_disposition(inv["slug"], "repo", "alpha", "tracking")
+    reg.set_investigation_disposition(inv["slug"], "repo", "beta", "using")
+
+    by_disp = reg.investigation_dispositions(inv["slug"])
+    assert sorted(by_disp) == ["tracking", "using"]
+    # in scope regardless of judgement
+    assert {m["entity_slug"] for m in reg.list_investigation_members(inv["slug"])} == {"alpha", "beta"}
+
+
+def test_changing_a_disposition_moves_rather_than_adds(made):
+    """A WorkingSet carries one disposition, so membership of two would assert
+    two contradictory judgements about the same resource at once."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Moving")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "gamma", "investigating")
+    reg.set_investigation_disposition(inv["slug"], "repo", "gamma", "abandoned")
+
+    by_disp = reg.investigation_dispositions(inv["slug"])
+    holding = [d for d, ms in by_disp.items() if any(m["entity_slug"] == "gamma" for m in ms)]
+    assert holding == ["abandoned"], f"in {len(holding)} sets at once: {holding}"
+    assert reg.disposition_of(inv["slug"], "repo", "gamma") == "abandoned"
+
+
+def test_clearing_a_disposition_leaves_it_in_scope(made):
+    """In scope but unjudged is the normal state straight after scouting, and
+    must be expressible — otherwise clearing a decision would silently remove
+    the resource from the investigation."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Unjudged")
+    reg = ProjectRegistry()
+    reg.set_investigation_disposition(inv["slug"], "repo", "delta", "tracking")
+    reg.set_investigation_disposition(inv["slug"], "repo", "delta", "")
+
+    assert reg.disposition_of(inv["slug"], "repo", "delta") == ""
+    assert any(m["entity_slug"] == "delta" for m in reg.list_investigation_members(inv["slug"]))
+
+
+def test_undecided_is_not_a_working_set(made):
+    """"Nobody has judged this" is the ABSENCE of a WorkingSet. Creating one for
+    it would make an unjudged resource indistinguishable from one deliberately
+    marked undecided."""
+    from resource_explorer.registry import ProjectRegistry
+    import pytest as _pytest
+
+    reg = ProjectRegistry()
+    assert "undecided" not in reg.WORKING_SET_DISPOSITIONS
+    inv = made(display_name="No Undecided Set")
+    with _pytest.raises(ValueError):
+        reg.get_or_create_disposition_set(inv["slug"], "undecided")
