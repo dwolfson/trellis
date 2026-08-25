@@ -85,8 +85,15 @@ _DOC_EXTS = (".md", ".mdx", ".rst", ".txt")
 @dataclass
 class DocLens:
     """What the document says, and how it lines up with what was proposed."""
-    outcome: str = "not-found"          # dl.Outcome — where the doc was found
-    evidence: str = ""                  # path / owner:path / URL
+    outcome: str = "not-found"          # dl.Outcome — where the READ document was found
+    evidence: str = ""                  # path / owner:path / URL of the read document
+    #: Every location found, read or not. Documentation is plural: OpenLineage
+    #: has six architecture sources and Milvus twelve, and a single-answer model
+    #: discarded all but one. Unreadable ones (a `doc-site`) belong here too —
+    #: they are sources we know about and cannot use, which is exactly what a
+    #: recommendation to ingest them attaches to.
+    sources: list = field(default_factory=list)   # list[(outcome, evidence)]
+    read_sources: list = field(default_factory=list)  # the ones actually consulted
     date: str | None = None             # last-commit date of the document
     terms: list = field(default_factory=list)        # candidate names it emphasises
     documented: dict = field(default_factory=dict)   # component slug -> matched term
@@ -160,31 +167,55 @@ def apply(owner_repo: str, components: list, client=None,
     """
     lens = DocLens()
     try:
-        art = dl.find_artifact(owner_repo, "architecture", client=client,
-                               locations=locations)
+        arts = dl.find_artifacts(owner_repo, "architecture", client=client,
+                                 locations=locations)
     except Exception as exc:  # noqa: BLE001 - degraded, never fatal
         lens.notes.append(f"architecture document lookup failed: {exc}")
         return lens
 
-    lens.outcome, lens.evidence, lens.date = art.outcome, art.evidence, art.date
-    if art.outcome == "not-found":
+    lens.sources = [(a.outcome, a.evidence) for a in arts if a.evidence]
+    readable = [a for a in arts if a.outcome in ("in-repo", "sibling-repo")]
+    unreadable = [a for a in arts if a.outcome == "doc-site"]
+
+    if not lens.sources:
         lens.notes.append("no architecture document located — nothing to read")
         return lens
-    if art.outcome == "doc-site":
-        # A homepage field is not proof of a page (doc_locations' own caveat),
-        # and fetching arbitrary sites is not this tier's job.
+    if not readable:
         lens.notes.append(
-            f"architecture document is a doc-site ({art.evidence}) — located but "
-            f"not readable from here, so no terms were extracted")
+            f"{len(unreadable)} documentation site(s) located and none readable from "
+            f"here ({', '.join(a.evidence for a in unreadable[:3])}) — located, not "
+            f"consulted. Ingesting the site would make these answerable.")
+        lens.outcome, lens.evidence = unreadable[0].outcome, unreadable[0].evidence
+        lens.date = unreadable[0].date
         return lens
 
-    text = _read_document(owner_repo, art, client, lens.notes)
-    if not text:
+    # Read EVERY readable source, not the first. The first is only "most
+    # specific by resolution order", which says nothing about which one
+    # actually describes the architecture — measured, OpenLineage's first
+    # sibling of five yielded nothing while the corpus average across all
+    # sources is what matters.
+    texts: list = []
+    for art in readable:
+        chunk = _read_document(owner_repo, art, client, lens.notes)
+        if chunk:
+            texts.append(chunk)
+            lens.read_sources.append((art.outcome, art.evidence))
+            if not lens.evidence:            # attribute to the first that read
+                lens.outcome, lens.evidence, lens.date = (
+                    art.outcome, art.evidence, art.date)
+        if sum(len(t) for t in texts) >= MAX_DOC_CHARS:
+            lens.notes.append(
+                f"stopped after {len(texts)} source(s) at {MAX_DOC_CHARS} characters")
+            break
+
+    if not texts:
         lens.notes.append(
-            f"architecture document at {art.evidence} could not be read — "
-            f"located but not consulted")
+            f"{len(readable)} readable source(s) located, none could be fetched — "
+            f"located, not consulted")
+        lens.outcome, lens.evidence = readable[0].outcome, readable[0].evidence
         return lens
 
+    text = "\n\n".join(texts)
     lens.terms = extract_terms(text)
     by_key: dict = {}
     for c in components:

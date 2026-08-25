@@ -61,7 +61,8 @@ class TestExtraction:
 
 class TestItIsALensNotAnOracle:
     def test_it_never_adds_a_component(self, monkeypatch):
-        monkeypatch.setattr(ad.dl, "find_artifact", lambda *a, **k: _Art())
+        monkeypatch.setattr(ad.dl, "find_artifacts",
+                            lambda *a, **k: [_Art()])
         monkeypatch.setattr(ad, "_read_document",
                             lambda *a, **k: "# Proxy\n# GhostService\n")
         comps = [_Comp("proxy")]
@@ -75,7 +76,8 @@ class TestItIsALensNotAnOracle:
     def test_a_doc_only_name_is_reported_as_undetected_not_adopted(self, monkeypatch):
         """§ finding 101: doc-disagrees-with-code is a FINDING, not a silent
         override. Adopting it would destroy the most useful thing here."""
-        monkeypatch.setattr(ad.dl, "find_artifact", lambda *a, **k: _Art())
+        monkeypatch.setattr(ad.dl, "find_artifacts",
+                            lambda *a, **k: [_Art()])
         monkeypatch.setattr(ad, "_read_document", lambda *a, **k: "# Scheduler\n")
         lens = ad.apply("o/r", [_Comp("proxy")])
         assert lens.documented == {}
@@ -96,15 +98,16 @@ class TestLocationIsPartOfTheAnswer:
         version-correlation discipline needs — OpenLineage's doc is from 2023."""
         art = _Art(outcome="sibling-repo", evidence="o/r-docs:architecture.md",
                    date="2023-11-03T00:00:00+00:00")
-        monkeypatch.setattr(ad.dl, "find_artifact", lambda *a, **k: art)
+        monkeypatch.setattr(ad.dl, "find_artifacts",
+                            lambda *a, **k: [art])
         monkeypatch.setattr(ad, "_read_document", lambda *a, **k: "# Proxy\n")
         lens = ad.apply("o/r", [_Comp("proxy")])
         assert lens.outcome == "sibling-repo"
         assert lens.date.startswith("2023")
 
     def test_not_found_is_not_an_error_and_reads_nothing(self, monkeypatch):
-        monkeypatch.setattr(ad.dl, "find_artifact",
-                            lambda *a, **k: _Art(outcome="not-found", evidence=""))
+        monkeypatch.setattr(ad.dl, "find_artifacts",
+                            lambda *a, **k: [_Art(outcome="not-found", evidence="")])
         lens = ad.apply("o/r", [_Comp("proxy")])
         assert lens.terms == [] and lens.consulted is False
         assert any("nothing to read" in n for n in lens.notes)
@@ -113,28 +116,33 @@ class TestLocationIsPartOfTheAnswer:
         """`doc-site` means a homepage field, which doc_locations itself says is
         not proof of a page. Located and unread are different states and both
         must be visible."""
-        monkeypatch.setattr(ad.dl, "find_artifact",
-                            lambda *a, **k: _Art(outcome="doc-site",
-                                                 evidence="https://x.example"))
+        monkeypatch.setattr(ad.dl, "find_artifacts",
+                            lambda *a, **k: [_Art(outcome="doc-site",
+                                                 evidence="https://x.example")])
         lens = ad.apply("o/r", [_Comp("proxy")])
         assert lens.outcome == "doc-site"
         assert lens.consulted is False
-        assert any("not readable" in n for n in lens.notes)
+        assert any("none readable from" in n for n in lens.notes)
+        assert lens.sources == [("doc-site", "https://x.example")], (
+            "an unreadable site is still a SOURCE — it is what a recommendation "
+            "to ingest the site would attach to"
+        )
 
     def test_consulted_distinguishes_read_from_merely_located(self, monkeypatch):
-        monkeypatch.setattr(ad.dl, "find_artifact", lambda *a, **k: _Art())
+        monkeypatch.setattr(ad.dl, "find_artifacts",
+                            lambda *a, **k: [_Art()])
         monkeypatch.setattr(ad, "_read_document", lambda *a, **k: "")
         lens = ad.apply("o/r", [_Comp("proxy")])
         assert lens.outcome == "in-repo", "it WAS located"
         assert lens.consulted is False, "and it was NOT read — different states"
-        assert any("could not be read" in n for n in lens.notes)
+        assert any("none could be fetched" in n for n in lens.notes)
 
 
 class TestNoSilentTruncation:
     def test_a_lookup_failure_degrades_with_a_note_rather_than_raising(self, monkeypatch):
         def _boom(*a, **k):
             raise RuntimeError("github down")
-        monkeypatch.setattr(ad.dl, "find_artifact", _boom)
+        monkeypatch.setattr(ad.dl, "find_artifacts", _boom)
         lens = ad.apply("o/r", [_Comp("proxy")])
         assert lens.consulted is False
         assert any("lookup failed" in n for n in lens.notes)
@@ -144,3 +152,43 @@ class TestNoSilentTruncation:
         down; each is an API call. The cap is the reason this stays in the tier
         it claims, and every capped read reports what it dropped."""
         assert 0 < ad.MAX_DOC_FILES < 78
+
+
+class TestDocumentationIsPlural:
+    """`find_artifact` returned one location and that discarded real answers.
+    Measured 2026-08-25: OpenLineage has six architecture sources (five sibling
+    repos and a homepage), Milvus twelve. Nothing said the first was the one
+    holding the architecture."""
+
+    def test_every_readable_source_is_read_not_just_the_first(self, monkeypatch):
+        arts = [_Art(evidence="a.md"), _Art(evidence="b.md")]
+        monkeypatch.setattr(ad.dl, "find_artifacts", lambda *a, **k: arts)
+        seen = []
+
+        def _read(owner_repo, art, client, notes):
+            seen.append(art.evidence)
+            return "# Proxy\n" if art.evidence == "b.md" else ""
+
+        monkeypatch.setattr(ad, "_read_document", _read)
+        lens = ad.apply("o/r", [_Comp("proxy")])
+        assert seen == ["a.md", "b.md"], "stopped at the first source"
+        assert lens.documented == {"proxy": "proxy"}, (
+            "the term was only in the SECOND source"
+        )
+
+    def test_sources_records_what_was_found_and_read_separately(self, monkeypatch):
+        arts = [_Art(evidence="a.md"), _Art(outcome="doc-site", evidence="https://x")]
+        monkeypatch.setattr(ad.dl, "find_artifacts", lambda *a, **k: arts)
+        monkeypatch.setattr(ad, "_read_document", lambda *a, **k: "# Proxy\n")
+        lens = ad.apply("o/r", [_Comp("proxy")])
+        assert len(lens.sources) == 2, "both located"
+        assert lens.read_sources == [("in-repo", "a.md")], "only one readable"
+
+    def test_a_site_only_project_reports_every_site_it_found(self, monkeypatch):
+        arts = [_Art(outcome="doc-site", evidence="https://a"),
+                _Art(outcome="doc-site", evidence="https://b")]
+        monkeypatch.setattr(ad.dl, "find_artifacts", lambda *a, **k: arts)
+        lens = ad.apply("o/r", [_Comp("proxy")])
+        assert len(lens.sources) == 2
+        assert lens.consulted is False
+        assert "2 documentation site(s) located" in lens.notes[0]

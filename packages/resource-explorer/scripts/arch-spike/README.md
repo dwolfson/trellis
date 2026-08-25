@@ -3789,3 +3789,59 @@ than the instance and it immediately found a second case in `rag_ingestion`.
 Their framing is worth keeping: this is the exact twin of the render-mode fix made the same morning,
 where a card said "no results" while holding real data. **Same seam, opposite directions, one day
 apart — so the reader/render boundary is where this class lives, not any individual analysis.**
+
+---
+
+**106. Documentation is plural, and one location was the wrong model. 36 → 49 documented, and the
+repo that motivated the work went 0 → 5.**
+
+Dan, on being told the plan was "resolve sibling-repo to a page": *"there is an assumption that may
+be worth considering — you are assuming that there can only be a single doc page. In practice that
+may not be true... perhaps record doc sites as we find them rather than assume there can only be
+one?"* And then: *"consider not just repos that call themselves documentation but also tutorials
+etc"*, and *"they may not be repos — often just web sites."*
+
+All three were right, and the data was already there. `DocLocations` has always been *"a bag of
+findings, not a verdict"* (§5.5a(c) point 4) — it holds in-repo dirs, a homepage, sibling repos AND
+README links. **`find_artifact` was the thing collapsing it to one**, first match wins.
+
+```
+                        sources found        before -> after
+OpenLineage/OpenLineage   1  ->   6     labelled  0 -> 5
+milvus-io/milvus          1  ->  12     labelled 15 -> 22
+monocle                                 labelled  0 -> 1
+
+corpus                                  36 -> 49 documented, 6 -> 8 repos of 16
+```
+
+Three changes, each traceable to one of Dan's points:
+
+* **`find_artifacts` (plural)** returns every location, ordered as before, so
+  `find_artifacts(...)[0]` is exactly what `find_artifact` returned and no caller changed. The lens
+  now reads *every readable source* rather than the first — "most specific by resolution order"
+  says nothing about which document describes the architecture, and OpenLineage's first sibling of
+  five yielded nothing while its siblings collectively yielded 5.
+* **Sibling repos are searched properly.** The old code tried `sibling_repos[0]` only, and only its
+  ROOT — which is why every sibling answer in the corpus was a bare pointer at a repo. A
+  documentation website keeps pages under `docs/` or `content/`, so the one place we looked was the
+  one place they are not. Now: every sibling, root then its own doc dirs.
+* **Tutorials and workshops count.** `_SIBLING_NAME_PATTERNS` went from 6 entries to 19, adding
+  tutorial/workshop/examples/learn shapes. It immediately found `OpenLineage/workshops`,
+  `milvus-io/milvus-tutorials` and `milvus-io/milvus-workshop`. A name that holds nothing costs one
+  shallow search; a name never tried costs the document.
+
+**And a documentation site is now a first-class source rather than a fallback.** A `doc-site` result
+— a declared homepage, or an off-site link the README itself offers, like Milvus's
+`milvus.io/docs/tutorials-overview.md` — is recorded in `DocLens.sources` even though it cannot be
+read from here. That is the difference between "no documentation" and "documentation we have not
+ingested", and it is precisely what the doc-site ingestion recommendation attaches to.
+
+`sources` and `read_sources` are kept separate for the same reason `consulted` exists: **located and
+consulted are different states**, and now that there are a dozen locations the distinction carries
+more weight, not less.
+
+**What did not move, and is the honest remainder.** `marquez`, `trellis`, `workshops`,
+`ryoma`, `egeria_python_git`, `docling_parse` still yield nothing, and `sqlglot`/`unitycatalog`
+remain site-only. Reading more sources raised the ceiling; it did not change that a documentation
+website read as markdown is mostly navigation. The next real gain is ingesting sites, not resolving
+harder.
