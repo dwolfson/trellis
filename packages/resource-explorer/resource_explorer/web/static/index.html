@@ -2756,7 +2756,7 @@ const _REPO_RESULTS_RENDER_MODE = {
   repository_health: 'metrics',
   code_symbol_extraction: 'custom',
   rag_ingestion: 'metrics',
-  website_ingestion: 'metrics',
+  website_ingestion: 'custom',
   // Phase 1 plan §4.2/§4.4 — architecture recovery's results view.
   architecture_recovery: 'custom',
   // Added 2026-08-23 — repo_manifest_parse's card (project_dependencies +
@@ -3218,8 +3218,59 @@ function _renderDocIngestionState(doc) {
   return '';
 }
 
+// Website ingestion — a zero here is usually the system being RIGHT.
+//
+// In `metrics` mode this card laid every key out as a row, so a repo that was
+// skipped for a good reason showed `chunks 0` as a peer of `reason
+// self_published`, and anyone scanning numbers saw the zero first. Measured
+// 2026-08-25: 20 of 60 repos are in that state — a third of the corpus reading
+// as a failure it did not have.
+//
+// The reason is not a footnote to the number, it IS the answer. So it leads,
+// and the counts follow only when they mean something.
+const _WEBSITE_SKIP_REASON = {
+  self_published: r => `The repository builds this site itself, so its source is already indexed in
+                        better form. Ingesting the rendered pages would duplicate it, worse.`,
+  already_ingested: r => `Already ingested${r.ingested_by ? ` by <span class="text-slate-300">${_esc(r.ingested_by)}</span>` : ''}${r.ingested_at ? ` at ${_esc(r.ingested_at)}` : ''}.
+                          This repo searches the same collection — it has the content, not a copy of it.`,
+  code_host: () => `The "documentation site" is a code-hosting URL, not documentation.`,
+  non_doc_host: () => `The site is not a documentation host.`,
+  unrelated_host: () => `The site belongs to an unrelated project.`,
+};
+
+function _renderWebsiteIngestionResults(data) {
+  const chunks = data.chunks || 0;
+  const reason = data.reason || '';
+  const url = data.url ? `<div class="text-[11px] text-slate-500 truncate" title="${_esc(data.url)}">${_esc(data.url)}</div>` : '';
+
+  if (!chunks && reason) {
+    const explain = _WEBSITE_SKIP_REASON[reason];
+    return `<div class="text-xs">
+      <div class="text-slate-300">Not ingested — <span class="text-slate-400">${_esc(reason.replace(/_/g, ' '))}</span></div>
+      <div class="text-slate-500 mt-0.5">${explain ? explain(data) : 'Skipped deliberately.'}</div>
+      ${url}
+    </div>`;
+  }
+  if (!chunks) {
+    // No reason recorded: genuinely ambiguous, and saying so beats a bare 0.
+    // Measured: 2 of 60 repos are here, milvus among them.
+    return `<div class="text-xs">
+      <div class="text-amber-400/90">Ran, stored nothing, and recorded no reason</div>
+      <div class="text-slate-500 mt-0.5">${data.pages_found || 0} page(s) found, ${data.pages_fetched || 0} fetched,
+        ${data.pages_failed || 0} failed. Without a reason this cannot be told apart from a failure.</div>
+      ${url}
+    </div>`;
+  }
+  return `<div class="text-xs text-slate-300">
+    <div>${chunks} chunk(s) from ${data.pages_fetched || 0} page(s)${data.collection ? ` in <span class="text-slate-400">${_esc(data.collection)}</span>` : ''}</div>
+    ${data.pages_failed ? `<div class="text-amber-400/80">${data.pages_failed} page(s) failed to fetch</div>` : ''}
+    ${url}
+  </div>`;
+}
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
+  if (analysisId === 'website_ingestion') return _renderWebsiteIngestionResults(data);
   if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
   if (analysisId === 'dependency_analysis') {
     const ecosystems = Object.entries(data.by_ecosystem || {});

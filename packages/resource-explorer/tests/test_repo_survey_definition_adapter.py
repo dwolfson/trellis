@@ -423,7 +423,12 @@ def test_website_ingestion_is_an_analysis_kind_with_results():
     kind = ANALYSIS_KINDS["website_ingestion"]
     assert kind.step_keys == ["repo_website_ingestion"]
     assert kind.results is not None
-    assert kind.results.render == "metrics"
+    # 'custom' since 2026-08-25, was 'metrics'. In metrics mode every key became
+    # a labelled row, so a repo skipped for a good reason showed `chunks 0` as a
+    # peer of `reason self_published` — and 20 of 60 repos are in that state, a
+    # third of the corpus reading as a failure it did not have. The reason is
+    # not a footnote to the number, it is the answer, so the card leads with it.
+    assert kind.results.render == "custom"
 
 
 def test_website_ingestion_catalog_entry_is_tagged_analysis():
