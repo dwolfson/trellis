@@ -3033,6 +3033,30 @@ function _renderManifestParseResults(data) {
     (data.surveyed_at ? `<div class="text-[10px] text-slate-600 mt-1">last run ${_relTime(data.surveyed_at)}</div>` : '');
 }
 
+// Architecture-recovery depth control — NOT configured yet, so not built yet.
+//
+// This is a wiring gap, not a verdict on the idea. The projection mechanism
+// works: given parents that resolve, project_rows collapses a nested input
+// (tests/test_arch_projection_liveness.py proves 3 -> 1). What is missing is
+// its input.
+//
+// Measured against stored results 2026-08-24:
+//   milvus      depth 0/1/2/3/None -> 204 components every time
+//   genaicomps  depth 0/1/2/3/None -> 311 components every time
+//
+// Why: components are linked to their nearest *candidate* ancestor at
+// generation time (code_markers.build_hierarchy, correctly), but persistence
+// writes a filtered subset — 16 of milvus's 213 persisted slugs are code::
+// namespaced — and parent links were never re-pointed at the nearest
+// SURVIVING ancestor. So milvus references 6 parents of which 0 are persisted,
+// every node reads as root-attached, and projection is an identity function.
+//
+// Two ways to configure it, neither done: re-parent to the nearest surviving
+// ancestor at persist time, or persist the ancestors that are referenced.
+// Until one lands a depth selector would move nothing, which is why it is
+// withheld rather than abandoned. See Backlog, "Purpose sets required DEPTH".
+const _ARCH_ROW_CAP = 20;
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
@@ -3111,8 +3135,25 @@ function _renderCustomAnalysisResults(analysisId, data) {
       return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
              + _renderDeploymentInterfaces(data.interfaces);
     }
-    return completeness + `<div class="text-xs text-slate-400 mb-1">${data.component_count} component(s)${data.surveyed_at ? ` · last run ${_relTime(data.surveyed_at)}` : ''}</div>` +
-      data.components.slice(0, 20).map(c => `
+    // Counts must be honest about BOTH coarsenings: the server-side depth
+    // projection AND this list's own cap. The payload has carried
+    // raw_component_count all along, added so a UI could say "13 shown (of 42
+    // total)" rather than let a projected view look like the whole answer —
+    // and nothing read it, while the header printed the projected count as if
+    // it were everything.
+    const _shown = Math.min(data.components.length, _ARCH_ROW_CAP);
+    const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
+    const _projected = (_raw !== null && _raw > data.component_count);
+    const _capped = data.components.length > _ARCH_ROW_CAP;
+    const _countLine = _shown + ' shown'
+      + (_capped ? ' of ' + data.components.length + ' at this depth' : '')
+      + (_projected ? ' · ' + _raw + ' recovered in full' : '')
+      + (data.surveyed_at ? ' · last run ' + _relTime(data.surveyed_at) : '');
+
+    return completeness
+      + `<div class="text-xs text-slate-400 mb-1">${_countLine}</div>`
+      + (_capped ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : '')
+      + data.components.slice(0, _ARCH_ROW_CAP).map(c => `
         <div class="text-xs text-slate-300 mb-1">
           <div class="flex justify-between gap-2">
             <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>

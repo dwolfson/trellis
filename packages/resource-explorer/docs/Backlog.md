@@ -574,6 +574,143 @@ adopter. Recording only — nothing routes on these labels.
 
 ---
 
+#### Re-parent components to the nearest SURVIVING ancestor — this is what makes depth control work
+
+Measured 2026-08-24 while prototyping a depth control, and the reason that control
+is withheld rather than built.
+
+`arch_recovery/projection.py` works — given resolvable parents it collapses a nested
+input (`tests/test_arch_projection_liveness.py`). It has never been given one:
+
+```
+milvus      depth 0/1/2/3/None -> 204 components every time
+genaicomps  depth 0/1/2/3/None -> 311 components every time
+```
+
+**The gap is between generation and persistence, and each half is individually
+correct.** `code_markers.build_hierarchy()` links every candidate subtree to *"the
+nearest ancestor directory that is ALSO a candidate"* — right, and matches `ir.py`'s
+documented contract. But persistence writes a **filtered subset** of candidates: 16
+of milvus's 213 persisted slugs are `code::` namespaced. Parent links still point at
+the pre-filter candidate set, so milvus references 6 parents of which **0 are
+persisted**. Every node reads as root-attached and `project_rows` becomes an identity
+function.
+
+**Two ways to close it:**
+
+1. **Re-parent at persist time** — walk up to the nearest ancestor that actually
+   survives into the persisted set, and rewrite `parent_slug` to that. Keeps the
+   persisted set as-is. Cheaper, and preserves whatever filtering exists for good
+   reasons.
+2. **Persist the referenced ancestors** — emit the intermediate candidates so the
+   links resolve. Truer to "store the hierarchy, project a level"
+   (`approach-portfolio-model.md` §2a), but grows the stored set.
+
+**Investigated 2026-08-24 — and the answer reverses that. (1) recovers nothing; (2) is
+the only option that works.**
+
+First, the candidates are not *filtered*. `code_markers` emits a Component per subtree
+in `by_subtree` — subtrees with **marker-rule hits** — while `parent_slug` is read from
+`hierarchy`, which holds **every** candidate subtree (any dir with >=2 first-party
+files). Different sets, and nothing reconciles them. An intermediate directory like
+`internal/distributed` has no markers *of its own* — its children do — so it never
+becomes a Component while its children point at it. Nobody dropped it; it was never a
+candidate for emission in the first place.
+
+That makes the persisted set a **flat frontier with no internal nodes**, which is fatal
+for (1). Measured on milvus's 16 persisted `code::` components:
+
+```
+ancestor/descendant pairs WITHIN the persisted set: 0
+```
+
+Not "few" — **zero**. No persisted component is an ancestor of any other, so
+re-parenting to the nearest surviving ancestor rewrites every link to "" and collapses
+nothing. Projection needs internal nodes and (1) cannot create them.
+
+(2) does, and the shape it produces is the interesting part:
+
+```
+code::internal::distributed        would absorb 6 components
+code::internal                     would absorb 2
+code::internal::querycoordv2       would absorb 2
+```
+
+`internal/distributed` absorbing 6 is precisely the milvus ground-truth grouping —
+`datanode`, `mixcoord`, `proxy`, `querynode`, `streamingnode` are 5 of the 8 published
+components, currently emitted as 5 unrelated siblings with no parent. So persisting
+intermediate candidates is not just what makes projection function; it is what makes
+the coarse level correspond to the answer a human already published.
+
+**Cost and caution:** these ancestors have no marker evidence of their own, so they must
+be persisted as structural nodes, not as typed/scored components — with an honest
+confidence and type, or none. Emitting them as ordinary components would invent
+evidence, which is the failure mode the whole `no metric, no number` rule exists to
+prevent (design §5). Structural-node-only is the constraint to design against.
+
+**Why this is worth doing before any Purpose→depth work:** depth-as-presentation is
+the cheap version of everything in the entry above — one run, re-rendered at several
+levels, no re-survey. It is currently untestable because there is no hierarchy to
+project. Until this lands, "sufficiency is a presentation rule" cannot even be
+evaluated, and the only alternative left standing is the expensive one (depth as a
+generation-time stopping rule).
+
+**Related and unwired:** `STAGE_PROJECTION_DEPTH` in the same module declares the
+level each stage wants (`discovery` 0, `assessment` 1, `analysis` unprojected) and is
+read by nothing. It becomes meaningful the moment projection has real input.
+
+---
+
+#### Purpose sets required DEPTH, not just which analyses run — unwritten, and it reframes precision
+
+Raised by Dan 2026-08-24, and not in any design doc. Both `investigation-framing-design.md`
+and `architecture-recovery-design.md` were checked: nothing ties depth or completeness to
+purpose. §3 of the framing design says the opposite for the neighbouring axis — *"changing
+perspective changes how much you see but never what gets run."*
+
+**The claim:** an investigation exists to meet its own objectives. Architecture recovery is
+one analysis among many and is *often not relevant at all*. Where it is relevant, **how much
+recovery, and to what completeness, is itself a function of the purpose.** The same is true
+of every other analysis with a depth dial — documentation, dependencies, security, profiling.
+
+**Why this matters more than it first sounds.** The current framing splits the problem as:
+framing decides *which surveys run* and *what a result means to this engagement*, but does
+nothing about *how many candidates a surveyor emits* — that being a separate precision
+problem. **That split is wrong, or at least too absolute.** If purpose sets the required
+depth, then purpose is a *stopping criterion*, and a stopping criterion changes the output
+size. Concretely: 154 components against a ground truth of 8 (Milvus, finding 99) is a
+useless answer for `Select` — "is there an architecture here, roughly what shape" — while
+possibly a fine one for `Learn` or `Explore`. The number is not wrong in the abstract; it is
+wrong *for a purpose nobody declared*.
+
+**What already exists to build on:**
+
+* **Completeness is already expressible.** Egeria's base annotation type carries
+  `sampleSize` / `samplePercent` / `samplingMethod` — *"how much did we look at"*
+  (`architecture-recovery-design.md` §6.1, which says to reuse them and populate them
+  honestly when a component is only partially analysed). The vocabulary for *reporting*
+  depth exists; nothing *decides* the depth required.
+* **The one measured selection mechanism is a gate, not a weighting.**
+  `expectations.recovery_gate` discriminates across all 60 repos (46 run / 8 skip / 6 none)
+  by keying on evidence containment rather than on a label — the property Perspective was
+  measured to lack. But it is **binary**: run or skip. The natural extension of this entry is
+  a graduated gate — run *to what depth* — rather than a second taxonomy.
+
+**Open questions, none answered yet:**
+
+1. What is the depth dial per analysis? For arch recovery it is plausibly a component-count
+   or granularity target; for others it may be sample percentage, or which sub-checks run.
+2. Does depth-by-purpose belong in the analysis catalog (declared per analysis), on the
+   investigation (declared once), or negotiated at dispatch?
+3. Is "sufficient for this purpose" a *stopping* rule during the run, or a *presentation*
+   rule over a full run? Cheaper is stopping; more reusable is presenting.
+
+**Do not conflate this with ranking.** Purpose ranking questions/analyses (§3) and Purpose
+gating RFA emission (§4) are both established. This is a third role — setting the depth
+contract for a run — and it is the one that touches surveyor output size.
+
+---
+
 #### Build the Investigation tab — nothing tracks this, and the design assumes it
 
 **The goal, in the design's own words** (`docs/investigation-framing-design.md` §Context, §1):
