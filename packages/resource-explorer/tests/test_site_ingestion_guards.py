@@ -139,3 +139,77 @@ class TestOwnershipEvidenceOutranksTheNameHeuristic:
         assert positions == sorted(positions), (
             f"refusals out of order: {order}"
         )
+
+
+class TestNothingStoredIsNotIngested:
+    """`milvus`: 400 pages found by sitemap, 400 fetches failed, 685 seconds
+    spent, and it recorded `ingested: True`. The StepOutcome beside it had the
+    answer right — `unverified`, because `known_positive=bool(fetched)` was
+    False — so the codebase held the truth and a redundant boolean contradicted
+    it, and downstream code read the boolean."""
+
+    def test_the_ingested_flag_reflects_what_landed(self):
+        import inspect
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        src = inspect.getsource(w.WebsiteIngestionSurveyor.run)
+        assert '"ingested": bool(chunks_added)' in src, (
+            "a hardcoded True can disagree with the outcome beside it"
+        )
+
+    def test_nothing_fetched_has_its_own_cause(self):
+        """One `else` covered both 'reached the site, no text' and 'never
+        reached the site', even though its own comment distinguished them — so
+        milvus reported `no_extractable_text` about text it never had the
+        chance to read."""
+        import inspect
+        import re
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        causes = set(re.findall(r'cause="(\w+)"',
+                                inspect.getsource(w.WebsiteIngestionSurveyor.run)))
+        assert "no_pages_fetched" in causes
+        assert "pages_unreachable" in causes
+
+
+class TestIngestionStatusReadsTheAuthoritativeField:
+    class _R:
+        def __init__(self, metrics):
+            self._m = metrics
+
+        def query_metrics(self, slug, kind):
+            return self._m
+
+    def test_a_lying_ingested_flag_does_not_produce_ingested(self):
+        """The live milvus record. If this reported `ingested`, the repo whose
+        lens result would benefit most would never be offered an ingest."""
+        from resource_explorer.surveyors.sub_surveyors import arch_lens as AL
+
+        rec = {"chunks": 0.0, "detail": {"ingested": True, "outcome": "unverified",
+                                         "outcome_cause": "no_extractable_text"}}
+        assert AL.ingestion_status(self._R(rec), "milvus")[0] == AL.ING_ATTEMPTED_EMPTY
+
+    def test_a_real_ingest_still_reads_ingested(self):
+        from resource_explorer.surveyors.sub_surveyors import arch_lens as AL
+
+        rec = {"chunks": 97.0, "detail": {"ingested": True, "outcome": "recovered",
+                                          "collection": "web_docs_sqlglot_com"}}
+        state, detail = AL.ingestion_status(self._R(rec), "sqlglot")
+        assert state == AL.ING_INGESTED
+        assert detail == "web_docs_sqlglot_com"
+
+    def test_a_partial_ingest_counts_as_ingested(self):
+        """Some pages unreachable but chunks stored is a usable collection."""
+        from resource_explorer.surveyors.sub_surveyors import arch_lens as AL
+
+        rec = {"chunks": 12.0, "detail": {"outcome": "partial", "collection": "c"}}
+        assert AL.ingestion_status(self._R(rec), "x")[0] == AL.ING_INGESTED
+
+    def test_the_new_refusals_count_as_declined(self):
+        from resource_explorer.surveyors.sub_surveyors import arch_lens as AL
+
+        for reason in ("self_published", "code_host", "non_doc_host", "unrelated_host"):
+            rec = {"chunks": 0.0, "detail": {"ingested": False, "reason": reason}}
+            assert AL.ingestion_status(self._R(rec), "x") == (AL.ING_DECLINED, reason)

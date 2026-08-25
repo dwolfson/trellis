@@ -296,9 +296,20 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         elif chunks_added:
             outcome = StepOutcome(RECOVERED, cause="",
                                   detail={"chunks": chunks_added, "pages": fetched})
-        else:
-            outcome = no_signal("no_extractable_text", known_positive=bool(fetched),
+        elif fetched:
+            # Reached the site and it yielded no text — the fetch itself is the
+            # known-positive, so this is a provable no_signal.
+            outcome = no_signal("no_extractable_text", known_positive=True,
                                 fetched=fetched, failed=failed)
+        else:
+            # NOTHING was fetched. Distinct from the branch above, and the two
+            # were one `else` until 2026-08-25 even though the comment beside it
+            # already distinguished them. `milvus` is the case: 400 pages found
+            # via sitemap, 400 fetches failed (milvus.io 302-loops for a
+            # non-browser client), 685 seconds spent, and it reported cause
+            # `no_extractable_text` about text it never had the chance to read.
+            outcome = StepOutcome(UNVERIFIED, cause="no_pages_fetched",
+                                  detail={"found": len(pages), "failed": failed})
 
         return self._note(
             f"{chunks_added} chunk(s) from {fetched} page(s) of {url}",
@@ -306,7 +317,13 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
             + (f" ({failed} unreachable)" if failed else "")
             + f", embedded into {collection}. The collection is keyed on the site's host rather "
             "than this repo, so every repo sharing this website searches the same copy.",
-            {"ingested": True, "url": url, "collection": collection,
+            # `ingested` reflects what actually landed. It was hardcoded True
+            # on this path regardless of `chunks_added`, so `milvus` reported
+            # `ingested: True` after 400 failed fetches — and downstream code
+            # reads this flag rather than the outcome beside it, which had the
+            # answer right. A redundant boolean that can disagree with the
+            # authoritative field is worse than no boolean.
+            {"ingested": bool(chunks_added), "url": url, "collection": collection,
              "pages_found": len(pages), "pages_fetched": fetched, "pages_failed": failed,
              "chunks": chunks_added, "discovery": how},
             confidence=100 if chunks_added else 50,

@@ -1729,3 +1729,66 @@ is for — not Discovery, where it would look like another survey step.
 
 **Not started.** Sized as small-but-not-trivial: item 1 is a link between two existing subsystems,
 item 2 needs a measurement first, item 3 is a live-verification pass on a step nobody has run.
+
+---
+
+### Stage and profile a documentation site before deciding how to ingest it
+
+**Dan, 2026-08-25:** *"what are your assumptions as you make an ingestion? Do we need to do some
+pre-analysis first, and perhaps internally stage the content and then profile it before we decide
+how to ingest it?"*
+
+Asked after three ingestion defects in one session. The honest answer is that ingestion currently
+**fetches, chunks and embeds in one pass with no decision point**, and every assumption below is
+made implicitly — none is checked, and none is visible in the result.
+
+**What `repo_website_ingestion` assumes today, read out of the code:**
+
+| # | Assumption | Where | Observed failing |
+|---|---|---|---|
+| 1 | The homepage URL is the documentation site | `repo_homepage` fallback to manifest/README | badges, registries, another project's docs — 10 of 60 (finding 108) |
+| 2 | A sitemap (or the landing page) identifies the right pages | `discover_pages` | milvus: 400 sitemap URLs, **every fetch failed** |
+| 3 | The pages can be fetched by a plain HTTP client | `self._fetch` | milvus.io 302-loops without a browser-like client |
+| 4 | Tag-stripping yields useful text | `_extract_text` | untested against JS-rendered sites; a client-rendered page yields an empty string, indistinguishable from a page with no content |
+| 5 | One chunk size fits all of it | `web_docs` type: 384/48, fixed | an API reference and a narrative guide are not the same shape; `api_reference` exists as a separate type and is never selected for a website |
+| 6 | Every discovered page is worth embedding | no relevance filter | the sibling-website case: navigation, marketing and blog pages embedded as documentation |
+| 7 | The site is one version | none | versioned docs sites embed N copies of the same page, splitting retrieval across them |
+| 8 | The content is not already held | `self_published` check only | that check catches a repo building its own site; it does not catch overlap with another repo's already-ingested content |
+
+**Assumptions 2–4 are the same failure**, and it is the expensive one: 685 seconds spent on milvus
+producing nothing, discovered only afterwards. **Nothing in the current design can fail early**,
+because there is no point between "we have a URL" and "we have embedded it" at which anything is
+inspected.
+
+**What a stage-and-profile step would answer**, in the order the cost rises:
+
+1. **Is it reachable at all, and by us?** One fetch of the landing page. Would have ended the milvus
+   run in under a second instead of 685.
+2. **Does text come out?** Extract from a handful of pages and measure. A site that yields 40
+   characters a page is client-rendered and needs a different fetcher — or is honestly out of scope,
+   which is a fine answer if it is *stated*.
+3. **What kind of documentation is it?** API reference, narrative guide, blog, marketing. This
+   selects the chunking profile, and the collection types for it already exist and are never chosen.
+4. **How much of it is boilerplate?** Nav, footers and sidebars repeat on every page; measuring the
+   repeated fraction before embedding says whether the ingest is mostly chrome.
+5. **Is it versioned, and is anything already held?** Both are duplication, and both split retrieval
+   rather than improving it.
+
+Only then decide **whether** and **how** to ingest — rather than ingesting and finding out.
+
+**Why this is worth building rather than adding more guards.** Finding 108's guards fixed the
+*input* (is this URL plausibly this project's docs). Everything above is about the *content*, which
+no URL check can reach. And the pattern is one this codebase already trusts: architecture recovery
+is exactly stage-then-decide — cheap classification gates the expensive tier — while ingestion has
+no gate at all.
+
+**Design constraints, from what already went wrong:**
+
+- **Staged content must be inspectable before it is committed.** The value is the decision point,
+  not the caching.
+- **A profile that says "do not ingest" is a result, not a failure** — with its reason, renderable
+  the way `skipped_by_design` is. Three of today's defects were a system being right and recording
+  it in a way that read as being wrong.
+- **Do not add a boolean beside the outcome.** `detail["ingested"]` was hardcoded `True` while the
+  `StepOutcome` next to it correctly said the site was never read, and downstream code read the
+  boolean. A profile with a `usable: true` flag would repeat that exactly.
