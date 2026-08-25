@@ -247,6 +247,15 @@
       class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700">
       ⚙ Admin
     </button>
+    <!-- The current Investigation — "the context everything else runs inside"
+         (§1). Header-level rather than an intent, and shown always, because a
+         result read without knowing which body of work it belongs to is the
+         ambiguity this whole frame exists to remove. -->
+    <button onclick="showMainView('investigations')" id="nav-investigation-hdr"
+      class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded hover:bg-slate-700"
+      title="The investigation this work belongs to">
+      🧭 <span id="current-investigation-label">No investigation</span>
+    </button>
     <!-- Read-only identity indicator — RE has no per-user login yet (see
          egeria.py::whoami's comment); this just surfaces the fixed Egeria
          service-account identity currently configured via .env. Clicking it
@@ -545,6 +554,12 @@
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
       <div id="curate-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
+      <!-- Investigations — the framing step AHEAD of Scouting
+           (investigation-framing-design.md §1). Deliberately not a ninth
+           intent: CLAUDE.md rule 17 fixes the eight, and this is not another
+           kind of work done to a resource, it is the frame the other eight run
+           inside. Header-level, like Activity and Admin. -->
+      <div id="investigations-view" class="flex-1 overflow-y-auto hidden flex flex-col"></div>
 
       <!-- Automate view (8th intent) — local-first notification
            subscriptions (see loadAutomatePanel()). Global by default, like
@@ -1494,6 +1509,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('chat-toggle-btn').classList.add('active');
   }
   setNavIntent('scouting');
+  // Surface the current investigation immediately — a result read without
+  // knowing which body of work it belongs to is the ambiguity this frame exists
+  // to remove, so the label must be right before anything else renders.
+  fetch('/api/investigations/').then(r => r.json()).then(list => {
+    _investigations = Array.isArray(list) ? list : [];
+    _refreshInvestigationLabel();
+  }).catch(() => _refreshInvestigationLabel());
   document.getElementById('query-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
   });
@@ -6919,6 +6941,157 @@ async function deleteCurateNote(noteId, entityType, slug) {
 
 // ── main view tabs ─────────────────────────────────────────────────────────────
 
+// ── Investigations ────────────────────────────────────────────────────────
+//
+// The framing step ahead of Scouting (investigation-framing-design.md §1): an
+// Investigation is one body of work, and the context the other eight intents
+// run inside. It is NOT a ninth intent — rule 17 fixes the eight, and this is
+// not another kind of work done to a resource.
+//
+// The current investigation is held client-side, matching the session Egeria
+// Project precedent above: there is no per-user server session to hang it off
+// (one fixed service-account identity for every request), so "current" means
+// "this browser".
+const _CURRENT_INVESTIGATION_KEY = 're_current_investigation';
+let _investigations = [];
+let _investigationPurposes = [];
+
+function _currentInvestigation() {
+  try { return localStorage.getItem(_CURRENT_INVESTIGATION_KEY) || ''; }
+  catch (e) { return ''; }
+}
+
+function _setCurrentInvestigation(slug) {
+  try {
+    if (slug) localStorage.setItem(_CURRENT_INVESTIGATION_KEY, slug);
+    else localStorage.removeItem(_CURRENT_INVESTIGATION_KEY);
+  } catch (e) { /* private mode — the label just won't persist */ }
+  _refreshInvestigationLabel();
+  if (!document.getElementById('investigations-view')?.classList.contains('hidden')) {
+    loadInvestigationsPanel();
+  }
+}
+
+function _refreshInvestigationLabel() {
+  const el = document.getElementById('current-investigation-label');
+  if (!el) return;
+  const cur = _currentInvestigation();
+  const inv = _investigations.find(i => i.slug === cur);
+  el.textContent = inv ? inv.display_name : (cur ? cur : 'No investigation');
+  el.className = inv ? 'text-cyan-300' : 'text-slate-500';
+}
+
+async function loadInvestigationsPanel() {
+  const view = document.getElementById('investigations-view');
+  if (!view) return;
+  view.innerHTML = `<div class="p-4 text-sm text-slate-400">Loading investigations…</div>`;
+  try {
+    const [invs, purp] = await Promise.all([
+      fetch('/api/investigations/').then(r => r.json()),
+      fetch('/api/investigations/purposes').then(r => r.json()),
+    ]);
+    _investigations = Array.isArray(invs) ? invs : [];
+    _investigationPurposes = (purp && purp.purposes) || [];
+  } catch (e) {
+    view.innerHTML = `<div class="p-4 text-sm text-rose-400">Could not load investigations: ${_esc(String(e))}</div>`;
+    return;
+  }
+  _refreshInvestigationLabel();
+  view.innerHTML = _renderInvestigationsPanel();
+}
+
+function _renderInvestigationsPanel() {
+  const cur = _currentInvestigation();
+  const purposeBoxes = _investigationPurposes.map(p => `
+    <label class="inline-flex items-center gap-1 text-xs text-slate-300 mr-3">
+      <input type="checkbox" class="inv-purpose" value="${_esc(p)}"> ${_esc(p)}
+    </label>`).join('');
+
+  const rows = _investigations.length ? _investigations.map(i => {
+    const isCur = i.slug === cur;
+    return `<div class="border ${isCur ? 'border-cyan-600' : 'border-slate-700'} rounded p-2 mb-2">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-sm font-medium ${isCur ? 'text-cyan-300' : 'text-slate-200'} truncate">
+            ${_esc(i.display_name)} ${isCur ? '<span class="text-[10px] text-cyan-500">· current</span>' : ''}
+          </div>
+          <div class="text-xs text-slate-500 truncate">${_esc(i.description || 'No description')}</div>
+          <div class="text-xs text-slate-400 mt-0.5">
+            ${(i.purposes || []).map(p => `<span class="bg-slate-700 rounded px-1.5 py-0.5 mr-1">${_esc(p)}</span>`).join('') || '<span class="text-slate-600">no purposes declared</span>'}
+          </div>
+          <div class="text-[11px] text-slate-500 mt-0.5">
+            ${i.member_count} resource(s) ·
+            ${i.egeria_project_guid ? 'bound to an Egeria Project' : 'local only — not in Egeria'}
+          </div>
+        </div>
+        <div class="shrink-0 flex gap-1">
+          ${isCur ? '' : `<button onclick="_setCurrentInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-cyan-600 text-white hover:bg-cyan-500">Use</button>`}
+          <button onclick="_closeInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-300 hover:bg-slate-600">Close</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('') : `<div class="text-xs text-slate-500 mb-2">No investigations yet. Declaring one is what lets everything downstream say why this work exists.</div>`;
+
+  return `<div class="p-4">
+    <div class="mb-3">
+      <h2 class="text-base text-slate-200">🧭 Investigations</h2>
+      <p class="text-xs text-slate-500 mt-0.5 max-w-2xl">
+        One body of work — the context every survey and analysis runs inside. The eight intents
+        describe what kind of work is happening to a resource; Perspective describes whose
+        concerns filter the view. Neither says <em>why this set of work exists at all</em>.
+      </p>
+    </div>
+    ${rows}
+    <div class="border border-slate-700 rounded p-3 mt-4">
+      <div class="text-sm text-slate-300 mb-2">New investigation</div>
+      <input id="inv-name" placeholder="Name (e.g. Pre-adoption review, Q3 certification)"
+             class="w-full mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200">
+      <input id="inv-desc" placeholder="What is this work for? (optional)"
+             class="w-full mb-2 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200">
+      <div class="mb-1 text-xs text-slate-500">
+        Purpose — why this work exists. These are ProjectCharter.purposes, the same vocabulary the
+        question catalog is tagged with, so they rank what gets proposed. Purpose ranks; it does not hide.
+      </div>
+      <div class="mb-2">${purposeBoxes}</div>
+      <button onclick="_createInvestigation()" class="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-500">Create</button>
+      <div class="text-[11px] text-slate-500 mt-2">
+        Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
+        the record carries a nullable project GUID so that stays a fill-in rather than a migration.
+      </div>
+    </div>
+  </div>`;
+}
+
+async function _createInvestigation() {
+  const name = (document.getElementById('inv-name')?.value || '').trim();
+  if (!name) { showToast('Name is required', 'error'); return; }
+  const purposes = Array.from(document.querySelectorAll('.inv-purpose:checked')).map(c => c.value);
+  try {
+    const resp = await fetch('/api/investigations/', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        display_name: name,
+        description: (document.getElementById('inv-desc')?.value || '').trim(),
+        purposes,
+      }),
+    });
+    if (!resp.ok) { showToast(`Could not create: ${(await resp.json()).detail || resp.status}`, 'error'); return; }
+    const inv = await resp.json();
+    showToast(`Investigation "${inv.display_name}" created`, 'success');
+    _setCurrentInvestigation(inv.slug);
+    loadInvestigationsPanel();
+  } catch (e) { showToast(`Could not create: ${e}`, 'error'); }
+}
+
+async function _closeInvestigation(slug) {
+  try {
+    await fetch(`/api/investigations/${encodeURIComponent(slug)}/close`, {method: 'POST'});
+    if (_currentInvestigation() === slug) _setCurrentInvestigation('');
+    showToast('Investigation closed', 'success');
+    loadInvestigationsPanel();
+  } catch (e) { showToast(`Could not close: ${e}`, 'error'); }
+}
+
 function showMainView(tab) {
   // NOTE: chat is no longer one of these panes — it's a persistent side panel
   // (#chat-panel) toggled independently via toggleChatPanel(), decoupled from
@@ -6934,6 +7107,7 @@ function showMainView(tab) {
   const assessmentView = document.getElementById('assessment-view');
   const analysisView   = document.getElementById('analysis-view');
   const discoveryAnalysesView = document.getElementById('discovery-analyses-view');
+  const investigationsView = document.getElementById('investigations-view');
   const understandingView = document.getElementById('understanding-view');
   const scoutingOverviewView = document.getElementById('scouting-overview-view');
   const scoutingResultsView = document.getElementById('scouting-results-view');
@@ -6958,7 +7132,7 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -6984,6 +7158,9 @@ function showMainView(tab) {
   } else if (tab === 'discovery-analyses') {
     discoveryAnalysesView.classList.remove('hidden');
     loadDiscoveryAnalysesPanel();
+  } else if (tab === 'investigations') {
+    investigationsView.classList.remove('hidden');
+    loadInvestigationsPanel();
   } else if (tab === 'understanding') {
     understandingView.classList.remove('hidden');
     loadUnderstandingCharts();
