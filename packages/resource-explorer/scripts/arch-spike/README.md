@@ -3950,3 +3950,59 @@ would be this codebase's oldest failure wearing new clothes.
 **Left as it is, deliberately:** three junk collections exist in the store from this pilot. They are
 small, host-keyed and obviously named, and deleting from a live store is not something to do without
 asking.
+
+---
+
+**109. Closing the loop: the lens can now read what ingestion stored. 49 → 60 documented, and the
+two site-only repos stopped being permanent zeros.**
+
+Ingestion existed so *Chat and Understanding* could answer from a project's documentation. It made
+that documentation available to everything **except the step that most needed it**: `sqlglot`'s site
+was 97 chunks in `web_docs_sqlglot_com` while `repo_arch_lens` reported *"located, not readable"*.
+
+Bulk-ingested the 38 repos whose homepage passes the finding-108 guards, then taught the lens to
+read a collection when a located site is unreadable:
+
+```
+ingested                25 of 60      refused: self_published 13 · non_doc_host 2
+                                               unrelated_host 1 · code_host 1
+web_docs collections    20
+
+lens, corpus            49 -> 60 documented       11 of 17 repos (was 8)
+   sqlglot               0 -> 6      <- was a permanent zero: site-only, unreadable
+   openmetadata          0 -> 4
+   unitycatalog          0 -> 1
+```
+
+**Ingested text needs a weaker test, and saying so is the point.** Rendered HTML converted to text
+has no markdown emphasis, so `extract_terms` — which keys on headings, bold and code spans — found
+twelve terms in sqlglot's ingested site and every one was a code fragment. The question has to
+change from *"what does this document emphasise"* to *"does this document mention this component"*,
+which needs no markup: word-boundary matched, four characters minimum, generic names excluded (a
+component called `index` is not evidenced by a site containing the word "index").
+
+That is genuinely weaker evidence and is labelled as such — `EVIDENCE_MENTIONED` versus
+`EVIDENCE_EMPHASISED`, carried per component. Collapsing them would let a reader over-trust the
+weaker one, and the whole value of this chain is that its claims can be checked.
+
+**A property keyed on the wrong thing, found by running it.** `DocLens.consulted` returned
+`bool(terms)`. The moment ingested sites became readable that was wrong: `unitycatalog` read 26
+chunks and reported *"document not consulted"*, because HTML text yields no markdown terms.
+**Extracting nothing from a document is not the same as never opening one** — the same distinction
+`consulted` was written to make, broken by the arrival of a source it did not anticipate. Now keys
+on `read_sources`.
+
+**Two ingestion defects found and left recorded, not fixed:**
+
+* **`milvus`: 400 pages fetched, 0 chunks stored, `ingested: True`, after 685 seconds.** A
+  contradiction on its face, and the repo whose lens result would most benefit. `ingested: True`
+  with `chunks: 0` is absence-versus-zero at the ingestion layer.
+* **`egeria-project.org` was ingested three times in one run** — once each for `egeria_git`,
+  `egeria_python_git`, `egeria_workspaces_git`, 6018 chunks and 187 pages every time, ~175 seconds
+  total. Collections are host-keyed precisely so sibling repos share one, but the *work* is not
+  deduplicated across repos within a run.
+
+**And one guard limitation worth knowing before trusting it:** `trellis` → `egeria-project.org` is
+refused as `unrelated_host`, and it probably should not be — trellis *is* an Egeria project. The
+relatedness check compares names and knows nothing about project families. It fails safe (a stated
+refusal, not a silent skip) but it is a real false-positive class.
