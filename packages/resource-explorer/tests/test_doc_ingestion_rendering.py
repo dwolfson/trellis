@@ -77,3 +77,44 @@ def test_every_live_state_is_one_the_renderer_handles():
     seen = {arch_lens.ingestion_status(reg, p.slug)[0] for p in reg.list_all()}
     unhandled = seen - handled - {""}
     assert not unhandled, f"live states with no render branch: {unhandled}"
+
+
+def test_the_unreadable_sentinel_still_exists_upstream():
+    """A guard on someone else's wording, which is the fragile part.
+
+    `_doc_ingestion_state` distinguishes "nobody read the site" from "we could
+    not tell" by matching the detail string `ingestion_status()` returns on a
+    read failure — because both arrive as `not-attempted`. If that wording
+    changes, the match silently stops working and the card goes back to
+    confidently offering to ingest sites whose status merely failed to load.
+
+    Silently is the problem. This fails loudly instead, and should be deleted
+    the day `ingestion_status()` returns a distinct state for the two — an offer
+    already made to that effect.
+    """
+    import inspect
+
+    from resource_explorer.surveyors.sub_surveyors import arch_lens
+
+    src = inspect.getsource(arch_lens.ingestion_status)
+    assert "ingestion status unreadable" in src, (
+        "the sentinel _doc_ingestion_state matches on has changed. Either update "
+        "that match, or better, switch to a distinct state if ingestion_status() "
+        "now provides one."
+    )
+
+
+def test_an_unreadable_status_never_produces_an_offer():
+    """The behaviour the sentinel exists to protect, asserted directly so it
+    survives however the detection is implemented."""
+    from resource_explorer.surveyors.sub_surveyors import arch_lens
+
+    class _Unreadable:
+        def query_metrics(self, *a, **kw):
+            raise RuntimeError("boom")
+
+    state, detail = arch_lens.ingestion_status(_Unreadable(), "x")
+    rendered = _doc_ingestion_state(_Unreadable(), "x")
+    assert rendered["state"] != arch_lens.ING_NOT_ATTEMPTED, (
+        f"an unreadable status ({state}/{detail!r}) would render as an offer"
+    )
