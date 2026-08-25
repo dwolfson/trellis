@@ -1635,11 +1635,34 @@ class ProjectRegistry:
                     purposes_json                  TEXT DEFAULT '[]',
                     egeria_project_guid            TEXT DEFAULT '',
                     egeria_project_qualified_name  TEXT DEFAULT '',
+                    -- The Egeria binding is the investigation's, not a
+                    -- separate session-wide setting. §1 makes binding to an
+                    -- Egeria Project one of the three ways to START an
+                    -- investigation, so a second parallel control would be two
+                    -- answers to one question. Carries the full context shape
+                    -- (unset/personal/declined/linked/deferred + free text) so
+                    -- publishes read it unchanged.
+                    egeria_project_status          TEXT DEFAULT 'unset',
+                    egeria_free_text_name          TEXT DEFAULT '',
                     status                         TEXT NOT NULL DEFAULT 'open',
                     created_at                     TEXT NOT NULL,
                     updated_at                     TEXT DEFAULT ''
                 )
             """)
+            # Migration: the Egeria binding columns were added when the
+            # session-wide project control was folded into the investigation
+            # (§1 — binding is one of the three ways to START one, so a second
+            # parallel control was two answers to one question). CREATE TABLE
+            # IF NOT EXISTS does nothing for a table that already exists, so a
+            # registry created before that change needs them added here.
+            inv_cols = self._get_table_columns(conn, "investigations")
+            for col, defn in [
+                ("egeria_project_status", "TEXT DEFAULT 'unset'"),
+                ("egeria_free_text_name", "TEXT DEFAULT ''"),
+            ]:
+                if col not in inv_cols:
+                    conn.execute(f"ALTER TABLE investigations ADD COLUMN {col} {defn}")
+
             # Membership is many-to-many (§1) and shaped like the Egeria
             # relationships it will become: one row per (investigation,
             # resource) carrying its own `resource_use`, so promotion replays
@@ -3648,6 +3671,14 @@ class ProjectRegistry:
             return None
         d = dict(row)
         d["purposes"] = _json.loads(d.pop("purposes_json") or "[]")
+        # The shape the publish path already speaks, assembled here so callers
+        # never rebuild it from the individual columns.
+        d["egeria_context"] = {
+            "status": d.get("egeria_project_status") or "unset",
+            "egeria_project_guid": d.get("egeria_project_guid") or "",
+            "egeria_project_qualified_name": d.get("egeria_project_qualified_name") or "",
+            "free_text_name": d.get("egeria_free_text_name") or "",
+        }
         d["member_count"] = len(self.list_investigation_members(slug))
         return d
 
@@ -3687,6 +3718,27 @@ class ProjectRegistry:
                 (investigation_slug,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def set_investigation_egeria_project(self, slug: str, ctx: dict) -> dict | None:
+        """Bind (or unbind) an investigation to an Egeria Project.
+
+        Takes the same context shape the publish path already speaks —
+        {status, egeria_project_guid, egeria_project_qualified_name,
+        free_text_name} — so nothing downstream has to learn a new one.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE investigations
+                   SET egeria_project_status = ?, egeria_project_guid = ?,
+                       egeria_project_qualified_name = ?, egeria_free_text_name = ?,
+                       updated_at = ?
+                   WHERE slug = ?""",
+                (ctx.get("status", "unset"), ctx.get("egeria_project_guid", ""),
+                 ctx.get("egeria_project_qualified_name", ""),
+                 ctx.get("free_text_name", ""),
+                 datetime.utcnow().isoformat(), slug),
+            )
+        return self.get_investigation(slug)
 
     def close_investigation(self, slug: str) -> dict | None:
         with self._conn() as conn:
