@@ -3841,6 +3841,55 @@ class ProjectRegistry:
             )
         return self.get_investigation(slug)
 
+    def inherited_egeria_project_context(self, entity_type: str, entity_slug: str) -> dict | None:
+        """The Egeria Project binding a resource inherits from its investigation.
+
+        An investigation IS "the context everything else runs inside" (design
+        §1). If a resource is in the working set of an investigation that is
+        bound to an Egeria Project, that binding already answers "which Project
+        does this belong to" — asking again per resource is asking a question
+        that has been answered.
+
+        Returns None when nothing is inheritable, so the caller can fall back to
+        the normal prompt rather than proceeding on a guess. Only `linked`
+        investigations qualify: `personal`, `declined` and `deferred` are
+        deliberate answers about THAT investigation and do not name a Project to
+        inherit.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT i.slug, i.display_name, i.egeria_project_guid,
+                          i.egeria_project_qualified_name
+                   FROM working_set_members m
+                   JOIN investigation_resource_lists rl
+                     ON rl.working_set_slug = m.working_set_slug
+                   JOIN investigations i
+                     ON i.slug = rl.investigation_slug
+                   WHERE m.entity_type = ? AND m.entity_slug = ?
+                     AND m.state <> 'excluded'
+                     AND i.status <> 'closed'
+                     AND i.egeria_project_status = 'linked'
+                     AND i.egeria_project_guid <> ''
+                   ORDER BY i.updated_at DESC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        if not row:
+            return None
+        # A resource can legitimately be in several investigations. Inheriting
+        # from the most recently updated one is a guess, so it is reported
+        # rather than hidden — the caller records which investigation supplied
+        # the binding.
+        first = dict(row[0])
+        return {
+            "status": "linked",
+            "egeria_project_guid": first["egeria_project_guid"],
+            "egeria_project_qualified_name": first["egeria_project_qualified_name"] or "",
+            "free_text_name": "",
+            "_inherited_from": first["slug"],
+            "_inherited_from_name": first["display_name"],
+            "_ambiguous": len(row) > 1,
+        }
+
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:
         """Record the Egeria Collection this working set became.

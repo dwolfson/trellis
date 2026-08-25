@@ -378,3 +378,65 @@ def test_a_failed_adoption_check_is_reported_because_that_is_when_duplicates_hap
     assert any("may have created a second" in e for e in res.errors), (
         "a failed adoption check was not surfaced — that is when duplicates happen"
     )
+
+
+def test_a_repo_inherits_its_project_binding_from_the_investigation(made):
+    """Membership answers the publish gate's question.
+
+    An investigation IS the context everything else runs inside, so when a repo
+    sits in the working set of one bound to an Egeria Project, that binding
+    already says which Project it belongs to. Asking again per resource asks a
+    question that has been answered — which is what left 17 repos unpublishable
+    after an Egeria reseed.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Inheriting")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "proj-inherit",
+        "egeria_project_qualified_name": "Project::Inherit",
+    })
+    ws = reg.get_or_create_working_set(inv["slug"])
+
+    # Not a member yet: nothing to inherit, so the gate must still prompt.
+    assert reg.inherited_egeria_project_context("repo", "some-unrelated-repo") is None
+
+    reg.add_working_set_member(ws["slug"], "repo", "some-unrelated-repo")
+    got = reg.inherited_egeria_project_context("repo", "some-unrelated-repo")
+    assert got and got["egeria_project_guid"] == "proj-inherit"
+    assert got["_inherited_from"] == inv["slug"]
+
+
+def test_only_a_linked_investigation_supplies_a_binding(made):
+    """personal / declined / deferred are deliberate answers about the
+    INVESTIGATION; none of them names a Project a member could inherit. Treating
+    them as inheritable would publish a repo into a Project nobody chose."""
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry()
+    for status in ("personal", "declined", "deferred", "unset"):
+        inv = made(display_name=f"Not Linked {status}")
+        reg.set_investigation_egeria_project(inv["slug"], {
+            "status": status, "egeria_project_guid": "",
+        })
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", f"probe-{status}")
+        assert reg.inherited_egeria_project_context("repo", f"probe-{status}") is None, (
+            f"'{status}' must not supply a Project binding"
+        )
+
+
+def test_an_excluded_member_does_not_inherit(made):
+    """§7's excluded state means "considered and ruled out" — it must not carry
+    the investigation's Project binding with it."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Excluding")
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(inv["slug"], {
+        "status": "linked", "egeria_project_guid": "proj-x",
+    })
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "ruled-out-repo", state="excluded")
+    assert reg.inherited_egeria_project_context("repo", "ruled-out-repo") is None
