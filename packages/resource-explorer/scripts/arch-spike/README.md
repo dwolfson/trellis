@@ -4256,3 +4256,49 @@ The list is published only when it is meaningful; otherwise the count and the re
 **One more default standing for "not computed."** The ingested-site path returns before this runs —
 rendered HTML has no emphasis to extract — so `undetected_usable` was `False` with an empty reason,
 indistinguishable from "we checked and it was not meaningful". It now says which.
+
+---
+
+**116. `integration` depth was buildable all along; `full` should never have been declared.**
+
+The summariser named three depths and implemented one. Finishing the other two produced opposite
+answers, and both corrections are mine.
+
+**`integration` — "how would we call it?" — needed no new fetching.** I had recorded that it
+"needs stage-two interface reads", and that was true only of operation *names*. Which interfaces
+are served, over what protocol, how many operations they declare, and what the repo calls out to
+are all sitting in `architecture_interfaces` already. The distinction matters beyond this feature:
+it is the difference between a depth that is unbuildable and one that is **a different reading of
+what we already hold**, which is the entire premise of depth as a summarisation level. Live:
+
+```
+milvus        gRPC: data_coord.proto, event_log.proto, index_coord.proto (+7 more);
+              297 operation(s) across them — public and internal interfaces are not
+              distinguished; the project's own documentation is what separates them
+openmetadata  HTTP/REST: openapi.yml — ...
+```
+
+**It names the interface, not the owning component**, and that was a real correction found by
+reading the output rather than the code. The first version reported *"gRPC via pkg"* for Milvus:
+`pkg` is the subtree the `.proto` files happen to sit in, and it tells a caller nothing. An IDL port
+is named for the interface it defines. What you call is `proxy.proto`, not `pkg`.
+
+**The caveat is the honest half.** Milvus declares 297 rpcs across ten files; `proxy` is
+client-facing and the coord services are internal, and **nothing in the code says so**. Reporting
+"the largest surface" would name `root_coord` (76 rpcs) over `proxy` (18) and be exactly backwards —
+so the summary states that public and internal are not distinguished and points at the documentation
+that separates them. Finding 101, restated where a reader actually meets it.
+
+**`full` was deleted, not implemented.** It was described as *"every component and operation — the
+raw analysis"*, which is precisely the problem: **a summariser whose deepest level is *do not
+summarise* is describing the results view that already exists.** Implementing it would have given a
+reader two spellings of one answer. The reasoning is the reusable part — *a depth is a summarisation
+level, and "none" is not one* — and the constant is gone rather than left declared, because a value
+nothing produces invites someone to pass it. An unknown depth still falls back to `suitability`.
+
+**And a fifth instance of the test-fake drift**, this time costing two confusing failures: `_port`
+carried only `protocol` and `operationCount`, while `persist.py` writes `component`, `port`,
+`direction`, `protocol`, `additionalProperties` and `kind`. A test asserting on direction therefore
+exercised the absent-direction path and failed for a reason unrelated to its name. The rule that
+would have prevented all five: **mirror the writer, not the fields the current test happens to
+read.**

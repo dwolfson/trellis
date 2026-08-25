@@ -40,12 +40,20 @@ def _f(check, label="", detail=None):
     return {"check_name": check, "label": label, "detail": detail or {}}
 
 
-def _port(protocol, operations=None, direction="Input-Output"):
-    """A port finding as persist.py writes one: label is the DIRECTION, and
-    protocol plus operationCount live in detail."""
+def _port(protocol, operations=None, direction="Input-Output", name="api.proto"):
+    """A port finding **exactly as `persist.py` writes one**.
+
+    The detail carries `component`, `port`, `direction`, `protocol`,
+    `additionalProperties` and `kind`. An earlier version of this helper carried
+    only protocol and operationCount, so a test asserting on direction silently
+    exercised the absent-direction path instead — the fifth time in this suite
+    that a hand-written fake lagged the shape it stands for. Mirror the writer,
+    not the fields the current test happens to read.
+    """
     ap = {"operationCount": str(operations)} if operations is not None else {}
-    return _f("port:api.proto", direction,
-              {"protocol": protocol, "additionalProperties": ap, "kind": "port"})
+    return _f(f"port:{name}", direction,
+              {"component": "svc", "port": name, "direction": direction,
+               "protocol": protocol, "additionalProperties": ap, "kind": "port"})
 
 
 class TestAnAbsentInputIsNotAnEmptySummary:
@@ -150,11 +158,12 @@ class TestItIsACheapStepByConstruction:
         summary must be cheap enough to recompute whenever its inputs change."""
         assert AS.ArchSummarySurveyor.requires_resources == {}
 
-    def test_depth_is_a_parameter_with_named_unimplemented_levels(self):
+    def test_depth_is_a_parameter_and_both_levels_are_implemented(self):
         """Depth is a request parameter in Egeria's model, not a new concept.
-        The finer levels are named so their absence reads as scope."""
-        assert AS.DEPTH_SUITABILITY in AS.DEPTHS
-        assert set(AS.DEPTHS) == {AS.DEPTH_SUITABILITY, AS.DEPTH_INTEGRATION, AS.DEPTH_FULL}
+        Both declared levels now do something — `full` was retired rather than
+        left declared-and-unbuilt, because a value nothing produces invites
+        someone to pass it."""
+        assert set(AS.DEPTHS) == {AS.DEPTH_SUITABILITY, AS.DEPTH_INTEGRATION}
 
     def test_an_unknown_depth_falls_back_rather_than_failing(self):
         s = AS.ArchSummarySurveyor(_Proj(), _Reg(scopes=[]), depth="nonsense")
@@ -203,3 +212,81 @@ class TestItReadsBothKindsAndTheRightColumn:
                          findings={"a": [_f("component", "Software Service")]}))
         assert ann.json_properties["protocols"] == {"gRPC": 1}
         assert ann.json_properties["operations"] == 296
+
+
+class TestIntegrationDepthAnswersHowWouldWeCallIt:
+    """Depth is a summarisation level over the same analysis, not a second
+    analysis. My own earlier note said this depth needed stage-two interface
+    reads; that was true only of operation NAMES. Which components serve what,
+    over which protocol, with how many operations, and what they call out to are
+    all in `architecture_interfaces` already."""
+
+    def _reg(self, ports):
+        class _R(_Reg):
+            def query_findings(self, slug, kind, scope=""):
+                if kind == "architecture_interfaces":
+                    return ports
+                return super().query_findings(slug, kind, scope)
+        return _R(scopes=["a"], findings={"a": [_f("component", "Software Service")]})
+
+    def test_it_names_the_interface_not_the_owning_component(self):
+        """An IDL port is named for the interface it defines; the component that
+        owns it is whatever subtree the file sits in — `pkg` on Milvus, which
+        tells a caller nothing. What you call is the interface."""
+        reg = self._reg([_port("gRPC", 18)])
+        (ann,) = AS.ArchSummarySurveyor(_Proj(), reg, depth=AS.DEPTH_INTEGRATION).run()
+        assert "api.proto" in ann.summary
+        assert "gRPC" in ann.summary
+
+    def test_it_says_public_and_internal_are_not_distinguished(self):
+        """Milvus declares 297 rpcs across ten .proto files. `proxy` is
+        client-facing and the coord services are internal, and nothing in the
+        code says so — reporting the largest surface would name `root_coord`
+        (76 rpcs) over `proxy` (18) and be exactly backwards."""
+        reg = self._reg([_port("gRPC", 18)])
+        (ann,) = AS.ArchSummarySurveyor(_Proj(), reg, depth=AS.DEPTH_INTEGRATION).run()
+        assert "not distinguished" in ann.summary
+        assert "documentation" in ann.summary
+
+    def test_no_served_interface_is_said_plainly(self):
+        reg = self._reg([])
+        (ann,) = AS.ArchSummarySurveyor(_Proj(), reg, depth=AS.DEPTH_INTEGRATION).run()
+        assert "Nothing here serves an interface" in ann.summary
+
+    def test_a_client_only_port_is_not_a_served_interface(self):
+        """Direction is the whole point of §3.2's vocabulary: `Input-Output` is
+        request-response PROVIDED, `Output-Input` is CALLED. Counting a client
+        port as a served interface would invert the dependency."""
+        reg = self._reg([_port("gRPC", 5, direction="Output-Input")])
+        (ann,) = AS.ArchSummarySurveyor(_Proj(), reg, depth=AS.DEPTH_INTEGRATION).run()
+        assert "Nothing here serves an interface" in ann.summary
+
+    def test_suitability_is_unchanged_by_the_new_depth(self):
+        reg = self._reg([_port("gRPC", 18)])
+        (ann,) = AS.ArchSummarySurveyor(_Proj(), reg, depth=AS.DEPTH_SUITABILITY).run()
+        assert "runnable unit" in ann.summary or "candidate component" in ann.summary
+
+
+class TestFullWasRemovedRatherThanBuilt:
+    """A summariser whose deepest level is *do not summarise* is describing the
+    architecture-recovery results view, which already exists. Building it would
+    have given a reader two spellings of one answer."""
+
+    def test_full_is_gone_from_the_declared_depths(self):
+        assert set(AS.DEPTHS) == {AS.DEPTH_SUITABILITY, AS.DEPTH_INTEGRATION}
+        assert not hasattr(AS, "DEPTH_FULL"), (
+            "a constant left behind invites someone to pass it"
+        )
+
+    def test_what_integration_still_cannot_say_is_named(self):
+        """Operation names and signatures are deliberately not extracted
+        (finding 100: a count is a summary, a listing is not), so their absence
+        is a scoped decision rather than an oversight."""
+        assert any("signature" in s for s in AS.INTEGRATION_NOT_ANSWERED)
+        assert any("schema" in s for s in AS.INTEGRATION_NOT_ANSWERED)
+
+    def test_the_retired_depth_falls_back_rather_than_erroring(self):
+        """`full` was a declared value; anything that still asks for it should
+        get the coarse answer, not a crash and not a silent 'full'."""
+        s = AS.ArchSummarySurveyor(_Proj(), _Reg(scopes=[]), depth="full")
+        assert s._depth == AS.DEPTH_SUITABILITY
