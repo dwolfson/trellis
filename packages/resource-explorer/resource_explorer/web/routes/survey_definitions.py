@@ -53,6 +53,37 @@ def _map_reader_executor_errors(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _derived_from_steps(steps: list[dict]) -> dict:
+    """`analysis_ids` and `perspectives` for a candidate, from its own steps.
+
+    Both are unions over the analysis_catalog entries whose step keys this
+    survey runs. `analysis_ids` is what lets a survey card offer the same
+    Results view its local counterparts have; `perspectives` is what lets one
+    perspective filter apply to both card kinds instead of silently half.
+
+    Order is preserved rather than sorted -- for perspectives it follows step
+    order, which is run order, so the reading matches the survey's own shape.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    step_keys = [s.get("re_analysis_step") for s in steps if s.get("re_analysis_step")]
+    if not step_keys:
+        return {"analysis_ids": [], "perspectives": []}
+
+    analysis_ids: list[str] = []
+    perspectives: list[str] = []
+    for entry in get_analyses("repo", include_egeria_live=False):
+        owned = entry.get("re_analysis_steps") or []
+        if not owned or not any(k in step_keys for k in owned):
+            continue
+        if entry["id"] not in analysis_ids:
+            analysis_ids.append(entry["id"])
+        for persp in entry.get("perspectives") or []:
+            if persp not in perspectives:
+                perspectives.append(persp)
+    return {"analysis_ids": analysis_ids, "perspectives": perspectives}
+
+
 @router.get("/{entity_type}/{slug}/candidates")
 async def list_candidates(
     entity_type: str, slug: str,
@@ -205,6 +236,13 @@ async def list_candidates(
                 # it's derived (Survey Definitions have no such field of
                 # their own to read).
                 "run_time": get_survey_definition_speed_tag(steps),
+                # A Survey Definition has no perspectives of its own in Egeria,
+                # so the Survey tab's perspective filter could only ever filter
+                # the local half of the list -- a live-looking control acting on
+                # half the cards. A survey IS its steps, so its perspectives are
+                # the union of what those steps serve. Derived, not invented:
+                # every value traces to an analysis_catalog entry.
+                **_derived_from_steps(steps),
             })
 
         # Composite-survey propagation (2026-08-24 — direct feedback: "if a

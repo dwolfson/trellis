@@ -1632,7 +1632,20 @@ const INTENT_PLACEHOLDER_TEXT = {};
 // in docs/dr-egeria/foundations/foundations.md (Architecture, Community,
 // Consumer, Data Expert, Data Owner, ... ). Converging them is a real design
 // question, deliberately not answered by simply hiding this row.
-const _PERSPECTIVE_AWARE_INTENTS = new Set(['assessment', 'analysis']);
+// Every intent whose panel renders survey/analysis cards -- all of them route
+// through _loadAnalysisCatalogPanel(), which is where activePerspectives is
+// consumed, so the row now acts on each of them rather than on two.
+//
+// Scouting stays OUT deliberately, and this is not an oversight: its Questions
+// checklist carries its own perspective filter over a DIFFERENT vocabulary (the
+// Egeria Perspective set authored in foundations.md -- Architecture, Community,
+// Consumer, ...), not analysis_catalog.yaml's four tags. Showing both would
+// stack two perspective rows that disagree about what a perspective is.
+// Converging the vocabularies is a real design question, not something to
+// settle by revealing a second row.
+const _PERSPECTIVE_AWARE_INTENTS = new Set([
+  'assessment', 'analysis', 'discovery', 'enrichment', 'understanding', 'curate',
+]);
 
 function setNavIntent(intent) {
   // Leaving the frame for an intent — drop the Investigation tab's highlight.
@@ -2372,7 +2385,7 @@ function togglePerspective(p) {
   localStorage.setItem('pe_perspectives', JSON.stringify([...activePerspectives]));
   // Re-render whatever's currently showing, if it's perspective-aware (Assessment/
   // Analysis, once Steps 2/4 land) — a no-op elsewhere, same pattern as setNavIntent.
-  if (currentNavIntent === 'assessment' || currentNavIntent === 'analysis') {
+  if (_PERSPECTIVE_AWARE_INTENTS.has(currentNavIntent)) {
     setNavIntent(currentNavIntent);
   }
 }
@@ -2453,6 +2466,7 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
     const res = await fetch(`/api/analyses/${resourceType}?intent=${intent}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     let analyses = await res.json();
+    _lastAnalysisCatalog = analyses;
     // Perspective filtering happens client-side: the backend's `perspective`
     // param only accepts one value, but the UI's perspective selector is
     // concurrent/multi-select (OR semantics — an analysis matches if it's
@@ -2601,7 +2615,19 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     ${unavailableNote}
   </div>`;
 
-  const validCandidates = candidates.filter(c => !c.error);
+  // The perspective filter applies to BOTH card kinds. It used to narrow only
+  // the local cards, so switching perspective visibly shrank one half of the
+  // list and left the other untouched — a control that looked like it acted on
+  // the panel while acting on part of it. Candidates carry perspectives derived
+  // from their steps (see _derived_from_steps), so the same OR-semantics test
+  // works unchanged. An errored candidate is kept regardless: it has no steps
+  // to derive from, and hiding a broken survey behind a filter it cannot be
+  // judged against would make it silently disappear.
+  const validCandidates = candidates.filter(c => !c.error).filter(c =>
+    !activePerspectives.size
+    || !(c.perspectives || []).length
+    || (c.perspectives || []).includes('all')
+    || (c.perspectives || []).some(x => activePerspectives.has(x)));
 
   if (!analyses.length && !validCandidates.length) {
     view.innerHTML = subnavHtml + header + `<div class="text-slate-600 text-xs text-center py-12">${_esc(emptyText)}</div>`;
@@ -2663,15 +2689,20 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
            🔔 Notify me
          </button>`
       : '';
-    // No Publish button here (unlike Survey Definition cards): _publishScopedSteps
-    // needs the underlying re_analysis_step *keys* (REPO_ANALYSIS_STEP_MAP's
-    // values, e.g. "repo_language"), not the analysis_id itself, and the
-    // /api/analyses/{resource_type} response this card is built from doesn't
-    // carry that mapping — adding it is a real, separate follow-up (a new
-    // field on AnalysisCatalogEntry or a small resolving endpoint), not
-    // something to fake with the wrong value. last_published_at above still
-    // works today via the whole-repo "Publish survey →" fallback
-    // (get_last_published_annotation_types), same as it did before this merge.
+    // Publish, same scoped action the Survey Definition cards have had. The
+    // blocker was real and is now fixed at the source rather than faked here:
+    // _publishScopedSteps needs re_analysis_step KEYS, not the analysis id, and
+    // /api/analyses/{resource_type} did not carry them. AnalysisCatalogEntry
+    // now exposes re_analysis_steps, so the two card kinds call the identical
+    // function with the identical argument shape.
+    const _localStepKeys = a.re_analysis_steps || [];
+    const publishButton = (entityType === 'repo' && slug && _localStepKeys.length)
+      ? `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(_localStepKeys)}, this, ${JSON.stringify(a.name)}, ${JSON.stringify(a.id)})'
+           class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
+           title="Publishes this analysis's own findings as their own SurveyReport, linked to the same Egeria asset">
+           ☁ Publish
+         </button>`
+      : '';
 
     return { key: `local:${a.id}`, lastRunAt: la.last_run_at || '', html: `<div class="analysis-card ${a.recommended ? 'recommended' : ''}">
       <div class="flex-1 min-w-0">
@@ -2687,6 +2718,7 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
         </button>
         ${resultsButton}
         ${scheduleButton}
+        ${publishButton}
         ${notifyButton}
       </div>
       <div id="sched-form-${safeId}" class="hidden mt-1"></div>
@@ -2850,6 +2882,45 @@ const _REPO_TREND_LABEL = {
   architecture_recovery: 'Components proposed (per run)',
   manifest_parse: 'Dependencies parsed',
 };
+
+// A survey's Results: every one of its analyses that stores results, each
+// under its own heading. Deliberately not reusing toggleAnalysisResults, whose
+// container id is derived from the analysis id alone -- Discovery shows survey
+// cards and local analysis cards on the same screen, so those ids collide.
+async function _toggleSurveyResults(qualifiedName, analysisIds, slug, btn) {
+  const safeId = String(qualifiedName).replace(/[^a-zA-Z0-9]/g, '_');
+  const el = document.getElementById(`svresults-${safeId}`);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.innerHTML = '<div class="text-slate-500 text-xs py-2">Loading results…</div>';
+
+  const sections = await Promise.all(analysisIds.map(async id => {
+    try {
+      const res = await fetch(`/api/projects/${slug}/analyses/${id}/results`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { id, html: _renderAnalysisResultsContent(id, await res.json()) };
+    } catch (e) {
+      // One analysis failing must not blank the others: a partial panel that
+      // says which part failed beats an empty one that says nothing.
+      return { id, html: `<div class="text-xs text-amber-400">Could not load: ${_esc(String(e.message || e))}</div>` };
+    }
+  }));
+
+  el.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-2 space-y-3">`
+    + sections.map(sec => `<div>
+        <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">${_esc(_analysisDisplayName(sec.id))}</div>
+        ${sec.html}
+      </div>`).join('')
+    + `</div>`;
+}
+
+// Best-effort label: the catalog name when this card's panel has it loaded,
+// otherwise the id itself rather than a blank heading.
+function _analysisDisplayName(analysisId) {
+  const found = (_lastAnalysisCatalog || []).find(a => a.id === analysisId);
+  return found ? found.name : analysisId;
+}
 
 async function toggleAnalysisResults(analysisId, slug, btn) {
   const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
@@ -6170,6 +6241,10 @@ function _surveyDefEntityAndSlug() {
 // surface), passes phase='' (unscoped — every candidate, narrowed only by
 // Perspective) instead of the old hardcoded survey_kind="discovery". A
 // phase-scoped host (e.g. Scouting's Survey sub-tab) passes its own stage.
+//: Last analysis catalog fetched, kept only so a survey card can label the
+//: analyses inside its Results panel with their catalog names rather than ids.
+let _lastAnalysisCatalog = [];
+
 let _surveyPanelKey = '';                    // entityType:slug:phase — perspective filter resets when this changes
 let _surveyPanelActivePerspectives = new Set();
 let _surveyPanelAvailablePerspectives = [];  // this phase's Question-derived vocabulary (repo-only — see below)
@@ -6436,9 +6511,16 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
     ? c.last_published_scope === 'repo'
       ? `<span class="text-slate-600" title="No candidate-specific publish yet — inferred from a whole-repo publish after this ran: ${_esc(c.last_published_at)}">☁ Repo published ${_relTime(c.last_published_at)}</span>`
       : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
-    : '';
+    // Was '' — so "never published" and "we did not look" rendered the same
+    // (as nothing), while the local cards beside these said "Not published".
+    : `<span class="text-slate-600">☁ Not published</span>`;
   const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
   const speedTag = c.run_time ? `<span class="analysis-tag ${speedTagClass[c.run_time] || ''}">${_esc(c.run_time)}</span>` : '';
+  // Same tags the local cards carry. A Survey Definition declares none in
+  // Egeria, so these are the union over its steps' analyses — which is what a
+  // survey's perspectives ARE, it being a bundle of those steps.
+  const perspTags = (c.perspectives || []).filter(x => x !== 'all')
+    .map(x => `<span class="analysis-tag">${_esc(x.replace(/_/g, ' '))}</span>`).join(' ');
 
   return `<div class="analysis-card">
     <div class="flex items-start justify-between gap-2">
@@ -6449,7 +6531,7 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
         <div class="text-xs mt-1 flex flex-wrap gap-2.5">${lastRunHtml}${lastPublishedHtml}</div>
       </div>
     </div>
-    <div class="flex flex-wrap gap-1 mt-1">${speedTag}<span class="analysis-tag tag-egeria">☁ Egeria Survey</span></div>
+    <div class="flex flex-wrap gap-1 mt-1">${speedTag}<span class="analysis-tag tag-egeria">☁ Egeria Survey</span>${perspTags}</div>
     <details class="mt-1.5">
       <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">${(c.steps || []).length} step(s), in order (click to expand)</summary>
       <div class="mt-0.5">${stepsHtml || '<div class="text-xs text-slate-500">No steps.</div>'}</div>
@@ -6490,10 +6572,35 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
             ☁ Publish
           </button>`;
       })()}
+      ${(() => {
+        // Notify, unchanged in meaning from the local cards: watches this
+        // survey for changes on FUTURE SCHEDULED runs. Subscriptions are keyed
+        // by whatever id the card runs under -- analysis_id there,
+        // qualified_name here -- the same way ⏱ Schedule already keys them.
+        if (!slug) return '';
+        return `<button onclick='_createSubscriptionFromCard(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(c.display_name || c.qualified_name)})'
+            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap"
+            title="Notify me (via RFA) when this survey changes on a future scheduled run — also set ⏱ Schedule, or this never fires">
+            🔔 Notify me
+          </button>`;
+      })()}
+      ${(() => {
+        // Results. A survey runs several analyses, so this opens all of the
+        // ones that HAVE results rather than picking one arbitrarily. Ids that
+        // store nothing are filtered out here, so the button is absent instead
+        // of opening an empty panel.
+        const withResults = (c.analysis_ids || []).filter(id => id in _REPO_RESULTS_RENDER_MODE);
+        if (entityType !== 'repo' || !slug || !withResults.length) return '';
+        return `<button onclick='_toggleSurveyResults(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(withResults)}, ${JSON.stringify(slug)}, this)'
+            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">
+            📊 Results${withResults.length > 1 ? ` (${withResults.length})` : ''}
+          </button>`;
+      })()}
     </div>
     ${(() => {
       const safeId = c.qualified_name.replace(/[^a-zA-Z0-9]/g, '_');
-      return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>`;
+      return `<div id="sched-form-${safeId}" class="hidden mt-1 w-full"></div>
+              <div id="svresults-${safeId}" class="hidden mt-2 w-full"></div>`;
     })()}
   </div>`;
 }

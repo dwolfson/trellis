@@ -77,7 +77,29 @@ class AnalysisCatalogEntry:
             "recommended": self.recommended,
             "egeria_registration": self.egeria_registration,
             "target_shape": self.target_shape,
+            # The orchestrator step keys this analysis actually runs. Present so
+            # a card can offer a scoped Publish: _publishScopedSteps needs the
+            # step keys, not the analysis id, and without them the local
+            # Analyses cards had no Publish button at all while the Survey
+            # Definition cards beside them did. Empty for non-repo entries and
+            # for live-Egeria-merged ones, which have no local steps to publish.
+            "re_analysis_steps": _re_analysis_steps_for(self.id),
         }
+
+
+def _re_analysis_steps_for(analysis_id: str) -> list[str]:
+    """REPO_ANALYSIS_STEP_MAP lookup, imported lazily.
+
+    repo_survey_definition_adapter imports this module at import time, so a
+    module-level import here would close the cycle.
+    """
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+        )
+    except Exception:  # pragma: no cover - defensive
+        return []
+    return list(REPO_ANALYSIS_STEP_MAP.get(analysis_id, []))
 
 
 def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
