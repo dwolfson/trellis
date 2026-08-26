@@ -21,9 +21,12 @@ import pytest
 
 INDEX = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html"
 
-#: Stages whose sub-navigation offers a list of runnable analyses. Scouting and
-#: Enrichment are deliberately absent: they run one thing, not a catalog.
-_CATALOG_STAGES = ("_discoverySubnavHtml", "_assessmentSubnavHtml", "_analysisSubnavHtml")
+#: Every stage whose sub-navigation offers something runnable. All of them,
+#: because "Survey" is the generic container: an analysis is a STEP inside a
+#: survey, and a survey type may do ingestion instead of or as well as analysis.
+#: Naming the tab after one kind of step misdescribes everything else it runs.
+_CATALOG_STAGES = ("_scoutingSubnavHtml", "_discoverySubnavHtml", "_assessmentSubnavHtml",
+                   "_analysisSubnavHtml", "_enrichmentSubnavHtml")
 
 
 def _tabs(fn: str) -> list[tuple[str, str]]:
@@ -34,12 +37,20 @@ def _tabs(fn: str) -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize("fn", _CATALOG_STAGES)
-def test_the_analyses_tab_is_called_the_same_thing_everywhere(fn):
+def test_the_runnable_tab_is_called_survey_everywhere(fn):
+    """Survey, not Analyses or Catalog.
+
+    A survey type may run ingestion instead of, or as well as, analysis, and an
+    analysis is a step (a microflow) inside a survey that produces annotations.
+    An earlier pass unified these on "Analyses", which named the container after
+    one kind of thing it contains — narrower than the truth, and wrong for every
+    survey that does not analyse.
+    """
     labels = [lab for _, lab in _tabs(fn)]
-    assert any(lab == "📋 Analyses" for lab in labels), (
-        f"{fn} labels its analyses tab {labels!r}. Assessment, Analysis and "
-        "Discovery offer the identical concept and must name it identically — a "
-        "different word or glyph makes the same thing read as a different thing."
+    assert any(lab == "📊 Survey" for lab in labels), (
+        f"{fn} labels its runnable tab {labels!r}. Survey is the generic term; "
+        "naming it after analysis misdescribes ingestion and anything else a "
+        "survey type can run."
     )
 
 

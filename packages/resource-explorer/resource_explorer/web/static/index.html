@@ -1819,7 +1819,7 @@ function showAssessmentPane() {
 
 function _assessmentSubnavHtml(active) {
   const tabs = [
-    { tab: 'analyses',      label: '📋 Analyses' },
+    { tab: 'analyses',      label: '📊 Survey' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
@@ -1861,7 +1861,7 @@ function showAnalysisPane() {
 }
 
 function _analysisSubnavHtml(active) {
-  const tabs = [{ tab: 'catalog', label: '📋 Analyses' }];  // "Analyses", not "Catalog": assessment and discovery call the identical concept — the list of analyses runnable at this stage — by that name, and one stage using a different word for it makes them look like different things.
+  const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
@@ -1895,7 +1895,7 @@ function showDiscoveryPane() {
 
 function _discoverySubnavHtml(active) {
   const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
-  tabs.push({ tab: 'analyses', label: '📋 Analyses' });  // 📋, not 🧪 — same label and same concept as assessment's and analysis's, so it should carry the same glyph; a different icon for the same thing reads as a different kind of thing.
+  tabs.push({ tab: 'analyses', label: '📊 Survey' });  // same label and glyph as every other stage's runnable list — see the note in _analysisSubnavHtml for why "Survey" and not "Analyses".
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
@@ -1928,7 +1928,7 @@ function showEnrichmentPane() {
 }
 
 function _enrichmentSubnavHtml(active) {
-  const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '🔬 Survey' }];
+  const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '📊 Survey' }];  // 📊 like every other stage — same concept, same glyph.
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
@@ -3247,7 +3247,18 @@ const _WEBSITE_SKIP_REASON = {
   code_host: () => `The "documentation site" is a code-hosting URL, not documentation.`,
   non_doc_host: () => `The site is not a documentation host.`,
   unrelated_host: () => `The site belongs to an unrelated project.`,
+  // NOT a deliberate skip like the others — this one is a failure. The site was
+  // meant to be read and could not be, so it renders amber below rather than as
+  // one of the "correctly declined" explanations. Grouping it with them would
+  // tell a user nothing is wrong when something is.
+  unreachable: r => `The documentation site could not be reached${r.url ? '' : ''}. This is a failure, not a
+                     deliberate skip — the site was meant to be read.`,
 };
+
+//: Reasons that mean "the system correctly chose not to ingest". `unreachable`
+//: is deliberately absent: it means the attempt failed.
+const _WEBSITE_DELIBERATE_SKIPS = new Set(
+  ['self_published', 'already_ingested', 'code_host', 'non_doc_host', 'unrelated_host']);
 
 function _renderWebsiteIngestionResults(data) {
   const chunks = data.chunks || 0;
@@ -3256,8 +3267,9 @@ function _renderWebsiteIngestionResults(data) {
 
   if (!chunks && reason) {
     const explain = _WEBSITE_SKIP_REASON[reason];
+    const deliberate = _WEBSITE_DELIBERATE_SKIPS.has(reason);
     return `<div class="text-xs">
-      <div class="text-slate-300">Not ingested — <span class="text-slate-400">${_esc(reason.replace(/_/g, ' '))}</span></div>
+      <div class="${deliberate ? 'text-slate-300' : 'text-amber-400/90'}">Not ingested — <span class="${deliberate ? 'text-slate-400' : 'text-amber-400/70'}">${_esc(reason.replace(/_/g, ' '))}</span></div>
       <div class="text-slate-500 mt-0.5">${explain ? explain(data) : 'Skipped deliberately.'}</div>
       ${url}
     </div>`;
