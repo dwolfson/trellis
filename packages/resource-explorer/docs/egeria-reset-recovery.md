@@ -224,3 +224,54 @@ exactly what is outstanding.
   rather than auto-resolves
 - `docs/survey-definitions.md` — the Survey Definition model and its current limitations
 - `docs/Backlog.md` — the Egeria↔RE reconciliation entry, including what is still open
+
+---
+
+## 6. What this runbook did not cover until 2026-08-26
+
+Three kinds of cached Egeria GUID exist, not one. The runbook above and the
+sweep script both knew only about the first.
+
+| cached in RE | what dangles after a reset |
+|---|---|
+| `projects.egeria_asset_guid` | the ☁ Published badge, and anything needing the asset |
+| `investigations.egeria_project_guid` | the investigation renders "linked" to a Project that is gone; promoting again fails on a GUID nothing resolves |
+| `working_sets.egeria_collection_guid` | each disposition's Collection |
+
+`scripts/sweep_stale_egeria_guids.py` now checks all three, on both dry runs and
+`--apply`. It also clears `project_published_annotation_types` alongside the
+asset GUID: those rows are what the Analyses cards' "Published" / "Repo
+published" badge is derived from, so leaving them puts a Published badge on a
+repo whose catalog entry no longer exists — the same failure one table further
+along.
+
+### The sweep's staleness test was wrong
+
+**Measured 2026-08-26 against a live, healthy catalog:** the sweep used
+`get_asset_by_guid`, which raised `PyegeriaNotFoundException`/400 for GUIDs that
+plainly existed. It reported **all 23 cached GUIDs stale** while
+`find_asset_guid` returned those exact GUIDs for the same repos. Running
+`--apply` on that verdict would have cleared every valid registration in the
+catalog, with its survey records and publish history.
+
+It now verifies the way `EgeriaPublisher._find_or_create_asset` does — search by
+`qualifiedName`, check the GUID is among the results — so the sweep and the
+publisher can no longer disagree about whether the same asset exists.
+`tests/test_stale_guid_sweep.py` pins that.
+
+### Perspectives now depend on the ScopedBy graph
+
+Survey Definition perspectives are read from
+`Survey --ScopedBy--> Question --> Perspective`. Until the `questions` batch and
+the survey-definition `Link Element To Scope` commands have both re-run, surveys
+fall back to step-derived perspectives and report `perspectives_source:
+"derived"` instead of `"scoped"`. Nothing lies — the source is labelled — but a
+recovery is not complete while surveys that should be `scoped` are `derived`.
+`_folder_order.json` already puts `questions` before `survey-definitions` for
+this reason.
+
+### Verifying a recovery
+
+`docs/egeria-redeploy-baseline-2026-08-26.json` captures the pre-redeploy state:
+batch presence, the 12 perspectives, and all 8 Survey Definitions with their step
+counts and perspective sources. Compare against it rather than against memory.

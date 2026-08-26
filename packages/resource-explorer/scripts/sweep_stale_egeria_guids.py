@@ -14,8 +14,15 @@ the badge lies and any operation that needs the asset — adding it to an
 investigation's working set, for one — fails with a bare NotFound.
 
 Read-only by default. Pass --apply to clear. Clearing also removes that project's
-`project_egeria_surveys` rows, which are local claims about surveys that Egeria
-no longer holds; the count is reported so the deletion is never silent.
+`project_egeria_surveys` rows and its `project_published_annotation_types` rows —
+local claims about surveys and published annotations Egeria no longer holds; both
+counts are reported so the deletion is never silent.
+
+Three kinds of cached GUID are checked, not one. The asset GUIDs came first; an
+investigation's Egeria Project and each disposition WorkingSet's Collection were
+added later and were left dangling by every sweep before this one — an
+investigation would keep rendering as "linked" to a Project that no longer
+exists, and promoting it again would fail on a Project GUID nothing resolves.
 
     uv run python scripts/sweep_stale_egeria_guids.py
     uv run python scripts/sweep_stale_egeria_guids.py --apply
@@ -60,16 +67,48 @@ def main() -> int:
         print("Refusing to sweep: unreachable is not the same as stale.")
         return 2
 
+    # Verified the same way EgeriaPublisher._find_or_create_asset verifies before
+    # reusing a cached GUID: search by qualifiedName and check the GUID is among
+    # the results.
+    #
+    # NOT get_asset_by_guid. That was the original test here and it is wrong:
+    # against a live catalog it raises PyegeriaNotFoundException/400 for GUIDs
+    # that plainly exist -- measured 2026-08-26, when it declared all 23 cached
+    # GUIDs stale while find_asset_guid returned those exact GUIDs for the same
+    # repos. Running --apply on that verdict would have cleared every valid
+    # registration in the catalog, with their survey records and publish claims.
+    #
+    # Two systems disagreeing about whether the same asset exists is worse than
+    # either answer, so this now asks the question the publisher asks.
+    with registry._conn() as conn:
+        urls = {
+            r["slug"]: r["github_url"]
+            for r in conn.execute("SELECT slug, github_url FROM projects").fetchall()
+        }
+
     stale, live, unknown = [], [], []
     for slug, guid in cached:
+        url = urls.get(slug, "")
+        if not url:
+            unknown.append((slug, guid, "no github_url on the project row"))
+            continue
         try:
-            found = maker.get_asset_by_guid(guid)
-            (live if found and "No elements" not in str(found) else stale).append((slug, guid))
-        except Exception as exc:
-            if "NotFound" in type(exc).__name__ or "404" in str(exc) or "400" in str(exc):
+            check = maker.find_software_capabilities(
+                search_string=f"SourceControlLibrary::{url}",
+                starts_with=True, ignore_case=False, output_format="JSON",
+            )
+            if not isinstance(check, list):
+                # pyegeria returns a string when nothing matched -- a real
+                # "not there", distinct from an exception.
                 stale.append((slug, guid))
+            elif any(e.get("elementHeader", {}).get("guid") == guid for e in check):
+                live.append((slug, guid))
             else:
-                unknown.append((slug, guid, f"{type(exc).__name__}: {str(exc)[:60]}"))
+                stale.append((slug, guid))
+        except Exception as exc:
+            # An error is never read as stale. The publisher trusts the cache on
+            # a failed verification for exactly this reason.
+            unknown.append((slug, guid, f"{type(exc).__name__}: {str(exc)[:60]}"))
 
     print(f"  resolves in Egeria : {len(live)}")
     print(f"  STALE (dangling)   : {len(stale)}")
@@ -80,21 +119,98 @@ def main() -> int:
         print(f"    ?      {slug:32} {guid}  ({why})")
 
     if not stale:
-        print("\nNothing stale. No action needed.")
+        print("\nNo stale asset GUIDs.")
+        # Still sweep the other two kinds: they dangle independently, and an
+        # early return here is why they went unchecked for as long as they did.
+        _sweep_investigations(registry, maker, apply=args.apply)
         return 0
     if not args.apply:
         print(f"\nDry run. Re-run with --apply to clear {len(stale)} stale entr(ies).")
         print("Projects that could not be determined are never cleared.")
+        _sweep_investigations(registry, maker, apply=False)
         return 0
 
-    total_surveys = 0
+    total_surveys = total_published = 0
     for slug, _ in stale:
         result = registry.clear_egeria_registration(slug)
         total_surveys += result["surveys_deleted"]
-        print(f"    cleared {slug} (survey records removed: {result['surveys_deleted']})")
-    print(f"\nCleared {len(stale)} stale GUID(s) and {total_surveys} local survey record(s).")
+        total_published += result.get("published_types_deleted", 0)
+        print(f"    cleared {slug} (surveys removed: {result['surveys_deleted']}, "
+              f"publish claims removed: {result.get('published_types_deleted', 0)})")
+    print(f"\nCleared {len(stale)} stale GUID(s), {total_surveys} local survey record(s) "
+          f"and {total_published} published-annotation claim(s).")
     print("Those repos now read as un-published, which is the truth. Re-publish to recreate them.")
+    _sweep_investigations(registry, maker, apply=args.apply)
     return 0
+
+
+def _resolves(maker, guid: str) -> bool | None:
+    """True / False / None for "could not determine".
+
+    Never collapse the third into the second: an unreachable Egeria must not
+    read as everything being stale. Projects and Collections are looked up
+    through the generic element route rather than by asset GUID, since
+    get_asset_by_guid is unreliable even for elements that exist (see the note
+    in main()).
+    """
+    try:
+        found = maker.get_element_by_guid(guid, output_format="JSON")
+    except Exception as exc:
+        name = type(exc).__name__
+        if "NotFound" in name or "404" in str(exc):
+            return False
+        return None
+    if isinstance(found, str):
+        return "No elements" not in found and bool(found.strip())
+    return bool(found)
+
+
+def _sweep_investigations(registry, maker, *, apply: bool) -> None:
+    """Investigation -> Egeria Project, and each WorkingSet -> Collection.
+
+    Reported and cleared separately from the asset sweep because they fail
+    differently: a dangling asset GUID makes a badge lie, while a dangling
+    Project GUID makes promote() fail outright against a Project nothing
+    resolves.
+    """
+    with registry._conn() as conn:
+        invs = conn.execute(
+            "SELECT slug, egeria_project_guid FROM investigations "
+            "WHERE egeria_project_guid IS NOT NULL AND egeria_project_guid <> ''"
+        ).fetchall()
+        sets = conn.execute(
+            "SELECT slug, egeria_collection_guid FROM working_sets "
+            "WHERE egeria_collection_guid IS NOT NULL AND egeria_collection_guid <> ''"
+        ).fetchall()
+    if not invs and not sets:
+        print("\nNo investigation or working-set GUIDs cached. Nothing further to sweep.")
+        return
+
+    print(f"\n{len(invs)} investigation(s) and {len(sets)} working set(s) carry a cached GUID.")
+    stale_inv = [(r["slug"], r["egeria_project_guid"]) for r in invs
+                 if _resolves(maker, r["egeria_project_guid"]) is False]
+    stale_set = [(r["slug"], r["egeria_collection_guid"]) for r in sets
+                 if _resolves(maker, r["egeria_collection_guid"]) is False]
+    for slug, guid in stale_inv:
+        print(f"    stale investigation  {slug:28} {guid}")
+    for slug, guid in stale_set:
+        print(f"    stale working set    {slug:28} {guid}")
+    if not stale_inv and not stale_set:
+        print("    all resolve. Nothing to clear.")
+        return
+    if not apply:
+        print("    Dry run — re-run with --apply to clear these too.")
+        return
+    with registry._conn() as conn:
+        for slug, _ in stale_inv:
+            conn.execute(
+                "UPDATE investigations SET egeria_project_guid = '', "
+                "egeria_project_status = 'local' WHERE slug = ?", (slug,))
+        for slug, _ in stale_set:
+            conn.execute(
+                "UPDATE working_sets SET egeria_collection_guid = '' WHERE slug = ?", (slug,))
+    print(f"    Cleared {len(stale_inv)} investigation and {len(stale_set)} working-set GUID(s). "
+          "Those investigations read as local-only again — promote to rebuild them.")
 
 
 if __name__ == "__main__":

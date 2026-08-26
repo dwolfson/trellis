@@ -3218,8 +3218,17 @@ class ProjectRegistry:
     def clear_egeria_registration(self, slug: str) -> dict:
         """Clear the cached Egeria GUID and all published survey records for a project.
 
-        Returns {"asset_guid_cleared": bool, "surveys_deleted": int} so callers
-        can report what was removed.  Safe to call when the project is not registered.
+        Returns {"asset_guid_cleared", "surveys_deleted", "published_types_deleted"}
+        so callers can report what was removed. Safe to call when the project is
+        not registered.
+
+        project_published_annotation_types goes too. Those rows are local claims
+        that Egeria holds annotations of a given type, and they are what the
+        Analyses cards' "Published"/"Repo published" badge is derived from. If
+        the asset they were published against no longer resolves, the claim is
+        false, and leaving it would put a Published badge on a repo whose
+        catalog entry is gone — the same "published to a catalog that no longer
+        holds it" this sweep exists to end, one table further along.
         """
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
@@ -3233,7 +3242,14 @@ class ProjectRegistry:
             deleted = conn.execute(
                 "DELETE FROM project_egeria_surveys WHERE project_slug = ?", (slug,)
             ).rowcount
-        return {"asset_guid_cleared": had_guid, "surveys_deleted": deleted}
+            published = conn.execute(
+                "DELETE FROM project_published_annotation_types WHERE project_slug = ?",
+                (slug,),
+            ).rowcount
+        return {
+            "asset_guid_cleared": had_guid, "surveys_deleted": deleted,
+            "published_types_deleted": published,
+        }
 
     def record_egeria_survey(
         self,
