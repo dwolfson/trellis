@@ -194,3 +194,26 @@ class TestLoadSpecsFromCsv:
         assert "WARNING" not in capsys.readouterr().out
         full = next(s for s in specs if s.survey_group == "RepoFullSurvey")
         assert set(full.step_keys) == set(script.STEP_REGISTRY.keys())
+
+
+class TestBuildSteps:
+    """PREFECT_ROUTED_STEPS opts specific long-running steps into
+    executes_at: prefect for real flow-run observability/cancellation — see
+    docs/re-ea-consolidation-audit.md and the Prefect entry in
+    docs/Backlog.md. A blanket switch would just add per-step overhead to
+    every cheap step for no benefit; this guards that the opt-in stays
+    narrow and doesn't silently grow or shrink."""
+
+    def test_arch_coupling_is_routed_to_prefect(self, script):
+        steps = script.build_steps(["repo_arch_coupling"])
+        assert steps[0].executes_at == "prefect"
+
+    def test_an_ordinary_step_stays_local(self, script):
+        steps = script.build_steps(["repo_health"])
+        assert steps[0].executes_at == "resource-explorer"
+
+    def test_the_opt_in_list_is_exactly_what_this_test_expects(self, script):
+        """Guards against the opt-in silently growing (paying Prefect
+        overhead on more steps than anyone decided to) or shrinking (this
+        test passing for the wrong reason)."""
+        assert script.PREFECT_ROUTED_STEPS == {"repo_arch_coupling"}

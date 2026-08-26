@@ -157,7 +157,7 @@ class SurveyDefinitionExecutor:
         errors: list = []
 
         from resource_explorer.config import get_config
-        from resource_explorer.surveyors.prefect_adapter import run_prefect_step
+        from resource_explorer.surveyors.prefect_adapter import PrefectFlowRunCancelled, run_prefect_step
 
         # Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py)
         # and have no STEP_REGISTRY entry, so there is nothing local to run them
@@ -255,6 +255,16 @@ class SurveyDefinitionExecutor:
                     output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "status": "ok", "engine": "prefect"})
+                except PrefectFlowRunCancelled as exc:
+                    # Distinct from a generic failure — this is the user
+                    # actually stopping the survey (via the Admin "⚡ Prefect"
+                    # panel's Cancel button), not something breaking. Surfaced
+                    # as its own status so the activity log reads "cancelled",
+                    # not "error", for what was a deliberate action.
+                    msg = f"Prefect step '{step.re_analysis_step}' was cancelled: {exc}"
+                    log.info(msg)
+                    errors.append(msg)
+                    steps_report.append({"step": step.qualified_name, "status": "cancelled", "engine": "prefect"})
                 except Exception as exc:
                     msg = f"Prefect step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)

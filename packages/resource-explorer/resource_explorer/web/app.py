@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
 @asynccontextmanager
@@ -54,6 +54,7 @@ app.include_router(project_context.router, prefix="/api/project-context", tags=[
 app.include_router(automate.router, prefix="/api/automate", tags=["automate"])
 app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
+app.include_router(prefect_status.router, prefix="/api/prefect", tags=["prefect"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"])

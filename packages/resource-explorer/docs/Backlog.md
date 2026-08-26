@@ -1340,7 +1340,7 @@ guessed at further:
 
 ### Platform & orchestration
 
-#### Distributed survey orchestration via a flow tool (Prefect) — early prototype, not yet integrated
+#### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
 
 RE's only execution model today is either synchronous in-process (`SurveyOrchestrator`) or the `scheduler.py` daemon-thread poller (see the "Periodic / triggered survey scheduling" item below). Neither can run survey work *near* a protected asset (a database inside a VPC, a filesystem edge agent) without deploying RE itself there, and neither gives retries/backoff/task-level telemetry for free.
 
@@ -1369,6 +1369,73 @@ a legitimate deployment choice, it just has to be asked for by name.
 **Not yet done:** ~~`executes_at: prefect` is not wired into `survey_definition_executor.py`'s dispatch loop~~ **(CORRECTED 2026-08-19, verified against this tree: it IS wired — `_use_prefect` at `survey_definition_executor.py:162-167`. Note `:167` — when `config.prefect.enabled` is true, *every* step marked `executes_at: resource-explorer` is rerouted to Prefect, so a global flag overrides what a definition explicitly asked for. Open question whether that is intended.)**; no staged-candidate registry states in `registry.py`; no deployment/worker actually configured or run against. This needs review as a real design decision (own dependency on a flow engine is a significant infra commitment) before the prototype code is treated as a real feature — not yet reflected as its own line item, currently living only in these two design docs.
 
 Related/overlapping: "Periodic / triggered survey scheduling" below (this may be the eventual replacement for the daemon thread it says is only a short-term fix), "Coherent selective-cataloging model" below (the staging-registry funnel is a concrete proposal for it), and "Unify survey launching" above once a launcher needs to route to a third execution engine, not just two.
+
+**VERIFIED LIVE 2026-08-26 — the "needs review as a real design decision" above is answered:
+real dispatch works end-to-end**, tested against a local `prefect server` + a deployed
+`re_survey_flow` + a running worker, not just code review. Three more bugs found and fixed in
+the process, none caught by the earlier code-only review:
+
+- `prefect deploy` (the CLI command) itself failed — `.deploy(work_pool_name=...)` alone
+  requires an image or remote storage location; fixed to `.from_source(source=<this
+  checkout>, entrypoint=...)`, correct for a `process`-type work pool running on the same
+  machine as the caller.
+- `_run_prefect_step_api` fetched the completed flow run's result via
+  `client.resolve_value(state.data)`, which doesn't exist on `PrefectClient` in Prefect 3.x —
+  every completed API-dispatched run raised `AttributeError`, was caught by the same broad
+  `except` the 2026-08-20 finding above already flagged, and silently ran the step's work a
+  **second time** via local fallback. Fixed to `state.result(raise_on_failure=True)`, and
+  `re_survey_flow` now declares `persist_result=True` (Prefect 3.x doesn't persist results by
+  default, and a state fetched back via `read_flow_run` from a different process than the one
+  that ran the flow has nothing to fall back to without it).
+- **Cancelling a flow run silently didn't stop the work.** Found testing the new cancel
+  endpoint (see below): `state.is_cancelled()` correctly raised, but that exception was caught
+  by the *same* broad `except` as "server unreachable," so a cancelled run fell back to running
+  the step again locally — cancel had no actual effect. Fixed with a dedicated
+  `PrefectFlowRunCancelled` exception that `run_prefect_step` re-raises instead of falling back
+  from; everything else (a real connection failure, a bug) still falls back as before.
+
+**Default flipped:** `PrefectConfig.enabled` now defaults `True` (was `False`) — safe with no
+server running, confirmed by the fallback behavior above; adds per-step connection-attempt
+overhead for `executes_at: prefect` steps only, until a server exists. `route_local_steps`
+stays `False` by default — routing every plain step through Prefect multiplies overhead by
+however many steps a survey has, unproven at volume; left for a later pass once the admin
+panel below makes it observable. `.env.example` and CLAUDE.md's External Services list now
+document the required local setup (`prefect server start`, `resource-explorer prefect deploy`,
+`resource-explorer prefect worker`) — previously undocumented anywhere.
+
+**One step opted in so far:** `repo_arch_coupling` (the real `git log` history clone,
+long-running/thrash-prone in a way the cheaper steps aren't) now declares
+`executes_at: prefect` in `scripts/generate_repo_survey_definition.py`'s `PREFECT_ROUTED_STEPS`
+— a deliberate, narrow opt-in, not a blanket switch. **This is a mechanism, not yet a live
+change** — the corresponding Egeria-side Survey Definition step is published via a one-time
+Dr.Egeria markdown run (`dr_egeria_survey_publisher.py`), which needs a live Egeria instance
+and human-in-the-loop execution; not done as part of this pass.
+
+**New: an Admin "⚡ Prefect" panel** (`web/routes/prefect_status.py`,
+`loadAdminPrefectPanel()`/`renderAdminPrefectPanel()` in `index.html`) — flow-run status
+grouped by resource (slug/step tags added to `create_flow_run_from_deployment`), a real Cancel
+button (`POST /api/prefect/flow-runs/{id}/cancel`, verified live to actually stop a running
+step, not just mark it), and a link out to Prefect's own UI for full per-task logs. Degrades
+gracefully (a status flag, not a 500) when no server is reachable.
+
+**Scope boundary, worth restating here too:** all of the above is about **locally-dispatched**
+survey steps. `executes_at: egeria` steps are coordinated by Egeria itself — none of this gives
+RE any more visibility into those. See "Some surveys are coordinated by Egeria, not RE" below.
+
+---
+
+#### Some surveys are coordinated by Egeria, not RE — a separate visibility question, deliberately deferred
+
+Raised 2026-08-26 alongside the Prefect work above, and explicitly scoped out of it by the
+user: `executes_at: egeria` survey steps are coordinated by Egeria itself, not by RE's local
+executor or Prefect. RE has no more visibility into those than it had before this pass (no
+flow-run, no local thread, no activity_log row updated mid-run) — the "are my surveys making
+progress / how do I cancel one / where's the log" questions this whole thread started from have
+a real, currently-unanswered version for this category specifically. Needs its own design pass:
+what does Egeria itself expose for a running `GovernanceActionProcess` (status, cancellation,
+logs), and how would RE surface that the same way `web/routes/prefect_status.py` now does for
+the local/Prefect case. Not investigated yet — flagged so it isn't assumed solved by the
+Prefect work above.
 
 ---
 

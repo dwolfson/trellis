@@ -607,6 +607,12 @@
            scout" searches/lists, picked from Scouting's Discover sub-tab. -->
       <div id="admin-discovery-sources-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <div id="admin-egeria-links-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+
+      <!-- Prefect observability view (Admin) — flow-run status/cancel for
+           locally-dispatched (executes_at: prefect) survey steps only; does
+           NOT cover executes_at: egeria steps, which Egeria coordinates
+           itself. See docs/re-ea-consolidation-audit.md. -->
+      <div id="admin-prefect-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <!-- Question Catalog view (Admin) — read-only browser over the full
            docs/dr-egeria/resource_questions.csv catalog (via GET
            /api/analyses/question-catalog), unscoped to any one project. See
@@ -7924,11 +7930,12 @@ function showMainView(tab) {
   const adminDiscoverySourcesView = document.getElementById('admin-discovery-sources-view');
   const adminEgeriaLinksView = document.getElementById('admin-egeria-links-view');
   const adminQuestionCatalogView = document.getElementById('admin-question-catalog-view');
+  const adminPrefectView = document.getElementById('admin-prefect-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
   // security set — "Scouting ignores it entirely," per its own HTML comment)
   // visually duplicates the Questions tab's own dedicated 12-name Perspective
@@ -8037,6 +8044,10 @@ function showMainView(tab) {
     adminQuestionCatalogView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminQuestionCatalogPanel();
+  } else if (tab === 'admin-prefect') {
+    adminPrefectView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminPrefectPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -10696,6 +10707,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
     { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
+    { tab: 'admin-prefect',           label: '⚡ Prefect' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -12125,6 +12137,110 @@ function renderAdminQuestionCatalogPanel() {
         </table>
       </div>
     </div>`;
+}
+
+// ── Prefect observability panel (Admin ⚡ Prefect) ───────────────────────
+// Flow-run status/cancel for locally-dispatched (executes_at: prefect)
+// survey steps only — see web/routes/prefect_status.py's module docstring.
+// Does NOT cover executes_at: egeria steps, which Egeria coordinates itself.
+async function loadAdminPrefectPanel() {
+  const view = document.getElementById('admin-prefect-view');
+  view.innerHTML = _adminSubnavHtml('admin-prefect') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading Prefect status…</div>';
+  try {
+    const [statusRes, runsRes] = await Promise.all([
+      fetch('/api/prefect/status'),
+      fetch('/api/prefect/flow-runs?limit=50'),
+    ]);
+    const status = await statusRes.json();
+    const runsBody = await runsRes.json();
+    renderAdminPrefectPanel(status, runsBody);
+  } catch(e) {
+    view.innerHTML = _adminSubnavHtml('admin-prefect') +
+      `<div class="text-red-400 text-xs p-4">Failed to load Prefect status: ${_esc(e.message)}</div>`;
+  }
+}
+
+const _PREFECT_STATE_COLORS = {
+  COMPLETED: 'bg-emerald-900 text-emerald-200',
+  RUNNING: 'bg-cyan-900 text-cyan-200',
+  SCHEDULED: 'bg-slate-700 text-slate-200',
+  PENDING: 'bg-slate-700 text-slate-200',
+  FAILED: 'bg-red-900 text-red-200',
+  CRASHED: 'bg-red-900 text-red-200',
+  CANCELLED: 'bg-amber-900 text-amber-200',
+  CANCELLING: 'bg-amber-900 text-amber-200',
+};
+
+function renderAdminPrefectPanel(status, runsBody) {
+  const view = document.getElementById('admin-prefect-view');
+  const active = new Set(['RUNNING', 'PENDING', 'SCHEDULED', 'CANCELLING']);
+
+  const statusBanner = status.reachable
+    ? `<div class="text-xs text-emerald-400 flex items-center gap-2">
+         <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+         Reachable at <a href="${_esc(status.ui_url)}" target="_blank" class="underline hover:text-emerald-300">${_esc(status.api_url)}</a>
+         · <a href="${_esc(status.ui_url)}" target="_blank" class="underline hover:text-emerald-300">Open Prefect UI ↗</a> for full per-task logs
+       </div>`
+    : `<div class="text-xs text-amber-400 flex items-center gap-2">
+         <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+         Not reachable at ${_esc(status.api_url)} — steps run locally, exactly as if Prefect were disabled.
+         ${status.error ? `<span class="text-slate-500">(${_esc(status.error)})</span>` : ''}
+       </div>`;
+
+  const rows = (runsBody.flow_runs || []).map(r => {
+    const colorClass = _PREFECT_STATE_COLORS[r.state] || 'bg-slate-700 text-slate-200';
+    const cancelBtn = active.has(r.state)
+      ? `<button onclick="cancelAdminPrefectFlowRun('${_esc(r.id)}')" class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors">⏹ Cancel</button>`
+      : '';
+    return `<tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+      <td class="px-4 py-3 text-slate-200 text-xs">${_esc(r.slug || '—')}</td>
+      <td class="px-4 py-3 font-mono text-cyan-400 text-xs">${_esc(r.step || '—')}</td>
+      <td class="px-4 py-3 text-xs"><span class="px-1.5 py-0.5 rounded ${colorClass}">${_esc(r.state)}</span></td>
+      <td class="px-4 py-3 text-slate-450 text-xs">${_esc(r.start_time || r.created || '—')}</td>
+      <td class="px-4 py-3 text-slate-450 text-xs">${_esc(r.end_time || '—')}</td>
+      <td class="px-4 py-3 text-right">${cancelBtn}</td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-prefect') + `
+    <div class="p-6 space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">⚡ Prefect</h1>
+          <p class="text-xs text-slate-400 mt-1">Flow-run status for locally-dispatched survey steps (executes_at: prefect) — not executes_at: egeria steps, which Egeria coordinates itself.</p>
+        </div>
+        <button onclick="loadAdminPrefectPanel()" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">🔄 Refresh</button>
+      </div>
+      ${statusBanner}
+      ${!runsBody.reachable ? `<div class="text-xs text-slate-500">${_esc(runsBody.error || '')}</div>` : ''}
+      ${rows ? `
+        <table class="w-full text-left">
+          <thead>
+            <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase tracking-wide">
+              <th class="px-4 py-2">Resource</th>
+              <th class="px-4 py-2">Step</th>
+              <th class="px-4 py-2">State</th>
+              <th class="px-4 py-2">Started</th>
+              <th class="px-4 py-2">Ended</th>
+              <th class="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`
+        : '<div class="text-slate-500 text-xs py-8 text-center">No flow runs yet — nothing has run via executes_at: prefect.</div>'}
+    </div>`;
+}
+
+async function cancelAdminPrefectFlowRun(id) {
+  if (!confirm('Cancel this flow run? The step it was running will stop, not silently retry locally.')) return;
+  try {
+    const res = await fetch(`/api/prefect/flow-runs/${id}/cancel`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setTimeout(loadAdminPrefectPanel, 1000);  // give Prefect a moment to transition state
+  } catch(e) {
+    alert(`Failed to cancel: ${e.message}`);
+  }
 }
 
 async function loadAdminDiscoverySourcesPanel() {
