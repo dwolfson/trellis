@@ -2667,11 +2667,31 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     // tables (activity_log's analysis_run rows vs. survey/catalog rows;
     // see registry.get_analysis_last_run()/get_last_published_annotation_types()).
     const la = lastActivity[a.id] || {};
+    // "Ran as part of a survey" is still a run. Reading only the per-analysis
+    // Run button made every card say "Never run" while its results sat in the
+    // findings tables — next to a Published badge derived from a different
+    // source, which is how one card came to claim both at once.
+    const _runVia = la.last_run_via === 'survey' ? ' (as part of a survey)' : '';
+    const _partial = la.last_run_partial
+      ? ' — covered some of this analysis\'s steps, not all' : '';
+    // Three states, not two. A repo surveyed by runs too old to record which
+    // steps they executed has NOT never-run — we simply cannot say. Printing
+    // "Never run" there, beside a publish we CAN attribute, is exactly the
+    // contradiction this whole fix is about.
     const lastRunHtml = la.last_run_at
-      ? `<span class="text-cyan-400" title="Last run: ${_esc(la.last_run_at)} (${_esc(la.last_run_status || '')})">📅 Last run ${_relTime(la.last_run_at)}</span>`
-      : `<span class="text-amber-400">📅 Never run</span>`;
+      ? `<span class="text-cyan-400" title="Last run: ${_esc(la.last_run_at)} (${_esc(la.last_run_status || '')})${_esc(_runVia)}${_esc(_partial)}">📅 Last run ${_relTime(la.last_run_at)}${la.last_run_partial ? '*' : ''}</span>`
+      : la.last_run_basis === 'not_established'
+        ? `<span class="text-slate-500" title="${la.unattributed_surveys} survey run(s) on this repo predate per-step recording, so whether this analysis was among them cannot be determined. Run it to establish one.">📅 Last run not established</span>`
+        : `<span class="text-amber-400">📅 Never run</span>`;
+    // Two tiers, because annotation types are shared. 'analysis' means a type
+    // only this analysis produces was published — real evidence about THIS
+    // card. 'repo' means only shared types matched, so all that is known is
+    // that the repo was published; shown dimmer and hedged rather than
+    // claiming a precision the join cannot support.
     const lastPublishedHtml = la.last_published_at
-      ? `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>`
+      ? la.last_published_scope === 'repo'
+        ? `<span class="text-slate-600" title="No publish attributable to this analysis alone — its annotation types are produced by several analyses. The repo was published at ${_esc(la.last_published_at)}.">☁ Repo published ${_relTime(la.last_published_at)}</span>`
+        : `<span class="text-slate-500" title="Last published: ${_esc(la.last_published_at)}">☁ Published ${_relTime(la.last_published_at)}</span>`
       : `<span class="text-slate-600">☁ Not published</span>`;
     // Scheduling is a cross-cutting, per-analysis action — available from
     // whichever card surfaced it (Assessment, Analysis, or Discovery),

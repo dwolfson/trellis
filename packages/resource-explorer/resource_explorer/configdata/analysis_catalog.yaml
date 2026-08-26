@@ -86,7 +86,7 @@ repo_analyses:
     description: "Identify programming languages, file types, and project structure. Produces file-type counts and language breakdown."
     resource_types: ["repo"]
     intent: scouting
-    perspectives: ["all"]
+    perspectives: ["Data Expert", "Architecture", "all"]
     annotation_types: ["ResourceMeasureAnnotation", "ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -102,7 +102,7 @@ repo_analyses:
     description: "Stars, forks, contributors, open issues, and activity metrics from GitHub. Produces a quality score annotation."
     resource_types: ["repo"]
     intent: scouting
-    perspectives: ["all"]
+    perspectives: ["Community", "Consumer", "Steward"]
     annotation_types: ["QualityScoreAnnotation"]
     source: local
     run_time: fast
@@ -361,7 +361,7 @@ repo_analyses:
     # by construction. Recorded rather than quietly reconciled — the
     # maintainer's call was explicit and is not this comment's to override.
     intent: discovery
-    perspectives: ["all"]
+    perspectives: ["Architecture", "App/AI Builder"]
     annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
     run_time: fast
@@ -383,7 +383,7 @@ repo_analyses:
     # where the tier's description stops being a rule and becomes a slogan, and
     # somebody should decide which it is.
     intent: discovery
-    perspectives: ["all"]
+    perspectives: ["Architecture", "Consumer"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -404,7 +404,7 @@ repo_analyses:
     # discovery tier where the recovery steps it consumes do not, and it can be
     # recomputed whenever those findings change without re-downloading anything.
     intent: discovery
-    perspectives: ["all"]
+    perspectives: ["Architecture", "Consumer"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -420,7 +420,7 @@ repo_analyses:
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."
     resource_types: ["repo"]
     intent: scouting
-    perspectives: ["all"]
+    perspectives: ["Admin", "Data Expert"]
     annotation_types: []
     source: local
     run_time: minutes
@@ -436,7 +436,7 @@ repo_analyses:
     description: "Pull the latest commits and re-embed changed content into pgvector (incremental, commit-diff based). Keeps chat/RAG answers current with the repo."
     resource_types: ["repo"]
     intent: analysis
-    perspectives: ["all"]
+    perspectives: ["App/AI Builder", "Admin"]
     annotation_types: []
     source: local
     run_time: minutes
@@ -452,7 +452,7 @@ repo_analyses:
     description: "Embed the project's documentation site into pgvector so Chat and Understanding can answer from what the project says about itself, not only from its source tree. Collapses versioned docs to the current release. Skips when the repo builds that site itself — the source is already ingested in a better form."
     resource_types: ["repo"]
     intent: analysis
-    perspectives: ["all"]
+    perspectives: ["App/AI Builder", "Consumer", "Community"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: minutes

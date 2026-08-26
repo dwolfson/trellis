@@ -231,14 +231,23 @@ def test_all_does_not_swallow_a_surveys_derived_perspectives():
     """
     from resource_explorer.web.routes.survey_definitions import _derived_from_steps
 
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    # Pick a step whose analysis really does carry "all", from the catalog
+    # rather than by name -- an earlier version of this test hard-coded one and
+    # broke the moment that entry was retagged.
+    carrier = next(
+        a for a in get_analyses("repo", include_egeria_live=False)
+        if "all" in (a.get("perspectives") or []) and (a.get("re_analysis_steps") or [])
+    )
     got = _derived_from_steps([
         {"re_analysis_step": "repo_security"},
-        {"re_analysis_step": "repo_arch_detect"},   # tagged only "all"
+        {"re_analysis_step": carrier["re_analysis_steps"][0]},
     ])
-    assert "all" not in got["perspectives"]
+    assert "all" not in got["perspectives"], "'all' leaked into a derived union"
     assert "Security" in got["perspectives"]
 
-    # A survey whose steps are ALL generic is genuinely unspecific. It derives
-    # an empty list, which callers treat as "cannot be judged, so keep it" --
-    # the same visible outcome as before, reached honestly.
-    assert _derived_from_steps([{"re_analysis_step": "repo_arch_detect"}])["perspectives"] == []
+    # A survey whose steps carry no real lens at all derives an empty list,
+    # which callers treat as "cannot be judged, so keep it" -- the same visible
+    # outcome as matching everything, reached honestly rather than by "all".
+    assert _derived_from_steps([{"re_analysis_step": "no_such_step"}])["perspectives"] == []

@@ -4752,32 +4752,102 @@ class ProjectRegistry:
         local AnalysisKind cards — the Analyses-card equivalent of
         get_survey_definition_last_activity() above, added the same day for
         the same reason (direct feedback: Analyses cards had no last-run
-        signal at all, unlike Survey Definition cards). Reads
-        activity_logger.log_analysis_run()'s operation='analysis_run' rows,
-        keyed by the `analysis_id` embedded in `detail`. Kept as its own
-        method rather than folded into get_survey_definition_last_activity —
-        different operation value, different ref key, no shared publish-
-        attribution logic to reuse (an Analyses card's 'last published' comes
-        from get_last_published_annotation_types() instead, joined by
-        annotation_types, not by activity_log at all)."""
+        signal at all, unlike Survey Definition cards).
+
+        Reads TWO kinds of activity row, because an analysis can be invoked two
+        ways and reading only one made almost everything look never-run:
+
+        * operation='analysis_run' — the per-analysis "Run →" button.
+        * operation='survey' — a Survey Definition run, whose detail records
+          every step it executed. These are the NORMAL path (scheduled runs,
+          "Run" on a survey card) and never write analysis_run rows. The whole
+          database held 17 analysis_run rows against 116 survey rows, so every
+          analysis on every repo reported "Never run" while its results sat in
+          the findings tables and its annotations sat published — the card said
+          "Never run" and "Published today" side by side.
+
+        A survey step's qualifiedName ends with its re_analysis_step key
+        (`GovActionProcessStep::RepoCoarseProfile::repo_language`), and
+        REPO_ANALYSIS_STEP_MAP partitions those keys across analyses — each key
+        belongs to exactly one — so this attribution is exact, not a guess.
+
+        An analysis owning several step keys counts as run when ANY of them
+        ran: it did real work then, and calling that "never run" is the larger
+        error. `last_run_partial` says whether the run covered all its steps.
+        """
+        step_owner = self._step_key_to_analysis_id()
+        owned_counts = {a: len(k) for a, k in _repo_analysis_step_map().items()}
         result: dict[str, dict] = {}
+
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT ts, status, detail FROM activity_log "
-                "WHERE entity_type = ? AND entity_slug = ? AND operation = 'analysis_run' "
+                "SELECT ts, status, detail, operation FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? "
+                "AND operation IN ('analysis_run', 'survey') "
                 "ORDER BY ts DESC LIMIT ?",
                 (entity_type, entity_slug, limit),
             ).fetchall()
+
+        unattributable = 0
         for row in rows:
             try:
                 detail = json.loads(row["detail"] or "{}")
             except (TypeError, ValueError):
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            if row["operation"] == "survey" and not (detail.get("steps") or []):
+                # A real survey happened; it just predates step recording. That
+                # is "we cannot say which analyses ran", not "none did".
+                unattributable += 1
                 continue
-            analysis_id = detail.get("analysis_id") if isinstance(detail, dict) else None
-            if not analysis_id or analysis_id in result:
+
+            if row["operation"] == "analysis_run":
+                analysis_id = detail.get("analysis_id")
+                if analysis_id and analysis_id not in result:
+                    result[analysis_id] = {
+                        "last_run_at": row["ts"], "last_run_status": row["status"],
+                        "last_run_via": "analysis", "last_run_partial": False,
+                    }
                 continue
-            result[analysis_id] = {"last_run_at": row["ts"], "last_run_status": row["status"]}
+
+            ran: dict[str, list] = {}
+            for step in (detail.get("steps") or []):
+                key = str(step.get("step") or "").rsplit("::", 1)[-1]
+                owner = step_owner.get(key)
+                if owner:
+                    ran.setdefault(owner, []).append(step.get("status") or "")
+            for analysis_id, statuses in ran.items():
+                if analysis_id in result:
+                    continue    # newest-first, so the first win stands
+                result[analysis_id] = {
+                    "last_run_at": detail.get("surveyed_at") or row["ts"],
+                    # The steps' own status, not the survey's: a survey that
+                    # errored elsewhere still ran this analysis successfully.
+                    "last_run_status": "error" if any(s == "error" for s in statuses) else "ok",
+                    "last_run_via": "survey",
+                    "last_run_partial": len(statuses) < owned_counts.get(analysis_id, 0),
+                }
+        if unattributable:
+            # Recorded against a reserved key rather than spread across every
+            # analysis: the point is that we do not know which ones ran, and
+            # marking them all "ran" would be the same lie in the other
+            # direction. Callers read it to choose "not established" over
+            # "never run" for analyses with no row of their own.
+            result["__unattributed_surveys__"] = {
+                "count": unattributable, "last_run_at": "", "last_run_status": "",
+                "last_run_via": "", "last_run_partial": False,
+            }
         return result
+
+    @staticmethod
+    def _step_key_to_analysis_id() -> dict[str, str]:
+        """Inverse of REPO_ANALYSIS_STEP_MAP."""
+        return {
+            key: analysis_id
+            for analysis_id, keys in _repo_analysis_step_map().items()
+            for key in keys
+        }
 
     def update_activity_status(
         self,
@@ -5233,3 +5303,18 @@ class ProjectRegistry:
             totals["fs_data_file_count"] += getattr(fs, "data_file_count", 0) or 0
 
         return totals
+
+
+def _repo_analysis_step_map() -> dict:
+    """REPO_ANALYSIS_STEP_MAP, fetched lazily.
+
+    repo_survey_definition_adapter imports this module at import time, so a
+    module-level import here would close the cycle.
+    """
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+        )
+    except ImportError:  # pragma: no cover - defensive
+        return {}
+    return REPO_ANALYSIS_STEP_MAP
