@@ -3247,6 +3247,19 @@ const _WEBSITE_SKIP_REASON = {
   code_host: () => `The "documentation site" is a code-hosting URL, not documentation.`,
   non_doc_host: () => `The site is not a documentation host.`,
   unrelated_host: () => `The site belongs to an unrelated project.`,
+  // Added with site profiling (2026-08-25). These three are the profiler
+  // refusing BEFORE a crawl rather than a guard refusing a URL, and they carry
+  // a measurement — `landing_chars` is how much readable text the landing page
+  // yielded, which is the evidence for the refusal and worth showing.
+  unreachable: r => `The site could not be fetched at all — it may need a browser-like client.
+                     Crawling it would repeat that failure once per page${r.url ? '' : ''}.`,
+  no_extractable_text: r => `The site was reached and yielded no readable text
+                             (${r.landing_chars ?? 0} characters on the landing page).
+                             It is most likely rendered client-side, so ingesting it would embed
+                             markup and navigation rather than documentation.`,
+  host_not_found: () => `The recorded homepage points at a domain that does not resolve. That is
+                         worth correcting — nothing about the project is wrong.`,
+  no_homepage: () => `No documentation site is recorded for this repository yet.`,
 };
 
 function _renderWebsiteIngestionResults(data) {

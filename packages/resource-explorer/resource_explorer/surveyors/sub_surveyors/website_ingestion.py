@@ -105,9 +105,7 @@ class WebsiteIngestionSurveyor(BaseSurveyor):
         # (an unbounded passthrough would let anything into the record) but the
         # hazard is worth naming at the point it bites.
         detail = {k: v for k, v in props.items()
-                  if k in ("url", "collection", "reason", "marker", "discovery",
-                           "pages_found", "pages_failed", "ingested", "error",
-                           "ingested_by", "ingested_at", "owner_repo")}
+                  if k in _DETAIL_FIELDS}
         if outcome is not None:
             # The shared vocabulary (resource_explorer/step_outcome.py) alongside
             # this step's own `reason`. Both are kept: the outcome is queryable
@@ -461,6 +459,26 @@ def _already_ingested(registry, collection: str, this_slug: str):
             continue
         return other.slug, when
     return None, None
+
+
+#: What a `_note` detail may carry. A fixed allowlist, kept explicit on purpose —
+#: an unbounded passthrough would let anything into the record — but a key added
+#: at a call site and not added here is dropped **silently**.
+#:
+#: That has now happened three times in one day: `ingested_by` when the dedup
+#: skip was written, `landing_chars`/`sampled_chars` when site profiling was
+#: added, and `operationCount` in `arch_recovery/persist.py`'s equivalent. Each
+#: instance is individually defensible; three is a pattern.
+#:
+#: `tests/test_site_ingestion_guards.py` now asserts this list is a superset of
+#: every key any caller in this module actually passes, so the next omission
+#: fails at commit rather than becoming an empty field in a card.
+_DETAIL_FIELDS = frozenset({
+    "url", "collection", "reason", "marker", "discovery",
+    "pages_found", "pages_failed", "ingested", "error",
+    "ingested_by", "ingested_at", "owner_repo",
+    "landing_chars", "sampled_chars",
+})
 
 
 def _group_sibling_names(registry, project) -> list:
