@@ -2393,7 +2393,19 @@ function togglePerspective(p) {
 function _restorePerspectives() {
   try {
     const stored = JSON.parse(localStorage.getItem('pe_perspectives') || '[]');
-    activePerspectives = new Set(stored);
+    // Drop selections the current vocabulary no longer contains. Retagging onto
+    // Egeria's Perspective set renamed every value, so a browser holding the
+    // old ones would restore a filter matching NOTHING — an empty panel with an
+    // active-looking chip and no way to tell why. Unknown values are discarded
+    // rather than mapped: guessing what a stale tag meant is how the two
+    // vocabularies drifted apart to begin with.
+    const known = new Set([...document.querySelectorAll('#perspective-row [data-perspective]')]
+      .map(b => b.dataset.perspective));
+    const kept = known.size ? stored.filter(x => known.has(x)) : stored;
+    if (known.size && kept.length !== stored.length) {
+      localStorage.setItem('pe_perspectives', JSON.stringify(kept));
+    }
+    activePerspectives = new Set(kept);
     document.querySelectorAll('#perspective-row [data-perspective]').forEach(b => {
       b.classList.toggle('active', activePerspectives.has(b.dataset.perspective));
     });
@@ -6513,14 +6525,20 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
       : `<span class="text-slate-500" title="Last published: ${_esc(c.last_published_at)}">☁ Published ${_relTime(c.last_published_at)}</span>`
     // Was '' — so "never published" and "we did not look" rendered the same
     // (as nothing), while the local cards beside these said "Not published".
-    : `<span class="text-slate-600">☁ Not published</span>`;
+    : c.publishes_itself
+      ? `<span class="text-slate-500" title="Every step of this survey runs natively in Egeria, so its annotations are written there as it runs — there is nothing held locally to publish">☁ Publishes itself</span>`
+      : `<span class="text-slate-600">☁ Not published</span>`;
   const speedTagClass = { fast: 'tag-fast', minutes: 'tag-mins', async: 'tag-async' };
   const speedTag = c.run_time ? `<span class="analysis-tag ${speedTagClass[c.run_time] || ''}">${_esc(c.run_time)}</span>` : '';
   // Same tags the local cards carry. A Survey Definition declares none in
   // Egeria, so these are the union over its steps' analyses — which is what a
   // survey's perspectives ARE, it being a bundle of those steps.
+  // A declared perspective is the author's statement; a derived one is our
+  // inference from the steps. Shown differently, because a filter acting on a
+  // guess should not look like it is acting on a declaration.
+  const _perspDerived = c.perspectives_source === 'derived';
   const perspTags = (c.perspectives || []).filter(x => x !== 'all')
-    .map(x => `<span class="analysis-tag">${_esc(x.replace(/_/g, ' '))}</span>`).join(' ');
+    .map(x => `<span class="analysis-tag"${_perspDerived ? ' style="opacity:.7" title="Inferred from this survey\'s steps — not declared on the Survey Definition"' : ' title="Declared on the Survey Definition in Egeria"'}>${_esc(x)}${_perspDerived ? '*' : ''}</span>`).join(' ');
 
   return `<div class="analysis-card">
     <div class="flex items-start justify-between gap-2">
@@ -6564,11 +6582,15 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
         // native/prefect-routed steps have nothing local to publish from
         // here, and _publishScopedSteps' route is repo-only today, so the
         // button is omitted rather than shown disabled/broken for those.
+        // Nothing to publish when every step runs in Egeria: the annotations
+        // are already there. A button here would either no-op or re-publish
+        // what Egeria wrote, under Resource Explorer's name.
+        if (c.publishes_itself) return '';
         const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
         if (entityType !== 'repo' || !stepKeys.length) return '';
         return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
             class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
-            title="Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset">
+            title="${c.steps_native ? `Publishes the ${c.steps_local} step(s) that ran in Resource Explorer — the other ${c.steps_native} wrote straight to Egeria` : "Publishes this survey's own findings as their own SurveyReport, linked to the same Egeria asset"}">
             ☁ Publish
           </button>`;
       })()}

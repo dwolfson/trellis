@@ -53,7 +53,25 @@ def _map_reader_executor_errors(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
-def _derived_from_steps(steps: list[dict]) -> dict:
+def _execution_split(steps: list[dict]) -> dict:
+    """How many of this survey's steps run where.
+
+    `publishes_itself` is true only when EVERY step runs natively in Egeria:
+    one resource-explorer step means there are local findings that nobody will
+    publish unless asked. Saying "already published" then would be the exact
+    failure this vocabulary exists to prevent -- a status that reads as an
+    answer while local annotations sit unpublished.
+    """
+    native = sum(1 for s in steps if s.get("executes_at") not in (None, "", "resource-explorer"))
+    local = sum(1 for s in steps if s.get("executes_at") in ("resource-explorer",))
+    return {
+        "steps_native": native,
+        "steps_local": local,
+        "publishes_itself": bool(steps) and local == 0,
+    }
+
+
+def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict:
     """`analysis_ids` and `perspectives` for a candidate, from its own steps.
 
     Both are unions over the analysis_catalog entries whose step keys this
@@ -68,7 +86,8 @@ def _derived_from_steps(steps: list[dict]) -> dict:
 
     step_keys = [s.get("re_analysis_step") for s in steps if s.get("re_analysis_step")]
     if not step_keys:
-        return {"analysis_ids": [], "perspectives": []}
+        return {"analysis_ids": [], "perspectives": list(declared or []),
+                "perspectives_source": "declared" if declared else ""}
 
     analysis_ids: list[str] = []
     perspectives: list[str] = []
@@ -81,7 +100,15 @@ def _derived_from_steps(steps: list[dict]) -> dict:
         for persp in entry.get("perspectives") or []:
             if persp not in perspectives:
                 perspectives.append(persp)
-    return {"analysis_ids": analysis_ids, "perspectives": perspectives}
+    # An author's declaration beats our inference and REPLACES it: a survey
+    # tagged "Security" by its author is a Security survey even if its steps
+    # also serve Steward. Merging the two would quietly re-add what the author
+    # left out, making the declaration unable to narrow anything.
+    if declared:
+        return {"analysis_ids": analysis_ids, "perspectives": list(declared),
+                "perspectives_source": "declared"}
+    return {"analysis_ids": analysis_ids, "perspectives": perspectives,
+            "perspectives_source": "derived" if perspectives else ""}
 
 
 @router.get("/{entity_type}/{slug}/candidates")
@@ -242,7 +269,14 @@ async def list_candidates(
                 # half the cards. A survey IS its steps, so its perspectives are
                 # the union of what those steps serve. Derived, not invented:
                 # every value traces to an analysis_catalog entry.
-                **_derived_from_steps(steps),
+                **_derived_from_steps(steps, declared=survey_def.perspectives),
+                # Where this survey's steps actually run. An Egeria-native step
+                # writes its annotations into Egeria as it runs -- published by
+                # construction, with nothing local to publish and no "publish
+                # this" to offer. A resource-explorer step produces annotations
+                # here and needs an explicit publish. A survey can be a mix, so
+                # this is a count, not a flag.
+                **_execution_split(steps),
             })
 
         # Composite-survey propagation (2026-08-24 — direct feedback: "if a

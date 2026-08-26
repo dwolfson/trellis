@@ -148,17 +148,31 @@ def get_egeria_merge_status(resource_type: str) -> str:
     return _last_merge_status.get(resource_type, "unknown")
 
 
-def list_perspectives() -> list[str]:
-    """Return the distinct, real (non-"all") perspective values actually used
-    across the catalog, sorted. Backs the UI's perspective selector so it's
-    data-driven rather than a hardcoded list that silently drifts out of sync
-    with what the catalog actually contains — see GET /api/analyses/perspectives.
+#: The one Perspective vocabulary — Egeria's, authored in
+#: docs/dr-egeria/foundations/foundations.md and live, with 41 questions already
+#: scoped against it. RE previously carried a parallel set of four
+#: (dba/data_scientist/security/steward) whose values could not be compared with
+#: the Egeria ones the Questions checklist filters by, so the same word meant
+#: different things on two screens and the other ten had no local meaning at all.
+#:
+#: The four were mapped by DESCRIPTION rather than name: `dba` -> Admin
+#: ("operational/infrastructure administration" — and all four dba entries were
+#: database operations), `data_scientist` -> Data Expert ("works with, moves and
+#: shapes data"). `security`/`steward` had exact namesakes.
+EGERIA_PERSPECTIVES = (
+    "Admin", "App/AI Builder", "Architecture", "Community", "Consumer",
+    "Data Expert", "Data Owner", "Financial", "Governance", "Privacy",
+    "Security", "Steward",
+)
 
-    NOTE: this is a stopgap sourced from RE's own local catalog only. It does
-    NOT yet reflect Egeria's native Perspective type, nor Egeria Advisor's own
-    perspective set (developer/data_engineer/data_steward/governance_officer)
-    — those are a real, larger unification the Trellis design work has already
-    flagged as its own thread.
+
+def list_perspectives() -> list[str]:
+    """The perspectives that actually tag at least one analysis, sorted.
+
+    A subset of EGERIA_PERSPECTIVES, not the whole vocabulary: this backs the
+    UI's perspective row, which FILTERS analyses, so offering a perspective
+    nothing is tagged with would be a chip that can only ever empty the list.
+    It grows on its own as entries get tagged — no code change needed.
     """
     values: set[str] = set()
     for entries in _load().values():

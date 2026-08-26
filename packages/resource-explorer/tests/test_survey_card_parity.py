@@ -116,15 +116,15 @@ def test_survey_perspectives_are_the_union_over_its_steps():
         {"re_analysis_step": "repo_security"},
     ])
     assert got["analysis_ids"] == ["repository_health", "security_scan"]
-    assert "security" in got["perspectives"]
+    assert "Security" in got["perspectives"]
+    assert got["perspectives_source"] == "derived"
 
     # A native/prefect-routed survey has no local steps, so it derives nothing
     # -- and must return empty rather than a plausible-looking default, since
     # the UI treats "no perspectives" as "do not filter this card out".
-    assert _derived_from_steps([{"re_analysis_step": None}]) == {
-        "analysis_ids": [], "perspectives": [],
-    }
-    assert _derived_from_steps([]) == {"analysis_ids": [], "perspectives": []}
+    empty = {"analysis_ids": [], "perspectives": [], "perspectives_source": ""}
+    assert _derived_from_steps([{"re_analysis_step": None}]) == empty
+    assert _derived_from_steps([]) == empty
 
 
 def test_a_survey_reports_every_analysis_its_steps_run():
@@ -136,3 +136,57 @@ def test_a_survey_reports_every_analysis_its_steps_run():
     # step keys -- matching ANY of them must claim the analysis.
     got = _derived_from_steps([{"re_analysis_step": "repo_language"}])
     assert got["analysis_ids"] == ["language_file_classification"]
+
+
+def test_a_declared_perspective_replaces_the_derived_one():
+    """An author's declaration must be able to NARROW.
+
+    Merging declared with derived would quietly re-add whatever the author left
+    out, so a survey tagged "Security" would still answer to Steward -- making
+    the declaration incapable of changing anything.
+    """
+    from resource_explorer.web.routes.survey_definitions import _derived_from_steps
+
+    steps = [{"re_analysis_step": "repo_health"}, {"re_analysis_step": "repo_security"}]
+    derived = _derived_from_steps(steps)
+    declared = _derived_from_steps(steps, declared=["Security"])
+
+    assert "Steward" in derived["perspectives"]
+    assert declared["perspectives"] == ["Security"]
+    assert declared["perspectives_source"] == "declared"
+    # analysis_ids still come from the steps -- a declaration is about lenses,
+    # not about which analyses ran.
+    assert declared["analysis_ids"] == derived["analysis_ids"]
+
+
+def test_a_survey_publishes_itself_only_when_every_step_is_native():
+    """One resource-explorer step means local findings nobody will publish
+    unless asked, so "already published" would be false for the whole survey."""
+    from resource_explorer.web.routes.survey_definitions import _execution_split
+
+    native = [{"executes_at": "egeria"}, {"executes_at": "egeria"}]
+    mixed = [{"executes_at": "egeria"}, {"executes_at": "resource-explorer"}]
+    local = [{"executes_at": "resource-explorer"}]
+
+    assert _execution_split(native)["publishes_itself"] is True
+    assert _execution_split(mixed)["publishes_itself"] is False
+    assert _execution_split(local)["publishes_itself"] is False
+    # A survey with no steps at all publishes nothing -- it must not claim to.
+    assert _execution_split([])["publishes_itself"] is False
+
+    assert _execution_split(mixed) == {
+        "steps_native": 1, "steps_local": 1, "publishes_itself": False,
+    }
+
+
+def test_declared_perspectives_parse_from_additional_properties():
+    """Egeria stores Additional Properties as strings, so a multi-valued one is
+    separated by convention -- and an untrimmed " Steward" would match no
+    filter while looking correct in the payload."""
+    from resource_explorer.surveyors.survey_definition_reader import _split_perspectives
+
+    assert _split_perspectives("Security, Steward") == ["Security", "Steward"]
+    assert _split_perspectives("Security;Steward") == ["Security", "Steward"]
+    assert _split_perspectives("A,,B, A") == ["A", "B"]
+    assert _split_perspectives(None) == []
+    assert _split_perspectives("") == []

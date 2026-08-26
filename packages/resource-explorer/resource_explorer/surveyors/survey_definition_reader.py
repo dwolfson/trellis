@@ -124,6 +124,29 @@ _NEXT_STEPS_KEY = "nextProcessSteps"
 _LINKS_KEY = "processStepLinks"
 
 
+def _split_perspectives(raw) -> list:
+    """Additional Properties values arrive as a string; accept a list too.
+
+    Egeria stores Additional Properties as strings, so a multi-valued one is a
+    separated list by convention. Splits on comma and semicolon, trims, and
+    drops blanks -- an author writing "Security, Steward" and one writing
+    "Security;Steward" mean the same thing and must not produce a perspective
+    literally named " Steward" that matches no filter.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        values = str(raw).replace(";", ",").split(",")
+    seen: list = []
+    for v in values:
+        v = str(v).strip()
+        if v and v not in seen:
+            seen.append(v)
+    return seen
+
+
 class SurveyDefinitionReaderError(RuntimeError):
     """Raised when a Survey Definition can't be read, or is missing required data."""
 
@@ -205,6 +228,12 @@ class SurveyDefinition:
     # docs/discovery-automate-project-context-plan.md Part 1. None for
     # Survey Definitions authored before this convention existed.
     survey_kind: str | None = None
+    #: Perspectives this survey is authored FOR, declared in Additional
+    #: Properties as a comma-separated list (same convention survey_kind uses).
+    #: Empty when the author declared none — callers then derive them from the
+    #: survey's steps, which is a weaker but honest answer. Kept distinct from
+    #: derived values so "the author said so" and "we worked it out" never merge.
+    perspectives: list = field(default_factory=list)
 
 
 class SurveyDefinitionReader:
@@ -704,6 +733,7 @@ class SurveyDefinitionReader:
             links=links,
             description=process_props.get("description", ""),
             survey_kind=process_additional.get("survey_kind"),
+            perspectives=_split_perspectives(process_additional.get("perspectives")),
         )
 
     def _parse_step(self, element: dict) -> SurveyStep:
