@@ -56,6 +56,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     ArchLensSurveyor,
     ArchSummarySurveyor,
     CiQualitySurveyor,
+    CommunitySupportSurveyor,
     CveScanSurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
@@ -511,6 +512,15 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Read-only at survey time over already-parsed findings (parsing
         # happens once at ingest, per this surveyor's own docstring) — no
         # fetch, no re-scan here.
+    ),
+    "repo_community_support": StepInfo(
+        "repo_community_support", CommunitySupportSurveyor,
+        "Community support as separate dimensions — attention, participation, "
+        "channels — rather than one number. repository_health's community_score "
+        "is dominated by stars and forks, and scores a four-contributor project "
+        "100/100; this reports the weakest dimension instead of averaging it away.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
     ),
     "repo_cve_scan": StepInfo(
         "repo_cve_scan", CveScanSurveyor,
@@ -1085,6 +1095,36 @@ def _ci_quality_results(registry, slug: str) -> dict:
         for r in rows
     ]
     return {"findings": findings}
+
+
+def _community_support_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "community_support")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _community_support_headline(registry, slug: str) -> dict | None:
+    """The WEAKEST dimension, never an average.
+
+    Averaging is what let 683 stars mask four contributors in
+    repository_health's community_score. A reader deciding whether to depend on
+    something needs the weakest link named, not smoothed out.
+    """
+    rows = _community_support_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    by_name = {r["check_name"]: r["label"] for r in rows}
+    if by_name.get("attention_exceeds_participation") == "yes":
+        return {"label": "widely used, narrowly maintained", "tone": "warn"}
+    participation = by_name.get("participation") or ""
+    if participation in ("sole_maintainer", "small_team"):
+        return {"label": participation.replace("_", " "), "tone": "warn"}
+    if participation:
+        return {"label": f"{participation} participation", "tone": "good"}
+    return {"label": "participation not established", "tone": "warn"}
 
 
 def _cve_scan_results(registry, slug: str) -> dict:
@@ -2318,6 +2358,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         "ci_quality", ["repo_ci_quality"],
         results=AnalysisKindResults(
             _ci_quality_results, _ci_quality_trend, "findings_list", headline_reader=_ci_quality_headline,
+        ),
+    ),
+    "community_support": AnalysisKind(
+        "community_support", ["repo_community_support"],
+        results=AnalysisKindResults(
+            _community_support_results, None, "findings_list",
+            headline_reader=_community_support_headline,
         ),
     ),
     "cve_scan": AnalysisKind(

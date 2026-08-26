@@ -304,6 +304,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Community Support
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_community_support
+
+### Description
+Community support as separate dimensions — attention, participation, channels — rather than one number. repository_health's community_score is dominated by stars and forks, and scores a four-contributor project 100/100; this reports the weakest dimension instead of averaging it away.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_community_support |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Cve Scan
 
 ### Qualified Name
@@ -778,6 +797,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_ci_quality
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_community_support
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_community_support
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_cve_scan

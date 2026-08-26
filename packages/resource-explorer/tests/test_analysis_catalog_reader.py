@@ -135,7 +135,11 @@ class TestFilterByIntent:
         # discovery tier describes. It is the first analysis here that consumes
         # findings instead of collecting anything.
         assert ids == {"license_classification", "maturity", "repo_conventions",
-                       "repo_classification", "architecture_summary"} \
+                       "repo_classification", "architecture_summary",
+                       # community_support (2026-08-26) reads project_stats and
+                       # fetches nothing — the same consume-what-Scouting-
+                       # collected shape as architecture_summary above.
+                       "community_support"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):

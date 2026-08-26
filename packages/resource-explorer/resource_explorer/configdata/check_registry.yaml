@@ -33,6 +33,16 @@
 
 analyses:
 
+  community_support:
+    findings_kind: community_support
+    source: surveyors/sub_surveyors/community_support.py:assess
+    checks:
+      - attention
+      - participation
+      - attention_exceeds_participation
+      - channels
+      - responsiveness
+
   foss_scorecard:
     findings_kind: foss_scorecard
     source: surveyors/sub_surveyors/foss_scorecard.py:CHECKS
