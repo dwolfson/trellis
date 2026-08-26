@@ -80,6 +80,11 @@ class Fact:
     can_run: list = field(default_factory=list)
     #: Why the state is what it is, in words, when there is something to say.
     note: str = ""
+    #: True when this informs a judgement rather than making one. Whether a
+    #: resource REPLACES something you already have is a decision about intent;
+    #: no query settles it, so the related-resources fact is offered as
+    #: evidence and must not be phrased as the answer.
+    evidence_only: bool = False
 
     @property
     def is_known(self) -> bool:
@@ -96,6 +101,7 @@ class Fact:
             "value": self.value, "provenance": self.provenance,
             "last_run_at": self.last_run_at, "can_run": self.can_run,
             "note": self.note, "is_known": self.is_known,
+            "evidence_only": self.evidence_only,
         }
 
 
@@ -206,6 +212,109 @@ def _r_feedback(reg, p) -> tuple:
     return ({"feedback_count": len(rows)}, MEASURED if rows else NOTHING_FOUND)
 
 
+def _r_license(reg, p) -> tuple:
+    stats = reg.get_latest_project_stats(p.slug) or {}
+    name = (stats.get("license") or "").strip()
+    spdx = (stats.get("license_spdx_id") or "").strip()
+    # "Other"/"NOASSERTION" is GitHub saying it could not identify a licence,
+    # which is NOT the same as there being none — and for a question about
+    # restrictions on use, reporting it as a licence would be the more
+    # dangerous of the two errors.
+    unidentified = spdx.upper() in ("NOASSERTION", "") or name.lower() == "other"
+    return (
+        {"license": name, "license_spdx_id": spdx,
+         "identified": not unidentified},
+        MEASURED if (name and not unidentified) else NOTHING_FOUND,
+    )
+
+
+def _r_existing_use(reg, p) -> tuple:
+    """Is this already known to us, and does anything sit alongside it?
+
+    "Existing use in our organization" is answered from what the catalog
+    already holds: whether this resource is registered, and what shares its
+    group. Anything beyond that would be a guess about people, not resources.
+    """
+    group = getattr(p, "group_slug", "") or ""
+    siblings = []
+    if group:
+        siblings = [
+            x.slug for x in (reg.list_projects_in_group(group) or [])
+            if x.slug != p.slug
+        ]
+    value = {
+        "registered": True,
+        "group": group,
+        "siblings_in_group": len(siblings),
+        "sibling_slugs": siblings[:20],
+        "surveyed": bool(getattr(p, "last_surveyed_at", "")),
+    }
+    # Registered at all IS existing use of a kind, so this is measured even
+    # with no group -- the zero is about siblings, not about knowing it.
+    return value, MEASURED
+
+
+def _r_related(reg, p) -> tuple:
+    """Resources that might overlap with this one.
+
+    Evidence for the judgement, never the judgement. Whether something
+    REPLACES what you already have is a decision about intent, and no query
+    settles it -- so this returns candidates and says so in the note rather
+    than answering a question it cannot.
+    """
+    lang = (reg.get_latest_project_stats(p.slug) or {}).get("primary_language") or ""
+    same_language = []
+    if lang:
+        for other in reg.list_all():
+            if other.slug == p.slug:
+                continue
+            other_lang = (reg.get_latest_project_stats(other.slug) or {}).get("primary_language")
+            if other_lang == lang:
+                same_language.append(other.slug)
+    group = getattr(p, "group_slug", "") or ""
+    siblings = [x.slug for x in (reg.list_projects_in_group(group) or [])
+                if x.slug != p.slug] if group else []
+    value = {
+        "primary_language": lang,
+        "same_language_count": len(same_language),
+        "same_language": same_language[:15],
+        "same_group_count": len(siblings),
+        "same_group": siblings[:15],
+    }
+    return value, MEASURED if (same_language or siblings) else NOTHING_FOUND
+
+
+def _r_changed_since_survey(reg, p) -> tuple:
+    """Which analyses produced something different on their latest run.
+
+    Runs the same comparison Automate's subscriptions use, across every
+    analysis with results history, so the answer is the one the change
+    detector would give rather than a second opinion about it.
+    """
+    from resource_explorer.notification_detector import detect_change
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_RESULTS_MAP,
+    )
+
+    changed, unchanged = [], 0
+    for analysis_id in sorted(REPO_ANALYSIS_RESULTS_MAP):
+        try:
+            res = detect_change(reg, p.slug, analysis_id)
+        except Exception:  # one unreadable kind must not lose the rest
+            continue
+        if res.changed:
+            changed.append({"analysis_id": analysis_id, "summary": res.summary})
+        else:
+            unchanged += 1
+    value = {"changed_count": len(changed), "changed": changed[:15],
+             "unchanged_count": unchanged,
+             "last_surveyed_at": getattr(p, "last_surveyed_at", "") or ""}
+    # Nothing changed IS an answer, provided something was comparable at all.
+    # With no comparable history, nothing is known either way.
+    comparable = bool(changed) or unchanged
+    return value, (MEASURED if changed else NOTHING_FOUND) if comparable else NOT_ESTABLISHED
+
+
 #: question text -> (resolver, subject). The subject is what the fact is
 #: ABOUT, used as the analysis_id slot so the envelope reads sensibly.
 RESOURCE_STATE_SOURCES = {
@@ -217,7 +326,19 @@ RESOURCE_STATE_SOURCES = {
     "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
         (_r_disposition, "disposition"),
     "Any known feedback?": (_r_feedback, "resource_feedback"),
+    "Are there any restrictions for use?": (_r_license, "license"),
+    "Is there any existing use within our organization?":
+        (_r_existing_use, "catalog_presence"),
+    "Does it replace or extend something we already have?":
+        (_r_related, "related_resources"),
+    "How much has changed since the last time this was surveyed — is it worth re-running now?":
+        (_r_changed_since_survey, "change_since_last_survey"),
 }
+
+#: Facts that are EVIDENCE for a judgement rather than the judgement. The
+#: distinction earns its own table because the phrasing has to differ: a fact
+#: that answers gets stated, one that informs gets offered.
+EVIDENCE_ONLY = {"related_resources"}
 
 #: Kinds that ARE answerable, but not from analysis results — and not yet
 #: readable here. `direct` questions come from a field on the resource
@@ -416,6 +537,7 @@ class FactLayer:
                         note=f"Could not be read ({type(exc).__name__}).")
         return Fact(
             subject, state, value=value, provenance=PROVENANCE_MEASURED,
+            evidence_only=subject in EVIDENCE_ONLY,
             note=("Nothing is recorded for this — a real absence, not an "
                   "unrun analysis." if state == NOTHING_FOUND else ""),
         )

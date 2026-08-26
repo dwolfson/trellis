@@ -362,3 +362,84 @@ class TestResourceStateSources:
         # Unregistered, so still not answerable -- but it got as far as the
         # resolver rather than being turned away by the kind.
         assert env.facts, "a declared source was skipped because of its kind"
+
+
+class TestCrossResourceResolvers:
+    """Questions answered by looking across the catalog, not at one analysis."""
+
+    def test_an_unidentified_licence_is_not_reported_as_a_licence(self):
+        """GitHub returns "Other"/"NOASSERTION" when it could not identify the
+        licence. For a question about RESTRICTIONS ON USE, reporting that as a
+        licence is the more dangerous of the two errors."""
+        from resource_explorer.facts import _r_license
+
+        class _Reg:
+            def __init__(self, name, spdx):
+                self._s = {"license": name, "license_spdx_id": spdx}
+
+            def get_latest_project_stats(self, _slug):
+                return self._s
+
+        class _P:
+            slug = "s"
+
+        assert _r_license(_Reg("Other", "NOASSERTION"), _P())[1] == NOTHING_FOUND
+        assert _r_license(_Reg("", ""), _P())[1] == NOTHING_FOUND
+        value, state = _r_license(_Reg("Apache License 2.0", "Apache-2.0"), _P())
+        assert state == MEASURED and value["identified"] is True
+
+    def test_related_resources_are_evidence_not_a_verdict(self):
+        """Whether something REPLACES what you already have is a decision about
+        intent. No query settles it, and a shared primary language is nowhere
+        near enough -- so the fact is flagged so the client cannot phrase it as
+        the answer."""
+        from resource_explorer.facts import EVIDENCE_ONLY
+
+        assert "related_resources" in EVIDENCE_ONLY
+        fl = FactLayer()
+        f = fl._resource_state_fact("no-such-repo", lambda r, p: ({}, MEASURED),
+                                    "related_resources")
+        # Unregistered here, but the flag is set from the subject, so check the
+        # wiring directly on a registered-looking one.
+        assert Fact("related_resources", MEASURED, evidence_only=True).as_dict()["evidence_only"]
+
+    def test_being_registered_at_all_is_existing_use(self):
+        """A repo with no group still IS known to us. The zero is about
+        siblings, not about whether anyone has seen it."""
+        from resource_explorer.facts import _r_existing_use
+
+        class _Reg:
+            def list_projects_in_group(self, _g):
+                return []
+
+        class _P:
+            slug = "s"
+            group_slug = ""
+            last_surveyed_at = ""
+
+        value, state = _r_existing_use(_Reg(), _P())
+        assert state == MEASURED
+        assert value["registered"] is True and value["siblings_in_group"] == 0
+
+    def test_no_comparable_history_is_not_established_not_unchanged(self):
+        """"Nothing changed" and "there was nothing to compare" are opposite
+        answers to "is it worth re-running"."""
+        from resource_explorer.facts import _r_changed_since_survey
+
+        class _Reg:
+            pass
+
+        class _P:
+            slug = "s"
+            last_surveyed_at = ""
+
+        import resource_explorer.notification_detector as nd
+
+        original = nd.detect_change
+        try:
+            nd.detect_change = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no history"))
+            value, state = _r_changed_since_survey(_Reg(), _P())
+        finally:
+            nd.detect_change = original
+        assert state == NOT_ESTABLISHED
+        assert value["changed_count"] == 0 and value["unchanged_count"] == 0

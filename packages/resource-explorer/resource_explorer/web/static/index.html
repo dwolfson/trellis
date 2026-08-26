@@ -8798,6 +8798,10 @@ function _renderEnvelopeMarkdown(env, slug) {
   known.forEach(f => {
     const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
     lines.push(`- ${st.icon} **${f.analysis_id}** — ${st.text}` +
+      // Evidence informs a judgement; it is not the judgement. Phrasing it as
+      // an answer would have this report "yes, it replaces X" from nothing
+      // more than a shared primary language.
+      (f.evidence_only ? ' _(evidence for you to judge, not an answer)_' : '') +
       (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '') +
       (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
     const summary = _summariseFactValue(f.value);
