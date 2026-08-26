@@ -77,15 +77,43 @@ def test_perspective_filter_applies_to_survey_definitions_too():
 
 
 def test_perspective_row_is_shown_on_every_card_rendering_intent():
+    """One control, in the header, on every intent it applies to.
+
+    Scouting was excluded while its Questions checklist carried a filter over a
+    different vocabulary -- showing both would have stacked two rows that
+    disagreed on what a perspective is. Both vocabularies are Egeria's twelve
+    now and the in-tab rows are gone, so the exclusion went with them.
+    """
     html = INDEX.read_text()
     decl = html.split("const _PERSPECTIVE_AWARE_INTENTS = new Set([")[1].split("]")[0]
-    for intent in ("assessment", "analysis", "discovery", "enrichment",
-                   "understanding", "curate"):
+    for intent in ("scouting", "assessment", "analysis", "discovery",
+                   "enrichment", "understanding", "curate"):
         assert f"'{intent}'" in decl, f"{intent} renders cards but has no perspective row"
-    # Scouting is excluded deliberately -- its Questions checklist carries a
-    # filter over a DIFFERENT perspective vocabulary, and showing both would
-    # stack two rows that disagree on what a perspective is.
-    assert "'scouting'" not in decl
+
+
+def test_there_is_exactly_one_perspective_control():
+    """Four existed: the header row, the survey panel's, the Results panel's,
+    and the Questions tab's. The same concept appeared twice on screen at once,
+    and which one you touched decided whether anything happened."""
+    html = INDEX.read_text()
+    # The in-pane rows are gone.
+    assert 'Perspective (filter)</div>' not in html.split("renderAdminQuestionCatalog")[0], \
+        "an in-pane Perspective row survives in the workflow panes"
+    # Their state is gone too -- one Set, owned by the header.
+    for dead in ("_surveyPanelActivePerspectives", "_questionsActivePerspectives",
+                 "_surveyResultsActivePerspectives", "_surveyPanelAvailablePerspectives"):
+        assert dead not in html, f"panel-local perspective state survives: {dead}"
+    # The header toggle refreshes the panes rather than each pane owning a copy.
+    toggle = html.split("function togglePerspective(")[1].split("\n}")[0]
+    for fn in ("_reloadSurveyPanelForPerspective", "_reloadSurveyResultsForPerspective",
+               "_reloadQuestionsForPerspective"):
+        assert fn in toggle, f"togglePerspective does not refresh via {fn}"
+
+
+def test_the_header_row_is_no_longer_hidden_on_the_questions_tab():
+    """It was hidden there specifically because that tab had its own row."""
+    html = INDEX.read_text()
+    assert "classList.toggle('hidden', tab === 'scouting-questions')" not in html
 
 
 # ── the backend halves the cards depend on ──────────────────────────────────
@@ -138,8 +166,8 @@ def test_a_survey_reports_every_analysis_its_steps_run():
     assert got["analysis_ids"] == ["language_file_classification"]
 
 
-def test_a_declared_perspective_replaces_the_derived_one():
-    """An author's declaration must be able to NARROW.
+def test_a_scoped_perspective_replaces_the_derived_one():
+    """A ScopedBy declaration must be able to NARROW.
 
     Merging declared with derived would quietly re-add whatever the author left
     out, so a survey tagged "Security" would still answer to Steward -- making
@@ -153,7 +181,7 @@ def test_a_declared_perspective_replaces_the_derived_one():
 
     assert "Steward" in derived["perspectives"]
     assert declared["perspectives"] == ["Security"]
-    assert declared["perspectives_source"] == "declared"
+    assert declared["perspectives_source"] == "scoped"
     # analysis_ids still come from the steps -- a declaration is about lenses,
     # not about which analyses ran.
     assert declared["analysis_ids"] == derived["analysis_ids"]
@@ -190,3 +218,27 @@ def test_declared_perspectives_parse_from_additional_properties():
     assert _split_perspectives("A,,B, A") == ["A", "B"]
     assert _split_perspectives(None) == []
     assert _split_perspectives("") == []
+
+
+def test_all_does_not_swallow_a_surveys_derived_perspectives():
+    """One untagged step must not make a whole survey match every filter.
+
+    "all" on a single analysis means "not specific to any lens". Unioned across
+    a survey's steps it means the opposite -- that the survey serves every lens
+    -- so a ten-step survey with nine Security steps and one generic one became
+    unfilterable. Caught live: every Discovery candidate derived ["all", ...]
+    and no perspective could narrow the tab.
+    """
+    from resource_explorer.web.routes.survey_definitions import _derived_from_steps
+
+    got = _derived_from_steps([
+        {"re_analysis_step": "repo_security"},
+        {"re_analysis_step": "repo_arch_detect"},   # tagged only "all"
+    ])
+    assert "all" not in got["perspectives"]
+    assert "Security" in got["perspectives"]
+
+    # A survey whose steps are ALL generic is genuinely unspecific. It derives
+    # an empty list, which callers treat as "cannot be judged, so keep it" --
+    # the same visible outcome as before, reached honestly.
+    assert _derived_from_steps([{"re_analysis_step": "repo_arch_detect"}])["perspectives"] == []

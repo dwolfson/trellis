@@ -71,6 +71,49 @@ def _execution_split(steps: list[dict]) -> dict:
     }
 
 
+def _narrow_by_perspective(candidates: list[dict], wanted: list | None) -> list[dict]:
+    """Post-filter, so a candidate is judged on its OWN perspectives.
+
+    A candidate with none is kept: an errored one has no steps and no scoping
+    to be judged from, and hiding it behind a test it cannot take would make a
+    broken Survey Definition silently disappear -- the opposite of what a
+    filter should do to something that needs attention.
+    """
+    if not wanted:
+        return candidates
+    want = set(wanted)
+    return [
+        c for c in candidates
+        if not (c.get("perspectives") or [])
+        or "all" in (c.get("perspectives") or [])
+        or want & set(c.get("perspectives") or [])
+    ]
+
+
+def _scoped_perspectives(matched_questions: list, question_rows: list[dict]) -> list:
+    """A Survey Definition's perspectives, read off the ScopedBy graph.
+
+    Survey --ScopedBy--> Question --> Perspective. This is the natural
+    association and the one D7 (docs/unified-survey-execution-model-plan.md)
+    already called for: Questions carry both Funnel Stage and Perspectives, so
+    scoping a Survey to the Questions it answers says which lenses it serves
+    without a second, separately-maintained tag.
+
+    Attribution comes from the same get_scoped_elements() calls that FOUND the
+    candidate -- the query already knows which Question matched, it was simply
+    being discarded by the union.
+    """
+    if not matched_questions:
+        return []
+    by_text = {q["question"]: q for q in question_rows}
+    out: list = []
+    for text in matched_questions:
+        for persp in (by_text.get(text, {}).get("perspectives") or []):
+            if persp not in out:
+                out.append(persp)
+    return out
+
+
 def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict:
     """`analysis_ids` and `perspectives` for a candidate, from its own steps.
 
@@ -87,7 +130,7 @@ def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict
     step_keys = [s.get("re_analysis_step") for s in steps if s.get("re_analysis_step")]
     if not step_keys:
         return {"analysis_ids": [], "perspectives": list(declared or []),
-                "perspectives_source": "declared" if declared else ""}
+                "perspectives_source": "scoped" if declared else ""}
 
     analysis_ids: list[str] = []
     perspectives: list[str] = []
@@ -98,7 +141,14 @@ def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict
         if entry["id"] not in analysis_ids:
             analysis_ids.append(entry["id"])
         for persp in entry.get("perspectives") or []:
-            if persp not in perspectives:
+            # "all" is deliberately NOT unioned in. On a single analysis it
+            # means "not specific to any lens"; carried into a survey's union it
+            # means one generic step makes the WHOLE survey match every filter.
+            # A ten-step survey where nine are Security and one is untagged is
+            # still a Security survey. When the union ends up empty the survey
+            # really is unspecific, and an empty list already says so — callers
+            # keep a candidate they cannot judge rather than hiding it.
+            if persp != "all" and persp not in perspectives:
                 perspectives.append(persp)
     # An author's declaration beats our inference and REPLACES it: a survey
     # tagged "Security" by its author is a Security survey even if its steps
@@ -106,7 +156,7 @@ def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict
     # left out, making the declaration unable to narrow anything.
     if declared:
         return {"analysis_ids": analysis_ids, "perspectives": list(declared),
-                "perspectives_source": "declared"}
+                "perspectives_source": "scoped"}
     return {"analysis_ids": analysis_ids, "perspectives": perspectives,
             "perspectives_source": "derived" if perspectives else ""}
 
@@ -134,7 +184,13 @@ async def list_candidates(
                     "over the full scan otherwise.",
     ),
     perspectives: list[str] | None = Query(
-        None, description="Further narrow the Question set by perspective, same OR semantics as elsewhere.",
+        None,
+        description="Narrow to Survey Definitions serving any of these perspectives "
+                    "(OR semantics). Applied to each candidate's own perspectives — "
+                    "read off the Survey->ScopedBy->Question->Perspective graph — "
+                    "AFTER discovery, never to the Question set used to discover "
+                    "them: narrowing that first would make every candidate report "
+                    "exactly the perspective asked for.",
     ),
 ) -> dict:
     """List Survey Definitions Egeria has for this resource's Technology Type,
@@ -153,9 +209,14 @@ async def list_candidates(
         # only narrow which cataloged Questions get considered, they aren't
         # required to attempt scoping at all (fixed live, see the phase=
         # param docstring above for the incident this closes).
-        questions = [
-            q["question"] for q in get_questions(resource_type=entity_type, phase=phase, perspectives=perspectives)
-        ]
+        # Deliberately NOT narrowed by `perspectives`: these rows are what a
+        # matched candidate reads its own perspectives from, and filtering them
+        # first would make every survey report exactly the filter that was
+        # applied -- a circular answer that always agrees with the question.
+        # Perspective narrowing of the candidate list happens client-side, over
+        # the perspectives derived here.
+        question_rows = get_questions(resource_type=entity_type, phase=phase)
+        questions = [q["question"] for q in question_rows]
         thin_candidates: list = []
         if questions:
             thin_candidates = reader.find_candidate_process_guids_by_questions(
@@ -269,7 +330,15 @@ async def list_candidates(
                 # half the cards. A survey IS its steps, so its perspectives are
                 # the union of what those steps serve. Derived, not invented:
                 # every value traces to an analysis_catalog entry.
-                **_derived_from_steps(steps, declared=survey_def.perspectives),
+                **_derived_from_steps(
+                    steps,
+                    # The ScopedBy graph is the declaration; the step union is
+                    # an inference used only where no Question scopes this
+                    # survey yet (notably the full-scan fallback, which finds
+                    # candidates without going through Questions at all).
+                    declared=(_scoped_perspectives(c.get("matched_questions") or [], question_rows)
+                              or survey_def.perspectives),
+                ),
                 # Where this survey's steps actually run. An Egeria-native step
                 # writes its annotations into Egeria as it runs -- published by
                 # construction, with nothing local to publish and no "publish
@@ -368,7 +437,7 @@ async def list_candidates(
 
         return {
             "technology_type": adapter.technology_type,
-            "candidates": detailed,
+            "candidates": _narrow_by_perspective(detailed, perspectives),
             "egeria_native_processes": native_processes,
         }
 

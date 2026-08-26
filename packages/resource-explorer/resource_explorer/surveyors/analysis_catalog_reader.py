@@ -167,17 +167,36 @@ EGERIA_PERSPECTIVES = (
 
 
 def list_perspectives() -> list[str]:
-    """The perspectives that actually tag at least one analysis, sorted.
+    """The perspectives that can actually narrow something, sorted.
 
     A subset of EGERIA_PERSPECTIVES, not the whole vocabulary: this backs the
-    UI's perspective row, which FILTERS analyses, so offering a perspective
-    nothing is tagged with would be a chip that can only ever empty the list.
-    It grows on its own as entries get tagged — no code change needed.
+    UI's perspective row, and offering a lens nothing is tagged with would be a
+    chip that can only ever empty the list.
+
+    The union of two sources, because the row filters two kinds of card. Local
+    analyses carry their own tags. Survey Definitions get theirs off the
+    ScopedBy graph (Survey -> Question -> Perspective), so every perspective
+    the QUESTION catalog uses is reachable by a survey — and those cover eight
+    lenses no analysis is tagged with today (Consumer, Data Owner, Community,
+    Architecture, ...). Reading only the analyses would have hidden them, and a
+    survey tagged Consumer would sit behind a chip that was never offered.
     """
     values: set[str] = set()
     for entries in _load().values():
         for entry in entries:
             values.update(p for p in entry.perspectives if p != "all")
+    # Narrow deliberately: a missing/unreadable question catalog is the one
+    # expected failure and must not take the analyses half of the row down with
+    # it. Anything else is a bug and should surface rather than quietly
+    # shrinking the vocabulary to whatever the analyses happen to use.
+    try:
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        for q in get_questions():
+            values.update(p for p in (q.get("perspectives") or []) if p and p != "all")
+    except OSError as exc:
+        log.warning("question catalog unreadable, perspective row limited to "
+                    "analysis tags: %s", exc)
     return sorted(values)
 
 

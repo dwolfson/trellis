@@ -818,6 +818,37 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     )
 
 
+@router.post("/{slug}/materialize-annotations")
+async def materialize_annotations(slug: str, report_guid: str | None = None) -> dict:
+    """Pull annotations Egeria PRODUCED into RE's own findings/metrics tables.
+
+    The inverse of publishing. A Survey Definition whose steps execute natively
+    in Egeria writes its annotations there, where RE's Results views, trend
+    charts and question-answering cannot see them. This brings them into
+    project_analysis_findings / project_analysis_metrics, which those views
+    already read -- so nothing downstream needs a special case.
+
+    Idempotent per report: one already materialized is skipped, because those
+    tables are append-only and a second pass would double every count read off
+    them.
+
+    Omit report_guid to sweep every not-yet-materialized report for the project.
+    """
+    import asyncio
+
+    from resource_explorer.surveyors.egeria_annotation_materializer import (
+        EgeriaAnnotationMaterializer,
+    )
+
+    _project, registry = _get_project_or_404(slug)
+    materializer = EgeriaAnnotationMaterializer(registry=registry)
+    # pyegeria's sync wrappers drive their own event loop, so this cannot run
+    # on the request's -- same treatment every other Egeria call here gets.
+    if report_guid:
+        return await asyncio.to_thread(materializer.materialize_report, slug, report_guid)
+    return await asyncio.to_thread(materializer.materialize_project, slug)
+
+
 @router.get("/{slug}/survey-report", response_model=SurveyReportData)
 async def get_survey_report(slug: str) -> SurveyReportData:
     """Assemble survey report data entirely from SQLite — no Egeria connection needed.

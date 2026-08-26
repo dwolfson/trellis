@@ -1644,7 +1644,8 @@ const INTENT_PLACEHOLDER_TEXT = {};
 // Converging the vocabularies is a real design question, not something to
 // settle by revealing a second row.
 const _PERSPECTIVE_AWARE_INTENTS = new Set([
-  'assessment', 'analysis', 'discovery', 'enrichment', 'understanding', 'curate',
+  'scouting', 'assessment', 'analysis', 'discovery', 'enrichment',
+  'understanding', 'curate',
 ]);
 
 function setNavIntent(intent) {
@@ -2383,8 +2384,13 @@ function togglePerspective(p) {
     b.classList.toggle('active', activePerspectives.has(b.dataset.perspective));
   });
   localStorage.setItem('pe_perspectives', JSON.stringify([...activePerspectives]));
-  // Re-render whatever's currently showing, if it's perspective-aware (Assessment/
-  // Analysis, once Steps 2/4 land) — a no-op elsewhere, same pattern as setNavIntent.
+  // Apply to whatever the middle pane is showing. The panels that keep their
+  // own render args are refreshed directly rather than by re-entering the
+  // intent, because re-entering resets sub-tab state -- changing a lens must
+  // not navigate you somewhere else.
+  _reloadSurveyPanelForPerspective();
+  _reloadSurveyResultsForPerspective();
+  _reloadQuestionsForPerspective();
   if (_PERSPECTIVE_AWARE_INTENTS.has(currentNavIntent)) {
     setNavIntent(currentNavIntent);
   }
@@ -6258,8 +6264,16 @@ function _surveyDefEntityAndSlug() {
 let _lastAnalysisCatalog = [];
 
 let _surveyPanelKey = '';                    // entityType:slug:phase — perspective filter resets when this changes
-let _surveyPanelActivePerspectives = new Set();
-let _surveyPanelAvailablePerspectives = [];  // this phase's Question-derived vocabulary (repo-only — see below)
+// Perspective is ONE control, in the header bar, applying to whatever the
+// middle pane is showing. There used to be three: this one, the Questions
+// tab's own, and the global row -- so the same concept appeared twice on
+// screen at once, and which of the two you touched decided whether it did
+// anything. They could not be merged until the vocabularies were (RE's four
+// tags vs Egeria's twelve Perspectives); now that both are Egeria's twelve,
+// there is nothing left to keep them apart.
+//
+// Kept as a named accessor rather than a find/replace so the reason survives.
+function _activePerspectives() { return activePerspectives; }
 // Kept in module state rather than threaded through each perspective chip's
 // inline onclick (like _surveyDefCandidatesCache below) — subnavHtml is a
 // full rendered HTML fragment with its own nested quotes/newlines, which
@@ -6304,13 +6318,15 @@ async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
   _surveyPanelArgs = { entityType, slug, phase, viewElId, subnavHtml };
   const view = document.getElementById(viewElId);
   const key = `${entityType}:${slug}:${phase || ''}`;
-  if (key !== _surveyPanelKey) { _surveyPanelKey = key; _surveyPanelActivePerspectives = new Set(); }
+  // Deliberately does not reset the filter: it is a header-level lens that
+  // outlives a panel, and clearing it here would leave the header showing
+  // chips as active while the pane was no longer filtered by them.
+  if (key !== _surveyPanelKey) _surveyPanelKey = key;
 
-  const cacheKey = `${key}:${[..._surveyPanelActivePerspectives].sort().join(',')}`;
+  const cacheKey = `${key}:${[..._activePerspectives()].sort().join(',')}`;
   const cached = _surveyPanelCache[cacheKey];
   const now = Date.now();
   if (cached && now - cached.at < _SURVEY_PANEL_CACHE_TTL_MS) {
-    _surveyPanelAvailablePerspectives = cached.perspectives;
     renderSurveyPanel(cached.data, entityType, slug, cached.schedules, phase, viewElId, subnavHtml);
     return;
   }
@@ -6343,7 +6359,7 @@ async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
     // Scope to this stage's own survey types (see _STAGE_SURVEY_KIND).
     const _kind = _STAGE_SURVEY_KIND[phase];
     if (_kind) params.set('survey_kind', _kind);
-    for (const p of _surveyPanelActivePerspectives) params.append('perspectives', p);
+    for (const p of _activePerspectives()) params.append('perspectives', p);
     const candidatesPromise = fetch(`/api/survey-definitions/${entityType}/${slug}/candidates?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
 
@@ -6355,7 +6371,6 @@ async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
       .catch(() => []);
 
     const [perspectives, data, scheduleRows] = await Promise.all([perspectivesPromise, candidatesPromise, schedulesPromise]);
-    _surveyPanelAvailablePerspectives = perspectives;
     const schedules = {};
     for (const r of scheduleRows) schedules[r.analysis_id] = r;
 
@@ -6366,9 +6381,10 @@ async function _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml) {
   }
 }
 
-function _toggleSurveyPanelPerspective(p) {
-  if (_surveyPanelActivePerspectives.has(p)) _surveyPanelActivePerspectives.delete(p);
-  else _surveyPanelActivePerspectives.add(p);
+// Re-render this panel for the header bar's current perspective. Called by
+// togglePerspective(), which owns the state -- this only redraws.
+function _reloadSurveyPanelForPerspective() {
+  if (!_surveyPanelArgs) return;
   const { entityType, slug, phase, viewElId, subnavHtml } = _surveyPanelArgs;
   _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml);
 }
@@ -6673,18 +6689,10 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
         </div>`).join('')}
     </div>` : '';
 
-  // Perspective filter row — same 12-name Egeria-aligned vocabulary and
-  // toggle pattern as the Questions tab (D7a), scoped to this phase's
-  // candidates. Absent entirely when there's no vocabulary to filter by
-  // (db/filesystem hosts, or a repo phase with no cataloged questions).
-  const perspectiveChips = _surveyPanelAvailablePerspectives.map(p => `<button
-      onclick='_toggleSurveyPanelPerspective(${JSON.stringify(p)})'
-      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_surveyPanelActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
-  const perspectiveRowHtml = _surveyPanelAvailablePerspectives.length ? `
-    <div class="px-4 pt-2">
-      <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
-      <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
-    </div>` : '';
+  // No in-panel Perspective row: the header bar is the one control, and it
+  // already applies to this pane. Two rows meant the same concept appeared
+  // twice, and which one you touched decided whether anything happened.
+  const perspectiveRowHtml = '';
 
   // Schedules editor: hidden for now (2026-07-09) — it still schedules the old
   // static analysis_catalog.py entries, which don't match Survey Definitions'
@@ -6711,7 +6719,7 @@ function renderSurveyPanel(data, entityType, slug, schedules, phase, viewElId, s
 // persistence — GET /api/projects/{slug}/survey-results is a pure
 // read/aggregation layer over the existing per-analysis_id results readers.
 let _surveyResultsPanelArgs = { entityType: '', slug: '', viewElId: '', subnavHtml: '' };
-let _surveyResultsActivePerspectives = new Set();
+
 
 async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, stage = '') {
   _surveyResultsPanelArgs = { entityType, slug, viewElId, subnavHtml, stage };
@@ -6737,9 +6745,10 @@ async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, s
   }
 }
 
-function _toggleSurveyResultsPerspective(p) {
-  if (_surveyResultsActivePerspectives.has(p)) _surveyResultsActivePerspectives.delete(p);
-  else _surveyResultsActivePerspectives.add(p);
+// Redraw only. togglePerspective() in the header owns the state; these exist
+// so it can refresh whichever pane is on screen without knowing its internals.
+function _reloadSurveyResultsForPerspective() {
+  if (!_surveyResultsPanelArgs) return;
   const { entityType, slug, viewElId, subnavHtml } = _surveyResultsPanelArgs;
   _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml);
 }
@@ -6778,29 +6787,16 @@ function renderSurveyResultsPanel(data, entityType, slug, viewElId, subnavHtml) 
   // carry (derived server-side, D4) — no separate fetch needed, unlike the
   // Survey panel which has to ask question_catalog for a phase's vocabulary
   // before it has any candidates to filter.
-  const allPerspectives = [];
-  dashboards.forEach(d => (d.perspectives || []).forEach(p => { if (!allPerspectives.includes(p)) allPerspectives.push(p); }));
-  // Single-quoted onclick, not double — JSON.stringify(p) itself emits
-  // double quotes, which would terminate a double-quoted onclick="..."
-  // attribute at the first embedded quote (a real bug, caught live: found
-  // via direct browser testing that the exact same pattern with
-  // double-quoted onclick truncates to "_toggleSurveyResultsPerspective("
-  // with no argument at all).
-  const perspectiveChips = allPerspectives.map(p => `<button
-      onclick='_toggleSurveyResultsPerspective(${JSON.stringify(p)})'
-      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_surveyResultsActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
-  const perspectiveRowHtml = allPerspectives.length ? `
-    <div class="px-4 pt-2">
-      <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
-      <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
-    </div>` : '';
+  // No in-panel row -- the header bar is the one Perspective control and it
+  // already filters this pane. See _activePerspectives().
+  const perspectiveRowHtml = '';
 
   // A dashboard with no derived Perspectives at all (nothing to filter by —
   // e.g. Code Structure/Data Profile today, whose analysis_ids happen not to
   // be answered by any authored Question yet) always shows, same as an
   // unfiltered state — it's never hidden by a filter it has no tags for.
-  const visible = _surveyResultsActivePerspectives.size
-    ? dashboards.filter(d => !d.perspectives.length || d.perspectives.some(p => _surveyResultsActivePerspectives.has(p)))
+  const visible = _activePerspectives().size
+    ? dashboards.filter(d => !d.perspectives.length || d.perspectives.some(p => _activePerspectives().has(p)))
     : dashboards;
 
   const cardsHtml = visible.map(d => {
@@ -8175,7 +8171,9 @@ function showMainView(tab) {
   // filter, two different vocabularies stacked on screen at once. Hide it
   // specifically here rather than resolve the vocabularies — that's the
   // larger Unification Thread (see foundations.md), not a quick fix.
-  document.getElementById('perspective-row')?.classList.toggle('hidden', tab === 'scouting-questions');
+  // (The row used to be hidden on the Questions tab because that tab had its
+  // own Perspective filter over a different vocabulary. Both are gone: one
+  // vocabulary, one control, shown everywhere it applies.)
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
@@ -8480,7 +8478,7 @@ async function _loadScoutingOverviewStats(slug) {
 // header comment on the Unification Thread this is meant to eventually
 // join, not duplicate forever.
 let _questionsPhase = 'scouting';
-let _questionsActivePerspectives = new Set();
+
 let _questionsAllData = null;  // last-loaded (phase-filtered, perspective-unfiltered) response
 
 const _QUESTION_PHASES = ['scouting', 'discovery', 'assessment', 'analysis', 'enrichment', 'understanding', 'curate'];
@@ -8528,17 +8526,14 @@ function _questionsPerspectiveList(data) {
 
 function renderScoutingQuestions(data) {
   const view = document.getElementById('scouting-questions-view');
-  const allPerspectives = _questionsPerspectiveList(data);
   const questions = (data.questions || []).filter(q =>
-    !_questionsActivePerspectives.size ||
-    (q.perspectives || []).some(p => _questionsActivePerspectives.has(p))
+    !_activePerspectives().size ||
+    (q.perspectives || []).some(p => _activePerspectives().has(p))
   );
 
   const phaseChips = _QUESTION_PHASES.map(p => `<button onclick="_setQuestionsPhase('${p}')"
       class="text-xs px-2.5 py-1 rounded capitalize transition-colors ${p === _questionsPhase ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${p}</button>`).join('');
 
-  const perspectiveChips = allPerspectives.map(p => `<button onclick="_toggleQuestionsPerspective('${_esc(p)}')"
-      class="text-[11px] px-2 py-0.5 rounded-full border transition-colors ${_questionsActivePerspectives.has(p) ? 'bg-cyan-700 border-cyan-600 text-white' : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}">${_esc(p)}</button>`).join('');
 
   const rows = questions.map(q => {
     const status = _questionStatus(q);
@@ -8573,10 +8568,6 @@ function renderScoutingQuestions(data) {
         <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
         <div class="flex flex-wrap gap-1.5">${phaseChips}</div>
       </div>
-      ${allPerspectives.length ? `<div>
-        <div class="text-[10px] text-slate-500 uppercase mb-1">Perspective (filter)</div>
-        <div class="flex flex-wrap gap-1.5">${perspectiveChips}</div>
-      </div>` : ''}
       <div class="text-[11px] text-slate-500">${answeredCount} / ${questions.length} answered or automatic</div>
       <div class="bg-slate-950 border border-slate-800 rounded p-2">${rows}</div>
     </div>`;
@@ -8587,9 +8578,7 @@ function _setQuestionsPhase(phase) {
   loadScoutingQuestions();
 }
 
-function _toggleQuestionsPerspective(p) {
-  if (_questionsActivePerspectives.has(p)) _questionsActivePerspectives.delete(p);
-  else _questionsActivePerspectives.add(p);
+function _reloadQuestionsForPerspective() {
   if (_questionsAllData) renderScoutingQuestions(_questionsAllData);
 }
 

@@ -228,11 +228,13 @@ class SurveyDefinition:
     # docs/discovery-automate-project-context-plan.md Part 1. None for
     # Survey Definitions authored before this convention existed.
     survey_kind: str | None = None
-    #: Perspectives this survey is authored FOR, declared in Additional
-    #: Properties as a comma-separated list (same convention survey_kind uses).
-    #: Empty when the author declared none — callers then derive them from the
-    #: survey's steps, which is a weaker but honest answer. Kept distinct from
-    #: derived values so "the author said so" and "we worked it out" never merge.
+    #: Perspectives this survey is authored FOR, as declared in Additional
+    #: Properties. Retained only as an escape hatch for a definition that has
+    #: no ScopedBy links yet — the real association is
+    #: Survey --ScopedBy--> Question --> Perspective, read by the candidates
+    #: route, because Questions already carry Perspectives and scoping a Survey
+    #: to the Questions it answers is the same statement without a second tag
+    #: to keep in sync (D7, docs/unified-survey-execution-model-plan.md).
     perspectives: list = field(default_factory=list)
 
 
@@ -467,11 +469,13 @@ class SurveyDefinitionReader:
 
         Returns [] (not an error) if no question resolves to a real GUID —
         the caller decides whether to fall back to the full scan."""
-        question_guids = [g for g in (self.resolve_question_guid(q) for q in questions) if g]
+        # Paired with their text, so a matched candidate can name the Questions
+        # that scoped it rather than just how many there were.
+        question_guids = [(q, g) for q, g in ((q, self.resolve_question_guid(q)) for q in questions) if g]
         if not question_guids:
             return []
 
-        cache_key = (tuple(sorted(question_guids)), technology_type, survey_kind)
+        cache_key = (tuple(sorted(g for _, g in question_guids)), technology_type, survey_kind)
         now = time.monotonic()
         cached = _candidates_cache.get(cache_key)
         if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
@@ -480,7 +484,7 @@ class SurveyDefinitionReader:
         by_guid: dict[str, dict] = {}
         try:
             client = self._connect_classification_explorer()
-            for question_guid in question_guids:
+            for question_text, question_guid in question_guids:
                 results = client.get_scoped_elements(
                     question_guid,
                     page_size=1000,
@@ -500,11 +504,20 @@ class SurveyDefinitionReader:
                         continue
                     header = el.get("elementHeader", {}) or {}
                     guid = header.get("guid", "")
-                    by_guid[guid] = {
-                        "qualified_name": qn,
-                        "display_name": props.get("displayName", qn),
-                        "guid": guid,
-                    }
+                    existing = by_guid.get(guid)
+                    if existing is None:
+                        by_guid[guid] = {
+                            "qualified_name": qn,
+                            "display_name": props.get("displayName", qn),
+                            "guid": guid,
+                            # The Questions this Survey Definition is ScopedBy,
+                            # among those queried. A survey answers more than
+                            # one, so this accumulates across the loop instead
+                            # of being overwritten by the last match.
+                            "matched_questions": [question_text],
+                        }
+                    elif question_text not in existing["matched_questions"]:
+                        existing["matched_questions"].append(question_text)
         except Exception as exc:
             log.debug("find_candidate_process_guids_by_questions failed: %s", exc)
             return []
