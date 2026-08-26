@@ -296,6 +296,10 @@ class TestCostTierFilter:
                     # external site over HTTP, so it is not zero-fetch.
                     "repo_website_ingestion",
                     "repo_git_statistics", "repo_sub_resource_survey",
+                    # repo_cve_scan (2026-08-26) — one batched call to OSV.dev.
+                    # No repo download and nothing fetched about the repo
+                    # itself, but still not zero-fetch.
+                    "repo_cve_scan",
                     # repo_manifest_parse (2026-08-23) — shares the zipball, but
                     # sharing an extraction does not make a step zero-fetch: the
                     # download still has to happen for it to run at all.

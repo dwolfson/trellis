@@ -198,6 +198,17 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: cve_scan
+    name: Dependency Advisories (CVEs)
+    description: "Queries OSV.dev for advisories against the dependencies the manifest parser already recorded. Reports coverage as prominently as the count: DECLARED dependencies only (transitive ones are invisible), and only those with a pinned, parseable version — a range like ^0.41.7 cannot be queried, and sending it anyway makes OSV return every advisory for the package regardless of version. A clean result means 'none of what we could check had an advisory', never 'this repo has no vulnerable dependencies'."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Admin"]
+    annotation_types: ["RequestForActionAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: minutes
+    target_shape: whole_resource_only
+
   - id: foss_scorecard
     name: FOSS Scorecard
     description: "OpenSSF-Scorecard-shaped checks computed from data already collected — maintenance, licence, CI tests, releases, contributors, SAST settings. A check that cannot be evaluated reports unknown and is EXCLUDED from the score, rather than scored zero as OpenSSF's own tool does, and the coverage is reported alongside the number: 8.0 over five checks and 8.0 over twelve are different claims. Not comparable with a published OpenSSF score, by design."

@@ -89,6 +89,8 @@ class TestFilterByIntent:
             # because it evaluates against criteria, which is this stage's
             # signature — even though it fetches nothing.
             "foss_scorecard",
+            # Added 2026-08-26: OSV.dev advisories over recorded dependencies.
+            "cve_scan",
         }
 
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the
