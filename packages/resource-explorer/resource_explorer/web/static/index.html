@@ -364,7 +364,7 @@
           <!-- Working set is the DEFAULT view: what the current investigation is
                actually about. "All" remains one click away — this narrows the
                list, it never hides that more exist (the count line says so). -->
-          <button onclick="_setProjectLifecycleFilter('working-set')" data-lifecycle-filter="working-set" class="filter-chip active">🎯 Working set</button>
+          <button onclick="_setProjectLifecycleFilter('working-set')" data-lifecycle-filter="working-set" class="filter-chip active">🎯 In scope</button>
           <button onclick="_setProjectLifecycleFilter('')" data-lifecycle-filter="" class="filter-chip">All</button>
           <button onclick="_setProjectLifecycleFilter('new')" data-lifecycle-filter="new" class="filter-chip">🆕 New</button>
           <button onclick="_setProjectLifecycleFilter('surveyed')" data-lifecycle-filter="surveyed" class="filter-chip">📊 Surveyed</button>
@@ -386,9 +386,9 @@
           <span id="ws-select-actions" class="hidden flex-wrap items-center gap-1 ml-1">
             <button onclick="_addSelectedToInvestigation()"
                     class="filter-chip bg-cyan-700 text-white hover:bg-cyan-600"
-                    data-tip="Add to the current investigation's working set">＋ Add <span id="ws-select-count">0</span></button>
+                    data-tip="Add to the current investigation's scope">＋ Add <span id="ws-select-count">0</span></button>
             <button onclick="_removeSelectedFromInvestigation()" class="filter-chip"
-                    data-tip="Remove from the working set — the repo itself is untouched">− Remove</button>
+                    data-tip="Remove from scope — the repo itself is untouched">− Remove</button>
             <button onclick="_hideSelected(true)" class="filter-chip"
                     data-tip="Hide from your own list. A personal view preference, not a judgement about the resource">🚫 Hide</button>
             <button onclick="_deleteSelected()" class="filter-chip text-rose-300 hover:bg-rose-900/40"
@@ -1424,6 +1424,7 @@ let _workingSetLoaded = false;
 // WorkingSet a resource sits in — deliberately distinct from the global
 // repo_dispositions judgement the sidebar badge shows.
 let _dispositionMembers = {};
+let _dispositionsLoaded = false;  // guards against rendering all-zero lanes mid-load
 let _dispositionFilter = '';
 let _projectLifecycleFilter = 'working-set';  // 'working-set' | '' | 'new' | 'surveyed' | 'published'
 let _activityLog     = [];  // [{id, ts, type, slug, status, summary, detail}]
@@ -3679,7 +3680,7 @@ function _renderProjectRow(p) {
           onclick="event.stopPropagation(); _toggleInvestigationMember('repo', '${_esc(p.slug)}')">${_workingSetKeys.has('repo:' + p.slug) ? '🎯' : '＋'}</button>` : ''}
         <button class="proj-action-btn" data-tip="Assign to group"
           onclick="event.stopPropagation(); openAssignGroupModal('${_esc(p.slug)}', '${_esc(p.group_slug)}')">🗂</button>
-        <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my working set' : 'Hide from my working set'}"
+        <button class="proj-action-btn" data-tip="${p.working_set_hidden ? 'Show in my list' : 'Hide from my list'}"
           onclick="event.stopPropagation(); toggleWorkingSetHidden('repo', '${_esc(p.slug)}', ${!p.working_set_hidden})">${p.working_set_hidden ? '🚫' : '👁'}</button>
       </div>
       ${p.github_url ? `<a class="proj-action-btn proj-gh-btn" href="${_esc(p.github_url)}" target="_blank"
@@ -3695,7 +3696,9 @@ function _renderProjectRow(p) {
 function _matchesProjectFilter(p) {
   // The working set is membership, not a lifecycle stage — it asks "is this
   // part of the body of work I declared", which no lifecycle value can answer.
-  if (_dispositionFilter) {
+  if (_dispositionFilter === _UNJUDGED) {
+    if (!_unjudgedKeys().has(`repo:${p.slug}`)) return false;
+  } else if (_dispositionFilter) {
     const members = _dispositionMembers[_dispositionFilter];
     if (!members || !members.has(`repo:${p.slug}`)) return false;
   }
@@ -3725,6 +3728,19 @@ const _DISPOSITION_GLYPH = {
   using: '✅', abandoned: '🪦', ignored: '🚫',
 };
 
+//: Registry.WORKING_SET_DISPOSITIONS, in the registry's own order rather than
+//: alphabetical: it runs tracking -> investigating -> recommended -> using and
+//: then the two ways out. Sorting it destroys that progression for no gain.
+const _DISPOSITION_ORDER = [
+  'tracking', 'investigating', 'recommended', 'using', 'abandoned', 'ignored',
+];
+
+//: Not a disposition -- the absence of one. `undecided` is deliberately NOT a
+//: WorkingSet (a Collection for "nobody judged this" would make unjudged and
+//: judged-as-undecided indistinguishable), so this lane is computed as folio
+//: membership minus every disposition set. It is the triage queue.
+const _UNJUDGED = '__unjudged__';
+
 async function _loadDispositions() {
   const inv = _currentInvestigation();
   _dispositionMembers = {};
@@ -3738,24 +3754,59 @@ async function _loadDispositions() {
   }
   // A filter whose disposition no longer has members would silently show an
   // empty list, so drop it rather than leave a chip selected that cannot match.
-  if (_dispositionFilter && !_dispositionMembers[_dispositionFilter]) _dispositionFilter = '';
+  if (_dispositionFilter && _dispositionFilter !== _UNJUDGED
+      && !_dispositionMembers[_dispositionFilter]) _dispositionFilter = '';
+  _dispositionsLoaded = true;
   _renderDispositionChips();
   renderProjectList();
+}
+
+// Resources in scope that carry no disposition yet — the triage queue.
+function _unjudgedKeys() {
+  const judged = new Set();
+  Object.values(_dispositionMembers).forEach(set => set.forEach(k => judged.add(k)));
+  return new Set([..._workingSetKeys].filter(k => !judged.has(k)));
 }
 
 function _renderDispositionChips() {
   const box = document.getElementById('disposition-chips');
   if (!box) return;
-  const entries = Object.entries(_dispositionMembers).filter(([, s]) => s.size);
-  if (!entries.length) { box.innerHTML = ''; return; }
+  // Only an investigation gives disposition a meaning to scope to, so with none
+  // selected there is nothing to offer. That is the ONLY case that hides the
+  // control: previously it also vanished whenever every count was zero, which
+  // made "nothing is judged yet" and "this app has no such thing as
+  // disposition" render identically — and left no way to discover the
+  // vocabulary before using it.
+  // Not-yet-loaded must not render as six zeroes: that is a measurement the
+  // app has not made, shown as one it has.
+  if (!_currentInvestigation() || !_dispositionsLoaded) { box.innerHTML = ''; return; }
+
+  const unjudged = _unjudgedKeys().size;
+  const lanes = [
+    ..._DISPOSITION_ORDER.map(d => [d, (_dispositionMembers[d] || new Set()).size]),
+    [_UNJUDGED, unjudged],
+  ];
   box.innerHTML =
     `<span class="text-[10px] text-slate-500 self-center mr-0.5">disposition</span>`
-    + entries.sort(([a], [b]) => a.localeCompare(b)).map(([d, set]) => `
-      <button onclick="_setDispositionFilter('${_esc(d)}')"
-              class="filter-chip ${_dispositionFilter === d ? 'active' : ''}"
-              data-tip="${set.size} resource(s) marked '${_esc(d)}' in this investigation">
-        ${_DISPOSITION_GLYPH[d] || '•'} ${_esc(d)} ${set.size}
-      </button>`).join('')
+    + lanes.map(([d, count]) => {
+        const label = d === _UNJUDGED ? 'unjudged' : d;
+        const glyph = d === _UNJUDGED ? '◌' : (_DISPOSITION_GLYPH[d] || '•');
+        // An empty lane is shown but not clickable: selecting it could only ever
+        // produce an empty list, and a filter that cannot match anything is a
+        // dead end dressed up as a choice. Shown, so the vocabulary is legible
+        // and a zero reads as a real measured zero.
+        const laneKeys = d === _UNJUDGED ? _unjudgedKeys() : (_dispositionMembers[d] || new Set());
+        const shown = _visibleProjects().filter(x => laneKeys.has(`repo:${x.slug}`)).length;
+        const tip = count
+          ? `${count} resource(s) ${d === _UNJUDGED ? 'in scope with no disposition yet' : `marked '${label}'`} in this investigation`
+            + (shown < count ? ` — ${count - shown} hidden from this list` : '')
+          : `No resource is ${d === _UNJUDGED ? 'awaiting a decision' : `marked '${label}'`} in this investigation`;
+        return `<button ${count ? `onclick="_setDispositionFilter('${_esc(d)}')"` : 'disabled'}
+              class="filter-chip ${_dispositionFilter === d ? 'active' : ''} ${count ? '' : 'opacity-40 cursor-default'}"
+              data-tip="${_esc(tip)}">
+        ${glyph} ${_esc(label)} ${count}
+      </button>`;
+      }).join('')
     + (_dispositionFilter
         ? `<button onclick="_setDispositionFilter('')" class="filter-chip">clear</button>`
         : '');
@@ -3922,7 +3973,7 @@ async function _removeSelectedFromInvestigation() {
   const inv = _currentInvestigation();
   if (!inv) { showToast('error', 'Select an investigation first', 3000); return; }
   const slugs = [..._wsSelected].filter(s => _workingSetKeys.has(`repo:${s}`));
-  if (!slugs.length) { showToast('error', 'None of those are in the working set', 3000); return; }
+  if (!slugs.length) { showToast('error', 'None of those are in scope', 3000); return; }
   let done = 0;
   for (const slug of slugs) {
     try {
@@ -3991,7 +4042,7 @@ async function _addSelectedToInvestigation() {
   const slugs = [..._wsSelected].filter(s => !_workingSetKeys.has(`repo:${s}`));
   const already = _wsSelected.size - slugs.length;
   if (!slugs.length) {
-    showToast('error', already ? 'Those are already in the working set' : 'Nothing selected', 3000);
+    showToast('error', already ? 'Those are already in scope' : 'Nothing selected', 3000);
     return;
   }
   await _addManyToInvestigation(slugs);
@@ -4017,7 +4068,7 @@ async function _toggleInvestigationMember(entityType, slug) {
       showToast('success', `Added to ${_investigationName(inv)}`, 2500);
     }
   } catch (e) {
-    showToast('error', `Could not update the working set: ${e}`, 4000);
+    showToast('error', `Could not update scope: ${e}`, 4000);
     return;
   }
   await _loadWorkingSet();
@@ -4102,13 +4153,22 @@ function renderProjectList() {
   if (_projectLifecycleFilter === 'working-set' && projects.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'px-3 py-3 text-xs text-slate-400';
-    empty.innerHTML = _currentInvestigation()
-      ? `<div class="mb-1 text-slate-300">Nothing in this investigation yet.</div>
-         <div class="text-slate-500 mb-2">${visible.length} resource(s) are registered — none is in scope for this body of work.</div>
-         <button onclick="setNavIntent('scouting')" class="text-cyan-400 hover:underline">Go to Scouting to find some →</button>`
-      : `<div class="mb-1 text-slate-300">No investigation selected.</div>
+    // A disposition lane narrows this list too, so an empty result under an
+    // active lane means "none marked that way" — NOT "nothing in scope". Saying
+    // the second while the first is true would send the user to Scouting to
+    // re-find resources the investigation already holds.
+    const _lane = _dispositionFilter === _UNJUDGED ? 'unjudged' : _dispositionFilter;
+    empty.innerHTML = !_currentInvestigation()
+      ? `<div class="mb-1 text-slate-300">No investigation selected.</div>
          <div class="text-slate-500 mb-2">Declare what this work is for, and the list shows what it is about.</div>
-         <button onclick="showMainView('investigations')" class="text-cyan-400 hover:underline">Open Investigation →</button>`;
+         <button onclick="showMainView('investigations')" class="text-cyan-400 hover:underline">Open Investigation →</button>`
+      : _lane
+      ? `<div class="mb-1 text-slate-300">Nothing is '${_esc(_lane)}' here.</div>
+         <div class="text-slate-500 mb-2">${_workingSetKeys.size} resource(s) are in scope; none carries that disposition right now.</div>
+         <button onclick="_setDispositionFilter('')" class="text-cyan-400 hover:underline">Clear the disposition filter →</button>`
+      : `<div class="mb-1 text-slate-300">Nothing in this investigation yet.</div>
+         <div class="text-slate-500 mb-2">${visible.length} resource(s) are registered — none is in scope for this body of work.</div>
+         <button onclick="setNavIntent('scouting')" class="text-cyan-400 hover:underline">Go to Scouting to find some →</button>`;
     list.appendChild(empty);
     return;
   }
@@ -4231,7 +4291,7 @@ async function toggleWorkingSetHidden(entityType, entitySlug, hidden) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     loadProjects();
   } catch(e) {
-    showToast('error', `Failed to update working set: ${_esc(e.message)}`, 5000);
+    showToast('error', `Failed to update scope: ${_esc(e.message)}`, 5000);
   }
 }
 

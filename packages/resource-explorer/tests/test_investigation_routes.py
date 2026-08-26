@@ -637,3 +637,58 @@ def test_classification_is_recorded_and_validated(client, made):
     bad = client.post("/api/investigations/", json={"display_name": "Bad Kind",
                                                     "project_classification": "Nonsense"})
     assert bad.status_code == 400
+
+
+def test_partly_judged_scope_is_not_reported_as_judged(client, made):
+    """One judged resource must not retire the offer for the other eighteen.
+
+    Measured against real data: q3-health-review had 5 of 19 judged and reported
+    `complete: true`, which the UI renders as "Nothing outstanding -- scoped,
+    judged and catalogued." That is the failure mode this whole vocabulary
+    exists to prevent: a status that reads as an answer while the work it claims
+    is done is mostly not.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Partly judged", purposes=["Assess"])
+    reg = ProjectRegistry()
+    slug = inv["slug"]
+    ws = reg.get_or_create_folio(slug)
+    for n in range(4):
+        reg.add_working_set_member(ws["slug"], "repo", f"repo-{n}")
+
+    def step():
+        steps = client.get(f"/api/investigations/{slug}/next-steps").json()["steps"]
+        return next((s for s in steps if s["id"] == "set_dispositions"), None)
+
+    assert step()["title"] == "Nothing judged yet"
+
+    reg.set_investigation_disposition(slug, "repo", "repo-0", "using")
+    s = step()
+    assert s is not None, "one judged resource retired the offer for the other three"
+    assert s["title"] == "3 resource(s) not judged yet"
+    assert "1 of 4" in s["detail"]
+
+    # Only judging ALL of them retires it.
+    for n in (1, 2, 3):
+        reg.set_investigation_disposition(slug, "repo", f"repo-{n}", "tracking")
+    assert step() is None
+
+
+def test_complete_means_every_resource_judged(client, made):
+    """`complete` drives a summary line that claims the work is finished, so it
+    has to be true of the whole scope rather than of one member of it."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Completeness", purposes=["Assess"])
+    reg = ProjectRegistry()
+    slug = inv["slug"]
+    ws = reg.get_or_create_folio(slug)
+    reg.add_working_set_member(ws["slug"], "repo", "a")
+    reg.add_working_set_member(ws["slug"], "repo", "b")
+    reg.set_investigation_disposition(slug, "repo", "a", "using")
+    reg.set_investigation_egeria_project(slug, {"status": "linked", "egeria_project_guid": "g"})
+
+    assert client.get(f"/api/investigations/{slug}/next-steps").json()["complete"] is False
+    reg.set_investigation_disposition(slug, "repo", "b", "ignored")
+    assert client.get(f"/api/investigations/{slug}/next-steps").json()["complete"] is True
