@@ -4366,3 +4366,46 @@ component rows were written, so it changed nothing — the same "computed and no
 finding 113, two hours later. And `depth` was left at 0 on filled components, so `projection` counted
 them as roots regardless of their parent: **a hierarchy with correct links and stale depths projects
 identically to a flat one**, which is precisely the symptom this finding started from.
+
+---
+
+**118. The allowlist audit: one live bug, two false alarms checked, and a guard that immediately
+found something I had wrong.**
+
+The ingestion session filed the pattern after three same-day instances — a curated field list that
+**discards anything added upstream without saying so**. Swept for the rest.
+
+**Three sites, one live bug, and it was mine and hours old.** `_note`'s allowlist did not carry
+`landing_chars`/`sampled_chars`, added the same afternoon with site profiling — so the profiler
+measured how little text a page yielded, and the measurement never reached the record. A card could
+say *"not ingested — no extractable text"* and not say **how little**, which is the evidence for the
+refusal.
+
+**Two that looked like bugs and were not**, checked rather than assumed:
+
+* `_website_ingestion_results` keeps `chunks`/`pages_fetched`/`pages_found`/`pages_failed` even at
+  zero and drops other empty fields — a *value* filter, not a field allowlist, and its comment
+  already explains why zero is the answer there.
+* `_repository_health_results` reads five named scores while **six** GovernanceMetrics are declared.
+  The sixth, `Documentation Signal Count`, is computed by `documentation.py` — a different analysis
+  entirely. No mismatch.
+
+**The guard found two more keys the moment it ran, and was wrong about them.** `chunks` and
+`pages_fetched` are passed to `_note` and are not in the allowlist — because they are written as
+**metrics**, which is where numbers go. My first assertion was *"every prop must be in
+`_DETAIL_FIELDS`"*; the property that actually matters is *"every prop must reach the record
+somewhere"*. Making the guard aware of both destinations made it **more** accurate, not looser —
+worth noting, because the tempting fix when a new test fails is to weaken it.
+
+**And one of my own older tests was pinned to how, not what.** It asserted `"ingested_by"` appeared
+as a literal substring of `_note`'s source. Moving the list to a module constant would have made it
+pass while checking nothing — the exact failure mode the presentation session's sentinel guard
+demonstrated this morning, in a test I wrote after reading their account of it. It checks the
+constant now.
+
+**Their `test_every_live_skip_reason_has_an_explanation` then caught a gap in my work**, which is
+the loop closing in the other direction: I had added `unreachable`, `no_extractable_text` and
+`host_not_found` as refusal reasons and left the card rendering the raw enum value. A reader would
+have seen `unreachable` with no way to know whether the zero beside it was a fault or the system
+being right. All three now explain themselves, and `no_extractable_text` shows the character count
+that justified the refusal.

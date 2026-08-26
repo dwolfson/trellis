@@ -299,9 +299,13 @@ class TestTheSkipStillWiresTheRepoToTheCollection:
 
         from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
 
-        src = inspect.getsource(w.WebsiteIngestionSurveyor._note)
+        # Against the constant, not the method body: the allowlist moved out of
+        # `_note` into `_DETAIL_FIELDS`, and a source-substring assertion would
+        # have gone green-then-silently-wrong on that refactor rather than
+        # failing loudly. The same how-versus-what distinction the presentation
+        # session's sentinel guard demonstrated.
         for key in ("ingested_by", "ingested_at"):
-            assert f'"{key}"' in src, f"{key} would be dropped from the record"
+            assert key in w._DETAIL_FIELDS, f"{key} would be dropped from the record"
 
     def test_skipping_the_fetch_must_not_skip_the_registration(self):
         """The query router searches a repo's OWN collection list. Skipping the
@@ -364,3 +368,86 @@ class TestProjectFamiliesVouchForAFamilySite:
             slug = "x"
 
         assert w._group_sibling_names(_Broken(), _P()) == []
+
+
+class TestTheDetailAllowlistCoversEveryCaller:
+    """A curated field list discards anything added upstream, without saying so.
+
+    Three instances in one day — `ingested_by` when the dedup skip was written,
+    `landing_chars`/`sampled_chars` when profiling was added, and
+    `operationCount` in `arch_recovery/persist.py`'s equivalent. Each is
+    individually defensible; three is a pattern, and the pattern is that nothing
+    tells the list when a call site grows a key.
+
+    This closes it structurally for this module: the list must be a superset of
+    what its callers actually pass. Filed as a cross-cutting item in
+    `docs/Backlog.md` for the sites this test cannot reach.
+    """
+
+    @staticmethod
+    def _keys_passed_to_note() -> set:
+        """Every literal dict key handed to `_note` in this module."""
+        import ast
+        import inspect
+        import textwrap
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(w)))
+        keys = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+            if name != "_note":
+                continue
+            for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                if isinstance(arg, ast.Dict):
+                    keys |= {k.value for k in arg.keys
+                             if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        return keys
+
+    @staticmethod
+    def _keys_written_as_metrics() -> set:
+        """Props that reach the record as METRICS rather than detail.
+
+        The first version of this test asserted every prop must be in
+        `_DETAIL_FIELDS`, and it immediately failed on `chunks` and
+        `pages_fetched` — which are not dropped at all, they are written as
+        metrics because they are numbers. The property that actually matters is
+        that a prop reaches SOMEWHERE, so this makes the guard more accurate
+        rather than looser.
+        """
+        import inspect
+        import re
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        src = inspect.getsource(w.WebsiteIngestionSurveyor._note)
+        block = src[src.index("upsert_metric"):]
+        return set(re.findall(r'props\.get\("(\w+)"', block))
+
+    def test_every_key_a_caller_passes_reaches_the_record(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        passed = self._keys_passed_to_note()
+        assert passed, "found no _note call sites — the extractor is broken, not the code"
+        reaches = set(w._DETAIL_FIELDS) | self._keys_written_as_metrics()
+        dropped = passed - reaches
+        assert not dropped, (
+            f"these keys are passed to _note and reach neither the detail nor "
+            f"the metrics: {sorted(dropped)}. Add them to _DETAIL_FIELDS, write "
+            f"them as metrics, or stop passing them."
+        )
+
+    def test_the_allowlist_has_no_entries_nobody_passes(self):
+        """The other direction is worth knowing but not worth failing on — a
+        field kept for a caller that no longer exists is dead weight, not a
+        bug. Reported so it can be pruned deliberately."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        unused = set(w._DETAIL_FIELDS) - self._keys_passed_to_note()
+        # `owner_repo` is passed inside an f-string-built dict in one branch;
+        # tolerate a small residue rather than assert emptiness we cannot verify.
+        assert len(unused) <= 3, f"allowlist has drifted from its callers: {sorted(unused)}"

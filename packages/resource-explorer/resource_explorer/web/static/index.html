@@ -3261,18 +3261,40 @@ const _WEBSITE_SKIP_REASON = {
   code_host: () => `The "documentation site" is a code-hosting URL, not documentation.`,
   non_doc_host: () => `The site is not a documentation host.`,
   unrelated_host: () => `The site belongs to an unrelated project.`,
-  // NOT a deliberate skip like the others — this one is a failure. The site was
-  // meant to be read and could not be, so it renders amber below rather than as
-  // one of the "correctly declined" explanations. Grouping it with them would
-  // tell a user nothing is wrong when something is.
-  unreachable: r => `The documentation site could not be reached${r.url ? '' : ''}. This is a failure, not a
-                     deliberate skip — the site was meant to be read.`,
+  // Theirs, kept whole — these come from the site profiler and carry a
+  // measurement (`landing_chars`), which is stronger than my one-line version.
+  // My distinction is preserved below in _WEBSITE_DELIBERATE_SKIPS rather than
+  // here: two of these are FAILURES, not the system correctly declining, and
+  // must not render neutral alongside self_published.
+  // Added with site profiling (2026-08-25). These three are the profiler
+  // refusing BEFORE a crawl rather than a guard refusing a URL, and they carry
+  // a measurement — `landing_chars` is how much readable text the landing page
+  // yielded, which is the evidence for the refusal and worth showing.
+  unreachable: r => `The site could not be fetched at all — it may need a browser-like client.
+                     Crawling it would repeat that failure once per page${r.url ? '' : ''}.`,
+  no_extractable_text: r => `The site was reached and yielded no readable text
+                             (${r.landing_chars ?? 0} characters on the landing page).
+                             It is most likely rendered client-side, so ingesting it would embed
+                             markup and navigation rather than documentation.`,
+  host_not_found: () => `The recorded homepage points at a domain that does not resolve. That is
+                         worth correcting — nothing about the project is wrong.`,
+  no_homepage: () => `No documentation site is recorded for this repository yet.`,
 };
 
 //: Reasons that mean "the system correctly chose not to ingest". `unreachable`
 //: is deliberately absent: it means the attempt failed.
-const _WEBSITE_DELIBERATE_SKIPS = new Set(
-  ['self_published', 'already_ingested', 'code_host', 'non_doc_host', 'unrelated_host']);
+const _WEBSITE_DELIBERATE_SKIPS = new Set([
+  // The system correctly choosing not to ingest. Renders neutral.
+  'self_published', 'already_ingested', 'code_host', 'non_doc_host', 'unrelated_host',
+  // The profiler refusing on measured evidence — a decision, not a failure.
+  'no_extractable_text',
+  // Nothing recorded to ingest: not a fault, and nothing to fix on our side.
+  'no_homepage',
+]);
+//: Everything NOT in that set renders amber. Today that is `unreachable` (the
+//: site could not be fetched) and `host_not_found` (the recorded homepage does
+//: not resolve) — both are things that went wrong, and colouring them like a
+//: deliberate skip would tell a user nothing is wrong when something is.
 
 function _renderWebsiteIngestionResults(data) {
   const chunks = data.chunks || 0;
