@@ -85,6 +85,10 @@ class TestFilterByIntent:
         ids = {a["id"] for a in analyses}
         assert ids == {
             "security_scan", "documentation_coverage", "security_features", "ci_quality",
+            # Added 2026-08-26: OpenSSF-Scorecard-shaped checks. Assessment
+            # because it evaluates against criteria, which is this stage's
+            # signature — even though it fetches nothing.
+            "foss_scorecard",
         }
 
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the

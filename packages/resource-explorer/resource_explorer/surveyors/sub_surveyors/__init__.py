@@ -8,6 +8,7 @@ from resource_explorer.surveyors.sub_surveyors.documentation import Documentatio
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
+from resource_explorer.surveyors.sub_surveyors.foss_scorecard import FossScorecardSurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors.repo_classification import RepoClassificationSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
@@ -41,6 +42,7 @@ __all__ = [
     "SecurityHygieneSurveyor",
     "DataProfilerSurveyor",
     "CiQualitySurveyor",
+    "FossScorecardSurveyor",
     "LicenseClassifierSurveyor",
     "RepoClassificationSurveyor",
     "SecurityFeaturesSurveyor",

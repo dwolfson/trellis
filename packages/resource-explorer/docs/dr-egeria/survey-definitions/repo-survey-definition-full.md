@@ -304,6 +304,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Foss Scorecard
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_foss_scorecard
+
+### Description
+OpenSSF-Scorecard-shaped checks computed from data already held — an unevaluable check reports unknown and is excluded from the score, rather than scored zero as OpenSSF's own tool does.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_foss_scorecard |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Maturity
 
 ### Qualified Name
@@ -740,6 +759,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_ci_quality
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_foss_scorecard
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_foss_scorecard
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_maturity

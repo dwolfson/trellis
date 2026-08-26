@@ -319,14 +319,34 @@ class TestAttribution:
         assert out["kinds"] == ["security_scan"]
 
     def test_an_unambiguous_annotation_type_attributes_it(self, project, slug):
-        """QualityScoreAnnotation is declared by exactly one step (repo_health),
-        so it can be attributed even though its analysisStep means nothing here."""
+        """DataClassAnnotation is declared by exactly one step (repo_dependency),
+        so it attributes even though its analysisStep means nothing here.
+
+        This used to use QualityScoreAnnotation, which was unique to repo_health
+        until foss_scorecard began producing one too on 2026-08-26 -- correctly,
+        it really does compute a quality score. Attribution by annotation type
+        is inherently fragile in exactly this way: it holds only while no second
+        analysis produces the same type, and nothing prevents one.
+        """
         reader = _FakeReader({"r": [
-            _ann("a", "QualityScoreAnnotation", "Overall health score: 83/100",
-                 step="HealthAssessment"),
+            _ann("a", "DataClassAnnotation", "dependencies", step="SomethingNative"),
         ]})
         out = EgeriaAnnotationMaterializer(registry=project, reader=reader).materialize_report(slug, "r")
-        assert out["kinds"] == ["repository_health"]
+        assert out["kinds"] == ["dependency_analysis"]
+
+    def test_a_type_that_gains_a_second_producer_stops_attributing(self, project, slug):
+        """The fragility, pinned rather than left to be rediscovered.
+
+        QualityScoreAnnotation attributed to repository_health until a second
+        analysis declared it. Now it cannot, and lands unattributed -- which is
+        the honest outcome, but it means adding an analysis silently reduces
+        attribution precision for every analysis sharing its types.
+        """
+        reader = _FakeReader({"r": [
+            _ann("a", "QualityScoreAnnotation", "score", step="HealthAssessment"),
+        ]})
+        out = EgeriaAnnotationMaterializer(registry=project, reader=reader).materialize_report(slug, "r")
+        assert out["kinds"] == [UNATTRIBUTED_KIND]
 
     def test_an_ambiguous_annotation_type_is_never_guessed(self, project, slug):
         """ResourceMeasureAnnotation has 15 producers. Picking one would file a
@@ -341,8 +361,10 @@ class TestAttribution:
     def test_sole_producer_lookup_is_strict(self):
         from resource_explorer.surveyors.egeria_annotation_materializer import _sole_producer_of
 
-        assert _sole_producer_of("QualityScoreAnnotation") == "repo_health"
         assert _sole_producer_of("DataClassAnnotation") == "repo_dependency"
+        # Shared since foss_scorecard also produces one -- see
+        # test_a_type_that_gains_a_second_producer_stops_attributing.
+        assert _sole_producer_of("QualityScoreAnnotation") == ""
         assert _sole_producer_of("ResourceMeasureAnnotation") == ""   # 15 owners
         assert _sole_producer_of("ClassificationAnnotation") == ""    # 13 owners
         assert _sole_producer_of("NoSuchAnnotation") == ""

@@ -33,6 +33,23 @@
 
 analyses:
 
+  foss_scorecard:
+    findings_kind: foss_scorecard
+    source: surveyors/sub_surveyors/foss_scorecard.py:CHECKS
+    checks:
+      - maintained
+      - license
+      - ci_tests
+      - security_policy
+      - releases
+      - contributors
+      - sast
+      - vulnerabilities
+      - code_review
+      - branch_protection
+      - signed_releases
+      - dependency_update
+
   repo_conventions:
     findings_kind: repo_conventions
     source: ingestion/repo_conventions_parser.py:97-179

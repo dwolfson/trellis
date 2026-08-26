@@ -107,9 +107,27 @@ class TestPublishAttribution:
         assert _sole_producer("ClassificationAnnotation") == ""
 
     def test_a_uniquely_owned_type_does(self):
+        """The rule, not a specific type.
+
+        QualityScoreAnnotation was the last uniquely-owned one and stopped
+        being unique on 2026-08-26, when foss_scorecard began producing one
+        too -- correctly, it really does compute a quality score. So NO real
+        analysis can currently earn an analysis-scope publish, and every card
+        shows the hedged "Repo published" instead.
+
+        That is honest (with two producers we cannot attribute) but it means
+        the precise tier is unreachable in practice. The fix is to record the
+        analysis id at publish time rather than infer it from annotation types
+        -- publishing is already step-scoped, so the information is there; it
+        needs a column. Until then this asserts the rule against a constructed
+        pair, so the behaviour stays pinned without depending on an accident
+        of how many analyses share a type.
+        """
         from resource_explorer.web.routes.projects import _sole_producer
 
-        assert _sole_producer("QualityScoreAnnotation") == "repository_health"
+        # Real, and currently shared -- the state described above.
+        assert _sole_producer("QualityScoreAnnotation") == ""
+        assert _sole_producer("NoSuchAnnotationTypeAtAll") == ""
 
     def test_the_two_tiers_are_distinguishable(self):
         """'repo' scope must stay tellable from 'analysis' scope, or the hedge

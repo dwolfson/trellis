@@ -59,6 +59,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     DataProfilerSurveyor,
     DependencySurveyor,
     DocumentationSurveyor,
+    FossScorecardSurveyor,
     FileInventorySurveyor,
     GitStatisticsSurveyor,
     WebsiteIngestionSurveyor,
@@ -509,6 +510,16 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Read-only at survey time over already-parsed findings (parsing
         # happens once at ingest, per this surveyor's own docstring) — no
         # fetch, no re-scan here.
+    ),
+    "repo_foss_scorecard": StepInfo(
+        "repo_foss_scorecard", FossScorecardSurveyor,
+        "OpenSSF-Scorecard-shaped checks computed from data already held — an "
+        "unevaluable check reports unknown and is excluded from the score, "
+        "rather than scored zero as OpenSSF's own tool does.",
+        ["QualityScoreAnnotation"],
+        accepts_surveyed_at=True,
+        # Reads project_stats and other analyses' findings — no fetch of its
+        # own, the same relationship repo_ci_quality has with its own data.
     ),
     "repo_maturity": StepInfo(
         "repo_maturity", MaturitySurveyor,
@@ -1062,6 +1073,47 @@ def _ci_quality_results(registry, slug: str) -> dict:
         for r in rows
     ]
     return {"findings": findings}
+
+
+def _foss_scorecard_results(registry, slug: str) -> dict:
+    """Findings plus the aggregate, which is the point of a scorecard.
+
+    `checks_evaluated`/`checks_unknown` travel WITH the score. A scorecard
+    number without its coverage is what this analysis exists to avoid: 8.0
+    over five checks and 8.0 over twelve are different claims.
+    """
+    rows = registry.query_findings(slug, "foss_scorecard")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    metrics = registry.query_metrics(slug, "foss_scorecard") or {}
+    out = {"findings": findings}
+    for key in ("score", "checks_evaluated", "checks_unknown"):
+        if key in metrics:
+            out[key] = metrics[key]
+    return out
+
+
+def _foss_scorecard_trend(registry, slug: str) -> list[dict]:
+    return registry.query_metrics_history(slug, "foss_scorecard", "score")
+
+
+def _foss_scorecard_headline(registry, slug: str) -> dict | None:
+    data = _foss_scorecard_results(registry, slug)
+    if not data.get("findings"):
+        return None
+    score = data.get("score")
+    if score is None:
+        return {"label": "no check could be evaluated", "tone": "warn"}
+    evaluated = int(data.get("checks_evaluated") or 0)
+    unknown = int(data.get("checks_unknown") or 0)
+    return {
+        "label": f"{score}/10 over {evaluated} check(s)"
+                 + (f", {unknown} not evaluable" if unknown else ""),
+        "tone": "good" if score >= 7 else "warn" if score >= 4 else "bad",
+    }
 
 
 def _ci_quality_trend(registry, slug: str) -> list[dict]:
@@ -2207,6 +2259,14 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         "ci_quality", ["repo_ci_quality"],
         results=AnalysisKindResults(
             _ci_quality_results, _ci_quality_trend, "findings_list", headline_reader=_ci_quality_headline,
+        ),
+    ),
+    "foss_scorecard": AnalysisKind(
+        "foss_scorecard", ["repo_foss_scorecard"],
+        family="security",
+        results=AnalysisKindResults(
+            _foss_scorecard_results, _foss_scorecard_trend, "findings_list",
+            headline_reader=_foss_scorecard_headline,
         ),
     ),
     "maturity": AnalysisKind(
