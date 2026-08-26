@@ -4102,13 +4102,39 @@ class ProjectRegistry:
             )
         return self.get_working_set(ws_slug)
 
-    def close_investigation(self, slug: str) -> dict | None:
+    #: An investigation's lifecycle. `closed` used to be the only non-open
+    #: value, and it meant three different things at once — finished, paused,
+    #: and abandoned — while the only behaviour attached to it was the one that
+    #: belongs to "finished". Naming them apart is what lets the UI say what a
+    #: button will do.
+    #:
+    #:   open      — active work.
+    #:   suspended — paused, will resume. Keeps its Egeria Project inheritance:
+    #:               pausing the work does not unbind the resources from the
+    #:               project they belong to.
+    #:   closed    — finished. Stops inheriting, because the work is over.
+    #:
+    #: Nothing is ever deleted by any of them.
+    INVESTIGATION_STATUSES = ("open", "suspended", "closed")
+
+    def set_investigation_status(self, slug: str, status: str) -> dict | None:
+        """Move an investigation through its lifecycle. Reversible, always."""
+        if status not in self.INVESTIGATION_STATUSES:
+            raise ValueError(
+                f"unknown status {status!r}; valid: {list(self.INVESTIGATION_STATUSES)}"
+            )
+        if not self.get_investigation(slug):
+            return None
         with self._conn() as conn:
             conn.execute(
-                "UPDATE investigations SET status = 'closed', updated_at = ? WHERE slug = ?",
-                (datetime.utcnow().isoformat(), slug),
+                "UPDATE investigations SET status = ?, updated_at = ? WHERE slug = ?",
+                (status, datetime.utcnow().isoformat(), slug),
             )
         return self.get_investigation(slug)
+
+    def close_investigation(self, slug: str) -> dict | None:
+        """Kept as the name the close route and its tests already use."""
+        return self.set_investigation_status(slug, "closed")
 
     # Egeria Project context (Part 5) — see entity_egeria_project_context's
     # own docstring above for the status vocabulary. get_project_context()

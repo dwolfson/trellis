@@ -612,6 +612,7 @@
            /api/analyses/question-catalog), unscoped to any one project. See
            loadAdminQuestionCatalogPanel() below. -->
       <div id="admin-question-catalog-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <div id="admin-resync-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -8205,16 +8206,11 @@ function showMainView(tab) {
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
-  // The legacy top-of-page Perspective row (4-tag dba/data_scientist/steward/
-  // security set — "Scouting ignores it entirely," per its own HTML comment)
-  // visually duplicates the Questions tab's own dedicated 12-name Perspective
-  // filter, two different vocabularies stacked on screen at once. Hide it
-  // specifically here rather than resolve the vocabularies — that's the
-  // larger Unification Thread (see foundations.md), not a quick fix.
-  // (The row used to be hidden on the Questions tab because that tab had its
-  // own Perspective filter over a different vocabulary. Both are gone: one
-  // vocabulary, one control, shown everywhere it applies.)
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, document.getElementById('admin-resync-view'), curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  // The header Perspective row used to be hidden on the Questions tab, which
+  // had its own filter over a different vocabulary. Both vocabularies are
+  // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
+  // control, shown everywhere it applies.
   navActivity?.classList.remove('active');
   document.getElementById('nav-activity-hdr')?.classList.remove('active');
   document.getElementById('nav-admin-hdr')?.classList.remove('active');
@@ -8316,6 +8312,10 @@ function showMainView(tab) {
     adminQuestionCatalogView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminQuestionCatalogPanel();
+  } else if (tab === 'admin-resync') {
+    document.getElementById('admin-resync-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminResyncPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -10966,6 +10966,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
     { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
+    { tab: 'admin-resync',            label: '🔄 Egeria Resync' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -12409,6 +12410,162 @@ async function loadAdminDiscoverySourcesPanel() {
   } catch(e) {
     view.innerHTML = _adminSubnavHtml('admin-discovery-sources') +
       `<div class="text-red-400 text-xs p-4">Failed to load discovery sources: ${_esc(e.message)}</div>`;
+  }
+}
+
+// ── Admin → Egeria Resync ───────────────────────────────────────────────────
+// RE keeps its own registry, so an Egeria reset loses nothing of yours — it
+// leaves RE holding pointers into a catalog that no longer contains what they
+// point at. Rebuilding after the 2026-08-26 redeploy took four operations in a
+// specific order, run by hand, and one of them did not exist.
+//
+// Scanning never writes. Repairs run only when asked for by name, and only
+// where there is ONE correct repair — anything needing a human answer is shown
+// as a decision with no button, because a resync that guessed would recreate
+// the class of wrong-but-plausible result this whole app keeps removing.
+let _resyncScan = null;
+let _resyncBusy = false;
+
+async function loadAdminResyncPanel() {
+  const view = document.getElementById('admin-resync-view');
+  view.innerHTML = _adminSubnavHtml('admin-resync')
+    + `<div class="p-6 text-sm text-slate-500">Scanning Egeria…</div>`;
+  try {
+    const res = await fetch('/api/egeria/resync/scan');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _resyncScan = await res.json();
+  } catch (e) {
+    view.innerHTML = _adminSubnavHtml('admin-resync')
+      + `<div class="p-6 text-sm text-amber-400">Could not scan: ${_esc(String(e.message || e))}</div>`;
+    return;
+  }
+  renderAdminResyncPanel();
+}
+
+function renderAdminResyncPanel() {
+  const view = document.getElementById('admin-resync-view');
+  const d = _resyncScan || {};
+  const subnav = _adminSubnavHtml('admin-resync');
+
+  if (!d.reachable) {
+    // Unreachable is never drift. Showing "nothing to do" here would be the
+    // worst possible answer: it reads as a clean bill of health.
+    view.innerHTML = subnav + `<div class="p-6 space-y-2">
+      <div class="text-sm text-amber-400">Egeria is unreachable — nothing was checked.</div>
+      <div class="text-xs text-slate-500">${_esc(d.unreachable_reason || '')}</div>
+      <div class="text-xs text-slate-500">This is deliberately not reported as "no drift":
+        a catalog we cannot read is not a catalog we know is fine.</div>
+      <button onclick="loadAdminResyncPanel()" class="mt-2 text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200">Retry</button>
+    </div>`;
+    return;
+  }
+
+  const findings = d.findings || [];
+  const repairable = findings.filter(f => f.repair_step);
+  const decisions = findings.filter(f => !f.repair_step);
+
+  const card = (f) => `<div class="bg-slate-950 border border-slate-800 rounded p-3">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="text-xs font-semibold text-slate-200">${_esc(f.title)}
+          <span class="text-slate-500 font-normal">· ${f.count}</span></div>
+        <div class="text-xs text-slate-400 mt-0.5">${_esc(f.detail)}</div>
+      </div>
+      ${f.repair_step
+        ? `<label class="shrink-0 text-xs text-slate-300 flex items-center gap-1.5">
+             <input type="checkbox" class="resync-step" value="${_esc(f.repair_step)}" checked> fix
+           </label>`
+        : `<span class="shrink-0 text-[10px] uppercase tracking-wide text-amber-400/80" title="No single repair is correct here — see the description">your call</span>`}
+    </div>
+    <details class="mt-1.5">
+      <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 select-none">show ${f.count}</summary>
+      <div class="mt-1 text-xs text-slate-400 font-mono space-y-0.5">
+        ${(f.items || []).map(i => `<div>${_esc(Object.entries(i).map(([k, v]) => `${k}=${v}`).join('  '))}</div>`).join('')}
+        ${f.truncated ? `<div class="text-slate-600">… and ${f.truncated} more</div>` : ''}
+      </div>
+    </details>
+  </div>`;
+
+  view.innerHTML = subnav + `<div class="p-6 space-y-4 max-w-4xl">
+    <div>
+      <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔄 Egeria Resync</h1>
+      <p class="text-xs text-slate-400 mt-1">
+        RE keeps its own registry, so an Egeria reset loses nothing here — but it leaves
+        pointers into a catalog that no longer holds what they point at. This finds them.
+        Scanning never writes.
+      </p>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3 text-xs">
+      <span class="text-slate-300">${d.total || 0} item(s) drifted</span>
+      <span class="text-slate-500">·</span>
+      <span class="text-cyan-400">${d.repairable || 0} repairable</span>
+      <span class="text-slate-500">·</span>
+      <span class="text-amber-400">${d.needs_decision || 0} need a decision</span>
+      ${d.undetermined_count
+        ? `<span class="text-slate-500">·</span>
+           <span class="text-amber-400" title="Lookups that failed. Reported, never counted as drift and never cleared.">${d.undetermined_count} undetermined</span>`
+        : ''}
+      <button onclick="loadAdminResyncPanel()" class="ml-auto text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200">Re-scan</button>
+    </div>
+
+    ${!findings.length
+      ? `<div class="text-xs text-emerald-400">Nothing has drifted. RE and Egeria agree.</div>`
+      : ''}
+
+    ${repairable.length ? `<div class="space-y-2">
+      <div class="text-[10px] uppercase tracking-wide text-slate-500">Repairable</div>
+      ${repairable.map(card).join('')}
+      <div class="flex items-center gap-2 pt-1">
+        <button id="resync-apply-btn" onclick="_applyResync()"
+          class="text-xs px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white transition-colors">
+          Apply selected
+        </button>
+        <span class="text-xs text-slate-500">Runs in dependency order regardless of what you tick.</span>
+      </div>
+    </div>` : ''}
+
+    ${decisions.length ? `<div class="space-y-2">
+      <div class="text-[10px] uppercase tracking-wide text-slate-500">Needs a decision</div>
+      ${decisions.map(card).join('')}
+    </div>` : ''}
+
+    <div id="resync-result" class="hidden"></div>
+  </div>`;
+}
+
+async function _applyResync() {
+  if (_resyncBusy) return;
+  const steps = [...document.querySelectorAll('.resync-step:checked')].map(c => c.value);
+  if (!steps.length) { showToast('error', 'Nothing selected.', 3000); return; }
+  if (!confirm(`Apply ${steps.length} repair step(s)?\n\n${steps.join('\n')}\n\n`
+             + 'This clears local records that claim things about Egeria which are no longer true.')) return;
+
+  _resyncBusy = true;
+  const btn = document.getElementById('resync-apply-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+  const out = document.getElementById('resync-result');
+  try {
+    const res = await fetch('/api/egeria/resync/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ steps }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    out.classList.remove('hidden');
+    out.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-3 text-xs space-y-1">
+      <div class="text-slate-300">Applied:</div>
+      ${Object.entries(data.applied || {}).map(([k, v]) =>
+        `<div class="font-mono text-slate-400">${_esc(k)} — ${_esc(JSON.stringify(v))}</div>`).join('')}
+    </div>`;
+    showToast('success', 'Resync applied.', 3000);
+    await loadAdminResyncPanel();
+  } catch (e) {
+    showToast('error', `Resync failed: ${_esc(String(e.message || e))}`, 5000);
+  } finally {
+    _resyncBusy = false;
+    const b = document.getElementById('resync-apply-btn');
+    if (b) { b.disabled = false; b.textContent = 'Apply selected'; }
   }
 }
 
