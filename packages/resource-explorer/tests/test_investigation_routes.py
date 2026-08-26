@@ -692,3 +692,49 @@ def test_complete_means_every_resource_judged(client, made):
     assert client.get(f"/api/investigations/{slug}/next-steps").json()["complete"] is False
     reg.set_investigation_disposition(slug, "repo", "b", "ignored")
     assert client.get(f"/api/investigations/{slug}/next-steps").json()["complete"] is True
+
+
+def test_members_can_be_relinked_after_their_resources_are_published(client, made):
+    """promote() links members once and then refuses to run again.
+
+    So a member with no asset GUID at promotion time had no way to be linked
+    later, and the Egeria Collection stayed permanently empty while RE showed
+    the resources in scope. Hit for real after the 2026-08-26 redeploy: both
+    investigations promoted with members_linked: [] because nothing had been
+    republished yet, and no operation existed to finish the job.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Relink", purposes=["Assess"])
+    reg = ProjectRegistry()
+    slug = inv["slug"]
+
+    pub = EgeriaInvestigationPublisher(reg)
+    # Not bound yet: says so rather than silently doing nothing.
+    res = pub.relink_members(slug)
+    assert not res.ok and "promote or bind it first" in " ".join(res.errors)
+
+
+def test_relink_reports_a_missing_working_set_rather_than_creating_one(client, made):
+    """Creating a second Collection here would orphan the first and split the
+    membership across both -- ensure_working_set owns that, deliberately."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Relink no ws", purposes=["Assess"])
+    reg = ProjectRegistry()
+    slug = inv["slug"]
+    reg.set_investigation_egeria_project(slug, {"status": "linked", "egeria_project_guid": "g"})
+
+    res = EgeriaInvestigationPublisher(reg).relink_members(slug)
+    assert not res.ok
+    assert "ensure_working_set" in " ".join(res.errors)
+
+
+def test_relink_route_404s_on_an_unknown_investigation(client):
+    assert client.post("/api/investigations/nope-nope/relink-members").status_code == 404

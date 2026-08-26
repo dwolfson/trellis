@@ -210,6 +210,16 @@ class EgeriaInvestigationPublisher:
         # 4. CollectionMembership per member, where the resource actually exists
         #    in Egeria. A member whose repo was never published has no asset to
         #    link — reported, never invented.
+        self._link_members(cm, res, members)
+        return res
+
+    def _link_members(self, cm, res: "PromotionResult", members: list) -> None:
+        """Attach every member that HAS an asset to the working set.
+
+        CollectionMembership is uni-link, so add_to_collection is an upsert:
+        calling it for an already-attached member is safe and does not
+        duplicate. That is what lets this be re-run.
+        """
         for m in members:
             asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
             if not asset_guid:
@@ -224,6 +234,49 @@ class EgeriaInvestigationPublisher:
                 res.members_unlinkable.append({
                     **m, "reason": f"add_to_collection failed: {type(exc).__name__}: {exc}",
                 })
+
+    def relink_members(self, investigation_slug: str) -> "PromotionResult":
+        """Re-attach an already-promoted investigation's members.
+
+        promote() links members once, at promotion time, and refuses to run
+        again on a bound investigation. So a member that had no asset GUID THEN
+        — every one of them, if the investigation was promoted before its repos
+        were published — has no way to be linked later, and the Egeria
+        Collection stays permanently empty while RE shows the resources in
+        scope.
+
+        Hit for real after the 2026-08-26 redeploy: both investigations
+        promoted with `members_linked: []` because no repo had been
+        republished yet, and nothing existed to run afterwards.
+
+        Idempotent: add_to_collection upserts on a uni-link relationship.
+        """
+        res = PromotionResult()
+        inv = self._registry.get_investigation(investigation_slug)
+        if not inv:
+            res.errors.append(f"investigation '{investigation_slug}' not found")
+            return res
+        res.project_guid = inv.get("egeria_project_guid") or ""
+        if not res.project_guid:
+            res.errors.append("not bound to an Egeria Project — promote or bind it first")
+            return res
+
+        ws = self._registry.get_or_create_working_set(investigation_slug)
+        res.collection_guid = (ws or {}).get("egeria_collection_guid") or ""
+        if not res.collection_guid:
+            res.errors.append(
+                "no working set Collection — run ensure_working_set first"
+            )
+            return res
+        res.resource_list_linked = True
+
+        try:
+            _, cm = self._managers()
+        except Exception as exc:
+            res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
+            return res
+
+        self._link_members(cm, res, self._registry.list_investigation_members(investigation_slug))
         return res
 
     def ensure_working_set(self, investigation_slug: str) -> PromotionResult:

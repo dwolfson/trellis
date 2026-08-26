@@ -251,6 +251,31 @@ async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/{slug}/relink-members")
+async def relink_members(slug: str) -> dict:
+    """Re-attach this investigation's in-scope resources to its Egeria working set.
+
+    promote() links members once and then refuses to run again, so members that
+    had no asset GUID at promotion time — all of them, if the investigation was
+    promoted before its repos were published — had no way to be linked
+    afterwards. Idempotent: CollectionMembership is uni-link, so re-attaching an
+    already-attached member is an upsert.
+    """
+    import asyncio
+
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    res = await asyncio.to_thread(
+        EgeriaInvestigationPublisher(reg).relink_members, slug
+    )
+    return res.as_dict()
+
+
 @router.post("/{slug}/sync-egeria")
 async def sync_egeria_project(slug: str) -> dict:
     """Push this investigation's name/description to its Egeria Project.
