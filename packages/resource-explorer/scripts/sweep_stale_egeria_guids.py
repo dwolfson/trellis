@@ -59,8 +59,7 @@ def main() -> int:
         _report_orphan_publish_claims(registry, apply=args.apply)
         maker = _connect(get_config)
         if maker is not None:
-            _report_orphan_publish_claims(registry, apply=args.apply)
-        _sweep_investigations(registry, maker, apply=args.apply)
+            _sweep_investigations(registry, maker, apply=args.apply)
         return 0
     print(f"{len(cached)} project(s) carry a cached Egeria asset GUID.\n")
 
