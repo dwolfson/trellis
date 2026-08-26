@@ -51,20 +51,23 @@ def main() -> int:
         ).fetchall()
     cached = [(r["slug"], r["egeria_asset_guid"]) for r in rows]
     if not cached:
-        print("No cached Egeria asset GUIDs. Nothing to sweep.")
+        print("No cached Egeria asset GUIDs.")
+        # Investigations and working sets dangle independently, and orphaned
+        # publish claims outlive the GUID this sweep keys on. Returning here --
+        # the third early return in this script to make that mistake -- is how
+        # a previous pass left 97 publish claims and 7 GUIDs unreachable.
+        _report_orphan_publish_claims(registry, apply=args.apply)
+        maker = _connect(get_config)
+        if maker is not None:
+            _report_orphan_publish_claims(registry, apply=args.apply)
+        _sweep_investigations(registry, maker, apply=args.apply)
         return 0
     print(f"{len(cached)} project(s) carry a cached Egeria asset GUID.\n")
 
-    try:
-        from pyegeria import AssetMaker
-        cfg = get_config().egeria
-        maker = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
-        maker.create_egeria_bearer_token()
-    except Exception as exc:
-        # Never guess. An unreachable Egeria must not be read as "everything is
-        # stale" — that would clear every valid GUID in the catalog.
-        print(f"Could not reach Egeria ({type(exc).__name__}: {exc}).")
-        print("Refusing to sweep: unreachable is not the same as stale.")
+    # Never guess. An unreachable Egeria must not be read as "everything is
+    # stale" — that would clear every valid GUID in the catalog.
+    maker = _connect(get_config)
+    if maker is None:
         return 2
 
     # Verified the same way EgeriaPublisher._find_or_create_asset verifies before
@@ -122,6 +125,7 @@ def main() -> int:
         print("\nNo stale asset GUIDs.")
         # Still sweep the other two kinds: they dangle independently, and an
         # early return here is why they went unchecked for as long as they did.
+        _report_orphan_publish_claims(registry, apply=args.apply)
         _sweep_investigations(registry, maker, apply=args.apply)
         return 0
     if not args.apply:
@@ -140,8 +144,64 @@ def main() -> int:
     print(f"\nCleared {len(stale)} stale GUID(s), {total_surveys} local survey record(s) "
           f"and {total_published} published-annotation claim(s).")
     print("Those repos now read as un-published, which is the truth. Re-publish to recreate them.")
+    _report_orphan_publish_claims(registry, apply=args.apply)
     _sweep_investigations(registry, maker, apply=args.apply)
     return 0
+
+
+def _connect(get_config):
+    """AssetMaker, or None with the reason printed. Never raises."""
+    try:
+        from pyegeria import AssetMaker
+        cfg = get_config().egeria
+        maker = AssetMaker(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+        maker.create_egeria_bearer_token()
+        return maker
+    except Exception as exc:
+        print(f"Could not reach Egeria ({type(exc).__name__}: {exc}).")
+        print("Refusing to sweep: unreachable is not the same as stale.")
+        return None
+
+
+def _report_orphan_publish_claims(registry, *, apply: bool) -> None:
+    """Publish claims for projects that no longer hold an asset GUID.
+
+    project_published_annotation_types is what the Analyses cards' Published
+    badge is derived from. Clearing was keyed on the project HAVING a stale
+    GUID, so any row an earlier pass missed became unreachable the moment that
+    GUID was cleared -- the badge keeps claiming a publish while nothing points
+    at a catalog entry, and no sweep can ever see it again. Measured after the
+    2026-08-26 redeploy: 97 rows across the same 23 projects, stranded exactly
+    this way by a sweep run from an older checkout.
+    """
+    with registry._conn() as conn:
+        rows = conn.execute(
+            "SELECT p.slug AS slug, count(*) AS n "
+            "FROM project_published_annotation_types t "
+            "JOIN projects p ON p.slug = t.project_slug "
+            "WHERE coalesce(p.egeria_asset_guid, '') = '' "
+            "GROUP BY p.slug ORDER BY n DESC"
+        ).fetchall()
+    if not rows:
+        print("\nNo orphaned publish claims.")
+        return
+    total = sum(r["n"] for r in rows)
+    print(f"\n{total} publish claim(s) across {len(rows)} project(s) have no asset GUID behind them.")
+    print("Those repos render as Published while nothing points at a catalog entry.")
+    for r in rows[:10]:
+        print(f"    orphan  {r['slug']:32} {r['n']}")
+    if len(rows) > 10:
+        print(f"    ... and {len(rows) - 10} more")
+    if not apply:
+        print("    Dry run — re-run with --apply to clear these too.")
+        return
+    with registry._conn() as conn:
+        deleted = conn.execute(
+            "DELETE FROM project_published_annotation_types WHERE project_slug IN ("
+            "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') = '')"
+        ).rowcount
+    print(f"    Cleared {deleted} orphaned publish claim(s). Those repos now read as "
+          "un-published, which is the truth.")
 
 
 def _resolves(lookup, guid: str) -> bool | None:

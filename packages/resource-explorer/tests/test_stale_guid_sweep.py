@@ -114,3 +114,45 @@ class TestResolverHonesty:
         assert _resolves(missing, "g") is False
         assert _resolves(lambda g: {"guid": g}, "g") is True
         assert _resolves(lambda g: "No elements found", "g") is False
+
+
+class TestNothingBecomesUnreachable:
+    """Clearing was keyed on the project HAVING a stale asset GUID.
+
+    So anything a pass missed became invisible the moment that GUID was
+    cleared: no later sweep could see it, because the sweep's own entry
+    condition was the GUID it had just removed. Measured after the 2026-08-26
+    redeploy, when a run from an older checkout left 97 publish claims and 7
+    investigation/working-set GUIDs stranded -- and a re-run of the FIXED
+    script said "No cached Egeria asset GUIDs. Nothing to sweep."
+    """
+
+    def test_orphaned_publish_claims_are_findable_without_a_guid(self):
+        src = SCRIPT.read_text()
+        assert "_report_orphan_publish_claims" in src
+        fn = src.split("def _report_orphan_publish_claims(")[1].split("\ndef ")[0]
+        # Found by the ABSENCE of a GUID, which is the whole point.
+        assert "coalesce(p.egeria_asset_guid, '') = ''" in fn
+        assert "project_published_annotation_types" in fn
+
+    def test_no_early_return_skips_the_other_sweeps(self):
+        """Three early returns in main() each skipped the investigation sweep at
+        some point. Every path that returns must first run both."""
+        src = SCRIPT.read_text()
+        main = src.split("def main(")[1].split("\ndef ")[0]
+        returns = [i for i, ln in enumerate(main.splitlines())
+                   if ln.strip() == "return 0"]
+        lines = main.splitlines()
+        for idx in returns:
+            window = "\n".join(lines[max(0, idx - 12):idx])
+            assert "_sweep_investigations" in window, \
+                f"a `return 0` at main() line {idx} skips the investigation sweep"
+            assert "_report_orphan_publish_claims" in window, \
+                f"a `return 0` at main() line {idx} skips orphaned publish claims"
+
+    def test_unreachable_egeria_still_refuses_to_clear(self):
+        """The connect helper must keep failing closed on every path."""
+        src = SCRIPT.read_text()
+        assert "Refusing to sweep: unreachable is not the same as stale." in src
+        fn = src.split("def _connect(")[1].split("\ndef ")[0]
+        assert "return None" in fn
