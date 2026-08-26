@@ -4409,3 +4409,93 @@ the loop closing in the other direction: I had added `unreachable`, `no_extracta
 have seen `unreachable` with no way to know whether the zero beside it was a fault or the system
 being right. All three now explain themselves, and `no_extractable_text` shows the character count
 that justified the refusal.
+
+---
+
+**119. Stage-and-profile's deeper half: three items proposed, none needed. Measured, not argued.**
+
+The backlog entry for staging and profiling listed five questions to answer before ingesting. Two
+were built (finding 111: reachability and text yield, which took milvus from 685s to 1.7s). The
+other three turn out not to be work at all — and finding that out cost three measurements against
+the 20 ingested collections rather than three implementations.
+
+**3. "What kind of documentation is it?" — nothing to select.** The premise was that
+`api_reference` (chunk 256/32) exists as a collection type and is never chosen for a website, so a
+classifier should pick it. Measured across every ingested collection, code-ish character density:
+
+```
+0.0% – 3.7%   across all 20 collections
+```
+
+All narrative. **Not one ingested site is API-reference shaped**, so a classifier would fire on
+zero of them. Building it would be building for a case this corpus does not contain — the same
+result as the doc-path prefix rule in finding 97, reached the same way.
+
+**4. "How much is boilerplate?" — already solved, and the measurement proves it.** `_extract_text`
+strips `script|style|nav|header|footer|aside` before chunking, and it works: the most-repeated
+phrases in every collection are **domain terms**, not chrome — `openlineage` (86 of 200 chunks),
+`transport` (63), `metadata`, `localhost`, `PRINCIPAL`. Exactly what should repeat in a project's
+own documentation. My first pass reported 0% at a strict threshold and I loosened it rather than
+accept a suspiciously clean answer; the looser pass confirmed it.
+
+**5. "Is it versioned?" — already solved, and I briefly claimed otherwise.**
+`web_docs_openlineage_io` holds chunks from **two** version segments, 172 under `1.50.0` and 20
+under `1.49.0`, and I called it a live duplication case. It is not:
+
+```
+11 distinct URLs, 11 distinct pages, 0 pages present in more than one version
+```
+
+`collapse_versioned` is working. The `1.49.0` pages exist **only** in 1.49.0 — they were removed by
+1.50.0 — so keeping them is correct, not duplication. **I inferred duplication from counting version
+segments without checking whether the same page appeared twice**, which is the exact shape of error
+this file keeps recording: a count that looks like evidence for a claim it does not support.
+
+**The transferable result:** a backlog entry written from reasoning proposed five pieces of work;
+measurement said two were real and three were already handled or pointless. Writing the entry was
+still right — it is what made the questions askable — but **an entry is a hypothesis, and the
+cheapest thing to do with one is measure it.**
+
+---
+
+**120. Backfilling the hierarchy, and two items closed by measurement rather than by building.**
+
+Finding 117 gave `projection` a hierarchy; only four repos had been re-run through it. Backfilled
+`repo_arch_detect` across all 43 with components. Depth control is now real corpus-wide:
+
+```
+genaiexamples  590 -> 31    egeria_git  251 -> 68    milvus  221 -> 97
+genaicomps     317 -> 17    enterprise_rag 114 -> 17  openlineage 130 -> 56
+```
+
+Some repos do not collapse at all — `docling_java` 8→8, `sqlglot` 11→11, `kedro_plugins` 4→4 —
+and that is the right answer: their components are top-level Maven modules and packages with no
+containing structure. **A hierarchy that declines to invent one is doing its job.**
+
+**`misgrouped` still has no emitter, and the measurement says that is correct.** The state exists
+for "right material, wrong structure", from Kubernetes scoring **0 of 6 while covering 2,002 of
+2,132 files**. With a real hierarchy the shape is finally detectable without ground truth — a few
+roots holding everything — and across all 28 repos with eight or more components it occurs **zero
+times**. The one concentrated repo (`haystack_opea`, 10 components under 2 roots) is eight
+third-party dependencies grouped correctly.
+
+The originating case needed **ground truth** to recognise: "0 of 6" is a score against a known
+answer, and the product path has none. So the state belongs to the spike's scorer, and writing an
+emitter would be inventing a detector for a condition nobody has observed here. Recorded on the
+constant itself so the next person does not re-derive it; **kept rather than deleted**, because the
+renderer branches on it and removing a state other code reads is a deliberate change, not a passing
+one.
+
+**Guard-based branching stays deferred, and now for a better reason.** It was deferred 2026-08-21
+because "recorded outcomes are useful without routing". Since then `repo_arch_lens` began producing
+two real guards (`document-consulted` / `no-document`), which finally gives branching a candidate
+consumer — so the original reason expired. The current one is narrower: **nothing would behave
+differently.** A Survey Definition could skip the summariser when no document was consulted, but the
+summariser already handles that case correctly and says so. Branching would add a routing mechanism
+to avoid a step that costs nothing and answers honestly. The guards are produced and recorded;
+routing waits for a consumer that would do something other than what already happens.
+
+**Two items closed, neither by writing code.** That is three in two findings — with finding 119's
+three — and the pattern is worth naming: **a backlog entry is a hypothesis about work, and the
+cheapest thing to do with one is measure whether the condition it describes exists.** Five of the
+six items measured this way turned out not to need building.

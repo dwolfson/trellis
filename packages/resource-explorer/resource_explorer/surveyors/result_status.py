@@ -59,6 +59,23 @@ SKIPPED_BY_DESIGN = "skipped_by_design"
 #: files — every component present, all six collapsed under one overclaiming
 #: node.
 #:
+#: **Still has no emitter, and 2026-08-26 measurement says that is correct
+#: rather than an omission.** Now that projection has a real hierarchy to work
+#: with (README finding 117), the shape is detectable without ground truth — a
+#: few roots holding everything — and across all 28 repos with eight or more
+#: components it occurs **zero times**. The one repo that concentrates
+#: (`haystack_opea`, 10 components under 2 roots) is eight third-party
+#: dependencies grouped correctly, and the three flat ones (`docling_java`,
+#: `sqlglot`, `ryoma`) are genuinely flat sets of top-level modules.
+#:
+#: The originating case needed GROUND TRUTH to recognise: "0 of 6" is a score
+#: against a known answer, and the product path has no known answer. So the
+#: honest position is that this state belongs to the spike's scorer, and an
+#: emitter in the product would be inventing a detector for a condition nobody
+#: has observed here. Kept rather than deleted because the renderer branches on
+#: it and deleting a state other code reads is a change to make deliberately,
+#: not in passing — flagged to the presentation session as theirs to decide.
+#:
 #: This is NOT a weaker `measured` and NOT a stronger `nothing_found`. It is a
 #: different KIND of answer: a merge failure, not a detection failure. Rendered
 #: as the same empty state as "found nothing" it cost that session an afternoon
