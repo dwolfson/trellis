@@ -283,3 +283,82 @@ class TestToolsDoNotAssertAbsence:
             if "project-explorer " in head:
                 offenders.append(head.strip()[:70])
         assert offenders == [], f"stale CLI name in tool output: {offenders}"
+
+
+class TestResourceStateSources:
+    """Questions answered from the resource's own recorded state.
+
+    Declared in code rather than as a CSV column because a field NAME is not
+    enough for most of them: "catalogued in Egeria AND when" is two fields read
+    together, "worth investigating" is a disposition looked up by github_url in
+    a different table, and "any known feedback" is a row count.
+    """
+
+    def test_every_declared_question_is_in_the_real_catalog(self):
+        """A key that matches nothing is a resolver that never runs, and it
+        would look exactly like a question we chose not to answer."""
+        from resource_explorer.facts import RESOURCE_STATE_SOURCES
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        catalog = {q["question"] for q in get_questions()}
+        missing = [q for q in RESOURCE_STATE_SOURCES if q not in catalog]
+        assert missing == [], f"declared for questions not in the catalog: {missing}"
+
+    def test_an_absent_value_is_a_measured_zero_not_an_unrun_analysis(self):
+        """`feedback_count: 0` means nobody left feedback -- a real answer.
+        Reporting it as unknown would make a clean resource look unexamined."""
+        from resource_explorer.facts import _r_feedback
+
+        class _Reg:
+            def list_resource_feedback(self, *_a):
+                return []
+
+        class _P:
+            slug = "s"
+
+        value, state = _r_feedback(_Reg(), _P())
+        assert state == NOTHING_FOUND and value == {"feedback_count": 0}
+
+    def test_undecided_is_the_absence_of_a_judgement_not_a_judgement(self):
+        """Every resource starts `undecided`. Reporting that as an answer would
+        tell the user someone had considered it when nobody had."""
+        from resource_explorer.facts import _r_disposition
+
+        class _Reg:
+            def __init__(self, verdict):
+                self._v = verdict
+
+            def get_disposition(self, _url):
+                return {"disposition": self._v}
+
+        class _P:
+            github_url = "u"
+
+        assert _r_disposition(_Reg("undecided"), _P())[1] == NOTHING_FOUND
+        assert _r_disposition(_Reg("investigating"), _P())[1] == MEASURED
+
+    def test_a_resource_state_fact_offers_no_survey_to_run(self):
+        """No step establishes these. Offering one would be a false promise --
+        the same shape of lie the envelope exists to stop."""
+        fl = FactLayer()
+        f = fl._resource_state_fact("no-such-repo-at-all", lambda r, p: ({}, MEASURED), "x")
+        assert f.can_run == []
+
+    def test_an_unregistered_resource_is_not_established_not_empty(self):
+        fl = FactLayer()
+        f = fl._resource_state_fact("no-such-repo-at-all", lambda r, p: ({}, MEASURED), "x")
+        assert f.state == NOT_ESTABLISHED
+        assert "is registered" in f.note
+
+    def test_a_declared_source_answers_whatever_the_kind_says(self):
+        """`direct` describes WHERE the answer lives. Once that is declared the
+        question is answerable, and the kind label must not veto it."""
+        from resource_explorer.facts import RESOURCE_STATE_SOURCES
+
+        q_text = next(iter(RESOURCE_STATE_SOURCES))
+        env = FactLayer().answer("no-such-repo-at-all", {
+            "question": q_text, "answering": {"kind": "direct", "analysis_ids": []},
+        })
+        # Unregistered, so still not answerable -- but it got as far as the
+        # resolver rather than being turned away by the kind.
+        assert env.facts, "a declared source was skipped because of its kind"

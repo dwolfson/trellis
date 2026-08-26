@@ -156,6 +156,69 @@ UNANSWERABLE_KINDS = {
                "is not recorded.",
 }
 
+#: Questions answerable from the resource's own recorded state rather than from
+#: an analysis. Declared here, keyed by the catalog's own question text.
+#:
+#: In code rather than as a CSV column because a field NAME is not enough for
+#: most of them: "has this been catalogued in Egeria and when" is two fields
+#: read together, "is this worth investigating" is a disposition looked up by
+#: github_url in a different table, and "any known feedback" is a row count. A
+#: column could name a field; it could not express any of those.
+#:
+#: Each resolver returns (value_dict, state) — and returns NOTHING_FOUND rather
+#: than a fabricated negative when the state is genuinely absent, so "no
+#: description" cannot become "this repo does nothing".
+def _r_description(reg, p) -> tuple:
+    d = (getattr(p, "description", "") or "").strip()
+    return ({"description": d}, MEASURED if d else NOTHING_FOUND)
+
+
+def _r_catalogued(reg, p) -> tuple:
+    guid = getattr(p, "egeria_asset_guid", "") or ""
+    # The GUID alone says "published at some point"; the publish claims say
+    # when. Both, or the answer is half of one.
+    published = reg.get_last_published_annotation_types(p.slug) or {}
+    when = max(published.values(), default="")
+    return ({"catalogued": bool(guid), "egeria_asset_guid": guid,
+             "last_published_at": when},
+            MEASURED if guid else NOTHING_FOUND)
+
+
+def _r_surveyed(reg, p) -> tuple:
+    when = getattr(p, "last_surveyed_at", "") or ""
+    return ({"last_surveyed_at": when, "surveyed": bool(when)},
+            MEASURED if when else NOTHING_FOUND)
+
+
+def _r_disposition(reg, p) -> tuple:
+    d = reg.get_disposition(p.github_url) or {}
+    verdict = d.get("disposition") or ""
+    # `undecided` is the default a resource has before anyone judged it, so it
+    # is the absence of an answer, not an answer.
+    known = verdict and verdict != "undecided"
+    return ({"disposition": verdict, "reason": d.get("reason", ""),
+             "decided_at": d.get("decided_at", "")},
+            MEASURED if known else NOTHING_FOUND)
+
+
+def _r_feedback(reg, p) -> tuple:
+    rows = reg.list_resource_feedback("repo", p.slug) or []
+    return ({"feedback_count": len(rows)}, MEASURED if rows else NOTHING_FOUND)
+
+
+#: question text -> (resolver, subject). The subject is what the fact is
+#: ABOUT, used as the analysis_id slot so the envelope reads sensibly.
+RESOURCE_STATE_SOURCES = {
+    "What does this repository do?": (_r_description, "description"),
+    "Has this repository already been catalogued in Egeria and when?":
+        (_r_catalogued, "egeria_catalogue_state"),
+    "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
+        (_r_surveyed, "survey_history"),
+    "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
+        (_r_disposition, "disposition"),
+    "Any known feedback?": (_r_feedback, "resource_feedback"),
+}
+
 #: Kinds that ARE answerable, but not from analysis results — and not yet
 #: readable here. `direct` questions come from a field on the resource
 #: (Project.description and the like) and `chart` from a trend series. The
@@ -298,6 +361,18 @@ class FactLayer:
             subject=slug, question=question.get("question", ""),
             question_id=question.get("question", ""), kind=kind,
         )
+        # A declared resource-state source answers before the kind is
+        # consulted: `direct` describes where the answer lives, and once that
+        # is declared the question is answerable regardless of the label.
+        declared = RESOURCE_STATE_SOURCES.get(question.get("question", ""))
+        if declared:
+            env.facts = [self._resource_state_fact(slug, *declared)]
+            if not env.answerable:
+                env.blocked_reason = (
+                    "Nothing is recorded for this on this resource yet."
+                )
+            return env
+
         for table in (UNANSWERABLE_KINDS, UNDECLARED_KINDS):
             if kind in table:
                 env.blocked_reason = table[kind]
@@ -322,6 +397,29 @@ class FactLayer:
         return env
 
     # ── internals ───────────────────────────────────────────────────────────
+    def _resource_state_fact(self, slug: str, resolver, subject: str) -> Fact:
+        """A fact read from the resource's own state, not from an analysis.
+
+        `can_run` is empty on purpose: no survey step establishes these. Saying
+        "run X to find out" when nothing would change the answer is the same
+        false offer the envelope exists to prevent, one step further on.
+        """
+        project = self._registry.get(slug)
+        if not project:
+            return Fact(subject, NOT_ESTABLISHED,
+                        note=f"No resource named {slug!r} is registered.")
+        try:
+            value, state = resolver(self._registry, project)
+        except Exception as exc:
+            log.debug("resource-state resolver failed for %s/%s: %s", slug, subject, exc)
+            return Fact(subject, NOT_ESTABLISHED,
+                        note=f"Could not be read ({type(exc).__name__}).")
+        return Fact(
+            subject, state, value=value, provenance=PROVENANCE_MEASURED,
+            note=("Nothing is recorded for this — a real absence, not an "
+                  "unrun analysis." if state == NOTHING_FOUND else ""),
+        )
+
     def _last_run(self, slug: str) -> dict:
         """{analysis_id: {last_run_at, basis, partial}} — one query per resource.
 
