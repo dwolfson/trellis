@@ -156,3 +156,44 @@ class TestNothingBecomesUnreachable:
         assert "Refusing to sweep: unreachable is not the same as stale." in src
         fn = src.split("def _connect(")[1].split("\ndef ")[0]
         assert "return None" in fn
+
+
+class TestEveryKindOfCachedGuid:
+    """Four tables cache an Egeria GUID, and each new one was added behind a
+    check for the previous ones -- so it went unswept until something broke.
+
+    After the 2026-08-26 redeploy the sweep cleared investigations and working
+    sets while 21 entity_egeria_project_context rows still pointed at those
+    same dead Projects. That table decides whether a resource may publish and
+    what it attaches to, so publishing would have attached to a Project that
+    does not exist.
+    """
+
+    def test_resource_project_context_is_swept(self):
+        src = SCRIPT.read_text()
+        assert "entity_egeria_project_context" in src
+        fn = src.split("def _sweep_investigations(")[1]
+        assert "stale_ctx" in fn
+
+    def test_the_guard_counts_every_kind(self):
+        """Returning on a subset is the mistake this script made four times."""
+        src = SCRIPT.read_text()
+        fn = src.split("def _sweep_investigations(")[1]
+        guard = [ln for ln in fn.splitlines() if ln.strip().startswith("if not invs")]
+        assert guard, "the early-return guard moved or was renamed"
+        assert "ctxs" in guard[0], f"guard ignores a kind of cached GUID: {guard[0]}"
+        assert "sets" in guard[0]
+
+    def test_a_cleared_context_goes_back_to_unset(self):
+        """Not 'personal' or 'declined'. The decision that was made pointed at a
+        Project that no longer exists, so it must be asked again rather than
+        silently reinterpreted as some other answer the user never gave."""
+        src = SCRIPT.read_text()
+        fn = src.split("def _sweep_investigations(")[1]
+        assert "status = 'unset'" in fn
+
+    def test_each_distinct_project_is_only_looked_up_once(self):
+        """21 rows shared 3 Project GUIDs; asking Egeria 21 times would be 18
+        pointless round trips."""
+        src = SCRIPT.read_text()
+        assert "seen_projects" in src

@@ -250,11 +250,24 @@ def _sweep_investigations(registry, maker, *, apply: bool) -> None:
             "SELECT slug, egeria_collection_guid FROM working_sets "
             "WHERE egeria_collection_guid IS NOT NULL AND egeria_collection_guid <> ''"
         ).fetchall()
-    if not invs and not sets:
-        print("\nNo investigation or working-set GUIDs cached. Nothing further to sweep.")
+    with registry._conn() as conn:
+        ctxs = conn.execute(
+            "SELECT entity_type, entity_slug, egeria_project_guid "
+            "FROM entity_egeria_project_context "
+            "WHERE coalesce(egeria_project_guid, '') <> ''"
+        ).fetchall()
+
+    # Every kind is counted in this guard. Returning on a subset is the mistake
+    # this script has now made four times -- each new kind of cached GUID was
+    # added behind a check for the previous ones, and so went unswept until
+    # something broke that pointed at it.
+    if not invs and not sets and not ctxs:
+        print("\nNo investigation, working-set or resource-context GUIDs cached. "
+              "Nothing further to sweep.")
         return
 
-    print(f"\n{len(invs)} investigation(s) and {len(sets)} working set(s) carry a cached GUID.")
+    print(f"\n{len(invs)} investigation(s), {len(sets)} working set(s) and {len(ctxs)} "
+          "resource context row(s) carry a cached GUID.")
     try:
         from resource_explorer.config import get_config
         from pyegeria import CollectionManager, ProjectManager
@@ -269,7 +282,7 @@ def _sweep_investigations(registry, maker, *, apply: bool) -> None:
         print("    Skipping — unreachable is not the same as stale.")
         return
 
-    stale_inv, stale_set, unknown = [], [], []
+    stale_inv, stale_set, stale_ctx, unknown = [], [], [], []
     for r in invs:
         verdict = _resolves(pm.get_project_by_guid, r["egeria_project_guid"])
         if verdict is False:
@@ -283,16 +296,39 @@ def _sweep_investigations(registry, maker, *, apply: bool) -> None:
         elif verdict is None:
             unknown.append(("working set", r["slug"], r["egeria_collection_guid"]))
 
+    # A resource's own Egeria Project context — the FOURTH place a Project GUID
+    # is cached, and the one that decides whether publishing is allowed and what
+    # it attaches to. Missed by every earlier sweep: after the 2026-08-26
+    # redeploy the investigation GUIDs were cleared while 21 context rows still
+    # pointed at those same dead Projects, so publishing would have attached to
+    # a Project that does not exist.
+    seen_projects: dict[str, bool | None] = {}
+    for r in ctxs:
+        guid = r["egeria_project_guid"]
+        if guid not in seen_projects:
+            seen_projects[guid] = _resolves(pm.get_project_by_guid, guid)
+        verdict = seen_projects[guid]
+        if verdict is False:
+            stale_ctx.append((f"{r['entity_type']}:{r['entity_slug']}", guid))
+        elif verdict is None:
+            unknown.append(("project context", f"{r['entity_type']}:{r['entity_slug']}", guid))
+
     for slug, guid in stale_inv:
         print(f"    stale investigation  {slug:28} {guid}")
     for slug, guid in stale_set:
         print(f"    stale working set    {slug:28} {guid}")
+    if stale_ctx:
+        print(f"    {len(stale_ctx)} resource context row(s) point at a Project that is gone:")
+        for slug, guid in stale_ctx[:6]:
+            print(f"        {slug:32} {guid}")
+        if len(stale_ctx) > 6:
+            print(f"        ... and {len(stale_ctx) - 6} more")
     # Reported, never dropped: silently swallowing these is what made an
     # entirely broken lookup print "all resolve".
     for kind, slug, guid in unknown:
         print(f"    ? {kind:18} {slug:28} {guid}  (could not determine — not cleared)")
 
-    if not stale_inv and not stale_set:
+    if not stale_inv and not stale_set and not stale_ctx:
         print(f"    Nothing stale ({len(unknown)} undetermined)." if unknown
               else "    All resolve. Nothing to clear.")
         return
@@ -307,8 +343,22 @@ def _sweep_investigations(registry, maker, *, apply: bool) -> None:
         for slug, _ in stale_set:
             conn.execute(
                 "UPDATE working_sets SET egeria_collection_guid = '' WHERE slug = ?", (slug,))
-    print(f"    Cleared {len(stale_inv)} investigation and {len(stale_set)} working-set GUID(s). "
-          "Those investigations read as local-only again — promote to rebuild them.")
+        for ref, _ in stale_ctx:
+            etype, _, eslug = ref.partition(":")
+            # Status goes back to 'unset', not 'personal' or 'declined': the
+            # decision that WAS made pointed at a Project that no longer exists,
+            # so it has to be asked again rather than silently reinterpreted as
+            # some other answer the user never gave.
+            conn.execute(
+                "UPDATE entity_egeria_project_context SET egeria_project_guid = '', "
+                "egeria_project_qualified_name = '', status = 'unset' "
+                "WHERE entity_type = ? AND entity_slug = ?", (etype, eslug))
+    print(f"    Cleared {len(stale_inv)} investigation, {len(stale_set)} working-set and "
+          f"{len(stale_ctx)} resource-context GUID(s).")
+    print("    Those investigations read as local-only again — promote to rebuild them.")
+    if stale_ctx:
+        print("    Those resources will ask again which Egeria Project they belong to, "
+              "which is the honest state: the one they had is gone.")
 
 
 if __name__ == "__main__":
