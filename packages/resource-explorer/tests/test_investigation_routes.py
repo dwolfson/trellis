@@ -738,3 +738,128 @@ def test_relink_reports_a_missing_working_set_rather_than_creating_one(client, m
 
 def test_relink_route_404s_on_an_unknown_investigation(client):
     assert client.post("/api/investigations/nope-nope/relink-members").status_code == 404
+
+
+# --- Lifecycle: suspend/reopen (docs/investigation-framing-design.md follow-up) ---
+#
+# The bug this whole block exists to prevent: a user hit "Close" thinking it
+# minimised a panel. It set status='closed', which hid the investigation from
+# every list with no reopen route and no confirmation -- so it read as a
+# delete even though the data survived. Recovering it needed a direct SQL
+# update. These tests pin the two fixes: a reopen route, and a status
+# ('suspended') that pauses without unbinding.
+
+def test_suspend_then_reopen_round_trips_with_everything_intact(client, made):
+    """Suspend and reopen must be a no-op on everything except `status` --
+    members, purposes and the Egeria binding all have to survive the round
+    trip, or "pause" would quietly be "lose some state"."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Round Trip", purposes=["Explore"])
+    slug = inv["slug"]
+    reg = ProjectRegistry()
+    reg.set_investigation_egeria_project(slug, {
+        "status": "linked", "egeria_project_guid": "proj-roundtrip",
+        "egeria_project_qualified_name": "Project::RoundTrip",
+    })
+    ws = reg.get_or_create_working_set(slug)
+    reg.add_working_set_member(ws["slug"], "repo", "roundtrip-repo")
+
+    r = client.post(f"/api/investigations/{slug}/suspend")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "suspended"
+
+    r = client.post(f"/api/investigations/{slug}/reopen")
+    assert r.status_code == 200, r.text
+    reopened = r.json()
+    assert reopened["status"] == "open"
+    assert reopened["purposes"] == ["Explore"]
+    assert reopened["egeria_context"]["egeria_project_guid"] == "proj-roundtrip"
+    members = client.get(f"/api/investigations/{slug}/members").json()
+    assert [m["entity_slug"] for m in members] == ["roundtrip-repo"]
+
+
+def test_suspended_still_inherits_egeria_project_but_closed_does_not(made):
+    """The one behavioural difference that justifies two words instead of one.
+
+    Both pause the investigation; only `closed` says the work is over, so only
+    `closed` should stop a member from inheriting the Project binding. Tested
+    against the real inherited_egeria_project_context query (registry.py
+    ~line 4069), not a mock of it -- that query is the thing that would
+    silently regress if 'suspended' were ever folded back into 'closed'.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry()
+
+    suspended_inv = made(display_name="Suspended Inherits")
+    reg.set_investigation_egeria_project(suspended_inv["slug"], {
+        "status": "linked", "egeria_project_guid": "proj-suspended",
+    })
+    ws = reg.get_or_create_working_set(suspended_inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "suspended-member")
+    reg.set_investigation_status(suspended_inv["slug"], "suspended")
+
+    got = reg.inherited_egeria_project_context("repo", "suspended-member")
+    assert got and got["egeria_project_guid"] == "proj-suspended", (
+        "suspended must keep supplying its Project binding -- pausing work "
+        "does not unbind the resources already in it"
+    )
+
+    closed_inv = made(display_name="Closed Stops Inheriting")
+    reg.set_investigation_egeria_project(closed_inv["slug"], {
+        "status": "linked", "egeria_project_guid": "proj-closed",
+    })
+    ws2 = reg.get_or_create_working_set(closed_inv["slug"])
+    reg.add_working_set_member(ws2["slug"], "repo", "closed-member")
+    reg.set_investigation_status(closed_inv["slug"], "closed")
+
+    assert reg.inherited_egeria_project_context("repo", "closed-member") is None, (
+        "closed must stop supplying a Project binding -- the work is over"
+    )
+
+
+def test_set_investigation_status_rejects_an_unknown_status(made):
+    """The same guard create_investigation's purpose check has, for the same
+    reason: a status outside the vocabulary would silently do nothing rather
+    than fail loudly, and 'nothing happened' looks identical to success."""
+    from resource_explorer.registry import ProjectRegistry
+
+    inv = made(display_name="Bad Status")
+    reg = ProjectRegistry()
+    with pytest.raises(ValueError, match="unknown status"):
+        reg.set_investigation_status(inv["slug"], "abandoned")
+
+
+def test_suspend_route_404s_on_an_unknown_slug(client):
+    assert client.post("/api/investigations/nope-nope/suspend").status_code == 404
+
+
+def test_reopen_route_404s_on_an_unknown_slug(client):
+    """The route that didn't exist before this fix -- without it, a closed
+    investigation had no way back except a direct SQL UPDATE."""
+    assert client.post("/api/investigations/nope-nope/reopen").status_code == 404
+
+
+def test_list_investigations_default_view_includes_suspended_but_not_closed(client, made):
+    """Pins the deliberate include_closed decision made in list_investigations:
+    'suspended' is paused-but-will-resume, so it stays reachable in the default
+    (unfiltered) list. Only 'closed' needs include_closed=True to see -- and
+    that split is exactly why the bug report calls Close "a delete", not
+    Suspend: only Close made the row disappear here.
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry()
+    suspended_inv = made(display_name="Listed Suspended")
+    closed_inv = made(display_name="Listed Closed")
+    reg.set_investigation_status(suspended_inv["slug"], "suspended")
+    reg.set_investigation_status(closed_inv["slug"], "closed")
+
+    default_slugs = {i["slug"] for i in client.get("/api/investigations/").json()}
+    assert suspended_inv["slug"] in default_slugs
+    assert closed_inv["slug"] not in default_slugs
+
+    all_slugs = {i["slug"] for i in client.get("/api/investigations/?include_closed=true").json()}
+    assert suspended_inv["slug"] in all_slugs
+    assert closed_inv["slug"] in all_slugs

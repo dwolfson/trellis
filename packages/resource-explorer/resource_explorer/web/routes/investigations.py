@@ -154,6 +154,27 @@ async def close_investigation(slug: str) -> dict:
     return reg.close_investigation(slug)
 
 
+@router.post("/{slug}/suspend")
+async def suspend_investigation(slug: str) -> dict:
+    """Pause without unbinding — see INVESTIGATION_STATUSES for why this is a
+    different word from `closed` rather than the same action under a nicer name."""
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return reg.set_investigation_status(slug, "suspended")
+
+
+@router.post("/{slug}/reopen")
+async def reopen_investigation(slug: str) -> dict:
+    """The route that did not exist: `close` had no way back except a direct
+    SQL update, which is what turned one accidental click into a data-recovery
+    incident. Works from either `closed` or `suspended` — both land on `open`."""
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return reg.set_investigation_status(slug, "open")
+
+
 @router.put("/{slug}/egeria-project")
 async def bind_egeria_project(slug: str, req: EgeriaProjectBinding) -> dict:
     """Bind (or clear) this investigation's Egeria Project.

@@ -3785,6 +3785,15 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute("SELECT slug FROM investigations ORDER BY created_at DESC").fetchall()
         out = [self.get_investigation(r["slug"]) for r in rows]
+        # Deliberately tests `!= "closed"` rather than `== "open"`: a `suspended`
+        # investigation is still reachable through the default (unfiltered) list.
+        # `suspended` means paused-but-will-resume, and hiding it here would be
+        # the exact bug this whole feature exists to fix — the user pauses
+        # something and it vanishes as if it had been closed. Only `closed`
+        # (truly finished) needs `include_closed=True` to surface. The kwarg
+        # name stays `include_closed` rather than being widened to
+        # `include_inactive` because closed is the only status this filter
+        # ever hides.
         return [i for i in out if i and (include_closed or i.get("status") != "closed")]
 
     # Membership goes through a WorkingSet, mirroring

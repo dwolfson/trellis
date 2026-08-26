@@ -7899,6 +7899,12 @@ async function deleteCurateNote(noteId, entityType, slug) {
 const _CURRENT_INVESTIGATION_KEY = 're_current_investigation';
 let _investigations = [];
 let _investigationPurposes = [];
+// 'active' | 'manage' — Manage lists every investigation regardless of status
+// with Resume/Suspend/Close controls. This exists because Close used to be a
+// one-way door: it hid the investigation from every list with no reopen route,
+// so a misclick read as data loss even though nothing was deleted. Manage is
+// the answer to "where did my investigation go".
+let _investigationsSubTab = 'active';
 
 function _currentInvestigation() {
   try { return localStorage.getItem(_CURRENT_INVESTIGATION_KEY) || ''; }
@@ -7945,8 +7951,12 @@ async function loadInvestigationsPanel() {
   if (!view) return;
   view.innerHTML = `<div class="p-4 text-sm text-slate-400">Loading investigations…</div>`;
   try {
+    // include_closed=true always: Manage needs the full roster regardless of
+    // which sub-tab is active, and Active filters client-side down to the same
+    // non-closed set the server's default already returns — one fetch, one
+    // source of truth, instead of the two lists drifting.
     const [invs, purp] = await Promise.all([
-      fetch('/api/investigations/').then(r => r.json()),
+      fetch('/api/investigations/?include_closed=true').then(r => r.json()),
       fetch('/api/investigations/purposes').then(r => r.json()),
     ]);
     _investigations = Array.isArray(invs) ? invs : [];
@@ -7957,23 +7967,98 @@ async function loadInvestigationsPanel() {
   }
   _refreshInvestigationLabel();
   view.innerHTML = _renderInvestigationsPanel();
-  _loadNextSteps(_currentInvestigation());
+  if (_investigationsSubTab === 'active') _loadNextSteps(_currentInvestigation());
+}
+
+function _investigationsSubnavHtml(active) {
+  const tabs = [
+    { tab: 'active', label: '🧭 Active' },
+    { tab: 'manage', label: '🗂 Manage' },  // every status, all in one place — see _investigationsSubTab above for why this tab exists
+  ];
+  return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
+    ${tabs.map(t => `<button onclick="_showInvestigationsSubTab('${t.tab}')"
+        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+        ${t.label}
+      </button>`).join('')}
+  </div>`;
+}
+
+function _showInvestigationsSubTab(tab) {
+  _investigationsSubTab = tab;
+  const view = document.getElementById('investigations-view');
+  if (view) view.innerHTML = _renderInvestigationsPanel();
+  if (tab === 'active') _loadNextSteps(_currentInvestigation());
 }
 
 function _renderInvestigationsPanel() {
+  return `<div class="p-4">
+    <div class="mb-3">
+      <h2 class="text-base text-slate-200">🧭 Investigations</h2>
+      <p class="text-xs text-slate-500 mt-0.5 max-w-2xl">
+        One body of work — the context every survey and analysis runs inside. The eight intents
+        describe what kind of work is happening to a resource; Perspective describes whose
+        concerns filter the view. Neither says <em>why this set of work exists at all</em>.
+      </p>
+    </div>
+    ${_investigationsSubnavHtml(_investigationsSubTab)}
+    ${_investigationsSubTab === 'manage' ? _renderInvestigationsManageTab() : _renderInvestigationsActiveTab()}
+  </div>`;
+}
+
+function _renderInvestigationsManageTab() {
+  // Grouped by status rather than one flat list: the point of this tab is
+  // "where did it go", and a status heading answers that at a glance instead
+  // of making the reader scan a badge on every row.
+  const groups = [
+    { status: 'open', label: 'Open' },
+    { status: 'suspended', label: 'Suspended — paused, still bound to Egeria' },
+    { status: 'closed', label: 'Closed — finished, no longer inherited' },
+  ];
+  const cur = _currentInvestigation();
+  return groups.map(g => {
+    const items = _investigations.filter(i => i.status === g.status);
+    const rows = items.length ? items.map(i => `
+      <div class="border border-slate-700 rounded p-2 mb-2 flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-sm text-slate-200 truncate">
+            ${_esc(i.display_name)} ${i.slug === cur ? '<span class="text-[10px] text-cyan-500">· current</span>' : ''}
+          </div>
+          <div class="text-[11px] text-slate-500">${i.member_count} resource(s) · ${_investigationBindingLabel(i)}</div>
+        </div>
+        <div class="shrink-0 flex gap-1">
+          ${g.status !== 'open' ? `<button onclick="_reopenInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-emerald-700 text-white hover:bg-emerald-600">Resume</button>` : ''}
+          ${g.status === 'open' ? `<button onclick="_suspendInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-amber-700 text-white hover:bg-amber-600">Suspend</button>` : ''}
+          ${g.status !== 'closed' ? `<button onclick="_closeInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-300 hover:bg-slate-600">Close</button>` : ''}
+        </div>
+      </div>`).join('') : `<div class="text-xs text-slate-600 mb-2">None</div>`;
+    return `<div class="mb-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500 mb-1">${_esc(g.label)} (${items.length})</div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
+function _renderInvestigationsActiveTab() {
   const cur = _currentInvestigation();
   const purposeBoxes = _investigationPurposes.map(p => `
     <label class="inline-flex items-center gap-1 text-xs text-slate-300 mr-3">
       <input type="checkbox" class="inv-purpose" value="${_esc(p)}"> ${_esc(p)}
     </label>`).join('');
 
-  const rows = _investigations.length ? _investigations.map(i => {
+  // Same rule the server's default (include_closed=false) list applies:
+  // `suspended` stays visible here — it means paused-but-will-resume, not gone.
+  // Only `closed` moves out of Active and into Manage.
+  const visible = _investigations.filter(i => i.status !== 'closed');
+
+  const rows = visible.length ? visible.map(i => {
     const isCur = i.slug === cur;
-    return `<div class="border ${isCur ? 'border-cyan-600' : 'border-slate-700'} rounded p-2 mb-2">
+    const suspended = i.status === 'suspended';
+    return `<div class="border ${isCur ? 'border-cyan-600' : 'border-slate-700'} rounded p-2 mb-2 ${suspended ? 'opacity-70' : ''}">
       <div class="flex items-center justify-between gap-2">
         <div class="min-w-0">
           <div class="text-sm font-medium ${isCur ? 'text-cyan-300' : 'text-slate-200'} truncate">
             ${_esc(i.display_name)} ${isCur ? '<span class="text-[10px] text-cyan-500">· current</span>' : ''}
+            ${suspended ? '<span class="text-[10px] text-amber-500">· ⏸ suspended</span>' : ''}
           </div>
           <div class="text-xs text-slate-500 truncate">${_esc(i.description || 'No description')}</div>
           <div class="text-xs text-slate-400 mt-0.5">
@@ -7989,22 +8074,16 @@ function _renderInvestigationsPanel() {
         </div>
         <div class="shrink-0 flex gap-1">
           ${isCur ? '' : `<button onclick="_setCurrentInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-cyan-600 text-white hover:bg-cyan-500">Use</button>`}
+          ${suspended
+            ? `<button onclick="_reopenInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-emerald-700 text-white hover:bg-emerald-600">Resume</button>`
+            : `<button onclick="_suspendInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-amber-700 text-white hover:bg-amber-600">Suspend</button>`}
           <button onclick="_closeInvestigation('${_esc(i.slug)}')" class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-300 hover:bg-slate-600">Close</button>
         </div>
       </div>
     </div>`;
   }).join('') : `<div class="text-xs text-slate-500 mb-2">No investigations yet. Declaring one is what lets everything downstream say why this work exists.</div>`;
 
-  return `<div class="p-4">
-    <div class="mb-3">
-      <h2 class="text-base text-slate-200">🧭 Investigations</h2>
-      <p class="text-xs text-slate-500 mt-0.5 max-w-2xl">
-        One body of work — the context every survey and analysis runs inside. The eight intents
-        describe what kind of work is happening to a resource; Perspective describes whose
-        concerns filter the view. Neither says <em>why this set of work exists at all</em>.
-      </p>
-    </div>
-    ${rows}
+  return `${rows}
     <div class="border border-slate-700 rounded p-3 mt-4">
       <div class="text-sm text-slate-300 mb-2">New investigation</div>
       <input id="inv-name" placeholder="Name (e.g. Pre-adoption review, Q3 certification)"
@@ -8032,8 +8111,7 @@ function _renderInvestigationsPanel() {
         Created local-only. Binding to an Egeria Project, or creating one, is not built yet —
         the record carries a nullable project GUID so that stays a fill-in rather than a migration.
       </div>
-    </div>
-  </div>`;
+    </div>`;
 }
 
 // The binding is a property of the investigation, so it is described here
@@ -8157,13 +8235,58 @@ async function _promoteInvestigation(slug) {
   }
 }
 
+// The confirmation text names the actual mechanism (N resources, the Egeria
+// Project inheritance) rather than a generic "Are you sure?" — a user closed
+// an investigation once thinking it minimised a panel, and a generic prompt
+// would not have stopped that: it read as data loss even though nothing was
+// deleted, only unlisted. member_count is read straight off the row already
+// loaded into _investigations, so this never re-fetches for something that
+// small.
+function _investigationLifecycleConfirmText(inv, action) {
+  const n = inv.member_count || 0;
+  const has = n === 1 ? '1 resource' : `${n} resource(s)`;
+  if (action === 'close') {
+    return `Close "${inv.display_name}"?\n\n` +
+      `Closing stops ${has} inheriting this investigation's Egeria Project — that binding ends ` +
+      `because the work is over. The record, its members and its findings are kept; nothing is ` +
+      `deleted. You can reopen it later from Investigations → 🗂 Manage.`;
+  }
+  return `Suspend "${inv.display_name}"?\n\n` +
+    `Suspending pauses this investigation but ${has} keep inheriting its Egeria Project — pausing ` +
+    `work does not unbind resources from the project they belong to. Resume it any time from ` +
+    `Investigations → 🗂 Manage.`;
+}
+
 async function _closeInvestigation(slug) {
+  const inv = _investigations.find(i => i.slug === slug);
+  if (inv && !confirm(_investigationLifecycleConfirmText(inv, 'close'))) return;
   try {
     await fetch(`/api/investigations/${encodeURIComponent(slug)}/close`, {method: 'POST'});
     if (_currentInvestigation() === slug) _setCurrentInvestigation('');
-    showToast('Investigation closed', 'success');
+    showToast('Investigation closed — record, members and findings are kept. Reopen it from Manage.', 'success');
     loadInvestigationsPanel();
   } catch (e) { showToast(`Could not close: ${e}`, 'error'); }
+}
+
+async function _suspendInvestigation(slug) {
+  const inv = _investigations.find(i => i.slug === slug);
+  if (inv && !confirm(_investigationLifecycleConfirmText(inv, 'suspend'))) return;
+  try {
+    await fetch(`/api/investigations/${encodeURIComponent(slug)}/suspend`, {method: 'POST'});
+    showToast('Investigation suspended — still inheriting its Egeria Project. Resume any time.', 'success');
+    loadInvestigationsPanel();
+  } catch (e) { showToast(`Could not suspend: ${e}`, 'error'); }
+}
+
+async function _reopenInvestigation(slug) {
+  // No confirmation: reopening only ever restores a state that was itself
+  // confirmed on the way in (or never asked, for suspend) — it has no
+  // destructive side effect symmetrical to close/suspend's.
+  try {
+    await fetch(`/api/investigations/${encodeURIComponent(slug)}/reopen`, {method: 'POST'});
+    showToast('Investigation reopened', 'success');
+    loadInvestigationsPanel();
+  } catch (e) { showToast(`Could not reopen: ${e}`, 'error'); }
 }
 
 function showMainView(tab) {
