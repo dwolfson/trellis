@@ -3865,6 +3865,23 @@ function _toggleSelectMode() {
   renderProjectList();
 }
 
+// Selecting a folder selects what is in it — including members hidden inside a
+// COLLAPSED group, because the group's count includes them and a selection that
+// silently skipped them would disagree with the number the user just read.
+function _toggleGroupSelected(groupSlug) {
+  const members = _visibleProjects()
+    .filter(p => p.group_slug === groupSlug)
+    .map(p => p.slug);
+  if (!members.length) return;
+  // Any unselected member means "select the rest"; only a fully-selected group
+  // clears. Otherwise clicking a partly-selected folder would throw away the
+  // choices already made in it.
+  const allSelected = members.every(sl => _wsSelected.has(sl));
+  members.forEach(sl => allSelected ? _wsSelected.delete(sl) : _wsSelected.add(sl));
+  _updateSelectCount();
+  renderProjectList();
+}
+
 function _toggleRowSelected(slug) {
   if (_wsSelected.has(slug)) _wsSelected.delete(slug);
   else _wsSelected.add(slug);
@@ -3895,6 +3912,10 @@ function _clearSelection() {
   _wsSelected = new Set();
   document.querySelectorAll('.ws-select-cb').forEach(cb => { cb.checked = false; });
   _updateSelectCount();
+  // Group checkboxes carry their own checked/indeterminate state derived from
+  // the set that was just emptied, so they have to be re-derived — unchecking
+  // only the row boxes would leave a folder still showing as fully selected.
+  renderProjectList();
 }
 
 async function _removeSelectedFromInvestigation() {
@@ -4054,6 +4075,16 @@ function _setProjectLifecycleFilter(kind) {
   renderProjectList();
 }
 
+// The rows the sidebar is currently showing. Shared with folder-selection so a
+// folder can never select something the user cannot see — the two would
+// otherwise drift apart the next time either filter changes.
+function _visibleProjects() {
+  const visible = _showIgnoredRepos
+    ? _allProjectSummaries
+    : _allProjectSummaries.filter(p => !_rowIsHidden(p));
+  return visible.filter(_matchesProjectFilter);
+}
+
 function renderProjectList() {
   const list = document.getElementById('project-list');
   list.innerHTML = '';
@@ -4062,7 +4093,7 @@ function renderProjectList() {
     ? _allProjectSummaries
     : _allProjectSummaries.filter(p => !_rowIsHidden(p));
   const filterActive = !!(_projectFilterText.trim() || _projectLifecycleFilter);
-  const projects = visible.filter(_matchesProjectFilter);
+  const projects = _visibleProjects();
 
   // An empty working set is the expected state for a new investigation, so it
   // gets an explanation and a next step rather than a blank column — the whole
@@ -4111,10 +4142,30 @@ function renderProjectList() {
     const collapsed = !filterActive && _collapsedGroups().includes(slug);
     const header = document.createElement('button');
     header.className = 'w-full text-left px-3 py-1.5 rounded text-xs text-purple-400 font-medium hover:bg-slate-800 transition-colors flex items-center gap-1 mt-1';
-    header.innerHTML = `<span class="inline-block transition-transform" style="transform:rotate(${collapsed ? '-90deg' : '0deg'})">▾</span>
-      🗂 ${_esc(_groupDisplayName(slug))} <span class="text-slate-500 font-normal">(${members.length})</span>`;
+    // In select mode the group gets its own checkbox: picking a folder should
+    // pick what is in it. Tri-state by member count rather than a plain
+    // checked/unchecked, because "some of this group is selected" is a real
+    // state and showing it as unchecked would invite a click that silently
+    // DESELECTS the ones already chosen.
+    const memberSlugs = members.map(m => m.slug);
+    const selectedHere = memberSlugs.filter(sl => _wsSelected.has(sl)).length;
+    const groupBox = _wsSelectMode
+      ? `<input type="checkbox" class="ws-group-cb shrink-0 mr-0.5" data-group="${_esc(slug)}"
+           ${selectedHere === memberSlugs.length && memberSlugs.length ? 'checked' : ''}
+           onclick="event.stopPropagation(); _toggleGroupSelected('${_esc(slug)}')">`
+      : '';
+    header.innerHTML = `${groupBox}<span class="inline-block transition-transform" style="transform:rotate(${collapsed ? '-90deg' : '0deg'})">▾</span>
+      🗂 ${_esc(_groupDisplayName(slug))} <span class="text-slate-500 font-normal">(${members.length}${
+        _wsSelectMode && selectedHere ? `, ${selectedHere} selected` : ''})</span>`;
     header.onclick = () => _toggleGroupCollapsed(slug);
     list.appendChild(header);
+    if (_wsSelectMode) {
+      const box = header.querySelector('.ws-group-cb');
+      // Partial selection shows as indeterminate — neither on nor off, which is
+      // the truth and is what stops a click reading as "select all" when it
+      // would actually clear an existing partial selection.
+      if (box) box.indeterminate = selectedHere > 0 && selectedHere < memberSlugs.length;
+    }
     if (!collapsed) {
       const wrap = document.createElement('div');
       wrap.className = 'pl-3 border-l border-slate-800 ml-3';

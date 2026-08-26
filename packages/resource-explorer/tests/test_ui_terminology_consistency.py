@@ -109,3 +109,31 @@ def test_stage_survey_lists_are_scoped_by_both_filters():
         "cross-stage surveys (Full Survey) belong to no single stage and are "
         "fetched separately; without this they vanish from every stage's tab"
     )
+
+
+def test_folder_selection_uses_the_same_visibility_as_the_rendered_list():
+    """A folder checkbox must select exactly the rows the sidebar is showing.
+
+    The bug this guards against is a folder that selects resources the user
+    cannot see -- filtered out, or hidden by disposition. Both the renderer and
+    the group toggle have to read from one shared definition of "visible", so
+    a later change to either filter cannot move them apart.
+    """
+    html = INDEX.read_text()
+    assert "function _visibleProjects()" in html
+    # The group toggle derives its members from the shared helper, never by
+    # re-filtering _allProjectSummaries itself.
+    toggle = html.split("function _toggleGroupSelected(")[1].split("\n}")[0]
+    assert "_visibleProjects()" in toggle
+    assert "_allProjectSummaries" not in toggle
+
+
+def test_partly_selected_folder_is_indeterminate_not_unchecked():
+    """Showing a partial selection as unchecked would invite a click that
+    silently DESELECTS the members already chosen -- the tri-state is what
+    makes the control's next click predictable."""
+    html = INDEX.read_text()
+    assert "box.indeterminate = selectedHere > 0 && selectedHere < memberSlugs.length" in html
+    toggle = html.split("function _toggleGroupSelected(")[1].split("\n}")[0]
+    # Only a fully-selected folder clears; any gap means "select the rest".
+    assert "const allSelected = members.every(" in toggle
