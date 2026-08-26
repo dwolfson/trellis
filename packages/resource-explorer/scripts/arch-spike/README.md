@@ -4409,3 +4409,49 @@ the loop closing in the other direction: I had added `unreachable`, `no_extracta
 have seen `unreachable` with no way to know whether the zero beside it was a fault or the system
 being right. All three now explain themselves, and `no_extractable_text` shows the character count
 that justified the refusal.
+
+---
+
+**119. Stage-and-profile's deeper half: three items proposed, none needed. Measured, not argued.**
+
+The backlog entry for staging and profiling listed five questions to answer before ingesting. Two
+were built (finding 111: reachability and text yield, which took milvus from 685s to 1.7s). The
+other three turn out not to be work at all — and finding that out cost three measurements against
+the 20 ingested collections rather than three implementations.
+
+**3. "What kind of documentation is it?" — nothing to select.** The premise was that
+`api_reference` (chunk 256/32) exists as a collection type and is never chosen for a website, so a
+classifier should pick it. Measured across every ingested collection, code-ish character density:
+
+```
+0.0% – 3.7%   across all 20 collections
+```
+
+All narrative. **Not one ingested site is API-reference shaped**, so a classifier would fire on
+zero of them. Building it would be building for a case this corpus does not contain — the same
+result as the doc-path prefix rule in finding 97, reached the same way.
+
+**4. "How much is boilerplate?" — already solved, and the measurement proves it.** `_extract_text`
+strips `script|style|nav|header|footer|aside` before chunking, and it works: the most-repeated
+phrases in every collection are **domain terms**, not chrome — `openlineage` (86 of 200 chunks),
+`transport` (63), `metadata`, `localhost`, `PRINCIPAL`. Exactly what should repeat in a project's
+own documentation. My first pass reported 0% at a strict threshold and I loosened it rather than
+accept a suspiciously clean answer; the looser pass confirmed it.
+
+**5. "Is it versioned?" — already solved, and I briefly claimed otherwise.**
+`web_docs_openlineage_io` holds chunks from **two** version segments, 172 under `1.50.0` and 20
+under `1.49.0`, and I called it a live duplication case. It is not:
+
+```
+11 distinct URLs, 11 distinct pages, 0 pages present in more than one version
+```
+
+`collapse_versioned` is working. The `1.49.0` pages exist **only** in 1.49.0 — they were removed by
+1.50.0 — so keeping them is correct, not duplication. **I inferred duplication from counting version
+segments without checking whether the same page appeared twice**, which is the exact shape of error
+this file keeps recording: a count that looks like evidence for a claim it does not support.
+
+**The transferable result:** a backlog entry written from reasoning proposed five pieces of work;
+measurement said two were real and three were already handled or pointless. Writing the entry was
+still right — it is what made the questions askable — but **an entry is a hypothesis, and the
+cheapest thing to do with one is measure it.**
