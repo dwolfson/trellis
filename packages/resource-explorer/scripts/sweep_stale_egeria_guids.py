@@ -144,21 +144,30 @@ def main() -> int:
     return 0
 
 
-def _resolves(maker, guid: str) -> bool | None:
+def _resolves(lookup, guid: str) -> bool | None:
     """True / False / None for "could not determine".
 
-    Never collapse the third into the second: an unreachable Egeria must not
-    read as everything being stale. Projects and Collections are looked up
-    through the generic element route rather than by asset GUID, since
-    get_asset_by_guid is unreliable even for elements that exist (see the note
-    in main()).
+    `lookup` is a callable taking a GUID. It is passed in rather than picked
+    here because Projects and Collections need their OWN clients --
+    ProjectManager.get_project_by_guid and
+    CollectionManager.get_collection_by_guid. An earlier version of this
+    function called AssetMaker.get_element_by_guid, which does not exist: every
+    lookup raised AttributeError, every result became "could not determine",
+    and the caller -- which collected only definite-False -- printed "all
+    resolve. Nothing to clear." A sweep that reports confidence it does not
+    have is worse than the stale GUIDs it was meant to find.
+
+    Never collapse None into False: an unreachable Egeria must not read as
+    everything being stale.
     """
     try:
-        found = maker.get_element_by_guid(guid, output_format="JSON")
+        found = lookup(guid)
     except Exception as exc:
         name = type(exc).__name__
         if "NotFound" in name or "404" in str(exc):
             return False
+        # AttributeError, auth failures, transport errors -- all genuinely
+        # unknown, and all reported rather than silently dropped.
         return None
     if isinstance(found, str):
         return "No elements" not in found and bool(found.strip())
@@ -187,16 +196,46 @@ def _sweep_investigations(registry, maker, *, apply: bool) -> None:
         return
 
     print(f"\n{len(invs)} investigation(s) and {len(sets)} working set(s) carry a cached GUID.")
-    stale_inv = [(r["slug"], r["egeria_project_guid"]) for r in invs
-                 if _resolves(maker, r["egeria_project_guid"]) is False]
-    stale_set = [(r["slug"], r["egeria_collection_guid"]) for r in sets
-                 if _resolves(maker, r["egeria_collection_guid"]) is False]
+    try:
+        from resource_explorer.config import get_config
+        from pyegeria import CollectionManager, ProjectManager
+
+        cfg = get_config().egeria
+        pm = ProjectManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+        cm = CollectionManager(cfg.view_server, cfg.platform_url, cfg.user_id, cfg.user_password)
+        pm.create_egeria_bearer_token()
+        cm.create_egeria_bearer_token()
+    except Exception as exc:
+        print(f"    Could not open Project/Collection clients ({type(exc).__name__}: {exc}).")
+        print("    Skipping — unreachable is not the same as stale.")
+        return
+
+    stale_inv, stale_set, unknown = [], [], []
+    for r in invs:
+        verdict = _resolves(pm.get_project_by_guid, r["egeria_project_guid"])
+        if verdict is False:
+            stale_inv.append((r["slug"], r["egeria_project_guid"]))
+        elif verdict is None:
+            unknown.append(("investigation", r["slug"], r["egeria_project_guid"]))
+    for r in sets:
+        verdict = _resolves(cm.get_collection_by_guid, r["egeria_collection_guid"])
+        if verdict is False:
+            stale_set.append((r["slug"], r["egeria_collection_guid"]))
+        elif verdict is None:
+            unknown.append(("working set", r["slug"], r["egeria_collection_guid"]))
+
     for slug, guid in stale_inv:
         print(f"    stale investigation  {slug:28} {guid}")
     for slug, guid in stale_set:
         print(f"    stale working set    {slug:28} {guid}")
+    # Reported, never dropped: silently swallowing these is what made an
+    # entirely broken lookup print "all resolve".
+    for kind, slug, guid in unknown:
+        print(f"    ? {kind:18} {slug:28} {guid}  (could not determine — not cleared)")
+
     if not stale_inv and not stale_set:
-        print("    all resolve. Nothing to clear.")
+        print(f"    Nothing stale ({len(unknown)} undetermined)." if unknown
+              else "    All resolve. Nothing to clear.")
         return
     if not apply:
         print("    Dry run — re-run with --apply to clear these too.")

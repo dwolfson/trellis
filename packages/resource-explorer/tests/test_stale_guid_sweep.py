@@ -65,3 +65,52 @@ def test_clearing_a_registration_also_drops_its_publish_claims():
     fn = registry.split("def clear_egeria_registration(")[1].split("\n    def ")[0]
     assert "project_published_annotation_types" in fn
     assert "published_types_deleted" in fn
+
+
+class TestResolverHonesty:
+    """A sweep that reports confidence it does not have is worse than the stale
+    GUIDs it was written to find.
+
+    The investigation/working-set resolver called AssetMaker.get_element_by_guid,
+    which does not exist. Every lookup raised AttributeError, every result became
+    "could not determine", and the caller collected only definite-False -- so it
+    printed "all resolve. Nothing to clear." against a catalog where all 7 were
+    in fact dangling (measured 2026-08-26, right after a redeploy).
+    """
+
+    def test_projects_and_collections_use_their_own_clients(self):
+        src = SCRIPT.read_text()
+        assert "get_project_by_guid" in src
+        assert "get_collection_by_guid" in src
+        # The call that does not exist on AssetMaker.
+        calls = [ln for ln in src.splitlines()
+                 if ".get_element_by_guid(" in ln and not ln.lstrip().startswith("#")]
+        assert calls == [], f"resolver still calls a method AssetMaker lacks: {calls}"
+
+    def test_undetermined_results_are_reported_not_dropped(self):
+        """Silently swallowing them is what let a wholly broken lookup pass as
+        a clean bill of health."""
+        src = SCRIPT.read_text()
+        fn = src.split("def _sweep_investigations(")[1]
+        assert "unknown.append" in fn
+        assert "could not determine — not cleared" in fn
+        # And a clean report must not be claimed while any are undetermined.
+        assert "Nothing stale (" in fn
+
+    def test_an_attribute_error_is_undetermined_not_stale(self):
+        """The specific mapping that hid the bug: an exception type that is not
+        NotFound/404 means we could not tell, never that it is gone."""
+        import sys
+        sys.path.insert(0, str(SCRIPT.parent))
+        from sweep_stale_egeria_guids import _resolves
+
+        def boom(_guid):
+            raise AttributeError("no such method")
+
+        def missing(_guid):
+            raise type("PyegeriaNotFoundException", (Exception,), {})("gone")
+
+        assert _resolves(boom, "g") is None
+        assert _resolves(missing, "g") is False
+        assert _resolves(lambda g: {"guid": g}, "g") is True
+        assert _resolves(lambda g: "No elements found", "g") is False
