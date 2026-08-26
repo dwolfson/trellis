@@ -2494,8 +2494,42 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
     let candidates = [];
     if (slug) {
       try {
-        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ phase: intent })}`);
+        // BOTH filters, deliberately — they are incomplete in different ways and
+        // neither alone gives the right list.
+        //
+        // `phase` narrows by which cataloged QUESTIONS a definition is scoped
+        // to, so a survey shows up under any stage whose questions it can help
+        // answer. On its own that was badly wrong in both directions: measured
+        // 2026-08-25, phase=discovery returned 8 including Assessment Survey and
+        // Scouting Survey, while phase=assessment returned Full Survey and Repo
+        // Discovery Survey and NOT Assessment Survey.
+        //
+        // `survey_kind` is the definition's own declared stage, which is what a
+        // reader expects a stage's tab to list. But filtering by it alone runs
+        // the unscoped scan, which misses definitions the question-scoped lookup
+        // finds — Repo Architecture Discovery is real, is survey_kind=discovery,
+        // and does not appear in that scan at all.
+        //
+        // Together: question-scoped discovery, filtered to the stage that
+        // actually owns each definition.
+        //
+        //   scouting   3 | discovery 2 | assessment 1 | analysis 1
+        //
+        // Cross-stage definitions (survey_kind=automate_full — "Full Survey (all
+        // steps)") belong to no single stage and would otherwise vanish from the
+        // UI entirely, so they are fetched separately and appended.
+        const _candParams = { phase: intent, survey_kind: intent };
+        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(_candParams)}`);
         if (candRes.ok) candidates = (await candRes.json()).candidates || [];
+        try {
+          const fullRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ survey_kind: 'automate_full' })}`);
+          if (fullRes.ok) {
+            const seen = new Set(candidates.map(c => c.qualified_name));
+            for (const c of (await fullRes.json()).candidates || []) {
+              if (!seen.has(c.qualified_name)) candidates.push(c);
+            }
+          }
+        } catch { /* non-fatal — the stage's own surveys still render */ }
       } catch { /* non-fatal — local Analyses cards still render on their own */ }
     }
     renderAnalysisCatalogCards(analyses, candidates, view, {

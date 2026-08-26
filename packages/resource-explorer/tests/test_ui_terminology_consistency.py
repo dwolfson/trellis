@@ -76,3 +76,36 @@ def test_one_user_visible_word_for_a_position_in_the_sequence():
     assert not offenders, (
         f"user-visible text still uses a rejected synonym for 'stage': {offenders[:4]}"
     )
+
+
+def test_stage_survey_lists_are_scoped_by_both_filters():
+    """A stage's Survey tab must list the surveys that BELONG to that stage.
+
+    Two filters exist and each is wrong alone, measured 2026-08-25 against the
+    real corpus:
+
+      phase        narrows by which cataloged QUESTIONS a definition is scoped
+                   to, so a survey appears under any stage whose questions it
+                   can help answer. phase=discovery returned 8 including
+                   Assessment Survey and Scouting Survey; phase=assessment
+                   returned Full Survey and Repo Discovery Survey and NOT
+                   Assessment Survey.
+      survey_kind  is the definition's own declared stage — what a reader
+                   expects — but filtering by it alone runs the unscoped scan,
+                   which misses definitions the question-scoped lookup finds.
+                   Repo Architecture Discovery is real, is survey_kind=discovery,
+                   and is absent from that scan entirely.
+
+    So the fetch must send both. This asserts the call site still does, because
+    dropping either silently restores one of those two failures — neither of
+    which errors, and both of which just show a plausible wrong list.
+    """
+    src = INDEX.read_text()
+    assert "const _candParams = { phase: intent, survey_kind: intent };" in src, (
+        "the Survey Definition candidates fetch no longer sends both phase and "
+        "survey_kind — see this test's docstring for what each one gets wrong alone"
+    )
+    assert "survey_kind: 'automate_full'" in src, (
+        "cross-stage surveys (Full Survey) belong to no single stage and are "
+        "fetched separately; without this they vanish from every stage's tab"
+    )
