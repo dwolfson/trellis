@@ -1819,7 +1819,7 @@ function showAssessmentPane() {
 
 function _assessmentSubnavHtml(active) {
   const tabs = [
-    { tab: 'analyses',      label: '📋 Analyses' },
+    { tab: 'analyses',      label: '📊 Survey' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
@@ -1861,7 +1861,7 @@ function showAnalysisPane() {
 }
 
 function _analysisSubnavHtml(active) {
-  const tabs = [{ tab: 'catalog', label: '📋 Catalog' }];
+  const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
@@ -1887,15 +1887,27 @@ function _showAnalysisSubTab(tab) {
 // case (confirmed: Discovery still operates over a particular cataloged
 // asset even though it adds no new data of its own, so it has the same
 // per-entity context Scouting/Assessment/Analysis do). ─────────────────────
-let _discoverySubTab = 'survey-definitions';  // 'survey-definitions' | 'analyses' | 'questions' | 'disposition'
+let _discoverySubTab = 'analyses';  // 'analyses' | 'questions' | 'disposition'
+// Was 'survey-definitions' until that tab was merged into 'analyses'. Left as a
+// default would have opened Discovery on a tab that no longer exists.
 
 function showDiscoveryPane() {
   _showDiscoverySubTab(_discoverySubTab);
 }
 
 function _discoverySubnavHtml(active) {
-  const tabs = [{ tab: 'survey-definitions', label: '🔎 Survey Definitions' }];
-  tabs.push({ tab: 'analyses', label: '🧪 Analyses' });  // the five discovery-tier analyses
+  // ONE Survey tab, like every other stage. There used to be a separate
+  // "🔎 Survey Definitions" tab here, which split the list by where a survey is
+  // DEFINED — Egeria-authored definitions in one tab, RE's own in another —
+  // and a user does not care where a survey runs or is defined. Worse, that tab
+  // showed definitions for every stage, so Egeria-authored surveys were grouped
+  // by their origin while local ones were grouped by what they do.
+  //
+  // Nothing is lost: _loadAnalysisCatalogPanel already fetches Survey Definition
+  // candidates scoped to the stage and renders them in their own section of the
+  // same tab. Verified before removal — every definition the unscoped tab listed
+  // is reachable from at least one stage's Survey tab.
+  const tabs = [{ tab: 'analyses', label: '📊 Survey' }];
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
@@ -1909,10 +1921,12 @@ function _discoverySubnavHtml(active) {
 
 function _showDiscoverySubTab(tab) {
   if (tab === 'results') { _resultsHost = 'discovery'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'survey-definitions';
+  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'analyses';
   _discoverySubTab = tab;
-  if (tab === 'survey-definitions') showMainView('survey-definitions');
-  else if (tab === 'analyses') showMainView('discovery-analyses');
+  // 'survey-definitions' kept as an alias rather than dropped: a bookmark,
+  // a saved sub-tab or any caller still asking for it lands on the merged
+  // Survey tab instead of silently rendering nothing.
+  if (tab === 'survey-definitions' || tab === 'analyses') showMainView('discovery-analyses');
   else if (tab === 'questions') { _questionsDispositionHost = 'discovery'; _questionsPhase = 'discovery'; showMainView('scouting-questions'); }
   else if (tab === 'disposition') { _questionsDispositionHost = 'discovery'; showMainView('scouting-disposition'); }
 }
@@ -1928,7 +1942,7 @@ function showEnrichmentPane() {
 }
 
 function _enrichmentSubnavHtml(active) {
-  const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '🔬 Survey' }];
+  const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '📊 Survey' }];  // 📊 like every other stage — same concept, same glyph.
   tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
@@ -2480,8 +2494,42 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
     let candidates = [];
     if (slug) {
       try {
-        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ phase: intent })}`);
+        // BOTH filters, deliberately — they are incomplete in different ways and
+        // neither alone gives the right list.
+        //
+        // `phase` narrows by which cataloged QUESTIONS a definition is scoped
+        // to, so a survey shows up under any stage whose questions it can help
+        // answer. On its own that was badly wrong in both directions: measured
+        // 2026-08-25, phase=discovery returned 8 including Assessment Survey and
+        // Scouting Survey, while phase=assessment returned Full Survey and Repo
+        // Discovery Survey and NOT Assessment Survey.
+        //
+        // `survey_kind` is the definition's own declared stage, which is what a
+        // reader expects a stage's tab to list. But filtering by it alone runs
+        // the unscoped scan, which misses definitions the question-scoped lookup
+        // finds — Repo Architecture Discovery is real, is survey_kind=discovery,
+        // and does not appear in that scan at all.
+        //
+        // Together: question-scoped discovery, filtered to the stage that
+        // actually owns each definition.
+        //
+        //   scouting   3 | discovery 2 | assessment 1 | analysis 1
+        //
+        // Cross-stage definitions (survey_kind=automate_full — "Full Survey (all
+        // steps)") belong to no single stage and would otherwise vanish from the
+        // UI entirely, so they are fetched separately and appended.
+        const _candParams = { phase: intent, survey_kind: intent };
+        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(_candParams)}`);
         if (candRes.ok) candidates = (await candRes.json()).candidates || [];
+        try {
+          const fullRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ survey_kind: 'automate_full' })}`);
+          if (fullRes.ok) {
+            const seen = new Set(candidates.map(c => c.qualified_name));
+            for (const c of (await fullRes.json()).candidates || []) {
+              if (!seen.has(c.qualified_name)) candidates.push(c);
+            }
+          }
+        } catch { /* non-fatal — the stage's own surveys still render */ }
       } catch { /* non-fatal — local Analyses cards still render on their own */ }
     }
     renderAnalysisCatalogCards(analyses, candidates, view, {
@@ -3247,6 +3295,11 @@ const _WEBSITE_SKIP_REASON = {
   code_host: () => `The "documentation site" is a code-hosting URL, not documentation.`,
   non_doc_host: () => `The site is not a documentation host.`,
   unrelated_host: () => `The site belongs to an unrelated project.`,
+  // Theirs, kept whole — these come from the site profiler and carry a
+  // measurement (`landing_chars`), which is stronger than my one-line version.
+  // My distinction is preserved below in _WEBSITE_DELIBERATE_SKIPS rather than
+  // here: two of these are FAILURES, not the system correctly declining, and
+  // must not render neutral alongside self_published.
   // Added with site profiling (2026-08-25). These three are the profiler
   // refusing BEFORE a crawl rather than a guard refusing a URL, and they carry
   // a measurement — `landing_chars` is how much readable text the landing page
@@ -3262,6 +3315,21 @@ const _WEBSITE_SKIP_REASON = {
   no_homepage: () => `No documentation site is recorded for this repository yet.`,
 };
 
+//: Reasons that mean "the system correctly chose not to ingest". `unreachable`
+//: is deliberately absent: it means the attempt failed.
+const _WEBSITE_DELIBERATE_SKIPS = new Set([
+  // The system correctly choosing not to ingest. Renders neutral.
+  'self_published', 'already_ingested', 'code_host', 'non_doc_host', 'unrelated_host',
+  // The profiler refusing on measured evidence — a decision, not a failure.
+  'no_extractable_text',
+  // Nothing recorded to ingest: not a fault, and nothing to fix on our side.
+  'no_homepage',
+]);
+//: Everything NOT in that set renders amber. Today that is `unreachable` (the
+//: site could not be fetched) and `host_not_found` (the recorded homepage does
+//: not resolve) — both are things that went wrong, and colouring them like a
+//: deliberate skip would tell a user nothing is wrong when something is.
+
 function _renderWebsiteIngestionResults(data) {
   const chunks = data.chunks || 0;
   const reason = data.reason || '';
@@ -3269,8 +3337,9 @@ function _renderWebsiteIngestionResults(data) {
 
   if (!chunks && reason) {
     const explain = _WEBSITE_SKIP_REASON[reason];
+    const deliberate = _WEBSITE_DELIBERATE_SKIPS.has(reason);
     return `<div class="text-xs">
-      <div class="text-slate-300">Not ingested — <span class="text-slate-400">${_esc(reason.replace(/_/g, ' '))}</span></div>
+      <div class="${deliberate ? 'text-slate-300' : 'text-amber-400/90'}">Not ingested — <span class="${deliberate ? 'text-slate-400' : 'text-amber-400/70'}">${_esc(reason.replace(/_/g, ' '))}</span></div>
       <div class="text-slate-500 mt-0.5">${explain ? explain(data) : 'Skipped deliberately.'}</div>
       ${url}
     </div>`;
@@ -6106,6 +6175,19 @@ function _toggleSurveyPanelPerspective(p) {
   _loadSurveyPanel(entityType, slug, phase, viewElId, subnavHtml);
 }
 
+// ORPHANED 2026-08-25 — no longer reachable from the UI.
+//
+// Discovery's separate "Survey Definitions" tab was merged into its Survey tab,
+// because splitting the list by where a survey is DEFINED is a distinction the
+// user should not have to care about. Every stage's Survey tab already fetches
+// stage-scoped Survey Definition candidates and renders them alongside the
+// local ones.
+//
+// Left in place rather than deleted: this panel renders per-definition detail
+// (steps, last run, publish state) that the cards summarise but do not fully
+// replace, so it is the obvious basis for a "definition detail" view if one is
+// wanted. Delete it if that turns out not to be wanted — but do not re-add a
+// top-level tab for it.
 async function loadSurveyDefinitionsPanel() {
   const [entityType, slug] = _surveyDefEntityAndSlug();
   const view = document.getElementById('survey-definitions-view');
@@ -8140,7 +8222,7 @@ async function _loadScoutingOverviewStats(slug) {
         t.status === 'warn' ? 'text-amber-400 border-amber-900' :
         t.status === 'gap' ? 'text-red-400 border-red-900' : 'text-slate-300 border-slate-800';
       return `<span class="text-[11px] px-2 py-0.5 rounded-full border bg-slate-950 ${color}" title="${_esc(t.analysis_name)}">${_esc(t.label)}</span>`;
-    }).join('') : '<span class="text-[11px] text-slate-600">No scouting-tier results yet — run a Scouting Scan.</span>';
+    }).join('') : '<span class="text-[11px] text-slate-600">No Scouting results yet — run a Scouting Scan.</span>';
   } catch(e) {
     el.innerHTML = `<span class="text-[11px] text-slate-600">Signal unavailable.</span>`;
   }
@@ -8241,14 +8323,14 @@ function renderScoutingQuestions(data) {
           ${q.note ? `<div class="text-[10px] text-slate-600 mt-0.5">${_esc(q.note)}</div>` : ''}
         </div>
       </div>`;
-  }).join('') || '<div class="text-xs text-slate-500 py-4 text-center">No questions for this phase/perspective combination.</div>';
+  }).join('') || '<div class="text-xs text-slate-500 py-4 text-center">No questions for this stage and perspective.</div>';
 
   const answeredCount = questions.filter(q => _questionStatus(q).icon === '✓').length;
 
   view.innerHTML = _qdSubnavHtml('questions') + `
     <div class="space-y-3">
       <div>
-        <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+        <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
         <div class="flex flex-wrap gap-1.5">${phaseChips}</div>
       </div>
       ${allPerspectives.length ? `<div>
@@ -12023,7 +12105,7 @@ function renderAdminQuestionCatalogPanel() {
           oninput="_setAdminQCSearch(this.value)"
           class="w-full max-w-sm bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-700">
         <div>
-          <div class="text-[10px] text-slate-500 uppercase mb-1">Funnel stage</div>
+          <div class="text-[10px] text-slate-500 uppercase mb-1">Stage</div>
           <div class="flex flex-wrap gap-1.5">${stageChips || '<span class="text-xs text-slate-600">—</span>'}</div>
         </div>
         ${_adminQCPerspectives().length ? `<div>
