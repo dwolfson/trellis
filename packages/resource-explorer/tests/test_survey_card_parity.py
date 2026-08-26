@@ -281,3 +281,30 @@ def test_an_unresolvable_run_reports_itself():
     assert "showToast(" in fn, "a cache miss is still silent"
     assert "console.error(" in fn
     assert "if (!candidate) return;" not in fn
+
+
+def test_prefect_routed_steps_are_local_not_egeria_native():
+    """Prefect is a dispatch mechanism, not a different owner of the findings.
+
+    executes_at="prefect" runs Resource Explorer's OWN surveyor as a Prefect
+    flow (resource_explorer/prefect/flows.py); the annotations come back here
+    and still need publishing. Classifying anything that is not
+    "resource-explorer" as Egeria-native was safe only while "egeria" was the
+    sole alternative — a peer session began routing repo_arch_coupling through
+    Prefect on 2026-08-26, and a survey whose steps were ALL Prefect-routed
+    would then have reported "Publishes itself" and hidden the only button that
+    publishes them.
+    """
+    from resource_explorer.web.routes.survey_definitions import _execution_split
+
+    all_prefect = _execution_split([{"executes_at": "prefect"}, {"executes_at": "prefect"}])
+    assert all_prefect["publishes_itself"] is False, \
+        "a Prefect-routed survey must still offer Publish"
+    assert all_prefect["steps_native"] == 0
+
+    # A genuinely Egeria-native survey is unchanged: it writes its own
+    # annotations, so there is nothing local left to publish.
+    assert _execution_split([{"executes_at": "egeria"}])["publishes_itself"] is True
+
+    mixed = _execution_split([{"executes_at": "resource-explorer"}, {"executes_at": "prefect"}])
+    assert mixed["steps_local"] == 2 and mixed["steps_native"] == 0

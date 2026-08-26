@@ -62,8 +62,18 @@ def _execution_split(steps: list[dict]) -> dict:
     failure this vocabulary exists to prevent -- a status that reads as an
     answer while local annotations sit unpublished.
     """
-    native = sum(1 for s in steps if s.get("executes_at") not in (None, "", "resource-explorer"))
-    local = sum(1 for s in steps if s.get("executes_at") in ("resource-explorer",))
+    # Classified by WHO OWNS THE ANNOTATIONS, not by where the code runs.
+    #
+    # "prefect" is a dispatch mechanism for Resource Explorer's OWN surveyors
+    # (resource_explorer/prefect/flows.py) — the findings come back here and
+    # still need publishing. Treating it as native was safe only while "egeria"
+    # was the sole alternative to "resource-explorer"; a peer session began
+    # routing repo_arch_coupling through Prefect on 2026-08-26, which is what
+    # exposed it. A survey whose steps were all Prefect-routed would otherwise
+    # report "Publishes itself" and hide the only button that publishes them.
+    local_engines = {None, "", "resource-explorer", "prefect"}
+    native = sum(1 for s in steps if s.get("executes_at") not in local_engines)
+    local = sum(1 for s in steps if s.get("executes_at") in local_engines)
     return {
         "steps_native": native,
         "steps_local": local,
