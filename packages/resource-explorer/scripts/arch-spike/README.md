@@ -4302,3 +4302,67 @@ carried only `protocol` and `operationCount`, while `persist.py` writes `compone
 exercised the absent-direction path and failed for a reason unrelated to its name. The rule that
 would have prevented all five: **mirror the writer, not the fields the current test happens to
 read.**
+
+---
+
+**117. Depth control finally does something: 204 at every level becomes 82/142/216/221 — and both
+earlier diagnoses of why were wrong.**
+
+`projection.py` collapses a stored hierarchy to a requested level, and had never been given one.
+Milvus reported **204 components at depth 0, 1, 2 and None**; genaicomps 311. Two explanations were
+already on record and both were wrong:
+
+* The backlog held that **persistence filtered out intermediate candidates**, so parent links
+  pointed at nodes nobody stored.
+* The presentation session then **built the fix that implies** — persisting referenced ancestors —
+  and measured no change: 204 → 205.
+
+Measured directly, the cause is simpler and much larger:
+
+```
+milvus     217 component rows — 201 with parent_slug = "", 16 with one
+genaicomps 311 component rows — 301 with parent_slug = ""
+```
+
+**Only `code::` components ever had a hierarchy at all.** Manifest-, deployment- and
+coupling-derived components are **parentless by construction**, and they are the overwhelming
+majority — so no amount of persisting code-marker ancestors could have reached them. Both earlier
+diagnoses were about the 7% that had parents.
+
+**The evidence was already in the scope locator, and it is not opaque:**
+
+```
+internal/agg           a PATH     -> its parent is internal/
+compose::agent         an IDENTITY-> its parent is the compose stack that declares it
+```
+
+Reading it is reading what the detector wrote down. A compose file is a real deployment unit a
+person would name; a directory is a real boundary. Neither is a naming heuristic invented to make a
+number look better.
+
+```
+                depth 0 / 1 / 2 / None
+milvus          82 / 142 / 216 / 221      (was 204 at every level)
+genaicomps       8 / 296 / 296 / 317      (was 311)
+egeria_workspaces 19 / 75 / 80 / 86
+openlineage      56 / 78 / 107 / 130
+```
+
+**Three constraints the implementation turns on:**
+
+* **Attach to the nearest ancestor that GROUPS, not the nearest parent.**
+  `internal/parser/planparserv2` has one sibling under `internal/parser` and dozens under
+  `internal`; attaching only to the immediate parent left it a root three levels deep while
+  `internal` sat there grouping the rest. Walking up took milvus from 25 roots to 5.
+* **A parent of one child is not a parent.** It collapses nothing and adds a level a reader must
+  traverse to reach a single child.
+* **A derived ancestor is a structural node, never a component.** Nothing detected `internal/` — its
+  children were detected — so it carries no type, no confidence and no proposer. Emitting it as an
+  ordinary component would invent evidence, which is what design §5's *no metric, no number* exists
+  to prevent.
+
+**Two ordering bugs found by running it, not by reading it.** The fill initially ran *after* the
+component rows were written, so it changed nothing — the same "computed and not stored" shape as
+finding 113, two hours later. And `depth` was left at 0 on filled components, so `projection` counted
+them as roots regardless of their parent: **a hierarchy with correct links and stale depths projects
+identically to a flat one**, which is precisely the symptom this finding started from.
