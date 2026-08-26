@@ -4,6 +4,40 @@ from __future__ import annotations
 from beeai_framework.tools import tool
 
 
+def _absence(project_slug: str, analysis_id: str, subject: str) -> str:
+    """What to say when a table came back empty.
+
+    "No dependencies found" asserts a fact about the repo. That is only true if
+    the analysis actually ran; otherwise the truth is that nobody looked, and
+    the two are opposite answers reaching the caller as the same sentence. An
+    LLM handed the first will state it as a finding — which is the whole reason
+    the fact layer exists.
+
+    So this asks rather than guesses, and names the step that would settle it
+    instead of a CLI command (the old text suggested `project-explorer refresh`,
+    a binary that has not existed since the package was renamed).
+    """
+    try:
+        from resource_explorer.facts import FactLayer
+
+        fact = FactLayer().fact(project_slug, analysis_id)
+    except Exception:  # pragma: no cover - a tool must still answer
+        return (f"No {subject} recorded for '{project_slug}' — and whether the "
+                f"analysis that produces them has run could not be determined.")
+
+    if fact.is_known:
+        return (f"No {subject} for '{project_slug}'. This is a measured result: "
+                f"the analysis ran and found none.")
+    runnable = f" Run: {', '.join(fact.can_run)}." if fact.can_run else ""
+    if fact.state == "never_run":
+        return (f"Nothing is known about {subject} for '{project_slug}' — the "
+                f"analysis that produces them has never run here, so this is NOT "
+                f"a finding that there are none.{runnable}")
+    return (f"Nothing is known about {subject} for '{project_slug}' — "
+            f"{fact.note or 'the result cannot be established from what was recorded.'}"
+            f"{runnable}")
+
+
 @tool(description=(
     "Search indexed project content (code, docs, API specs) for text relevant to the query. "
     "collection_names is a comma-separated list of fully-qualified collection names, "
@@ -61,7 +95,7 @@ def query_project_stats(project_slug: str, days: int = 90) -> str:
     except Exception as e:
         return f"Error reading stats: {e}"
     if not row:
-        return f"No stats found for '{slug}'. Run: project-explorer refresh {slug}"
+        return _absence(slug, "repository_health", "statistics")
     d = dict(row)
 
     # Prefer live counts from project_commits; fall back to snapshot if no commit data
@@ -152,7 +186,7 @@ def query_top_committers(project_slug: str, limit: int = 10) -> str:
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
-        return f"No commit data for '{slug}'. Run: project-explorer refresh {slug}"
+        return _absence(slug, "repository_health", "commit data")
     counter: Counter = Counter()
     for name, email in rows:
         label = name or email or "unknown"
@@ -335,7 +369,7 @@ def query_commit_activity(project_slug: str, weeks: int = 12) -> str:
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
-        return f"No commit data for '{slug}'. Run: project-explorer refresh {slug}"
+        return _absence(slug, "repository_health", "commit data")
     now = datetime.utcnow()
     week_commits: defaultdict = defaultdict(int)
     week_adds: defaultdict = defaultdict(int)
@@ -476,7 +510,9 @@ def _build_example_context_raw(project_slug: str, topic: str) -> str:
     store = MultiCollectionStore()
     existing = [c for c in candidate_collections if store.collection_exists(c)]
     if not existing:
-        return f"No indexed collections found for '{slug}'. Run: project-explorer add/refresh {slug}"
+        return (f"No indexed collections found for '{slug}' — this repo's content has "
+                f"not been embedded, so nothing can be retrieved from it. That is not a "
+                f"statement about what the repo contains. Run: resource-explorer add/refresh {slug}")
 
     # Targeted searches: topic itself, import/setup patterns, usage examples
     pkg = slug.replace("_", " ")
@@ -578,10 +614,7 @@ def query_dependencies(project_slug: str, dep_type: str = "all") -> str:
         slug = slugs[0]
         deps = registry.query_dependencies(slug, dep_type=dep_type if dep_type != "all" else None)
         if not deps:
-            return (
-                f"No dependencies found for '{slug}'. "
-                f"Run 'project-explorer refresh {slug}' to index them."
-            )
+            return _absence(slug, "dependency_analysis", "dependencies")
         lines = [
             f"Dependencies for **{slug}** (filter: {dep_type}):", "",
             "| Package | Version | Type | Ecosystem | Source |",

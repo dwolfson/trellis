@@ -8711,7 +8711,13 @@ function renderScoutingQuestions(data) {
     const stageBadge = q.stage
       ? `<span class="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 whitespace-nowrap" title="Funnel Stage: ${_esc(q.stage)}">${_esc(q.stage)}</span>`
       : '';
-    return `<div class="flex items-start gap-2 py-1.5 border-b border-slate-800/60 last:border-0">
+    // Clicking a question answers it in the chat panel. It sends the question
+    // TEXT, not a prompt: the catalog is keyed on it, so this resolves through
+    // the fact layer rather than being retyped at an LLM and re-interpreted.
+    return `<div class="flex items-start gap-2 py-1.5 border-b border-slate-800/60 last:border-0
+                        hover:bg-slate-800/40 rounded cursor-pointer transition-colors"
+                 onclick='_answerQuestionInChat(${JSON.stringify(q.question)})'
+                 title="Answer this in the chat panel">
         <span class="${status.color} mt-0.5 shrink-0" title="${_esc(status.label)}">${status.icon}</span>
         <div class="flex-1 min-w-0">
           <div class="flex items-start justify-between gap-2">
@@ -8735,6 +8741,94 @@ function renderScoutingQuestions(data) {
       <div class="text-[11px] text-slate-500">${answeredCount} / ${questions.length} answered or automatic</div>
       <div class="bg-slate-950 border border-slate-800 rounded p-2">${rows}</div>
     </div>`;
+}
+
+// ── answering a catalogued question ─────────────────────────────────────────
+// Deliberately NOT routed through sendQuery()/the RAG. The catalog already
+// declares how each of these is answered, so the answer is resolved from the
+// fact layer and rendered here. An LLM asked the same question over raw rows
+// would happily report "no security policy" when the truth is that the step
+// never ran -- and would sound identical either way.
+async function _answerQuestionInChat(question) {
+  const slug = _currentSelectedSlug();
+  if (!slug) { showToast('error', 'Select a resource first.', 3000); return; }
+  openChatPanel();
+  appendMessage('you', question);
+  const thinking = document.getElementById('thinking');
+  thinking?.classList.remove('hidden');
+  try {
+    const res = await fetch(
+      `/api/analyses/facts/${encodeURIComponent(slug)}/answer?question=${encodeURIComponent(question)}`);
+    if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
+    appendMessage('assistant', _renderEnvelopeMarkdown(await res.json(), slug));
+  } catch (e) {
+    appendMessage('assistant', `Could not answer that: ${String(e.message || e)}`);
+  } finally {
+    thinking?.classList.add('hidden');
+  }
+}
+
+//: How a fact's state reads to someone who asked a question. The wording is
+//: fixed here rather than left to a model, because these five are exactly the
+//: distinctions that get lost when a value is narrated without its state.
+const _FACT_STATE_TEXT = {
+  measured:        { icon: '✓', text: 'measured' },
+  nothing_found:   { icon: '○', text: 'ran and found nothing — a measured zero, not a gap' },
+  never_run:       { icon: '·', text: 'never run here' },
+  not_established: { icon: '?', text: 'cannot be established from what was recorded' },
+  partial:         { icon: '◐', text: 'ran over part of what it covers' },
+};
+
+function _renderEnvelopeMarkdown(env, slug) {
+  const lines = [];
+  if (!env.answerable) {
+    // Never phrased as a negative answer about the resource. "No CVEs" and
+    // "nothing can look for CVEs" are opposite claims.
+    lines.push(`**I can't answer that yet.**\n\n${env.blocked_reason || ''}`);
+    if ((env.can_run || []).length) {
+      lines.push(`\nRunning \`${env.can_run.join('`, `')}\` would establish it.`);
+      lines.push(`\n_Ask me to run it, or use the Survey tab._`);
+    }
+    return lines.join('\n');
+  }
+
+  const known = (env.facts || []).filter(f => f.is_known);
+  const unknown = (env.facts || []).filter(f => !f.is_known);
+  lines.push(`Answering from ${known.length} measurement(s) on **${slug}**:\n`);
+  known.forEach(f => {
+    const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
+    lines.push(`- ${st.icon} **${f.analysis_id}** — ${st.text}` +
+      (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '') +
+      (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
+    const summary = _summariseFactValue(f.value);
+    if (summary) lines.push(`  \n  ${summary}`);
+    if (f.note) lines.push(`  \n  _${f.note}_`);
+  });
+  if (unknown.length) {
+    lines.push(`\n**Not everything is known.** ` +
+      unknown.map(f => `\`${f.analysis_id}\` ${(_FACT_STATE_TEXT[f.state] || {}).text || f.state}`).join('; ') + '.');
+  }
+  if ((env.can_run || []).length) {
+    lines.push(`\n_Re-run \`${env.can_run.join('`, `')}\` to refresh this._`);
+  }
+  return lines.join('\n');
+}
+
+//: A compact, honest reading of a results dict. Counts and named scalars only
+//: -- this must not invent a narrative the value does not support, which is
+//: what the fact layer exists to prevent one layer up.
+function _summariseFactValue(value) {
+  if (!value || typeof value !== 'object') return '';
+  const skip = new Set(['_status', 'surveyed_at', 'detail', 'scoped_to', 'run_outcomes']);
+  const parts = [];
+  for (const [k, v] of Object.entries(value)) {
+    if (skip.has(k)) continue;
+    if (Array.isArray(v)) { if (v.length) parts.push(`${k}: ${v.length}`); }
+    else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}: ${v}`);
+    else if (typeof v === 'string' && v.trim() && v.length < 60) parts.push(`${k}: ${v}`);
+    if (parts.length >= 6) break;
+  }
+  return parts.join(' · ');
 }
 
 function _setQuestionsPhase(phase) {

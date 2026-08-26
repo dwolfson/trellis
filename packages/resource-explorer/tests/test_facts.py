@@ -166,3 +166,120 @@ class TestProvenance:
         from resource_explorer.facts import PROVENANCE_EGERIA
 
         assert FactLayer._provenance_for({"detail": {"source": "egeria"}}) == PROVENANCE_EGERIA
+
+
+class TestQuestionsTabWiring:
+    """Clicking a catalogued question must not become an LLM prompt.
+
+    The catalog already declares how each of these is answered. Retyping the
+    question at a model and letting it re-interpret discards that -- and a
+    model reading raw rows reports "no security policy" when the truth is that
+    the step never ran, sounding identical either way.
+    """
+
+    _INDEX = None
+
+    @classmethod
+    def _html(cls) -> str:
+        if cls._INDEX is None:
+            from pathlib import Path
+
+            cls._INDEX = (Path(__file__).resolve().parents[1] / "resource_explorer"
+                          / "web" / "static" / "index.html").read_text()
+        return cls._INDEX
+
+    def test_a_question_click_resolves_rather_than_prompting(self):
+        html = self._html()
+        fn = html.split("async function _answerQuestionInChat(")[1].split("\n}")[0]
+        assert "/answer?question=" in fn, "question click no longer resolves through the fact layer"
+        assert "sendQuery(" not in fn, "question click routes through the RAG"
+
+    def test_an_unanswerable_envelope_never_renders_as_a_negative_answer(self):
+        """"No CVEs" and "nothing can look for CVEs" are opposite claims."""
+        html = self._html()
+        fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
+        assert "env.answerable" in fn
+        assert "I can't answer that yet" in fn
+        assert "blocked_reason" in fn
+
+    def test_every_fact_state_has_fixed_wording(self):
+        """These five distinctions are exactly what gets lost when a value is
+        narrated without its state, so the wording is not left to a model."""
+        html = self._html()
+        table = html.split("const _FACT_STATE_TEXT = {")[1].split("};")[0]
+        for state in ("measured", "nothing_found", "never_run", "not_established", "partial"):
+            assert f"{state}:" in table, f"no fixed wording for {state}"
+        assert "measured zero" in table, "nothing_found must not read as absence of coverage"
+
+    def test_a_recovered_fact_is_labelled_as_a_proposal(self):
+        html = self._html()
+        fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
+        assert "not yet validated" in fn
+
+
+class TestToolsDoNotAssertAbsence:
+    """An empty table is not a finding.
+
+    "No dependencies found for X" is only true if the analysis ran; otherwise
+    nobody looked, and the two opposite answers reached the LLM as the same
+    sentence — which it then stated as a finding. This is the free-text half of
+    what the fact layer fixes; the Questions tab is the other.
+    """
+
+    def test_a_measured_zero_is_reported_as_measured(self, monkeypatch):
+        from resource_explorer.agents import tools
+        from resource_explorer.facts import Fact
+        from resource_explorer.surveyors.result_status import NOTHING_FOUND
+
+        monkeypatch.setattr(tools, "_absence", tools._absence)  # keep the real one
+        monkeypatch.setattr(
+            "resource_explorer.facts.FactLayer.fact",
+            lambda self, slug, aid: Fact(aid, NOTHING_FOUND),
+        )
+        out = tools._absence("s", "dependency_analysis", "dependencies")
+        assert "measured result" in out
+        assert "never run" not in out
+
+    def test_never_run_says_it_is_not_a_finding(self, monkeypatch):
+        """The sentence that has to exist: an unrun analysis must not be
+        readable as evidence of absence."""
+        from resource_explorer.agents import tools
+        from resource_explorer.facts import Fact
+        from resource_explorer.surveyors.result_status import NEVER_RUN
+
+        monkeypatch.setattr(
+            "resource_explorer.facts.FactLayer.fact",
+            lambda self, slug, aid: Fact(aid, NEVER_RUN, can_run=["repo_dependency"]),
+        )
+        out = tools._absence("s", "dependency_analysis", "dependencies")
+        assert "NOT a finding that there are none" in out
+        assert "repo_dependency" in out, "must name the step that would settle it"
+
+    def test_a_broken_fact_layer_still_answers_without_asserting(self, monkeypatch):
+        """A tool must always return something, but never silently fall back to
+        claiming absence."""
+        from resource_explorer.agents import tools
+
+        def _boom(self, slug, aid):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr("resource_explorer.facts.FactLayer.fact", _boom)
+        out = tools._absence("s", "dependency_analysis", "dependencies")
+        assert "could not be determined" in out
+
+    def test_no_tool_recommends_a_binary_that_does_not_exist(self):
+        """The old absence text told users to run `project-explorer refresh` —
+        a command gone since the package was renamed to resource_explorer."""
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "resource_explorer"
+               / "agents" / "tools.py").read_text()
+        # Only what a tool RETURNS. The docstring on _absence names the stale
+        # command deliberately, to say why it was removed -- a test that
+        # forbade the explanation would invite its deletion.
+        offenders = []
+        for block in src.split("return ")[1:]:
+            head = block.split("\n\n")[0]
+            if "project-explorer " in head:
+                offenders.append(head.strip()[:70])
+        assert offenders == [], f"stale CLI name in tool output: {offenders}"
