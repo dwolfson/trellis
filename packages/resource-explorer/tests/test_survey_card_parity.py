@@ -251,3 +251,33 @@ def test_all_does_not_swallow_a_surveys_derived_perspectives():
     # which callers treat as "cannot be judged, so keep it" -- the same visible
     # outcome as matching everything, reached honestly rather than by "all".
     assert _derived_from_steps([{"re_analysis_step": "no_such_step"}])["perspectives"] == []
+
+
+def test_every_panel_that_renders_survey_cards_registers_them():
+    """A Run button that silently does nothing.
+
+    showSurveyDefinitionRunModal resolves the candidate out of
+    _surveyDefCandidatesCache by (viewElId, qualified_name). Only the older
+    renderSurveyPanel() populated that cache, so once Assessment / Analysis /
+    Discovery began rendering these cards through renderAnalysisCatalogCards,
+    their Run buttons looked perfectly enabled and did nothing -- no error, no
+    toast, no console message. Reported live against deep_causality.
+    """
+    html = INDEX.read_text()
+    body = html.split("function renderAnalysisCatalogCards(")[1].split("\nfunction ")[0]
+    assert "_surveyDefCandidatesCache[viewId]" in body, \
+        "the merged panel renders Survey Definition cards without registering them"
+    # Registered from the UNFILTERED list: a perspective filter narrowing the
+    # view must not be able to make a still-visible card unrunnable.
+    assert "_surveyDefCandidatesCache[viewId] = candidates.filter(c => !c.error)" in body
+
+
+def test_an_unresolvable_run_reports_itself():
+    """The bare `return` is what made this invisible for a whole release: the
+    control looked enabled, the click did nothing, and nothing anywhere said
+    why. A wiring bug must announce itself rather than present a dead button."""
+    html = INDEX.read_text()
+    fn = html.split("function showSurveyDefinitionRunModal(")[1].split("\n}")[0]
+    assert "showToast(" in fn, "a cache miss is still silent"
+    assert "console.error(" in fn
+    assert "if (!candidate) return;" not in fn

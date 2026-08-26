@@ -2764,6 +2764,16 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     </div>` };
   });
 
+  // The Run modal resolves a candidate out of this cache by (viewElId,
+  // qualified_name). Only the older renderSurveyPanel() populated it, so once
+  // Assessment/Analysis/Discovery started rendering these cards through here,
+  // their Run buttons looked enabled and did nothing at all.
+  //
+  // Cached BEFORE the perspective filter, deliberately: the modal must still
+  // resolve a card the user can see, and a filter narrowing the list must not
+  // be able to make a visible card unrunnable.
+  _surveyDefCandidatesCache[viewId] = candidates.filter(c => !c.error);
+
   const egeriaCardsHtml = validCandidates.map(c => ({
     key: `egeria:${c.qualified_name}`,
     lastRunAt: c.last_run_at || '',
@@ -6979,7 +6989,18 @@ function showSurveyDefinitionRunModal(entityType, slug, viewElId, qualifiedName)
   // shared array — see _surveyDefCandidatesCache's declaration comment for
   // the real bug this fixes (Run on one survey silently executing another).
   const candidate = (_surveyDefCandidatesCache[viewElId] || []).find(c => c.qualified_name === qualifiedName);
-  if (!candidate) return;
+  if (!candidate) {
+    // Was a bare `return`: the button did nothing, said nothing, and looked
+    // perfectly enabled. A panel that renders these cards without caching them
+    // is a wiring bug, and it must announce itself rather than present a dead
+    // control.
+    showToast('error', `Cannot run '${qualifiedName}': this panel did not register its survey list. `
+                     + `Reload the page — and please report it, this is a bug.`, 6000);
+    console.error('showSurveyDefinitionRunModal: no cached candidate', {
+      viewElId, qualifiedName, cached: Object.keys(_surveyDefCandidatesCache || {}),
+    });
+    return;
+  }
   _surveyDefRun = { entityType, slug, candidate };
   document.getElementById('survey-def-run-name').textContent = candidate.display_name || candidate.qualified_name;
   document.getElementById('survey-def-run-modal').classList.remove('hidden');
