@@ -150,7 +150,7 @@ class EgeriaResync:
         res.findings.append(self._scan_orphan_publish_claims())
         res.findings.append(self._scan_investigation_guids(res))
         res.findings.append(self._scan_contexts(res))
-        res.findings.append(self._scan_unlinked_members())
+        res.findings.append(self._scan_unlinked_members(res))
         res.findings.append(self._scan_unpublished_but_expected())
         res.findings.append(self._scan_local_investigations())
         res.findings = [f for f in res.findings if f.count]
@@ -288,22 +288,58 @@ class EgeriaResync:
             items=stale, repair_step="clear_stale_contexts",
         )
 
-    def _scan_unlinked_members(self) -> Finding:
+    def _scan_unlinked_members(self, res: ScanResult) -> Finding:
         """In-scope resources that have an asset but are not in the Collection.
 
         promote() links membership once and refuses to run again, so members
         published AFTER promotion have no way in.
+
+        Checks actual Egeria Collection membership (get_member_list), not just
+        "has an asset" — the first version of this scan conflated the two, so
+        it kept reporting the same members as "linkable" forever, even
+        immediately after a successful relink_investigation_members repair
+        actually attached them. Confirmed live 2026-08-26: repair reported
+        22 members linked with zero errors, and the very next scan showed the
+        identical 2 investigations again, because the scan never checked
+        whether they were already there. "Has an asset" only proves a member
+        is *linkable*, not that it still *needs* linking.
+
+        A collection whose membership can't be read (unreachable, auth
+        failure, method missing) goes to `undetermined`, not into `items` —
+        reporting it as needing a repair we can't actually verify is done
+        would be the same "guess dressed as a fact" this module's docstring
+        warns against elsewhere.
         """
+        cm = self._clients["collection"]
         items = []
         for inv in self._registry.list_investigations():
             if not inv.get("egeria_project_guid"):
                 continue
             ws = self._registry.get_or_create_working_set(inv["slug"])
-            if not (ws or {}).get("egeria_collection_guid"):
+            collection_guid = (ws or {}).get("egeria_collection_guid")
+            if not collection_guid:
                 continue
-            linkable = [
+            candidates = [
                 m for m in self._registry.list_investigation_members(inv["slug"])
                 if self._asset_guid(m["entity_type"], m["entity_slug"])
+            ]
+            if not candidates:
+                continue
+            try:
+                members = cm.get_member_list(collection_guid=collection_guid)
+                if not isinstance(members, list):
+                    raise ValueError(f"get_member_list returned {members!r}, not a list")
+            except Exception as exc:
+                res.undetermined.append({
+                    "kind": "collection membership",
+                    "ref": f"investigation:{inv['slug']}",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            already_linked = {m.get("guid", "") for m in members}
+            linkable = [
+                m for m in candidates
+                if self._asset_guid(m["entity_type"], m["entity_slug"]) not in already_linked
             ]
             if linkable:
                 items.append({"investigation": inv["slug"], "linkable": len(linkable)})
