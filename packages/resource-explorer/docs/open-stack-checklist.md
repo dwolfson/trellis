@@ -80,6 +80,33 @@ this any more.
 - [ ] Decide polling cadence (Kafka is an optimisation only — correctness rests
       on `claim`, not delivery)
 
+**Two live findings, 2026-08-27 — both change the design, neither is in the
+design note yet:**
+
+1. **`get_active_claimed_engine_actions` cannot be used to FIND work.** Called
+   with the `EgeriaWatchdog` engine's GUID it returns `'No elements found'`
+   while three actions are `IN_PROGRESS` on that very engine — at every
+   page_size, so it is not paging. Those three are claimed by
+   `egeriawatchdogengine`, and the call was made as `erinoverview`. So it is
+   caller-scoped: it answers "what have *I* claimed", not "what is available".
+   Useful for **recovery after a restart** — reclaiming what we already hold —
+   and useless for discovery. Finding claimable work needs
+   `get_active_engine_actions` filtered on unclaimed status instead.
+
+2. **RE needs its own engine-host user identity.** It talks to Egeria as one
+   fixed service account (`erinoverview`). The watchdog claims as
+   `egeriawatchdogengine`. Claims are attributed to the caller, so without a
+   distinct identity RE's claims are indistinguishable from any other use of
+   that account — and finding (1) means RE could not even list its own claimed
+   work apart from anyone else's. This is a deployment prerequisite, not a
+   coding detail.
+
+Also noted: `actionStatus` is the field on `get_active_engine_actions`'
+payload, while `egeria_delegated_step` found the real key was `activityStatus`
+when reading the same concept through `get_metadata_element_by_guid`. The name
+differs by endpoint — worth pinning wherever the loop reads status, since that
+exact mismatch already caused one false-terminal bug.
+
 Design: `docs/survey-model-and-engine-host-design.md` §4.
 
 ## 4. The granularity collapse — deferred by decision
