@@ -107,12 +107,14 @@ of one format is how they drift apart.
 Verified against live Egeria before and after: all eight definitions reconcile to a no-op, with
 kept counts equal to `steps − 1`. The change rewrites nothing on real data.
 
-**What is deliberately NOT fixed: RE still cannot RUN a branching definition.**
+**What is NOT fixed: RE still cannot RUN a branching definition.**
 `SurveyDefinitionReader._parse_graph` walks a single chain and raises
 `UnsupportedSurveyDefinitionError` on a second outgoing edge. That is a loud, safe failure rather
-than silent destruction, and it should stay one: evaluating guards to choose a branch is
-implementing a workflow engine inside RE, which is exactly what §4 argues Egeria should own. The
-hazard was never that RE refuses to run a branch — it was that RE destroyed one.
+than silent destruction, so it is not a hazard — but it is not the right end state either, and
+an earlier draft of this section gave the wrong reason for leaving it. It said guard evaluation
+would mean "a workflow engine inside RE, which is Egeria's job under §4". That framing left RE
+with nothing to do when RE is the coordinator. The answer is §4.6: RE delegates to Prefect. RE
+should never be the engine, in either case.
 
 Note the irony worth recording: `NextGovernanceActionProcessStep` is MULTI_LINK, which is why
 Dr.Egeria's link command duplicates rather than upserts — the problem that took definitions out
@@ -315,7 +317,31 @@ things RE must express, because Egeria's process engine walks the graph and RE e
 And it raises the stakes on §3: RE's annotations would be consumed by things that are not RE, so
 `annotationType` carrying the real finding kind stops being tidiness and becomes the interface.
 
-### 4.5 What it costs
+### 4.5 Prefect is the executor whenever RE coordinates
+
+**RE should not be a workflow engine in either direction.** Two coordinators, neither of them RE:
+
+* Egeria coordinates — RE is an engine host, claims engine actions, executes leaves (§4.1).
+* RE coordinates — RE hands the workflow to **Prefect** and lets Prefect sequence it.
+
+Today it does neither. `survey_definition_executor.execute()` walks `survey_def.steps` in its own
+`while i < n` loop, deciding step order itself and dispatching individual steps to Prefect via
+`prefect_adapter.run_prefect_step` (batching consecutive local ones). So **RE is the sequencer and
+Prefect is a task runner** — the inversion of what it should be. `prefect/flows.py` already
+defines `@flow re_survey_flow` and `@task run_surveyor_step_task`, so the machinery exists at the
+wrong granularity rather than not existing.
+
+The thing forcing this is an API detail worth naming: `SurveyDefinition.steps` is a **flat list**,
+produced by `_parse_graph` walking a single chain — which is also why branching raises. The graph
+is already there beside it, in `SurveyDefinition.links`, carrying `guard` and `mandatory_guard`
+per edge. RE flattens a graph it has already parsed, then sequences the flattening by hand.
+
+So making branching runnable is not "build a guard evaluator in RE". It is: stop flattening, and
+translate the step graph into a Prefect flow whose edges are the guards. That work is independent
+of the engine-host decision — it is what RE needs whenever RE is the one coordinating, which is
+every offline and local run, and the case §4.5 says must survive indefinitely.
+
+### 4.6 What it costs
 
 **Inversion of control.** `SurveyOrchestrator.run(slug, steps=…)` owns the loop today. For
 Egeria-coordinated runs it would not. RE must keep the local path indefinitely — the argument
@@ -347,13 +373,18 @@ Ordered by dependency, not by value.
    set built from the authored document. Authoring a guard is now safe end to end; running one
    is still refused, deliberately.
 5. **Confirm §4.3** against a live platform. Gates everything below.
-6. **Collapse `analysis_id`'s bundling role into survey types.** Migration with real blast
+6. **Hand sequencing to Prefect (§4.5).** Stop flattening the graph in `_parse_graph`, and
+   translate it into a Prefect flow with guarded edges. Independent of the engine-host decision:
+   it is what RE needs whenever RE coordinates, which includes every offline run. Retires the
+   branching-not-supported refusal as a side effect.
+7. **Collapse `analysis_id`'s bundling role into survey types.** Migration with real blast
    radius: `resource_schedules` has live rows keyed by `analysis_id` and 27 render payloads to
    repoint. Own design pass.
-7. **Engine-host participation**, polling first.
+8. **Engine-host participation**, polling first.
 
 Steps 1–4 are corrections to shipped code and were worth doing whether or not §4 is ever built.
-All four are done. Everything from 5 onward depends on the engine-host decision.
+All four are done. Step 5 gates 8; step 6 does not depend on the engine-host
+decision at all.
 
 ---
 
