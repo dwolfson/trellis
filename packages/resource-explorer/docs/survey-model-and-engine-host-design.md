@@ -317,13 +317,30 @@ the topic. **Correctness rests on `claim`, not on delivery** — every host may 
 claim wins. So the polling implementation can be built first and the topic added later purely to
 cut latency and poll load, with no redesign.
 
-### 4.3 What is not confirmed
+### 4.3 Arbitration — CONFIRMED 2026-08-26
 
-**That `claim_engine_action` fails against an already-claimed action** rather than silently
-succeeding. The entire model rests on server-enforced arbitration. It is strongly implied by
-`ACTIVATING` existing as a distinct state between `WAITING` and `IN_PROGRESS`, but this was read
-from the client side only. **Test against a live platform before designing on it** — two
-concurrent claims on one action, expect exactly one success.
+The model rests on the server refusing a second claim. Tested against the live platform by
+POSTing `/engine-actions/{guid}/claim` for an action already `IN_PROGRESS` under the running
+`EgeriaWatchdog` engine host:
+
+```
+OMAG-GENERIC-HANDLERS-403-003  Engine Host OMAG Server with a userId of erinoverview is not
+allowed claim the engine action ... because it is already claimed
+systemAction: The system cannot claim an engine action because another Engine Host OMAG
+Server has got there first.
+```
+
+**Server-enforced, first-claim-wins.** The refused claim left the watchdog's action untouched
+(still `IN_PROGRESS`, same owner), which is also the property that makes polling safe: every host
+may see an action, and only one can take it. So Kafka remains an optimization (§4.2) — correctness
+never depended on delivery.
+
+**One correction to §4.1.** `claim_engine_action` and `update_engine_action_status` exist in
+`egeria-python` `main` (commit `8362b1c`) but **not in the installed pyegeria 6.0.18.4**, which
+has only `initiate`/`get`/`find`/`cancel`. §4.1 read the working tree and reported them as
+available. They are not, yet — engine-host participation is gated on that release landing, not
+only on the design decision. The server-side capability is confirmed regardless; this is a client
+packaging gap, and the endpoint is reachable directly in the meantime.
 
 ### 4.4 What it changes
 
@@ -435,7 +452,9 @@ Ordered by dependency, not by value.
 4. ~~**§1.2 reconciler keyed on `(prev, next, guard)`**~~ **Done 2026-08-26**, with the expected
    set built from the authored document. Authoring a guard is now safe end to end; running one
    is still refused, deliberately.
-5. **Confirm §4.3** against a live platform. Gates everything below.
+5. ~~**Confirm §4.3** against a live platform.~~ **Done 2026-08-26** — arbitration is
+   server-enforced. Engine-host work is now gated on a pyegeria release carrying
+   `claim_engine_action`, not on an unknown.
 6. ~~**Hand sequencing to Prefect (§4.5).**~~ **Done 2026-08-26**, behind `prefect.enabled`,
    reader included. A branching Survey Definition can now be authored, parsed, planned, run and
    repaired; RE sequences none of it.
