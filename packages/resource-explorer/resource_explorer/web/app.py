@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -14,8 +15,31 @@ from resource_explorer.scheduler import start_scheduler
 from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
+log = logging.getLogger(__name__)
+
+
+def _reconcile_orphaned_runs() -> None:
+    try:
+        from resource_explorer.run_reconciler import reconcile
+
+        result = reconcile()
+        if result["resolved"]:
+            log.info("reconciled %s orphaned run(s) at startup; %s left alone",
+                     result["resolved"], result["left_alone"])
+    except Exception as exc:
+        # Startup must not fail because bookkeeping did.
+        log.warning("orphaned-run reconciliation skipped: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # A Survey Definition run lives in a daemon thread in THIS process, so a
+    # restart kills it with no chance to write a terminal status and its
+    # activity row claims "running" for ever. Anything left running by a
+    # process that is provably gone is resolved here, at the one moment we can
+    # be certain those threads are not coming back. Never raises and never
+    # blocks: it fails safe, leaving alone anything it cannot judge.
+    _reconcile_orphaned_runs()
     start_scheduler()
     # Detect + repair Dr.Egeria definitions wiped by an Egeria reset. Runs one
     # check immediately (covers a restart alongside the reset) then periodically

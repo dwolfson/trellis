@@ -558,10 +558,21 @@ async def run_survey_definition_route(entity_type: str, slug: str, body: SurveyD
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
+    # Who owns this run, recorded up front. The work happens in a daemon
+    # thread in THIS process, so if the process dies the thread vanishes with
+    # no chance to write a terminal status — and the row would claim "running"
+    # for ever. Recording the owner lets that be resolved precisely later
+    # rather than guessed at by age; see resource_explorer/run_reconciler.py.
+    import json
+
+    from resource_explorer.run_reconciler import process_identity
+
     activity_id = log_survey(
         registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
         entity_location="", intent="assessment", status="running",
         summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
+        detail=json.dumps({"_runner": process_identity(),
+                           "survey_definition_ref": body.survey_definition_ref}),
     )
 
     t = threading.Thread(
