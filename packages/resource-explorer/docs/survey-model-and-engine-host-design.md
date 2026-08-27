@@ -360,7 +360,37 @@ per edge. RE flattens a graph it has already parsed, then sequences the flatteni
 So making branching runnable is not "build a guard evaluator in RE". It is: stop flattening, and
 translate the step graph into a Prefect flow whose edges are the guards. That work is independent
 of the engine-host decision — it is what RE needs whenever RE is the one coordinating, which is
-every offline and local run, and the case §4.5 says must survive indefinitely.
+every offline and local run, and the case §4.6 says must survive indefinitely.
+
+**BUILT 2026-08-26, behind `prefect.enabled`.**
+
+* `surveyors/survey_execution_plan.py` — pure: a definition in, a DAG out. Dependencies come
+  from `.links`, not list order. Guards are *carried, not evaluated*; deciding one here would
+  rebuild the engine in the file whose purpose is to stop RE from being one. A cycle raises
+  rather than planning part of a survey.
+* `prefect/flows.py::re_survey_definition_flow` — takes the whole plan and submits each step as
+  a task with its upstreams as dependencies, so **Prefect resolves the order**, not RE. A step
+  whose guard was not emitted reports `skipped`, never `ok`: a branch not taken and a branch that
+  ran are different facts. A failed step skips its dependents with a stated reason and leaves
+  independent branches running.
+* `survey_definition_executor.execute()` delegates the whole definition when Prefect is enabled,
+  and everything after sequencing — publishing, the activity entry, the assembled result — is
+  shared, so the two paths differ only in who ordered the steps.
+
+The local loop stays as the fallback and that is not temporary: a Prefect-less or offline run
+must keep working, the same argument that made Automate local-first. An unreachable Prefect
+degrades to it with a logged reason rather than failing a survey the loop could have run.
+
+Verified: every live definition plans to exactly its current order (so nothing that runs today
+changes), a real `RepoCoarseScout` run sequenced all three steps through Prefect end to end, and
+the same definition with Prefect off still runs locally. Branching itself is covered by
+in-process flow tests — Prefect 3 runs flows without a standing server, so the ordering asserted
+is Prefect's own.
+
+**Still open:** `SurveyDefinitionReader._parse_graph` continues to raise on branching, so a
+branching definition cannot be *fetched* yet even though the plan and the flow can both express
+and run one. That is now the only remaining blocker, and it is a change to the reader rather than
+an engine to build.
 
 ### 4.6 What it costs
 
@@ -394,10 +424,9 @@ Ordered by dependency, not by value.
    set built from the authored document. Authoring a guard is now safe end to end; running one
    is still refused, deliberately.
 5. **Confirm §4.3** against a live platform. Gates everything below.
-6. **Hand sequencing to Prefect (§4.5).** Stop flattening the graph in `_parse_graph`, and
-   translate it into a Prefect flow with guarded edges. Independent of the engine-host decision:
-   it is what RE needs whenever RE coordinates, which includes every offline run. Retires the
-   branching-not-supported refusal as a side effect.
+6. ~~**Hand sequencing to Prefect (§4.5).**~~ **Done 2026-08-26**, behind `prefect.enabled`.
+   The remaining piece is `_parse_graph`, which still refuses to fetch a branching definition —
+   a reader change, not an engine.
 7. **Collapse `analysis_id`'s bundling role into survey types.** Migration with real blast
    radius: `resource_schedules` has live rows keyed by `analysis_id` and 27 render payloads to
    repoint. Own design pass.
