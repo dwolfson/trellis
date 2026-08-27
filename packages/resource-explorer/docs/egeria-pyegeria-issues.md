@@ -4,6 +4,13 @@
 
 Each entry: what broke, the exact error, where RE hit it, the workaround (if any) applied in RE, and status.
 
+> **SUPERSEDED — log new entries in `egeria-python`'s `PYEGERIA_ISSUES.md` instead.**
+> That tracker is canonical and carries 77 issues under a unified `ISSUE-#` numbering;
+> this file stopped at 6 `E#` entries and has not been touched since RE became a
+> workspace member (2026-08-06). Noticed 2026-08-26 while logging ISSUE-78, when
+> `docs/Backlog.md` was still directing new entries here. The six below are kept for
+> their history — check them against the canonical tracker before acting on one.
+
 ---
 
 ## Open
