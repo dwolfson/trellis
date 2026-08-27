@@ -918,3 +918,33 @@ class TestSurveyDefinitionLastActivityRepoWideFallback:
 
         activity = db.get_survey_definition_last_activity("repo", "s")
         assert activity["RefY"]["last_published_scope"] == "repo"
+
+
+class TestAnalysisLastRunPublishFailedFlag:
+    """last_publish_failed backs the ☁ Publish button's visibility (2026-08-27):
+    shown as a recovery action when the last auto-publish attempt failed, hidden
+    once cleanly published. Must not conflate "never attempted" with "failed" —
+    an unassigned resource's card would otherwise look broken forever."""
+
+    def _log(self, db, published):
+        from resource_explorer.activity_logger import log_analysis_run
+        log_analysis_run(
+            db, "repo", "s", "s", "ok", "ran", "fake_analysis", published=published,
+        )
+
+    def test_a_failed_publish_attempt_sets_the_flag(self, db):
+        self._log(db, published=False)
+        activity = db.get_analysis_last_run("repo", "s")
+        assert activity["fake_analysis"]["last_publish_failed"] is True
+
+    def test_a_successful_publish_does_not_set_the_flag(self, db):
+        self._log(db, published=True)
+        activity = db.get_analysis_last_run("repo", "s")
+        assert activity["fake_analysis"]["last_publish_failed"] is False
+
+    def test_never_attempted_is_not_read_as_failed(self, db):
+        """The regression this whole flag exists to prevent: None must not
+        collapse into "failed" the way it easily could with a plain bool."""
+        self._log(db, published=None)
+        activity = db.get_analysis_last_run("repo", "s")
+        assert activity["fake_analysis"]["last_publish_failed"] is False

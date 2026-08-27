@@ -4902,6 +4902,13 @@ class ProjectRegistry:
                     result[analysis_id] = {
                         "last_run_at": row["ts"], "last_run_status": row["status"],
                         "last_run_via": "analysis", "last_run_partial": False,
+                        # True only when this run's auto-publish attempt
+                        # (projects.py's run_single_analysis) actually failed —
+                        # None (never attempted: unassigned, or no annotations)
+                        # is NOT a failure and must not read as one. The
+                        # frontend's ☁ Publish button uses this to decide
+                        # whether it's a recovery action worth showing.
+                        "last_publish_failed": detail.get("published") is False,
                     }
                 continue
 

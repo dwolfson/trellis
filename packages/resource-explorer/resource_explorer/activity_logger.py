@@ -85,6 +85,7 @@ def log_analysis_run(
     status: str,
     summary: str,
     analysis_id: str,
+    published: bool | None = None,
 ) -> str:
     """One row per local AnalysisKind run (POST /{slug}/analyses/{analysis_id}
     /run) — the Analyses cards' equivalent of log_survey's Survey Definition
@@ -92,7 +93,15 @@ def log_analysis_run(
     signal at all, unlike Survey Definition cards). `detail` carries
     {"analysis_id": ...} as the join key, same convention as
     survey_definitions.py's survey_definition_ref — see
-    registry.get_analysis_last_run()."""
+    registry.get_analysis_last_run().
+
+    `published` is three-state, not a bool default-False: True (auto-publish
+    attempted and succeeded), False (attempted and failed — the ☁ Publish
+    button on this card should stay visible as a recovery action, findings
+    are already stored, only the Egeria write needs retrying), or None
+    (never attempted — unassigned resource or no annotations, same button
+    stays visible as the only way to publish at all). See
+    registry.get_analysis_last_run()'s `last_publish_failed`."""
     import json
 
     entry_id = str(uuid.uuid4())
@@ -107,7 +116,7 @@ def log_analysis_run(
         entity_location="",
         status=status,
         summary=summary,
-        detail=json.dumps({"analysis_id": analysis_id}),
+        detail=json.dumps({"analysis_id": analysis_id, "published": published}),
     ))
     return entry_id
 

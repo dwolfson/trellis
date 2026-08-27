@@ -94,3 +94,9 @@ class TestAutoPublishOnAnalysisRun:
         body = r.json()
         assert body["status"] == "ok"
         assert "egeria unreachable" in body["message"]
+
+        # Backs the ☁ Publish button staying visible as a retry action —
+        # see registry.py's get_analysis_last_run() / TestAnalysisLastRun
+        # PublishFailedFlag in test_registry.py for the unit-level coverage.
+        activity = registry.get_analysis_last_run("repo", "myproj")
+        assert activity["fake_analysis"]["last_publish_failed"] is True

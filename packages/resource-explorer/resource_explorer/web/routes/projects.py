@@ -688,15 +688,22 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     # accurate to what actually ran. Publish failure must not turn an
     # otherwise-successful survey into a reported error: the findings are
     # real and stored either way.
+    # Three-state, not a bool: None (never attempted — unassigned or no
+    # annotations) and False (attempted, failed) both keep the card's ☁
+    # Publish button visible as the only/recovery path; True hides it, since
+    # the whole reason to hide it is "nothing left to do here."
+    published = None
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
             EgeriaPublisher(registry=registry).publish(result)
+            published = True
         except Exception as exc:
+            published = False
             summary += f" (⚠ auto-publish to Egeria failed: {exc})"
             log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
 
-    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id)
+    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id, published=published)
     return AnalysisRunResult(
         status="ok", slug=slug, analysis_id=analysis_id,
         message=summary,

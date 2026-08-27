@@ -2740,12 +2740,23 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     // /api/analyses/{resource_type} did not carry them. AnalysisCatalogEntry
     // now exposes re_analysis_steps, so the two card kinds call the identical
     // function with the identical argument shape.
+    //
+    // Hidden once cleanly published (2026-08-27): "Run →" now auto-publishes
+    // when a project is assigned, so a button reading "☁ Publish" sitting
+    // right next to "☁ Published 2 min ago" looked broken, not optional —
+    // there's nothing left for it to do. Kept visible for the two cases
+    // where it's a real action: never published at all, or the last
+    // auto-publish attempt failed (la.last_publish_failed) — findings are
+    // already stored, this is the retry. The weaker 'repo' scope (shared
+    // annotation types, not proof this analysis itself was published) also
+    // keeps it visible rather than implying a precision the join can't back.
     const _localStepKeys = a.re_analysis_steps || [];
-    const publishButton = (entityType === 'repo' && slug && _localStepKeys.length)
+    const _cleanlyPublished = la.last_published_at && la.last_published_scope !== 'repo' && !la.last_publish_failed;
+    const publishButton = (entityType === 'repo' && slug && _localStepKeys.length && !_cleanlyPublished)
       ? `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(_localStepKeys)}, this, ${JSON.stringify(a.name)}, ${JSON.stringify(a.id)})'
            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
-           title="Publishes this analysis's own findings as their own SurveyReport, linked to the same Egeria asset">
-           ☁ Publish
+           title="${la.last_publish_failed ? 'The last automatic publish attempt failed — retry it; findings are already stored, only the Egeria write needs to happen.' : "Publishes this analysis's own findings as their own SurveyReport, linked to the same Egeria asset"}">
+           ☁ ${la.last_publish_failed ? 'Retry publish' : 'Publish'}
          </button>`
       : '';
 
