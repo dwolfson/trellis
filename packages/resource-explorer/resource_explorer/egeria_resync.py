@@ -355,7 +355,18 @@ class EgeriaResync:
         )
 
     def _scan_unpublished_but_expected(self) -> Finding:
-        """Repos that decided a context once but now hold no asset."""
+        """Repos with an Egeria Project context but no asset — two causes, kept apart.
+
+        This reported them all as "previously catalogued that Egeria no longer
+        holds", which is true of only some. Measured 2026-08-27: of seven, four
+        really had been published (2026-08-24/25) and lost the asset to the
+        redeploy, while three — `docs`, `enterprise_rag`, `genaicomps` — carry
+        only a scout import from 2026-08-21 and were never catalogued at all.
+
+        Telling a reader they lost something they never had sends them looking
+        for a fault that does not exist, and the two need different actions:
+        one is re-registering a known asset, the other is a first publish.
+        """
         items = []
         with self._registry._conn() as conn:
             rows = conn.execute(
@@ -365,14 +376,34 @@ class EgeriaResync:
                 "WHERE c.entity_type = 'repo' AND coalesce(p.egeria_asset_guid, '') = '' "
                 "ORDER BY c.entity_slug"
             ).fetchall()
-        for r in rows:
-            items.append({"slug": r["slug"], "context": r["status"]})
+            for r in rows:
+                # A completed catalog/publish in the activity log is the
+                # evidence that an asset once existed. Absent it, nothing was
+                # lost — this repo has simply never been published.
+                published_before = conn.execute(
+                    "SELECT 1 FROM activity_log WHERE entity_slug = ? "
+                    "AND operation = 'catalog' AND status = 'ok' LIMIT 1",
+                    (r["slug"],),
+                ).fetchone() is not None
+                items.append({
+                    "slug": r["slug"],
+                    "context": r["status"],
+                    "was_published": published_before,
+                    "cause": ("asset lost — it was catalogued before"
+                              if published_before else
+                              "never catalogued — a context was set but no publish ran"),
+                })
+        lost = sum(1 for i in items if i["was_published"])
         return Finding(
             key="needs_republish",
-            title="Repos previously catalogued that Egeria no longer holds",
+            title=(f"Repos with an Egeria Project context but no asset "
+                   f"({lost} lost an asset, {len(items) - lost} never had one)"),
             detail="Publishing is a write and can be slow, so it is never done for you. "
-                   "Scope it to one cheap step to re-register the asset: "
-                   "POST /api/egeria/{slug}/publish with steps ['repo_health'].",
+                   "Scope it to one cheap step to register the asset: "
+                   "POST /api/egeria/{slug}/publish with steps ['repo_health']. "
+                   "The call is the same either way, but the situations are not: "
+                   "one restores something Egeria lost, the other catalogues a "
+                   "repo for the first time.",
             items=items, repair_step="", needs_decision=True,
         )
 

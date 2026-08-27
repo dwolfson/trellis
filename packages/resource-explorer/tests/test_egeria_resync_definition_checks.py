@@ -129,3 +129,46 @@ def test_the_coverage_finding_offers_no_repair_button():
         object.__new__(R.EgeriaResync))
     assert finding.repair_step == ""
     assert finding.needs_decision is True
+
+
+# ── needs_republish: two causes, not one ────────────────────────────────────
+def test_never_catalogued_is_not_reported_as_a_lost_asset(pg_registry):
+    """The finding claimed every member was "previously catalogued that Egeria
+    no longer holds". Measured 2026-08-27: of seven, three had only a scout
+    import and were never catalogued at all.
+
+    Telling someone they lost something they never had sends them hunting a
+    fault that does not exist, and the two need different actions — restoring a
+    known asset versus a first publish.
+    """
+    from resource_explorer.registry import Project
+
+    registry = pg_registry
+    for slug in ("was_published", "never_published"):
+        registry.add(Project(slug=slug, display_name=slug,
+                             github_url=f"https://github.com/x/{slug}"))
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO entity_egeria_project_context "
+                "(entity_type, entity_slug, status) VALUES (?,?,?)",
+                ("repo", slug, "linked"),
+            )
+    # Only one of them has a completed catalog operation behind it. Written
+    # through the real logging API rather than raw SQL, so the row is shaped
+    # exactly as a genuine publish would leave it.
+    from resource_explorer.activity_logger import log_catalog
+
+    log_catalog(registry, "repo", "was_published", "was_published", "",
+                "ok", "Published to Egeria")
+
+    scanner = object.__new__(R.EgeriaResync)
+    scanner._registry = registry
+    finding = R.EgeriaResync.__dict__["_scan_unpublished_but_expected"](scanner)
+
+    by_slug = {i["slug"]: i for i in finding.items}
+    assert by_slug["was_published"]["was_published"] is True
+    assert "asset lost" in by_slug["was_published"]["cause"]
+    assert by_slug["never_published"]["was_published"] is False
+    assert "never catalogued" in by_slug["never_published"]["cause"]
+    # The title must not assert loss for the ones that never had an asset.
+    assert "1 lost an asset, 1 never had one" in finding.title

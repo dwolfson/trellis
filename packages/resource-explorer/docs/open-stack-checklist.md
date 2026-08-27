@@ -207,9 +207,20 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       periods, or retire it and derive tier from `project_commits`. Not urgent
       now that its reader is honest — but the trap remains for the next
       consumer.
-- [ ] `needs_republish: 7` in the Egeria Alignment scan — no automatic repair by
-      design (needs a decision per resource). Worth checking whether the count
-      should be growing.
+- [x] **Checked 2026-08-27, and the finding was wrong.** `needs_republish` billed
+      all its members as "previously catalogued that Egeria no longer holds".
+      Of the seven, only four were: `docling_eval`, `openlineage`,
+      `openmetadata` and `unitycatalog` really were published on 24–25 Aug and
+      lost their asset to the redeploy. The other three — `docs`,
+      `enterprise_rag`, `genaicomps` — carry only a scout import from 21 Aug
+      and were **never catalogued at all**. Telling someone they lost something
+      they never had sends them hunting a fault that does not exist, and the
+      two want different actions: restoring a known asset versus a first
+      publish. The finding now states which is which, from whether a completed
+      `catalog` operation exists in the activity log.
+- [ ] Those seven still need publishing — a decision per resource, by design,
+      since publishing is a write. `POST /api/egeria/{slug}/publish` with
+      `steps: ['repo_health']` is the cheap one-step form.
 - [ ] Egeria-side: `_parse_graph` now reads branching definitions, but no
       definition uses a guard yet. Authoring one would exercise the whole chain
       end to end on real data.
