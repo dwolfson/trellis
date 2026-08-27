@@ -683,22 +683,6 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     )
 
 
-def _sole_producer(annotation_type: str) -> str:
-    """The one analysis_id that can produce this annotation type, or "".
-
-    Shared types resolve to "" rather than to a winner: crediting one analysis
-    with a publish that any of thirteen could have produced makes that card
-    state a fact it cannot know.
-    """
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-
-    owners = [
-        a["id"] for a in get_analyses("repo", include_egeria_live=False)
-        if annotation_type in (a.get("annotation_types") or [])
-    ]
-    return owners[0] if len(owners) == 1 else ""
-
-
 @router.get("/{slug}/analyses/last-activity")
 async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
@@ -730,6 +714,7 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     # cannot be credited, but they also cannot honestly be called never-run.
     unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
     published_by_type = registry.get_last_published_annotation_types(slug)
+    published_by_analysis = registry.get_last_published_analyses(slug)
 
     result: dict[str, dict] = {}
     for a in get_analyses("repo", include_egeria_live=False):
@@ -745,12 +730,20 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
         # this analysis's types were involved, which is weaker and is labelled
         # as such -- the same 'analysis' vs 'repo' distinction the Survey
         # Definition cards already draw.
+        # Recorded attribution first: the publish itself said which analyses it
+        # covered (project_published_analyses). Everything below is the older
+        # inference, kept only for publishes that predate that record.
+        recorded = published_by_analysis.get(a["id"])
         own_types = a.get("annotation_types") or []
-        exact = [t for t in own_types if t in published_by_type and _sole_producer(t) == a["id"]]
         shared = [t for t in own_types if t in published_by_type]
-        if exact:
-            pub_at, pub_scope = max(published_by_type[t] for t in exact), "analysis"
+        if recorded:
+            pub_at, pub_scope = recorded, "analysis"
         elif shared:
+            # The inference can no longer yield an 'analysis' scope for
+            # anything: once two analyses shared a type, nothing was uniquely
+            # owned. Historical rows therefore read as the hedged 'repo'
+            # scope, which is the truth about them — we cannot say which
+            # analysis a pre-record publish covered.
             pub_at, pub_scope = max(published_by_type[t] for t in shared), "repo"
         else:
             pub_at, pub_scope = "", ""

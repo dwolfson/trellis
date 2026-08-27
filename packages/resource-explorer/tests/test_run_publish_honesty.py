@@ -98,46 +98,69 @@ class TestRunAttribution:
 
 
 class TestPublishAttribution:
-    def test_a_shared_annotation_type_does_not_credit_a_publish(self):
-        """ResourceMeasureAnnotation has 15 producers; crediting all of them is
-        what put "Published today" on cards that had never run."""
-        from resource_explorer.web.routes.projects import _sole_producer
+    """Which analysis a publish covered is RECORDED, not inferred.
 
-        assert _sole_producer("ResourceMeasureAnnotation") == ""
-        assert _sole_producer("ClassificationAnnotation") == ""
+    It used to be worked out backwards: join a publish's annotation types
+    against each analysis's declared ones, and treat a uniquely-owned type as
+    proof. That held only while every type had one producer. It stopped being
+    true the moment a second analysis produced a QualityScoreAnnotation —
+    after which NO analysis could earn an attributable publish and every card
+    showed the hedged "Repo published". The inference was always going to break
+    that way; nothing prevented a second producer.
 
-    def test_a_uniquely_owned_type_does(self):
-        """The rule, not a specific type.
+    SurveyOrchestrator knows exactly which steps ran, so the publish records
+    the analyses outright (project_published_analyses).
+    """
 
-        QualityScoreAnnotation was the last uniquely-owned one and stopped
-        being unique on 2026-08-26, when foss_scorecard began producing one
-        too -- correctly, it really does compute a quality score. So NO real
-        analysis can currently earn an analysis-scope publish, and every card
-        shows the hedged "Repo published" instead.
+    def test_the_orchestrator_records_what_actually_ran(self):
+        """`steps_run` must reflect the post-cost-filter set: attributing an
+        analysis a cost ceiling excluded would be the same false claim in a
+        new place."""
+        import inspect
 
-        That is honest (with two producers we cannot attribute) but it means
-        the precise tier is unreachable in practice. The fix is to record the
-        analysis id at publish time rather than infer it from annotation types
-        -- publishing is already step-scoped, so the information is there; it
-        needs a column. Until then this asserts the rule against a constructed
-        pair, so the behaviour stays pinned without depending on an accident
-        of how many analyses share a type.
-        """
-        from resource_explorer.web.routes.projects import _sole_producer
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
-        # Real, and currently shared -- the state described above.
-        assert _sole_producer("QualityScoreAnnotation") == ""
-        assert _sole_producer("NoSuchAnnotationTypeAtAll") == ""
+        src = inspect.getsource(SurveyOrchestrator.run)
+        assert "result.steps_run" in src
+        assert src.index("result.steps_run") > src.index("max_compute_cost is not None"), \
+            "steps_run recorded before the cost filter narrowed the set"
 
-    def test_the_two_tiers_are_distinguishable(self):
-        """'repo' scope must stay tellable from 'analysis' scope, or the hedge
-        is invisible and the weaker claim reads as the stronger one."""
-        html = (
-            __import__("pathlib").Path(__file__).resolve().parents[1]
-            / "resource_explorer" / "web" / "static" / "index.html"
-        ).read_text()
-        assert "☁ Repo published" in html
-        assert "last_published_scope === 'repo'" in html
+    def test_steps_map_to_the_analyses_that_own_them(self):
+        from resource_explorer.surveyors.egeria_publisher import _analyses_for_steps
+
+        assert _analyses_for_steps(["repo_health"]) == {"repository_health"}
+        assert _analyses_for_steps([]) == set()
+
+    def test_a_partial_run_still_attributes_its_analysis(self):
+        """language_file_classification owns three steps. One of them running
+        published real findings under its name, and reporting nothing would
+        lose them."""
+        from resource_explorer.surveyors.egeria_publisher import _analyses_for_steps
+
+        assert _analyses_for_steps(["repo_language"]) == {"language_file_classification"}
+
+    def test_recorded_attribution_round_trips(self, pg_registry):
+        reg = pg_registry
+        reg.record_published_analyses("attr-demo", ["repository_health", "security_scan"],
+                                      "guid-1", published_at="2026-08-27T00:00:00")
+        got = reg.get_last_published_analyses("attr-demo")
+        assert got["repository_health"] == "2026-08-27T00:00:00"
+        assert got["security_scan"] == "2026-08-27T00:00:00"
+
+    def test_recording_nothing_is_not_an_error(self, pg_registry):
+        pg_registry.record_published_analyses("attr-none", [])
+        assert pg_registry.get_last_published_analyses("attr-none") == {}
+
+    def test_the_route_prefers_the_record_over_the_inference(self):
+        import inspect
+
+        from resource_explorer.web.routes import projects
+
+        src = inspect.getsource(projects.get_analyses_last_activity)
+        assert "published_by_analysis" in src
+        # The dead inference helper is gone, not left to rot beside its
+        # replacement.
+        assert not hasattr(projects, "_sole_producer")
 
 
 class TestNotEstablished:

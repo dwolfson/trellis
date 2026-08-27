@@ -836,6 +836,33 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_published_annotation_types_slug "
                 "ON project_published_annotation_types(project_slug, annotation_type)"
             )
+            # Which ANALYSES a publish covered, recorded directly.
+            #
+            # project_published_annotation_types above answers the same
+            # question by inference — join a publish's annotation types against
+            # each analysis's declared ones — and that only worked while every
+            # type had exactly one producer. It stopped being true the moment a
+            # second analysis produced a QualityScoreAnnotation, after which NO
+            # analysis could earn an attributable publish and every card showed
+            # the hedged "Repo published". The inference was always going to
+            # break that way; nothing prevented a second producer.
+            #
+            # The publishing side knows the answer outright — SurveyOrchestrator
+            # records the step keys it ran on SurveyResult.steps_run — so this
+            # stores it instead of re-deriving it afterwards.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_published_analyses (
+                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug       TEXT NOT NULL,
+                    analysis_id        TEXT NOT NULL,
+                    published_at       TEXT NOT NULL,
+                    egeria_report_guid TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_published_analyses_slug "
+                "ON project_published_analyses(project_slug, analysis_id)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_data_profiles (
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3322,6 +3349,41 @@ class ProjectRegistry:
                    VALUES (?, ?, ?, ?)""",
                 [(slug, at, published_at, report_guid) for at in annotation_types],
             )
+
+    def record_published_analyses(
+        self, slug: str, analysis_ids, report_guid: str = "",
+        published_at: str | None = None,
+    ) -> None:
+        """One row per analysis actually covered by this publish.
+
+        Best-effort like its annotation-type sibling: the caller wraps it, and
+        a bookkeeping failure must never roll back a publish that succeeded.
+        """
+        analysis_ids = sorted(set(analysis_ids or []))
+        if not analysis_ids:
+            return
+        slug = self._normalize_slug(slug)
+        if published_at is None:
+            published_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO project_published_analyses
+                   (project_slug, analysis_id, published_at, egeria_report_guid)
+                   VALUES (?, ?, ?, ?)""",
+                [(slug, aid, published_at, report_guid) for aid in analysis_ids],
+            )
+
+    def get_last_published_analyses(self, slug: str) -> dict[str, str]:
+        """{analysis_id: latest published_at} — a direct answer, no inference."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT analysis_id, MAX(published_at) AS published_at
+                   FROM project_published_analyses
+                   WHERE project_slug = ? GROUP BY analysis_id""",
+                (slug,),
+            ).fetchall()
+        return {r["analysis_id"]: r["published_at"] for r in rows}
 
     def get_last_published_annotation_types(self, slug: str) -> dict[str, str]:
         """{annotation_type: latest published_at} for this project — the

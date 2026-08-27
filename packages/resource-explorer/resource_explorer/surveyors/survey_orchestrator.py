@@ -147,6 +147,12 @@ class SurveyOrchestrator:
                 if _COMPUTE_COST_ORDER.index(STEP_REGISTRY[k].compute_cost) <= ceiling
             }
 
+        # Recorded AFTER the cost-tier narrowing, so it is what actually ran
+        # rather than what was asked for — a publish attributing an analysis
+        # that a cost ceiling excluded would be the same false claim in a new
+        # place.
+        result.steps_run = sorted(step_keys_to_run)
+
         # D6 (docs/unified-survey-execution-model-plan.md): resolve every
         # shared resource any selected step needs, once, before
         # constructing any surveyor — resolve_resources dedupes across
