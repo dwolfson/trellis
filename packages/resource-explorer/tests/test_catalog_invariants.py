@@ -118,6 +118,34 @@ class TestDerivationTrace:
             assert q["derivation"]["analysis_ids"] == q["answering"]["analysis_ids"]
 
 
+class TestAnalysisAvailability:
+    """availability is DERIVED from run_time, not hand-tagged -- see
+    AnalysisCatalogEntry.availability and context-compilation-design.md §20."""
+
+    def test_only_fast_is_inline(self):
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        for resource_type in ("repo", "database", "filesystem"):
+            for a in get_analyses(resource_type):
+                expected = "inline" if a["run_time"] == "fast" else "queued"
+                assert a["availability"] == expected, (
+                    f"{a['id']}: run_time={a['run_time']} -> {a['availability']}"
+                )
+
+    def test_unknown_run_time_is_queued_not_inline(self):
+        """Guessing cheap is the dangerous direction: an unrecognised run_time
+        must not let a packer block on a minutes-long analysis."""
+        from resource_explorer.surveyors.analysis_catalog_reader import AnalysisCatalogEntry
+
+        entry = AnalysisCatalogEntry(
+            id="x", name="x", description="", resource_types=["repo"],
+            intent="analysis", perspectives=[], annotation_types=[],
+            source="local", run_time="something-new", action="survey",
+            recommended=False,
+        )
+        assert entry.availability == "queued"
+
+
 class TestKnownGaps:
     def test_gap_report_is_available(self, report):
         """Not an assertion about the gaps themselves -- they are expected to

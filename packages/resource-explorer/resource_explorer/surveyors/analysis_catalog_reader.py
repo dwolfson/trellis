@@ -62,6 +62,23 @@ class AnalysisCatalogEntry:
     # shape isn't known) — never assume scopability without confirming it.
     target_shape: str = "whole_resource_only"
 
+    @property
+    def availability(self) -> str:
+        """"inline" | "queued" -- may a context compile run this on the hot
+        path if no stored result exists, or must it emit a gap and queue?
+
+        DERIVED from run_time rather than hand-tagged. run_time already
+        carries the cost signal ("fast" / "minutes" / "async") and a second
+        hand-maintained column would be one more thing to keep consistent
+        with it -- see docs/context-compilation-design.md section 19 on
+        protecting the curated vocabulary by not multiplying it.
+
+        Only "fast" is inline. "minutes" and "async" are queued: no packer
+        can synchronously await them (section 20), and an unknown value is
+        treated as queued because guessing cheap is the dangerous direction.
+        """
+        return "inline" if self.run_time == "fast" else "queued"
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -73,6 +90,7 @@ class AnalysisCatalogEntry:
             "annotation_types": self.annotation_types,
             "source": self.source,
             "run_time": self.run_time,
+            "availability": self.availability,
             "action": self.action,
             "recommended": self.recommended,
             "egeria_registration": self.egeria_registration,

@@ -626,6 +626,21 @@ does not silently omit. This preserves the existing scheduler/outbox architectur
 competing with it, and it is consistent with the standing decision that shared analytics are
 **materialized, not live-called**.
 
+**Implementation finding (2026-08-27).** Two corrections from building this:
+
+- **`availability` is derived, not tagged.** The analysis catalog already carries `run_time`
+  (`fast` / `minutes` / `async`), which is the same cost signal. `AnalysisCatalogEntry.availability`
+  maps `fast` → `inline` and everything else → `queued`, with unknown values treated as `queued`
+  because guessing cheap is the dangerous direction. A second hand-maintained column would be one
+  more thing to keep consistent with the first — §19's argument against multiplying the vocabulary
+  applies to the catalog's own columns, not only to new axes.
+- **`temporal` does not belong on the analysis catalog at all.** The compiler reads *stored,
+  timestamped* analysis results, never a live run — so every analysis is as-of-able over its own
+  results, and tagging 34 entries `as_of` would be a column with one value. `current_only` is a
+  property of resolvers that query a live source at compile time (a direct API fetch, an unstamped
+  registry read), so the declaration belongs on **resolver kind**, not on analyses. An earlier draft
+  of this section put it on both.
+
 **And this is what rescues determinism.** §14 asks for byte-identical recompiles, which is
 impossible if an agent runs inside the compile — agents are nondeterministic. The resolution is
 that the guarantee is over *materialized inputs*: `same spec + same as_of + same materialized state
