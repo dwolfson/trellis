@@ -77,7 +77,29 @@ class AnalysisCatalogEntry:
             "recommended": self.recommended,
             "egeria_registration": self.egeria_registration,
             "target_shape": self.target_shape,
+            # The orchestrator step keys this analysis actually runs. Present so
+            # a card can offer a scoped Publish: _publishScopedSteps needs the
+            # step keys, not the analysis id, and without them the local
+            # Analyses cards had no Publish button at all while the Survey
+            # Definition cards beside them did. Empty for non-repo entries and
+            # for live-Egeria-merged ones, which have no local steps to publish.
+            "re_analysis_steps": _re_analysis_steps_for(self.id),
         }
+
+
+def _re_analysis_steps_for(analysis_id: str) -> list[str]:
+    """REPO_ANALYSIS_STEP_MAP lookup, imported lazily.
+
+    repo_survey_definition_adapter imports this module at import time, so a
+    module-level import here would close the cycle.
+    """
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+        )
+    except Exception:  # pragma: no cover - defensive
+        return []
+    return list(REPO_ANALYSIS_STEP_MAP.get(analysis_id, []))
 
 
 def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
@@ -126,22 +148,55 @@ def get_egeria_merge_status(resource_type: str) -> str:
     return _last_merge_status.get(resource_type, "unknown")
 
 
-def list_perspectives() -> list[str]:
-    """Return the distinct, real (non-"all") perspective values actually used
-    across the catalog, sorted. Backs the UI's perspective selector so it's
-    data-driven rather than a hardcoded list that silently drifts out of sync
-    with what the catalog actually contains — see GET /api/analyses/perspectives.
+#: The one Perspective vocabulary — Egeria's, authored in
+#: docs/dr-egeria/foundations/foundations.md and live, with 41 questions already
+#: scoped against it. RE previously carried a parallel set of four
+#: (dba/data_scientist/security/steward) whose values could not be compared with
+#: the Egeria ones the Questions checklist filters by, so the same word meant
+#: different things on two screens and the other ten had no local meaning at all.
+#:
+#: The four were mapped by DESCRIPTION rather than name: `dba` -> Admin
+#: ("operational/infrastructure administration" — and all four dba entries were
+#: database operations), `data_scientist` -> Data Expert ("works with, moves and
+#: shapes data"). `security`/`steward` had exact namesakes.
+EGERIA_PERSPECTIVES = (
+    "Admin", "App/AI Builder", "Architecture", "Community", "Consumer",
+    "Data Expert", "Data Owner", "Financial", "Governance", "Privacy",
+    "Security", "Steward",
+)
 
-    NOTE: this is a stopgap sourced from RE's own local catalog only. It does
-    NOT yet reflect Egeria's native Perspective type, nor Egeria Advisor's own
-    perspective set (developer/data_engineer/data_steward/governance_officer)
-    — those are a real, larger unification the Trellis design work has already
-    flagged as its own thread.
+
+def list_perspectives() -> list[str]:
+    """The perspectives that can actually narrow something, sorted.
+
+    A subset of EGERIA_PERSPECTIVES, not the whole vocabulary: this backs the
+    UI's perspective row, and offering a lens nothing is tagged with would be a
+    chip that can only ever empty the list.
+
+    The union of two sources, because the row filters two kinds of card. Local
+    analyses carry their own tags. Survey Definitions get theirs off the
+    ScopedBy graph (Survey -> Question -> Perspective), so every perspective
+    the QUESTION catalog uses is reachable by a survey — and those cover eight
+    lenses no analysis is tagged with today (Consumer, Data Owner, Community,
+    Architecture, ...). Reading only the analyses would have hidden them, and a
+    survey tagged Consumer would sit behind a chip that was never offered.
     """
     values: set[str] = set()
     for entries in _load().values():
         for entry in entries:
             values.update(p for p in entry.perspectives if p != "all")
+    # Narrow deliberately: a missing/unreadable question catalog is the one
+    # expected failure and must not take the analyses half of the row down with
+    # it. Anything else is a bug and should surface rather than quietly
+    # shrinking the vocabulary to whatever the analyses happen to use.
+    try:
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        for q in get_questions():
+            values.update(p for p in (q.get("perspectives") or []) if p and p != "all")
+    except OSError as exc:
+        log.warning("question catalog unreadable, perspective row limited to "
+                    "analysis tags: %s", exc)
     return sorted(values)
 
 

@@ -3218,8 +3218,17 @@ class ProjectRegistry:
     def clear_egeria_registration(self, slug: str) -> dict:
         """Clear the cached Egeria GUID and all published survey records for a project.
 
-        Returns {"asset_guid_cleared": bool, "surveys_deleted": int} so callers
-        can report what was removed.  Safe to call when the project is not registered.
+        Returns {"asset_guid_cleared", "surveys_deleted", "published_types_deleted"}
+        so callers can report what was removed. Safe to call when the project is
+        not registered.
+
+        project_published_annotation_types goes too. Those rows are local claims
+        that Egeria holds annotations of a given type, and they are what the
+        Analyses cards' "Published"/"Repo published" badge is derived from. If
+        the asset they were published against no longer resolves, the claim is
+        false, and leaving it would put a Published badge on a repo whose
+        catalog entry is gone — the same "published to a catalog that no longer
+        holds it" this sweep exists to end, one table further along.
         """
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
@@ -3233,7 +3242,14 @@ class ProjectRegistry:
             deleted = conn.execute(
                 "DELETE FROM project_egeria_surveys WHERE project_slug = ?", (slug,)
             ).rowcount
-        return {"asset_guid_cleared": had_guid, "surveys_deleted": deleted}
+            published = conn.execute(
+                "DELETE FROM project_published_annotation_types WHERE project_slug = ?",
+                (slug,),
+            ).rowcount
+        return {
+            "asset_guid_cleared": had_guid, "surveys_deleted": deleted,
+            "published_types_deleted": published,
+        }
 
     def record_egeria_survey(
         self,
@@ -3769,6 +3785,15 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute("SELECT slug FROM investigations ORDER BY created_at DESC").fetchall()
         out = [self.get_investigation(r["slug"]) for r in rows]
+        # Deliberately tests `!= "closed"` rather than `== "open"`: a `suspended`
+        # investigation is still reachable through the default (unfiltered) list.
+        # `suspended` means paused-but-will-resume, and hiding it here would be
+        # the exact bug this whole feature exists to fix — the user pauses
+        # something and it vanishes as if it had been closed. Only `closed`
+        # (truly finished) needs `include_closed=True` to surface. The kwarg
+        # name stays `include_closed` rather than being widened to
+        # `include_inactive` because closed is the only status this filter
+        # ever hides.
         return [i for i in out if i and (include_closed or i.get("status") != "closed")]
 
     # Membership goes through a WorkingSet, mirroring
@@ -4086,13 +4111,39 @@ class ProjectRegistry:
             )
         return self.get_working_set(ws_slug)
 
-    def close_investigation(self, slug: str) -> dict | None:
+    #: An investigation's lifecycle. `closed` used to be the only non-open
+    #: value, and it meant three different things at once — finished, paused,
+    #: and abandoned — while the only behaviour attached to it was the one that
+    #: belongs to "finished". Naming them apart is what lets the UI say what a
+    #: button will do.
+    #:
+    #:   open      — active work.
+    #:   suspended — paused, will resume. Keeps its Egeria Project inheritance:
+    #:               pausing the work does not unbind the resources from the
+    #:               project they belong to.
+    #:   closed    — finished. Stops inheriting, because the work is over.
+    #:
+    #: Nothing is ever deleted by any of them.
+    INVESTIGATION_STATUSES = ("open", "suspended", "closed")
+
+    def set_investigation_status(self, slug: str, status: str) -> dict | None:
+        """Move an investigation through its lifecycle. Reversible, always."""
+        if status not in self.INVESTIGATION_STATUSES:
+            raise ValueError(
+                f"unknown status {status!r}; valid: {list(self.INVESTIGATION_STATUSES)}"
+            )
+        if not self.get_investigation(slug):
+            return None
         with self._conn() as conn:
             conn.execute(
-                "UPDATE investigations SET status = 'closed', updated_at = ? WHERE slug = ?",
-                (datetime.utcnow().isoformat(), slug),
+                "UPDATE investigations SET status = ?, updated_at = ? WHERE slug = ?",
+                (status, datetime.utcnow().isoformat(), slug),
             )
         return self.get_investigation(slug)
+
+    def close_investigation(self, slug: str) -> dict | None:
+        """Kept as the name the close route and its tests already use."""
+        return self.set_investigation_status(slug, "closed")
 
     # Egeria Project context (Part 5) — see entity_egeria_project_context's
     # own docstring above for the status vocabulary. get_project_context()
@@ -4752,32 +4803,102 @@ class ProjectRegistry:
         local AnalysisKind cards — the Analyses-card equivalent of
         get_survey_definition_last_activity() above, added the same day for
         the same reason (direct feedback: Analyses cards had no last-run
-        signal at all, unlike Survey Definition cards). Reads
-        activity_logger.log_analysis_run()'s operation='analysis_run' rows,
-        keyed by the `analysis_id` embedded in `detail`. Kept as its own
-        method rather than folded into get_survey_definition_last_activity —
-        different operation value, different ref key, no shared publish-
-        attribution logic to reuse (an Analyses card's 'last published' comes
-        from get_last_published_annotation_types() instead, joined by
-        annotation_types, not by activity_log at all)."""
+        signal at all, unlike Survey Definition cards).
+
+        Reads TWO kinds of activity row, because an analysis can be invoked two
+        ways and reading only one made almost everything look never-run:
+
+        * operation='analysis_run' — the per-analysis "Run →" button.
+        * operation='survey' — a Survey Definition run, whose detail records
+          every step it executed. These are the NORMAL path (scheduled runs,
+          "Run" on a survey card) and never write analysis_run rows. The whole
+          database held 17 analysis_run rows against 116 survey rows, so every
+          analysis on every repo reported "Never run" while its results sat in
+          the findings tables and its annotations sat published — the card said
+          "Never run" and "Published today" side by side.
+
+        A survey step's qualifiedName ends with its re_analysis_step key
+        (`GovActionProcessStep::RepoCoarseProfile::repo_language`), and
+        REPO_ANALYSIS_STEP_MAP partitions those keys across analyses — each key
+        belongs to exactly one — so this attribution is exact, not a guess.
+
+        An analysis owning several step keys counts as run when ANY of them
+        ran: it did real work then, and calling that "never run" is the larger
+        error. `last_run_partial` says whether the run covered all its steps.
+        """
+        step_owner = self._step_key_to_analysis_id()
+        owned_counts = {a: len(k) for a, k in _repo_analysis_step_map().items()}
         result: dict[str, dict] = {}
+
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT ts, status, detail FROM activity_log "
-                "WHERE entity_type = ? AND entity_slug = ? AND operation = 'analysis_run' "
+                "SELECT ts, status, detail, operation FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? "
+                "AND operation IN ('analysis_run', 'survey') "
                 "ORDER BY ts DESC LIMIT ?",
                 (entity_type, entity_slug, limit),
             ).fetchall()
+
+        unattributable = 0
         for row in rows:
             try:
                 detail = json.loads(row["detail"] or "{}")
             except (TypeError, ValueError):
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            if row["operation"] == "survey" and not (detail.get("steps") or []):
+                # A real survey happened; it just predates step recording. That
+                # is "we cannot say which analyses ran", not "none did".
+                unattributable += 1
                 continue
-            analysis_id = detail.get("analysis_id") if isinstance(detail, dict) else None
-            if not analysis_id or analysis_id in result:
+
+            if row["operation"] == "analysis_run":
+                analysis_id = detail.get("analysis_id")
+                if analysis_id and analysis_id not in result:
+                    result[analysis_id] = {
+                        "last_run_at": row["ts"], "last_run_status": row["status"],
+                        "last_run_via": "analysis", "last_run_partial": False,
+                    }
                 continue
-            result[analysis_id] = {"last_run_at": row["ts"], "last_run_status": row["status"]}
+
+            ran: dict[str, list] = {}
+            for step in (detail.get("steps") or []):
+                key = str(step.get("step") or "").rsplit("::", 1)[-1]
+                owner = step_owner.get(key)
+                if owner:
+                    ran.setdefault(owner, []).append(step.get("status") or "")
+            for analysis_id, statuses in ran.items():
+                if analysis_id in result:
+                    continue    # newest-first, so the first win stands
+                result[analysis_id] = {
+                    "last_run_at": detail.get("surveyed_at") or row["ts"],
+                    # The steps' own status, not the survey's: a survey that
+                    # errored elsewhere still ran this analysis successfully.
+                    "last_run_status": "error" if any(s == "error" for s in statuses) else "ok",
+                    "last_run_via": "survey",
+                    "last_run_partial": len(statuses) < owned_counts.get(analysis_id, 0),
+                }
+        if unattributable:
+            # Recorded against a reserved key rather than spread across every
+            # analysis: the point is that we do not know which ones ran, and
+            # marking them all "ran" would be the same lie in the other
+            # direction. Callers read it to choose "not established" over
+            # "never run" for analyses with no row of their own.
+            result["__unattributed_surveys__"] = {
+                "count": unattributable, "last_run_at": "", "last_run_status": "",
+                "last_run_via": "", "last_run_partial": False,
+            }
         return result
+
+    @staticmethod
+    def _step_key_to_analysis_id() -> dict[str, str]:
+        """Inverse of REPO_ANALYSIS_STEP_MAP."""
+        return {
+            key: analysis_id
+            for analysis_id, keys in _repo_analysis_step_map().items()
+            for key in keys
+        }
 
     def update_activity_status(
         self,
@@ -4795,47 +4916,13 @@ class ProjectRegistry:
                 (status, summary, summary, detail, detail, entry_id),
             )
 
-    def reconcile_orphaned_running_activity(self) -> list[str]:
-        """Mark every activity_log row still at status='running' as 'error',
-        with a summary explaining why — call once, early, on process startup.
-
-        Every 'running' row is created by a background `daemon=True` thread
-        (survey_definitions.py's `_run_survey_definition_background` and its
-        siblings in projects.py/databases.py/filesystems.py) that writes the
-        real terminal status only when it finishes. Daemon threads do not
-        survive a process restart — so by the time a NEW process's startup
-        code runs, any row still 'running' cannot possibly have a live thread
-        behind it anymore, in this single-process architecture. It's not a
-        best-effort guess; it's certain.
-
-        Confirmed live 2026-08-26: a server restart (to pick up a git pull)
-        killed two in-flight Survey Definition runs mid-flight, orphaning
-        their wrapper activity_log rows at 'running' forever — nothing
-        reconciled them until fixed by hand. This closes that gap.
-
-        The individual steps a survey completed before the interruption keep
-        their own 'ok' activity_log rows (written separately, per step) —
-        this only fixes the outer wrapper row, and says so in its summary
-        rather than implying the whole run failed outright.
-        """
-        note = (
-            "Interrupted — the process running this was restarted (or crashed) "
-            "before it reached a terminal state, detected on the next startup. "
-            "Individual step results published before the interruption are "
-            "unaffected; see nearby activity log entries for what completed."
-        )
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT id FROM activity_log WHERE status = 'running'"
-            ).fetchall()
-            ids = [r["id"] for r in rows]
-            if ids:
-                conn.executemany(
-                    "UPDATE activity_log SET status = 'error', summary = ?, "
-                    "detail = ? WHERE id = ?",
-                    [(note, json.dumps({"reason": "orphaned_running_row_reconciled_on_startup"}), i) for i in ids],
-                )
-        return ids
+    # reconcile_orphaned_running_activity() lived here briefly (2026-08-26) —
+    # removed in favor of resource_explorer/run_reconciler.py's
+    # ownership-based (pid + process-start-time) reconciliation, wired into
+    # web/app.py's _lifespan(). This method's blanket "every running row is
+    # orphaned on any startup" was unsafe: multiple RE processes routinely
+    # share one database, so it would falsely resolve a peer's still-live
+    # run out from under it.
 
     # ── RFA actions (local response tracking — see PATCH /api/activity/rfas/{rfa_id}
     # in web/routes/activity.py) ─────────────────────────────────────────────
@@ -5275,3 +5362,18 @@ class ProjectRegistry:
             totals["fs_data_file_count"] += getattr(fs, "data_file_count", 0) or 0
 
         return totals
+
+
+def _repo_analysis_step_map() -> dict:
+    """REPO_ANALYSIS_STEP_MAP, fetched lazily.
+
+    repo_survey_definition_adapter imports this module at import time, so a
+    module-level import here would close the cycle.
+    """
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+        )
+    except ImportError:  # pragma: no cover - defensive
+        return {}
+    return REPO_ANALYSIS_STEP_MAP

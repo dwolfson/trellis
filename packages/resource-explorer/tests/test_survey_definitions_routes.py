@@ -263,7 +263,12 @@ class TestListCandidates:
             resp = client.get("/api/survey-definitions/repo/myproj/candidates?survey_kind=discovery")
 
         assert resp.status_code == 200
-        mock_get_questions.assert_called_once_with(resource_type="repo", phase=None, perspectives=None)
+        # `perspectives` is deliberately NOT passed: these rows are what a
+        # matched candidate reads its own perspectives from (Survey ->ScopedBy->
+        # Question -> Perspective), and narrowing them first would make every
+        # candidate report exactly the perspective that was asked for.
+        # Perspective narrowing is applied to the assembled candidates instead.
+        mock_get_questions.assert_called_once_with(resource_type="repo", phase=None)
         mock_scoped.assert_called_once()
         mock_full_scan.assert_not_called()
         assert resp.json()["candidates"][0]["qualified_name"] == "GovActionProcess::Scoped"

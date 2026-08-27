@@ -136,6 +136,45 @@ def list_question_catalog(resource_type: str = "repo") -> list[dict]:
     return get_questions(resource_type)
 
 
+@router.get("/facts/{slug}")
+def resource_facts(slug: str, analysis_ids: list[str] | None = Query(None)) -> dict:
+    """What is known about this resource, and how well it is known.
+
+    Facts arrive already judged: each carries a state from result_status's
+    vocabulary rather than a bare value, so a caller cannot turn "never ran"
+    into "none found". Omit analysis_ids for every analysis that has a results
+    reader.
+    """
+    from resource_explorer.facts import FactLayer
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_RESULTS_MAP,
+    )
+
+    ids = analysis_ids or sorted(REPO_ANALYSIS_RESULTS_MAP)
+    layer = FactLayer()
+    return {"subject": slug, "facts": [f.as_dict() for f in layer.facts(slug, ids)]}
+
+
+@router.get("/facts/{slug}/answer")
+def answer_question(slug: str, question: str = Query(...)) -> dict:
+    """An answer envelope for one catalogued question.
+
+    The question is matched by its text, which is what the catalog keys on and
+    what the Questions tab already renders. An envelope whose `answerable` is
+    false carries `blocked_reason` and MUST NOT be rendered as a negative
+    answer about the resource — for 30 of the 41 catalogued questions that is
+    the correct outcome, and inventing an answer for them is precisely what
+    this layer exists to prevent.
+    """
+    from resource_explorer.facts import FactLayer
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    match = next((q for q in get_questions() if q.get("question") == question), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Question not in the catalog: {question!r}")
+    return FactLayer().answer(slug, match).as_dict()
+
+
 @router.get("/{resource_type}")
 def list_analyses(
     resource_type: str,

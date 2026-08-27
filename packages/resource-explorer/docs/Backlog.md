@@ -1353,15 +1353,26 @@ background `daemon=True` thread doing the work. Kill the process, and that line 
 nothing on startup reconciled it, so the row read "running" indefinitely, with no way to tell
 "still going" from "died and nobody noticed."
 
-**Fixed:** `ProjectRegistry.reconcile_orphaned_running_activity()` (`registry.py`) marks every
-`status='running'` row `error` with an explanatory summary ("interrupted... individual step
-results published before the interruption are unaffected"), called once, synchronously, at the
-very start of `web/app.py`'s `_lifespan()` — before the scheduler or anything else starts, so it
-can never race a real survey this same startup kicks off. Not a heuristic or a timeout: in this
-single-process architecture, a daemon thread cannot survive the process restarting, so *any*
-row still `running` when a fresh process's startup code runs is certainly orphaned, not
-probably. The two real stuck rows were fixed by hand the same way before this general fix
-existed. Tests: `tests/test_registry.py::TestReconcileOrphanedRunningActivity`.
+**Fixed independently, twice, same day — the ownership-based version won.** This session's
+first pass added `ProjectRegistry.reconcile_orphaned_running_activity()`: a blanket "every
+`running` row is orphaned on any startup" reconciler. **That was wrong** — multiple RE
+processes routinely share one database during development (confirmed live: this session's
+server and the user's, running concurrently against the same rows), so a blanket sweep on
+*any* process's startup would falsely resolve a peer's genuinely-still-running survey out from
+under it, mid-write.
+
+**What actually shipped** (`4e91ba2`, "Runs that stopped stop claiming to be running"):
+`resource_explorer/run_reconciler.py`, wired into `web/app.py`'s `_lifespan()`. Reconciles by
+**ownership**, not blanket sweep or age — a running row records the pid and process start time
+of whoever owns it, and is resolved only when that exact process is provably gone. Age (six
+hours) is the fallback only for rows with no owner recorded, an order of magnitude past the
+longest measured real survey (~16 minutes). Marks resolved rows `interrupted`, not `error` —
+"we know it stopped, not that it failed." Fails safe throughout: an owner that can't be
+verified is left alone (`left_alone` in the return value), because "I can't tell if this is
+alive" must never resolve to "it's dead" — a real timezone bug in an early version did exactly
+that (silently routed every row to `left_alone` and resolved nothing, for three days, while
+reporting success). The blanket version and its tests were removed during the merge that
+brought this branch and `main` together (2026-08-26) rather than kept alongside the real fix.
 
 ---
 

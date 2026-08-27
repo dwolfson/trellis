@@ -811,46 +811,9 @@ class TestScopeLocatorOnFindingsAndMetrics:
         assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "src")] == ["a"]
         assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "tests")] == ["b"]
 
-
-class TestReconcileOrphanedRunningActivity:
-    """Confirmed live 2026-08-26: a server restart mid-survey left two
-    activity_log rows stuck at 'running' forever — daemon threads don't
-    survive a process restart, so nothing was ever going to mark them
-    terminal. reconcile_orphaned_running_activity() closes that gap; see its
-    own docstring for why every 'running' row is certainly orphaned by the
-    time a fresh process's startup code runs, not just probably."""
-
-    def _log(self, db, status, summary="in flight"):
-        from resource_explorer.activity_logger import log_survey
-        return log_survey(
-            db, entity_type="repo", entity_slug="s", entity_name="s",
-            entity_location="", intent="assessment", status=status, summary=summary,
-        )
-
-    def test_marks_running_rows_as_error(self, db):
-        entry_id = self._log(db, "running")
-        reconciled = db.reconcile_orphaned_running_activity()
-        assert reconciled == [entry_id]
-        row = db.get_activity(entry_id)
-        assert row["status"] == "error"
-
-    def test_leaves_terminal_rows_alone(self, db):
-        ok_id = self._log(db, "ok")
-        db.reconcile_orphaned_running_activity()
-        assert db.get_activity(ok_id)["status"] == "ok"
-
-    def test_summary_explains_it_was_an_interruption_not_a_failure(self, db):
-        entry_id = self._log(db, "running")
-        db.reconcile_orphaned_running_activity()
-        summary = db.get_activity(entry_id)["summary"]
-        assert "interrupted" in summary.lower()
-        assert "restarted" in summary.lower() or "crashed" in summary.lower()
-
-    def test_reconciles_multiple_rows_in_one_pass(self, db):
-        ids = {self._log(db, "running") for _ in range(3)}
-        reconciled = db.reconcile_orphaned_running_activity()
-        assert set(reconciled) == ids
-
-    def test_nothing_to_reconcile_returns_empty(self, db):
-        self._log(db, "ok")
-        assert db.reconcile_orphaned_running_activity() == []
+    # A TestReconcileOrphanedRunningActivity class lived here briefly
+    # (2026-08-26), covering ProjectRegistry.reconcile_orphaned_running_activity()
+    # — removed along with that method in favor of
+    # resource_explorer/run_reconciler.py's ownership-based reconciliation
+    # (see its own tests). See registry.py's note at the old method's former
+    # location for why the blanket version was unsafe.

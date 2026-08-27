@@ -53,6 +53,124 @@ def _map_reader_executor_errors(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _execution_split(steps: list[dict]) -> dict:
+    """How many of this survey's steps run where.
+
+    `publishes_itself` is true only when EVERY step runs natively in Egeria:
+    one resource-explorer step means there are local findings that nobody will
+    publish unless asked. Saying "already published" then would be the exact
+    failure this vocabulary exists to prevent -- a status that reads as an
+    answer while local annotations sit unpublished.
+    """
+    # Classified by WHO OWNS THE ANNOTATIONS, not by where the code runs.
+    #
+    # "prefect" is a dispatch mechanism for Resource Explorer's OWN surveyors
+    # (resource_explorer/prefect/flows.py) — the findings come back here and
+    # still need publishing. Treating it as native was safe only while "egeria"
+    # was the sole alternative to "resource-explorer"; a peer session began
+    # routing repo_arch_coupling through Prefect on 2026-08-26, which is what
+    # exposed it. A survey whose steps were all Prefect-routed would otherwise
+    # report "Publishes itself" and hide the only button that publishes them.
+    local_engines = {None, "", "resource-explorer", "prefect"}
+    native = sum(1 for s in steps if s.get("executes_at") not in local_engines)
+    local = sum(1 for s in steps if s.get("executes_at") in local_engines)
+    return {
+        "steps_native": native,
+        "steps_local": local,
+        "publishes_itself": bool(steps) and local == 0,
+    }
+
+
+def _narrow_by_perspective(candidates: list[dict], wanted: list | None) -> list[dict]:
+    """Post-filter, so a candidate is judged on its OWN perspectives.
+
+    A candidate with none is kept: an errored one has no steps and no scoping
+    to be judged from, and hiding it behind a test it cannot take would make a
+    broken Survey Definition silently disappear -- the opposite of what a
+    filter should do to something that needs attention.
+    """
+    if not wanted:
+        return candidates
+    want = set(wanted)
+    return [
+        c for c in candidates
+        if not (c.get("perspectives") or [])
+        or "all" in (c.get("perspectives") or [])
+        or want & set(c.get("perspectives") or [])
+    ]
+
+
+def _scoped_perspectives(matched_questions: list, question_rows: list[dict]) -> list:
+    """A Survey Definition's perspectives, read off the ScopedBy graph.
+
+    Survey --ScopedBy--> Question --> Perspective. This is the natural
+    association and the one D7 (docs/unified-survey-execution-model-plan.md)
+    already called for: Questions carry both Funnel Stage and Perspectives, so
+    scoping a Survey to the Questions it answers says which lenses it serves
+    without a second, separately-maintained tag.
+
+    Attribution comes from the same get_scoped_elements() calls that FOUND the
+    candidate -- the query already knows which Question matched, it was simply
+    being discarded by the union.
+    """
+    if not matched_questions:
+        return []
+    by_text = {q["question"]: q for q in question_rows}
+    out: list = []
+    for text in matched_questions:
+        for persp in (by_text.get(text, {}).get("perspectives") or []):
+            if persp not in out:
+                out.append(persp)
+    return out
+
+
+def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict:
+    """`analysis_ids` and `perspectives` for a candidate, from its own steps.
+
+    Both are unions over the analysis_catalog entries whose step keys this
+    survey runs. `analysis_ids` is what lets a survey card offer the same
+    Results view its local counterparts have; `perspectives` is what lets one
+    perspective filter apply to both card kinds instead of silently half.
+
+    Order is preserved rather than sorted -- for perspectives it follows step
+    order, which is run order, so the reading matches the survey's own shape.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    step_keys = [s.get("re_analysis_step") for s in steps if s.get("re_analysis_step")]
+    if not step_keys:
+        return {"analysis_ids": [], "perspectives": list(declared or []),
+                "perspectives_source": "scoped" if declared else ""}
+
+    analysis_ids: list[str] = []
+    perspectives: list[str] = []
+    for entry in get_analyses("repo", include_egeria_live=False):
+        owned = entry.get("re_analysis_steps") or []
+        if not owned or not any(k in step_keys for k in owned):
+            continue
+        if entry["id"] not in analysis_ids:
+            analysis_ids.append(entry["id"])
+        for persp in entry.get("perspectives") or []:
+            # "all" is deliberately NOT unioned in. On a single analysis it
+            # means "not specific to any lens"; carried into a survey's union it
+            # means one generic step makes the WHOLE survey match every filter.
+            # A ten-step survey where nine are Security and one is untagged is
+            # still a Security survey. When the union ends up empty the survey
+            # really is unspecific, and an empty list already says so — callers
+            # keep a candidate they cannot judge rather than hiding it.
+            if persp != "all" and persp not in perspectives:
+                perspectives.append(persp)
+    # An author's declaration beats our inference and REPLACES it: a survey
+    # tagged "Security" by its author is a Security survey even if its steps
+    # also serve Steward. Merging the two would quietly re-add what the author
+    # left out, making the declaration unable to narrow anything.
+    if declared:
+        return {"analysis_ids": analysis_ids, "perspectives": list(declared),
+                "perspectives_source": "scoped"}
+    return {"analysis_ids": analysis_ids, "perspectives": perspectives,
+            "perspectives_source": "derived" if perspectives else ""}
+
+
 @router.get("/{entity_type}/{slug}/candidates")
 async def list_candidates(
     entity_type: str, slug: str,
@@ -76,7 +194,13 @@ async def list_candidates(
                     "over the full scan otherwise.",
     ),
     perspectives: list[str] | None = Query(
-        None, description="Further narrow the Question set by perspective, same OR semantics as elsewhere.",
+        None,
+        description="Narrow to Survey Definitions serving any of these perspectives "
+                    "(OR semantics). Applied to each candidate's own perspectives — "
+                    "read off the Survey->ScopedBy->Question->Perspective graph — "
+                    "AFTER discovery, never to the Question set used to discover "
+                    "them: narrowing that first would make every candidate report "
+                    "exactly the perspective asked for.",
     ),
 ) -> dict:
     """List Survey Definitions Egeria has for this resource's Technology Type,
@@ -95,9 +219,14 @@ async def list_candidates(
         # only narrow which cataloged Questions get considered, they aren't
         # required to attempt scoping at all (fixed live, see the phase=
         # param docstring above for the incident this closes).
-        questions = [
-            q["question"] for q in get_questions(resource_type=entity_type, phase=phase, perspectives=perspectives)
-        ]
+        # Deliberately NOT narrowed by `perspectives`: these rows are what a
+        # matched candidate reads its own perspectives from, and filtering them
+        # first would make every survey report exactly the filter that was
+        # applied -- a circular answer that always agrees with the question.
+        # Perspective narrowing of the candidate list happens client-side, over
+        # the perspectives derived here.
+        question_rows = get_questions(resource_type=entity_type, phase=phase)
+        questions = [q["question"] for q in question_rows]
         thin_candidates: list = []
         if questions:
             thin_candidates = reader.find_candidate_process_guids_by_questions(
@@ -205,6 +334,28 @@ async def list_candidates(
                 # it's derived (Survey Definitions have no such field of
                 # their own to read).
                 "run_time": get_survey_definition_speed_tag(steps),
+                # A Survey Definition has no perspectives of its own in Egeria,
+                # so the Survey tab's perspective filter could only ever filter
+                # the local half of the list -- a live-looking control acting on
+                # half the cards. A survey IS its steps, so its perspectives are
+                # the union of what those steps serve. Derived, not invented:
+                # every value traces to an analysis_catalog entry.
+                **_derived_from_steps(
+                    steps,
+                    # The ScopedBy graph is the declaration; the step union is
+                    # an inference used only where no Question scopes this
+                    # survey yet (notably the full-scan fallback, which finds
+                    # candidates without going through Questions at all).
+                    declared=(_scoped_perspectives(c.get("matched_questions") or [], question_rows)
+                              or survey_def.perspectives),
+                ),
+                # Where this survey's steps actually run. An Egeria-native step
+                # writes its annotations into Egeria as it runs -- published by
+                # construction, with nothing local to publish and no "publish
+                # this" to offer. A resource-explorer step produces annotations
+                # here and needs an explicit publish. A survey can be a mix, so
+                # this is a count, not a flag.
+                **_execution_split(steps),
             })
 
         # Composite-survey propagation (2026-08-24 — direct feedback: "if a
@@ -296,7 +447,7 @@ async def list_candidates(
 
         return {
             "technology_type": adapter.technology_type,
-            "candidates": detailed,
+            "candidates": _narrow_by_perspective(detailed, perspectives),
             "egeria_native_processes": native_processes,
         }
 
@@ -407,10 +558,21 @@ async def run_survey_definition_route(entity_type: str, slug: str, body: SurveyD
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
+    # Who owns this run, recorded up front. The work happens in a daemon
+    # thread in THIS process, so if the process dies the thread vanishes with
+    # no chance to write a terminal status — and the row would claim "running"
+    # for ever. Recording the owner lets that be resolved precisely later
+    # rather than guessed at by age; see resource_explorer/run_reconciler.py.
+    import json
+
+    from resource_explorer.run_reconciler import process_identity
+
     activity_id = log_survey(
         registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
         entity_location="", intent="assessment", status="running",
         summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
+        detail=json.dumps({"_runner": process_identity(),
+                           "survey_definition_ref": body.survey_definition_ref}),
     )
 
     t = threading.Thread(

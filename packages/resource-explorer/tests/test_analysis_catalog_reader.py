@@ -85,6 +85,12 @@ class TestFilterByIntent:
         ids = {a["id"] for a in analyses}
         assert ids == {
             "security_scan", "documentation_coverage", "security_features", "ci_quality",
+            # Added 2026-08-26: OpenSSF-Scorecard-shaped checks. Assessment
+            # because it evaluates against criteria, which is this stage's
+            # signature — even though it fetches nothing.
+            "foss_scorecard",
+            # Added 2026-08-26: OSV.dev advisories over recorded dependencies.
+            "cve_scan",
         }
 
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the
@@ -129,7 +135,11 @@ class TestFilterByIntent:
         # discovery tier describes. It is the first analysis here that consumes
         # findings instead of collecting anything.
         assert ids == {"license_classification", "maturity", "repo_conventions",
-                       "repo_classification", "architecture_summary"} \
+                       "repo_classification", "architecture_summary",
+                       # community_support (2026-08-26) reads project_stats and
+                       # fetches nothing — the same consume-what-Scouting-
+                       # collected shape as architecture_summary above.
+                       "community_support"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):
@@ -154,15 +164,28 @@ class TestFilterByIntent:
 
 class TestFilterByPerspective:
     def test_filters_to_security(self):
-        analyses = acr.get_analyses("database", perspective="security", include_egeria_live=False)
+        # Egeria's vocabulary since the unification -- "Security", not "security".
+        analyses = acr.get_analyses("database", perspective="Security", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
         assert "privilege_audit" in ids
 
     def test_perspective_excludes_entries_not_tagged_for_it(self):
-        analyses = acr.get_analyses("database", perspective="data_scientist", include_egeria_live=False)
+        analyses = acr.get_analyses("database", perspective="Data Expert", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
-        assert "privilege_audit" not in ids  # tagged 'security'/'dba', no 'all'
+        assert "privilege_audit" not in ids  # tagged 'Security'/'Admin', no 'all'
         assert "schema_inventory" in ids  # tagged 'all'
+
+    def test_the_retired_vocabulary_matches_nothing(self):
+        """The old four were renamed, not aliased.
+
+        Leaving them working would let both vocabularies stay in use, which is
+        the state the unification existed to end -- and a caller passing the old
+        value would get a silently empty result rather than a visible break.
+        """
+        for retired in ("security", "dba", "steward", "data_scientist"):
+            got = acr.get_analyses("database", perspective=retired, include_egeria_live=False)
+            # Only entries tagged "all" survive, never one tagged for that lens.
+            assert all("all" in a["perspectives"] for a in got), retired
 
     def test_all_perspective_entries_included_regardless(self):
         analyses = acr.get_analyses("repo", perspective="security", include_egeria_live=False)
@@ -179,10 +202,30 @@ class TestListPerspectives:
     def test_returns_distinct_real_perspectives(self):
         perspectives = acr.list_perspectives()
         assert "all" not in perspectives
-        assert "dba" in perspectives
-        assert "security" in perspectives
-        assert "steward" in perspectives
-        assert "data_scientist" in perspectives
+        # One vocabulary now: Egeria's, from foundations.md.
+        assert "Admin" in perspectives
+        assert "Security" in perspectives
+        assert "Steward" in perspectives
+        assert "Data Expert" in perspectives
+
+    def test_every_tag_belongs_to_the_egeria_vocabulary(self):
+        """The guard against re-divergence.
+
+        RE previously carried its own four perspectives, so the same word meant
+        different things on the Analyses row and the Questions checklist, and
+        Egeria's other eight had no local meaning at all. Any new tag has to be
+        a real Perspective or this fails.
+        """
+        assert set(acr.list_perspectives()) <= set(acr.EGERIA_PERSPECTIVES)
+
+    def test_the_vocabulary_matches_what_is_authored_in_egeria(self):
+        """EGERIA_PERSPECTIVES is a copy, so it can go stale against its source."""
+        import re as _re
+        from pathlib import Path as _P
+
+        doc = _P(__file__).resolve().parents[1] / "docs" / "dr-egeria" / "foundations" / "foundations.md"
+        authored = set(_re.findall(r"^Perspective::(.+)$", doc.read_text(), _re.M))
+        assert authored == set(acr.EGERIA_PERSPECTIVES)
 
     def test_sorted(self):
         perspectives = acr.list_perspectives()

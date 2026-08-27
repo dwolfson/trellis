@@ -12,7 +12,8 @@
 RE_WEB_URL := http://localhost:8810
 EA_WEB_URL := http://localhost:8880
 
-.PHONY: help sync re re-web ea ea-web dev test test-re test-ea lint fmt prefect-up prefect-down
+.PHONY: help sync re re-web ea ea-web dev test test-re test-ea lint fmt \
+        prefect-up prefect-down re-resync re-resync-apply re-sweep
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## /{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -47,6 +48,22 @@ test-re: ## Run resource-explorer's test suite
 
 test-ea: ## Run egeria-advisor's test suite
 	uv run --package egeria-advisor --extra dev pytest packages/egeria-advisor/tests
+
+# Maintenance scripts. These exist as targets because running them from the
+# wrong checkout is a real hazard, not a hypothetical one: this workspace has
+# four clones of the repo on different branches sharing ONE database, and a
+# sweep run from a stale one on 2026-08-26 cleared 23 asset GUIDs while leaving
+# 97 publish claims behind — the older script simply did not know about them.
+# `uv run --package` resolves from the workspace root, so these always run the
+# code that belongs with the tree you invoke them from.
+
+re-resync: ## Report drift between RE and Egeria (read-only)
+	uv run --package resource-explorer python packages/resource-explorer/scripts/sweep_stale_egeria_guids.py
+
+re-resync-apply: ## Clear the drift re-resync reports — writes
+	uv run --package resource-explorer python packages/resource-explorer/scripts/sweep_stale_egeria_guids.py --apply
+
+re-sweep: re-resync ## Alias for re-resync
 
 lint: ## ruff check both packages
 	uv run --package resource-explorer ruff check packages/resource-explorer/resource_explorer

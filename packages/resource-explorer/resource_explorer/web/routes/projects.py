@@ -683,6 +683,22 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     )
 
 
+def _sole_producer(annotation_type: str) -> str:
+    """The one analysis_id that can produce this annotation type, or "".
+
+    Shared types resolve to "" rather than to a winner: crediting one analysis
+    with a publish that any of thirteen could have produced makes that card
+    state a fact it cannot know.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    owners = [
+        a["id"] for a in get_analyses("repo", include_egeria_live=False)
+        if annotation_type in (a.get("annotation_types") or [])
+    ]
+    return owners[0] if len(owners) == 1 else ""
+
+
 @router.get("/{slug}/analyses/last-activity")
 async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
     """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
@@ -710,19 +726,48 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
     last_run = registry.get_analysis_last_run("repo", slug)
+    # Surveys that ran but carry no step detail (older rows). Their analyses
+    # cannot be credited, but they also cannot honestly be called never-run.
+    unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
     published_by_type = registry.get_last_published_annotation_types(slug)
 
     result: dict[str, dict] = {}
     for a in get_analyses("repo", include_egeria_live=False):
         run = last_run.get(a["id"], {})
-        pub_at = max(
-            (published_by_type[t] for t in (a.get("annotation_types") or []) if t in published_by_type),
-            default="",
-        )
+        # Publish attribution, in two tiers. Annotation types are shared --
+        # ResourceMeasureAnnotation has 15 producers, ClassificationAnnotation
+        # 13 -- so "any of my annotation types was published" credited every
+        # sibling analysis with a publish it had no part in. That is what put
+        # "Published today" on cards that had never run.
+        #
+        # A type only ONE analysis can produce is real evidence THIS analysis
+        # was published. A shared one only shows the repo was published while
+        # this analysis's types were involved, which is weaker and is labelled
+        # as such -- the same 'analysis' vs 'repo' distinction the Survey
+        # Definition cards already draw.
+        own_types = a.get("annotation_types") or []
+        exact = [t for t in own_types if t in published_by_type and _sole_producer(t) == a["id"]]
+        shared = [t for t in own_types if t in published_by_type]
+        if exact:
+            pub_at, pub_scope = max(published_by_type[t] for t in exact), "analysis"
+        elif shared:
+            pub_at, pub_scope = max(published_by_type[t] for t in shared), "repo"
+        else:
+            pub_at, pub_scope = "", ""
         result[a["id"]] = {
             "last_run_at": run.get("last_run_at", ""),
             "last_run_status": run.get("last_run_status", ""),
+            # "measured" / "never_run" / "not_established" -- the third is a
+            # repo that WAS surveyed by runs we cannot attribute to analyses.
+            # Calling that "never run" beside an attributable publish is what
+            # produced "Never run" and "Published today" on one card.
+            "last_run_basis": ("measured" if run.get("last_run_at")
+                               else "not_established" if unattributed else "never_run"),
+            "unattributed_surveys": unattributed,
+            "last_run_via": run.get("last_run_via", ""),
+            "last_run_partial": run.get("last_run_partial", False),
             "last_published_at": pub_at,
+            "last_published_scope": pub_scope,
         }
     return result
 

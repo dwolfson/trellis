@@ -1,0 +1,163 @@
+{
+ "counts": {
+  "projects": 60,
+  "with_asset_guid": 23,
+  "published_annotation_types": 97,
+  "investigations_linked": 2,
+  "working_sets_linked": 5
+ },
+ "bootstrap": {
+  "foundations": {
+   "display_name": "Foundations \u2014 glossaries, funnel stages, perspectives",
+   "present": true,
+   "reachable": true,
+   "last_checked_at": "2026-08-26T16:17:09+00:00",
+   "last_verified_at": "2026-08-26T16:17:09+00:00",
+   "last_check_error": "",
+   "last_healed_at": "",
+   "last_heal_result": "",
+   "consecutive_failures": 0,
+   "idempotent": true,
+   "file_count": 1
+  },
+  "questions": {
+   "display_name": "Resource questions (scouting stage)",
+   "present": true,
+   "reachable": true,
+   "last_checked_at": "2026-08-26T16:17:09+00:00",
+   "last_verified_at": "2026-08-26T16:17:09+00:00",
+   "last_check_error": "",
+   "last_healed_at": "",
+   "last_heal_result": "",
+   "consecutive_failures": 0,
+   "idempotent": true,
+   "file_count": 1
+  },
+  "survey-definitions": {
+   "display_name": "Repo Survey Definitions",
+   "present": true,
+   "reachable": true,
+   "last_checked_at": "2026-08-26T16:17:10+00:00",
+   "last_verified_at": "2026-08-26T16:17:10+00:00",
+   "last_check_error": "",
+   "last_healed_at": "",
+   "last_heal_result": "",
+   "consecutive_failures": 0,
+   "idempotent": false,
+   "file_count": 8
+  },
+  "governance-metrics": {
+   "display_name": "Resource Explorer governance metrics",
+   "present": true,
+   "reachable": true,
+   "last_checked_at": "2026-08-26T16:17:10+00:00",
+   "last_verified_at": "2026-08-26T16:17:10+00:00",
+   "last_check_error": "",
+   "last_healed_at": "",
+   "last_heal_result": "",
+   "consecutive_failures": 0,
+   "idempotent": true,
+   "file_count": 1
+  }
+ },
+ "perspectives": [
+  "Admin",
+  "App/AI Builder",
+  "Architecture",
+  "Community",
+  "Consumer",
+  "Data Expert",
+  "Data Owner",
+  "Financial",
+  "Governance",
+  "Privacy",
+  "Security",
+  "Steward"
+ ],
+ "survey_definitions": {
+  "GovActionProcess::RepoScoutingSurvey": {
+   "steps": 9,
+   "perspectives_source": "scoped",
+   "perspectives": [
+    "Steward",
+    "Consumer",
+    "Data Expert",
+    "Data Owner",
+    "Security",
+    "Community"
+   ]
+  },
+  "GovActionProcess::RepoCoarseScout": {
+   "steps": 3,
+   "perspectives_source": "scoped",
+   "perspectives": [
+    "Steward",
+    "Consumer",
+    "Data Expert",
+    "Data Owner",
+    "Security",
+    "Community"
+   ]
+  },
+  "GovActionProcess::RepoCoarseProfile": {
+   "steps": 7,
+   "perspectives_source": "scoped",
+   "perspectives": [
+    "Steward",
+    "Consumer",
+    "Data Expert",
+    "Architecture"
+   ]
+  },
+  "GovActionProcess::RepoArchitectureDiscovery": {
+   "steps": 4,
+   "perspectives_source": "derived",
+   "perspectives": [
+    "Architecture",
+    "App/AI Builder",
+    "Consumer"
+   ]
+  },
+  "GovActionProcess::RepoDiscoverySurvey": {
+   "steps": 4,
+   "perspectives_source": "derived",
+   "perspectives": [
+    "Steward",
+    "Data Expert",
+    "Security"
+   ]
+  },
+  "GovActionProcess::RepoAssessmentSurvey": {
+   "steps": 6,
+   "perspectives_source": "derived",
+   "perspectives": [
+    "Security",
+    "Steward"
+   ]
+  },
+  "GovActionProcess::RepoAnalysisSurvey": {
+   "steps": 10,
+   "perspectives_source": "scoped",
+   "perspectives": [
+    "Consumer",
+    "Data Expert",
+    "Security",
+    "Admin"
+   ]
+  },
+  "GovActionProcess::RepoFullSurvey": {
+   "steps": 28,
+   "perspectives_source": "derived",
+   "perspectives": [
+    "Data Expert",
+    "Architecture",
+    "Community",
+    "Consumer",
+    "Steward",
+    "Security",
+    "App/AI Builder",
+    "Admin"
+   ]
+  }
+ }
+}

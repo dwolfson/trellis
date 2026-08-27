@@ -86,7 +86,7 @@ repo_analyses:
     description: "Identify programming languages, file types, and project structure. Produces file-type counts and language breakdown."
     resource_types: ["repo"]
     intent: scouting
-    perspectives: ["all"]
+    perspectives: ["Data Expert", "Architecture", "all"]
     annotation_types: ["ResourceMeasureAnnotation", "ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -102,7 +102,7 @@ repo_analyses:
     description: "Stars, forks, contributors, open issues, and activity metrics from GitHub. Produces a quality score annotation."
     resource_types: ["repo"]
     intent: scouting
-    perspectives: ["all"]
+    perspectives: ["Community", "Consumer", "Steward"]
     annotation_types: ["QualityScoreAnnotation"]
     source: local
     run_time: fast
@@ -118,7 +118,7 @@ repo_analyses:
     description: "Scan package manifests (pyproject.toml, package.json, pom.xml, etc.) for dependencies by ecosystem."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural/quantitative, not a scored evaluation
-    perspectives: ["all", "security"]
+    perspectives: ["all", "Security"]
     annotation_types: ["DataClassAnnotation"]
     source: local
     run_time: fast
@@ -134,7 +134,7 @@ repo_analyses:
     description: "Detect hardcoded secrets, insecure patterns, and missing security artifacts (SECURITY.md, signed commits)."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — unchanged
-    perspectives: ["security", "steward"]
+    perspectives: ["Security", "Steward"]
     annotation_types: ["RequestForActionAnnotation"]
     source: local
     run_time: fast
@@ -150,7 +150,7 @@ repo_analyses:
     description: "Assess README completeness, CHANGELOG, API docs, and inline comment coverage."
     resource_types: ["repo"]
     intent: assessment  # scores completeness against a checklist — unchanged
-    perspectives: ["steward", "all"]
+    perspectives: ["Steward", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -168,8 +168,8 @@ repo_analyses:
       - repo
     intent: discovery
     perspectives:
-      - steward
-      - data_scientist
+      - Steward
+      - Data Expert
       - all
     annotation_types:
       - ClassificationAnnotation
@@ -187,7 +187,7 @@ repo_analyses:
     description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."
     resource_types: ["repo"]
     intent: discovery  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
-    perspectives: ["steward", "security", "all"]
+    perspectives: ["Steward", "Security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -198,12 +198,45 @@ repo_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: community_support
+    name: Community Support
+    description: "Is this supported by a community, or merely popular? Reports attention, participation and channels as SEPARATE dimensions and names the weakest, rather than averaging them. repository_health's community_score is dominated by stars and forks — measured on the real catalog, it scores docling_graph 100/100 with four contributors, and 22 of 59 repos have six or fewer. Responsiveness is reported as not established: issue and pull-request response times are not collected, and an open-issue count says nothing about whether anyone replies."
+    resource_types: ["repo"]
+    intent: discovery
+    perspectives: ["Community", "Consumer", "Steward", "Governance"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    target_shape: whole_resource_only
+
+  - id: cve_scan
+    name: Dependency Advisories (CVEs)
+    description: "Queries OSV.dev for advisories against the dependencies the manifest parser already recorded. Reports coverage as prominently as the count: DECLARED dependencies only (transitive ones are invisible), and only those with a pinned, parseable version — a range like ^0.41.7 cannot be queried, and sending it anyway makes OSV return every advisory for the package regardless of version. A clean result means 'none of what we could check had an advisory', never 'this repo has no vulnerable dependencies'."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Admin"]
+    annotation_types: ["RequestForActionAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    run_time: minutes
+    target_shape: whole_resource_only
+
+  - id: foss_scorecard
+    name: FOSS Scorecard
+    description: "OpenSSF-Scorecard-shaped checks computed from data already collected — maintenance, licence, CI tests, releases, contributors, SAST settings. A check that cannot be evaluated reports unknown and is EXCLUDED from the score, rather than scored zero as OpenSSF's own tool does, and the coverage is reported alongside the number: 8.0 over five checks and 8.0 over twelve are different claims. Not comparable with a published OpenSSF score, by design."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Governance", "Consumer"]
+    annotation_types: ["QualityScoreAnnotation"]
+    source: local
+    run_time: fast
+    target_shape: whole_resource_only
+
   - id: security_features
     name: "Security Features"
     description: "GitHub's native security feature toggles (Dependabot, secret scanning, advanced security) — configuration state, not artifact presence."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — same family as security_scan
-    perspectives: ["security", "steward"]
+    perspectives: ["Security", "Steward"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -219,7 +252,7 @@ repo_analyses:
     description: "Whether CI workflows actually run tests/lint/build (keyword scan of workflow content), not just whether a CI config file exists."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — same family as security_scan
-    perspectives: ["steward", "security", "all"]
+    perspectives: ["Steward", "Security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -235,7 +268,7 @@ repo_analyses:
     description: "Project age/lifecycle stage (nascent/emerging/established/mature) from repo creation date — a CHAOSS-informed early-headlights signal, distinct from Repository Health's activity/community/release scoring."
     resource_types: ["repo"]
     intent: discovery  # retagged from 'assessment' 2026-08-20 — see CLAUDE.md rule 17.
-    perspectives: ["steward", "all"]
+    perspectives: ["Steward", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -251,7 +284,7 @@ repo_analyses:
     description: "Discovery-tier repo conventions: security policy content, build automation, deployment/Docker evidence, catalog self-description (Backstage-style catalog-info.yaml), documentation breadth."
     resource_types: ["repo"]
     intent: discovery  # retagged from 'assessment' 2026-08-20 — see CLAUDE.md rule 17.
-    perspectives: ["steward", "security", "all"]
+    perspectives: ["Steward", "Security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -267,7 +300,7 @@ repo_analyses:
     description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural profiling, baseline for change-detection
-    perspectives: ["data_scientist", "steward"]
+    perspectives: ["Data Expert", "Steward"]
     annotation_types: ["SchemaAnalysisAnnotation", "DataClassAnnotation"]
     source: local
     run_time: minutes
@@ -290,7 +323,7 @@ repo_analyses:
     # the strength of data_file_profiling alone and this analysis was invisible
     # to stage routing.
     intent: analysis
-    perspectives: ["steward", "data_scientist", "all"]
+    perspectives: ["Steward", "Data Expert", "all"]
     annotation_types: ["ClassificationAnnotation", "ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -303,7 +336,7 @@ repo_analyses:
     description: "Extract public functions, classes, and API endpoints from Python, JavaScript, and OpenAPI source."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural extraction, not evaluative
-    perspectives: ["data_scientist", "all"]
+    perspectives: ["Data Expert", "all"]
     annotation_types: ["SchemaAnalysisAnnotation"]
     source: local
     run_time: fast
@@ -319,7 +352,7 @@ repo_analyses:
     description: "Extract class/function/method symbols (tree-sitter/AST) for every supported language and refresh the code-symbol index — the self-contained refresh 'API & Symbol Extraction' and any future consumer read from. Independently runnable/schedulable so symbols stay current even for repos that skip RAG ingestion."
     resource_types: ["repo"]
     intent: analysis
-    perspectives: ["data_scientist", "all"]
+    perspectives: ["Data Expert", "all"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -335,7 +368,7 @@ repo_analyses:
     description: "Parse dependency manifests, CI workflow content, and repo-convention signals from a fresh zipball, refreshing dependency, CI-quality, and repo-convention data — the self-contained refresh 'Dependency Analysis', 'CI Quality' and 'Repo Conventions' read from. Independently runnable/schedulable so these tables stay current even for repos that skip full ingestion (the org-import/discovery path always does)."
     resource_types: ["repo"]
     intent: analysis
-    perspectives: ["data_scientist", "steward", "all"]
+    perspectives: ["Data Expert", "Steward", "all"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -361,7 +394,7 @@ repo_analyses:
     # by construction. Recorded rather than quietly reconciled — the
     # maintainer's call was explicit and is not this comment's to override.
     intent: discovery
-    perspectives: ["all"]
+    perspectives: ["Architecture", "App/AI Builder"]
     annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
     run_time: fast
@@ -383,7 +416,7 @@ repo_analyses:
     # where the tier's description stops being a rule and becomes a slogan, and
     # somebody should decide which it is.
     intent: discovery
-    perspectives: ["all"]
+    perspectives: ["Architecture", "Consumer"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
@@ -404,7 +437,7 @@ repo_analyses:
     # discovery tier where the recovery steps it consumes do not, and it can be
     # recomputed whenever those findings change without re-downloading anything.
     intent: discovery
-    perspectives: ["all"]
+    perspectives: ["Architecture", "Consumer"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -420,7 +453,7 @@ repo_analyses:
     description: "Download the repo's zipball once and refresh file inventory and data-file profiles (optionally also code symbols) — decoupled from pgvector re-ingestion. Backs Scouting's Coarse Profile tab."
     resource_types: ["repo"]
     intent: scouting
-    perspectives: ["all"]
+    perspectives: ["Admin", "Data Expert"]
     annotation_types: []
     source: local
     run_time: minutes
@@ -436,7 +469,7 @@ repo_analyses:
     description: "Pull the latest commits and re-embed changed content into pgvector (incremental, commit-diff based). Keeps chat/RAG answers current with the repo."
     resource_types: ["repo"]
     intent: analysis
-    perspectives: ["all"]
+    perspectives: ["App/AI Builder", "Admin"]
     annotation_types: []
     source: local
     run_time: minutes
@@ -452,7 +485,7 @@ repo_analyses:
     description: "Embed the project's documentation site into pgvector so Chat and Understanding can answer from what the project says about itself, not only from its source tree. Collapses versioned docs to the current release. Skips when the repo builds that site itself — the source is already ingested in a better form."
     resource_types: ["repo"]
     intent: analysis
-    perspectives: ["all"]
+    perspectives: ["App/AI Builder", "Consumer", "Community"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: minutes
@@ -468,7 +501,7 @@ repo_analyses:
     description: "Register the repository in Egeria and publish all survey annotations as a SurveyReport asset. Requires Egeria connection."
     resource_types: ["repo"]
     intent: curate  # was 'assessment' — action:"publish" is an explicit catalog-of-record write
-    perspectives: ["steward", "all"]
+    perspectives: ["Steward", "all"]
     annotation_types: ["SurveyReport"]
     source: egeria
     run_time: minutes
@@ -485,7 +518,7 @@ database_analyses:
     description: "List all schemas, tables, columns with types, constraints, primary keys, foreign keys, and comments."
     resource_types: ["database"]
     intent: scouting
-    perspectives: ["all", "dba"]
+    perspectives: ["all", "Admin"]
     annotation_types: ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -501,7 +534,7 @@ database_analyses:
     description: "Count rows in all tables using pg_stat_user_tables. Records a time-series data point for trend analysis."
     resource_types: ["database"]
     intent: scouting
-    perspectives: ["all", "dba"]
+    perspectives: ["all", "Admin"]
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
@@ -517,7 +550,7 @@ database_analyses:
     description: "Review database roles, grants, and superuser accounts for security hygiene."
     resource_types: ["database"]
     intent: assessment  # scores grant/role hygiene — unchanged
-    perspectives: ["security", "dba"]
+    perspectives: ["Security", "Admin"]
     annotation_types: ["DataClassAnnotation", "RequestForActionAnnotation"]
     source: local
     run_time: fast
@@ -533,7 +566,7 @@ database_analyses:
     description: "Trigger Egeria's native PostgreSQL survey for deep annotation of schema, data quality, and lineage. Runs asynchronously."
     resource_types: ["database"]
     intent: curate  # was 'assessment' — action:"publish" is an explicit catalog-of-record write
-    perspectives: ["all", "dba"]
+    perspectives: ["all", "Admin"]
     annotation_types: ["SchemaAnalysisAnnotation", "ClassificationAnnotation", "RequestForActionAnnotation"]
     source: egeria
     run_time: async
@@ -550,7 +583,7 @@ filesystem_analyses:
     description: "Walks the filesystem, collects file sizes, formats, timestamps, and classifications. Profiles tabular data file schemas."
     resource_types: ["filesystem"]
     intent: scouting
-    perspectives: ["all", "steward"]
+    perspectives: ["all", "Steward"]
     annotation_types:
       - ResourceMeasureAnnotation
       - ClassificationAnnotation

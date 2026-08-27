@@ -109,3 +109,73 @@ def test_stage_survey_lists_are_scoped_by_both_filters():
         "cross-stage surveys (Full Survey) belong to no single stage and are "
         "fetched separately; without this they vanish from every stage's tab"
     )
+
+
+def test_folder_selection_uses_the_same_visibility_as_the_rendered_list():
+    """A folder checkbox must select exactly the rows the sidebar is showing.
+
+    The bug this guards against is a folder that selects resources the user
+    cannot see -- filtered out, or hidden by disposition. Both the renderer and
+    the group toggle have to read from one shared definition of "visible", so
+    a later change to either filter cannot move them apart.
+    """
+    html = INDEX.read_text()
+    assert "function _visibleProjects()" in html
+    # The group toggle derives its members from the shared helper, never by
+    # re-filtering _allProjectSummaries itself.
+    toggle = html.split("function _toggleGroupSelected(")[1].split("\n}")[0]
+    assert "_visibleProjects()" in toggle
+    assert "_allProjectSummaries" not in toggle
+
+
+def test_partly_selected_folder_is_indeterminate_not_unchecked():
+    """Showing a partial selection as unchecked would invite a click that
+    silently DESELECTS the members already chosen -- the tri-state is what
+    makes the control's next click predictable."""
+    html = INDEX.read_text()
+    assert "box.indeterminate = selectedHere > 0 && selectedHere < memberSlugs.length" in html
+    toggle = html.split("function _toggleGroupSelected(")[1].split("\n}")[0]
+    # Only a fully-selected folder clears; any gap means "select the rest".
+    assert "const allSelected = members.every(" in toggle
+
+
+def test_scope_filter_is_not_called_working_set():
+    """`WorkingSet` is now the Egeria type for ONE disposition's Collection.
+
+    The sidebar filter shows the Folio -- everything in scope, across every
+    disposition -- so calling it "Working set" pointed a user-facing label at a
+    different thing than the type of the same name.
+    """
+    html = INDEX.read_text()
+    assert ">🎯 In scope<" in html
+    assert ">🎯 Working set<" not in html
+    # The two other user-visible uses of the phrase named different concepts
+    # again (the investigation's scope, and a personal hide toggle).
+    for stale in ("Add to the current investigation's working set",
+                  "Hide from my working set",
+                  "None of those are in the working set"):
+        assert stale not in html, f"user-facing label still says: {stale}"
+
+
+def test_every_disposition_is_offered_not_just_the_populated_ones():
+    """The API returns only dispositions that HAVE members ({} when none), so
+    deriving the chips from it taught the user nothing until after they had
+    already used the feature -- and made "nothing judged yet" render identically
+    to "this app has no such thing as disposition"."""
+    html = INDEX.read_text()
+    assert "const _DISPOSITION_ORDER = [" in html
+    for d in ("tracking", "investigating", "recommended", "using", "abandoned", "ignored"):
+        assert f"'{d}'" in html.split("const _DISPOSITION_ORDER = [")[1].split("]")[0]
+    # Empty lanes render, but cannot be clicked into an unavoidably empty list.
+    assert "${count ? `onclick=" in html and "'disabled'" in html
+    # Mid-load must not render six zeroes as if measured.
+    assert "!_dispositionsLoaded" in html
+
+
+def test_unjudged_is_computed_not_stored():
+    """`undecided` is deliberately NOT a WorkingSet -- a Collection for "nobody
+    judged this" would make unjudged and judged-as-undecided indistinguishable.
+    So the triage lane must be scope minus every disposition set."""
+    html = INDEX.read_text()
+    fn = html.split("function _unjudgedKeys()")[1].split("\n}")[0]
+    assert "_workingSetKeys" in fn and "_dispositionMembers" in fn

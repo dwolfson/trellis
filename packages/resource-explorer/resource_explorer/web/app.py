@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -14,22 +15,38 @@ from resource_explorer.scheduler import start_scheduler
 from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
+log = logging.getLogger(__name__)
+
+
+def _reconcile_orphaned_runs() -> None:
+    try:
+        from resource_explorer.run_reconciler import reconcile
+
+        result = reconcile()
+        if result["resolved"]:
+            log.info("reconciled %s orphaned run(s) at startup; %s left alone",
+                     result["resolved"], result["left_alone"])
+    except Exception as exc:
+        # Startup must not fail because bookkeeping did.
+        log.warning("orphaned-run reconciliation skipped: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # Any activity_log row still 'running' cannot have a live thread behind
-    # it in a freshly-started process — daemon threads don't survive a
-    # restart. Confirmed live 2026-08-26: a restart mid-survey left two rows
-    # stuck at 'running' forever, with nothing to notice or fix them. Runs
-    # synchronously, before anything else, so it never races a real survey
-    # this same startup kicks off later.
-    from resource_explorer.registry import ProjectRegistry
-    reconciled = ProjectRegistry().reconcile_orphaned_running_activity()
-    if reconciled:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Reconciled %d orphaned 'running' activity_log row(s) on startup: %s",
-            len(reconciled), reconciled,
-        )
+    # A Survey Definition run lives in a daemon thread in THIS process, so a
+    # restart kills it with no chance to write a terminal status and its
+    # activity row claims "running" for ever. Anything left running by a
+    # process that is provably gone is resolved here, at the one moment we can
+    # be certain those threads are not coming back. Never raises and never
+    # blocks: it fails safe, leaving alone anything it cannot judge.
+    #
+    # Supersedes an earlier, less careful version of this same idea
+    # (ProjectRegistry.reconcile_orphaned_running_activity(), briefly on this
+    # branch) that treated every 'running' row as orphaned on any startup —
+    # wrong given multiple RE processes routinely share one database; it
+    # would have falsely killed a peer's still-live run. Removed in favor of
+    # this ownership-based (pid + process-start-time) version.
+    _reconcile_orphaned_runs()
     start_scheduler()
     # Detect + repair Dr.Egeria definitions wiped by an Egeria reset. Runs one
     # check immediately (covers a restart alongside the reset) then periodically
