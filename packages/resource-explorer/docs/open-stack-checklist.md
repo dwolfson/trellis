@@ -68,12 +68,51 @@ direct path. Also fixed en route: the Prefect tests were not hermetic — they h
 configured `PREFECT_API_URL` from `.env`, so they passed in one checkout and failed in another on
 ambient environment alone. Shared `ephemeral_prefect` fixture in `tests/conftest.py`.
 
-## 3. RE as an engine host — unblocked, not started
+## 3. RE as an engine host — BLOCKED, and a design already exists
 
-Server arbitration confirmed (`OMAG-GENERIC-HANDLERS-403-003`, first-claim-wins),
-client methods available since the pyegeria 6.1.5 upgrade, and the refusal
-arrives as a typed `PyegeriaUnauthorizedException`. Nothing external is gating
-this any more.
+**Correction 2026-08-27.** This section previously said "unblocked, not
+started". That was wrong on both halves.
+
+**A complete design already exists:** `docs/re-as-engine-host-plan.md`
+(2026-08-17), grounded in a direct read of Egeria's Java source — the four
+execution permutations, the reachability dimension, and case 2 ("RE as a
+claiming engine") as the real investment. It is marked **ON HOLD**. Anything
+starting here should begin by reading it, not by re-deriving it.
+
+**Two hard gaps, confirmed by reading pyegeria 6.1.5 and by probing the live
+platform:**
+
+1. **Nothing can create a `GovernanceEngine` or `GovernanceService` element.**
+   pyegeria has no create method and no properties class for either — only
+   link/update/detach for the `SupportedGovernanceService` *relationship*,
+   which presupposes both elements exist. This is **server-side**:
+   `GovernanceConfigurationResource` is read-only, and Egeria itself populates
+   engines and services through content-pack archive writers. Not a wrapping
+   gap; an Egeria change or archive-based registration is required.
+2. **No way to list claimable work.** The Java route
+   `GET /governance-engines/{guid}/active-engine-actions` has no pyegeria
+   wrapper (zero matches for the route string). `get_active_claimed_engine_actions`
+   hits `.../active-claimed` and is caller-scoped — confirmed live, and
+   confirmed by its own docstring: "claimed by this caller's userId ... used
+   when the caller restarts". Restart recovery, not discovery. This one *is*
+   only a wrapper gap; the route exists.
+
+**The blocker the plan cites is not in any live tracker.** It cites
+`ISSUE-51` for a template-created-asset bug where native surveys fail with
+"connector is null". `PYEGERIA_ISSUES.md` was renumbered on 2026-08-15 and its
+ISSUE-51 is now an unrelated, fixed `fetch_element()` issue. Searching the
+canonical tracker for the blocker's own content — "connector is null",
+`create_*_element_from_template` — returns nothing. The nearest match is `E1`
+in RE's superseded local tracker, which is a *different* failure (a Postgres
+repository connector 500 on classification save).
+
+So a blocker that halted a workstream survives only as prose in a design doc,
+under a number that now means something else. Before any build here:
+
+- [ ] Re-verify whether the template/Connection failure still reproduces
+- [ ] Re-file it in the canonical tracker with its own content, not a number
+- [ ] Decide the registration route given gap 1 is server-side
+- [ ] File the missing `active-engine-actions` wrapper (gap 2)
 
 - [ ] Register RE's steps as request types via `link_supported_governance_service`
 - [ ] Implement find → claim → execute → report
