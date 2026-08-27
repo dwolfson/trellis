@@ -121,13 +121,31 @@ platform:**
    `GovernanceConfigurationResource` is read-only, and Egeria itself populates
    engines and services through content-pack archive writers. Not a wrapping
    gap; an Egeria change or archive-based registration is required.
-2. **No way to list claimable work.** The Java route
-   `GET /governance-engines/{guid}/active-engine-actions` has no pyegeria
-   wrapper (zero matches for the route string). `get_active_claimed_engine_actions`
-   hits `.../active-claimed` and is caller-scoped — confirmed live, and
-   confirmed by its own docstring: "claimed by this caller's userId ... used
-   when the caller restarts". Restart recovery, not discovery. This one *is*
-   only a wrapper gap; the route exists.
+2. **No way to list claimable work — and it is NOT a wrapper gap.**
+   *Corrected 2026-08-27 after `egeria-python-07` checked the Java source and
+   pushed back.* I had recorded this as "only a wrapper gap; the route exists",
+   taking `re-as-engine-host-plan.md` at its word that
+   `.../active-engine-actions` was "the per-engine claimable-actions listing,
+   distinct from the requester-side general listing". It is not distinct.
+
+   Verified in `egeria-v6/egeria`: that route is declared in
+   `GovernanceContextResource.java:89` and its handler is literally named
+   **`getActiveClaimedEngineActions`**, with the Javadoc "engine actions that
+   are still in process and that have been **claimed by this caller's userId**.
+   This call is used when the caller restarts." It is the same restart-recovery
+   operation as `.../engine-actions/active-claimed`, under a misleading URL.
+   Live, it 404s on the View Service, which registers only `initiate` and
+   `active-claimed` under `governance-engines/{guid}`.
+
+   Enumerating **every** per-engine route in Egeria gives four: two config
+   reads, the attach, and those two restart-recovery listings. **There is no
+   claimable/unclaimed listing anywhere.** So this is a server-side gap — a
+   missing Java endpoint — not a missing Python wrapper.
+
+   The workable approach is the one live probing had already pointed at before
+   the brief contradicted it: whole-server `get_active_engine_actions()`,
+   filtered client-side by `governanceEngineGUID` and unclaimed status. Costs a
+   wider fetch; correctness still rests on `claim` refusing a second claimant.
 
 **The blocker the plan cites is not in any live tracker.** It cites
 `ISSUE-51` for a template-created-asset bug where native surveys fail with
@@ -144,7 +162,17 @@ under a number that now means something else. Before any build here:
 - [ ] Re-verify whether the template/Connection failure still reproduces
 - [ ] Re-file it in the canonical tracker with its own content, not a number
 - [ ] Decide the registration route given gap 1 is server-side
-- [ ] File the missing `active-engine-actions` wrapper (gap 2)
+- [x] ~~File the missing `active-engine-actions` wrapper~~ — there is nothing
+      to wrap. Raise the missing *endpoint* with whoever owns the Java side, or
+      accept whole-server-plus-client-side-filter.
+- [x] **The blocker is real and current** — `egeria-python-07` reproduced it
+      2026-08-27 and filed it as ISSUE-79 (odpi/egeria-python PR #314). A
+      template-created FileFolder survives creation now (E1's 500 no longer
+      reproduces) but its native survey fails server-side with a
+      `NullPointerException` in `BasicFolderConnector.getFile()` because
+      `assetConnector` is null. Two distinct bugs, as suspected — the design
+      doc had conflated them. **So the ON HOLD stands, now for a documented,
+      reproducible reason instead of a dangling number.**
 
 - [ ] Register RE's steps as request types via `link_supported_governance_service`
 - [ ] Implement find → claim → execute → report

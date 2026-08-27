@@ -335,6 +335,18 @@ Server has got there first.
 may see an action, and only one can take it. So Kafka remains an optimization (§4.2) — correctness
 never depended on delivery.
 
+**Correction 2026-08-27 — there is no per-engine claimable listing to poll.** §4.1 listed
+`GET /governance-engines/{guid}/active-engine-actions` as the discovery primitive, following
+`re-as-engine-host-plan.md`. Verified in Egeria's Java source: that route's handler is named
+`getActiveClaimedEngineActions` and its Javadoc says "claimed by this caller's userId ... used
+when the caller restarts" — the same restart-recovery operation as `.../active-claimed`, under a
+URL that reads otherwise. It also 404s on the View Service. Enumerating every per-engine route in
+Egeria yields four, none of which lists claimable work.
+
+Discovery therefore means whole-server `get_active_engine_actions()` filtered client-side by
+engine GUID and unclaimed status — a wider fetch, and safe for the same reason polling was:
+`claim` refuses the second claimant. A per-engine endpoint would be a **server-side** addition.
+
 **The client gap is closed (2026-08-27).** `claim_engine_action`,
 `update_engine_action_status` and `get_active_claimed_engine_actions` were missing from the
 installed pyegeria 6.0.18.4 — §4.1 had read the `egeria-python` working tree and reported them as
