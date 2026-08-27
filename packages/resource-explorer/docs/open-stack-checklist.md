@@ -19,12 +19,33 @@ the design docs. Delete an entry when it is done — this is not a history.
 | `chaoss_metrics` | 8 | " |
 | `cii_badge` | 8 | " |
 
-- [ ] Run `repo_manifest_parse` across a **representative slice**, confirm the
-      slice is representative, widen if not. 60 zipball downloads if run whole,
-      so volume and timing are a deliberate choice, not a default.
-- [ ] Then `foss_scorecard`, `chaoss_metrics`, `cii_badge` — all zero-fetch, so
-      cheap once their inputs exist.
-- [ ] Re-check the coverage table above afterwards.
+- [x] **Slice of 12 done 2026-08-27** — one repo per language, 2→65k stars,
+      5→423 contributors. `supply_chain` 11/12 (the 12th, `awesome_kedro`, is an
+      awesome-list with no `.github/workflows` — a real result, not a failure);
+      `foss_scorecard`/`chaoss_metrics`/`cii_badge` 12/12. ~18 min, no errors,
+      though `openmetadata`'s zipball alone took ~11.
+- [x] **Slice judged representative.** All three supply-chain checks
+      discriminate (dangerous_workflow 7 pass/4 fail; pinned_dependencies 6
+      partial/5 fail; token_permissions 9 partial/2 pass), every language is
+      covered, and nothing failed systematically. Scorecard coverage rose from
+      5–8 to **10–11 of 16 checks evaluated**, and scores *fell* as it rose
+      (openmetadata 8.6→7.0, deep_causality 7.5→7.3) — correct, since fewer
+      flattering unknowns are being excluded.
+- [ ] **Run the remaining ~48 repos.** For coverage, not validation — the
+      checks are proven. Budget for it: one large repo took 11 minutes.
+- [ ] Re-check the whole-catalogue coverage table afterwards.
+
+**Verified by hand, not taken on trust:** `data_prep_kit`'s 7 checkout hits were
+confirmed earlier from a local clone. `genaieval`'s hit is the *script-injection*
+path, which had only synthetic coverage until now — checked against the real
+file: `pr-path-detection.yml` interpolates
+`${{ github.event.pull_request.head.ref }}`, an attacker-controlled fork branch
+name, straight into a shell `run:` block. True positive.
+
+**Refinement worth logging:** the injection check does not distinguish
+`pull_request` from `pull_request_target`. Both are genuine injection, but only
+the latter runs with the base repo's secrets, so blast radius differs and the
+finding currently reads the same for both.
 
 ## 2. ~~Retire the ISSUE-50 workaround~~ — DONE 2026-08-27
 
