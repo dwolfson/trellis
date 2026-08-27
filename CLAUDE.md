@@ -21,12 +21,24 @@ else, and rewriting to fix it was not safe with another session live on the bran
 Stage the paths you actually changed. If that is tedious, it is because the change is large, not
 because the rule is wrong.
 
-**2. One session per worktree.**
+**2. Worktrees are not currently a usable isolation mechanism here — know why before relying on
+one.**
 
-Worktrees are already in use here (`git worktree list` — several branches, plus
-`.claude/worktrees/`). Use them. If you want to work on a branch another session is already in,
-create a worktree rather than sharing the checkout. Two sessions in one working directory race on
-the index, the tip, and untracked files.
+Every Claude session on this machine runs with `cwd: /Users/dwolfson`, which is not a git
+repository. Sessions reach into this repo by absolute path, so they have no per-session repo
+context and cannot take a worktree of it. That is why concurrent sessions all land in the same
+checkout: not carelessness, but the absence of any mechanism that would separate them.
+
+`git worktree list` does show worktrees (`.claude/worktrees/`, plus sibling checkouts). Those come
+from subagents given an explicit repo path, or from manual setup — not from session isolation. A
+stale one is normal and harmless; check it is clean and behind before removing it.
+
+If you genuinely need isolation for a long parallel change, the fix is to start a session **inside
+the repo** rather than in the home directory. That is a deliberate trade: sessions run from home
+precisely so they can work across trellis, egeria-python, egeria-workspaces and pyegeria in one
+place, and rooting a session in one repo gives that up.
+
+Absent that, **rule 1 is the only control that actually operates.** Treat it accordingly.
 
 **Before committing, read `git status` and confirm every staged path is yours.** An unexpected file
 is a signal that another session is mid-write, not something to sweep in.
