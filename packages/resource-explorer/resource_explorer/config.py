@@ -209,7 +209,15 @@ class KrokiConfig(BaseSettings):
 class PrefectConfig(BaseSettings):
     api_url: str = Field(default="http://localhost:4200/api", alias="PREFECT_API_URL")
     ui_url: str = Field(default="http://localhost:4200", alias="PREFECT_UI_URL")
-    enabled: bool = Field(default=False, alias="PREFECT_ENABLED")
+    # Default True as of 2026-08-26, once run_prefect_step's API path was
+    # verified live against a real local server + worker (see
+    # tests/test_prefect_dispatch.py's module docstring for the three fixed
+    # faults). Safe with no server running — an unreachable PREFECT_API_URL
+    # falls back to running the step locally in-process, same as enabled=False
+    # always has, just with one warning-level log line and connection-attempt
+    # overhead per executes_at: prefect step. Steps that don't declare
+    # executes_at: prefect are unaffected regardless (see route_local_steps).
+    enabled: bool = Field(default=True, alias="PREFECT_ENABLED")
     work_pool: str = Field(default="default-agent-pool", alias="PREFECT_WORK_POOL")
     # Route steps that explicitly declare executes_at="resource-explorer" through
     # Prefect as well. Off by default, and deliberately its own setting rather

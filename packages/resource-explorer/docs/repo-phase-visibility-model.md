@@ -73,11 +73,21 @@ one `SurveyReport`. Every phase-scoped publish above reuses the exact same
 `POST /{slug}/publish` route with a non-empty `steps` list — no separate
 publish mechanism was built; see `PublishRequest.steps` in `web/routes/egeria.py`.
 
-**Important**: nothing publishes automatically today. Every row above is an
-explicit button click. A "default to publish, opt out for exploratory work"
-flag was discussed and its direction confirmed, but is explicitly deferred —
-not built. If you're expecting scans to publish by default, that's the gap,
-not a bug.
+**Updated 2026-08-27 — this was accurate for the Assessment/Analysis "Run →" flow described
+above, but not the whole picture.** The deferred "default to publish, opt out for exploratory
+work" flag this note used to describe is now built, but implemented as a project-assignment
+gate rather than an opt-out toggle: both this route (`projects.py`'s `run_single_analysis`) and
+Survey Definition runs (`survey_definition_executor.py`, used by the Discovery tab and Scouting
+scans) now auto-publish to Egeria via `EgeriaPublisher.publish()` whenever the survey produced
+annotations AND `ProjectRegistry.has_assigned_egeria_project()` is true for the resource — i.e.
+publish happens automatically once a human has decided the resource belongs in Egeria
+(`entity_egeria_project_context.status == "linked"`), and stays local-only otherwise. Manual
+publish via the button described above still works regardless, for re-publishing or explicitly
+cataloging an unassigned resource.
+
+Worth knowing this correction exists: the Survey Definition path had actually been publishing
+**unconditionally** — no gate at all, not even the loose one this route already had — until this
+same pass added `has_assigned_egeria_project()` to it too, so both paths are consistent now.
 
 ## The three-way "Discovery" naming collision
 

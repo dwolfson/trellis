@@ -562,7 +562,7 @@ Proposes additional architecture-component boundaries from import coupling and c
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_arch_coupling |
 

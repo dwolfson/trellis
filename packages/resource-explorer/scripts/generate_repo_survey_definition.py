@@ -184,10 +184,23 @@ def load_specs_from_csv(csv_path: Path = SPECS_CSV) -> list[SurveyDefSpec]:
 SPECS = load_specs_from_csv()
 
 
+# Steps deliberately opted into Prefect (executes_at: prefect) rather than
+# plain local execution — real flow-run observability/cancellation is worth
+# the per-step overhead specifically for long-running or thrash-prone steps,
+# not a blanket switch. See docs/re-ea-consolidation-audit.md and the Prefect
+# entry in docs/Backlog.md. repo_arch_coupling does a real `git log` history
+# clone (git_clone_root, unlike repo_arch_detect's zipball-only read) and is
+# the step this was written for — long enough, and network/IO-dependent
+# enough, that "is it still running or did it hang" is a real question for it
+# in a way it usually isn't for the cheaper steps.
+PREFECT_ROUTED_STEPS = frozenset({"repo_arch_coupling"})
+
+
 def build_steps(step_keys: list[str]) -> list[PublishableStep]:
     return [
         PublishableStep(
             step_key=key, description=STEP_REGISTRY[key].description, technology_type=TECHNOLOGY_TYPE,
+            executes_at="prefect" if key in PREFECT_ROUTED_STEPS else "resource-explorer",
         )
         for key in step_keys
     ]

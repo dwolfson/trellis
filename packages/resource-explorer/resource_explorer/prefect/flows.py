@@ -147,7 +147,7 @@ def run_gx_validation_task(
     }
 
 
-@flow(name="RE Survey Flow")
+@flow(name="RE Survey Flow", persist_result=True)
 def re_survey_flow(
     entity_type: str,
     slug: str,

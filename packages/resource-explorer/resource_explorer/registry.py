@@ -4255,6 +4255,40 @@ class ProjectRegistry:
             ).fetchone()
         return dict(row) if row else None
 
+    def has_assigned_egeria_project(self, entity_type: str, entity_slug: str) -> bool:
+        """The single, correct gate for "should this resource's survey results be
+        automatically cataloged into Egeria" — used by both publish paths
+        (survey_definition_executor.py's auto-publish and the Assessment/Analysis
+        auto-publish added alongside it) rather than each re-deriving its own.
+
+        Deliberately tighter than egeria.py's publish route's own inline check
+        (`status != "unset"`), which also lets personal/deferred/declined pass —
+        those are equally deliberate "not linked to Egeria" answers, and treating
+        them as green-lighting an automatic Egeria write would be wrong. Only a
+        real `linked` status with a `egeria_project_guid` counts here.
+
+        Falls back to `inherited_egeria_project_context()` and WRITES it when
+        found, same as the publish route already does inline — an inheritance
+        that stayed read-only would make a resource's context depend on
+        investigation membership at read time, so leaving the investigation's
+        working set later would silently un-answer a question already settled.
+        """
+        entity_slug = self._normalize_slug(entity_slug)
+        context = self.get_project_context(entity_type, entity_slug)
+        if not context or context.get("status") == "unset":
+            inherited = self.inherited_egeria_project_context(entity_type, entity_slug)
+            if not inherited:
+                return False
+            self.set_project_context(
+                entity_type, entity_slug,
+                status="linked",
+                egeria_project_guid=inherited["egeria_project_guid"],
+                egeria_project_qualified_name=inherited["egeria_project_qualified_name"],
+                free_text_name=f"inherited from investigation '{inherited['_inherited_from_name']}'",
+            )
+            context = self.get_project_context(entity_type, entity_slug)
+        return bool(context) and context.get("status") == "linked" and bool(context.get("egeria_project_guid"))
+
     # Automate (Part 4) — notification_subscriptions. See that table's own
     # docstring above for the local-first rationale. No hard delete —
     # deactivate/activate, matching the disposition/working-set convention
@@ -4853,7 +4887,16 @@ class ProjectRegistry:
             for entry in result.values():
                 if "last_published_at" in entry:
                     continue
-                if entry.get("last_run_at", "") <= repo_wide_publish_at:
+                # `entry.get("last_run_at", "")` used to fall through to "" for a
+                # candidate that has an entry (via a ref-tagged catalog row) but no
+                # matching survey row — and "" <= anything is always True in Python
+                # string comparison, so a candidate that never ran still got
+                # last_published_scope: 'repo' stamped on it. Confirmed live
+                # 2026-08-27: this is what produced "Never Run" + "Published today"
+                # on the same card. A candidate can only have "necessarily been
+                # included" in a repo-wide publish if it actually ran.
+                last_run_at = entry.get("last_run_at")
+                if last_run_at and last_run_at <= repo_wide_publish_at:
                     entry["last_published_at"] = repo_wide_publish_at
                     entry["last_published_scope"] = "repo"
         return result
@@ -4921,6 +4964,13 @@ class ProjectRegistry:
                     result[analysis_id] = {
                         "last_run_at": row["ts"], "last_run_status": row["status"],
                         "last_run_via": "analysis", "last_run_partial": False,
+                        # True only when this run's auto-publish attempt
+                        # (projects.py's run_single_analysis) actually failed —
+                        # None (never attempted: unassigned, or no annotations)
+                        # is NOT a failure and must not read as one. The
+                        # frontend's ☁ Publish button uses this to decide
+                        # whether it's a recovery action worth showing.
+                        "last_publish_failed": detail.get("published") is False,
                     }
                 continue
 
@@ -4977,6 +5027,14 @@ class ProjectRegistry:
                 "WHERE id = ?",
                 (status, summary, summary, detail, detail, entry_id),
             )
+
+    # reconcile_orphaned_running_activity() lived here briefly (2026-08-26) —
+    # removed in favor of resource_explorer/run_reconciler.py's
+    # ownership-based (pid + process-start-time) reconciliation, wired into
+    # web/app.py's _lifespan(). This method's blanket "every running row is
+    # orphaned on any startup" was unsafe: multiple RE processes routinely
+    # share one database, so it would falsely resolve a peer's still-live
+    # run out from under it.
 
     # ── RFA actions (local response tracking — see PATCH /api/activity/rfas/{rfa_id}
     # in web/routes/activity.py) ─────────────────────────────────────────────

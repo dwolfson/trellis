@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -39,6 +39,13 @@ async def _lifespan(app: FastAPI):
     # process that is provably gone is resolved here, at the one moment we can
     # be certain those threads are not coming back. Never raises and never
     # blocks: it fails safe, leaving alone anything it cannot judge.
+    #
+    # Supersedes an earlier, less careful version of this same idea
+    # (ProjectRegistry.reconcile_orphaned_running_activity(), briefly on this
+    # branch) that treated every 'running' row as orphaned on any startup —
+    # wrong given multiple RE processes routinely share one database; it
+    # would have falsely killed a peer's still-live run. Removed in favor of
+    # this ownership-based (pid + process-start-time) version.
     _reconcile_orphaned_runs()
     start_scheduler()
     # Detect + repair Dr.Egeria definitions wiped by an Egeria reset. Runs one
@@ -78,6 +85,7 @@ app.include_router(project_context.router, prefix="/api/project-context", tags=[
 app.include_router(automate.router, prefix="/api/automate", tags=["automate"])
 app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
+app.include_router(prefect_status.router, prefix="/api/prefect", tags=["prefect"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"])

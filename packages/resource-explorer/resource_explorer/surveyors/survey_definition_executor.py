@@ -178,7 +178,7 @@ class SurveyDefinitionExecutor:
                 pending_steps = []
 
         from resource_explorer.config import get_config
-        from resource_explorer.surveyors.prefect_adapter import run_prefect_step
+        from resource_explorer.surveyors.prefect_adapter import PrefectFlowRunCancelled, run_prefect_step
 
         # Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py)
         # and have no STEP_REGISTRY entry, so there is nothing local to run them
@@ -276,6 +276,16 @@ class SurveyDefinitionExecutor:
                     output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "status": "ok", "engine": "prefect"})
+                except PrefectFlowRunCancelled as exc:
+                    # Distinct from a generic failure — this is the user
+                    # actually stopping the survey (via the Admin "⚡ Prefect"
+                    # panel's Cancel button), not something breaking. Surfaced
+                    # as its own status so the activity log reads "cancelled",
+                    # not "error", for what was a deliberate action.
+                    msg = f"Prefect step '{step.re_analysis_step}' was cancelled: {exc}"
+                    log.info(msg)
+                    errors.append(msg)
+                    steps_report.append({"step": step.qualified_name, "status": "cancelled", "engine": "prefect"})
                 except Exception as exc:
                     msg = f"Prefect step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)
@@ -353,10 +363,19 @@ class SurveyDefinitionExecutor:
 
             i += 1
 
+        # Gated on the resource actually having an assigned Egeria Project — this
+        # used to publish unconditionally for any repo a Survey Definition ran
+        # against, decided-in-Egeria or not (confirmed live 2026-08-27, alongside
+        # egeria.py's manual-publish route, which HAS always gated this). Findings
+        # are stored locally either way; only the automatic Egeria write is
+        # skipped for an unassigned resource. Manual publish is still available
+        # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
-        if step_outputs:
+        published = False
+        if step_outputs and self.registry.has_assigned_egeria_project(entity_type, slug):
             try:
                 report_guid = adapter.publish(entity, step_outputs, surveyed_at, self.registry)
+                published = True
             except Exception as exc:
                 msg = f"Failed to publish results to Egeria: {exc}"
                 log.exception(msg)
@@ -372,6 +391,7 @@ class SurveyDefinitionExecutor:
             "steps": steps_report,
             "errors": errors,
             "egeria_report_guid": report_guid,
+            "published": published,
         }
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
