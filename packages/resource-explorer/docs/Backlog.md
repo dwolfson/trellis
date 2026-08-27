@@ -1378,7 +1378,7 @@ brought this branch and `main` together (2026-08-26) rather than kept alongside 
 
 #### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
 
-#### Retire the ISSUE-50 workaround in `egeria_delegated_step.py` — the pyegeria bug it exists for is fixed
+#### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
 
 `EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because
 `initiate_engine_action()` used to 404: it posted to a URL missing the governance engine's name
@@ -1397,7 +1397,15 @@ delegated step, and drop the per-step `GovernanceActionType` requirement (and it
 verification holds. The module's comment saying the direct path is "kept for when ISSUE-50 is
 fixed" is stale and should go with it.
 
-Not urgent — the workaround works and is live-verified. It is pure overhead removal.
+**Done 2026-08-27.** `initiate_and_wait()` now takes `governance_engine_name`
+and passes it through; the surveyor requires it alongside `request_type` and says so, rather than
+letting the omission surface as a bare 404. Live-verified: a real engine action on the
+Stewardship engine (`write-to-audit-log`) reached `COMPLETED` with a real completion message
+through the direct path, needing no pre-authored `GovernanceActionType`.
+
+`initiate_action_type_and_wait()` is kept — it is not a workaround any more, just the other valid
+path, and the better one when a `GovernanceActionType` already exists since the engine is then
+resolved server-side from its executor link.
 
 
 #### Distributed survey orchestration via a flow tool (Prefect) — early prototype, not yet integrated

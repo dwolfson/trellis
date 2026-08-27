@@ -26,20 +26,23 @@ the design docs. Delete an entry when it is done — this is not a history.
       cheap once their inputs exist.
 - [ ] Re-check the coverage table above afterwards.
 
-## 2. Retire the ISSUE-50 workaround
+## 2. ~~Retire the ISSUE-50 workaround~~ — DONE 2026-08-27
 
 `EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()`,
 which needs a **pre-authored `GovernanceActionType` per delegated step**. The
 pyegeria bug that forced it is fixed: `initiate_engine_action` now takes
 `governance_engine_name`. `initiate_and_wait()` already exists in the module.
 
-- [ ] Switch the primary trigger path to `initiate_and_wait()`
-- [ ] Live-verify against a real delegated step
-- [ ] Drop the per-step `GovernanceActionType` requirement and its probe doc
-- [ ] Remove the stale comment saying the direct path is "kept for when
+- [x] Switch the primary trigger path to `initiate_and_wait()`
+- [x] Live-verify against a real delegated step
+- [x] Drop the per-step `GovernanceActionType` requirement and its probe doc
+- [x] Remove the stale comment saying the direct path is "kept for when
       ISSUE-50 is fixed"
 
-Full entry: `docs/Backlog.md` → Platform & orchestration.
+Live-verified: a real engine action on the Stewardship engine reached `COMPLETED` through the
+direct path. Also fixed en route: the Prefect tests were not hermetic — they honoured a
+configured `PREFECT_API_URL` from `.env`, so they passed in one checkout and failed in another on
+ambient environment alone. Shared `ephemeral_prefect` fixture in `tests/conftest.py`.
 
 ## 3. RE as an engine host — unblocked, not started
 

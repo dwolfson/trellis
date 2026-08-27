@@ -19,6 +19,9 @@ from resource_explorer.prefect import flows
 logging.disable(logging.INFO)
 
 
+pytestmark = pytest.mark.usefixtures("ephemeral_prefect")
+
+
 def _plan(*rows):
     return [{"step_key": k, "qualified_name": f"QN::{k}",
              "depends_on": list(deps), "guarded_by": dict(guards)}

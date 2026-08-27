@@ -1,0 +1,564 @@
+# Context compilation — a shared spec model for RE and EA
+
+**Status: design. Nothing built, and — unlike
+`packages/resource-explorer/docs/investigation-framing-design.md`, which measured its dispatch
+chain against the real catalog before asserting it — nothing here is measured.** Everything
+below is asserted. §3's weighting claim and §5's portability claim are both testable and both
+untested; §9 lists what to measure before building. This doc also **proposes revising two
+verdicts** in `docs/re-ea-consolidation-audit.md` (§7) — proposals, not findings.
+
+## Why this doc exists
+
+"Context compiler" is the current industry framing for: a declarative spec of what a task's
+context should contain → typed resolvers → budget-aware packing with a compression ladder →
+content-addressed cache → provenance out the other side. It is mostly a fad, because it is
+usually applied on top of a vector store with no schema, where the "compiler" is a heuristic
+packer wearing a build-system metaphor.
+
+It applies here for a reason that is not generic: **RE has already built the front half and
+called it question dispatch.**
+
+```
+Purpose (why) + Perspective (whose concerns) → Questions → analysis_ids → Surveys & Analyses
+```
+
+That is a spec language, an intermediate representation (the question catalog), and a resolver
+registry (the analysis catalog). What is missing is the back half — budget solve, compression
+ladder, provenance envelope, manifest, cache key — and RE assembles that last mile by hand in
+the Chat panel today.
+
+EA, separately, has the cache-key discipline RE lacks, a serialization format and lifecycle for
+specs, and a working ranking engine. Neither app has the back half.
+
+**So the recommendation is not "adopt context compilers." It is: finish the compiler RE already
+has, using the parts EA already built.** RE is the newer thinking; EA's concepts have not all
+been pulled across yet.
+
+## 1. The four focusing axes
+
+| Axis | Scope | Compiler role | Identity-bearing? |
+|---|---|---|---|
+| **Investigation** | the body of work | the **compilation unit**; membership defines the frontier | Yes |
+| **Purpose** | the engagement | selects the spec; section priority; the one axis that may **gate** | Yes |
+| **Perspective** | the person | budget weights, compression level, ordering, emphasis | **No** |
+| **Intent** | right now, one resource | the section *shape* | Yes |
+
+The identity column is EA's test from `REPORT_SPEC_BUILDER_DESIGN.md` §"Three parameter
+categories" — *change it, get different data?* — applied to RE's axes. It is a cache-key
+partition, and RE has no equivalent statement anywhere today.
+
+Two consequences that are easy to get wrong:
+
+**The cache is keyed on Investigation, not on resource.** Membership is N:M and a resource
+belongs to many investigations simultaneously (confirmed 2026-08-24, framing design §1). The
+same repo therefore compiles to *different* contexts depending on which body of work is asking.
+A per-resource context cache — the obvious implementation — is wrong at the grain, in exactly
+the way `entity_egeria_project_context`'s one-row-per-resource key was wrong for membership.
+
+**Perspective's non-identity is an invariant to protect, not an observation.** The moment
+Perspective gates anything, it becomes identity-bearing, and a cache keyed without it starts
+silently serving contexts built for someone else.
+
+## 2. What the compiler adds that neither app has
+
+- **Budget solve** — allocate a token budget across sections, degrade rather than truncate.
+- **Compression ladder** — each section declares `full → summary → identifiers-only`.
+- **Provenance envelope** — every packed span carries `{guid, version, fetched_at, source_kind}`.
+- **Manifest** — what was included, compressed, dropped, and why. Emitted alongside the prompt.
+- **Cache key** — `(spec version, resolved GUIDs+versions, compression level)`, partitioned by
+  the identity column in §1.
+
+The manifest is not a debugging nicety; it is **the return path for user input**. Purpose,
+Perspective and Intent are already user-set UI state (declared at Investigation creation, the
+multi-select chip row, the exclusive intent nav). What is missing is showing the user what their
+selections actually did to the context. With a manifest, the chips become a live control on
+context rather than only on display — which is what focusing results *with user input* requires.
+The current Chat panel, scoped to the selected resource and nothing else, cannot express this.
+
+## 3. Perspective is a weight, not a filter
+
+Framing design §3 measured Perspective against the real catalog and found it cannot drive
+dispatch: the twelve perspectives' analysis sets are strictly nested, not one reaches anything
+unique to it, `Privacy` reaches nothing at all, and 17 of 41 questions carry 4+ perspectives.
+Perspective varies the *size* of the result, never its *content*.
+
+**Those properties are disqualifying for a filter and close to ideal for a budget allocator:**
+
+- "Varies size, not content" is a defect in a dispatch key and a specification for a weight
+  function.
+- **Nesting is a safety property.** Because nothing is reachable *only* via one perspective,
+  running out of budget can never drop the one section that perspective alone needed. It
+  degrades down the ladder instead. That guarantee does not hold for any discriminating axis.
+
+This is the job Perspective should have, and it is consistent with framing design §3's
+"Perspective ranks within that — presentation, ordering, emphasis."
+
+**Untested claim:** that these weights actually improve answers. Nesting makes them *safe*; it
+does not make them *useful*. See §9.
+
+`Privacy` reaching zero analyses becomes a feature under this model: the manifest reports an
+empty evidence section instead of the Chat panel quietly answering from RAG prose with no
+signal that nothing analysis-backed was behind it. Coverage gaps surface rather than smoothing
+over.
+
+## 4. Purpose gates — and the gate must be typed
+
+Purpose is the discriminating axis (overlap 0.22 vs Perspective's 0.37) and it primarily
+*ranks*. But framing design §4 gates RFA emission on Purpose, with `Select` emitting none at
+all, and the design doc explicitly warns that implementing that gate as a ranking produces a
+flooded RFA drawer and **fails silently** — surfacing as noise nobody traces back to the rule.
+
+In the compiler, sections carry `mode: rank | gate` as a schema field. The distinction becomes
+typed and testable instead of a convention that has already been misread once in its own design
+document. This is a genuine improvement over the current model, not a re-encoding of it.
+
+## 5. What EA contributes
+
+| EA asset | Role in the compiler |
+|---|---|
+| "Part of spec identity?" partition | the cache-key discipline (§1) |
+| Dr.Egeria markdown catalog entry | spec serialization, already user-editable |
+| draft → preview → save lifecycle | spec authoring, already built |
+| `collection_router.py` scoring engine | **the packer's weight function** |
+| `feedback_collector.py` | **the tuning signal for those weights** |
+| `graph_query_depth` | the budget dial |
+| `_ModelOverrideClient` / `get_planning_llm()` | cheap model for the ladder, strong model for the answer |
+
+Two of these are the substantive pulls:
+
+**EA's collection router is already a ranker.** 400 lines of real scoring — explicit mention,
+domain-term overlap, intent-keyword boosting, policy boosts, feedback-adjustment multipliers, an
+informational-query guard, fallback expansion. RE's equivalent is a 57-line intent→content-type
+lookup. RE's Perspective needs precisely a weight function, and one has been built once already.
+The consolidation audit kept the two routers separate because the *collection models* genuinely
+diverge — that stands; the scoring engine underneath is not the collection model.
+
+**EA's feedback collector already keys on perspective.** Star rating, category, **perspective**,
+routing agent, sentiment, feeding `analytics.py` / `sentiment_analysis.py`. You cannot tune
+budget weights without a quality signal dimensioned along the axis being tuned, and EA has been
+collecting one on the right axis for 652 lines' worth of implementation. RE's equivalent is a
+21-line thumbs-up/down CLI prompt.
+
+`graph_query_depth` is noted in EA's design as "straddling shape and performance." That is not a
+wart awaiting resolution — depth is *the* budget dial, the one parameter that is simultaneously
+content and cost, which is exactly what a packer trades off.
+
+## 6. Scope is not fixed — what that costs
+
+Purposes and intents are expected to extend into data quality, conformance, certification,
+timeliness, provenance, comparison and historical analysis. Some devolve to direct Egeria
+queries, some need new gathering, some need new analysis. Sorted by what each costs the
+compiler:
+
+**Additive — new Purposes, new questions, new resolvers, zero compiler change.** Data quality,
+conformance, certifications. The compiler is deliberately indifferent to whether a resolver is a
+direct Egeria query, a fetch, or a multi-step analysis; all the packer needs is the cost tier,
+which CLAUDE.md rule 17 already makes you tag (Discovery as the cheap tier gating the expensive
+ones *is* a budget policy, stated in resource terms). That indifference is most of why this is
+worth building.
+
+**Nearly free, but only with the envelope.** Timeliness reads `fetched_at`. Provenance questions
+are answered *from the manifest*, not by a resolver at all. Both are cheap once the envelope
+exists and awkward to bolt on after — which moves the envelope up the build order.
+
+**Not additive — these two change the compiler's shape and should be designed in now:**
+
+1. **Comparison is arity.** The compile unit becomes a set. The failure mode is specific: if the
+   packer exhausts its budget mid-pack and subject A gets full evidence while subject B gets
+   summarized, the model will systematically favour A, **and nothing in the output reveals why.**
+   Comparison specs need a **symmetric packing constraint** — equal per-subject budget, all
+   subjects degrade to the same ladder rung together, manifest asserts symmetry. This is a
+   correctness property, not a nicety, and it changes the packer's loop order, so retrofitting
+   is real work.
+
+2. **Historical is time — and Egeria supplies most of it.** *(Revised 2026-08-27: an earlier
+   draft of this section proposed a local retention archive and told the reader to go measure
+   how much history Egeria keeps. Egeria versions **and** timestamps elements, supports as-of
+   time queries, and imposes no limit on history. The retention question was largely the wrong
+   question.)* For Egeria-sourced sections, historical and timeliness questions devolve to an
+   as-of query — a **resolver parameter, not a cache policy**. See §10.
+
+   What Egeria does *not* cover is RE-local resolver output that was never published: survey
+   results, AST/dependency analytics, RAG-derived material. Those are the only sections needing
+   local retention — which is a direct argument for publishing analysis results through the
+   existing outbox/publisher, since publishing buys unlimited history for free rather than
+   requiring a second archive to be designed and maintained.
+
+   **Comparison and historical compose.** "How did A and B differ six months ago" is a
+   symmetric pack at `as_of=T`. The symmetry constraint above must hold across subjects *and*
+   across time points; a spec comparing two timestamps of the same resource is the same problem
+   with the subjects being `(resource, T1)` and `(resource, T2)`.
+
+## 7. Proposed revisions to `re-ea-consolidation-audit.md`
+
+The audit examined implementation duplication. This framing sits mostly *downstream* of the line
+it drew, but it moves two entries.
+
+**Item 8 (LLM client) — `(c)` "RE has no multi-model need today" becomes a real need.** A
+compression ladder creates one: the summarize-down-a-tier step wants a cheap, high-volume model
+while the answer step wants the strong one. That is exactly EA's `_ModelOverrideClient` /
+`get_planning_llm()` split. The framing manufactures the need the audit correctly reported did
+not yet exist. Reclassify as "port when the ladder is built," not "port when needed."
+
+**"Prompt templates — pure string content, no logic to extract" stays true and stops being the
+whole story.** A compiler moves the boundary: templates remain app-specific (still correct),
+prompt *assembly* becomes shared. A new extraction candidate the audit could not see, because it
+audited what exists rather than what is proposed.
+
+**Intent classification/routing stays `(c)`, and that is what makes this mergeable.** RE's flat
+regex classifier and EA's tiered-plus-LLM-fallback system really do track different routing
+surfaces. The compiler sits downstream of whichever classifier each app runs, so both stay
+divergent and still feed one spec model. No part of this proposal requires relitigating that
+verdict.
+
+## 8. The shared package boundary
+
+**Moves into a shared package** (same tier as `trellis-microflow`, per the audit's
+extraction pattern):
+
+- `ContextSpec` — schema, serialization, versioning
+- Resolver registry — typed loaders keyed by cost tier
+- Packer — budget solve, compression ladder, symmetric-packing constraint
+- Provenance envelope + manifest
+- Context cache — the audit's item 1 `QueryCache` (RE's TTL/Redis/invalidation base) with the
+  identity partition from §1
+
+**Stays per-app:** query classifiers, question and analysis catalogs, collection models, prompt
+template content, agent rosters, auth.
+
+This is a narrower and more actionable answer to the standing "how do RE and EA stay in sync on
+shared code" question than the general one, because the interface is small and the audit already
+established the tiering precedent.
+
+## 9. Open questions — measure before building
+
+- **EA's compile unit — proposed resolved, see §17.** EA has no Investigation equivalent, and
+  `docs/design/SESSION_AND_INTERACTION_STATE.md` records that EA has *no backend-owned session
+  concept at all today*, with `draft_id` generation unscoped by user or session. The proposal is
+  that EA adopt RE's Investigation rather than grow a new concept — an unbound local row
+  classified `PersonalProject`. What remains open is the migration, not the model.
+- **Does Perspective weighting improve answers?** §3 shows nesting makes weights safe. Whether
+  they help is unmeasured. EA's feedback data, dimensioned by perspective, is the instrument —
+  check first whether it has enough volume per perspective to say anything.
+- **Is EA's collection-router scoring engine actually portable**, or is it fused to EA's fixed
+  catalog the way its collection model is? The audit found the models diverge; it did not
+  examine whether the scorer separates from them.
+- **How much version history does Egeria retain** for the properties historical questions will
+  ask about? Determines the retention policy in §6.
+- **Master-detail parameter inheritance** is already flagged unresolved in EA's own design
+  (whether detail specs inherit `content_filters` / `shape_defaults` or carry their own
+  three-category model). It interacts directly with nested Investigations via
+  `ProjectHierarchy`, and the two should be resolved together rather than twice.
+
+---
+
+*Sections 10–16 added 2026-08-27, in response to a review pass on explainability, observability,
+feedback, testing, ingestion, agent structure, and model selection.*
+
+## 10. As-of time — the parameter that makes everything else work
+
+Egeria versions and timestamps elements, supports as-of time queries, and keeps unlimited
+history. That single fact upgrades three things this design had hedged on:
+
+**`as_of` becomes a first-class ContextSpec parameter, and it is identity-bearing.** Different
+`as_of` → different content → different cache entry. It sits alongside `content_filters` in EA's
+partition.
+
+**Reproducibility stops being a lie.** An earlier framing of this design conceded that "same spec
+→ same context" cannot hold against live-changing metadata, and that determinism claims needed a
+pinned snapshot RE did not have. Egeria *is* the snapshot mechanism. Pin `as_of` and the same
+spec recompiles byte-identically, indefinitely.
+
+**Which makes the manifest replayable, not merely readable.** This is the hinge for §11: an
+explanation you can only read is an assertion; an explanation you can re-execute is an audit.
+`(spec version, as_of, resolved GUIDs)` is a complete, permanently re-runnable description of a
+compile.
+
+Two things to get right:
+
+- **Resolvers must accept and propagate `as_of`.** A resolver that ignores it silently mixes
+  current data into a historical compile — the worst failure mode here, because the output looks
+  coherent. Resolvers should declare `temporal: as_of | current_only`, and a compile at a past
+  `as_of` containing a `current_only` section must be marked as mixed in the manifest, not
+  quietly packed.
+- **`fetched_at` and `as_of` are different fields.** The envelope needs both: when the fact was
+  true (Egeria's timestamp) and when we read it (staleness, per RE's stale-but-labeled policy).
+  Collapsing them loses the ability to distinguish "old fact" from "stale read."
+
+## 11. Explainability
+
+The manifest and envelope in §2 are necessary and not sufficient. They record *what was packed*.
+They do not record *why those sections were candidates*, which is the part a user actually asks
+about. Two distinct artifacts:
+
+| Artifact | Answers | Source |
+|---|---|---|
+| **Derivation** | why these sections exist at all | Investigation → Purpose → Question → `analysis_ids` |
+| **Manifest** | what survived the budget, at which rung | the packer |
+| **Envelope** | where each span came from, as of when | resolvers |
+
+The derivation trace is the explanation with real content — *"this section is here because your
+Investigation's Purpose is `Certify`, which ranked Q17, which dispatches `security_scan`"* — and
+it is available today only as an implicit consequence of the dispatch chain. Making it an emitted
+artifact is close to free and is the piece most likely to be skipped.
+
+Three requirements that follow:
+
+- **Citation contract.** Without one, the envelope is write-only. Answers must cite
+  `(guid, version, as_of)`, and an uncited claim is a detectable defect (§14).
+- **Negative explainability.** "Why did I *not* see X" is answerable here in a way it usually
+  isn't: since Perspective never excludes and Purpose ranks, the honest answer is nearly always
+  "ranked below the budget line at rung N," which the manifest can state precisely.
+- **Replay.** Per §10, an explanation is auditable rather than merely plausible.
+
+## 12. Observability
+
+The compile is a span tree that maps onto OTel with no impedance mismatch: `spec resolve →
+per-resolver spans (attributed with cost tier) → pack → answer`. RE's `phoenix_client.py` is
+already hardened for BeeAI (with the measured 7.89s dead-collector precheck) and EA has none —
+consolidation audit item 4 already recommends EA adopt it, and the compiler raises the payoff,
+because under this design the compile is the interesting span, not the LLM call.
+
+The natural division of labour between the two systems each app half-has:
+
+- **Phoenix/OTel — runtime traces.** RE's implementation is the base; EA adopts (audit item 4).
+- **MLflow — spec experiments.** EA's 742-line implementation is the base; RE's is a 34-line
+  stub (audit item 5). Evaluating spec variants — does adding this section improve answers? —
+  is experiment tracking, not tracing, and it is where the tuning loop in §13 reports.
+
+Metrics that do not exist today in either app and that this design needs:
+
+- budget utilization and **ladder-rung distribution per section**
+- drop rate by section (a section always dropped is a spec defect; a section never dropped is a
+  budget defect)
+- cache hit rate **partitioned by identity** (§1) — a low rate here usually means the key is
+  wrong, not that the cache is cold
+- resolver latency by cost tier — which **empirically validates CLAUDE.md rule 17's tiering**.
+  Rule 17 currently asserts Discovery-tier cheapness per analysis, with one measured exception
+  (`architecture_recovery` at ~5s). Compiler telemetry turns that per-analysis argument into a
+  continuously measured property.
+
+## 13. Feedback
+
+EA's `feedback_collector.py` already carries the right dimension (perspective). The gap is
+attachment point: **feedback today attaches to the answer, and weight tuning needs it attached to
+the compile.** A rating must carry the manifest id, or a poor answer cannot be distinguished
+between "wrong evidence was selected," "right evidence was compressed to rung 3," and "the model
+had everything and reasoned badly." Those need different fixes, and without the manifest link the
+signal cannot separate them. This is cheap to add now and expensive to retrofit across accumulated
+feedback data.
+
+Three loops, deliberately separate:
+
+1. **Answer quality → weight tuning.** Perspective-dimensioned ratings + manifest → §3's weights.
+2. **"This section was useless / I needed X" → spec editing.** Routes into EA's existing
+   draft → preview → save lifecycle. The spec is already a user-editable Dr.Egeria markdown
+   document, so this loop needs a route, not a mechanism.
+3. **RFA.** Already exists; human decisions on findings, gated by Purpose (§4). Unchanged.
+
+**Guard against double-counting.** EA's collection router already applies feedback-adjustment
+multipliers. If both the router and the packer learn from the same signal, the same feedback is
+applied twice with compounding effect and no trace of it in either component. Pick one consumer
+per signal, or dimension them explicitly.
+
+This is a concrete piece of the "redesign AI-response feedback into a real closed loop" workstream
+already flagged as the genuinely hard one of RE's three feedback systems.
+
+## 14. Testing and guardrails
+
+Packing is otherwise untestable by inspection, which is most of the argument for making it an
+explicit component. Properties worth asserting:
+
+- **Determinism** — same `(spec version, as_of, GUIDs)` → byte-identical context. Only possible
+  because of §10, and the highest-value test here.
+- **Monotonicity** — increasing the budget never *removes* content. Catches a large class of
+  packer bugs cheaply.
+- **Nesting invariant** — adding a Perspective never removes a section. Guaranteed today by the
+  framing-design measurement; asserting it means a future question-catalog retag that breaks
+  nesting fails a test instead of silently changing dispatch semantics. This is the guardrail
+  protecting §1's identity invariant, and the same pattern as `tests/test_check_registry.py`.
+- **Symmetry** — comparison specs pack all subjects at equal budget and the same rung (§6).
+- **Gate coverage** — every `mode: gate` section has an explicit test, §4's RFA rule first.
+- **No dangling references** — extend the existing question→analysis id check through
+  spec → section → resolver.
+- **Budget ceiling is a hard failure, not a truncation.** Silent truncation at the window
+  boundary defeats every other guarantee in this document.
+
+Runtime guardrails:
+
+- **Refuse rather than degrade below a floor.** The `Privacy`-reaches-zero-analyses case should
+  report an empty evidence section, not backfill with RAG prose.
+- **Mixed-temporality compiles must be labelled** (§10), never silently packed.
+- **Packed resolver content is untrusted input.** RE ingests arbitrary GitHub repositories —
+  README text, commit messages, code comments, DB object comments. Spans must be delimited and
+  marked as data, never as instructions. This is a live exposure given RE's discovery flow
+  imports repos found by keyword search, not a theoretical one.
+
+## 15. Ingestion — the ladder has to be built upstream
+
+This is the largest downstream implication, and it touches a verdict in
+`docs/ingestion-pipeline-audit.md`.
+
+**Rungs cannot be generated at compile time.** Summarizing on the hot path is too slow and too
+expensive at the volume a packer needs. The compression ladder therefore has to be *precomputed
+at ingest*: ingestion emits multi-resolution artifacts, not just chunks and embeddings. The
+ingestion audit already raises "stage ingestion instead of fetch-chunk-embed-in-one-pass" as an
+open item; this design gives that item a concrete requirement to satisfy.
+
+**Chunk size and rung boundaries are different axes.** *(Revised 2026-08-27: an earlier draft
+framed this as two competing strategies — "structure for rungs, windows for retrieval." That was
+too binary.)* Chunk size is a **tuned parameter**, driven by artifact category (code vs. doc) and
+by a rough content profile, because retrieval quality measurably improves when chunk size matches
+content style. Rung boundaries are a **containment** question — a structural unit can contain
+several retrieval chunks. Neither derives from the other.
+
+The synthesis both need: **parse once, emit a containment tree.** Retrieval chunks are its leaves,
+sized by profile. Ladder rungs are cuts across it at different depths. One parse generates both.
+
+This resolves `docs/ingestion-pipeline-audit.md` item 3 more cleanly than the earlier draft did.
+The audit found RE's fixed-size windowing and EA's semantic-unit extraction to be a real, confirmed
+divergence — "windowed-chunk RAG vs. semantic-unit RAG" — and ruled `(c)`, leave alone. That
+verdict compared two *outputs*, and it stands as a comparison of outputs. The shareable thing is
+the **tree that produces them**, which neither app currently emits as a first-class artifact.
+
+**Where profiling actually earns its keep.** For code it is largely moot: tree-sitter already
+gives authoritative boundaries, so the tree *is* the profile. Profiling matters where structure is
+weak — prose docs, wikis, generated output, plain text. Two refinements:
+
+- **Profile per document, not per repository.** A README, an ADR, and generated API docs share a
+  repo and nothing else stylistically.
+- **The signals are things RE's survey layer largely computes already** — heading density and
+  depth, code-to-prose ratio, tokens per semantic unit, list/table density, boilerplate ratio. The
+  chunk-tuning profile is a derived view of survey output, not a new tool to acquire.
+
+**And the better instrument is the feedback loop, not a better profiler.** Rough profiling sets the
+prior. Retrieval quality per section, rung distribution (§12), and manifest-linked ratings (§13)
+tune the posterior empirically. This is an argument for treating chunk-size heuristics as
+provisional-and-measurable rather than for investing in more sophisticated up-front profiling.
+
+Two further ingestion-spec consequences:
+
+- **Envelope fields must be captured at ingest.** `source guid`, Egeria `version`, Egeria
+  timestamp, and `fetched_at` (§10) — retrofitting provenance onto already-embedded material is
+  painful and often impossible.
+- **The shared Egeria-family corpus becomes temporal, not a rolling snapshot.** A compile at
+  `as_of=T` needs material as it stood at T. This is a larger change to the materialization model
+  than it first sounds, and it should be decided before the corpus grows further.
+
+## 16. Agent structure and model selection
+
+### Agent structure
+
+The compiler's main structural effect is **taking context assembly away from the agents.** Today
+both apps' specialist agents each gather their own context; under this design they split into
+three roles with different implementations:
+
+| Role | What it is | Implementation |
+|---|---|---|
+| **Resolvers** | produce evidence; no conversation | BeeAI agents *or* plain functions, uniform contract |
+| **Packer** | budget solve, ladder, envelope | **deterministic code — explicitly not an agent** |
+| **Answerer** | consumes packed context, cites it | BeeAI `RequirementAgent` |
+
+The packer being ordinary code is the important line. Every guarantee in §14 — determinism,
+monotonicity, symmetry, the budget ceiling — is unavailable if an LLM decides what to include.
+
+Consequences:
+
+- **Consolidation audit item 2 (shared BeeAI agent base) rises in value**, since resolvers want
+  one uniform contract across both apps.
+- **The per-app classifiers stay divergent (§7), but their output changes**: a classifier now
+  selects a *spec*, not an agent. That is a small change at each call site and is the actual
+  integration point between the existing routing layer and this design.
+- **EA's 10+ specialist agents will partly collapse into resolvers.** Do not do this as a big
+  bang; convert one agent, measure, continue.
+
+### Model selection and tuning
+
+Three roles rather than one, which is the need consolidation audit item 8 recorded as not yet
+existing:
+
+- **Summarizer** — builds ladder rungs. High volume, and per §15 it runs at *ingest*, not at
+  compile. Precomputation inverts the usual economics: because latency no longer matters, this
+  can use a *larger* model than a hot-path summarizer could, once, per artifact.
+- **Answerer** — strong model, sees only packed context.
+- **Judge** — optional, for the §13 evaluation loop.
+
+EA's `_ModelOverrideClient` / `get_planning_llm()` is the mechanism; RE has multi-provider but not
+multi-model.
+
+**The target model is identity-bearing.** Its context window is an input to the budget solve, so a
+different model produces different packing and therefore different content. It belongs on the
+`content_filters` side of EA's partition, not in `performance_hints` — an easy and consequential
+thing to misfile, since "which model" reads like operational tuning.
+
+**Tuning** runs through MLflow (EA's mature implementation, per §12) with labels supplied by the
+manifest-linked feedback of §13. Longer term, a compiler also generates precisely the training
+data for the text→spec fine-tunes already tracked as an option — `(question, spec, outcome)`
+triples fall out of the loop as a byproduct. Noted as a downstream benefit, not a plan.
+
+## 17. EA's compile unit — adopt Investigation, don't invent a concept
+
+§9 flagged this as the largest hole. The proposal is that **EA adopts RE's Investigation rather
+than growing a parallel session concept**, on the grounds that the framing design already built
+the general case:
+
+- An Investigation is **one local row with a nullable `egeria_project_guid`** in all three
+  creation paths, which makes promotion a fill-in rather than a migration.
+- `PersonalProject` is **already one of the four Egeria `Project` classifications** the framing
+  design enumerates (`PersonalProject` / `Task` / `StudyProject` / `Campaign`). A private EA
+  working session is a `PersonalProject`-classified local Investigation, promoted to a bound
+  Egeria Project on the day it needs to be shared or audited — which is exactly the lifecycle a
+  session concept would otherwise have to reinvent.
+
+This is the better answer than a new concept for four reasons: the compile unit is then **shared
+across both apps**, which is what §8's shared package needs to key its cache on; the promotion
+path is designed and its structural decision already argued; per-user partitioning gets a natural
+owner, addressing an item confirmed needed in three separate places (EA plan drafts, Portal
+dashboard-sheet JSON, RE dr.egeria artifacts); and it avoids adding a fourth meaning to the word
+"project," which the framing design §7 identifies as already carrying three.
+
+**Investigation sits above EA's existing two work objects, and replaces neither.** The LGCI Plan
+is imperative and single-run; a Report Spec is declarative and repeatable. An Investigation is the
+container both run inside — the same relationship RE's Investigation has to its surveys.
+
+**Migration is not a constraint** (confirmed 2026-08-27: there are no users yet). What would
+otherwise be the hard part of this — rehoming unscoped `draft_id`s, backfilling scope onto existing
+work — costs compute and schema churn, not coordination. What remains open is placement:
+
+- **Where the table lives.** RE owns the Investigation schema today. The ingestion audit
+  established a third centralization pattern — **cross-schema read** over the shared Postgres
+  instance (`advisor/re_code_symbol_reader.py` reading RE's tables directly, no shared package) —
+  which is the cheapest option here, but needs a deliberate decision about *write* ownership, since
+  EA would be creating Investigations rather than only reading them.
+- **Master-detail parameter inheritance** (unresolved in EA's own report-spec design) and
+  Investigation nesting via `ProjectHierarchy` are the same question about inherited scope, and
+  should be resolved once rather than twice.
+
+## 18. Sequencing — what to protect
+
+With no users, schema churn and re-ingestion are cheap. **The expensive asset is curated
+intellectual work, not data**: the 41 questions and their Purpose/Perspective tagging, the 21
+analyses and their cost-tier assignments, the framing design's model. Data regenerates; tagging
+does not. Sequence to protect the vocabulary, not the schema.
+
+This also restates §14. The guardrails there were argued partly from silent-failure-in-production,
+which does not apply yet. They remain worth building for a different reason: what they protect is a
+sole contributor's debugging time against silent drift, which is the scarcer resource here.
+
+1. **Instruments first** — envelope fields captured at ingest (§10), manifest-linked feedback
+   (§13). Both purely additive. Everything in this document is asserted and unmeasured, and these
+   are what make it measurable; building them first is the same discipline
+   `investigation-framing-design.md` applied to its own dispatch chain.
+2. **The containment tree (§15) second.** The only item with a real clock on it — not because of
+   users, but because re-ingestion cost scales with a corpus that keeps growing.
+3. **`ContextSpec` + packer third, wrapping the existing dispatch chain.** The question catalog,
+   analysis catalog, Purpose/Perspective tagging and rule 17's tiers all become *inputs* to the
+   packer. None of the curated work is invalidated, which is the point.
+4. **EA adopts Investigation and the shared package fourth**, once the packer is proven in RE.
+
+Deliberately deferred: collapsing specialist agents into resolvers (§16 — one at a time, measured),
+the model-role split (§16 — needs the ladder to exist first), and any fine-tuning.
+
+**The one thing to stop investing in now:** context-assembly logic inside specialist agents. If the
+packer takes over assembly, per-agent gathering code is the work most likely to be discarded. Stop
+adding to it rather than continuing to refine it.

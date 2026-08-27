@@ -59,7 +59,7 @@ class TestInitiateAndWait:
         ):
             guid, status, message = initiate_and_wait(
                 qualified_name="qn", display_name="dn", description="desc",
-                request_type="SomeRequestType",
+                governance_engine_name="AssetSurvey", request_type="SomeRequestType",
             )
 
         assert guid == "action-guid-1"
@@ -85,7 +85,7 @@ class TestInitiateAndWait:
         ), patch("resource_explorer.surveyors.egeria_delegated_step.time.sleep"):
             guid, status, message = initiate_and_wait(
                 qualified_name="qn", display_name="dn", description="desc",
-                request_type="SomeRequestType", poll_interval=0.01,
+                governance_engine_name="AssetSurvey", request_type="SomeRequestType", poll_interval=0.01,
             )
 
         assert status == "COMPLETED"
@@ -103,7 +103,7 @@ class TestInitiateAndWait:
             with pytest.raises(RuntimeError, match="did not initiate"):
                 initiate_and_wait(
                     qualified_name="qn", display_name="dn", description="desc",
-                    request_type="SomeRequestType",
+                    governance_engine_name="AssetSurvey", request_type="SomeRequestType",
                 )
 
     def test_raises_timeout_when_never_terminal(self):
@@ -119,7 +119,7 @@ class TestInitiateAndWait:
             with pytest.raises(EgeriaEngineActionTimeoutError):
                 initiate_and_wait(
                     qualified_name="qn", display_name="dn", description="desc",
-                    request_type="SomeRequestType", poll_interval=0.01, timeout=0.02,
+                    governance_engine_name="AssetSurvey", request_type="SomeRequestType", poll_interval=0.01, timeout=0.02,
                 )
 
 
@@ -135,7 +135,7 @@ class TestEgeriaDelegatedStepSurveyor:
             return_value=(automated_curation, metadata_expert),
         ):
             results = EgeriaDelegatedStepSurveyor(
-                project, registry, request_type="SomeRequestType",
+                project, registry, governance_engine_name="AssetSurvey", request_type="SomeRequestType",
             ).run()
 
         assert len(results) == 1
@@ -158,7 +158,7 @@ class TestEgeriaDelegatedStepSurveyor:
             return_value=(automated_curation, metadata_expert),
         ):
             results = EgeriaDelegatedStepSurveyor(
-                project, registry, request_type="SomeRequestType",
+                project, registry, governance_engine_name="AssetSurvey", request_type="SomeRequestType",
             ).run()
 
         assert len(results) == 1
@@ -178,7 +178,7 @@ class TestEgeriaDelegatedStepSurveyor:
             return_value=(automated_curation, metadata_expert),
         ), patch("resource_explorer.surveyors.egeria_delegated_step.time.sleep"):
             results = EgeriaDelegatedStepSurveyor(
-                project, registry, request_type="SomeRequestType",
+                project, registry, governance_engine_name="AssetSurvey", request_type="SomeRequestType",
                 poll_interval=0.01, timeout=0.02,
             ).run()  # must not raise
 
@@ -192,7 +192,7 @@ class TestEgeriaDelegatedStepSurveyor:
             side_effect=RuntimeError("connection refused"),
         ):
             results = EgeriaDelegatedStepSurveyor(
-                project, registry, request_type="SomeRequestType",
+                project, registry, governance_engine_name="AssetSurvey", request_type="SomeRequestType",
             ).run()  # must not raise
 
         assert len(results) == 1
@@ -200,7 +200,7 @@ class TestEgeriaDelegatedStepSurveyor:
         assert "connection refused" in results[0].explanation
 
     def test_step_name_includes_request_type(self, registry, project):
-        surveyor = EgeriaDelegatedStepSurveyor(project, registry, request_type="SomeRequestType")
+        surveyor = EgeriaDelegatedStepSurveyor(project, registry, governance_engine_name="AssetSurvey", request_type="SomeRequestType")
         assert surveyor.step_name == "EgeriaDelegatedStep[SomeRequestType]"
 
     def test_requires_exactly_one_of_request_type_or_action_type(self, registry, project):
@@ -209,7 +209,7 @@ class TestEgeriaDelegatedStepSurveyor:
         with pytest.raises(ValueError, match="exactly one"):
             EgeriaDelegatedStepSurveyor(
                 project, registry,
-                request_type="SomeRequestType",
+                governance_engine_name="AssetSurvey", request_type="SomeRequestType",
                 action_type_qualified_name="GovActionType::Probe",
             )
 
@@ -283,3 +283,28 @@ class TestEgeriaDelegatedStepSurveyorActionTypePath:
             project, registry, action_type_qualified_name="GovActionType::Probe",
         )
         assert surveyor.step_name == "EgeriaDelegatedStep[GovActionType::Probe]"
+
+
+# ── ISSUE-50 retired (2026-08-27) ───────────────────────────────────────────
+def test_the_engine_name_is_required_alongside_a_request_type(project, registry):
+    """`governance_engine_name` is a URL path segment on the initiate endpoint,
+    so a request_type alone cannot address anything.
+
+    pyegeria's initiate_engine_action had no parameter for it until 6.0.18.4,
+    and the omission surfaced as a bare 404 that read as a pyegeria bug
+    (ISSUE-50) rather than a missing argument. Refusing here names it.
+    """
+    with pytest.raises(ValueError) as exc:
+        EgeriaDelegatedStepSurveyor(
+            project, registry, request_type="SomeRequestType")
+    assert "governance_engine_name" in str(exc.value)
+
+
+def test_the_action_type_path_needs_no_engine_name(project, registry):
+    """The GovernanceActionType carries its own executor link, so the engine is
+    resolved server-side. That is now a genuine choice between two valid paths
+    rather than the only one that worked."""
+    surveyor = EgeriaDelegatedStepSurveyor(
+        project, registry,
+        action_type_qualified_name="GovernanceActionType::Demo")
+    assert surveyor._governance_engine_name is None

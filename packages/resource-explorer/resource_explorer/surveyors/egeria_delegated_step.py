@@ -13,16 +13,18 @@ rfa_egeria_sync.py for ToDo status) -- no new pyegeria client work needed
 for this case, confirmed in the plan doc's gap analysis (that's case 2's
 problem, not case 4's).
 
-**Live verification found a real, blocking pyegeria bug (2026-08-17),
-logged as PYEGERIA_ISSUES.md ISSUE-50, not fixed here per standing
-policy**: AutomatedCuration.initiate_engine_action() always 404s -- it
-posts to a URL missing the governance engine's name as a required path
-segment (confirmed against the real Java route, OpenGovernanceResource.
-java's /governance-engines/{governanceEngineName}/engine-actions/
-initiate), and the method has no parameter to supply one.
+**ISSUE-50 is FIXED (pyegeria 6.0.18.4+, confirmed 2026-08-27).**
+initiate_engine_action() used to 404: it posted to a URL missing the
+governance engine's name as a required path segment, and had no parameter
+to supply one. It now takes `governance_engine_name` as its first required
+argument and builds the URL the real Java route
+(/governance-engines/{governanceEngineName}/engine-actions/initiate)
+expects. initiate_and_wait() below passes it, so the direct path is the
+preferred one again: it needs no pre-authored GovernanceActionType per
+delegated step, which was the whole cost of the workaround.
 
-**Workaround, live-verified end to end 2026-08-17** against a real
-platform: AutomatedCuration.initiate_gov_action_type() hits POST .../
+**The workaround, kept and still valid, live-verified 2026-08-17** against
+a real platform: AutomatedCuration.initiate_gov_action_type() hits POST .../
 governance-action-types/initiate -- the same flat URL shape as
 initiate_gov_action_process (no engine-name path segment at all), since a
 GovernanceActionType already carries its own GovernanceActionExecutor
@@ -34,10 +36,11 @@ real Stewardship engine's write-to-audit-log service, confirming Link
 Action to Action Executor's own executor GUID matched the real Stewardship
 engine's GUID from the Java source) followed by a real
 EgeriaDelegatedStepSurveyor.run() call reaching actionStatus COMPLETED
-with a real completion message. initiate_action_type_and_wait() below is
-the primary, currently-viable trigger path; initiate_and_wait() (the
-direct initiate_engine_action() path) is kept for when ISSUE-50 is fixed,
-since it needs no pre-authored GovernanceActionType per delegated step.
+with a real completion message. initiate_action_type_and_wait() remains
+correct and is the right choice when a GovernanceActionType already exists
+-- it carries its own executor link, so the engine is resolved server-side
+from metadata rather than named by the caller. It is no longer the only
+viable path.
 
 **A second, real bug was found and fixed during that same live pass --
 this one RE's own, not pyegeria's**: _poll_action_status() originally read
@@ -52,10 +55,12 @@ genuinely in flight. Fixed here directly (not filed as a PYEGERIA_ISSUES.md
 entry -- this was never pyegeria's bug).
 
 Two triggering primitives, one polling helper, one surveyor wrapper:
-  initiate_and_wait()             -- direct engine-action trigger. Blocked
-                                      by ISSUE-50 today.
+  initiate_and_wait()             -- direct engine-action trigger. Needs
+                                      governance_engine_name; no
+                                      pre-authored element required.
   initiate_action_type_and_wait() -- GovernanceActionType-mediated
-                                      trigger. The workaround; requires a
+                                      trigger. Engine resolved server-side;
+                                      requires a
                                       pre-authored GovernanceActionType
                                       (Dr.Egeria "Create Governance Action
                                       Type" + "Link Action to Action
@@ -175,6 +180,7 @@ def _poll_action_status(
 
 def initiate_and_wait(
     *,
+    governance_engine_name: str,
     qualified_name: str,
     display_name: str,
     description: str,
@@ -191,9 +197,16 @@ def initiate_and_wait(
     AutomatedCuration.initiate_engine_action() and block until it reaches
     a terminal status, or the timeout elapses.
 
-    **Blocked by PYEGERIA_ISSUES.md ISSUE-50 today** (initiate_engine_
-    action() always 404s) -- see initiate_action_type_and_wait() for the
-    currently-viable path.
+    **ISSUE-50 is fixed** (pyegeria 6.0.18.4+, confirmed 2026-08-27).
+    initiate_engine_action() used to 404 because it posted to a URL missing
+    the governance engine's name and had no parameter to supply one; it now
+    takes `governance_engine_name` as its first required argument and builds
+    `.../governance-engines/{name}/engine-actions/initiate`, which is the
+    shape AutomatedCurationResource.java expects.
+
+    This is the preferred path again. Unlike initiate_action_type_and_wait()
+    it needs no pre-authored GovernanceActionType per delegated step -- that
+    authoring overhead existed only to route around the bug.
 
     Returns (engine_action_guid, final_status, completion_message).
     Raises EgeriaEngineActionTimeoutError on timeout, or a plain exception
@@ -204,6 +217,7 @@ def initiate_and_wait(
     """
     automated_curation, metadata_expert = _get_clients()
     guid = automated_curation.initiate_engine_action(
+        governance_engine_name=governance_engine_name,
         qualified_name=qualified_name,
         domain_identifier=domain_identifier,
         display_name=display_name,
@@ -217,7 +231,7 @@ def initiate_and_wait(
     if not guid or guid == "Action not initiated":
         raise RuntimeError(
             f"Egeria did not initiate an engine action for request_type={request_type!r} "
-            f"(qualified_name={qualified_name!r})"
+            f"on engine {governance_engine_name!r} (qualified_name={qualified_name!r})"
         )
     status, completion_message = _poll_action_status(metadata_expert, guid, poll_interval, timeout)
     return guid, status, completion_message
@@ -238,8 +252,9 @@ def initiate_action_type_and_wait(
     block until the resulting engine action reaches a terminal status, or
     the timeout elapses.
 
-    This is the ISSUE-50 workaround -- the currently-viable trigger path
-    for case 4, unlike initiate_and_wait() above. Requires the
+    Originally the ISSUE-50 workaround; now simply the other valid path.
+    Prefer it when the GovernanceActionType already exists, since it carries
+    its own executor link and the engine is resolved server-side. Requires the
     GovernanceActionType to already exist in Egeria (Dr.Egeria "Create
     Governance Action Type" + "Link Action to Action Executor"); this
     function does no authoring itself.
@@ -275,11 +290,11 @@ class EgeriaDelegatedStepSurveyor(BaseSurveyor):
 
     Pass exactly one of:
       request_type               -- direct AutomatedCuration.
-                                     initiate_engine_action() path. Blocked
-                                     by PYEGERIA_ISSUES.md ISSUE-50 today
-                                     (always 404s) -- kept for when that's
-                                     fixed, since it needs no per-step
-                                     Egeria authoring.
+                                     initiate_engine_action() path. Needs
+                                     governance_engine_name alongside it
+                                     (the engine is a URL path segment).
+                                     Preferred: no per-step Egeria
+                                     authoring required.
       action_type_qualified_name -- AutomatedCuration.
                                      initiate_gov_action_type() workaround
                                      path, via a pre-authored
@@ -297,6 +312,7 @@ class EgeriaDelegatedStepSurveyor(BaseSurveyor):
         registry,
         *,
         request_type: str | None = None,
+        governance_engine_name: str | None = None,
         action_type_qualified_name: str | None = None,
         display_name: str = "",
         description: str = "",
@@ -310,7 +326,19 @@ class EgeriaDelegatedStepSurveyor(BaseSurveyor):
                 "EgeriaDelegatedStepSurveyor needs exactly one of "
                 "request_type or action_type_qualified_name, not both/neither"
             )
+        if request_type and not governance_engine_name:
+            # The engine name is a path segment on the initiate endpoint, so a
+            # request_type alone cannot address anything. Refused here rather
+            # than at the HTTP layer, where it surfaced as a bare 404 for two
+            # months (ISSUE-50) and read as a pyegeria bug rather than a
+            # missing argument.
+            raise ValueError(
+                "EgeriaDelegatedStepSurveyor needs governance_engine_name "
+                "alongside request_type -- the engine name is part of the "
+                "initiate URL, not a body field"
+            )
         super().__init__(project, registry)
+        self._governance_engine_name = governance_engine_name
         self._request_type = request_type
         self._action_type_qualified_name = action_type_qualified_name
         target = request_type or action_type_qualified_name
@@ -342,6 +370,7 @@ class EgeriaDelegatedStepSurveyor(BaseSurveyor):
                     f"EngineAction::{self.project.slug}::{self._request_type}::{int(time.time())}"
                 )
                 guid, status, completion_message = initiate_and_wait(
+                    governance_engine_name=self._governance_engine_name,
                     qualified_name=qualified_name,
                     display_name=self._display_name,
                     description=self._description
