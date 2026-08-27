@@ -33,6 +33,18 @@
 
 analyses:
 
+  interface_surface:
+    findings_kind: interface_surface
+    source: surveyors/sub_surveyors/interface_surface.py:detect
+    checks:
+      - http_api
+      - grpc
+      - graphql
+      - messaging
+      - soap
+      - cli
+      - published_spec
+
   community_support:
     findings_kind: community_support
     source: surveyors/sub_surveyors/community_support.py:assess

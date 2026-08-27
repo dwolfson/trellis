@@ -104,6 +104,15 @@ class SurveyResult:
     surveyed_at: datetime = field(default_factory=datetime.utcnow)
     annotations: list[Annotation] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)   # non-fatal issues during survey
+    #: The re_analysis_step keys this run actually executed, set by
+    #: SurveyOrchestrator, which is the one place that knows exactly.
+    #:
+    #: Recorded so a publish can say WHICH analyses it published rather than
+    #: inferring it from annotation types afterwards. That inference held only
+    #: while every type had a single producer, and stopped being true the
+    #: moment a second analysis produced a QualityScoreAnnotation — after which
+    #: no analysis could earn an attributable publish at all.
+    steps_run: list[str] = field(default_factory=list)
     # Same failures as `errors`, keyed by the step that raised. Needed because a
     # single run can now carry steps belonging to several different scheduled
     # analyses (scheduler.py coalesces same-repo due schedules into one run so

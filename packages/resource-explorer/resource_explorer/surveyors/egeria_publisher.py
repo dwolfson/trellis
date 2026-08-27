@@ -37,6 +37,26 @@ class EgeriaConnectionError(RuntimeError):
     """Raised when Egeria credentials are absent or the platform is unreachable."""
 
 
+def _analyses_for_steps(step_keys) -> set:
+    """The analyses whose steps these are.
+
+    An analysis counts as published when ANY of its steps ran: a partial run
+    still published real findings under its name, and reporting nothing would
+    lose them. Imported lazily — the adapter imports this module.
+    """
+    if not step_keys:
+        return set()
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+        )
+    except ImportError:  # pragma: no cover - defensive
+        return set()
+    wanted = set(step_keys)
+    return {aid for aid, keys in REPO_ANALYSIS_STEP_MAP.items()
+            if wanted & set(keys)}
+
+
 class EgeriaPublisher:
     """
     Converts a SurveyResult into Egeria API calls:
@@ -129,6 +149,15 @@ class EgeriaPublisher:
                 self._registry.record_published_annotation_types(
                     result.project_slug,
                     {a.annotation_type.value for a in result.annotations},
+                    report_guid,
+                )
+                # Which ANALYSES this publish covered, recorded directly rather
+                # than inferred later from shared annotation types. The
+                # orchestrator put the step keys on the result; mapping them is
+                # a lookup, not a guess.
+                self._registry.record_published_analyses(
+                    result.project_slug,
+                    _analyses_for_steps(result.steps_run),
                     report_guid,
                 )
             except Exception as exc:

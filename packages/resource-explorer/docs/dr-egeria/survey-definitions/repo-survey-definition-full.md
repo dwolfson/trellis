@@ -304,6 +304,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Interface Surface
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_interface_surface
+
+### Description
+What can be talked to, and whether the contract is written down — from the file inventory and declared dependencies. A committed openapi.yaml is 'specified'; a fastapi dependency is only 'implied', and never counts as a published API.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_interface_surface |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Community Support
 
 ### Qualified Name
@@ -797,6 +816,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_ci_quality
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_interface_surface
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_interface_surface
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_community_support
