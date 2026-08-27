@@ -202,6 +202,25 @@ structural improvement, but did not close the gap — see SS-1.
 
 ---
 
+## Trellis Consolidation (RE ↔ EA)
+
+Full detail: `docs/re-ea-consolidation-audit.md` (root of the Trellis workspace). Cross-app
+items that require changes in both `resource-explorer` and `egeria-advisor` are filed in
+`packages/resource-explorer/docs/Backlog.md` under "Platform & orchestration" (TC-1 through
+TC-3 below point there); this section holds the items scoped to EA alone.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| TC-1 | Adopt the shared `QueryCache` once extracted | open | See `packages/resource-explorer/docs/Backlog.md`, "extract a shared query cache" — EA's `query_cache.py` is named/documented as LRU but isn't (plain `dict`, no `move_to_end()` on access, just FIFO eviction). The extraction fixes this for EA as a side effect; EA's hit/miss/`most_popular` telemetry gets layered onto the shared class rather than lost. |
+| TC-2 | Adopt the shared BeeAI agent base/runner once extracted | open | See `packages/resource-explorer/docs/Backlog.md`, "extract the BeeAI agent base/runner" — `advisor/agents/base.py`'s `BaseAdvisorAgent` and RE's `BaseExplorerAgent` hand-roll the same `_build_agent()`/`_run_agent()` BeeAI-in-a-thread pattern, copy-pasted rather than convergent. Check first whether the second, "legacy... not using BeeAI" `BaseAgent` class in this file is still referenced anywhere — it should probably be deleted regardless of this extraction. |
+| TC-3 | Adopt RE's dual-backend registry connection-management pattern | open | See `packages/resource-explorer/docs/Backlog.md`, "EA should adopt RE's dual-backend registry connection-management pattern" — `db_consolidated.py`'s `ConsolidatedDBManager` reinvents a narrower, Postgres-only version of RE's `ConnectionWrapper`/SQLAlchemy dual-engine abstraction. Schemas stay separate; only the connection/DDL-provisioning mechanism would move. Not urgent while EA's Postgres-only assumption holds. |
+| TC-4 | Add Phoenix/OTel tracing — EA has none today | open | RE's `observability/phoenix_client.py` (47 lines) is a real, hardened Arize Phoenix/OTel setup — `openinference.instrumentation.beeai` + `BatchSpanProcessor`, a reachability pre-check avoiding a measured 7.89s dead-collector penalty, non-blocking export. `grep` for phoenix/Phoenix across `advisor/` returns nothing. Since both apps use BeeAI and RE's client is config-driven, it's plausibly portable close to verbatim rather than a rewrite. |
+| TC-5 | Refactor `web/app.py` toward RE's router-per-domain factory pattern | open | RE's `web/app.py` is 106 lines — `lifespan` context manager, 20 `include_router()` calls to one file per domain in `web/routes/`, and a deliberate `/health` (liveness) vs. `/health/ready` (DB-exercising) split fixing a real prior incident. EA's `web/app.py` is 1924 lines — ~50+ endpoints (including streaming SSE and 25+ plan/draft CRUD endpoints) decorated directly on `app`, with only `admin.py` actually extracted as a router. Mechanical, EA-internal refactor; the two apps' route sets don't overlap so this isn't a shared-package move. Large — worth scoping into sub-tasks (e.g. one router per existing logical group: plans, drafts, reports, auth) rather than one pass. |
+| TC-6 | Check whether `query_classifier.py` is still live | open | Not an RE/EA question — found while comparing routing modules across the two apps. EA carries three parallel-looking classifiers: `query_processor.py` (674 lines, the active priority-tiered pattern system), `query_classifier.py` (487 lines, a `QueryType`/`QueryTopic` dataclass-based system that looks structurally redundant with `query_processor.py`'s own patterns), and `llm_intent_classifier.py` (99 lines, the LLM fallback for ambiguous cases). Confirm whether `query_classifier.py` is actually called from anywhere before deciding whether to remove it. |
+| TC-7 | `code_symbol_store.py`'s import from `advisor/ingest.py` (renamed from `ingest_to_milvus.py`) is dead | resolved | Confirmed 2026-08-25: the only `code_symbol_store` import in `ingest.py` is inside `CodeIngester._extract_java_symbols()`, itself already marked "Deprecated, no longer called from `ingest_file()`" (AST-ownership-transfer plan decision D8, kept as a rollback safety net). Not called anywhere live — no further action needed. `ingest_to_milvus.py` itself has been renamed to `ingest.py` (2026-08-25, part of the Milvus-code-removal pass) since its content never actually referenced Milvus, only its filename did. |
+
+---
+
 ## Done (recent)
 
 | Item | Date | Notes |

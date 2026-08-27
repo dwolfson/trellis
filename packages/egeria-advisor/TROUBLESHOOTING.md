@@ -19,7 +19,7 @@ Run these commands to verify:
 # Output: Shows version 0.1.0 and all dependencies
 
 # Test imports
-.venv/bin/python -c "import pymilvus; import langchain; print('✓ Working!')"
+.venv/bin/python -c "import pgvector; import langchain; print('✓ Working!')"
 # Output: ✓ Working!
 ```
 
@@ -92,7 +92,7 @@ ls -la .venv/
 # Should show: Version 0.1.0
 
 # 5. Core imports work
-.venv/bin/python -c "import pymilvus, langchain, ollama, docling; print('✓ All imports OK')"
+.venv/bin/python -c "import pgvector, langchain, ollama, docling; print('✓ All imports OK')"
 # Should show: ✓ All imports OK
 
 # 6. CLI works (with .env file)

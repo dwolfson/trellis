@@ -37,16 +37,36 @@ class _Boom:
 def test_an_unreadable_status_is_not_rendered_as_an_offer():
     """The subtle one, and the reason this wrapper exists.
 
-    `ingestion_status()` absorbs its own read failure and returns
-    `not-attempted` with detail "ingestion status unreadable" — so "nobody has
-    read the site" and "we could not tell" arrive as the SAME state. Rendering
-    keys on state, so passing it through would produce a confident offer to
-    ingest a site we know nothing about: absence dressed as a finding, again.
+    "Nobody has read the site" and "we could not tell" must not arrive as the
+    same thing: rendering keys on state, so passing the second through as the
+    first would produce a confident offer to ingest a site we know nothing
+    about — absence dressed as a finding, again.
 
-    It also must not take out the card it decorates. A missing offer is not a
-    missing result.
+    They used to arrive as one state, and this told them apart by matching
+    `ingestion_status`'s DETAIL STRING. That coupling is gone: `unknown` is a
+    state of its own, and this asserts the BEHAVIOUR rather than the sentinel,
+    so it survives however the distinction is implemented. It also must not take
+    out the card it decorates — a missing offer is not a missing result.
     """
     assert _doc_ingestion_state(_Boom(), "any") == {"state": "", "detail": ""}
+
+
+def test_the_unknown_state_is_what_the_wrapper_keys_on():
+    """Named explicitly so the contract between these two modules is a value,
+    not a phrase. If `ingestion_status` renames the state, this fails loudly;
+    when it merely reworded the detail, the old sentinel failed silently."""
+    import inspect
+
+    from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        _doc_ingestion_state as f,
+    )
+    from resource_explorer.surveyors.sub_surveyors.arch_lens import ING_STATES, ING_UNKNOWN
+
+    assert ING_UNKNOWN in ING_STATES
+    assert "ING_UNKNOWN" in inspect.getsource(f)
+    assert "ingestion status unreadable" not in inspect.getsource(f), (
+        "the detail-string sentinel is gone; the state is the contract"
+    )
 
 
 def test_the_state_is_carried_on_the_architecture_results():
@@ -79,29 +99,16 @@ def test_every_live_state_is_one_the_renderer_handles():
     assert not unhandled, f"live states with no render branch: {unhandled}"
 
 
-def test_the_unreadable_sentinel_still_exists_upstream():
-    """A guard on someone else's wording, which is the fragile part.
-
-    `_doc_ingestion_state` distinguishes "nobody read the site" from "we could
-    not tell" by matching the detail string `ingestion_status()` returns on a
-    read failure — because both arrive as `not-attempted`. If that wording
-    changes, the match silently stops working and the card goes back to
-    confidently offering to ingest sites whose status merely failed to load.
-
-    Silently is the problem. This fails loudly instead, and should be deleted
-    the day `ingestion_status()` returns a distinct state for the two — an offer
-    already made to that effect.
-    """
-    import inspect
-
-    from resource_explorer.surveyors.sub_surveyors import arch_lens
-
-    src = inspect.getsource(arch_lens.ingestion_status)
-    assert "ingestion status unreadable" in src, (
-        "the sentinel _doc_ingestion_state matches on has changed. Either update "
-        "that match, or better, switch to a distinct state if ingestion_status() "
-        "now provides one."
-    )
+# The sentinel test that used to sit here is deleted, as its own docstring said
+# it should be: it guarded a match on ingestion_status()'s DETAIL STRING, which
+# was only ever a stand-in for a distinction the state could not express.
+# `ING_UNKNOWN` now exists, the wrapper keys on it, and
+# test_the_unknown_state_is_what_the_wrapper_keys_on asserts the contract as a
+# VALUE — which fails loudly if renamed, where the wording failed silently when
+# reworded. Keeping both would guard a dependency that no longer exists.
+#
+# It earned its keep first: it went red on the very commit that changed the
+# wording, in the same run, before the behaviour drifted.
 
 
 def test_an_unreadable_status_never_produces_an_offer():
@@ -117,4 +124,45 @@ def test_an_unreadable_status_never_produces_an_offer():
     rendered = _doc_ingestion_state(_Unreadable(), "x")
     assert rendered["state"] != arch_lens.ING_NOT_ATTEMPTED, (
         f"an unreadable status ({state}/{detail!r}) would render as an offer"
+    )
+
+
+def test_every_live_skip_reason_has_an_explanation():
+    """A skip reason with no branch renders as a bare label.
+
+    The website-ingestion card leads with the REASON when nothing was stored,
+    because a zero there is usually the system being right — measured
+    2026-08-25, 20 of 60 repos are in that state. A reason the UI cannot explain
+    reduces to the raw enum value, which is better than a bare 0 but still makes
+    the reader guess whether it is a fault.
+
+    Checked against the reasons actually occurring in the corpus rather than the
+    constants, so a new one added upstream fails here rather than shipping as an
+    unexplained label.
+    """
+    import re
+    from pathlib import Path
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
+
+    reader = ANALYSIS_KINDS["website_ingestion"].results.results_reader
+    reg = ProjectRegistry()
+    live = set()
+    for p in reg.list_all():
+        res = reader(reg, p.slug)
+        if not res.get("chunks") and res.get("reason"):
+            live.add(res["reason"])
+    if not live:
+        pytest.skip("no skipped ingestions in this corpus")
+
+    index = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html"
+    block = index.read_text().split("const _WEBSITE_SKIP_REASON = {")[1].split("};")[0]
+    explained = set(re.findall(r"^\s*(\w+):", block, re.M))
+
+    missing = live - explained
+    assert not missing, (
+        f"skip reason(s) with no explanation in the card: {sorted(missing)}. "
+        "They render as the raw enum value, leaving the reader to guess whether "
+        "a zero is a fault or the system being right."
     )

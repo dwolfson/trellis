@@ -7,7 +7,7 @@ silently returned None against the installed tree-sitter-java grammar,
 making is_private always False and @-annotation capture always empty).
 
 Kept in place, not deleted, as a rollback safety net (decision D8) — not
-wired into CodeIngester.ingest_file() anymore (see advisor/ingest_to_milvus.py).
+wired into CodeIngester.ingest_file() anymore (see advisor/ingest.py).
 
 Java symbol extractor using tree-sitter.
 
@@ -371,5 +371,5 @@ class JavaSymbolExtractor:
 
 
 def extract_java_symbols(file_path: Path) -> list[JavaSymbol]:
-    """Convenience wrapper used by ingest_to_milvus."""
+    """Convenience wrapper used by advisor.ingest."""
     return JavaSymbolExtractor().extract_file(file_path)

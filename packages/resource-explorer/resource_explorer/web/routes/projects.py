@@ -676,11 +676,54 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         log_analysis_run(registry, "repo", slug, project.display_name, "error", error, analysis_id)
         return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=error)
     summary = f"{len(result.annotations)} annotation(s)."
-    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id)
+
+    # Auto-publish, gated the same way survey_definition_executor.py's Survey
+    # Definition path is (has_assigned_egeria_project) — this is the "actual
+    # ask" this gating pass exists for: an Assessment/Analysis "Run →" against
+    # an assigned resource now reaches Egeria without a separate manual
+    # Publish click, same as a Survey Definition run already does. Scoped to
+    # exactly the steps that just ran (this `result`, not a fresh full
+    # survey), same as the manual Publish button's own `steps` scoping — so
+    # last-published attribution (get_last_published_annotation_types) stays
+    # accurate to what actually ran. Publish failure must not turn an
+    # otherwise-successful survey into a reported error: the findings are
+    # real and stored either way.
+    # Three-state, not a bool: None (never attempted — unassigned or no
+    # annotations) and False (attempted, failed) both keep the card's ☁
+    # Publish button visible as the only/recovery path; True hides it, since
+    # the whole reason to hide it is "nothing left to do here."
+    published = None
+    if result.annotations and registry.has_assigned_egeria_project("repo", slug):
+        try:
+            from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+            EgeriaPublisher(registry=registry).publish(result)
+            published = True
+        except Exception as exc:
+            published = False
+            summary += f" (⚠ auto-publish to Egeria failed: {exc})"
+            log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
+
+    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id, published=published)
     return AnalysisRunResult(
         status="ok", slug=slug, analysis_id=analysis_id,
         message=summary,
     )
+
+
+def _sole_producer(annotation_type: str) -> str:
+    """The one analysis_id that can produce this annotation type, or "".
+
+    Shared types resolve to "" rather than to a winner: crediting one analysis
+    with a publish that any of thirteen could have produced makes that card
+    state a fact it cannot know.
+    """
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+    owners = [
+        a["id"] for a in get_analyses("repo", include_egeria_live=False)
+        if annotation_type in (a.get("annotation_types") or [])
+    ]
+    return owners[0] if len(owners) == 1 else ""
 
 
 @router.get("/{slug}/analyses/last-activity")
@@ -710,19 +753,48 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
     last_run = registry.get_analysis_last_run("repo", slug)
+    # Surveys that ran but carry no step detail (older rows). Their analyses
+    # cannot be credited, but they also cannot honestly be called never-run.
+    unattributed = last_run.pop("__unattributed_surveys__", {}).get("count", 0)
     published_by_type = registry.get_last_published_annotation_types(slug)
 
     result: dict[str, dict] = {}
     for a in get_analyses("repo", include_egeria_live=False):
         run = last_run.get(a["id"], {})
-        pub_at = max(
-            (published_by_type[t] for t in (a.get("annotation_types") or []) if t in published_by_type),
-            default="",
-        )
+        # Publish attribution, in two tiers. Annotation types are shared --
+        # ResourceMeasureAnnotation has 15 producers, ClassificationAnnotation
+        # 13 -- so "any of my annotation types was published" credited every
+        # sibling analysis with a publish it had no part in. That is what put
+        # "Published today" on cards that had never run.
+        #
+        # A type only ONE analysis can produce is real evidence THIS analysis
+        # was published. A shared one only shows the repo was published while
+        # this analysis's types were involved, which is weaker and is labelled
+        # as such -- the same 'analysis' vs 'repo' distinction the Survey
+        # Definition cards already draw.
+        own_types = a.get("annotation_types") or []
+        exact = [t for t in own_types if t in published_by_type and _sole_producer(t) == a["id"]]
+        shared = [t for t in own_types if t in published_by_type]
+        if exact:
+            pub_at, pub_scope = max(published_by_type[t] for t in exact), "analysis"
+        elif shared:
+            pub_at, pub_scope = max(published_by_type[t] for t in shared), "repo"
+        else:
+            pub_at, pub_scope = "", ""
         result[a["id"]] = {
             "last_run_at": run.get("last_run_at", ""),
             "last_run_status": run.get("last_run_status", ""),
+            # "measured" / "never_run" / "not_established" -- the third is a
+            # repo that WAS surveyed by runs we cannot attribute to analyses.
+            # Calling that "never run" beside an attributable publish is what
+            # produced "Never run" and "Published today" on one card.
+            "last_run_basis": ("measured" if run.get("last_run_at")
+                               else "not_established" if unattributed else "never_run"),
+            "unattributed_surveys": unattributed,
+            "last_run_via": run.get("last_run_via", ""),
+            "last_run_partial": run.get("last_run_partial", False),
             "last_published_at": pub_at,
+            "last_published_scope": pub_scope,
         }
     return result
 
@@ -832,7 +904,19 @@ def _results_have_data(results) -> bool:
     if not results:
         return False
     if isinstance(results, dict):
-        return any(_results_have_data(v) for v in results.values())
+        # `_status` is an ENVELOPE, not content — it describes why a payload is
+        # empty, so counting it as data makes every explained emptiness claim to
+        # hold something. That is the opposite of what this function exists for:
+        # a card saying "skipped, here is why" would be reported as having
+        # results and then render as an explanation of nothing.
+        #
+        # `surveyed_at` and `detail` are excluded for the same reason — a
+        # timestamp is evidence a step ran, not evidence it found anything, and
+        # a reader that returns only a timestamp has nothing to show.
+        # (_renderMetricsResults in index.html already filters exactly these
+        # three for the same reason; this is the server-side half of it.)
+        envelope = {"_status", "surveyed_at", "detail"}
+        return any(_results_have_data(v) for k, v in results.items() if k not in envelope)
     if isinstance(results, (list, tuple, set)):
         return len(results) > 0
     if isinstance(results, bool):

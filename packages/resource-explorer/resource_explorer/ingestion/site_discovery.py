@@ -124,7 +124,8 @@ def _tokens(text: str) -> set:
     return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(t) > 2}
 
 
-def host_relates_to_project(url: str, owner_repo: str) -> bool:
+def host_relates_to_project(url: str, owner_repo: str,
+                            also_related: "tuple | list | set" = ()) -> bool:
     """Does this site plausibly belong to THIS project?
 
     The hardest case the pilot exposed is not a badge, it is a real
@@ -140,11 +141,23 @@ def host_relates_to_project(url: str, owner_repo: str) -> bool:
     `docling-project.github.io` all pass; `docling-nlp` / `docs.astral.sh` does
     not.
 
-    **Deliberately a refusal with a stated reason, not a silent skip.** A
-    project whose documentation genuinely lives on an unrelated domain will be
-    refused here, and that must be visible and correctable rather than looking
-    like an absence — which is the whole failure class this codebase keeps
-    meeting.
+    **`also_related` is how project families get in.** A name comparison knows
+    nothing about them, so `trellis` was refused for declaring
+    `egeria-project.org` — and it is an Egeria project, sitting in the registry's
+    own `egeria` group alongside four repos declaring that exact homepage. The
+    evidence was already recorded; this function simply could not see it. The
+    caller passes its group siblings' `owner/repo` names and any of them may
+    carry the match.
+
+    Deliberately the caller's job rather than a registry lookup here: this module
+    is pure and testable without a database, and the alternative — reaching into
+    the registry from a URL helper — would make every test of a string
+    comparison need a project store.
+
+    **Still a refusal with a stated reason, not a silent skip.** A project whose
+    documentation genuinely lives on an unrelated domain, with no family to
+    vouch for it, will be refused — and that must be visible and correctable
+    rather than looking like an absence.
     """
     host = (urlparse(url).hostname or "").lower().removeprefix("www.")
     host_tokens = _tokens(host.replace(".", " "))
@@ -152,6 +165,8 @@ def host_relates_to_project(url: str, owner_repo: str) -> bool:
     host_tokens -= {"com", "org", "net", "io", "dev", "app", "github", "docs",
                     "www", "readthedocs", "gitlab", "pages"}
     project_tokens = _tokens(owner_repo.replace("/", " "))
+    for sibling in also_related or ():
+        project_tokens |= _tokens(str(sibling).replace("/", " "))
     if not host_tokens or not project_tokens:
         return True          # nothing to compare — do not refuse on no evidence
     if host_tokens & project_tokens:

@@ -1309,9 +1309,74 @@ that is about to change is the expensive order to do this in.
 
 ---
 
+#### A curated field allowlist silently drops anything added upstream — three instances in one day
+
+Found 2026-08-25 while auditing ingestion (`docs/ingestion-pipeline-audit.md`): `_note`'s prop
+filter dropped a newly-added `ingested_by` field with no error, no log line, and no visible
+symptom beyond attribution coming back empty. The same session hit the identical shape twice
+more the same day, in unrelated code: `arch_recovery/persist.py` silently dropping
+`operationCount`, and a `detail` field before either of those. Each instance is individually
+defensible — a hand-written allowlist is a normal way to control what a serialized shape
+exposes — but three unrelated instances of "add a field upstream, watch it vanish downstream
+with nothing to say why" in one day is the same shape this project's silent-failure testing
+strategy (see "four silent-failure classes" above) was built to catch, just not this
+particular one.
+
+**Not yet scoped as a fix — this entry is the "notice it, track it" step**, filed rather than
+guessed at further:
+- Find every hand-maintained field allowlist/filter of this shape (props filters, persisted
+  payload shapes, cross-schema readers like `advisor/re_code_symbol_reader.py`'s aliasing) and
+  check whether each is still correct against its current source shape, not just its shape when
+  written.
+- Decide whether the general fix is procedural (a code-review checklist item: "does this
+  allowlist need a matching entry for that new field?") or structural (a passthrough/explicit-
+  exclude default instead of an explicit-include default, or a test asserting the allowlist's
+  keys are a superset of what upstream actually produces) — that choice needs whoever owns
+  each call site, not a blanket answer here.
+- Out of scope for `docs/ingestion-pipeline-audit.md` itself, since it's a codebase-wide pattern
+  rather than an RE-vs-EA ingestion-pipeline-duplication finding — that doc points here.
+
+---
+
 ### Platform & orchestration
 
-#### Distributed survey orchestration via a flow tool (Prefect) — early prototype, not yet integrated
+#### FIXED — a server restart mid-survey left activity_log rows stuck at 'running' forever
+
+Confirmed live 2026-08-26: restarting the web server to pick up a git pull killed two
+in-flight Survey Definition runs (`RepoFullSurvey` and `RepoArchitectureDiscovery` on
+`deep_causality`) mid-flight. Each survey's individual steps had genuinely completed and
+published to Egeria — visible as their own `ok` activity_log rows — but the *outer wrapper*
+row each survey run creates up front (`status='running'`, written by `survey_definitions.py`'s
+`run_survey_definition_route`, `projects.py`'s scouting-scan route, and the equivalent
+database/filesystem routes) is only ever marked terminal by one line at the very end of the
+background `daemon=True` thread doing the work. Kill the process, and that line never runs —
+nothing on startup reconciled it, so the row read "running" indefinitely, with no way to tell
+"still going" from "died and nobody noticed."
+
+**Fixed independently, twice, same day — the ownership-based version won.** This session's
+first pass added `ProjectRegistry.reconcile_orphaned_running_activity()`: a blanket "every
+`running` row is orphaned on any startup" reconciler. **That was wrong** — multiple RE
+processes routinely share one database during development (confirmed live: this session's
+server and the user's, running concurrently against the same rows), so a blanket sweep on
+*any* process's startup would falsely resolve a peer's genuinely-still-running survey out from
+under it, mid-write.
+
+**What actually shipped** (`4e91ba2`, "Runs that stopped stop claiming to be running"):
+`resource_explorer/run_reconciler.py`, wired into `web/app.py`'s `_lifespan()`. Reconciles by
+**ownership**, not blanket sweep or age — a running row records the pid and process start time
+of whoever owns it, and is resolved only when that exact process is provably gone. Age (six
+hours) is the fallback only for rows with no owner recorded, an order of magnitude past the
+longest measured real survey (~16 minutes). Marks resolved rows `interrupted`, not `error` —
+"we know it stopped, not that it failed." Fails safe throughout: an owner that can't be
+verified is left alone (`left_alone` in the return value), because "I can't tell if this is
+alive" must never resolve to "it's dead" — a real timezone bug in an early version did exactly
+that (silently routed every row to `left_alone` and resolved nothing, for three days, while
+reporting success). The blanket version and its tests were removed during the merge that
+brought this branch and `main` together (2026-08-26) rather than kept alongside the real fix.
+
+---
+
+#### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
 
 RE's only execution model today is either synchronous in-process (`SurveyOrchestrator`) or the `scheduler.py` daemon-thread poller (see the "Periodic / triggered survey scheduling" item below). Neither can run survey work *near* a protected asset (a database inside a VPC, a filesystem edge agent) without deploying RE itself there, and neither gives retries/backoff/task-level telemetry for free.
 
@@ -1340,6 +1405,110 @@ a legitimate deployment choice, it just has to be asked for by name.
 **Not yet done:** ~~`executes_at: prefect` is not wired into `survey_definition_executor.py`'s dispatch loop~~ **(CORRECTED 2026-08-19, verified against this tree: it IS wired — `_use_prefect` at `survey_definition_executor.py:162-167`. Note `:167` — when `config.prefect.enabled` is true, *every* step marked `executes_at: resource-explorer` is rerouted to Prefect, so a global flag overrides what a definition explicitly asked for. Open question whether that is intended.)**; no staged-candidate registry states in `registry.py`; no deployment/worker actually configured or run against. This needs review as a real design decision (own dependency on a flow engine is a significant infra commitment) before the prototype code is treated as a real feature — not yet reflected as its own line item, currently living only in these two design docs.
 
 Related/overlapping: "Periodic / triggered survey scheduling" below (this may be the eventual replacement for the daemon thread it says is only a short-term fix), "Coherent selective-cataloging model" below (the staging-registry funnel is a concrete proposal for it), and "Unify survey launching" above once a launcher needs to route to a third execution engine, not just two.
+
+**VERIFIED LIVE 2026-08-26 — the "needs review as a real design decision" above is answered:
+real dispatch works end-to-end**, tested against a local `prefect server` + a deployed
+`re_survey_flow` + a running worker, not just code review. Three more bugs found and fixed in
+the process, none caught by the earlier code-only review:
+
+- `prefect deploy` (the CLI command) itself failed — `.deploy(work_pool_name=...)` alone
+  requires an image or remote storage location; fixed to `.from_source(source=<this
+  checkout>, entrypoint=...)`, correct for a `process`-type work pool running on the same
+  machine as the caller.
+- `_run_prefect_step_api` fetched the completed flow run's result via
+  `client.resolve_value(state.data)`, which doesn't exist on `PrefectClient` in Prefect 3.x —
+  every completed API-dispatched run raised `AttributeError`, was caught by the same broad
+  `except` the 2026-08-20 finding above already flagged, and silently ran the step's work a
+  **second time** via local fallback. Fixed to `state.result(raise_on_failure=True)`, and
+  `re_survey_flow` now declares `persist_result=True` (Prefect 3.x doesn't persist results by
+  default, and a state fetched back via `read_flow_run` from a different process than the one
+  that ran the flow has nothing to fall back to without it).
+- **Cancelling a flow run silently didn't stop the work.** Found testing the new cancel
+  endpoint (see below): `state.is_cancelled()` correctly raised, but that exception was caught
+  by the *same* broad `except` as "server unreachable," so a cancelled run fell back to running
+  the step again locally — cancel had no actual effect. Fixed with a dedicated
+  `PrefectFlowRunCancelled` exception that `run_prefect_step` re-raises instead of falling back
+  from; everything else (a real connection failure, a bug) still falls back as before.
+
+**Default flipped:** `PrefectConfig.enabled` now defaults `True` (was `False`) — safe with no
+server running, confirmed by the fallback behavior above; adds per-step connection-attempt
+overhead for `executes_at: prefect` steps only, until a server exists. `route_local_steps`
+stays `False` by default — routing every plain step through Prefect multiplies overhead by
+however many steps a survey has, unproven at volume; left for a later pass once the admin
+panel below makes it observable. `.env.example` and CLAUDE.md's External Services list now
+document the required local setup (`prefect server start`, `resource-explorer prefect deploy`,
+`resource-explorer prefect worker`) — previously undocumented anywhere.
+
+**One step opted in so far:** `repo_arch_coupling` (the real `git log` history clone,
+long-running/thrash-prone in a way the cheaper steps aren't) now declares
+`executes_at: prefect` in `scripts/generate_repo_survey_definition.py`'s `PREFECT_ROUTED_STEPS`
+— a deliberate, narrow opt-in, not a blanket switch. **This is a mechanism, not yet a live
+change** — the corresponding Egeria-side Survey Definition step is published via a one-time
+Dr.Egeria markdown run (`dr_egeria_survey_publisher.py`), which needs a live Egeria instance
+and human-in-the-loop execution; not done as part of this pass.
+
+**New: an Admin "⚡ Prefect" panel** (`web/routes/prefect_status.py`,
+`loadAdminPrefectPanel()`/`renderAdminPrefectPanel()` in `index.html`) — flow-run status
+grouped by resource (slug/step tags added to `create_flow_run_from_deployment`), a real Cancel
+button (`POST /api/prefect/flow-runs/{id}/cancel`, verified live to actually stop a running
+step, not just mark it), and a link out to Prefect's own UI for full per-task logs. Degrades
+gracefully (a status flag, not a 500) when no server is reachable.
+
+**Scope boundary, worth restating here too:** all of the above is about **locally-dispatched**
+survey steps. `executes_at: egeria` steps are coordinated by Egeria itself — none of this gives
+RE any more visibility into those. See "Some surveys are coordinated by Egeria, not RE" below.
+
+**Bare-host only for now, deliberately (2026-08-26):** `scripts/prefect_up.sh`/`prefect_down.sh`
+(`make prefect-up`/`prefect-down`) bring the server/work pool/deployment/worker up idempotently
+on this machine, but nothing containerizes them — no launchd/systemd unit either. Trellis isn't
+ready for containerization yet (explicit user call), so this stays a bare-host convenience
+script rather than becoming a container prematurely.
+
+**A Prefect container already exists — in `egeria-workspaces-fs`, not Trellis — and isn't
+started.** `egeria-workspaces-fs/compose-configs/optional-associated-runtimes/prefect/
+docker-compose.yaml` defines `prefect-server` (`prefecthq/prefect:3-python3.12`, matches the
+3.x this integration was verified against) and `prefect-worker`, both on `egeria_network`.
+Reviewed, not modified — three concrete gaps to close whenever Trellis containerization
+actually happens, so they aren't rediscovered from scratch:
+
+1. **Work pool name mismatch.** The container's worker runs `prefect worker start --pool
+   egeria-pool`; RE's own default (`PrefectConfig.work_pool` in `config.py`) is
+   `default-agent-pool`. As configured today, RE would deploy to a pool this worker never
+   polls — every step would sit `SCHEDULED` forever, silently, no error. Either the container's
+   pool name or RE's default needs to change to match (or `PREFECT_WORK_POOL` set explicitly in
+   whichever environment talks to this container).
+2. **The worker container has no access to RE's code.** It builds from
+   `../../../runtime-volumes/prefect/user_code` — a generic flow-code mount, not
+   `resource_explorer`. `re_survey_flow` imports `resource_explorer.surveyors.
+   survey_definition_executor` and `resource_explorer.registry` directly; nothing in the
+   compose file installs the `resource-explorer` package or mounts the RE checkout into that
+   container, so the worker would fail on import the moment it tried to run RE's flow for
+   real. Needs either the package installed into a custom image (a new Dockerfile, not the
+   generic `user_code` one) or an equivalent volume mount plus dependency install.
+3. **Separate `prefect` Postgres database, unconfirmed whether it's provisioned.** The server
+   points at `postgresql+asyncpg://prefect_user:user4prefect@egeria-shared-postgres:5442/
+   prefect` — a distinct database/role from the `egeria_advisor` database RE and EA already
+   share. Not verified from a Trellis checkout whether that role/database already exists on
+   the shared Postgres instance or still needs creating, the way RE's own `resource_explorer`
+   schema did (see root README's "Databases" section).
+
+None of these are hard blockers, but (2) in particular is real integration work, not a config
+tweak — worth sizing before assuming this container is a quick swap-in for `prefect_up.sh`.
+
+---
+
+#### Some surveys are coordinated by Egeria, not RE — a separate visibility question, deliberately deferred
+
+Raised 2026-08-26 alongside the Prefect work above, and explicitly scoped out of it by the
+user: `executes_at: egeria` survey steps are coordinated by Egeria itself, not by RE's local
+executor or Prefect. RE has no more visibility into those than it had before this pass (no
+flow-run, no local thread, no activity_log row updated mid-run) — the "are my surveys making
+progress / how do I cancel one / where's the log" questions this whole thread started from have
+a real, currently-unanswered version for this category specifically. Needs its own design pass:
+what does Egeria itself expose for a running `GovernanceActionProcess` (status, cancellation,
+logs), and how would RE surface that the same way `web/routes/prefect_status.py` now does for
+the local/Prefect case. Not investigated yet — flagged so it isn't assumed solved by the
+Prefect work above.
 
 ---
 
@@ -1383,6 +1552,59 @@ Originally: filling out the local filesystem survey pop-up and clicking Run appe
 Every repo download (full ingest, incremental refresh, Coarse Profile's `refresh_profile()`, symbol-only extraction, single-collection re-embed — confirmed all 5 call sites 2026-08-10) already downloads into a `tempfile.TemporaryDirectory()`, self-cleaning on the `with` block's exit — success, error, or exception. No local clone persists anywhere by design; disk usage from a repo download is transient, existing only for the duration of that one run. The one non-`TemporaryDirectory` temp file (notebook parsing, `NamedTemporaryFile(delete=False)`) is explicitly `os.unlink()`'d in a `finally` block.
 
 The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-download skips the `with` block's cleanup entirely, potentially leaving an orphaned temp dir (partial zipball) in the OS temp directory. Rare, self-limiting (each leftover is at most one repo's zip; the OS's own temp-dir conventions eventually reclaim it), and not actively guarded against today. A small startup sweep clearing stale resource-explorer-tagged temp dirs from a previous crash would close it — not worth building unless actual `/tmp` bloat shows up in practice.
+
+---
+
+#### HIGH — extract a shared query cache into a Trellis package; it fixes a live bug in Egeria Advisor
+
+Full detail: `docs/re-ea-consolidation-audit.md` item 1.
+
+RE's `query_cache.py` (124 lines) is genuine LRU (`OrderedDict` + `move_to_end()` on access) with
+TTL and an optional Redis backend. EA's `query_cache.py` (169 lines) is named and documented as
+LRU throughout but **is not** — plain `dict`, no reordering on access, just FIFO eviction of the
+oldest insertion. EA does have hit/miss/`most_popular` telemetry RE lacks.
+
+**Proposed:** a shared `trellis-`package `QueryCache` built from RE's TTL/Redis/invalidation
+design as the base, with EA's stats/`most_popular` reporting layered on top — same shape as
+`trellis-vectorstore`'s extraction (each app keeps a thin adapter over the shared class). Fixes
+EA's eviction bug as a side effect of the extraction, not as separate work.
+
+---
+
+#### HIGH — extract the BeeAI agent base/runner shared by RE and EA
+
+Full detail: `docs/re-ea-consolidation-audit.md` item 2.
+
+RE's `resource_explorer/agents/base.py` (`BaseExplorerAgent`, 200 lines) and EA's
+`advisor/agents/base.py` (`BaseAdvisorAgent`, 83 lines) both hand-roll the same BeeAI
+`RequirementAgent` construction and the same "sync caller in an async context → spawn a thread
+with a fresh event loop" workaround, down to matching inline comments explaining why BeeAI needs
+a fresh event loop in a thread. This is copy-pasted logic, not two teams converging on the same
+idiom independently — same tier of confidence as `trellis-microflow`'s extraction.
+
+**Proposed:** a shared `BeeAIAgentRunner`/`BaseAgent` mixin covering `_build_agent()`/
+`_run_agent()`. RE's slug-inference/clarification helpers and EA's separate (apparently dead)
+"legacy... not using BeeAI" `BaseAgent` scaffolding stay app-specific — check whether that
+second EA class is still referenced anywhere before or alongside this extraction.
+
+---
+
+#### MEDIUM — EA should adopt RE's dual-backend registry connection-management pattern
+
+Full detail: `docs/re-ea-consolidation-audit.md` item 3.
+
+RE's `registry.py` has a mature `ConnectionWrapper` + SQLAlchemy dual-engine abstraction
+(SQLite↔Postgres placeholder/DDL translation, pooling, same-transaction column introspection
+working around a real Postgres visibility bug) that RE already reuses across `registry.py`,
+`observability/metrics_collector.py`, and `feedback_store.py`. EA's `db_consolidated.py`
+(`ConsolidatedDBManager`, 283 lines) reinvents a narrower, Postgres-only version of the same
+idea — same shape as the Java-symbol-extraction finding in the ingestion audit: one app's
+implementation is simply more mature, and the other never adopted it.
+
+**Proposed:** the schemas stay separate (project/resource state vs. metrics/audit/symbol
+tables are genuinely different data) — only the connection-management primitive moves, with EA
+adopting it. Not urgent while EA's Postgres-only assumption holds, but worth doing before EA
+needs a SQLite fallback path RE has already solved.
 
 ---
 

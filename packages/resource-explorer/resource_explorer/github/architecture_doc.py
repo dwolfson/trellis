@@ -87,6 +87,13 @@ _OVERVIEW_HINTS = ("readme", "architecture", "overview", "design", "components",
 
 _DOC_EXTS = (".md", ".mdx", ".rst", ".txt")
 
+#: Where a documentation-site repository keeps its prose. `contents` is not a
+#: typo for `content` — Gatsby uses the plural and `MarquezProject/website` is
+#: the live case; both are listed because guessing which convention a site
+#: follows is not something a keyword search should have to do.
+_SITE_CONTENT_DIRS = ("docs", "content", "contents", "website/pages", "pages",
+                      "src/pages", "guides", "documentation")
+
 
 @dataclass
 class DocLens:
@@ -108,6 +115,9 @@ class DocLens:
     #: ingested site, and collapsing them would over-state the weaker one.
     evidence_kind: dict = field(default_factory=dict)
     undetected: list = field(default_factory=list)   # doc names we did NOT propose
+    #: Whether `undetected` means anything. See `undetected_is_meaningful`.
+    undetected_usable: bool = False
+    undetected_reason: str = ""
     notes: list = field(default_factory=list)
 
     @property
@@ -206,6 +216,46 @@ def find_mentions(text: str, components: list) -> dict:
     return found
 
 
+def undetected_is_meaningful(terms: list, components: list) -> tuple:
+    """`(usable, reason)` — is `undetected` a list of things we failed to detect,
+    or just a document's own section structure?
+
+    Measured 2026-08-25, and the shapes are not close:
+
+    ```
+    amundsen      4 terms / 43 components    100% matched   an overview
+    sqlglot      12 terms / 11 components     50%           an overview
+    milvus     1140 terms / 206 components     2%           25 design documents
+    openlineage 713 terms / 124 components     3%           a documentation site
+    ```
+
+    The rule is a **comparison, not a threshold**: a document that emphasises
+    more things than the repository has components is describing its own
+    structure — headings, steps, options — and its unmatched emphasis says
+    nothing about components we missed. An architecture overview emphasises
+    fewer things than there are components, because it names the important ones.
+
+    Deliberately not tuned. `terms <= components` needs no constant, cannot be
+    quietly adjusted to make a number look better, and states the claim it rests
+    on: **emphasis at scale is structure, not naming.**
+    """
+    n_terms, n_comps = len(terms), len(components)
+    if not n_terms:
+        return False, "no emphasised terms were extracted"
+    if not n_comps:
+        return False, "no components to compare against"
+    if n_terms > n_comps:
+        return False, (
+            f"the document set emphasises {n_terms} terms against {n_comps} "
+            f"recovered component(s) — at that ratio emphasis is section "
+            f"structure rather than component naming, so unmatched terms are "
+            f"headings, not components we missed")
+    return True, (
+        f"{n_terms} emphasised term(s) against {n_comps} component(s) — few "
+        f"enough that emphasis plausibly names components, so unmatched terms "
+        f"are worth reading")
+
+
 def _component_keys(component) -> set:
     """The names a component could legitimately be called in prose."""
     keys = set()
@@ -256,6 +306,16 @@ def apply(owner_repo: str, components: list, client=None,
             for slug in mentions:
                 lens.evidence_kind[slug] = EVIDENCE_MENTIONED
             lens.read_sources.append(("ingested-site", collection))
+            # Say WHY, rather than leaving the default False to be read as "we
+            # looked and it was not meaningful". Ingested text is rendered HTML
+            # with no markdown emphasis, so `extract_terms` has nothing to work
+            # from and `undetected` is not computed on this path at all — which
+            # is a different fact from having computed it and found it useless.
+            lens.undetected_usable = False
+            lens.undetected_reason = (
+                "not computed: this came from an ingested site, whose text has no "
+                "markdown emphasis to extract, so components were matched by "
+                "mention rather than by emphasis")
             return lens
         lens.notes.append(
             f"{len(unreadable)} documentation site(s) located and none readable from "
@@ -308,6 +368,8 @@ def apply(owner_repo: str, components: list, client=None,
     matched_terms = set(lens.documented.values())
     lens.undetected = [t for t in lens.terms if t not in matched_terms
                        and t not in lens.documented]
+    lens.undetected_usable, lens.undetected_reason = undetected_is_meaningful(
+        lens.terms, components)
     return lens
 
 
@@ -385,6 +447,33 @@ def _read_document(owner_repo: str, art, client, notes: list) -> str:
     except Exception as exc:  # noqa: BLE001
         notes.append(f"could not fetch {target}:{path or '/'} — {exc}")
         return ""
+
+    # A bare sibling POINTER (no `:path`) resolves to the repo root, whose only
+    # markdown is usually a build README. Measured 2026-08-25: nine of thirteen
+    # located documents are sibling pointers, and reading their roots yielded
+    # 2 terms for `openlineage`, 5 for `marquez`, 0 for `trellis`.
+    #
+    # The content is there — `OpenLineage/docs` has `docs/guides`,
+    # `MarquezProject/website` has `contents/`, `docling-project/website` has
+    # `website/pages`. What none of them has is a FILE NAMED "architecture",
+    # which is what `doc_locations` searches for and why it returns a pointer
+    # rather than a page. **Filename keyword matching is the wrong instrument
+    # for a documentation website**: the architecture is described across its
+    # guides and concept pages, not filed under that word.
+    #
+    # So when we hold only a pointer, read the site's documentation directories
+    # broadly instead of its root. Same shallow discipline, same file cap.
+    if isinstance(entry, list) and not path:
+        broadened = []
+        for name in _SITE_CONTENT_DIRS:
+            try:
+                broadened.extend(repo.get_contents(name))
+            except Exception:  # noqa: BLE001
+                continue
+        if broadened:
+            notes.append(f"{target} resolved to the repository rather than a page; "
+                         f"read its documentation directories instead")
+            entry = broadened
 
     entries = entry if isinstance(entry, list) else [entry]
     files, subdirs = [], []

@@ -82,7 +82,7 @@ extraction, not deduplicating existing code — out of scope for an ingestion-pi
 
 | | RE | EA |
 |---|---|---|
-| Chunk unit | Fixed-size token windows with overlap, split on function/class boundaries where possible (`code_parser.py`, `CodeChunk`) | One embedding per semantic unit — one vector per `CodeElement`/`DocumentSection`, no windowing (`ingest_to_milvus.py`'s `DataIngester.ingest_code_elements`/`ingest_documentation`) |
+| Chunk unit | Fixed-size token windows with overlap, split on function/class boundaries where possible (`code_parser.py`, `CodeChunk`) | One embedding per semantic unit — one vector per `CodeElement`/`DocumentSection`, no windowing (`ingest.py`'s `DataIngester.ingest_code_elements`/`ingest_documentation`) |
 
 **Verdict: (c) — leave alone, deliberately.** This is a real design difference in retrieval
 strategy (windowed-chunk RAG vs. semantic-unit RAG), not accidental duplication. Neither app's
@@ -111,6 +111,11 @@ Fixed-catalog + persistent-clone is a reasonable fit for EA's shape; dynamic-cat
 zipball-no-clone is a reasonable fit for RE's. Forcing one orchestrator on both is the
 highest-risk, lowest-confidence move available here and shouldn't be attempted before EA work
 resumes enough to know what EA's pipeline actually needs to become.
+
+*Narrower correction (measured, not this pass's original claim):* within RE's own orchestrator,
+sibling repos that share a host are genuinely re-doing the same work — see item 8. That's real
+ingestion-pipeline duplication and belongs to this item's scope even though the RE-vs-EA
+orchestrator split above stays as-is.
 
 ### 6. Coverage measurement itself has a trap — a real, concurrently-measured finding
 
@@ -156,25 +161,118 @@ correct GUID). Not an ingestion-pipeline duplication issue (items 1–5 don't to
 historical ingestion data pulled from before the fix should be treated as measured against a
 catalog that was, for some repos, genuinely wrong — not just incomplete.
 
+### 8. Within-run duplicate ingestion across sibling repos — FIXED
+
+Originally measured as: `egeria-project.org` ingested **three separate times in one run** — once
+each for `egeria_git`, `egeria_python_git`, and `egeria_workspaces_git` — 6018 chunks, 187 pages,
+~175 seconds, every time. RE's `web_docs` collections are host-keyed by design specifically so
+sibling repos that share a doc site land in one destination collection — but nothing memoized
+the *work*, only the destination.
+
+**Status: fixed** (`sub_surveyors/website_ingestion.py`, same day). Numbers below are historical,
+kept for the before/after:
+
+```
+before   egeria_git 79s · egeria_python_git 46s · egeria_workspaces_git 49s
+after    0.4s · 0.2s · 0.2s
+```
+
+**The shape of the fix corrects this doc's original framing, and is worth recording as the
+better answer.** This audit's recommendation called it "run-scoped memoization." That's not
+what was built, and the person who fixed it explained why: `SurveyOrchestrator.run()` is
+**per project** — there is no run spanning sibling repos to memoize within. The fix is instead
+keyed on the **collection's own state** ("has this collection been ingested recently, with
+content in it") — which also correctly dedupes siblings surveyed days apart, by the scheduler,
+or one at a time from the UI, none of which a within-run cache would ever catch. **"Ingest-once
+semantics on a shared collection" is the accurate name for this, and it's a strictly larger fix
+than what this doc originally proposed.** Filed here as a correction to the audit's own
+recommendation, not just a status update — the general lesson (worth carrying into any future
+audit written before seeing the actual fix) is that "memoize the repeated work" defaults to
+whatever scope the audit happened to be looking at (a run, here), when the right scope is
+usually a property of the data (a collection's staleness), not the caller.
+
+Two conditions the fix deliberately does **not** treat as "already done," both worth an audit
+knowing are handled rather than assuming:
+- **A run that stored nothing** — `milvus` had recorded a *completed* ingest with zero chunks
+  after 400 failed fetches; skipping re-ingestion because a completed record exists would make
+  that failure permanent.
+- **Staleness** — a 24-hour constant, so a daily scheduled survey re-ingests once a day rather
+  than once per sibling repo per day.
+
+And the skip path still registers the collection on the repo being skipped — the query router
+searches a repo's own collection list, so skipping the fetch without that registration would
+leave a repo unable to search a site it points at, which would make the "saving" cost the thing
+the ingest was for.
+
+**Also measured, not yet chased down:** a bug where `detail["ingested"]` was hardcoded `True`
+regardless of outcome — `milvus` recorded `ingested: True` after 400/400 sitemap-page fetches
+failed and 685 seconds were spent, while the adjacent `StepOutcome` (`unverified`, from
+`known_positive=bool(fetched)`) was correct the whole time. Since fixed (`ingested` now reads
+`bool(chunks_added)`), by the same concurrent session — noted here because it means any
+ingestion-coverage numbers pulled from before the fix over-report, the same caveat as item 7 but
+for a different field. Current corpus snapshot after a 38-repo bulk run: 25 ingested, 20
+`web_docs` collections; refusals split `self_published` (13) / `non_doc_host` (2) /
+`unrelated_host` (1) / `code_host` (1) — the last two are new guards, one of which caught a real
+bug (a homepage resolving to someone else's documentation site and pulling 3096 chunks of it
+into the wrong collection, before the guard existed).
+
+**Open question, deliberately not answered here:** ingestion currently fetches, chunks, and
+embeds in one pass with no staging/decision point — the dead-site case above (8 unchecked
+assumptions, one bad one costing 685s before anything noticed) is the concrete argument for
+profiling/staging *before* deciding whether and how to ingest. Whether that's worth building is
+a product/design call this audit doesn't have the standing to make on its own — recorded as a
+Follow-up below rather than a verdict.
+
 ## Recommendation
 
 1. **Extend the existing cross-schema-read pattern to Python symbol extraction** (item 1)
    once EA's Python ingestion targets (pyegeria etc.) are also registered as RE projects — ask
    whoever ran the AST-ownership-transfer plan whether that was the actual blocker, rather than
    re-deriving it. This is the only item in this audit with a clear, proven playbook to reuse.
-2. **Don't touch** items 2, 3, or 5 — each is a confirmed, reasonable divergence, not
-   duplication.
+2. **Don't touch** items 2, 3, or 5 (RE-vs-EA orchestrator split) — each is a confirmed,
+   reasonable divergence, not duplication.
 3. **Nothing further on embeddings** (item 4) — already resolved via the `trellis-vectorstore`
    Protocol seam.
+4. ~~Fix item 8's within-run duplication~~ — **done.** Confirms this audit's own method: the
+   item flagged lowest-risk/highest-confidence was the one acted on first, and fixed same-day.
+   The shape that shipped (collection-state-keyed, not run-scoped) corrected this doc's original
+   proposal — see item 8.
 
 ## Follow-ups (not part of this pass)
 
 - Write a real design doc for the "AST-ownership-transfer plan" (currently only exists as
   in-code docstrings scattered across ~15 files in both packages) — the next person to touch
   this area shouldn't have to `grep` for it the way this audit did.
-- `advisor/ingest_to_milvus.py` is still named for the pre-pgvector-migration vector store
-  (mirrors resource-explorer's own historical rule 9 note — same class of drift, unaddressed
-  on the EA side). A rename, not a behavior change.
+- ~~`advisor/ingest_to_milvus.py` is still named for the pre-pgvector-migration vector store~~
+  — **done**, renamed to `advisor/ingest.py` (2026-08-25), alongside removing
+  `packages/egeria-advisor/airflow/dags/incremental_update_dag.py`, an orphaned DAG with live
+  `pymilvus`/`airflow` imports — neither package is a dependency anywhere in the workspace, and
+  nothing else referenced the file. Two operational docs (`TROUBLESHOOTING.md`,
+  `VENV_SETUP_GUIDE.md`) had import-check snippets that still said `import pymilvus`, which
+  would have failed for a new developer following them — corrected to `pgvector`. Historical
+  design docs mentioning Milvus (dozens, under `docs/design/`) and
+  `resource-explorer/scripts/migrate_vectors_milvus_to_pg.py` (the completed migration script
+  itself) were deliberately left alone, same rationale as RE's own rule 9: historical record,
+  not live code.
 - Confirm with the user whether EA's fixed 5-repo catalog should eventually register those
   repos as RE projects (making item 1's extension possible) — that's a product decision, not
   an engineering one, and shouldn't be assumed here.
+- **Stage ingestion instead of fetch-chunk-embed-in-one-pass** (raised alongside item 8):
+  website ingestion currently makes eight unchecked assumptions between "found a homepage" and
+  "chunks are embedded" — the homepage is the docs site, a sitemap finds the pages, a plain
+  client can fetch them, tag-stripping yields text, one chunk size fits everything, every page
+  is worth embedding, the site is one version, the content isn't already held. The dead-site
+  case in item 8 (all 400 fetches failing, 685 seconds spent before anything noticed) is the
+  concrete argument for profiling/staging *before* committing to a full ingest — deciding
+  whether and how, not just whether. Whether that's worth the added complexity is a design call
+  this audit deliberately leaves open rather than assumes.
+- **Out of scope for this doc, flagged for tracking elsewhere:** a concurrent session hit the
+  same bug shape three times in one day — a curated field allowlist silently dropping anything
+  added upstream without saying so (`_note`'s prop filter dropping `ingested_by`,
+  `arch_recovery/persist.py`'s `operationCount`, and a `detail` field before that). Each is
+  individually defensible, but three in one day across unrelated code suggests a repeated
+  pattern rather than three accidents. It's a general codebase-hygiene finding, not an RE-vs-EA
+  ingestion-pipeline-duplication one, so it doesn't get its own item in *this* doc — but it's
+  real and worth a tracking issue or backlog entry of its own. **Filed:** `docs/Backlog.md`,
+  "Corpus, signals & testing" — "A curated field allowlist silently drops anything added
+  upstream — three instances in one day."

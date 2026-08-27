@@ -56,9 +56,12 @@ from resource_explorer.surveyors.sub_surveyors import (
     ArchLensSurveyor,
     ArchSummarySurveyor,
     CiQualitySurveyor,
+    CommunitySupportSurveyor,
+    CveScanSurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
     DocumentationSurveyor,
+    FossScorecardSurveyor,
     FileInventorySurveyor,
     GitStatisticsSurveyor,
     WebsiteIngestionSurveyor,
@@ -509,6 +512,36 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Read-only at survey time over already-parsed findings (parsing
         # happens once at ingest, per this surveyor's own docstring) — no
         # fetch, no re-scan here.
+    ),
+    "repo_community_support": StepInfo(
+        "repo_community_support", CommunitySupportSurveyor,
+        "Community support as separate dimensions — attention, participation, "
+        "channels — rather than one number. repository_health's community_score "
+        "is dominated by stars and forks, and scores a four-contributor project "
+        "100/100; this reports the weakest dimension instead of averaging it away.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+    ),
+    "repo_cve_scan": StepInfo(
+        "repo_cve_scan", CveScanSurveyor,
+        "Dependency advisories from OSV.dev, over dependencies the manifest "
+        "parser already recorded. Reports coverage with the count: declared "
+        "dependencies only, and only those with a pinned, parseable version.",
+        ["RequestForActionAnnotation", "ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        # One batched call to a public advisory database — no repo download,
+        # and nothing fetched about the repo itself.
+        fetch_cost="api",
+    ),
+    "repo_foss_scorecard": StepInfo(
+        "repo_foss_scorecard", FossScorecardSurveyor,
+        "OpenSSF-Scorecard-shaped checks computed from data already held — an "
+        "unevaluable check reports unknown and is excluded from the score, "
+        "rather than scored zero as OpenSSF's own tool does.",
+        ["QualityScoreAnnotation"],
+        accepts_surveyed_at=True,
+        # Reads project_stats and other analyses' findings — no fetch of its
+        # own, the same relationship repo_ci_quality has with its own data.
     ),
     "repo_maturity": StepInfo(
         "repo_maturity", MaturitySurveyor,
@@ -995,7 +1028,48 @@ def _security_features_results(registry, slug: str) -> dict:
         {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"], "confidence": r["confidence"]}
         for r in rows
     ]
-    return {"findings": findings}
+    if findings:
+        return {"findings": findings}
+
+    # No findings has two very different causes, and an empty list tells them
+    # apart for nobody.
+    #
+    # GitHub returns `security_and_analysis` ONLY to callers with admin access
+    # to the repository. For a third-party repo it comes back empty however many
+    # times this runs — the analysis is not failing, it is structurally
+    # impossible, which is a fact about GitHub's API and not about the run.
+    # Measured 2026-08-25: 2 of 60 repos in this corpus have any findings, and
+    # both are the operator's own. The other 58 rendered as an empty card.
+    #
+    # `skipped_by_design` is the honest state and its reason is required, for
+    # exactly this: a skip with no stated reason is indistinguishable from a
+    # failure on the screen.
+    stats = registry.get_latest_project_stats(slug) or {}
+    if not stats:
+        # No stats at all: the step this reads from has never run for this repo,
+        # which is a third distinct cause and must not be folded into either of
+        # the others. Stated rather than left as a bare empty list.
+        return {
+            "findings": [],
+            "_status": {
+                "state": result_status.NEVER_RUN,
+                "hint": "Repository statistics have not been fetched for this repo yet.",
+            },
+        }
+    raw = stats.get("security_and_analysis_json")
+    visible = bool(raw) and raw not in ("{}", "null")
+    if not visible:
+        return {
+            "findings": [],
+            "_status": result_status.skipped(
+                "GitHub only returns security feature settings to repository "
+                "admins, so these are invisible for a repo you do not own. "
+                "Not a gap in the repository.",
+                gate="github_admin_only",
+            ),
+        }
+    # Visible and genuinely nothing enabled — a real, final answer.
+    return {"findings": []}
 
 
 def _security_features_trend(registry, slug: str) -> list[dict]:
@@ -1021,6 +1095,124 @@ def _ci_quality_results(registry, slug: str) -> dict:
         for r in rows
     ]
     return {"findings": findings}
+
+
+def _community_support_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "community_support")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _community_support_headline(registry, slug: str) -> dict | None:
+    """The WEAKEST dimension, never an average.
+
+    Averaging is what let 683 stars mask four contributors in
+    repository_health's community_score. A reader deciding whether to depend on
+    something needs the weakest link named, not smoothed out.
+    """
+    rows = _community_support_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    by_name = {r["check_name"]: r["label"] for r in rows}
+    if by_name.get("attention_exceeds_participation") == "yes":
+        return {"label": "widely used, narrowly maintained", "tone": "warn"}
+    participation = by_name.get("participation") or ""
+    if participation in ("sole_maintainer", "small_team"):
+        return {"label": participation.replace("_", " "), "tone": "warn"}
+    if participation:
+        return {"label": f"{participation} participation", "tone": "good"}
+    return {"label": "participation not established", "tone": "warn"}
+
+
+def _cve_scan_results(registry, slug: str) -> dict:
+    """Findings plus coverage, and coverage is not optional here.
+
+    A clean CVE result means "none of the dependencies we could check had an
+    advisory". Without `checked`/`unqueryable`/`ecosystems_seen` beside it, that
+    is indistinguishable from "this repo has no vulnerable dependencies" — a
+    claim this analysis cannot make, since it sees declared dependencies only.
+    """
+    rows = registry.query_findings(slug, "cve_scan")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    metrics = registry.query_metrics(slug, "cve_scan") or {}
+    out = {"findings": findings}
+    for key in ("advisories", "packages_affected", "checked", "unqueryable"):
+        if key in metrics:
+            out[key] = metrics[key]
+    detail = metrics.get("detail") or {}
+    if isinstance(detail, dict):
+        for key in ("ecosystems_seen", "recorded", "scanned", "excludes_transitive"):
+            if key in detail:
+                out[key] = detail[key]
+    return out
+
+
+def _cve_scan_trend(registry, slug: str) -> list[dict]:
+    return registry.query_metrics_history(slug, "cve_scan", "advisories")
+
+
+def _cve_scan_headline(registry, slug: str) -> dict | None:
+    data = _cve_scan_results(registry, slug)
+    if not data.get("scanned"):
+        return None
+    advisories = int(data.get("advisories") or 0)
+    checked = int(data.get("checked") or 0)
+    recorded = int(data.get("recorded") or checked)
+    if advisories:
+        return {"label": f"{advisories} advisor{'y' if advisories == 1 else 'ies'} "
+                         f"across {int(data.get('packages_affected') or 0)} package(s)",
+                "tone": "bad"}
+    # A clean result never states itself without its coverage.
+    return {"label": f"none in {checked} of {recorded} declared dependenc(ies)",
+            "tone": "good" if checked == recorded else "warn"}
+
+
+def _foss_scorecard_results(registry, slug: str) -> dict:
+    """Findings plus the aggregate, which is the point of a scorecard.
+
+    `checks_evaluated`/`checks_unknown` travel WITH the score. A scorecard
+    number without its coverage is what this analysis exists to avoid: 8.0
+    over five checks and 8.0 over twelve are different claims.
+    """
+    rows = registry.query_findings(slug, "foss_scorecard")
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    metrics = registry.query_metrics(slug, "foss_scorecard") or {}
+    out = {"findings": findings}
+    for key in ("score", "checks_evaluated", "checks_unknown"):
+        if key in metrics:
+            out[key] = metrics[key]
+    return out
+
+
+def _foss_scorecard_trend(registry, slug: str) -> list[dict]:
+    return registry.query_metrics_history(slug, "foss_scorecard", "score")
+
+
+def _foss_scorecard_headline(registry, slug: str) -> dict | None:
+    data = _foss_scorecard_results(registry, slug)
+    if not data.get("findings"):
+        return None
+    score = data.get("score")
+    if score is None:
+        return {"label": "no check could be evaluated", "tone": "warn"}
+    evaluated = int(data.get("checks_evaluated") or 0)
+    unknown = int(data.get("checks_unknown") or 0)
+    return {
+        "label": f"{score}/10 over {evaluated} check(s)"
+                 + (f", {unknown} not evaluable" if unknown else ""),
+        "tone": "good" if score >= 7 else "warn" if score >= 4 else "bad",
+    }
 
 
 def _ci_quality_trend(registry, slug: str) -> list[dict]:
@@ -1393,6 +1585,132 @@ def _architecture_interfaces_results(registry, slug: str) -> dict:
     return {"deployments": out}
 
 
+def _architecture_summary_results(registry, slug: str) -> dict:
+    """The architecture summary, read back.
+
+    The step persisted nothing until 2026-08-25 — it computed a summary,
+    returned it as an annotation and wrote no row, so there was nothing for a
+    results view to read and every run recomputed from scratch. Found by the
+    end-to-end audit rather than by the step failing, because it never failed.
+    """
+    rows = registry.query_findings(slug, "architecture_summary") or []
+    if not rows:
+        return {"state": result_status.NEVER_RUN,
+                "message": "No architecture summary yet — run the analysis."}
+    row = rows[-1]
+    detail = row.get("detail_json") or row.get("detail") or {}
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:  # noqa: BLE001
+            detail = {}
+    return {"summary": row.get("summary", ""), "depth": row.get("label", ""),
+            "surveyed_at": row.get("surveyed_at", ""), **detail}
+
+
+def _architecture_doc_lens_results(registry, slug: str) -> dict:
+    """Which components the project's own documentation names, and from where.
+
+    `evidence_kind` is carried per component and MUST NOT be flattened by a
+    renderer — and this docstring asserted that before the persistence provided
+    it, which is how a promise in prose outran the data. 212 rows carried none.
+    `tests/test_persisted_detail_contracts.py` now asserts it against real rows
+    rather than against this sentence: emphasis in a source document is a stronger claim than a mention
+    in an ingested site's text, and a reader who cannot tell them apart will
+    over-trust the weaker one. Group or mark them structurally rather than
+    styling them, which the presentation session's own argument settles — a
+    style difference assumes the reader is looking for one.
+    """
+    # `query_findings` returns the latest row PER SCOPE, and a lens run is a
+    # whole-resource event — so a scope that was documented in an earlier run
+    # and is not documented now keeps its old row forever, and reads as current.
+    # Measured 2026-08-25: three such rows survived a full corpus refresh, on
+    # `docling_eval` and `docling_java`, because those scopes stopped matching
+    # and nothing removes a finding that is no longer produced.
+    #
+    # So take the newest timestamp across the whole kind and report only rows
+    # from that run. The stale rows stay in the table — this is a read-side
+    # correction, not a deletion — but they stop being presented as the current
+    # answer, which is the part that misleads.
+    # The run marker is the authority on what "current" means: a run that
+    # documents nothing writes only this, so without it the newest rows are
+    # whatever the last successful run left behind.
+    latest = ""
+    for row in registry.query_findings(slug, "architecture_doc_lens") or []:
+        if (row.get("check_name") or "") == "lens_run":
+            latest = max(latest, str(row.get("surveyed_at") or ""))
+
+    rows_by_scope = {}
+    for scope in registry.query_finding_scopes(slug, "architecture_doc_lens") or []:
+        rows = [f for f in (registry.query_findings(slug, "architecture_doc_lens", scope) or [])
+                if (f.get("check_name") or "") == "documented_by"]
+        if not rows:
+            continue
+        rows_by_scope[scope] = rows
+        if not latest:                     # no marker yet (rows predate it)
+            latest = max(latest, max(str(f.get("surveyed_at") or "") for f in rows))
+
+    findings = []
+    for scope, rows in rows_by_scope.items():
+        for f in rows:
+            if str(f.get("surveyed_at") or "") != latest:
+                continue
+            detail = f.get("detail_json") or f.get("detail") or {}
+            if isinstance(detail, str):
+                try:
+                    detail = json.loads(detail)
+                except Exception:  # noqa: BLE001
+                    detail = {}
+            findings.append({
+                "component": scope, "label": f.get("label", ""),
+                "summary": f.get("summary", ""),
+                "term": detail.get("term", ""), "evidence": detail.get("evidence", ""),
+                "date": detail.get("date", ""),
+                "evidence_kind": detail.get("evidence_kind", ""),
+            })
+    if not findings:
+        # The run marker is what separates these. "Nobody has run the lens here"
+        # and "the lens ran and the documentation named nothing we recovered"
+        # are different facts about the repository, and the second is a real
+        # answer — the same distinction `never_run` vs `nothing_found` exists to
+        # make, which this reader collapsed until the marker existed to tell
+        # them apart.
+        if latest:
+            return {"state": result_status.NOTHING_FOUND,
+                    "message": "The architecture documentation was consulted and named "
+                               "none of the components recovered here. That is an answer "
+                               "about this project's documentation, not a missing run."}
+        return {"state": result_status.NEVER_RUN,
+                "message": "The architecture document has not been consulted for this "
+                           "resource yet."}
+    return {"findings": findings, "count": len(findings)}
+
+
+def _architecture_summary_headline(registry, slug: str) -> dict | None:
+    r = _architecture_summary_results(registry, slug)
+    if r.get("state"):
+        return None                      # never run — the card's own empty state
+    n, doc = r.get("components", 0), r.get("documented", 0)
+    if not r.get("complete", True):
+        # A summary that lost half its input still reads as a confident answer,
+        # which is why partial-ness has to survive into the one line every
+        # caller sees.
+        return {"label": f"Summary incomplete — {n} candidate(s), some unread",
+                "status": "warn"}
+    return {"label": (f"{doc} documented of {n} candidate component(s)" if doc
+                      else f"{n} candidate component(s), none documented"),
+            "status": "info" if doc else "warn"}
+
+
+def _architecture_doc_lens_headline(registry, slug: str) -> dict | None:
+    r = _architecture_doc_lens_results(registry, slug)
+    if r.get("state"):
+        return None
+    n = r.get("count", 0)
+    return {"label": f"{n} component(s) named by the project's own documentation",
+            "status": "info"}
+
+
 def _doc_ingestion_state(registry, slug: str) -> dict:
     """`{state, detail}` for this repo's documentation site, for rendering.
 
@@ -1403,14 +1721,16 @@ def _doc_ingestion_state(registry, slug: str) -> dict:
     try:
         from resource_explorer.surveyors.sub_surveyors.arch_lens import ingestion_status
 
+        from resource_explorer.surveyors.sub_surveyors.arch_lens import ING_UNKNOWN
+
         state, detail = ingestion_status(registry, slug)
-        # ingestion_status() absorbs its own read failure and returns
-        # `not-attempted` with detail "ingestion status unreadable" — so
-        # "nobody has read the site" and "we could not tell" arrive as the same
-        # state. Rendering keys on state, so without this an unreadable status
-        # would produce a confident offer to ingest a site we know nothing
-        # about. Downgraded to unknown, which renders as nothing.
-        if detail == "ingestion status unreadable":
+        # `unknown` is now a state of its own (2026-08-25). Until it was, this
+        # told "nobody has read the site" from "we could not tell" by matching
+        # ingestion_status's DETAIL STRING — this module depending on another's
+        # wording, with nothing to notice a reword. It is exactly what happened:
+        # the detail gained an exception suffix and the exact match stopped
+        # firing. The state is the contract; the prose beside it is not.
+        if state == ING_UNKNOWN:
             return {"state": "", "detail": ""}
         return {"state": state, "detail": detail}
     except Exception:  # noqa: BLE001
@@ -1685,11 +2005,19 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
     return {"label": f"{n} component(s) recovered", "status": "info" if n else "warn"}
 
 
-def _website_ingestion_headline(results: dict) -> dict | None:
+def _website_ingestion_headline(registry, slug: str) -> dict | None:
     """Survey Results dashboard headline. A skip is reported as its own status
     rather than as zero-with-a-warning — "this repo publishes its own site" is a
     correct, final answer, and flagging it as a shortfall would push someone to
-    "fix" a duplicate ingest we deliberately avoid."""
+    "fix" a duplicate ingest we deliberately avoid.
+
+    Signature is `(registry, slug)` like every other headline reader. It took
+    `(results)` until 2026-08-25, so the uniform call site
+    (`web/routes/projects.py`) raised TypeError on every invocation — 0 of 60
+    repos — and the caller's bare `except Exception: headline = None` swallowed
+    it. The tile never rendered for anyone and nothing was logged.
+    """
+    results = _website_ingestion_results(registry, slug)
     if not results.get("surveyed_at"):
         return None
     reason = results.get("reason", "")
@@ -2032,6 +2360,29 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             _ci_quality_results, _ci_quality_trend, "findings_list", headline_reader=_ci_quality_headline,
         ),
     ),
+    "community_support": AnalysisKind(
+        "community_support", ["repo_community_support"],
+        results=AnalysisKindResults(
+            _community_support_results, None, "findings_list",
+            headline_reader=_community_support_headline,
+        ),
+    ),
+    "cve_scan": AnalysisKind(
+        "cve_scan", ["repo_cve_scan"],
+        family="security",
+        results=AnalysisKindResults(
+            _cve_scan_results, _cve_scan_trend, "findings_list",
+            headline_reader=_cve_scan_headline,
+        ),
+    ),
+    "foss_scorecard": AnalysisKind(
+        "foss_scorecard", ["repo_foss_scorecard"],
+        family="security",
+        results=AnalysisKindResults(
+            _foss_scorecard_results, _foss_scorecard_trend, "findings_list",
+            headline_reader=_foss_scorecard_headline,
+        ),
+    ),
     "maturity": AnalysisKind(
         "maturity", ["repo_maturity"],
         results=AnalysisKindResults(_maturity_results, None, "findings_list", headline_reader=_maturity_headline),
@@ -2064,7 +2415,7 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     "website_ingestion": AnalysisKind(
         "website_ingestion", ["repo_website_ingestion"],
         results=AnalysisKindResults(
-            _website_ingestion_results, _website_ingestion_trend, "metrics",
+            _website_ingestion_results, _website_ingestion_trend, "custom",
             headline_reader=_website_ingestion_headline,
         ),
     ),
@@ -2103,9 +2454,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     # _architecture_recovery_results' docstring).
     "architecture_doc_lens": AnalysisKind(
         "architecture_doc_lens", ["repo_arch_lens"],
+        results=AnalysisKindResults(_architecture_doc_lens_results, None, "findings_list",
+                                    headline_reader=_architecture_doc_lens_headline),
     ),
     "architecture_summary": AnalysisKind(
         "architecture_summary", ["repo_arch_summary"],
+        results=AnalysisKindResults(_architecture_summary_results, None, "metrics",
+                                    headline_reader=_architecture_summary_headline),
     ),
     "architecture_recovery": AnalysisKind(
         "architecture_recovery", ["repo_arch_detect", "repo_arch_coupling"],

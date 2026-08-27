@@ -74,6 +74,25 @@ Discovery-tier repo conventions: security policy content, build automation, depl
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Repo Discovery Survey — Repo Community Support
+
+### Qualified Name
+GovActionProcessStep::RepoDiscoverySurvey::repo_community_support
+
+### Description
+Community support as separate dimensions — attention, participation, channels — rather than one number. repository_health's community_score is dominated by stars and forks, and scores a four-contributor project 100/100; this reports the weakest dimension instead of averaging it away.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_community_support |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Repo Discovery Survey
@@ -131,6 +150,18 @@ GovActionProcessStep::RepoDiscoverySurvey::repo_maturity
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoDiscoverySurvey::repo_conventions
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_conventions
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoDiscoverySurvey::repo_community_support
 
 ### Guard
 Any

@@ -13,6 +13,20 @@ from resource_explorer.prefect.flows import re_survey_flow
 nest_asyncio.apply()
 
 
+class PrefectFlowRunCancelled(Exception):
+    """A flow run was cancelled through Prefect (e.g. the Admin "⚡ Prefect"
+    panel's Cancel button — see web/routes/prefect_status.py). Deliberately
+    NOT caught by run_prefect_step's fallback-to-local except block: falling
+    back would re-run the step's work anyway, just locally and outside
+    Prefect's supervision — silently defeating the entire reason someone
+    clicked Cancel. Found live 2026-08-26 testing the cancel endpoint: a
+    cancelled run's RuntimeError was swallowed like any other API failure,
+    the fallback ran the step again, and it just... finished — cancel had
+    no actual effect. Every other failure (unreachable server, a real bug)
+    should still fall back; only a genuine user-initiated cancellation
+    should not."""
+
+
 async def _run_prefect_step_api(
     entity_type: str,
     slug: str,
@@ -33,7 +47,12 @@ async def _run_prefect_step_api(
                 "Did you run 'resource-explorer prefect deploy'? Error: {e}"
             )
 
-        # 2. Trigger the flow run
+        # 2. Trigger the flow run — tagged so the admin "⚡ Prefect" panel can
+        # group/filter flow-runs by the resource they belong to. Not the RE
+        # activity_id (run_prefect_step doesn't have one in scope — threading
+        # it through SurveyDefinitionExecutor.run()'s whole call chain is a
+        # bigger change than this pass makes; slug+step is enough for "what's
+        # running/stuck for resource X").
         flow_run = await client.create_flow_run_from_deployment(
             deployment_id=deployment.id,
             parameters={
@@ -42,6 +61,7 @@ async def _run_prefect_step_api(
                 "step_name": step_name,
                 "runner_kwargs": runner_kwargs,
             },
+            tags=[f"entity_type:{entity_type}", f"slug:{slug}", f"step:{step_name}"],
         )
 
         # 3. Poll for the flow run to complete
@@ -49,15 +69,23 @@ async def _run_prefect_step_api(
             run = await client.read_flow_run(flow_run.id)
             state = run.state
             if state.is_completed():
-                # Fetch result
-                result = await client.resolve_value(state.data)
+                # `PrefectClient.resolve_value` doesn't exist in Prefect 3.x — this
+                # line has never successfully returned a result; the exception it
+                # always raised was swallowed by run_prefect_step's broad `except`,
+                # so the flow run completed for real (verified live against a local
+                # server + worker 2026-08-26) but its result was silently discarded
+                # and every call fell through to a second, duplicate local
+                # execution. `State.result()`/`State.aresult()` is the real 3.8.x
+                # API on this installed version — no `fetch` kwarg here (that's a
+                # newer/older-version signature; this one auto-resolves).
+                result = await state.result(raise_on_failure=True)
                 return result or {}
             elif state.is_failed():
                 raise RuntimeError(
                     f"Prefect flow run '{flow_run.id}' failed: {state.message}"
                 )
             elif state.is_cancelled():
-                raise RuntimeError(f"Prefect flow run '{flow_run.id}' was cancelled.")
+                raise PrefectFlowRunCancelled(f"Prefect flow run '{flow_run.id}' was cancelled.")
 
             await asyncio.sleep(1.0)
 
@@ -103,6 +131,12 @@ def run_prefect_step(
                     return future.result()
             else:
                 return asyncio.run(_run_prefect_step_api(entity_type, slug, step_name, runner_kwargs))
+        except PrefectFlowRunCancelled:
+            # Must NOT fall through to local execution — that would silently
+            # redo the step's work outside Prefect, defeating the cancel.
+            # Re-raise so the caller (and whatever activity_log entry is
+            # tracking this) sees a real cancellation, not a quiet success.
+            raise
         except Exception as e:
             # Falling back is right for an unreachable or failing Prefect server —
             # the work still gets done locally. But catching everything is what hid

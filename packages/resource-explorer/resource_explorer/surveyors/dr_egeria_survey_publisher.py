@@ -47,6 +47,14 @@ class PublishableStep:
     step_key: str
     description: str
     technology_type: str
+    # "resource-explorer" | "prefect" | "egeria" — see survey_definition_executor.py's
+    # _use_prefect() and PrefectConfig.route_local_steps' docstring in config.py.
+    # Defaults to plain local execution; set "prefect" only for steps genuinely
+    # worth the per-step Prefect overhead in exchange for real flow-run
+    # observability/cancellation — long-running or thrash-prone ones, not a
+    # blanket switch. See docs/re-ea-consolidation-audit.md and the Prefect
+    # entry in docs/Backlog.md for which steps and why.
+    executes_at: str = "resource-explorer"
 
 
 def _step_qualified_name(survey_group: str, step_key: str) -> str:
@@ -65,9 +73,11 @@ def _step_display_name(survey_display_name: str, step_key: str) -> str:
 def render_step_block(survey_group: str, survey_display_name: str, step: PublishableStep) -> str:
     """One "Create Governance Action Process Step" command block. Additional
     Properties follow the documented executes_at/supported_technology_type/
-    re_analysis_step convention (§6.2) — executes_at is always
-    "resource-explorer" here since every PublishableStep this module handles
-    is, by definition, an RE-local sub-surveyor."""
+    re_analysis_step convention (§6.2) — executes_at defaults to
+    "resource-explorer" (every PublishableStep this module handles is, by
+    definition, an RE-local sub-surveyor) but is per-step overridable to
+    "prefect" for steps a caller has deliberately opted into distributed
+    execution for; see PublishableStep.executes_at."""
     qn = _step_qualified_name(survey_group, step.step_key)
     return (
         "## Create Governance Action Process Step\n"
@@ -77,7 +87,7 @@ def render_step_block(survey_group: str, survey_display_name: str, step: Publish
         "### Additional Properties\n"
         "| Parameter Name | Parameter Value |\n"
         "|---|---|\n"
-        "| executes_at | resource-explorer |\n"
+        f"| executes_at | {step.executes_at} |\n"
         f"| supported_technology_type | {step.technology_type} |\n"
         f"| re_analysis_step | {step.step_key} |\n"
     )

@@ -4006,3 +4006,496 @@ on `read_sources`.
 refused as `unrelated_host`, and it probably should not be — trellis *is* an Egeria project. The
 relatedness check compares names and knows nothing about project families. It fails safe (a stated
 refusal, not a silent skip) but it is a real false-positive class.
+
+---
+
+**110. A site is now ingested once, not once per sibling repo — and the first version of the fix
+re-ingested anyway.**
+
+`site_collection_name`'s own docstring said a site should be *"ingested once and every repo pointing
+at it"* shares the copy. The **naming** did that; nothing enforced it. Measured:
+`egeria-project.org` fetched and embedded **three times in one batch** — 187 pages and 6018 chunks
+each, ~175 seconds — because host-keying dedupes the *destination* and not the *fetch*.
+
+**Keyed on the collection's state, not on a within-run memo**, and that choice matters:
+`SurveyOrchestrator.run()` is per project, so there is no "run" spanning sibling repos to memoise
+against. A state-keyed check also holds when the repos are surveyed days apart, by the scheduler, or
+one at a time from the UI.
+
+```
+before   egeria_git 79s · egeria_python_git 46s · egeria_workspaces_git 49s
+after    0.4s · 0.2s · 0.2s
+```
+
+**The first version excluded the repo itself, and re-ingested in front of me.** Two siblings skipped
+in under a second; the third then spent **103 seconds re-fetching the site its own record said was
+current**. Skipping writes a zero-chunk record over whatever that repo held, so after two skips only
+the third still carried the evidence — and run last, it found nobody else and started fetching. The
+question is *"has this collection been ingested recently"*, not *"did somebody else do it"*.
+
+Worth noting what caught it: not a test, but **running the exact three-repo case that motivated the
+work**. A unit test with two repos would have passed.
+
+**Two conditions the check deliberately does not treat as "done":**
+
+* **A run that stored nothing.** `milvus` recorded a completed ingest with **zero chunks after 400
+  failed fetches**; treating that as already-done would make a bad run permanent.
+* **A stale one.** 24 hours, stated as a constant with its reasoning — a documentation site does not
+  change hourly, and a daily scheduled survey should re-ingest once a day rather than once per repo.
+
+**Skipping the fetch must not skip the wiring.** The query router searches a repo's *own* collection
+list, so the skip still registers the collection on this repo — otherwise the saving costs the
+thing the ingest was for. A test pins it.
+
+**And a third instance of one shape, in one day.** `_note` filters its props through a fixed
+allowlist, so `ingested_by` was **dropped silently** and the attribution came back empty. That is
+`operationCount` in `arch_recovery/persist.py` this morning, and the port/wire `detail` before it:
+**a curated field list that discards anything added upstream, without saying so.** The list stays
+explicit — an unbounded passthrough would let anything into the record — but the hazard is now named
+at the point it bit.
+
+---
+
+**111. Look before you crawl: 685 seconds becomes 1.7, and the first version of the check would
+have refused a site that works.**
+
+Dan asked what ingestion assumes, and whether content should be staged and profiled before deciding
+how to ingest it. The honest answer was that ingestion **fetched, chunked and embedded in one pass
+with no decision point** — so `milvus` spent **685 seconds finding 400 pages by sitemap and failing
+all 400 fetches**, and nothing could notice until it was over.
+
+`ingestion/site_profile.py` is the cheap tier that gates the expensive one — the shape architecture
+recovery already uses, and the one thing ingestion had no version of. Two questions, because they
+are the two answerable from **one or two fetches**:
+
+```
+milvus.io              1.7s   unreachable            (was 685s)
+sqlglot.com            0.4s   ok, 34659 chars
+polaris.apache.org     0.2s   ok
+docs.unitycatalog.com  0.1s   unreachable
+```
+
+**The first version refused `sqlglot`, which ingests 97 chunks perfectly well.** Its landing page is
+a 138-byte `meta-refresh` stub, `discover_pages` follows it, and my profiler did not — so the
+profile said "no readable text" about a site whose text is one hop away. `follow_meta_refresh`
+already existed for exactly this reason and I did not use it.
+
+**The rule that generalises, and it is not a detail: a profile must model what the crawl actually
+does.** Profiling with a *more* capable fetcher clears sites the crawl then fails on. Profiling with
+a *less* capable one refuses sites the crawl would have managed. Both are worse than not profiling,
+because both are **confident**. The fetcher is passed in by the caller for that reason, and a test
+asserts it.
+
+**What caught it was checking against reality rather than against invented cases.** I profiled every
+site that had actually ingested content — 18 of them — and asked whether any would now be refused.
+The answer after the fix is **zero**; before it, `sqlglot` was one. A unit test written from
+imagination would have used a normal HTML page and passed.
+
+**Two questions, not five.** Reachability and text yield are answerable from one page. What *kind*
+of documentation it is (which should select a chunking profile), how much is boilerplate, and
+whether it duplicates something already held are real and remain in the Backlog — each needs several
+pages and a judgement. Building the cheap half first is the entire point of a cheap tier.
+
+**Reached-and-empty stays distinct from never-reached**, which is what `no_pages_fetched` was split
+out for one finding ago: `no_extractable_text` is a `no_signal` with `known_positive=True` because
+we reached the site and it told us; `unreachable` is `unverified` because we never got to look.
+
+---
+
+**112. What `repo_homepage` actually produces, measured — and "unreachable" was two facts again.**
+
+The homepage field drives site ingestion, and its quality had never been measured; it was only ever
+described as "falls back to manifest/README URLs, which are sometimes wrong". Profiled all 60:
+
+```
+ok                   33      a usable documentation site
+code_host            12  ┐
+non_doc_host          5  ├── refused by URL guards (22)   — finding 108
+unrelated_host        5  ┘
+no_extractable_text   2  ┐
+unreachable           2  ├── refused by profiling (5)     — invisible before finding 111
+host_not_found        1  ┘
+```
+
+**55% of recorded homepages are a usable documentation site.** The other 45% now each have a named
+reason instead of being discovered at embed time, or not at all.
+
+**`unreachable` was carrying two facts, and splitting them took one DNS lookup.** `milvus.io`
+302-loops for **every** user agent tried, including a browser one — curl-like gets a 403 — so it
+actively defends against non-browser clients and is honestly out of scope for a survey step. But
+`docs.unitycatalog.com` **does not resolve at all**, and `unitycatalog_python` still carries it as
+its homepage. Those ask different things of a reader: one is out of everyone's reach, the other is
+**stale data somebody can fix**. `VERDICT_HOST_NOT_FOUND` says so, costs no HTTP request, and its
+prose puts the fault where it belongs — *"worth correcting; nothing about the project is wrong"*.
+
+That is the sixth or seventh instance of the same shape today, and the first one I went looking for
+rather than tripped over: I asked *why* milvus was unreachable rather than recording that it was,
+and the answer was that two unrelated situations shared a label.
+
+**A precheck quietly made a unit path depend on the network.** Adding the DNS lookup turned eight
+passing tests red, because they all use invented hostnames — and the failure mode is worse than red:
+had the tests happened to use resolvable names, they would have gone on *passing while no longer
+testing text extraction at all*, short-circuiting before the fetch. Fixed with an autouse fixture,
+and the tests that are about resolution override it explicitly.
+
+**Two more things the profile caught that no URL guard could.** `kedro_viz`'s homepage is
+`demo.kedro.org`, a demo application rather than documentation. `kedro_starters`' is a **deep link
+into a section of another project's docs** — it passes the relatedness check because "kedro" is
+shared, which is the project-family limitation from finding 109 seen from the other side: relatedness
+is necessary and nowhere near sufficient.
+
+---
+
+**113. The summariser computed a summary and stored nothing — finding 89's shape, in code written
+the day finding 89 was recorded.**
+
+`ArchSummarySurveyor` produced its summary, returned it as an annotation, and **persisted no row at
+all**. So nothing could read it back, no results view was possible, and every run recomputed from
+scratch. Found by the presentation session's end-to-end audit — *"I could find no rows it writes
+under any kind, so it may be doing nothing at all"* — and they were right.
+
+It is exactly finding 89 (*"the capability existed and nothing wired it to storage"*), which I
+recorded this morning, in a step I wrote this afternoon. **Knowing the shape did not prevent me
+producing another instance of it**, which is worth more as a data point than the fix is.
+
+Why it survived every check: the step returns annotations and the orchestrator reports them, so a
+live run **printed the right answer**. Nothing failed. The tests asserted the returned annotation,
+which was correct. The absence was only visible by asking a question nobody had asked — *does
+anything land in the store?*
+
+Fixed: `KIND = "architecture_summary"`, one whole-resource finding carrying the summary and its
+detail, plus metrics for the counts. Whole-resource deliberately — a summary is about the resource,
+and writing it under a component's scope would shadow that component's findings, which is the trap
+finding 103 records.
+
+**Two contract tests then caught the half-wired feature**, which is the system working:
+`test_every_kind_with_results_has_a_render_mode` and
+`test_headline_reader_exists_for_every_ANALYSIS_KINDS_entry_with_results`. A backend results reader
+with no frontend entry and no headline is a Results button that never appears — the same invisibility
+this finding is about, one layer out. Both readers, both headlines and both render modes are now in.
+
+**And a shape neither session had hit before, from the same audit:**
+`_website_ingestion_headline` declared `(results)` and was called as `(registry, slug)`, so it
+raised `TypeError` into a bare `except Exception` and **never fired for any of 60 repos**. The test
+called it with the reader's own signature — so **the test and its subject agreed on a contract the
+caller did not share**, and a bare except at the call site let them stay wrong together. That is not
+a missing test; it is two halves of a broken contract agreeing with each other.
+
+---
+
+**114. Chasing one dropped field found four layers of the same thing.**
+
+The presentation session reported that `evidence_kind` — the field distinguishing a component
+*emphasised* in a source document from one merely *mentioned* in an ingested site — was **computed
+and never stored**: 212 rows across 11 repos, none carrying it. Worse, `_architecture_doc_lens_results`'
+docstring **promised** a renderer it would be there. Had they trusted the prose they would have built
+grouping for an absent field, shipped identical-looking rows, and concluded the distinction did not
+matter in practice.
+
+They named the variant: **documentation asserting a contract the storage does not fulfil.** Distinct
+from `_website_ingestion_headline`, where a test and its subject agreed while the caller disagreed.
+Here prose agreed with intent while data disagreed with both.
+
+Fixing it uncovered three more layers, each hidden by the fix for the one before:
+
+1. **The field was dropped at the persistence boundary.** `detail` carried `kind: "doc-lens"` — a
+   type tag — beside where `evidence_kind` should have been. The names are close enough that the
+   absence read as presence.
+2. **A run that documents nothing wrote nothing at all.** So the newest rows in the table were
+   whatever the last *successful* run left: `docling_eval` and `docling_java` kept 17:02 rows through
+   a full corpus refresh that labelled neither, and both read as current. **Nothing removes a finding
+   that is no longer produced.** A `lens_run` marker is now written on every run, labelled or not —
+   the smallest thing that makes staleness detectable, and it deletes nothing.
+3. **My own reader then returned `never_run` for a repo where the lens had run and found nothing.**
+   One value, two facts, in the code written to fix the previous instance. It returns
+   `nothing_found` now, with a message saying the documentation named none of the recovered
+   components — which is an answer about the project, not a missing run.
+
+**Their generalisation is the durable part**, and it is built: *for any field a reader's docstring
+promises, assert it is present in real persisted rows.* `tests/test_persisted_detail_contracts.py`.
+I moved it to assert **through the reader** rather than against raw rows — raw rows conflate a field
+the persistence never wrote (a bug) with a row left behind by code that predates the field (history),
+and only the first is worth failing on.
+
+**And a test fake that has now lagged its subject four times.** `_Lens` was missing `sources`, then
+turned an explicit `terms=[]` back into a populated list, then lacked `undetected_usable`, then
+lacked `evidence_kind` — and that last one was read inside `_persist`'s `try/except`, so the
+`AttributeError` was **swallowed and the write silently did not happen**, surfacing as an unrelated
+scope assertion failing for no visible reason. A hand-written fake is a duplicate of a shape and
+nothing tells it when the original moves; a swallowing caller turns that into a no-op instead of an
+error.
+
+Corpus after all of it: **88 documented components across 17 repos**, up from 60 across 11.
+
+---
+
+**115. `undetected` earns its place with a comparison, not a threshold.**
+
+`undetected` — terms a document emphasises that nothing proposed — was 506 entries on Milvus and
+therefore useless: section headings from 25 design documents, not components we missed. It needed a
+way to know when emphasis means "this is a component" rather than "this is a heading". Measured:
+
+```
+amundsen       4 terms /  43 components   100% matched   an overview
+sqlglot       12 terms /  11 components    50%           an overview
+milvus      1140 terms / 206 components     2%           25 design documents
+openlineage  713 terms / 124 components     3%           a documentation site
+egeria_ws   1728 terms /  73 components     1%
+```
+
+The rule is `terms <= components`, and it is deliberately a **comparison rather than a threshold**:
+a document emphasising more things than the repository has components is describing its own
+structure, and its unmatched emphasis says nothing about detection. An architecture overview
+emphasises *fewer* things than there are components, because it names the important ones. No
+constant, nothing to quietly tune, and it states the claim it rests on — **emphasis at scale is
+structure, not naming.**
+
+The list is published only when it is meaningful; otherwise the count and the reason are, so
+"1118 undetected" never reads as a detection gap.
+
+**One more default standing for "not computed."** The ingested-site path returns before this runs —
+rendered HTML has no emphasis to extract — so `undetected_usable` was `False` with an empty reason,
+indistinguishable from "we checked and it was not meaningful". It now says which.
+
+---
+
+**116. `integration` depth was buildable all along; `full` should never have been declared.**
+
+The summariser named three depths and implemented one. Finishing the other two produced opposite
+answers, and both corrections are mine.
+
+**`integration` — "how would we call it?" — needed no new fetching.** I had recorded that it
+"needs stage-two interface reads", and that was true only of operation *names*. Which interfaces
+are served, over what protocol, how many operations they declare, and what the repo calls out to
+are all sitting in `architecture_interfaces` already. The distinction matters beyond this feature:
+it is the difference between a depth that is unbuildable and one that is **a different reading of
+what we already hold**, which is the entire premise of depth as a summarisation level. Live:
+
+```
+milvus        gRPC: data_coord.proto, event_log.proto, index_coord.proto (+7 more);
+              297 operation(s) across them — public and internal interfaces are not
+              distinguished; the project's own documentation is what separates them
+openmetadata  HTTP/REST: openapi.yml — ...
+```
+
+**It names the interface, not the owning component**, and that was a real correction found by
+reading the output rather than the code. The first version reported *"gRPC via pkg"* for Milvus:
+`pkg` is the subtree the `.proto` files happen to sit in, and it tells a caller nothing. An IDL port
+is named for the interface it defines. What you call is `proxy.proto`, not `pkg`.
+
+**The caveat is the honest half.** Milvus declares 297 rpcs across ten files; `proxy` is
+client-facing and the coord services are internal, and **nothing in the code says so**. Reporting
+"the largest surface" would name `root_coord` (76 rpcs) over `proxy` (18) and be exactly backwards —
+so the summary states that public and internal are not distinguished and points at the documentation
+that separates them. Finding 101, restated where a reader actually meets it.
+
+**`full` was deleted, not implemented.** It was described as *"every component and operation — the
+raw analysis"*, which is precisely the problem: **a summariser whose deepest level is *do not
+summarise* is describing the results view that already exists.** Implementing it would have given a
+reader two spellings of one answer. The reasoning is the reusable part — *a depth is a summarisation
+level, and "none" is not one* — and the constant is gone rather than left declared, because a value
+nothing produces invites someone to pass it. An unknown depth still falls back to `suitability`.
+
+**And a fifth instance of the test-fake drift**, this time costing two confusing failures: `_port`
+carried only `protocol` and `operationCount`, while `persist.py` writes `component`, `port`,
+`direction`, `protocol`, `additionalProperties` and `kind`. A test asserting on direction therefore
+exercised the absent-direction path and failed for a reason unrelated to its name. The rule that
+would have prevented all five: **mirror the writer, not the fields the current test happens to
+read.**
+
+---
+
+**117. Depth control finally does something: 204 at every level becomes 82/142/216/221 — and both
+earlier diagnoses of why were wrong.**
+
+`projection.py` collapses a stored hierarchy to a requested level, and had never been given one.
+Milvus reported **204 components at depth 0, 1, 2 and None**; genaicomps 311. Two explanations were
+already on record and both were wrong:
+
+* The backlog held that **persistence filtered out intermediate candidates**, so parent links
+  pointed at nodes nobody stored.
+* The presentation session then **built the fix that implies** — persisting referenced ancestors —
+  and measured no change: 204 → 205.
+
+Measured directly, the cause is simpler and much larger:
+
+```
+milvus     217 component rows — 201 with parent_slug = "", 16 with one
+genaicomps 311 component rows — 301 with parent_slug = ""
+```
+
+**Only `code::` components ever had a hierarchy at all.** Manifest-, deployment- and
+coupling-derived components are **parentless by construction**, and they are the overwhelming
+majority — so no amount of persisting code-marker ancestors could have reached them. Both earlier
+diagnoses were about the 7% that had parents.
+
+**The evidence was already in the scope locator, and it is not opaque:**
+
+```
+internal/agg           a PATH     -> its parent is internal/
+compose::agent         an IDENTITY-> its parent is the compose stack that declares it
+```
+
+Reading it is reading what the detector wrote down. A compose file is a real deployment unit a
+person would name; a directory is a real boundary. Neither is a naming heuristic invented to make a
+number look better.
+
+```
+                depth 0 / 1 / 2 / None
+milvus          82 / 142 / 216 / 221      (was 204 at every level)
+genaicomps       8 / 296 / 296 / 317      (was 311)
+egeria_workspaces 19 / 75 / 80 / 86
+openlineage      56 / 78 / 107 / 130
+```
+
+**Three constraints the implementation turns on:**
+
+* **Attach to the nearest ancestor that GROUPS, not the nearest parent.**
+  `internal/parser/planparserv2` has one sibling under `internal/parser` and dozens under
+  `internal`; attaching only to the immediate parent left it a root three levels deep while
+  `internal` sat there grouping the rest. Walking up took milvus from 25 roots to 5.
+* **A parent of one child is not a parent.** It collapses nothing and adds a level a reader must
+  traverse to reach a single child.
+* **A derived ancestor is a structural node, never a component.** Nothing detected `internal/` — its
+  children were detected — so it carries no type, no confidence and no proposer. Emitting it as an
+  ordinary component would invent evidence, which is what design §5's *no metric, no number* exists
+  to prevent.
+
+**Two ordering bugs found by running it, not by reading it.** The fill initially ran *after* the
+component rows were written, so it changed nothing — the same "computed and not stored" shape as
+finding 113, two hours later. And `depth` was left at 0 on filled components, so `projection` counted
+them as roots regardless of their parent: **a hierarchy with correct links and stale depths projects
+identically to a flat one**, which is precisely the symptom this finding started from.
+
+---
+
+**118. The allowlist audit: one live bug, two false alarms checked, and a guard that immediately
+found something I had wrong.**
+
+The ingestion session filed the pattern after three same-day instances — a curated field list that
+**discards anything added upstream without saying so**. Swept for the rest.
+
+**Three sites, one live bug, and it was mine and hours old.** `_note`'s allowlist did not carry
+`landing_chars`/`sampled_chars`, added the same afternoon with site profiling — so the profiler
+measured how little text a page yielded, and the measurement never reached the record. A card could
+say *"not ingested — no extractable text"* and not say **how little**, which is the evidence for the
+refusal.
+
+**Two that looked like bugs and were not**, checked rather than assumed:
+
+* `_website_ingestion_results` keeps `chunks`/`pages_fetched`/`pages_found`/`pages_failed` even at
+  zero and drops other empty fields — a *value* filter, not a field allowlist, and its comment
+  already explains why zero is the answer there.
+* `_repository_health_results` reads five named scores while **six** GovernanceMetrics are declared.
+  The sixth, `Documentation Signal Count`, is computed by `documentation.py` — a different analysis
+  entirely. No mismatch.
+
+**The guard found two more keys the moment it ran, and was wrong about them.** `chunks` and
+`pages_fetched` are passed to `_note` and are not in the allowlist — because they are written as
+**metrics**, which is where numbers go. My first assertion was *"every prop must be in
+`_DETAIL_FIELDS`"*; the property that actually matters is *"every prop must reach the record
+somewhere"*. Making the guard aware of both destinations made it **more** accurate, not looser —
+worth noting, because the tempting fix when a new test fails is to weaken it.
+
+**And one of my own older tests was pinned to how, not what.** It asserted `"ingested_by"` appeared
+as a literal substring of `_note`'s source. Moving the list to a module constant would have made it
+pass while checking nothing — the exact failure mode the presentation session's sentinel guard
+demonstrated this morning, in a test I wrote after reading their account of it. It checks the
+constant now.
+
+**Their `test_every_live_skip_reason_has_an_explanation` then caught a gap in my work**, which is
+the loop closing in the other direction: I had added `unreachable`, `no_extractable_text` and
+`host_not_found` as refusal reasons and left the card rendering the raw enum value. A reader would
+have seen `unreachable` with no way to know whether the zero beside it was a fault or the system
+being right. All three now explain themselves, and `no_extractable_text` shows the character count
+that justified the refusal.
+
+---
+
+**119. Stage-and-profile's deeper half: three items proposed, none needed. Measured, not argued.**
+
+The backlog entry for staging and profiling listed five questions to answer before ingesting. Two
+were built (finding 111: reachability and text yield, which took milvus from 685s to 1.7s). The
+other three turn out not to be work at all — and finding that out cost three measurements against
+the 20 ingested collections rather than three implementations.
+
+**3. "What kind of documentation is it?" — nothing to select.** The premise was that
+`api_reference` (chunk 256/32) exists as a collection type and is never chosen for a website, so a
+classifier should pick it. Measured across every ingested collection, code-ish character density:
+
+```
+0.0% – 3.7%   across all 20 collections
+```
+
+All narrative. **Not one ingested site is API-reference shaped**, so a classifier would fire on
+zero of them. Building it would be building for a case this corpus does not contain — the same
+result as the doc-path prefix rule in finding 97, reached the same way.
+
+**4. "How much is boilerplate?" — already solved, and the measurement proves it.** `_extract_text`
+strips `script|style|nav|header|footer|aside` before chunking, and it works: the most-repeated
+phrases in every collection are **domain terms**, not chrome — `openlineage` (86 of 200 chunks),
+`transport` (63), `metadata`, `localhost`, `PRINCIPAL`. Exactly what should repeat in a project's
+own documentation. My first pass reported 0% at a strict threshold and I loosened it rather than
+accept a suspiciously clean answer; the looser pass confirmed it.
+
+**5. "Is it versioned?" — already solved, and I briefly claimed otherwise.**
+`web_docs_openlineage_io` holds chunks from **two** version segments, 172 under `1.50.0` and 20
+under `1.49.0`, and I called it a live duplication case. It is not:
+
+```
+11 distinct URLs, 11 distinct pages, 0 pages present in more than one version
+```
+
+`collapse_versioned` is working. The `1.49.0` pages exist **only** in 1.49.0 — they were removed by
+1.50.0 — so keeping them is correct, not duplication. **I inferred duplication from counting version
+segments without checking whether the same page appeared twice**, which is the exact shape of error
+this file keeps recording: a count that looks like evidence for a claim it does not support.
+
+**The transferable result:** a backlog entry written from reasoning proposed five pieces of work;
+measurement said two were real and three were already handled or pointless. Writing the entry was
+still right — it is what made the questions askable — but **an entry is a hypothesis, and the
+cheapest thing to do with one is measure it.**
+
+---
+
+**120. Backfilling the hierarchy, and two items closed by measurement rather than by building.**
+
+Finding 117 gave `projection` a hierarchy; only four repos had been re-run through it. Backfilled
+`repo_arch_detect` across all 43 with components. Depth control is now real corpus-wide:
+
+```
+genaiexamples  590 -> 31    egeria_git  251 -> 68    milvus  221 -> 97
+genaicomps     317 -> 17    enterprise_rag 114 -> 17  openlineage 130 -> 56
+```
+
+Some repos do not collapse at all — `docling_java` 8→8, `sqlglot` 11→11, `kedro_plugins` 4→4 —
+and that is the right answer: their components are top-level Maven modules and packages with no
+containing structure. **A hierarchy that declines to invent one is doing its job.**
+
+**`misgrouped` still has no emitter, and the measurement says that is correct.** The state exists
+for "right material, wrong structure", from Kubernetes scoring **0 of 6 while covering 2,002 of
+2,132 files**. With a real hierarchy the shape is finally detectable without ground truth — a few
+roots holding everything — and across all 28 repos with eight or more components it occurs **zero
+times**. The one concentrated repo (`haystack_opea`, 10 components under 2 roots) is eight
+third-party dependencies grouped correctly.
+
+The originating case needed **ground truth** to recognise: "0 of 6" is a score against a known
+answer, and the product path has none. So the state belongs to the spike's scorer, and writing an
+emitter would be inventing a detector for a condition nobody has observed here. Recorded on the
+constant itself so the next person does not re-derive it; **kept rather than deleted**, because the
+renderer branches on it and removing a state other code reads is a deliberate change, not a passing
+one.
+
+**Guard-based branching stays deferred, and now for a better reason.** It was deferred 2026-08-21
+because "recorded outcomes are useful without routing". Since then `repo_arch_lens` began producing
+two real guards (`document-consulted` / `no-document`), which finally gives branching a candidate
+consumer — so the original reason expired. The current one is narrower: **nothing would behave
+differently.** A Survey Definition could skip the summariser when no document was consulted, but the
+summariser already handles that case correctly and says so. Branching would add a routing mechanism
+to avoid a step that costs nothing and answers honestly. The guards are produced and recorded;
+routing waits for a consumer that would do something other than what already happens.
+
+**Two items closed, neither by writing code.** That is three in two findings — with finding 119's
+three — and the pattern is worth naming: **a backlog entry is a hypothesis about work, and the
+cheapest thing to do with one is measure whether the condition it describes exists.** Five of the
+six items measured this way turned out not to need building.

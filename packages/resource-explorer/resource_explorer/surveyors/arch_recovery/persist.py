@@ -86,6 +86,22 @@ def detector_family(detector: str) -> str:
     return prefix or "unknown"
 
 
+def _scope_depth(scope: str) -> int:
+    """How deep a scope locator sits, in its own terms.
+
+    A path counts separators; an identity locator (`compose::agent`) is one
+    below its deployment unit. `projection` counts this to decide what falls
+    within a requested level, so a component with a parent and depth 0 would
+    still project as a root — which is how a filled hierarchy can look identical
+    to a flat one.
+    """
+    if not scope or scope == ".":
+        return 0
+    if "::" in scope:
+        return 1
+    return len([p for p in scope.split("/") if p]) - 1
+
+
 def persist_ir(
     registry,
     slug: str,
@@ -150,6 +166,42 @@ def persist_ir(
     outcome_row = outcome.as_row()
     slug_to_scope: dict[str, str] = {c.slug: scope_locator_for(c) for c in components}
 
+    # Fill in the parent that the SCOPE LOCATOR already encodes, for every
+    # component that has none.
+    #
+    # The block below only ever followed `parent_slug` values that already
+    # existed, which is why persisting referenced ancestors changed nothing when
+    # it was tried: measured 2026-08-25, 201 of milvus's 217 component rows
+    # carry `parent_slug = ""`. Only `code::` components were ever given a
+    # hierarchy; manifest-, deployment- and coupling-derived components are
+    # parentless by construction, and they are the overwhelming majority.
+    #
+    # The locator is not opaque — `internal/agg` names a directory,
+    # `compose::agent` names the compose stack that declares it — so this reads
+    # recorded evidence rather than inventing structure. See
+    # `scope_hierarchy.derive` for why a group needs two members and why a
+    # derived ancestor is structural rather than a component.
+    from . import scope_hierarchy
+
+    all_scopes = sorted(set(slug_to_scope.values()))
+    scope_parents, derived_structural = scope_hierarchy.derive(all_scopes)
+    scope_to_slug = {v: k for k, v in slug_to_scope.items()}
+    for c in components:
+        if c.parent_slug:
+            continue
+        parent_scope = scope_parents.get(slug_to_scope.get(c.slug, ""), "")
+        if parent_scope:
+            # A structural ancestor is identified BY its scope: it has no slug
+            # of its own because nothing detected it.
+            c.parent_slug = scope_to_slug.get(parent_scope, parent_scope)
+            # `depth` is what `projection` counts to decide whether a node is
+            # within the requested level, so a filled parent with depth 0 still
+            # projects as a root. Derived from the scope's own shape, which is
+            # where the parent came from.
+            c.depth = _scope_depth(slug_to_scope.get(c.slug, ""))
+
+
+
 
     for c in components:
         loc = slug_to_scope[c.slug]
@@ -204,17 +256,25 @@ def persist_ir(
     referenced = {c.parent_slug for c in components if c.parent_slug}
     missing = sorted(referenced - present)
     for anc_slug in missing:
-        ns, _, rest = anc_slug.partition("::")
-        anc_path = rest.replace("::", "/") if rest else ""
+        if anc_slug in derived_structural:
+            # Derived from a scope locator, so the slug IS the scope — no
+            # namespace to unpack.
+            anc_path = anc_slug
+        else:
+            ns, _, rest = anc_slug.partition("::")
+            anc_path = rest.replace("::", "/") if rest else ""
         # Its own parent is the nearest OTHER referenced ancestor, derived from
         # the slug itself — never fabricated beyond what is already referenced.
-        parts = anc_slug.split("::")
-        anc_parent = ""
-        for i in range(len(parts) - 1, 1, -1):
-            cand = "::".join(parts[:i])
-            if cand in missing or cand in present:
-                anc_parent = cand
-                break
+        if anc_slug in derived_structural:
+            anc_parent = scope_parents.get(anc_slug, "")
+        else:
+            parts = anc_slug.split("::")
+            anc_parent = ""
+            for i in range(len(parts) - 1, 1, -1):
+                cand = "::".join(parts[:i])
+                if cand in missing or cand in present:
+                    anc_parent = cand
+                    break
         registry.upsert_finding(
             slug, KIND,
             [{

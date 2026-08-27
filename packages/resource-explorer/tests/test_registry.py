@@ -810,3 +810,141 @@ class TestScopeLocatorOnFindingsAndMetrics:
         ], scope_locator="tests")
         assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "src")] == ["a"]
         assert [r["check_name"] for r in db.query_findings("myproj", "api_structure", "tests")] == ["b"]
+
+    # A TestReconcileOrphanedRunningActivity class lived here briefly
+    # (2026-08-26), covering ProjectRegistry.reconcile_orphaned_running_activity()
+    # — removed along with that method in favor of
+    # resource_explorer/run_reconciler.py's ownership-based reconciliation
+    # (see its own tests). See registry.py's note at the old method's former
+    # location for why the blanket version was unsafe.
+
+
+class TestHasAssignedEgeriaProject:
+    """The single gate both auto-publish paths use (survey_definition_executor.py
+    and projects.py's Assessment/Analysis run route) — deliberately tighter than
+    egeria.py's publish route's own inline check, which lets personal/deferred/
+    declined pass too. Only a real `linked` status with a GUID counts here."""
+
+    def test_no_context_at_all_is_false(self, db):
+        assert db.has_assigned_egeria_project("repo", "nobody-decided") is False
+
+    def test_linked_with_a_guid_is_true(self, db):
+        db.set_project_context("repo", "s", status="linked", egeria_project_guid="g-1")
+        assert db.has_assigned_egeria_project("repo", "s") is True
+
+    def test_unset_is_false(self, db):
+        db.set_project_context("repo", "s", status="unset")
+        assert db.has_assigned_egeria_project("repo", "s") is False
+
+    def test_personal_deferred_declined_are_all_false(self, db):
+        """Egeria's own manual-publish route treats these as "decided, proceed" —
+        deliberately not the case here: they're all real answers to "should this
+        be in Egeria" and the answer each gives is no."""
+        for status in ("personal", "deferred", "declined"):
+            db.set_project_context("repo", f"s-{status}", status=status)
+            assert db.has_assigned_egeria_project("repo", f"s-{status}") is False, status
+
+    def test_linked_but_no_guid_is_false(self, db):
+        """A 'linked' row with no GUID shouldn't be possible via set_project_context
+        in practice, but the check must not trust status alone."""
+        db.set_project_context("repo", "s", status="linked", egeria_project_guid="")
+        assert db.has_assigned_egeria_project("repo", "s") is False
+
+    def test_falls_back_to_and_writes_the_inherited_context(self, db, monkeypatch):
+        """Same write-through behavior as egeria.py's publish route: an
+        inheritance that stayed read-only would make a resource's context
+        depend on investigation membership at read time."""
+        monkeypatch.setattr(db, "inherited_egeria_project_context", lambda et, es: {
+            "egeria_project_guid": "inherited-guid",
+            "egeria_project_qualified_name": "qn",
+            "_inherited_from_name": "Q3 Health Review",
+        })
+        assert db.has_assigned_egeria_project("repo", "s") is True
+        context = db.get_project_context("repo", "s")
+        assert context["status"] == "linked"
+        assert context["egeria_project_guid"] == "inherited-guid"
+
+    def test_no_inheritance_available_is_false(self, db, monkeypatch):
+        monkeypatch.setattr(db, "inherited_egeria_project_context", lambda et, es: None)
+        assert db.has_assigned_egeria_project("repo", "s") is False
+
+
+class TestSurveyDefinitionLastActivityRepoWideFallback:
+    """Confirmed live 2026-08-27: a candidate with NO last_run_at at all still
+    received last_published_scope: 'repo' from the repo-wide-publish fallback,
+    because `"" <= repo_wide_publish_at` is always True in Python string
+    comparison — reproducing "Never Run" + "Published today" on the same card."""
+
+    def _log_survey(self, db, ref, ts_suffix=""):
+        from resource_explorer.activity_logger import log_survey
+        log_survey(
+            db, entity_type="repo", entity_slug="s", entity_name="s",
+            entity_location="", intent="assessment", status="ok",
+            summary="ran", detail=json.dumps({"survey_definition_ref": ref}),
+        )
+
+    def _log_catalog_no_ref(self, db):
+        from resource_explorer.activity_logger import log_catalog
+        log_catalog(
+            db, entity_type="repo", entity_slug="s", entity_name="s",
+            entity_location="", status="ok",
+            summary="published", detail=json.dumps({}),
+        )
+
+    def test_a_ref_with_no_survey_row_never_gets_the_repo_wide_fallback(self, db):
+        """The regression guard. This ref has an entry (via a ref-tagged
+        catalog row further below) but no matching 'survey' row — i.e. it
+        never ran — so it must not receive last_published_scope: 'repo'."""
+        from resource_explorer.activity_logger import log_catalog
+
+        # A ref-tagged catalog row with no matching survey row — the entry
+        # this ref gets in `result` has no last_run_at.
+        log_catalog(
+            db, entity_type="repo", entity_slug="s", entity_name="s",
+            entity_location="", status="ok",
+            summary="published", detail=json.dumps({"survey_definition_ref": "RefX"}),
+        )
+        # An untagged catalog row after it, to populate repo_wide_publish_at.
+        self._log_catalog_no_ref(db)
+
+        activity = db.get_survey_definition_last_activity("repo", "s")
+        assert "last_run_at" not in activity.get("RefX", {})
+        assert activity["RefX"].get("last_published_scope") != "repo"
+
+    def test_a_ref_that_actually_ran_before_the_repo_wide_publish_still_gets_it(self, db):
+        """The fallback must still work for the case it's actually for."""
+        self._log_survey(db, "RefY")
+        self._log_catalog_no_ref(db)
+
+        activity = db.get_survey_definition_last_activity("repo", "s")
+        assert activity["RefY"]["last_published_scope"] == "repo"
+
+
+class TestAnalysisLastRunPublishFailedFlag:
+    """last_publish_failed backs the ☁ Publish button's visibility (2026-08-27):
+    shown as a recovery action when the last auto-publish attempt failed, hidden
+    once cleanly published. Must not conflate "never attempted" with "failed" —
+    an unassigned resource's card would otherwise look broken forever."""
+
+    def _log(self, db, published):
+        from resource_explorer.activity_logger import log_analysis_run
+        log_analysis_run(
+            db, "repo", "s", "s", "ok", "ran", "fake_analysis", published=published,
+        )
+
+    def test_a_failed_publish_attempt_sets_the_flag(self, db):
+        self._log(db, published=False)
+        activity = db.get_analysis_last_run("repo", "s")
+        assert activity["fake_analysis"]["last_publish_failed"] is True
+
+    def test_a_successful_publish_does_not_set_the_flag(self, db):
+        self._log(db, published=True)
+        activity = db.get_analysis_last_run("repo", "s")
+        assert activity["fake_analysis"]["last_publish_failed"] is False
+
+    def test_never_attempted_is_not_read_as_failed(self, db):
+        """The regression this whole flag exists to prevent: None must not
+        collapse into "failed" the way it easily could with a plain bool."""
+        self._log(db, published=None)
+        activity = db.get_analysis_last_run("repo", "s")
+        assert activity["fake_analysis"]["last_publish_failed"] is False

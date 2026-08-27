@@ -116,6 +116,21 @@ class HealthSurveyor(BaseSurveyor):
                     pass
 
             # ── score calculations ────────────────────────────────────────────
+            #
+            # DECLARED metrics (design §5 — no metric, no number). Each of these
+            # has a GovernanceMetric in docs/dr-egeria/governance-metrics/ with
+            # its measurement and target written down:
+            #
+            #   activity        GovernanceMetric::ResourceExplorer::RepositoryActivity::1.0
+            #   community       GovernanceMetric::ResourceExplorer::RepositoryCommunity::1.0
+            #   release_cadence GovernanceMetric::ResourceExplorer::RepositoryReleaseCadence::1.0
+            #   freshness       GovernanceMetric::ResourceExplorer::RepositoryFreshness::1.0
+            #   overall         GovernanceMetric::ResourceExplorer::OverallRepositoryHealth::1.0
+            #
+            # The coefficients below ARE the declared measurement; changing one
+            # without updating its metric makes the declaration a lie, which is
+            # worse than having none. tests/test_declared_metrics.py fails if a
+            # score here has no declaration.
             activity_score = min(100, (commits_30d * 3) + (commits_90d // 2) + (commits_365d // 10))
             community_score = min(100, int((stars / 100) * 20 + (forks / 20) * 20 + min(contributors, 50) * 1.2))
             release_score = (

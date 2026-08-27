@@ -154,6 +154,27 @@ async def close_investigation(slug: str) -> dict:
     return reg.close_investigation(slug)
 
 
+@router.post("/{slug}/suspend")
+async def suspend_investigation(slug: str) -> dict:
+    """Pause without unbinding — see INVESTIGATION_STATUSES for why this is a
+    different word from `closed` rather than the same action under a nicer name."""
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return reg.set_investigation_status(slug, "suspended")
+
+
+@router.post("/{slug}/reopen")
+async def reopen_investigation(slug: str) -> dict:
+    """The route that did not exist: `close` had no way back except a direct
+    SQL update, which is what turned one accidental click into a data-recovery
+    incident. Works from either `closed` or `suspended` — both land on `open`."""
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    return reg.set_investigation_status(slug, "open")
+
+
 @router.put("/{slug}/egeria-project")
 async def bind_egeria_project(slug: str, req: EgeriaProjectBinding) -> dict:
     """Bind (or clear) this investigation's Egeria Project.
@@ -251,6 +272,31 @@ async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/{slug}/relink-members")
+async def relink_members(slug: str) -> dict:
+    """Re-attach this investigation's in-scope resources to its Egeria working set.
+
+    promote() links members once and then refuses to run again, so members that
+    had no asset GUID at promotion time — all of them, if the investigation was
+    promoted before its repos were published — had no way to be linked
+    afterwards. Idempotent: CollectionMembership is uni-link, so re-attaching an
+    already-attached member is an upsert.
+    """
+    import asyncio
+
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    reg = _registry()
+    if not reg.get_investigation(slug):
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    res = await asyncio.to_thread(
+        EgeriaInvestigationPublisher(reg).relink_members, slug
+    )
+    return res.as_dict()
+
+
 @router.post("/{slug}/sync-egeria")
 async def sync_egeria_project(slug: str) -> dict:
     """Push this investigation's name/description to its Egeria Project.
@@ -345,14 +391,33 @@ async def next_steps(slug: str) -> dict:
                       "An investigation with no resources cannot survey anything.",
             "action": "scouting",
         })
-    elif not reg.investigation_dispositions(slug):
-        steps.append({
-            "id": "set_dispositions",
-            "title": "Nothing judged yet",
-            "detail": f"{inv['member_count']} resource(s) in scope, none marked. "
-                      "Dispositions are how this investigation says which ones matter.",
-            "action": "disposition",
-        })
+    else:
+        # The remainder, not merely "has anyone judged anything". Keying on the
+        # latter let ONE judged resource out of nineteen report the whole
+        # investigation as judged — and the summary line above this list then
+        # said "Nothing outstanding", which was false while 14 sat unjudged.
+        judged = {
+            (m["entity_type"], m["entity_slug"])
+            for members in reg.investigation_dispositions(slug).values()
+            for m in members
+        }
+        unjudged = [
+            m for m in reg.list_investigation_members(slug)
+            if (m["entity_type"], m["entity_slug"]) not in judged
+        ]
+        if unjudged:
+            none_yet = not judged
+            steps.append({
+                "id": "set_dispositions",
+                "title": "Nothing judged yet" if none_yet
+                         else f"{len(unjudged)} resource(s) not judged yet",
+                "detail": (f"{inv['member_count']} resource(s) in scope, none marked. "
+                           if none_yet else
+                           f"{len(judged)} of {inv['member_count']} resource(s) in scope carry a "
+                           f"disposition; {len(unjudged)} do not. ")
+                          + "Dispositions are how this investigation says which ones matter.",
+                "action": "disposition",
+            })
     if inv.get("egeria_project_status") != "linked":
         steps.append({
             "id": "bind_egeria",

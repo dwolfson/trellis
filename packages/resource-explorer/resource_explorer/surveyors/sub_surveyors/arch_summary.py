@@ -58,6 +58,15 @@ log = logging.getLogger(__name__)
 #: graph — at which point this becomes the default, not the only source.
 SOURCE_KIND = "architecture_recovery"
 
+#: Where this step's own output lands. It had none until 2026-08-25: the
+#: summariser computed a summary, returned it as an annotation, and **persisted
+#: nothing**, so nothing could read it back, no results view was possible, and
+#: every run recomputed from scratch. Found by the presentation session auditing
+#: the end-to-end story, not by me — and it is finding 89's shape ("the
+#: capability existed and nothing wired it to storage") in code written the same
+#: day as the finding that names it.
+KIND = "architecture_summary"
+
 #: Ports and wires persist under their OWN kind, whole-resource scoped — not
 #: alongside the component findings. Discovered while wiring this step up: the
 #: summary reported no protocols at all while `interfaces.propose()` was
@@ -69,11 +78,34 @@ INTERFACE_KIND = "architecture_interfaces"
 
 #: Depths this summariser can produce. Only the first is implemented; the rest
 #: are named so their absence reads as scope rather than oversight.
-DEPTH_SUITABILITY = "suitability"       # "could we use this?" — implemented
-DEPTH_INTEGRATION = "integration"       # "how do we call it?" — needs stage-two interface reads
-DEPTH_FULL = "full"                     # every component and operation — the raw analysis
+DEPTH_SUITABILITY = "suitability"    # "could we use this?"
+DEPTH_INTEGRATION = "integration"    # "how would we call it?"
 
-DEPTHS = (DEPTH_SUITABILITY, DEPTH_INTEGRATION, DEPTH_FULL)
+#: `full` was declared here and is deliberately **gone**, not implemented.
+#:
+#: It was described as "every component and operation — the raw analysis", and
+#: that is precisely the problem: a summariser whose deepest level is *do not
+#: summarise* is describing the architecture-recovery results view, which
+#: already exists and is already reachable. Implementing it would have produced
+#: a second path to the same rows, and a reader choosing between them would be
+#: choosing between two spellings of one answer.
+#:
+#: Recorded rather than quietly dropped, because the reasoning is the reusable
+#: part: **a depth is a summarisation level, and "none" is not one.** For the
+#: raw component list, read `architecture_recovery`.
+DEPTHS = (DEPTH_SUITABILITY, DEPTH_INTEGRATION)
+
+#: What `integration` still cannot say without a stage-two read, named so its
+#: absence is a scoped decision rather than an oversight. Operation NAMES and
+#: request/response shapes are deliberately not extracted (finding 100: a count
+#: is a summary, a listing is not), so "how do we call it" is answered down to
+#: *what it serves, how much of it, and what it depends on* — not down to a
+#: signature. That last step needs the documents opened again at a different
+#: cost tier, and the driving question explicitly excluded it.
+INTEGRATION_NOT_ANSWERED = (
+    "operation names and signatures", "request/response schemas",
+    "authentication requirements", "client library versions",
+)
 
 #: `SolutionComponentType` values that mean "something that runs" — the ones a
 #: suitability answer is actually about. `Software Library` is excluded on
@@ -127,6 +159,11 @@ class ArchSummarySurveyor(BaseSurveyor):
         # recovered evidence, and dropping them would turn a lens into an
         # oracle in the one place a reader would not see it happen.
         documented = 0
+        # `integration` needs to know WHICH component serves WHAT, not just how
+        # many ports exist — the difference between "there are 10 gRPC ports"
+        # and "proxy serves gRPC".
+        serving: dict = {}
+        wire_targets: list = []
         # Every partial read is counted, because a summary that quietly lost
         # half its input still reads as a confident answer. `unread_scopes` and
         # `interfaces_unread` go into the annotation so a reader can tell a
@@ -150,6 +187,10 @@ class ArchSummarySurveyor(BaseSurveyor):
                     types[label or "Unclassified"] += 1
                     if label in _THIRD_PARTY_TYPES:
                         third_party += 1
+                elif check.startswith("wire:"):
+                    target = check.split(":", 1)[1]
+                    if target:
+                        wire_targets.append(target)
                 elif check.startswith("port:"):
                     # A port finding's LABEL is its direction; the protocol and
                     # the operation count live in `detail`. Reading `label` here
@@ -164,6 +205,9 @@ class ArchSummarySurveyor(BaseSurveyor):
                     proto = detail.get("protocol") or ""
                     if proto:
                         protocols[proto] += 1
+                        if detail.get("direction") == "Input-Output":
+                            serving.setdefault(proto, set()).add(
+                                detail.get("component") or scope)
                     try:
                         operations += int(
                             (detail.get("additionalProperties") or {}).get("operationCount", 0))
@@ -197,6 +241,16 @@ class ArchSummarySurveyor(BaseSurveyor):
                 proto = detail.get("protocol") or ""
                 if proto:
                     protocols[proto] += 1
+                    if detail.get("direction") == "Input-Output":
+                        # The PORT name, not the owning component. An IDL port is
+                        # named for the interface it defines (`proxy.proto`), and
+                        # the component that owns it is whatever subtree the file
+                        # sits in — `pkg` on Milvus, which tells a caller
+                        # nothing. What you call is the interface.
+                        serving.setdefault(proto, set()).add(
+                            detail.get("port") or detail.get("component") or "")
+                if (f.get("check_name") or "").startswith("wire:"):
+                    wire_targets.append((f.get("check_name") or "").split(":", 1)[1])
                 try:
                     operations += int(
                         (detail.get("additionalProperties") or {}).get("operationCount", 0))
@@ -206,8 +260,26 @@ class ArchSummarySurveyor(BaseSurveyor):
             log.exception("%s: could not read %s findings", slug, INTERFACE_KIND)
             interfaces_unread = True
 
-        summary = self._render(types, protocols, operations, third_party,
-                               documented)
+        if self._depth == DEPTH_INTEGRATION:
+            summary = self._render_integration(serving, wire_targets, operations)
+        else:
+            summary = self._render(types, protocols, operations, third_party,
+                                   documented)
+        props = {
+            "depth": self._depth,
+            "source_kind": SOURCE_KIND,
+            "component_scopes": len(scopes),
+            "components": sum(types.values()),
+            "component_types": dict(types),
+            "third_party": third_party,
+            "documented": documented,
+            "protocols": dict(protocols),
+            "operations": operations,
+            "unread_scopes": unread_scopes,
+            "interfaces_unread": interfaces_unread,
+            "complete": unread_scopes == 0 and not interfaces_unread,
+        }
+        self._persist(slug, summary, props)
         if unread_scopes or interfaces_unread:
             missing = []
             if unread_scopes:
@@ -239,6 +311,75 @@ class ArchSummarySurveyor(BaseSurveyor):
                 "complete": unread_scopes == 0 and not interfaces_unread,
             },
         )]
+
+    def _persist(self, slug: str, summary: str, props: dict) -> None:
+        """Write the summary where something can read it back.
+
+        Whole-resource scope: a summary is by definition about the resource, not
+        about one component — and writing it under a component's scope would
+        shadow that component's own findings, which is the trap finding 103
+        records.
+        """
+        try:
+            self.registry.upsert_finding(
+                slug, KIND,
+                [{
+                    "check_name": "architecture_summary",
+                    "label": self._depth,
+                    "summary": summary,
+                    "confidence": 90,
+                    "detail": props,
+                }],
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not persist the architecture summary", slug)
+        try:
+            self.registry.upsert_metric(
+                slug, KIND,
+                {"components": float(props.get("components", 0)),
+                 "documented": float(props.get("documented", 0)),
+                 "third_party": float(props.get("third_party", 0)),
+                 "operations": float(props.get("operations", 0))},
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not persist architecture summary metrics", slug)
+
+    def _render_integration(self, serving: dict, wires: list, operations: int) -> str:
+        """"How would we call it?" — from data already persisted.
+
+        My own earlier note said this depth needed stage-two interface reads.
+        That was only true of operation *names*: which components serve an
+        interface, over what protocol, how many operations, and what they call
+        out to are all in `architecture_interfaces` already. The correction
+        matters because it is the difference between a depth that is unbuildable
+        and one that is a different reading of what we hold — which is the whole
+        premise of depth as a summarisation level.
+        """
+        if not serving:
+            return ("Nothing here serves an interface we can see — no port with a "
+                    "protocol was recovered, so there is no call surface to describe")
+        parts = []
+        for proto, ifaces in sorted(serving.items(), key=lambda kv: -len(kv[1])):
+            named = ", ".join(sorted(ifaces)[:3])
+            more = f" (+{len(ifaces) - 3} more)" if len(ifaces) > 3 else ""
+            parts.append(f"{proto}: {named}{more}")
+        line = "; ".join(parts)
+        if operations:
+            line += f"; {operations} operation(s) across them"
+        if wires:
+            targets = sorted({w for w in wires})[:4]
+            line += f"; calls out to {', '.join(targets)}"
+        # The honest caveat, and it is the point of finding 101 restated where a
+        # reader meets it. Milvus declares 297 rpcs across ten .proto files;
+        # `proxy` is the client-facing one and the coord services are internal,
+        # and NOTHING IN THE CODE SAYS SO. Reporting the largest surface would
+        # name `root_coord` (76 rpcs) over `proxy` (18) and be exactly backwards.
+        if len(serving) or operations:
+            line += (" — public and internal interfaces are not distinguished; "
+                     "the project's own documentation is what separates them")
+        return line
 
     def _render(self, types: Counter, protocols: Counter,
                 operations: int, third_party: int, documented: int = 0) -> str:

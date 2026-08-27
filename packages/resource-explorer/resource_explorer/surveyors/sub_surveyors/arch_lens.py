@@ -77,7 +77,21 @@ PRODUCED_GUARDS = (GUARD_CONSULTED, GUARD_NO_DOCUMENT)
 ING_INGESTED = "ingested"            # a collection exists; do not offer
 ING_DECLINED = "declined"            # self_published / code_host — a correct refusal
 ING_ATTEMPTED_EMPTY = "attempted"    # ran, ingested nothing worth having
-ING_NOT_ATTEMPTED = "not-attempted"  # the only state an offer belongs in
+ING_NOT_ATTEMPTED = "not-attempted"  # the step has never run here — offer belongs here
+ING_UNKNOWN = "unknown"              # we could not find out; offer nothing
+
+#: Split out of `not-attempted` on 2026-08-25, at the presentation session's
+#: request and for a better reason than it not coping: it coped by matching the
+#: DETAIL STRING to tell "nobody read the site" from "we could not tell". That
+#: is their code depending on my wording across a module boundary, with nothing
+#: to notice a reword — and the failure would have been silent and specific,
+#: the card going back to confidently offering to ingest sites whose status
+#: merely failed to load.
+#:
+#: One state carrying two facts, which is the shape this session has met from
+#: five directions. Mine this time.
+ING_STATES = (ING_INGESTED, ING_DECLINED, ING_ATTEMPTED_EMPTY,
+              ING_NOT_ATTEMPTED, ING_UNKNOWN)
 
 
 def ingestion_status(registry, slug: str) -> tuple[str, str]:
@@ -96,9 +110,12 @@ def ingestion_status(registry, slug: str) -> tuple[str, str]:
     """
     try:
         m = registry.query_metrics(slug, "website_ingestion") or {}
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception("%s: could not read website_ingestion metrics", slug)
-        return ING_NOT_ATTEMPTED, "ingestion status unreadable"
+        # NOT `not-attempted`. "The step has never run here" is a fact about the
+        # repository; "we could not find out" is a fact about this lookup, and
+        # only the first is a reason to offer anything.
+        return ING_UNKNOWN, f"ingestion status unreadable: {exc}"
     if not m:
         return ING_NOT_ATTEMPTED, ""
     detail = m.get("detail") or {}
@@ -185,6 +202,7 @@ class ArchLensSurveyor(BaseSurveyor):
             return out
 
         self._persist(slug, components, lens)
+        self._record_run(slug, len(lens.documented), lens.outcome, lens.evidence)
 
         return [ClassificationAnnotation(
             summary=(f"{len(lens.documented)} of {len(components)} component(s) named "
@@ -205,6 +223,13 @@ class ArchLensSurveyor(BaseSurveyor):
                 "terms_extracted": len(lens.terms),
                 "documented": lens.documented,
                 "undetected_count": len(lens.undetected),
+                "undetected_usable": lens.undetected_usable,
+                "undetected_reason": lens.undetected_reason,
+                # The list itself only when it means something. On Milvus it is
+                # 506 section headings from 25 design documents, and publishing
+                # that as "things the docs name that we did not detect" would
+                # dress a table of contents as a detection gap.
+                **({"undetected": lens.undetected[:50]} if lens.undetected_usable else {}),
                 # Deliberately a COUNT, not the list: on Milvus this is 506
                 # section headings from 25 design documents, not component
                 # names. Publishing it as findings would dress prose as a gap.
@@ -267,6 +292,36 @@ class ArchLensSurveyor(BaseSurveyor):
                              "suggested_step": "repo_website_ingestion"},
         )
 
+    def _record_run(self, slug: str, documented: int, outcome: str, evidence: str) -> None:
+        """A whole-resource marker written on EVERY run, labelled or not.
+
+        Without it a run that documents nothing writes nothing, so the newest
+        rows in the table are whatever the last *successful* run left — and a
+        reader has no way to tell "this is the current answer" from "the current
+        run produced none and these are old". Measured: `docling_eval` and
+        `docling_java` kept rows from 17:02 through a full corpus refresh that
+        labelled neither, and both read as current.
+
+        The marker gives every reader a timestamp to compare against, which is
+        the smallest thing that makes staleness detectable. It does not delete
+        the old rows; nothing here should quietly remove evidence.
+        """
+        try:
+            self.registry.upsert_finding(
+                slug, LENS_KIND,
+                [{
+                    "check_name": "lens_run",
+                    "label": outcome or "not-consulted",
+                    "summary": f"{documented} component(s) named by the documentation",
+                    "confidence": 100,
+                    "detail": {"documented": documented, "evidence": evidence,
+                               "kind": "doc-lens-run"},
+                }],
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not record the doc-lens run", slug)
+
     def _persist(self, slug: str, components: list, lens) -> None:
         """One finding per documented component, on that component's own scope.
 
@@ -286,8 +341,17 @@ class ArchLensSurveyor(BaseSurveyor):
                         "label": lens.outcome,
                         "summary": f"named '{term}' in the architecture document",
                         "confidence": 90,
+                        # `evidence_kind` is the whole point of the field and it
+                        # was computed and dropped here — 212 stored rows across
+                        # 11 repos carried none of it, while
+                        # `_architecture_doc_lens_results`' docstring promised a
+                        # renderer it would be there. `kind` beside it is a type
+                        # tag ("doc-lens"), not evidence strength; the two names
+                        # are close enough that the absence read as presence.
                         "detail": {"term": term, "evidence": lens.evidence,
-                                   "date": lens.date, "kind": "doc-lens"},
+                                   "date": lens.date, "kind": "doc-lens",
+                                   "evidence_kind": lens.evidence_kind.get(
+                                       comp_slug, ad.EVIDENCE_EMPHASISED)},
                     }],
                     surveyed_at=self._surveyed_at, scope_locator=comp.scope,
                 )
@@ -296,6 +360,9 @@ class ArchLensSurveyor(BaseSurveyor):
 
     def _nothing(self, reason: str, *, guard: str, outcome: str = "",
                  evidence: str = "") -> Annotation:
+        # A run that found nothing is still a run, and saying so is what makes
+        # an older row detectable as stale rather than current.
+        self._record_run(self.project.slug, 0, outcome, evidence)
         return ClassificationAnnotation(
             summary=f"Architecture document not consulted — {reason}",
             analysis_step=self.step_name,

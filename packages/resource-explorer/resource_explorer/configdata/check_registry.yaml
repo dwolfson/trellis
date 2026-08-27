@@ -33,6 +33,33 @@
 
 analyses:
 
+  community_support:
+    findings_kind: community_support
+    source: surveyors/sub_surveyors/community_support.py:assess
+    checks:
+      - attention
+      - participation
+      - attention_exceeds_participation
+      - channels
+      - responsiveness
+
+  foss_scorecard:
+    findings_kind: foss_scorecard
+    source: surveyors/sub_surveyors/foss_scorecard.py:CHECKS
+    checks:
+      - maintained
+      - license
+      - ci_tests
+      - security_policy
+      - releases
+      - contributors
+      - sast
+      - vulnerabilities
+      - code_review
+      - branch_protection
+      - signed_releases
+      - dependency_update
+
   repo_conventions:
     findings_kind: repo_conventions
     source: ingestion/repo_conventions_parser.py:97-179
@@ -129,5 +156,9 @@ whole_analysis_only:
 
 # Excluded — `check_name` is an instance key here, not a check. See header.
 instance_keyed_not_checks:
+  # One finding per affected PACKAGE, so the keys are whatever the
+  # dependency set happens to contain — not a fixed set of checks that
+  # could be enumerated here.
+  - cve_scan
   - architecture_recovery
   - sub_resource_survey

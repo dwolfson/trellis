@@ -43,6 +43,19 @@ class _Reg:
 
 
 class _Lens:
+    """Stands in for `DocLens`, and has now lagged it four times.
+
+    Each miss cost a confusing failure somewhere unrelated: `sources` was
+    missing when the offer was added, `terms or [...]` turned an explicit empty
+    list into a populated one, `undetected_usable` arrived without it, and
+    `evidence_kind` was absent while `_persist` reads it inside a try/except —
+    so the AttributeError was SWALLOWED and the write simply did not happen,
+    which surfaced as a scope assertion failing for no visible reason.
+
+    The general point is worth more than the fixes: **a hand-written fake is a
+    duplicate of a shape, and nothing tells it when the original moves.** A
+    swallowing caller turns that into a silent no-op rather than an error.
+    """
     # `terms is None` vs `terms == []` are different setups and the fake must
     # keep them apart: `terms or ["proxy"]` turned an explicit empty list back
     # into a populated one, so the doc-site case silently tested the opposite
@@ -58,6 +71,11 @@ class _Lens:
         # shape fails for a reason that has nothing to do with the behaviour
         # under test.
         self.sources, self.read_sources = [(outcome, self.evidence)], []
+        # Kept in step with the real DocLens. A fake that lags the shape it
+        # stands for fails for reasons that have nothing to do with the
+        # behaviour under test — this is the third time in this file.
+        self.undetected_usable, self.undetected_reason = False, "test fake"
+        self.evidence_kind = {k: "emphasised" for k in self.documented}
 
     @property
     def consulted(self):
@@ -67,6 +85,19 @@ class _Lens:
 class TestAnnotatingMustNotShadowWhatItAnnotates:
     """The bug this step found. Any future step that labels another step's
     output has the same trap waiting for it."""
+
+    def test_every_run_records_a_marker_even_when_nothing_is_documented(self, monkeypatch):
+        """A run that documents nothing wrote nothing at all, so the newest rows
+        in the table were whatever the last successful run left — `docling_eval`
+        and `docling_java` kept rows through a full refresh that labelled
+        neither, and both read as current. The marker is the smallest thing that
+        makes staleness detectable."""
+        reg = _Reg(scopes=["a"])
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k: _Lens(documented={}))
+        AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
+        markers = [w for w in reg.writes if "lens_run" in w["checks"]]
+        assert len(markers) == 1
+        assert markers[0]["scope"] == "", "a run is about the resource, not a component"
 
     def test_labels_are_written_under_their_own_kind(self, monkeypatch):
         reg = _Reg(scopes=["client/index"])
@@ -93,7 +124,11 @@ class TestAnnotatingMustNotShadowWhatItAnnotates:
         monkeypatch.setattr(AL.ad, "apply",
                             lambda *a, **k: _Lens(documented={"index": "index"}))
         AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
-        assert reg.writes[0]["scope"] == "client/index"
+        # By check_name, not by index: the step also writes a whole-resource
+        # `lens_run` marker, and an index-based assertion silently became an
+        # assertion about write ORDER the moment that arrived.
+        labels = [w for w in reg.writes if "documented_by" in w["checks"]]
+        assert [w["scope"] for w in labels] == ["client/index"]
 
 
 class TestNoDocumentIsAnAnswer:
@@ -133,7 +168,11 @@ class TestItStaysALens:
         jp = ann.json_properties
         assert jp["undetected_count"] == 506
         assert "undetected" not in jp, "the raw list must not be published"
-        assert "overview" in jp["undetected_note"]
+        assert jp["undetected_usable"] is False
+        assert jp["undetected_reason"], (
+            "a bare False reads as 'we checked and it was not meaningful'; the "
+            "reason is what distinguishes that from 'not computed on this path'"
+        )
 
     def test_both_guards_are_declared(self):
         """0462 producedGuards — a coordinator needs to know a guard is
@@ -220,3 +259,59 @@ class TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone:
         (rfa,) = [a for a in self._run_with(monkeypatch, {})
                   if getattr(a, "action_requested", "")]
         assert "nothing is wrong with" in rfa.explanation
+
+
+class TestUnknownIsNotNotAttempted:
+    """Split at the presentation session's request, and for the better of the
+    two reasons available: their renderer coped by matching my DETAIL STRING to
+    tell "nobody read the site" from "we could not tell" — their code depending
+    on my wording across a module boundary, with nothing to notice a reword.
+
+    They wrote two guards against that and asked for them to be deleted the day
+    this split lands. These tests replace them."""
+
+    class _BrokenReg(_Reg):
+        def query_metrics(self, slug, kind):
+            raise RuntimeError("registry unreachable")
+
+    def test_an_unreadable_record_is_unknown_not_not_attempted(self):
+        state, detail = AL.ingestion_status(self._BrokenReg(), "x")
+        assert state == AL.ING_UNKNOWN
+        assert state != AL.ING_NOT_ATTEMPTED, (
+            "'we could not find out' is a fact about the lookup; 'the step has "
+            "never run here' is a fact about the repository"
+        )
+        assert "unreadable" in detail
+
+    def test_an_absent_record_is_still_not_attempted(self):
+        assert AL.ingestion_status(_Reg(), "x")[0] == AL.ING_NOT_ATTEMPTED
+
+    def test_no_offer_is_made_when_the_status_is_unknown(self, monkeypatch):
+        """The specific failure the split prevents: confidently offering to
+        ingest a site whose status merely failed to load."""
+        lens = _Lens(terms=[], outcome="doc-site")
+        lens.sources = [("doc-site", "https://a")]
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k: lens)
+        anns = AL.ArchLensSurveyor(_Proj(), self._BrokenReg(scopes=["x"])).run()
+        assert not [a for a in anns if getattr(a, "action_requested", "")]
+
+    def test_the_state_set_is_declared_so_a_caller_can_switch_on_it(self):
+        """A renderer branching on these should be able to enumerate them
+        rather than discover a new one at runtime."""
+        assert set(AL.ING_STATES) == {
+            AL.ING_INGESTED, AL.ING_DECLINED, AL.ING_ATTEMPTED_EMPTY,
+            AL.ING_NOT_ATTEMPTED, AL.ING_UNKNOWN}
+
+    def test_every_returned_state_is_in_the_declared_set(self):
+        cases = [
+            _Reg(),                                                        # absent
+            self._BrokenReg(),                                             # unreadable
+            TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone._MReg(
+                {"chunks": 97.0, "detail": {"outcome": "recovered"}}),      # ingested
+            TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone._MReg(
+                {"chunks": 0.0, "detail": {"reason": "self_published"}}),   # declined
+            TestTheIngestOfferFiresOnlyWhereItIsRealAndUndone._MReg(
+                {"chunks": 0.0, "detail": {"outcome": "unverified"}}),      # attempted
+        ]
+        for reg in cases:
+            assert AL.ingestion_status(reg, "x")[0] in AL.ING_STATES

@@ -124,6 +124,29 @@ _NEXT_STEPS_KEY = "nextProcessSteps"
 _LINKS_KEY = "processStepLinks"
 
 
+def _split_perspectives(raw) -> list:
+    """Additional Properties values arrive as a string; accept a list too.
+
+    Egeria stores Additional Properties as strings, so a multi-valued one is a
+    separated list by convention. Splits on comma and semicolon, trims, and
+    drops blanks -- an author writing "Security, Steward" and one writing
+    "Security;Steward" mean the same thing and must not produce a perspective
+    literally named " Steward" that matches no filter.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        values = str(raw).replace(";", ",").split(",")
+    seen: list = []
+    for v in values:
+        v = str(v).strip()
+        if v and v not in seen:
+            seen.append(v)
+    return seen
+
+
 class SurveyDefinitionReaderError(RuntimeError):
     """Raised when a Survey Definition can't be read, or is missing required data."""
 
@@ -205,6 +228,14 @@ class SurveyDefinition:
     # docs/discovery-automate-project-context-plan.md Part 1. None for
     # Survey Definitions authored before this convention existed.
     survey_kind: str | None = None
+    #: Perspectives this survey is authored FOR, as declared in Additional
+    #: Properties. Retained only as an escape hatch for a definition that has
+    #: no ScopedBy links yet — the real association is
+    #: Survey --ScopedBy--> Question --> Perspective, read by the candidates
+    #: route, because Questions already carry Perspectives and scoping a Survey
+    #: to the Questions it answers is the same statement without a second tag
+    #: to keep in sync (D7, docs/unified-survey-execution-model-plan.md).
+    perspectives: list = field(default_factory=list)
 
 
 class SurveyDefinitionReader:
@@ -438,11 +469,13 @@ class SurveyDefinitionReader:
 
         Returns [] (not an error) if no question resolves to a real GUID —
         the caller decides whether to fall back to the full scan."""
-        question_guids = [g for g in (self.resolve_question_guid(q) for q in questions) if g]
+        # Paired with their text, so a matched candidate can name the Questions
+        # that scoped it rather than just how many there were.
+        question_guids = [(q, g) for q, g in ((q, self.resolve_question_guid(q)) for q in questions) if g]
         if not question_guids:
             return []
 
-        cache_key = (tuple(sorted(question_guids)), technology_type, survey_kind)
+        cache_key = (tuple(sorted(g for _, g in question_guids)), technology_type, survey_kind)
         now = time.monotonic()
         cached = _candidates_cache.get(cache_key)
         if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
@@ -451,7 +484,7 @@ class SurveyDefinitionReader:
         by_guid: dict[str, dict] = {}
         try:
             client = self._connect_classification_explorer()
-            for question_guid in question_guids:
+            for question_text, question_guid in question_guids:
                 results = client.get_scoped_elements(
                     question_guid,
                     page_size=1000,
@@ -471,11 +504,20 @@ class SurveyDefinitionReader:
                         continue
                     header = el.get("elementHeader", {}) or {}
                     guid = header.get("guid", "")
-                    by_guid[guid] = {
-                        "qualified_name": qn,
-                        "display_name": props.get("displayName", qn),
-                        "guid": guid,
-                    }
+                    existing = by_guid.get(guid)
+                    if existing is None:
+                        by_guid[guid] = {
+                            "qualified_name": qn,
+                            "display_name": props.get("displayName", qn),
+                            "guid": guid,
+                            # The Questions this Survey Definition is ScopedBy,
+                            # among those queried. A survey answers more than
+                            # one, so this accumulates across the loop instead
+                            # of being overwritten by the last match.
+                            "matched_questions": [question_text],
+                        }
+                    elif question_text not in existing["matched_questions"]:
+                        existing["matched_questions"].append(question_text)
         except Exception as exc:
             log.debug("find_candidate_process_guids_by_questions failed: %s", exc)
             return []
@@ -704,6 +746,7 @@ class SurveyDefinitionReader:
             links=links,
             description=process_props.get("description", ""),
             survey_kind=process_additional.get("survey_kind"),
+            perspectives=_split_perspectives(process_additional.get("perspectives")),
         )
 
     def _parse_step(self, element: dict) -> SurveyStep:

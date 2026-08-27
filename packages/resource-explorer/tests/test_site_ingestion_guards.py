@@ -213,3 +213,241 @@ class TestIngestionStatusReadsTheAuthoritativeField:
         for reason in ("self_published", "code_host", "non_doc_host", "unrelated_host"):
             rec = {"chunks": 0.0, "detail": {"ingested": False, "reason": reason}}
             assert AL.ingestion_status(self._R(rec), "x") == (AL.ING_DECLINED, reason)
+
+
+class TestASiteIsIngestedOnceNotOncePerSiblingRepo:
+    """`site_collection_name`'s docstring already said a site should be
+    "ingested once and every repo pointing at it" shares the copy. The naming
+    did that; nothing enforced it. Measured: `egeria-project.org` fetched and
+    embedded three times in one batch — 187 pages and 6018 chunks each, ~175
+    seconds — because host-keying dedupes the DESTINATION and not the FETCH."""
+
+    class _P:
+        def __init__(self, slug, chunks, collection, when, url="https://x"):
+            self.slug, self._c, self._col, self._w = slug, chunks, collection, when
+
+    class _Reg:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def list_all(self):
+            return self._rows
+
+        def query_metrics(self, slug, kind):
+            for r in self._rows:
+                if r.slug == slug:
+                    return {"chunks": r._c, "surveyed_at": r._w,
+                            "detail": {"collection": r._col}}
+            return {}
+
+    @staticmethod
+    def _now(offset_hours=0):
+        from datetime import datetime, timedelta
+        return (datetime.utcnow() - timedelta(hours=offset_hours)).isoformat()
+
+    def _reg(self, *rows):
+        return self._Reg(list(rows))
+
+    def test_a_recent_ingest_by_a_sibling_is_found(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("sibling", 6018.0, "web_docs_x", self._now(1)))
+        owner, when = w._already_ingested(reg, "web_docs_x", "me")
+        assert owner == "sibling"
+
+    def test_this_repos_own_recent_ingest_also_counts(self):
+        """The first version excluded the repo itself, and that was wrong.
+        Skipping writes a zero-chunk record over what this repo held, so after
+        two siblings skip only the third still carries the evidence — run last,
+        it re-ingests. Observed: two skips in under a second, then 103 seconds
+        re-fetching a site the repo's own record said was current."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("me", 6018.0, "web_docs_x", self._now(1)))
+        assert w._already_ingested(reg, "web_docs_x", "me")[0] == "me"
+
+    def test_a_stale_ingest_does_not_count(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("sibling", 6018.0, "web_docs_x",
+                                self._now(w.SITE_FRESHNESS_HOURS + 1)))
+        assert w._already_ingested(reg, "web_docs_x", "me") == (None, None)
+
+    def test_a_run_that_stored_nothing_does_not_count(self):
+        """milvus recorded a completed ingest with zero chunks after 400 failed
+        fetches. Treating that as 'already done' would make a bad run
+        permanent."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("milvus", 0.0, "web_docs_x", self._now(1)))
+        assert w._already_ingested(reg, "web_docs_x", "me") == (None, None)
+
+    def test_a_different_collection_does_not_count(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        reg = self._reg(self._P("other", 99.0, "web_docs_somewhere_else", self._now(1)))
+        assert w._already_ingested(reg, "web_docs_x", "me") == (None, None)
+
+
+class TestTheSkipStillWiresTheRepoToTheCollection:
+    def test_attribution_survives_the_props_allowlist(self):
+        """`_note` filters props through a fixed allowlist, so a key added
+        upstream and not added there is dropped SILENTLY — which is what
+        happened to `ingested_by`, and to `operationCount` in
+        arch_recovery/persist.py the same day."""
+        import inspect
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        # Against the constant, not the method body: the allowlist moved out of
+        # `_note` into `_DETAIL_FIELDS`, and a source-substring assertion would
+        # have gone green-then-silently-wrong on that refactor rather than
+        # failing loudly. The same how-versus-what distinction the presentation
+        # session's sentinel guard demonstrated.
+        for key in ("ingested_by", "ingested_at"):
+            assert key in w._DETAIL_FIELDS, f"{key} would be dropped from the record"
+
+    def test_skipping_the_fetch_must_not_skip_the_registration(self):
+        """The query router searches a repo's OWN collection list. Skipping the
+        fetch without registering would leave this repo unable to search a site
+        it points at — a saving that costs the thing the ingest was for."""
+        import inspect
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        src = inspect.getsource(w.WebsiteIngestionSurveyor.run)
+        skip = src[src.index("already_ingested(self.registry"):src.index("no_signal(\"already_ingested\"")]
+        assert "update_indexed_at" in skip
+
+
+class TestProjectFamiliesVouchForAFamilySite:
+    """A name comparison knows nothing about project families, so `trellis` was
+    refused for declaring `egeria-project.org` — and it IS an Egeria project,
+    sitting in the registry's own `egeria` group beside four repos declaring
+    that exact homepage. The evidence was already recorded; the function could
+    not see it."""
+
+    def test_a_sibling_name_can_carry_the_match(self):
+        assert not host_relates_to_project("https://egeria-project.org/", "odpi/trellis")
+        assert host_relates_to_project("https://egeria-project.org/", "odpi/trellis",
+                                       ["odpi/egeria", "odpi/egeria-docs"])
+
+    def test_a_family_does_not_launder_an_unrelated_host(self):
+        """The check that matters. `docling-nlp` and `docling-parse` both point
+        at `docs.astral.sh/uv/` and both sit in a 13-repo docling family — if
+        family membership were enough to wave anything through, the guard would
+        be inert exactly where it did the most good."""
+        siblings = [f"docling-project/docling-{n}" for n in
+                    ("core", "serve", "eval", "java", "mcp", "sdg")]
+        assert not host_relates_to_project("https://docs.astral.sh/uv/",
+                                           "docling-project/docling-nlp", siblings)
+
+    @pytest.mark.parametrize("url,repo", [
+        ("https://community.intel.com/t5/Blogs/x", "opea-project/Enterprise-RAG"),
+        ("https://kubernetes.io/docs/setup/", "opea-project/GenAIInfra"),
+    ])
+    def test_the_other_live_refusals_survive_family_awareness(self, url, repo):
+        siblings = [f"opea-project/{n}" for n in ("GenAIComps", "GenAIExamples", "docs")]
+        assert not host_relates_to_project(url, repo, siblings)
+
+    def test_no_siblings_behaves_exactly_as_before(self):
+        for extra in ((), None, []):
+            assert host_relates_to_project("https://kafka.apache.org/", "apache/kafka", extra)
+            assert not host_relates_to_project("https://docs.astral.sh/uv/", "acme/widget", extra)
+
+    def test_sibling_lookup_failure_does_not_stop_an_ingest(self):
+        """Best-effort by design: a registry that cannot answer must not block
+        the ingest, it must fall back to the name comparison alone."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        class _Broken:
+            def list_groups(self):
+                raise RuntimeError("registry down")
+
+        class _P:
+            slug = "x"
+
+        assert w._group_sibling_names(_Broken(), _P()) == []
+
+
+class TestTheDetailAllowlistCoversEveryCaller:
+    """A curated field list discards anything added upstream, without saying so.
+
+    Three instances in one day — `ingested_by` when the dedup skip was written,
+    `landing_chars`/`sampled_chars` when profiling was added, and
+    `operationCount` in `arch_recovery/persist.py`'s equivalent. Each is
+    individually defensible; three is a pattern, and the pattern is that nothing
+    tells the list when a call site grows a key.
+
+    This closes it structurally for this module: the list must be a superset of
+    what its callers actually pass. Filed as a cross-cutting item in
+    `docs/Backlog.md` for the sites this test cannot reach.
+    """
+
+    @staticmethod
+    def _keys_passed_to_note() -> set:
+        """Every literal dict key handed to `_note` in this module."""
+        import ast
+        import inspect
+        import textwrap
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(w)))
+        keys = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+            if name != "_note":
+                continue
+            for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                if isinstance(arg, ast.Dict):
+                    keys |= {k.value for k in arg.keys
+                             if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        return keys
+
+    @staticmethod
+    def _keys_written_as_metrics() -> set:
+        """Props that reach the record as METRICS rather than detail.
+
+        The first version of this test asserted every prop must be in
+        `_DETAIL_FIELDS`, and it immediately failed on `chunks` and
+        `pages_fetched` — which are not dropped at all, they are written as
+        metrics because they are numbers. The property that actually matters is
+        that a prop reaches SOMEWHERE, so this makes the guard more accurate
+        rather than looser.
+        """
+        import inspect
+        import re
+
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        src = inspect.getsource(w.WebsiteIngestionSurveyor._note)
+        block = src[src.index("upsert_metric"):]
+        return set(re.findall(r'props\.get\("(\w+)"', block))
+
+    def test_every_key_a_caller_passes_reaches_the_record(self):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        passed = self._keys_passed_to_note()
+        assert passed, "found no _note call sites — the extractor is broken, not the code"
+        reaches = set(w._DETAIL_FIELDS) | self._keys_written_as_metrics()
+        dropped = passed - reaches
+        assert not dropped, (
+            f"these keys are passed to _note and reach neither the detail nor "
+            f"the metrics: {sorted(dropped)}. Add them to _DETAIL_FIELDS, write "
+            f"them as metrics, or stop passing them."
+        )
+
+    def test_the_allowlist_has_no_entries_nobody_passes(self):
+        """The other direction is worth knowing but not worth failing on — a
+        field kept for a caller that no longer exists is dead weight, not a
+        bug. Reported so it can be pruned deliberately."""
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as w
+
+        unused = set(w._DETAIL_FIELDS) - self._keys_passed_to_note()
+        # `owner_repo` is passed inside an f-string-built dict in one branch;
+        # tolerate a small residue rather than assert emptiness we cannot verify.
+        assert len(unused) <= 3, f"allowlist has drifted from its callers: {sorted(unused)}"
