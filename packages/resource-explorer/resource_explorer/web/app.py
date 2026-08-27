@@ -16,6 +16,20 @@ from resource_explorer.web.routes import activity, aliases, analyses, automate, 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Any activity_log row still 'running' cannot have a live thread behind
+    # it in a freshly-started process — daemon threads don't survive a
+    # restart. Confirmed live 2026-08-26: a restart mid-survey left two rows
+    # stuck at 'running' forever, with nothing to notice or fix them. Runs
+    # synchronously, before anything else, so it never races a real survey
+    # this same startup kicks off later.
+    from resource_explorer.registry import ProjectRegistry
+    reconciled = ProjectRegistry().reconcile_orphaned_running_activity()
+    if reconciled:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Reconciled %d orphaned 'running' activity_log row(s) on startup: %s",
+            len(reconciled), reconciled,
+        )
     start_scheduler()
     # Detect + repair Dr.Egeria definitions wiped by an Egeria reset. Runs one
     # check immediately (covers a restart alongside the reset) then periodically

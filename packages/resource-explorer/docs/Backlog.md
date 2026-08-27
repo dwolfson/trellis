@@ -1340,6 +1340,31 @@ guessed at further:
 
 ### Platform & orchestration
 
+#### FIXED — a server restart mid-survey left activity_log rows stuck at 'running' forever
+
+Confirmed live 2026-08-26: restarting the web server to pick up a git pull killed two
+in-flight Survey Definition runs (`RepoFullSurvey` and `RepoArchitectureDiscovery` on
+`deep_causality`) mid-flight. Each survey's individual steps had genuinely completed and
+published to Egeria — visible as their own `ok` activity_log rows — but the *outer wrapper*
+row each survey run creates up front (`status='running'`, written by `survey_definitions.py`'s
+`run_survey_definition_route`, `projects.py`'s scouting-scan route, and the equivalent
+database/filesystem routes) is only ever marked terminal by one line at the very end of the
+background `daemon=True` thread doing the work. Kill the process, and that line never runs —
+nothing on startup reconciled it, so the row read "running" indefinitely, with no way to tell
+"still going" from "died and nobody noticed."
+
+**Fixed:** `ProjectRegistry.reconcile_orphaned_running_activity()` (`registry.py`) marks every
+`status='running'` row `error` with an explanatory summary ("interrupted... individual step
+results published before the interruption are unaffected"), called once, synchronously, at the
+very start of `web/app.py`'s `_lifespan()` — before the scheduler or anything else starts, so it
+can never race a real survey this same startup kicks off. Not a heuristic or a timeout: in this
+single-process architecture, a daemon thread cannot survive the process restarting, so *any*
+row still `running` when a fresh process's startup code runs is certainly orphaned, not
+probably. The two real stuck rows were fixed by hand the same way before this general fix
+existed. Tests: `tests/test_registry.py::TestReconcileOrphanedRunningActivity`.
+
+---
+
 #### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
 
 RE's only execution model today is either synchronous in-process (`SurveyOrchestrator`) or the `scheduler.py` daemon-thread poller (see the "Periodic / triggered survey scheduling" item below). Neither can run survey work *near* a protected asset (a database inside a VPC, a filesystem edge agent) without deploying RE itself there, and neither gives retries/backoff/task-level telemetry for free.

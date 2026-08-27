@@ -4795,6 +4795,48 @@ class ProjectRegistry:
                 (status, summary, summary, detail, detail, entry_id),
             )
 
+    def reconcile_orphaned_running_activity(self) -> list[str]:
+        """Mark every activity_log row still at status='running' as 'error',
+        with a summary explaining why — call once, early, on process startup.
+
+        Every 'running' row is created by a background `daemon=True` thread
+        (survey_definitions.py's `_run_survey_definition_background` and its
+        siblings in projects.py/databases.py/filesystems.py) that writes the
+        real terminal status only when it finishes. Daemon threads do not
+        survive a process restart — so by the time a NEW process's startup
+        code runs, any row still 'running' cannot possibly have a live thread
+        behind it anymore, in this single-process architecture. It's not a
+        best-effort guess; it's certain.
+
+        Confirmed live 2026-08-26: a server restart (to pick up a git pull)
+        killed two in-flight Survey Definition runs mid-flight, orphaning
+        their wrapper activity_log rows at 'running' forever — nothing
+        reconciled them until fixed by hand. This closes that gap.
+
+        The individual steps a survey completed before the interruption keep
+        their own 'ok' activity_log rows (written separately, per step) —
+        this only fixes the outer wrapper row, and says so in its summary
+        rather than implying the whole run failed outright.
+        """
+        note = (
+            "Interrupted — the process running this was restarted (or crashed) "
+            "before it reached a terminal state, detected on the next startup. "
+            "Individual step results published before the interruption are "
+            "unaffected; see nearby activity log entries for what completed."
+        )
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id FROM activity_log WHERE status = 'running'"
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if ids:
+                conn.executemany(
+                    "UPDATE activity_log SET status = 'error', summary = ?, "
+                    "detail = ? WHERE id = ?",
+                    [(note, json.dumps({"reason": "orphaned_running_row_reconciled_on_startup"}), i) for i in ids],
+                )
+        return ids
+
     # ── RFA actions (local response tracking — see PATCH /api/activity/rfas/{rfa_id}
     # in web/routes/activity.py) ─────────────────────────────────────────────
     #
