@@ -1,6 +1,6 @@
 # Survey model: granularity, annotation types, and RE as an engine host
 
-**Status: design note. Nothing here is built. Three hazards in §1 are live and shipped.**
+**Status: design note. §1.1 is FIXED (2026-08-26). §1.2 and §1.3 are live and shipped.**
 **Date:** 2026-08-26
 **Supersedes in part:** `analysis-step-egeria-registration-plan.md` (D1/D3 shipped differently; D2 shipped; D4 still open)
 **Prompted by:** the question of whether RE should manage two granularities — individual
@@ -53,9 +53,25 @@ RE's own repair.
 pipeline currently treats the definition as disposable output of the specification, which is
 backwards, and which only survives today because nobody has authored a guard yet.
 
-*Fix:* make the generator seed-only — write when absent, never overwrite — and have the drift
-repair refuse to execute a document that has diverged from what the CSV would generate, rather
-than silently replacing it.
+**FIXED 2026-08-26.** The generator now writes a file only when it is absent, byte-identical,
+or provably untouched since it was last generated — the last established by a `.generated.json`
+sidecar of content hashes. A file that differs from generation *and* from its recorded hash has
+been hand-authored, and is reported with the first differing line rather than overwritten;
+`--force` discards it deliberately.
+
+The sidecar is what keeps `--force` rare. Without it, every legitimate CSV change would need
+`--force` too, people would pass it by reflex, and the hazard would be back.
+
+An earlier draft of this section proposed a second fix — "have the repair refuse to execute a
+document that has diverged from the CSV" — and it was wrong twice over. The repair never
+replaces documents; it executes them, which for a hand-authored guard is exactly what should
+happen. And CSV-divergence is the wrong criterion: divergence is expected once the `.md` carries
+detail the CSV cannot hold.
+
+The real interlock is §1.2's hazard, and it shipped alongside: the repair now refuses to run
+while any document carries a guard other than `Any`, because the reconciler it must run would
+delete the branch. A document it cannot read counts as guarded. That refusal can be removed once
+§1.2 is fixed, and not before.
 
 ### 1.2 The link reconciler forbids branching
 
@@ -74,6 +90,12 @@ Neither survives the model in §4:
 This is the same hazard as §1.1 one layer down, and it is reached by the same action: authoring
 a real guard. The reconciler is the mandatory post-heal step of the repair, so it runs on every
 recovery.
+
+Since 2026-08-26 the repair refuses to run while any document carries a non-`Any` guard, so this
+can no longer fire silently — but that is an interlock, not a fix. Branching definitions remain
+unrepairable until the reconciler is keyed on `(previous, next, guard)` with a non-linear
+expected set. `SurveyDefinitionReader` also treats branching as an error and refuses to run such
+a definition at all, so it is not merely the reconciler that assumes linearity.
 
 Note the irony worth recording: `NextGovernanceActionProcessStep` is MULTI_LINK, which is why
 Dr.Egeria's link command duplicates rather than upserts — the problem that took definitions out
@@ -277,7 +299,9 @@ why the generator must not own them.
 
 Ordered by dependency, not by value.
 
-1. **§1.1 generator seed-only.** Smallest change, stops the bleeding, unblocks hand-authoring.
+1. ~~**§1.1 generator seed-only.**~~ **Done 2026-08-26**, with the §1.2 interlock alongside it.
+   Hand-authoring a guard is now safe from the generator, and refused by the repair rather than
+   silently flattened.
 2. **§3 publish the real `annotationType`.** One string, already held. Independently useful,
    and it retires the `project_published_analyses` workaround.
 3. **§1.3 split the drift scan** into recovery and coverage checks. Cheap, and the current

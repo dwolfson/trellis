@@ -74,6 +74,10 @@ next step added later, so it stays a sentinel instead).
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
+
 import csv
 from dataclasses import dataclass
 from pathlib import Path
@@ -240,8 +244,62 @@ MANUAL_EXTRA_SCOPE_QUESTIONS: dict[str, list[str]] = {
 }
 
 
+#: Records the sha256 of the content this script last wrote for each document.
+#:
+#: It exists to tell two indistinguishable states apart. When a generated file
+#: no longer matches what the CSV would produce, that is either "the CSV
+#: changed" (regenerating is correct) or "someone hand-authored into it"
+#: (regenerating destroys their work). The file alone cannot say which. With a
+#: recorded hash it can: content that still matches what we last wrote has not
+#: been touched by hand, whatever the CSV now says.
+#:
+#: Deliberately a sidecar rather than a marker inside the document. These files
+#: are parsed by Dr.Egeria, and adding content to them to protect them from
+#: corruption would be its own risk.
+PROVENANCE_FILE = SURVEY_DEFS_DIR / ".generated.json"
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_provenance() -> dict:
+    try:
+        return json.loads(PROVENANCE_FILE.read_text())
+    except (OSError, ValueError):
+        # No record, or an unreadable one. Both mean we cannot prove any file
+        # is untouched, so every existing file is treated as hand-authored and
+        # left alone. Failing towards "refuse to overwrite" is the whole point.
+        return {}
+
+
+def _write_provenance(record: dict) -> None:
+    PROVENANCE_FILE.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
+def _first_divergent_line(existing: str, generated: str) -> str:
+    a, b = existing.splitlines(), generated.splitlines()
+    for i in range(max(len(a), len(b))):
+        old_line = a[i] if i < len(a) else "(end of file)"
+        new_line = b[i] if i < len(b) else "(end of file)"
+        if old_line != new_line:
+            return f"line {i + 1}:\n      on disk:   {old_line[:100]}\n      generated: {new_line[:100]}"
+    return "(no line differs — whitespace only)"
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite documents that have been edited since they were "
+             "generated. This DISCARDS guards, request parameters and any "
+             "other detail the CSV cannot express.",
+    )
+    args = parser.parse_args()
+
     SURVEY_DEFS_DIR.mkdir(parents=True, exist_ok=True)
+    provenance = _load_provenance()
+    skipped: list[str] = []
     step_key_to_questions = _build_step_key_to_questions()
     for spec in SPECS:
         steps = build_steps(spec.step_keys)
@@ -259,10 +317,46 @@ def main() -> None:
             answers_questions=answers_questions,
         )
         output_path = SURVEY_DEFS_DIR / spec.output_filename
+        existing = output_path.read_text() if output_path.exists() else None
+
+        if existing is not None and existing != markdown:
+            # The document differs from what the CSV now produces. Overwrite
+            # ONLY if we can prove it is untouched generator output.
+            untouched = provenance.get(spec.output_filename) == _digest(existing)
+            if not untouched and not args.force:
+                skipped.append(spec.output_filename)
+                print(
+                    f"[{spec.survey_kind}] SKIPPED {output_path.name} — it has been "
+                    f"edited since it was generated.\n"
+                    f"      This file is the definition; the CSV is only a "
+                    f"specification of it, and cannot express guards, request "
+                    f"parameters or branching.\n"
+                    f"      First difference at {_first_divergent_line(existing, markdown)}\n"
+                    f"      Re-run with --force to discard those edits."
+                )
+                continue
+
+        if existing == markdown:
+            # Byte-identical. Recording provenance is the whole value of this
+            # pass — it is what lets a LATER legitimate CSV change regenerate
+            # silently instead of being refused as possibly hand-authored.
+            provenance[spec.output_filename] = _digest(markdown)
+            print(f"[{spec.survey_kind}] unchanged: {output_path.name}")
+            continue
+
         output_path.write_text(markdown)
+        provenance[spec.output_filename] = _digest(markdown)
+        verb = "wrote" if existing is None else "regenerated"
         print(
-            f"[{spec.survey_kind}] wrote {len(steps)} step(s), "
+            f"[{spec.survey_kind}] {verb} {len(steps)} step(s), "
             f"{len(answers_questions)} question link(s) to {output_path}"
+        )
+
+    _write_provenance(provenance)
+    if skipped:
+        print(
+            f"\n{len(skipped)} document(s) left untouched: {', '.join(skipped)}\n"
+            "Nothing was lost. Reconcile them by hand, or re-run with --force."
         )
 
 

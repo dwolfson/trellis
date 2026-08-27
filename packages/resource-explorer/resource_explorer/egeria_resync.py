@@ -458,6 +458,33 @@ class EgeriaResync:
         if batch is None:
             return {"reauthored": False,
                     "error": "the survey-definitions batch was not found"}
+
+        # Interlock: refuse while any document carries a real guard.
+        #
+        # heal_batch's mandatory post-heal is the link reconciler, which
+        # identifies a duplicate edge by (previous, next) WITHOUT considering
+        # the guard, and builds its expected set as a linear chain. Two edges
+        # that differ only by guard are therefore read as one edge duplicated,
+        # and a genuine branch is read as stale. Both are deleted. Running the
+        # repair over a branching definition would silently flatten it.
+        #
+        # Refusing is the honest behaviour until the reconciler is keyed on
+        # (previous, next, guard) — see docs/survey-model-and-engine-host-design.md
+        # section 1.2. Repairing a definition by destroying the part of it the
+        # CSV could not express is worse than not repairing it.
+        guarded = _documents_with_real_guards(batch)
+        if guarded:
+            return {
+                "reauthored": False,
+                "error": (
+                    "refused: " + ", ".join(sorted(guarded)) + " carry guards other "
+                    "than 'Any'. The link reconciler this repair must run cannot yet "
+                    "tell a guarded branch from a duplicate edge, and would delete "
+                    "the branch. Re-author these by hand until it is branch-aware."
+                ),
+                "guarded_documents": sorted(guarded),
+            }
+
         ok, detail = heal_batch(batch)
         return {"reauthored": bool(ok), "detail": detail,
                 "documents": len(batch.files),
@@ -585,3 +612,38 @@ def _all_step_keys() -> list:
     except ImportError:  # pragma: no cover - defensive
         return []
     return sorted(STEP_REGISTRY.keys())
+
+
+#: Guard value meaning "always follow this edge" — the only one RE's generator
+#: emits and the only one the link reconciler can currently handle safely.
+UNCONDITIONAL_GUARD = "Any"
+
+
+def _documents_with_real_guards(batch) -> set:
+    """Documents declaring a guard other than `Any`.
+
+    Reads the `### Guard` sections of each Dr.Egeria document. A file that
+    cannot be read counts as guarded: this gates a destructive repair, so
+    "could not tell" must fail towards refusing, exactly as _resolves() does
+    for a lookup it cannot complete.
+    """
+    found = set()
+    for filename in getattr(batch, "files", []):
+        try:
+            lines = (batch.path / filename).read_text().splitlines()
+        except Exception:
+            # Any reason at all — missing file, unreadable, a batch without a
+            # usable path. All of them are "cannot tell", and this gates a
+            # destructive repair.
+            found.add(filename)
+            continue
+        for i, line in enumerate(lines):
+            if line.strip() != "### Guard":
+                continue
+            # The value is the next non-blank line.
+            for candidate in lines[i + 1:]:
+                if candidate.strip():
+                    if candidate.strip() != UNCONDITIONAL_GUARD:
+                        found.add(filename)
+                    break
+    return found

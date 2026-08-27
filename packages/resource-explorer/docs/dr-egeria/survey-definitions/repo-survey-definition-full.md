@@ -44,7 +44,7 @@ Full Survey (all steps) — Repo Manifest Parse
 GovActionProcessStep::RepoFullSurvey::repo_manifest_parse
 
 ### Description
-Parses dependency manifests, CI workflow content, and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
+Parses dependency manifests, CI workflow content, supply-chain signals and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions"/"supply_chain") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
