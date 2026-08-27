@@ -215,12 +215,20 @@ class SurveyDefinition:
     display_name: str
     qualified_name: str
     supported_technology_type: str | None
-    steps: list = field(default_factory=list)  # list[SurveyStep], in execution order
+    #: list[SurveyStep] in execution order. For a branching definition this is a
+    #: topological order — every step precedes its dependents — which is an
+    #: order to READ them in, not a sequence to run: which branch actually runs
+    #: is decided at execution time from the guards in `links`.
+    steps: list = field(default_factory=list)
     # list[StepLink] — the step-to-step edges WITH their guards. `steps` is the
     # linear execution order v1 runs; `links` is the authored topology, kept
     # whole so a coordinator can route on guards without re-fetching. Populated
     # even while the executor only walks a line.
     links: list = field(default_factory=list)
+    #: Steps the process declares that no path from its first step reaches.
+    #: Surfaced rather than dropped: such a step is in the definition, absent
+    #: from every run, and otherwise indistinguishable from one never authored.
+    unreachable_step_guids: list = field(default_factory=list)
     description: str = ""  # author-provided, from Egeria's own Description attribute
     # Which UI surface this Survey Definition is meant for — "scouting" |
     # "discovery" | "automate_full" | ... — Additional Properties convention,
@@ -609,11 +617,31 @@ class SurveyDefinitionReader:
         Returns a survey_definition_reconciler.ReconcileResult. Safe to call
         repeatedly — a fully-reconciled process is a no-op every time after
         the first."""
-        from resource_explorer.surveyors.survey_definition_reconciler import compute_expected_edges, diff_links
+        from resource_explorer.surveyors.survey_definition_docs import document_for
+        from resource_explorer.surveyors.survey_definition_reconciler import (
+            compute_expected_edges,
+            diff_links,
+            expected_edges_from_document,
+        )
 
         self.connect()
         process_qualified_name = f"GovActionProcess::{survey_group}"
-        expected_edges = compute_expected_edges(survey_group, step_keys)
+
+        # Prefer the authored document. A step list can only describe a linear
+        # chain, so reconciling against one deletes every branch as stale —
+        # and the branch is precisely what a step list cannot express. The
+        # linear fallback is for when no document can be found, and it is an
+        # approximation, not a definition.
+        doc = document_for(survey_group)
+        if doc is not None and doc.links:
+            expected_edges = expected_edges_from_document(survey_group, doc)
+        else:
+            log.warning(
+                "no authored document found for %s — reconciling against a linear "
+                "chain derived from its step list, which would treat any branch as "
+                "stale", survey_group,
+            )
+            expected_edges = compute_expected_edges(survey_group, step_keys)
 
         try:
             raw = self._governance_officer.get_governance_action_process_graph(guid=process_guid, output_format="JSON")
@@ -709,33 +737,30 @@ class SurveyDefinitionReader:
                     mandatory_guard=bool(link.get("mandatoryGuard") or False),
                 ))
 
+        ordered_guids, unreachable = _walk_graph(edges, nodes, first_guid, process_qn)
         steps: list = []
-        seen_guids: set = set()
-        current_guid = first_guid
-        while current_guid is not None:
-            if current_guid in seen_guids:
-                raise UnsupportedSurveyDefinitionError(
-                    f"Survey Definition {process_qn} contains a cycle at step guid "
-                    f"{current_guid} — not supported"
-                )
-            node = nodes.get(current_guid)
+        for guid in ordered_guids:
+            node = nodes.get(guid)
             if node is None:
                 raise SurveyDefinitionReaderError(
-                    f"Survey Definition {process_qn} references step guid {current_guid} "
+                    f"Survey Definition {process_qn} references step guid {guid} "
                     "with no corresponding node in the graph"
                 )
-            step = self._parse_step(node)
-            seen_guids.add(current_guid)
-            steps.append(step)
+            steps.append(self._parse_step(node))
 
-            next_guids = edges.get(current_guid, [])
-            if len(next_guids) > 1:
-                raise UnsupportedSurveyDefinitionError(
-                    f"Step {step.qualified_name} has {len(next_guids)} outgoing next-steps "
-                    "— branching Survey Definitions are not supported yet "
-                    "(v1 supports linear sequences only)"
-                )
-            current_guid = next_guids[0] if next_guids else None
+        if unreachable:
+            # Declared in the process but with no path from its first step.
+            # Previously these were dropped without a word, because the walk
+            # simply never arrived at them — a step present in the definition,
+            # absent from every report, and indistinguishable from one that had
+            # never been authored.
+            log.warning(
+                "Survey Definition %s declares %d step(s) unreachable from its "
+                "first step: %s — they are recorded on the definition and will "
+                "not run",
+                process_qn, len(unreachable),
+                ", ".join(sorted(unreachable)),
+            )
 
         return SurveyDefinition(
             process_guid=process_guid,
@@ -744,6 +769,7 @@ class SurveyDefinitionReader:
             supported_technology_type=process_additional.get("supported_technology_type"),
             steps=steps,
             links=links,
+            unreachable_step_guids=sorted(unreachable),
             description=process_props.get("description", ""),
             survey_kind=process_additional.get("survey_kind"),
             perspectives=_split_perspectives(process_additional.get("perspectives")),
@@ -784,3 +810,56 @@ class SurveyDefinitionReader:
                                 or element.get("actionTargets") or []),
             executor_present=bool(executor),
         )
+
+
+def _walk_graph(edges: dict, nodes: dict, first_guid, process_qn: str) -> tuple:
+    """(ordered step guids, unreachable step guids) for a definition's graph.
+
+    Replaces a walk that followed one outgoing edge and raised on a second.
+    That refusal was honest while nothing could run a branch, but it made a
+    branching definition unreadable as well as unrunnable — it could not be
+    displayed, diffed against its document, or repaired.
+
+    The order is topological with ties broken by discovery order from the first
+    step, following edges as declared. For a linear chain the topological order
+    is unique, so this returns exactly what the old walk did — verified against
+    all eight live definitions.
+
+    Cycles still raise. A cycle is not a shape RE declines to run; it is one
+    that cannot be ordered at all, and any order would be a fiction.
+    """
+    reachable: list = []
+    seen: set = set()
+    queue = [first_guid] if first_guid else []
+    while queue:
+        guid = queue.pop(0)
+        if guid in seen:
+            continue
+        seen.add(guid)
+        reachable.append(guid)
+        queue.extend(edges.get(guid, []))
+
+    discovery = {guid: i for i, guid in enumerate(reachable)}
+    incoming = {guid: [] for guid in reachable}
+    for guid in reachable:
+        for nxt in edges.get(guid, []):
+            if nxt in incoming:
+                incoming[nxt].append(guid)
+
+    remaining = {guid: list(deps) for guid, deps in incoming.items()}
+    ordered: list = []
+    while remaining:
+        ready = sorted((g for g, deps in remaining.items()
+                        if not any(d in remaining for d in deps)),
+                       key=lambda g: discovery[g])
+        if not ready:
+            raise UnsupportedSurveyDefinitionError(
+                f"Survey Definition {process_qn} contains a cycle among step guid(s) "
+                f"{sorted(remaining)} — no execution order exists"
+            )
+        for guid in ready:
+            ordered.append(guid)
+            del remaining[guid]
+
+    unreachable = {g for g in nodes if g not in seen and g != first_guid}
+    return ordered, unreachable

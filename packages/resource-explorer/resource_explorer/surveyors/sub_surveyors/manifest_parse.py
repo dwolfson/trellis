@@ -111,14 +111,15 @@ class ManifestParseSurveyor(BaseSurveyor):
     def run(self) -> list[Annotation]:
         local_root = Path(self._local_path)
         results: list[Annotation] = []
-        # Three independent try/excepts, not one around all three: a bug in
-        # the CI-workflow parser must not cost the dependency write, and
-        # vice versa. This is the isolation contract file_inventory.py and
-        # symbol_extraction.py don't need (they write one table each) but
-        # this step does, since it bundles three.
+        # One independent try/except per sub-parse, not one around all of
+        # them: a bug in the CI-workflow parser must not cost the dependency
+        # write, and vice versa. This is the isolation contract
+        # file_inventory.py and symbol_extraction.py don't need (they write one
+        # table each) but this step does, since it bundles four.
         results.append(self._parse_dependencies(local_root))
         results.append(self._parse_ci_quality(local_root))
         results.append(self._parse_repo_conventions(local_root))
+        results.append(self._parse_supply_chain(local_root))
         return results
 
     def _record_snapshot(self, kind: str, count: int, outcome: StepOutcome) -> None:
@@ -229,6 +230,56 @@ class ManifestParseSurveyor(BaseSurveyor):
             return ResourceMeasureAnnotation(
                 summary="CI workflow parse failed", analysis_step=STEP, confidence=0,
                 explanation=f"Could not parse CI workflow content: {exc}",
+                resource_properties={"finding_count": 0, "error": str(exc)},
+                json_properties=outcome.as_row(),
+            )
+
+    def _parse_supply_chain(self, local_root: Path) -> Annotation:
+        """Supply-chain findings from the same extracted zipball.
+
+        Added for the same reason the other three sub-parses exist: the parser
+        runs at ingestion and refresh_profile, so for a repo that arrived via
+        org-import or discovery — which deliberately skip ingestion — the table
+        was simply empty, and FossScorecard's three supply-chain checks reported
+        unknown forever with no way for a survey to change that.
+        """
+        slug = self.project.slug
+        try:
+            from resource_explorer.ingestion.supply_chain_parser import SupplyChainParser
+
+            findings = SupplyChainParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(slug, "supply_chain", findings,
+                                             surveyed_at=self._surveyed_at)
+                outcome = StepOutcome(RECOVERED, known_positive=True,
+                                      detail={"matched": len(findings)})
+                summary = f"{len(findings)} supply-chain check(s) evaluated"
+            else:
+                # Same ambiguity CiWorkflowParser has, and for the same reason:
+                # [] means "no .github/workflows", which is indistinguishable
+                # here from a repo whose CI lives elsewhere. Not a provable
+                # zero, so unverified rather than no_signal.
+                outcome = StepOutcome(UNVERIFIED, cause="no_github_actions_workflows_found")
+                summary = "No workflow YAML to evaluate for supply-chain signals"
+            self._record_snapshot("manifest_parse_supply_chain", len(findings), outcome)
+            return ResourceMeasureAnnotation(
+                summary=summary, analysis_step=STEP,
+                confidence=100 if outcome.is_conclusive else 50,
+                explanation=(
+                    "Refreshed project_analysis_findings (kind=\"supply_chain\") from "
+                    "a fresh zipball extraction — token permissions, action pinning "
+                    "and dangerous-workflow patterns, which FossScorecard reads."
+                ),
+                resource_properties={"finding_count": len(findings)},
+                json_properties=outcome.as_row(),
+            )
+        except Exception as exc:
+            log.warning("ManifestParseSurveyor supply-chain parse failed for %s: %s", slug, exc)
+            outcome = StepOutcome(UNVERIFIED, cause="parse_error", detail={"error": str(exc)})
+            self._record_snapshot("manifest_parse_supply_chain", 0, outcome)
+            return ResourceMeasureAnnotation(
+                summary="Supply-chain parse failed", analysis_step=STEP, confidence=0,
+                explanation=f"Could not parse supply-chain signals: {exc}",
                 resource_properties={"finding_count": 0, "error": str(exc)},
                 json_properties=outcome.as_row(),
             )

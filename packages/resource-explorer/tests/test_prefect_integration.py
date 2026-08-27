@@ -18,6 +18,8 @@ def db(tmp_path):
     return ProjectRegistry(db_path=db_path)
 
 
+pytestmark = pytest.mark.usefixtures("ephemeral_prefect")
+
 class TestRegistryGovernanceState:
     def test_default_governance_state(self, db):
         # Register a project, database, and filesystem

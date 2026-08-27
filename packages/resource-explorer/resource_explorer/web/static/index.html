@@ -2872,6 +2872,8 @@ async function _submitSchedule(analysisId, entityType, slug) {
 // genuinely bespoke shapes handled by name in _renderCustomAnalysisResults()
 // below (dependency-by-ecosystem, data-profile summary, API structure).
 const _REPO_RESULTS_RENDER_MODE = {
+  chaoss_metrics: 'findings_list',
+  cii_badge: 'findings_list',
   interface_surface: 'findings_list',
   community_support: 'findings_list',
   cve_scan: 'findings_list',
@@ -2936,6 +2938,7 @@ const _REPO_RESULTS_RENDER_MODE = {
 // value has no stated unit. Mirrors each kind's *_trend() reader in
 // repo_survey_definition_adapter.py.
 const _REPO_TREND_LABEL = {
+  chaoss_metrics: 'Elephant factor (contributors holding half the commits)',
   cve_scan: 'Advisories (declared deps with a pinned version)',
   foss_scorecard: 'Score (0-10, over evaluated checks only)',
   language_file_classification: 'Total files',
@@ -11220,7 +11223,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
     { tab: 'admin-prefect',           label: '⚡ Prefect' },
-    { tab: 'admin-resync',            label: '🔄 Egeria Resync' },
+    { tab: 'admin-resync',            label: '🔄 Egeria Alignment' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -12771,7 +12774,7 @@ async function loadAdminDiscoverySourcesPanel() {
   }
 }
 
-// ── Admin → Egeria Resync ───────────────────────────────────────────────────
+// ── Admin → Egeria Alignment ────────────────────────────────────────────────
 // RE keeps its own registry, so an Egeria reset loses nothing of yours — it
 // leaves RE holding pointers into a catalog that no longer contains what they
 // point at. Rebuilding after the 2026-08-26 redeploy took four operations in a
@@ -12846,11 +12849,11 @@ function renderAdminResyncPanel() {
 
   view.innerHTML = subnav + `<div class="p-6 space-y-4 max-w-4xl">
     <div>
-      <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔄 Egeria Resync</h1>
+      <h1 class="text-xl font-bold text-slate-100 flex items-center gap-2">🔄 Egeria Alignment</h1>
       <p class="text-xs text-slate-400 mt-1">
-        RE keeps its own registry, so an Egeria reset loses nothing here — but it leaves
-        pointers into a catalog that no longer holds what they point at. This finds them.
-        Scanning never writes.
+        Everywhere RE and Egeria have drifted apart, in both directions: pointers here
+        into a catalog that no longer holds what they point at, and definitions in
+        Egeria that have fallen behind what RE can now run. Scanning never writes.
       </p>
     </div>
 
@@ -12896,8 +12899,21 @@ async function _applyResync() {
   if (_resyncBusy) return;
   const steps = [...document.querySelectorAll('.resync-step:checked')].map(c => c.value);
   if (!steps.length) { showToast('error', 'Nothing selected.', 3000); return; }
-  if (!confirm(`Apply ${steps.length} repair step(s)?\n\n${steps.join('\n')}\n\n`
-             + 'This clears local records that claim things about Egeria which are no longer true.')) return;
+  // The two kinds of repair do opposite things, and one confirmation text
+  // cannot honestly describe both: clearing only touches local records, while
+  // re-authoring executes Dr.Egeria documents and WRITES to Egeria. Saying
+  // "this clears local records" while re-authoring the catalog would be the
+  // dialog lying about the one thing a dialog exists to disclose.
+  const writes = steps.includes('reauthor_survey_definitions');
+  const what = [
+    steps.some(s => s !== 'reauthor_survey_definitions')
+      ? 'Clears local records that claim things about Egeria which are no longer true.' : '',
+    writes
+      ? 'Re-authors the Survey Definitions IN EGERIA by re-running their Dr.Egeria '
+        + 'documents, then reconciles their step links. This writes to the catalog '
+        + 'and can take a few minutes — leave the page open.' : '',
+  ].filter(Boolean).join('\n\n');
+  if (!confirm(`Apply ${steps.length} repair step(s)?\n\n${steps.join('\n')}\n\n${what}`)) return;
 
   _resyncBusy = true;
   const btn = document.getElementById('resync-apply-btn');

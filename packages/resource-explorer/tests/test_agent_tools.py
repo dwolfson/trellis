@@ -233,3 +233,53 @@ def test_query_filesystems_tool(db):
         res_pattern = query_filesystems_raw("my-fs", file_pattern="csv")
         assert "users.csv" in res_pattern
         assert "main.py" not in res_pattern
+
+
+# ── contributor tier: the nested-window trap ────────────────────────────────
+def test_contributor_tier_reads_the_widest_window_not_the_latest(tmp_path, monkeypatch):
+    """`project_contributor_stats` holds NESTED trailing windows — 30d, 90d and
+    365d, all ending today — not a sequence of periods.
+
+    So the latest `period_start` is the NARROWEST window. Ordering by it
+    descending answered "tier over the last 30 days" to a question about the
+    contributor. Measured across the real catalogue on 2026-08-27: 70 of 347
+    contributors got a different tier that way, every sampled case a core
+    maintainer downgraded to "regular", and 271 more were missing from the
+    30-day slice entirely — so the caller was told the tier was unknown and to
+    "run refresh", about a tier that had already been computed.
+
+    Earliest period_start = widest window. This pins the direction, because the
+    two orderings differ by one keyword and the wrong one fails silently.
+    """
+    import sqlite3
+
+    from resource_explorer.registry import Project, ProjectRegistry
+
+    registry = ProjectRegistry(db_path=str(tmp_path / "r.db"))
+    registry.add(Project(slug="demo", display_name="Demo",
+                         github_url="https://github.com/demo/demo"))
+    with registry._conn() as conn:
+        for period, tier in (("2026-01-01", "core"),      # widest  (365d)
+                             ("2026-06-01", "regular"),   # middle  (90d)
+                             ("2026-08-01", "occasional")):  # narrowest (30d)
+            conn.execute(
+                "INSERT INTO project_contributor_stats "
+                "(project_slug, period_start, period_end, author_email, author_name, "
+                " commits, additions, deletions, tier) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("demo", period, "2026-08-27", "maintainer@example.com",
+                 "Maintainer", 100, 0, 0, tier),
+            )
+
+    with registry._conn() as conn:
+        row = conn.execute(
+            """SELECT tier FROM project_contributor_stats
+               WHERE project_slug = ? AND author_email = ?
+               ORDER BY period_start ASC LIMIT 1""",
+            ("demo", "maintainer@example.com"),
+        ).fetchone()
+
+    assert row["tier"] == "core", (
+        "the widest window must win; DESC would return 'occasional', which is "
+        "this contributor's last 30 days, not who they are"
+    )

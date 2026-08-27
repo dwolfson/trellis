@@ -71,7 +71,7 @@ class TestAllThreeTablesWrittenFromOneRoot:
         _write_manifest_repo(tmp_path)
         anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 3
+        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
         assert all(a.analysis_step == STEP for a in anns)
 
         deps = registry.query_dependencies(project.slug)
@@ -115,7 +115,7 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 3
+        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
         dep_ann = _by_summary_fragment(anns, "dependency parse failed")
         assert dep_ann.confidence == 0
         assert "boom" in dep_ann.explanation
@@ -135,13 +135,49 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 3
+        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
         ci_ann = _by_summary_fragment(anns, "ci workflow parse failed")
         assert ci_ann.confidence == 0
 
         assert registry.query_dependencies(project.slug)
         assert registry.query_findings(project.slug, "repo_conventions")
         assert not registry.query_findings(project.slug, "ci_quality")
+
+    def test_supply_chain_parser_raising_still_writes_the_other_three(
+            self, tmp_path, registry, project):
+        """The fourth sub-parse joins the same isolation contract: a bug in it
+        must not cost the dependency, CI or convention writes."""
+        _write_manifest_repo(tmp_path)
+        with patch(
+            "resource_explorer.ingestion.supply_chain_parser.SupplyChainParser.parse",
+            side_effect=RuntimeError("boom"),
+        ):
+            anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
+
+        assert len(anns) == 4
+        sc_ann = _by_summary_fragment(anns, "supply-chain parse failed")
+        assert sc_ann.confidence == 0 and "boom" in sc_ann.explanation
+        assert registry.query_dependencies(project.slug)
+        assert registry.query_findings(project.slug, "ci_quality")
+        assert registry.query_findings(project.slug, "repo_conventions")
+
+    def test_supply_chain_findings_are_written_by_a_survey_step(
+            self, tmp_path, registry, project):
+        """The whole point of routing this through ManifestParseSurveyor: for a
+        repo that arrived via org-import (which skips ingestion), a survey is
+        the only thing that can ever populate this table."""
+        _write_manifest_repo(tmp_path)
+        wf = tmp_path / ".github" / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
+        (wf / "ci.yml").write_text(
+            "permissions:\n  contents: read\non: push\n"
+            "jobs:\n  x:\n    steps:\n      - uses: third/party@v1\n")
+
+        ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
+        rows = {f["check_name"]: f["label"]
+                for f in registry.query_findings(project.slug, "supply_chain")}
+        assert rows["supply_chain_token_permissions"] == "pass"
+        assert rows["supply_chain_pinned_dependencies"] == "fail"
 
     def test_repo_conventions_parser_raising_still_writes_dependencies_and_ci(
         self, tmp_path, registry, project
@@ -153,7 +189,7 @@ class TestPerItemIsolation:
         ):
             anns = ManifestParseSurveyor(project, registry, local_path=str(tmp_path)).run()
 
-        assert len(anns) == 3
+        assert len(anns) == 4   # dependencies, ci_quality, conventions, supply_chain
         conv_ann = _by_summary_fragment(anns, "repo conventions parse failed")
         assert conv_ann.confidence == 0
 

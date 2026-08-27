@@ -146,6 +146,7 @@ class IngestionPipeline:
         self._parse_dependencies(project_slug, code_root)
         self._profile_data_files(project_slug, code_root)
         self._parse_ci_workflows(project_slug, code_root)
+        self._parse_supply_chain(project_slug, code_root)
         self._parse_repo_conventions(project_slug, code_root)
         return file_count, loc
 
@@ -264,6 +265,7 @@ class IngestionPipeline:
             file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
             self._profile_data_files(project_slug, local_root)
             self._parse_ci_workflows(project_slug, local_root)
+            self._parse_supply_chain(project_slug, local_root)
             self._parse_repo_conventions(project_slug, local_root)
 
             if include_symbols:
@@ -336,6 +338,27 @@ class IngestionPipeline:
                 self.console.print(f"[dim]CI quality: {len(findings)} check(s) evaluated.[/dim]")
         except Exception as exc:
             self.console.print(f"[dim]CI workflow parsing skipped: {exc}[/dim]")
+
+    def _parse_supply_chain(self, project_slug: str, local_root: Path) -> None:
+        """Supply-chain signals from the same workflow YAML, its own finding kind.
+
+        Deliberately not folded into ci_quality. That analysis answers "does CI
+        actually run anything"; these answer "can CI be trusted with a token" —
+        different questions, different cards, and merging them would make one
+        card's score move for reasons belonging to the other.
+        """
+        try:
+            from resource_explorer.ingestion.supply_chain_parser import SupplyChainParser
+            findings = SupplyChainParser().parse(local_root)
+            if findings:
+                self.registry.upsert_finding(
+                    project_slug, "supply_chain", findings,
+                    surveyed_at=datetime.utcnow().isoformat(),
+                )
+                self.console.print(
+                    f"[dim]Supply chain: {len(findings)} check(s) evaluated.[/dim]")
+        except Exception as exc:
+            self.console.print(f"[dim]Supply-chain parsing skipped: {exc}[/dim]")
 
     def _parse_repo_conventions(self, project_slug: str, local_root: Path) -> None:
         """Discovery-tier convention signals (Part 2, security_policy_content/

@@ -219,3 +219,28 @@ def pg_registry(pg_test_schema):
         f"?options=-csearch_path%3D{pg_test_schema}"
     )
     return ProjectRegistry(database_url=url)
+
+
+@pytest.fixture
+def ephemeral_prefect(monkeypatch):
+    """Force Prefect to run flows in-process, ignoring any configured server.
+
+    Prefect's client honours PREFECT_API_URL, and it loads that from `.env`
+    itself — so clearing os.environ is not enough, and a checkout whose .env
+    points at a Prefect server that is not running fails every Prefect test
+    with "Failed to reach API at http://localhost:4200/api/", which says
+    nothing about the behaviour under test.
+
+    Found exactly that way on 2026-08-27: the same tests passed in one checkout
+    and failed in another, on ambient environment alone. Both the flow tests
+    and the older integration tests depended on it.
+
+    Modules opt in with:
+        pytestmark = pytest.mark.usefixtures("ephemeral_prefect")
+    """
+    from prefect.settings import PREFECT_API_URL, temporary_settings
+
+    for var in ("PREFECT_API_URL", "PREFECT_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    with temporary_settings({PREFECT_API_URL: None}):
+        yield

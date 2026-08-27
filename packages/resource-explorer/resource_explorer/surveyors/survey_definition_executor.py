@@ -156,6 +156,27 @@ class SurveyDefinitionExecutor:
         step_outputs: list = []
         errors: list = []
 
+        # Hand the WHOLE definition to Prefect when it is available, instead of
+        # sequencing it here. RE should not be a workflow engine: Egeria
+        # coordinates and RE executes leaves, or RE coordinates and delegates
+        # the workflow to Prefect. The loop below is the third thing — RE as
+        # sequencer, Prefect as task runner — which is the inversion of that.
+        #
+        # Gated on prefect.enabled, so a deployment without Prefect keeps the
+        # local loop. That fallback is not temporary: an offline or
+        # Prefect-less run has to keep working, which is the same argument that
+        # made Automate local-first.
+        # Whatever the local loop still has to do. Prefect having run the
+        # definition leaves it empty; everything AFTER the loop — publishing,
+        # the activity entry, the assembled result — is shared, so the two
+        # paths differ only in who sequenced the steps.
+        pending_steps = survey_def.steps
+        if _prefect_orchestration_enabled():
+            planned = self._run_via_prefect(entity_type, entity, survey_def, runner_kwargs)
+            if planned is not None:
+                steps_report, step_outputs, errors = planned
+                pending_steps = []
+
         from resource_explorer.config import get_config
         from resource_explorer.surveyors.prefect_adapter import PrefectFlowRunCancelled, run_prefect_step
 
@@ -185,9 +206,9 @@ class SurveyDefinitionExecutor:
             return False
 
         i = 0
-        n = len(survey_def.steps)
+        n = len(pending_steps)
         while i < n:
-            step = survey_def.steps[i]
+            step = pending_steps[i]
             use_prefect = _use_prefect(step)
 
             # D1 (docs/survey-tab-unification-plan.md) — batch a run of consecutive
@@ -207,7 +228,7 @@ class SurveyDefinitionExecutor:
                 group = [step]
                 j = i + 1
                 while j < n:
-                    nxt = survey_def.steps[j]
+                    nxt = pending_steps[j]
                     if (
                         _use_prefect(nxt)
                         or nxt.executes_at != "resource-explorer"
@@ -373,6 +394,52 @@ class SurveyDefinitionExecutor:
             "published": published,
         }
 
+    def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
+        """(steps_report, step_outputs, errors) from one Prefect flow, or None.
+
+        Returns None rather than raising when the plan cannot be built or
+        Prefect cannot be reached, so an orchestration problem degrades to the
+        local loop instead of failing a survey the loop could have run. The
+        reason is logged — a silent fallback would make "Prefect ran this" and
+        "Prefect was never reachable" look identical in the report.
+        """
+        from resource_explorer.surveyors.survey_execution_plan import (
+            CyclicPlanError,
+            build_plan,
+            serialise,
+        )
+
+        try:
+            plan = build_plan(survey_def)
+        except CyclicPlanError as exc:
+            # Not a fallback case: the local loop would run a cyclic definition
+            # in list order and report success for a survey that cannot be
+            # ordered at all.
+            raise SurveyDefinitionExecutorError(str(exc)) from exc
+
+        if not plan.steps:
+            return None
+        try:
+            from resource_explorer.prefect.flows import re_survey_definition_flow
+
+            report = re_survey_definition_flow(
+                entity_type=entity_type, slug=entity.slug,
+                plan=serialise(plan), runner_kwargs=runner_kwargs or {},
+            )
+        except Exception as exc:
+            log.warning(
+                "Prefect orchestration unavailable for %s (%s) — falling back to "
+                "in-process sequencing", survey_def.qualified_name, exc)
+            return None
+
+        return (
+            [{k: v for k, v in entry.items() if k != "output"} for entry in report],
+            [entry["output"] for entry in report
+             if entry.get("status") == "ok" and entry.get("output")],
+            [f"{e['step_key']}: {e.get('detail', 'failed')}"
+             for e in report if e.get("status") == "error"],
+        )
+
     def _resolve_process_guid(
         self,
         entity_type: str,
@@ -425,3 +492,19 @@ def run_survey_definition(entity_type: str, slug: str, registry=None, **kwargs: 
         registry = ProjectRegistry()
     executor = SurveyDefinitionExecutor(registry)
     return executor.run(entity_type, slug, **kwargs)
+
+
+def _prefect_orchestration_enabled() -> bool:
+    """Whether Prefect should sequence a whole Survey Definition.
+
+    Reads the same `prefect.enabled` switch the per-step dispatch already
+    honours, so there is one answer to "is Prefect available here" rather than
+    two that can disagree.
+    """
+    try:
+        from resource_explorer.config import get_config
+
+        return bool(get_config().prefect.enabled)
+    except Exception as exc:  # pragma: no cover - config guard
+        log.debug("could not read prefect config, assuming disabled: %s", exc)
+        return False

@@ -4,7 +4,7 @@
 
 This is a list, not a design doc — keep entries short. Link to a full design doc/section when one exists.
 
-**Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked separately in `docs/egeria-pyegeria-issues.md`, not here — log new ones there as they're found.
+**Egeria/pyegeria bugs (as opposed to RE's own bugs)** are tracked in `egeria-python`'s `PYEGERIA_ISSUES.md` — the canonical tracker, unified `ISSUE-#` numbering — not here. RE's own `docs/egeria-pyegeria-issues.md` is superseded and frozen at 6 entries; it is kept for history only.
 
 **Current-state map (2026-08-19):** `docs/survey-and-analysis-current-state-2026-08-19.md` maps how surveys, analysis and curation work — the axes on which the two survey-launch paths diverge, an inventory of which analyses reach Egeria and which don't, and a suspected bug (filesystem annotations never publish). **It was derived from the pre-migration standalone repo and carries a staleness warning — line numbers need re-checking, and it predates `run_batch` in the executor.** Several items below are corrected there. Related: `docs/architecture-recovery-design.md` (deriving Solution Blueprints from repos).
 
@@ -1377,6 +1377,38 @@ brought this branch and `main` together (2026-08-26) rather than kept alongside 
 ---
 
 #### Distributed survey orchestration via a flow tool (Prefect) — verified live and default-on (2026-08-26)
+
+#### DONE 2026-08-27 — Retire the ISSUE-50 workaround in `egeria_delegated_step.py`
+
+`EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because
+`initiate_engine_action()` used to 404: it posted to a URL missing the governance engine's name
+and had no parameter to supply one (logged as ISSUE-50, 2026-08-17). The workaround needs a
+**pre-authored `GovernanceActionType` per delegated step**, which is real authoring overhead for
+every step RE wants to delegate.
+
+**Measured 2026-08-26: fixed in the installed pyegeria 6.0.18.4.** The method now takes
+`governance_engine_name` and builds
+`.../governance-engines/{name}/engine-actions/initiate` — the shape the Java route
+(`AutomatedCurationResource.java`) actually expects. `initiate_and_wait()` already exists in
+that module, kept for exactly this moment.
+
+Work: switch the primary trigger path to `initiate_and_wait()`, live-verify against a real
+delegated step, and drop the per-step `GovernanceActionType` requirement (and its probe doc) if
+verification holds. The module's comment saying the direct path is "kept for when ISSUE-50 is
+fixed" is stale and should go with it.
+
+**Done 2026-08-27.** `initiate_and_wait()` now takes `governance_engine_name`
+and passes it through; the surveyor requires it alongside `request_type` and says so, rather than
+letting the omission surface as a bare 404. Live-verified: a real engine action on the
+Stewardship engine (`write-to-audit-log`) reached `COMPLETED` with a real completion message
+through the direct path, needing no pre-authored `GovernanceActionType`.
+
+`initiate_action_type_and_wait()` is kept — it is not a workaround any more, just the other valid
+path, and the better one when a `GovernanceActionType` already exists since the engine is then
+resolved server-side from its executor link.
+
+
+#### Distributed survey orchestration via a flow tool (Prefect) — early prototype, not yet integrated
 
 RE's only execution model today is either synchronous in-process (`SurveyOrchestrator`) or the `scheduler.py` daemon-thread poller (see the "Periodic / triggered survey scheduling" item below). Neither can run survey work *near* a protected asset (a database inside a VPC, a filesystem edge agent) without deploying RE itself there, and neither gives retries/backoff/task-level telemetry for free.
 

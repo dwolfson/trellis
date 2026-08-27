@@ -43,6 +43,11 @@ log = logging.getLogger(__name__)
 
 STEP = "CommunitySupport"
 
+#: Said once, so the annotation and the persisted finding cannot drift apart.
+_NOTHING_TO_ASSESS = ("No repository statistics are recorded, so nothing about "
+                             "community support could be assessed — this is not a "
+                             "finding that it has none.")
+
 #: Contributor counts below which a project depends on very few people. Not a
 #: quality judgement — a four-person project can be excellent — but it is the
 #: fact someone deciding whether to depend on it most needs, and the one the
@@ -182,10 +187,21 @@ class CommunitySupportSurveyor(BaseSurveyor):
             slug = self.project.slug
             stats = self.registry.get_latest_project_stats(slug) or {}
             if not stats:
+                # Persist the reason, not just annotate it. The annotation says
+                # "not established"; the results card reads FINDINGS, so returning
+                # without writing one made the card render an absence where a stated
+                # reason exists — "we have nothing" instead of "we could not tell, and
+                # here is why". Found 2026-08-27 via kedro_kubeflow, which has neither
+                # commits nor stats and showed a blank card.
+                self.registry.upsert_finding(
+                    slug, "community_support",
+                    [{"check_name": "community_support", "label": "not_established",
+                      "summary": _NOTHING_TO_ASSESS, "confidence": 0,
+                      "detail": {"known": False}}],
+                    surveyed_at=self._surveyed_at,
+                )
                 out.append(ClassificationAnnotation(
-                    summary=("No repository statistics are recorded, so nothing about "
-                             "community support could be assessed — this is not a "
-                             "finding that it has none."),
+summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
                     confidence=0,

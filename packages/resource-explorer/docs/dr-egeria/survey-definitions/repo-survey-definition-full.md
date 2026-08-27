@@ -44,7 +44,7 @@ Full Survey (all steps) — Repo Manifest Parse
 GovActionProcessStep::RepoFullSurvey::repo_manifest_parse
 
 ### Description
-Parses dependency manifests, CI workflow content, and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
+Parses dependency manifests, CI workflow content, supply-chain signals and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions"/"supply_chain") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -323,6 +323,44 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Chaoss Metrics
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_chaoss_metrics
+
+### Description
+CHAOSS community-health metrics over recorded commits — chiefly the elephant factor, the fewest contributors accounting for half the commits. Contributor COUNT calls deep_causality a five-person project; the distribution says one person wrote 98% of it.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_chaoss_metrics |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Cii Badge
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_cii_badge
+
+### Description
+The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level with the age of the self-assessment behind it, and keeps 'no badge' apart from 'could not ask'.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_cii_badge |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Community Support
 
 ### Qualified Name
@@ -524,7 +562,7 @@ Proposes additional architecture-component boundaries from import coupling and c
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
-| executes_at | resource-explorer |
+| executes_at | prefect |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_arch_coupling |
 
@@ -828,6 +866,30 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_interface_surface
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_chaoss_metrics
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_chaoss_metrics
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_cii_badge
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_cii_badge
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_community_support

@@ -161,3 +161,97 @@ def re_survey_flow(
         step_name=step_name,
         runner_kwargs=runner_kwargs,
     )
+
+
+# ── whole-survey orchestration ──────────────────────────────────────────────
+#
+# `re_survey_flow` above runs ONE step. It is a task wrapped in a flow, which
+# is why RE ended up sequencing surveys itself: with only a per-step entry
+# point, the only place a step order could live was RE's own `while` loop in
+# survey_definition_executor.
+#
+# This flow takes the whole plan. Prefect resolves the order from the task
+# dependencies rather than RE walking a list, which is the point — RE should
+# delegate workflow execution, not perform it.
+
+
+@task(name="Run Planned Step")
+def run_planned_step_task(
+    entity_type: str,
+    slug: str,
+    step_key: str,
+    qualified_name: str,
+    runner_kwargs: dict[str, Any],
+    upstream: list[dict[str, Any]],
+    guarded_by: dict[str, str],
+) -> dict[str, Any]:
+    """One planned step, plus the guard decision for its incoming edges.
+
+    `upstream` is the results of everything this step depends on. Prefect
+    resolves those futures before this task starts, which is what makes the
+    ordering Prefect's rather than RE's.
+
+    A conditional edge is honoured here rather than in the planner: the
+    planner is pure and cannot know what guard a step emitted. A step whose
+    guards are not satisfied is reported "skipped" — never "ok", which would
+    make a branch not taken indistinguishable from one that ran.
+    """
+    by_key = {u.get("step_key"): u for u in upstream if isinstance(u, dict)}
+    for upstream_key, required in (guarded_by or {}).items():
+        produced = (by_key.get(upstream_key) or {}).get("guard")
+        if produced != required:
+            return {"step_key": step_key, "step": qualified_name, "status": "skipped",
+                    "engine": "prefect", "guard": None,
+                    "detail": (f"guard {required!r} required from {upstream_key} "
+                               f"but it produced {produced!r}")}
+
+    # An upstream that failed must stop this branch. Running on regardless
+    # would produce a result derived from a step that did not happen.
+    failed = [k for k, u in by_key.items() if u.get("status") == "error"]
+    if failed:
+        return {"step_key": step_key, "step": qualified_name, "status": "skipped",
+                "engine": "prefect", "guard": None,
+                "detail": f"upstream step(s) failed: {', '.join(sorted(failed))}"}
+
+    try:
+        output = run_surveyor_step_task.fn(
+            entity_type=entity_type, slug=slug, step_name=step_key,
+            runner_kwargs=runner_kwargs,
+        )
+    except Exception as exc:
+        return {"step_key": step_key, "step": qualified_name, "status": "error",
+                "engine": "prefect", "guard": None, "detail": str(exc)}
+
+    return {"step_key": step_key, "step": qualified_name, "status": "ok",
+            "engine": "prefect", "guard": (output or {}).get("guard"),
+            "output": output}
+
+
+@flow(name="RE Survey Definition Flow")
+def re_survey_definition_flow(
+    entity_type: str,
+    slug: str,
+    plan: list[dict[str, Any]],
+    runner_kwargs: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Run a whole Survey Definition, ordered by Prefect.
+
+    `plan` is the serialised ExecutionPlan — a list of
+    {step_key, qualified_name, depends_on, guarded_by} in topological order, so
+    every dependency has already been submitted when its dependents are.
+    """
+    runner_kwargs = runner_kwargs or {}
+    futures: dict[str, Any] = {}
+    for entry in plan:
+        key = entry["step_key"]
+        upstream = [futures[d] for d in entry.get("depends_on", []) if d in futures]
+        futures[key] = run_planned_step_task.submit(
+            entity_type=entity_type, slug=slug, step_key=key,
+            qualified_name=entry.get("qualified_name", ""),
+            runner_kwargs=runner_kwargs,
+            upstream=upstream,
+            guarded_by=entry.get("guarded_by", {}) or {},
+        )
+    # Resolved in plan order so the report reads in the order authored, not the
+    # order Prefect happened to finish them in.
+    return [futures[e["step_key"]].result() for e in plan]
