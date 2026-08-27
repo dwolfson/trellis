@@ -35,7 +35,10 @@ pyegeria bug that forced it is fixed: `initiate_engine_action` now takes
 
 - [x] Switch the primary trigger path to `initiate_and_wait()`
 - [x] Live-verify against a real delegated step
-- [x] Drop the per-step `GovernanceActionType` requirement and its probe doc
+- [x] Drop the per-step `GovernanceActionType` *requirement* — the direct path
+      needs no pre-authored element. The probe doc is kept: it documents the
+      action-type path, which is still valid and still preferable when a
+      `GovernanceActionType` already exists.
 - [x] Remove the stale comment saying the direct path is "kept for when
       ISSUE-50 is fixed"
 
