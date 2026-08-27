@@ -113,6 +113,26 @@ when reading the same concept through `get_metadata_element_by_guid`. The name
 differs by endpoint — worth pinning wherever the loop reads status, since that
 exact mismatch already caused one false-terminal bug.
 
+**RE-side sketch (does not depend on the pyegeria registration answer):**
+
+*One request type per step, not one generic one.* Egeria routes on
+`requestType`, and a governance engine's whole purpose is to advertise what it
+can do. 37 step keys today — 34 repo, 2 database, 1 filesystem. Collapsing them
+into a single "run an RE step" request type with the step name as a parameter
+would hide RE's capabilities from the catalog and put routing in a field Egeria
+does not interpret, which defeats registering at all. Per-step is also what
+makes `executes_at` collapse into catalog data (design note §4.4): the engine
+holding a `SupportedGovernanceService` for `repo_manifest_parse` *is* where it
+runs.
+
+*But registering all 37 uniformly would be wrong.* Their infrastructure needs
+differ — by `fetch_cost`: 19 need nothing but the RE database, 9 download a
+zipball, 3 are api_heavy, 3 make one API call. A remote engine host running a
+`download` step needs GitHub credentials and egress; a zero-fetch step needs
+neither. So the registered set is a **per-deployment choice**, not a fixed list,
+and the registration code should take the set as input rather than enumerating
+STEP_REGISTRY.
+
 Design: `docs/survey-model-and-engine-host-design.md` §4.
 
 ## 4. The granularity collapse — deferred by decision
