@@ -139,7 +139,8 @@ class TestFilterByIntent:
                        # community_support (2026-08-26) reads project_stats and
                        # fetches nothing — the same consume-what-Scouting-
                        # collected shape as architecture_summary above.
-                       "community_support"} \
+                       "community_support",
+                       "interface_surface"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:
             for step in REPO_ANALYSIS_STEP_MAP.get(aid, []):

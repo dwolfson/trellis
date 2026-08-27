@@ -58,6 +58,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     CiQualitySurveyor,
     CommunitySupportSurveyor,
     CveScanSurveyor,
+    InterfaceSurfaceSurveyor,
     DataProfilerSurveyor,
     DependencySurveyor,
     DocumentationSurveyor,
@@ -512,6 +513,15 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Read-only at survey time over already-parsed findings (parsing
         # happens once at ingest, per this surveyor's own docstring) — no
         # fetch, no re-scan here.
+    ),
+    "repo_interface_surface": StepInfo(
+        "repo_interface_surface", InterfaceSurfaceSurveyor,
+        "What can be talked to, and whether the contract is written down — "
+        "from the file inventory and declared dependencies. A committed "
+        "openapi.yaml is 'specified'; a fastapi dependency is only 'implied', "
+        "and never counts as a published API.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
     ),
     "repo_community_support": StepInfo(
         "repo_community_support", CommunitySupportSurveyor,
@@ -1095,6 +1105,38 @@ def _ci_quality_results(registry, slug: str) -> dict:
         for r in rows
     ]
     return {"findings": findings}
+
+
+def _interface_surface_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "interface_surface")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _interface_surface_headline(registry, slug: str) -> dict | None:
+    """Specified interfaces, and whether a contract is published.
+
+    An implied interface never reaches the headline on its own: "depends on
+    fastapi" is not an API this project offers, and a headline is exactly where
+    that distinction gets lost.
+    """
+    rows = _interface_surface_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    specified = [r["check_name"] for r in rows if r["label"] == "specified"]
+    published = next((r["label"] for r in rows
+                      if r["check_name"] == "published_spec"), "")
+    if specified:
+        return {"label": f"{', '.join(specified)} (specified)", "tone": "good"}
+    implied = [r["check_name"] for r in rows if r["label"] == "implied"]
+    if implied:
+        return {"label": f"{', '.join(implied[:3])} implied, no published contract",
+                "tone": "warn"}
+    return {"label": "no interface signals found",
+            "tone": "warn" if published == "no" else ""}
 
 
 def _community_support_results(registry, slug: str) -> dict:
@@ -2358,6 +2400,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         "ci_quality", ["repo_ci_quality"],
         results=AnalysisKindResults(
             _ci_quality_results, _ci_quality_trend, "findings_list", headline_reader=_ci_quality_headline,
+        ),
+    ),
+    "interface_surface": AnalysisKind(
+        "interface_surface", ["repo_interface_surface"],
+        results=AnalysisKindResults(
+            _interface_surface_results, None, "findings_list",
+            headline_reader=_interface_surface_headline,
         ),
     ),
     "community_support": AnalysisKind(

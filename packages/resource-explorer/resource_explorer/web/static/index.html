@@ -2855,6 +2855,7 @@ async function _submitSchedule(analysisId, entityType, slug) {
 // genuinely bespoke shapes handled by name in _renderCustomAnalysisResults()
 // below (dependency-by-ecosystem, data-profile summary, API structure).
 const _REPO_RESULTS_RENDER_MODE = {
+  interface_surface: 'findings_list',
   community_support: 'findings_list',
   cve_scan: 'findings_list',
   // findings_list, not custom: each check IS a finding with a label,
