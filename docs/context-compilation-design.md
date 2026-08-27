@@ -695,3 +695,68 @@ directly to the per-user partitioning item.
 rating says the answer was poor; an edit says *what was wrong with the context* — this section
 needed more budget, that one was irrelevant. Those are gradients rather than scalars, and they
 arrive already attached to the manifest that §13 needs them attached to.
+
+## 23. What this actually looks like in RE and EA
+
+*(Added 2026-08-27 — the document described the machinery without ever saying what a user does with
+it. Proposals, unmeasured like the rest.)*
+
+### RE
+
+**Today:** the Chat panel is RAG-backed, scoped to whichever resource is selected, and independent
+of the active intent. It assembles its own context, and nothing about the Investigation, the
+Purpose, or the Perspective chips reaches it.
+
+**Under this design:** the panel becomes Investigation-scoped and axis-aware, and the assembly moves
+out of it. Three flows, in the order they are worth building:
+
+**1. The adoption gate (`Purpose = Certify` or `Assess`).** A user with an active Investigation,
+Perspective chips set to Security, in the Assessment intent, selects a repo and asks whether it is
+ready to adopt. The compiler picks the spec Purpose ranks first, packs the materialized evidence
+(`security_scan`, `license_classification`, the supply-chain scorecard checks), and cites each span
+by `(guid, version, as_of)`. The manifest shows what ranked in, what fell below the budget line, and
+that one analysis has not run and is queued (§20). This is the smallest flow that exercises the
+entire path — spec, resolvers, budget, envelope, manifest, gap — which is why it goes first.
+
+**2. Impact (`Purpose = Maintain`).** "What breaks if this changes." The dependency closure is
+bounded by **Investigation membership first, depth second** — the membership join is the frontier,
+not an arbitrary depth-N walk. This is the flow where hand-assembled context is most obviously
+fragile today.
+
+**3. Comparison (`Purpose = Select`).** "Which of these three should we adopt." Exercises the
+symmetric packing constraint (§6), and is the first flow that can silently produce a *biased* answer
+rather than a poor one, so it should not be first.
+
+**Where it plugs in:** `question_catalog_reader` already resolves Purpose and Perspective to
+questions and `analysis_ids` — that becomes spec selection rather than checklist display. Analyses
+are already materialized in the registry. The visible new surface is a manifest pane in the Chat
+panel.
+
+### EA
+
+**Today:** report specs compile to human-readable reports, and a separate tiered classifier routes
+Q&A to 10+ specialist agents, each gathering its own context.
+
+**Under this design**, two uses, which are the same machinery pointed differently:
+
+**1. Narrate a report from its own evidence.** A report spec already declares what to fetch and
+show. The compiler packs *that resolved data* plus its provenance, so the narration cites the rows
+it is describing and cannot drift from them. The spec is unchanged; a second consumer is added
+beside the renderer.
+
+**2. Q&A with real sections rather than retrieved chunks.** A question compiles to a spec whose
+sections are the relevant Egeria elements (at `as_of`), the report specs that touch them, the shared
+corpus, and RE's code symbols — the last via the cross-schema read already established in
+`advisor/re_code_symbol_reader.py`, not a new integration.
+
+**3. AI-Ready Data Products** (still open in the Egeria Overview dashboard work). This design offers
+a testable definition rather than a vague tile: **a data product is AI-ready when it ships a
+compilable context spec** — declared sections, resolvers that answer, provenance, and a known
+budget. That converts "is this AI-ready?" from a judgement into a check, and it is the same
+machinery inverted: producing context for other consumers rather than consuming it.
+
+### Shared
+
+The manifest pane is one component in the shared package, not two implementations — it renders
+derivation, what packed at which rung, and what was gapped or queued. It is also where §22's
+editable-manifest feedback lives, so both apps get dynamic feedback from the same surface.
