@@ -188,6 +188,25 @@ Ingests the project's documentation site into pgvector as web_docs_{host}, so Ch
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Analysis Survey — Repo Chaoss Metrics
+
+### Qualified Name
+GovActionProcessStep::RepoAnalysisSurvey::repo_chaoss_metrics
+
+### Description
+CHAOSS community-health metrics over recorded commits — chiefly the elephant factor, the fewest contributors accounting for half the commits. Contributor COUNT calls deep_causality a five-person project; the distribution says one person wrote 98% of it.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_chaoss_metrics |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Analysis Survey
@@ -317,6 +336,18 @@ GovActionProcessStep::RepoAnalysisSurvey::repo_rag_ingestion
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoAnalysisSurvey::repo_website_ingestion
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAnalysisSurvey::repo_website_ingestion
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAnalysisSurvey::repo_chaoss_metrics
 
 ### Guard
 Any

@@ -56,6 +56,8 @@ from resource_explorer.surveyors.sub_surveyors import (
     ArchLensSurveyor,
     ArchSummarySurveyor,
     CiQualitySurveyor,
+    ChaossMetricsSurveyor,
+    CiiBadgeSurveyor,
     CommunitySupportSurveyor,
     CveScanSurveyor,
     InterfaceSurfaceSurveyor,
@@ -522,6 +524,27 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "and never counts as a published API.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+    ),
+    "repo_chaoss_metrics": StepInfo(
+        "repo_chaoss_metrics", ChaossMetricsSurveyor,
+        "CHAOSS community-health metrics over recorded commits — chiefly the "
+        "elephant factor, the fewest contributors accounting for half the "
+        "commits. Contributor COUNT calls deep_causality a five-person project; "
+        "the distribution says one person wrote 98% of it.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # Reads project_commits, which the stats fetcher already recorded.
+    ),
+    "repo_cii_badge": StepInfo(
+        "repo_cii_badge", CiiBadgeSurveyor,
+        "The real OpenSSF Best Practices (CII) badge, read from "
+        "bestpractices.dev rather than estimated. Reports the level with the "
+        "age of the self-assessment behind it, and keeps 'no badge' apart from "
+        "'could not ask'.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # One GET against a public registry — no repo download.
+        fetch_cost="api",
     ),
     "repo_community_support": StepInfo(
         "repo_community_support", CommunitySupportSurveyor,
@@ -1137,6 +1160,66 @@ def _interface_surface_headline(registry, slug: str) -> dict | None:
                 "tone": "warn"}
     return {"label": "no interface signals found",
             "tone": "warn" if published == "no" else ""}
+
+
+def _chaoss_metrics_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "chaoss_metrics")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _chaoss_metrics_trend(registry, slug: str) -> list[dict]:
+    return registry.query_metrics_history(slug, "chaoss_metrics", "elephant_factor")
+
+
+def _chaoss_metrics_headline(registry, slug: str) -> dict | None:
+    """Authorship concentration, never an average of the metrics.
+
+    Averaging is exactly what let a project one person wrote 98% of score
+    100/100 on repository_health's community_score.
+    """
+    rows = _chaoss_metrics_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    ef = next((r for r in rows if r["check_name"] == "elephant_factor"), None)
+    if not ef or ef["label"] == "not_established":
+        return {"label": "authorship concentration unknown", "tone": "neutral"}
+    tone = {"sole": "warn", "narrow": "warn"}.get(ef["label"], "ok")
+    return {"label": f"elephant factor: {ef['label']}", "tone": tone}
+
+
+def _cii_badge_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "cii_badge")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _cii_badge_headline(registry, slug: str) -> dict | None:
+    """Three outcomes, never two.
+
+    "not registered" is an answer about the project; "could not be looked up"
+    is an answer about us, and rendering the second as the first would be a
+    claim about someone's project derived from our own connectivity.
+    """
+    rows = _cii_badge_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    level = next((r for r in rows if r["check_name"] == "badge_level"), None)
+    if not level or level["label"] == "not_established":
+        return {"label": "badge could not be looked up", "tone": "neutral"}
+    if level["label"] == "not_registered":
+        return {"label": "no OpenSSF badge", "tone": "warn"}
+    stale = any(r["check_name"] == "badge_freshness" and r["label"] == "stale"
+                for r in rows)
+    return {"label": f"OpenSSF badge: {level['label']}"
+                     + (" (stale)" if stale else ""),
+            "tone": "warn" if stale else "ok"}
 
 
 def _community_support_results(registry, slug: str) -> dict:
@@ -2407,6 +2490,21 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _interface_surface_results, None, "findings_list",
             headline_reader=_interface_surface_headline,
+        ),
+    ),
+    "chaoss_metrics": AnalysisKind(
+        "chaoss_metrics", ["repo_chaoss_metrics"],
+        results=AnalysisKindResults(
+            _chaoss_metrics_results, _chaoss_metrics_trend, "findings_list",
+            headline_reader=_chaoss_metrics_headline,
+        ),
+    ),
+    "cii_badge": AnalysisKind(
+        "cii_badge", ["repo_cii_badge"],
+        family="security",
+        results=AnalysisKindResults(
+            _cii_badge_results, None, "findings_list",
+            headline_reader=_cii_badge_headline,
         ),
     ),
     "community_support": AnalysisKind(

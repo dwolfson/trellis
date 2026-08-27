@@ -91,6 +91,11 @@ class TestFilterByIntent:
             "foss_scorecard",
             # Added 2026-08-26: OSV.dev advisories over recorded dependencies.
             "cve_scan",
+            # Added 2026-08-26: the real OpenSSF Best Practices badge, read
+            # from bestpractices.dev. Assessment rather than Discovery — it
+            # evaluates against criteria (someone else's, externally held) and
+            # it fetches, so neither half of Discovery's signature applies.
+            "cii_badge",
         }
 
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the

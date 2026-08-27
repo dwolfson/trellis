@@ -2855,6 +2855,8 @@ async function _submitSchedule(analysisId, entityType, slug) {
 // genuinely bespoke shapes handled by name in _renderCustomAnalysisResults()
 // below (dependency-by-ecosystem, data-profile summary, API structure).
 const _REPO_RESULTS_RENDER_MODE = {
+  chaoss_metrics: 'findings_list',
+  cii_badge: 'findings_list',
   interface_surface: 'findings_list',
   community_support: 'findings_list',
   cve_scan: 'findings_list',
@@ -2919,6 +2921,7 @@ const _REPO_RESULTS_RENDER_MODE = {
 // value has no stated unit. Mirrors each kind's *_trend() reader in
 // repo_survey_definition_adapter.py.
 const _REPO_TREND_LABEL = {
+  chaoss_metrics: 'Elephant factor (contributors holding half the commits)',
   cve_scan: 'Advisories (declared deps with a pinned version)',
   foss_scorecard: 'Score (0-10, over evaluated checks only)',
   language_file_classification: 'Total files',

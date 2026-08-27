@@ -300,6 +300,11 @@ class TestCostTierFilter:
                     # No repo download and nothing fetched about the repo
                     # itself, but still not zero-fetch.
                     "repo_cve_scan",
+                    # repo_cii_badge (2026-08-26) — one GET against
+                    # bestpractices.dev. Same shape as repo_cve_scan: nothing
+                    # about the repo is downloaded, and it is still not
+                    # zero-fetch, so a "none" ceiling has to exclude it.
+                    "repo_cii_badge",
                     # repo_manifest_parse (2026-08-23) — shares the zipball, but
                     # sharing an extraction does not make a step zero-fetch: the
                     # download still has to happen for it to run at all.
