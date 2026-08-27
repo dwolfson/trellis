@@ -18,7 +18,22 @@ engines can be chosen per step; a flag that overrules it removes the only way to
 say "run this one here" and makes executes_at="prefect" redundant. Routing RE's
 own steps through Prefect is a legitimate deployment choice, so it keeps working
 — it just has to be asked for by name.
-"""
+
+**A third fault, found once the first two were fixed and the API path could
+finally run for real (2026-08-26, verified live against a local `prefect
+server` + worker — deploy required switching `.deploy()` to `.from_source()`,
+since a bare `work_pool_name` assumes remote/image-based storage rather than a
+local `process` pool).** `_run_prefect_step_api` fetched the completed flow
+run's result via `client.resolve_value(state.data)` — that method doesn't
+exist on `PrefectClient` in Prefect 3.x, so every completed API-dispatched run
+raised `AttributeError`, was caught by the same broad `except`, and fell
+through to a **second, duplicate local execution** — the step's real work had
+already happened once via the worker, then happened again via the fallback,
+silently. Fixed to `state.result(raise_on_failure=True)`, the real 3.x API —
+which then raised `MissingResult` until `re_survey_flow` also declared
+`persist_result=True` (3.x doesn't persist flow results by default, and a
+`State` fetched back via `read_flow_run` from a different process than the one
+that ran the flow has no in-memory result to fall back to)."""
 from __future__ import annotations
 
 import types
@@ -60,6 +75,23 @@ class TestTheApiPathIsReachable:
              patch.object(adapter, "re_survey_flow", return_value={"via": "local"}):
             assert adapter.run_prefect_step("repo", "s", "repo_health", {}) == {"via": "local"}
 
+    def test_a_cancelled_run_does_not_fall_back_to_local(self):
+        """Found live 2026-08-26 testing the cancel endpoint: a cancelled
+        flow run's exception was caught by the same broad `except` as a
+        connection failure, and the fallback quietly re-ran the step's work
+        locally — cancel had no actual effect. A genuine user-initiated
+        cancellation must propagate, not be treated as "API unreachable,
+        try locally"."""
+        async def cancelled(*a, **kw):
+            raise adapter.PrefectFlowRunCancelled("flow run 'x' was cancelled")
+
+        with patch.object(adapter, "get_config", lambda: _cfg(enabled=True)), \
+             patch.object(adapter, "_run_prefect_step_api", cancelled), \
+             patch.object(adapter, "re_survey_flow",
+                          side_effect=AssertionError("must not fall back for a cancellation")):
+            with pytest.raises(adapter.PrefectFlowRunCancelled):
+                adapter.run_prefect_step("repo", "s", "repo_health", {})
+
     def test_a_failing_api_still_falls_back_to_local(self):
         """The fallback is correct behaviour for a real server problem — it is
         only the blindness that was wrong."""
@@ -83,6 +115,47 @@ class TestTheApiPathIsReachable:
             adapter.run_prefect_step("repo", "s", "repo_health", {})
 
         assert "ValueError" in caplog.text
+
+
+class TestApiResultRetrieval:
+    """The third fault (see module docstring): a completed API-dispatched flow
+    run's result was fetched via `client.resolve_value`, which doesn't exist on
+    Prefect 3.x's `PrefectClient` — every completed run raised AttributeError,
+    was swallowed by the broad `except` in run_prefect_step, and silently
+    re-ran the step's real work a second time, locally. These guard the fix
+    directly against `_run_prefect_step_api`'s actual source, the same pattern
+    `test_predicate_matches_production` below uses for the routing predicate —
+    a live server round-trip is covered by manual verification (2026-08-26,
+    see this file's module docstring), not re-created here as a mock, since a
+    mock of `state.result()` can't tell a working call from a plausible-looking
+    wrong one the way the real API already did to `resolve_value`."""
+
+    def test_never_calls_the_nonexistent_resolve_value_again(self):
+        import inspect
+
+        src = inspect.getsource(adapter._run_prefect_step_api)
+        assert "client.resolve_value" not in src, (
+            "resolve_value doesn't exist on PrefectClient in Prefect 3.x — "
+            "every completed flow run silently re-ran the step a second time "
+            "via local fallback before this was caught. See the module "
+            "docstring's third fault.")
+
+    def test_fetches_the_result_via_state_result(self):
+        import inspect
+
+        src = inspect.getsource(adapter._run_prefect_step_api)
+        assert "state.result(raise_on_failure=True)" in src, (
+            "State.result()/aresult() is the real Prefect 3.x API for pulling "
+            "a completed flow run's return value back out.")
+
+    def test_the_flow_persists_its_result(self):
+        """Without this, `state.result()` raises MissingResult for any run
+        polled back via read_flow_run from a different process than the one
+        that executed it — i.e. every real distributed dispatch, which is the
+        entire point of the API path."""
+        from resource_explorer.prefect.flows import re_survey_flow
+
+        assert re_survey_flow.persist_result is True
 
 
 class TestEngineRouting:

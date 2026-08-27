@@ -1825,14 +1825,27 @@ app.add_typer(prefect_app)
 @prefect_app.command(name="deploy")
 def prefect_deploy():
     """Deploy Resource Explorer flows to the Prefect server."""
+    from pathlib import Path
+
     from resource_explorer.prefect.flows import re_survey_flow
     from resource_explorer.config import get_config
 
     config = get_config()
     console.print(f"[blue]Deploying flows to Prefect server at {config.prefect.api_url}...[/blue]")
     try:
-        # Deploy flow dynamically using Prefect v3 deploy API
-        re_survey_flow.deploy(
+        # .deploy() alone errors ("Either an image or remote storage location
+        # must be provided") because a bare work_pool_name assumes the worker
+        # fetches code from a remote source (git/Docker) — the right shape for
+        # a `process`-type pool running on this same machine is `from_source`
+        # pointing at this checkout, so the worker subprocess can just import
+        # the flow module directly. Confirmed live against a local server
+        # 2026-08-26 — this checkout's own root is the source, since the
+        # worker process runs with the resource-explorer package importable.
+        source_root = Path(__file__).resolve().parents[2]  # packages/resource-explorer/
+        re_survey_flow.from_source(
+            source=str(source_root),
+            entrypoint="resource_explorer/prefect/flows.py:re_survey_flow",
+        ).deploy(
             name="re-survey-step-deployment",
             work_pool_name=config.prefect.work_pool,
         )
