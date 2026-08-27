@@ -28,6 +28,11 @@ class Annotation:
     annotation_type: AnnotationType
     summary: str
     analysis_step: str
+    #: Optional override for Egeria's `annotationType` — the NAME of the result,
+    #: not its shape. Left empty, it is derived from analysis_step via the step
+    #: registry. Set it only where one step emits several distinguishable kinds
+    #: of result and the derived, per-step name would blur them together.
+    annotation_type_name: str = ""
     confidence: int = 100                   # 0–100
     expression: str = ""                    # relationship detail to the asset
     explanation: str = ""

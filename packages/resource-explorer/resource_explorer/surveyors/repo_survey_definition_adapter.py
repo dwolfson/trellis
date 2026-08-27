@@ -56,6 +56,8 @@ from resource_explorer.surveyors.sub_surveyors import (
     ArchLensSurveyor,
     ArchSummarySurveyor,
     CiQualitySurveyor,
+    ChaossMetricsSurveyor,
+    CiiBadgeSurveyor,
     CommunitySupportSurveyor,
     CveScanSurveyor,
     InterfaceSurfaceSurveyor,
@@ -336,9 +338,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # extraction — no extra network call.
     "repo_manifest_parse": StepInfo(
         "repo_manifest_parse", ManifestParseSurveyor,
-        "Parses dependency manifests, CI workflow content, and repo-convention "
-        "signals from a freshly extracted zipball, refreshing project_dependencies "
-        "and project_analysis_findings (kind=\"ci_quality\"/\"repo_conventions\") — "
+        "Parses dependency manifests, CI workflow content, supply-chain signals "
+        "and repo-convention signals from a freshly extracted zipball, refreshing "
+        "project_dependencies and project_analysis_findings "
+        "(kind=\"ci_quality\"/\"repo_conventions\"/\"supply_chain\") — "
         "the three tables previously written only by full ingestion (and, for the "
         "latter two, refresh_profile), never by a survey step.",
         ["ResourceMeasureAnnotation"],
@@ -522,6 +525,27 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "and never counts as a published API.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
+    ),
+    "repo_chaoss_metrics": StepInfo(
+        "repo_chaoss_metrics", ChaossMetricsSurveyor,
+        "CHAOSS community-health metrics over recorded commits — chiefly the "
+        "elephant factor, the fewest contributors accounting for half the "
+        "commits. Contributor COUNT calls deep_causality a five-person project; "
+        "the distribution says one person wrote 98% of it.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # Reads project_commits, which the stats fetcher already recorded.
+    ),
+    "repo_cii_badge": StepInfo(
+        "repo_cii_badge", CiiBadgeSurveyor,
+        "The real OpenSSF Best Practices (CII) badge, read from "
+        "bestpractices.dev rather than estimated. Reports the level with the "
+        "age of the self-assessment behind it, and keeps 'no badge' apart from "
+        "'could not ask'.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # One GET against a public registry — no repo download.
+        fetch_cost="api",
     ),
     "repo_community_support": StepInfo(
         "repo_community_support", CommunitySupportSurveyor,
@@ -1137,6 +1161,66 @@ def _interface_surface_headline(registry, slug: str) -> dict | None:
                 "tone": "warn"}
     return {"label": "no interface signals found",
             "tone": "warn" if published == "no" else ""}
+
+
+def _chaoss_metrics_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "chaoss_metrics")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _chaoss_metrics_trend(registry, slug: str) -> list[dict]:
+    return registry.query_metrics_history(slug, "chaoss_metrics", "elephant_factor")
+
+
+def _chaoss_metrics_headline(registry, slug: str) -> dict | None:
+    """Authorship concentration, never an average of the metrics.
+
+    Averaging is exactly what let a project one person wrote 98% of score
+    100/100 on repository_health's community_score.
+    """
+    rows = _chaoss_metrics_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    ef = next((r for r in rows if r["check_name"] == "elephant_factor"), None)
+    if not ef or ef["label"] == "not_established":
+        return {"label": "authorship concentration unknown", "tone": "neutral"}
+    tone = {"sole": "warn", "narrow": "warn"}.get(ef["label"], "ok")
+    return {"label": f"elephant factor: {ef['label']}", "tone": tone}
+
+
+def _cii_badge_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "cii_badge")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]}
+
+
+def _cii_badge_headline(registry, slug: str) -> dict | None:
+    """Three outcomes, never two.
+
+    "not registered" is an answer about the project; "could not be looked up"
+    is an answer about us, and rendering the second as the first would be a
+    claim about someone's project derived from our own connectivity.
+    """
+    rows = _cii_badge_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    level = next((r for r in rows if r["check_name"] == "badge_level"), None)
+    if not level or level["label"] == "not_established":
+        return {"label": "badge could not be looked up", "tone": "neutral"}
+    if level["label"] == "not_registered":
+        return {"label": "no OpenSSF badge", "tone": "warn"}
+    stale = any(r["check_name"] == "badge_freshness" and r["label"] == "stale"
+                for r in rows)
+    return {"label": f"OpenSSF badge: {level['label']}"
+                     + (" (stale)" if stale else ""),
+            "tone": "warn" if stale else "ok"}
 
 
 def _community_support_results(registry, slug: str) -> dict:
@@ -2409,6 +2493,21 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             headline_reader=_interface_surface_headline,
         ),
     ),
+    "chaoss_metrics": AnalysisKind(
+        "chaoss_metrics", ["repo_chaoss_metrics"],
+        results=AnalysisKindResults(
+            _chaoss_metrics_results, _chaoss_metrics_trend, "findings_list",
+            headline_reader=_chaoss_metrics_headline,
+        ),
+    ),
+    "cii_badge": AnalysisKind(
+        "cii_badge", ["repo_cii_badge"],
+        family="security",
+        results=AnalysisKindResults(
+            _cii_badge_results, None, "findings_list",
+            headline_reader=_cii_badge_headline,
+        ),
+    ),
     "community_support": AnalysisKind(
         "community_support", ["repo_community_support"],
         results=AnalysisKindResults(
@@ -2823,3 +2922,100 @@ _ADAPTER = ResourceTypeAdapter(
 )
 
 register_adapter(_ADAPTER)
+
+
+# ── annotation type names ───────────────────────────────────────────────────
+#
+# Egeria's AnnotationProperties.annotation_type is a free string naming WHICH
+# result an annotation is. RE filled it with the entity subtype name
+# ("ClassificationAnnotation"), duplicating the `class` field beside it and
+# telling a reader nothing: 14 repo analyses share that subtype. The names RE
+# actually has — chaoss_metrics, supply_chain, cve_scan — never reached the
+# catalog at all.
+#
+# The map is DERIVED from STEP_REGISTRY and ANALYSIS_KINDS rather than written
+# out, because a hand-maintained second list of the same facts is what this
+# module spent its history collapsing. Nothing here is guessed from string
+# shape either: `CiQualityCheck` -> `ci_quality` and `ApiStructureAnalysis` ->
+# `api_structure` are not derivable by any snake_case rule, and a rule that
+# looked right for most of them would quietly mislabel the rest.
+
+_ANNOTATION_TYPE_NAMES: dict | None = None
+
+
+def _step_constant(surveyor_cls) -> str:
+    """The value a surveyor puts in Annotation.analysis_step, or "".
+
+    Three conventions exist in the tree, all read here, none required: a
+    module-level STEP constant (most), a class-level STEP attribute
+    (FileClassifierSurveyor), and a `step_name` property returning a literal
+    (the architecture surveyors). Reading all three is cheaper than making
+    thirty surveyors agree on one, and a convention this file does not know
+    about simply goes unmapped rather than being mislabelled.
+    """
+    import importlib
+
+    try:
+        step = getattr(importlib.import_module(surveyor_cls.__module__), "STEP", None)
+    except ImportError as exc:
+        log.warning("cannot read STEP for %s — module import failed: %s",
+                    surveyor_cls.__name__, exc)
+        return ""
+    if isinstance(step, str) and step:
+        return step
+
+    own = getattr(surveyor_cls, "STEP", None)
+    if isinstance(own, str) and own:
+        return own
+
+    prop = getattr(surveyor_cls, "step_name", None)
+    getter = getattr(prop, "fget", None)
+    if getter is None:
+        log.warning("%s declares no STEP constant and no step_name property — its "
+                    "annotations will fall back to naming their entity subtype",
+                    surveyor_cls.__name__)
+        return ""
+    try:
+        # Safe for a property whose body is `return "SomeName"`. One that
+        # touches self raises exactly these, and is left unmapped.
+        value = getter(None)
+    except (AttributeError, TypeError) as exc:
+        log.warning("%s.step_name could not be read without an instance (%s) — its "
+                    "annotations will fall back to naming their entity subtype",
+                    surveyor_cls.__name__, exc)
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def annotation_type_names() -> dict:
+    """{analysis_step value: annotation type name}.
+
+    The name is the analysis id where the step belongs to one, and the step key
+    otherwise. The four prerequisite refresh steps (repo_file_inventory,
+    repo_git_statistics, repo_homepage, repo_file_size) have no analysis by
+    design — they are expressible in a survey type, not as an analysis — so
+    their own key is the most specific true name they have.
+    """
+    global _ANNOTATION_TYPE_NAMES
+    if _ANNOTATION_TYPE_NAMES is not None:
+        return _ANNOTATION_TYPE_NAMES
+
+    step_to_analysis = {sk: aid for aid, kind in ANALYSIS_KINDS.items()
+                        for sk in kind.step_keys}
+    out: dict = {}
+    for step_key, info in STEP_REGISTRY.items():
+        constant = _step_constant(info.surveyor_cls)
+        if constant:
+            out[constant] = step_to_analysis.get(step_key, step_key)
+    _ANNOTATION_TYPE_NAMES = out
+    return out
+
+
+def resolve_annotation_type(analysis_step: str) -> str:
+    """The annotation type name for an analysis_step, or "" when unknown.
+
+    Returns "" rather than a guess. Callers fall back to the entity subtype
+    name, which is what was always written — wrong, but no more wrong than
+    before, and a fabricated name would be worse than a vague one.
+    """
+    return annotation_type_names().get((analysis_step or "").strip(), "")

@@ -1,9 +1,16 @@
 """Sub-surveyor: an OpenSSF-Scorecard-shaped assessment, over data already held.
 
 Answers "how does it measure up on the FOSS scorecard?" without collecting
-anything new. Every check below reads `project_stats` or findings another
-analysis already wrote — the same read-only-at-survey-time relationship
-CiQualitySurveyor has with its own findings.
+anything new. Every check below reads `project_stats`, the file inventory, or
+findings another analysis already wrote — the same read-only-at-survey-time
+relationship CiQualitySurveyor has with its own findings.
+
+The four supply-chain checks (2026-08-26) work the same way: SupplyChainParser
+parses .github/workflows at ingestion time, where the zipball is already on
+disk, and this reads what it wrote. Until it has run they report `unknown`
+with what would make them evaluable — never `fail`, because "we have not
+parsed the workflows" and "the workflows are unsafe" are opposite claims and
+only one of them is an accusation.
 
 **The one place this deliberately departs from OpenSSF Scorecard.** Scorecard
 awards a low score to a check it could not evaluate, so "this project has no
@@ -24,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Callable
@@ -53,7 +61,7 @@ _POINTS = {PASS: 10.0, PARTIAL: 5.0, FAIL: 0.0}
 class Check:
     id: str
     title: str
-    #: (stats, findings_by_kind) -> (state, detail_str)
+    #: (stats, findings_by_kind, file_paths) -> (state, detail_str)
     evaluate: Callable
     #: What would make this evaluable, when it is not. Shown to the reader, so
     #: "unknown" is actionable rather than merely honest.
@@ -65,7 +73,7 @@ def _stat(stats: dict, key, default=None):
     return default if v in (None, "") else v
 
 
-def _c_maintained(stats, findings) -> tuple:
+def _c_maintained(stats, findings, paths) -> tuple:
     if _stat(stats, "archived"):
         return FAIL, "Repository is archived."
     c90 = _stat(stats, "commits_90d", 0) or 0
@@ -77,7 +85,7 @@ def _c_maintained(stats, findings) -> tuple:
     return FAIL, "No commits recorded in the last 90 days."
 
 
-def _c_license(stats, findings) -> tuple:
+def _c_license(stats, findings, paths) -> tuple:
     spdx = (_stat(stats, "license_spdx_id", "") or "").strip()
     name = (_stat(stats, "license", "") or "").strip()
     if spdx and spdx.upper() != "NOASSERTION":
@@ -89,7 +97,7 @@ def _c_license(stats, findings) -> tuple:
     return FAIL, "No licence detected."
 
 
-def _c_ci_tests(stats, findings) -> tuple:
+def _c_ci_tests(stats, findings, paths) -> tuple:
     rows = findings.get("ci_quality") or []
     if not rows:
         return UNKNOWN, "The CI quality analysis has not run for this resource."
@@ -102,7 +110,7 @@ def _c_ci_tests(stats, findings) -> tuple:
     return UNKNOWN, "No CI findings recorded."
 
 
-def _c_security_policy(stats, findings) -> tuple:
+def _c_security_policy(stats, findings, paths) -> tuple:
     for kind in ("security_scan", "security_features"):
         for r in findings.get(kind) or []:
             if "polic" in (r.get("check_name") or "").lower():
@@ -112,7 +120,7 @@ def _c_security_policy(stats, findings) -> tuple:
     return UNKNOWN, "Neither security analysis has run for this resource."
 
 
-def _c_releases(stats, findings) -> tuple:
+def _c_releases(stats, findings, paths) -> tuple:
     count = _stat(stats, "releases_count", 0) or 0
     if count <= 0:
         return FAIL, "No releases published."
@@ -123,7 +131,7 @@ def _c_releases(stats, findings) -> tuple:
     return PASS, detail + "."
 
 
-def _c_contributors(stats, findings) -> tuple:
+def _c_contributors(stats, findings, paths) -> tuple:
     n = _stat(stats, "contributors_count", 0) or 0
     if n >= 10:
         return PASS, f"{n} contributors."
@@ -136,19 +144,19 @@ def _c_contributors(stats, findings) -> tuple:
     return UNKNOWN, "Contributor count was not collected."
 
 
-def _c_code_review(stats, findings) -> tuple:
+def _c_code_review(stats, findings, paths) -> tuple:
     return UNKNOWN, "Requires pull-request review history."
 
 
-def _c_branch_protection(stats, findings) -> tuple:
+def _c_branch_protection(stats, findings, paths) -> tuple:
     return UNKNOWN, "Requires the branch-protection API, which needs admin scope."
 
 
-def _c_signed_releases(stats, findings) -> tuple:
+def _c_signed_releases(stats, findings, paths) -> tuple:
     return UNKNOWN, "Requires release asset signatures."
 
 
-def _c_vulnerabilities(stats, findings) -> tuple:
+def _c_vulnerabilities(stats, findings, paths) -> tuple:
     rows = findings.get("cve_scan") or []
     if not rows:
         return UNKNOWN, "No vulnerability scan has run — see the CVE analysis."
@@ -158,11 +166,7 @@ def _c_vulnerabilities(stats, findings) -> tuple:
     return PASS, "No advisories matched the recorded dependencies."
 
 
-def _c_dependency_update(stats, findings) -> tuple:
-    return UNKNOWN, "Requires detecting a dependency-update bot config."
-
-
-def _c_sast(stats, findings) -> tuple:
+def _c_sast(stats, findings, paths) -> tuple:
     raw = _stat(stats, "security_and_analysis_json", "") or ""
     try:
         parsed = json.loads(raw) if isinstance(raw, str) else (raw or {})
@@ -175,6 +179,82 @@ def _c_sast(stats, findings) -> tuple:
     if enabled:
         return PASS, f"Enabled: {', '.join(sorted(enabled))}."
     return FAIL, "No GitHub security analysis features are enabled."
+
+
+# ── supply chain: read from what SupplyChainParser wrote at ingestion ────────
+#: Its labels are already this vocabulary, so mapping is identity for the three
+#: real states and explicit for its fourth, which is an absence, not a failure.
+_SC_STATE = {"pass": PASS, "partial": PARTIAL, "fail": FAIL,
+             "not_established": UNKNOWN}
+
+
+def _supply_chain(findings, check_name: str, absent: str) -> tuple:
+    """One supply-chain row, or a stated reason it could not be read.
+
+    Two distinct absences, kept apart: the analysis never ran, and it ran and
+    found no workflows to look at. Only the second is a fact about the repo.
+    """
+    rows = findings.get("supply_chain") or []
+    if not rows:
+        return UNKNOWN, absent
+    for r in rows:
+        if r.get("check_name") == check_name:
+            return _SC_STATE.get((r.get("label") or "").lower(), UNKNOWN), \
+                r.get("summary") or ""
+    return UNKNOWN, "The supply-chain analysis ran but did not report this check."
+
+
+_SC_ABSENT = ("No workflow supply-chain findings are recorded — refresh the "
+              "profile to parse .github/workflows.")
+
+
+def _c_token_permissions(stats, findings, paths) -> tuple:
+    return _supply_chain(findings, "supply_chain_token_permissions", _SC_ABSENT)
+
+
+def _c_pinned_dependencies(stats, findings, paths) -> tuple:
+    return _supply_chain(findings, "supply_chain_pinned_dependencies", _SC_ABSENT)
+
+
+def _c_dangerous_workflow(stats, findings, paths) -> tuple:
+    return _supply_chain(findings, "supply_chain_dangerous_workflow", _SC_ABSENT)
+
+
+# ── path-derived checks ─────────────────────────────────────────────────────
+#: An SBOM committed to the repository. Generating one in CI and attaching it
+#: to a release is the other common practice and leaves no file behind, so a
+#: miss here is reported as a miss for THIS form, not as "has no SBOM".
+_SBOM_RE = re.compile(
+    r"(^|/)(sbom[^/]*|.*\.spdx(\.json|\.ya?ml)?|.*bom\.json|"
+    r".*cyclonedx[^/]*\.(json|xml))$", re.I)
+
+#: Dependency-update automation, by its configuration file.
+_UPDATE_BOT = {
+    ".github/dependabot.yml": "Dependabot", ".github/dependabot.yaml": "Dependabot",
+    "renovate.json": "Renovate", "renovate.json5": "Renovate",
+    ".renovaterc": "Renovate", ".renovaterc.json": "Renovate",
+    ".github/renovate.json": "Renovate", ".github/renovate.json5": "Renovate",
+}
+
+
+def _c_sbom(stats, findings, paths) -> tuple:
+    if paths is None:
+        return UNKNOWN, "No file inventory is recorded for this resource."
+    hits = sorted(p for p in paths if _SBOM_RE.search(p or ""))
+    if hits:
+        return PASS, f"{len(hits)} SBOM file(s) committed: {', '.join(hits[:3])}."
+    return FAIL, ("No SBOM file is committed. One generated in CI and attached to a "
+                  "release would not appear here.")
+
+
+def _c_dependency_update_tool(stats, findings, paths) -> tuple:
+    if paths is None:
+        return UNKNOWN, "No file inventory is recorded for this resource."
+    lower = {(p or "").lower(): p for p in paths}
+    found = sorted({name for cfg, name in _UPDATE_BOT.items() if cfg in lower})
+    if found:
+        return PASS, f"Configured: {', '.join(found)}."
+    return FAIL, "No Dependabot or Renovate configuration is committed."
 
 
 CHECKS: list = [
@@ -195,8 +275,16 @@ CHECKS: list = [
           needs="The branch-protection API, which needs admin scope on the repo."),
     Check("signed_releases", "Signed-Releases", _c_signed_releases,
           needs="Release asset signatures, which are not collected."),
-    Check("dependency_update", "Dependency-Update-Tool", _c_dependency_update,
-          needs="Detection of a dependency-update bot configuration."),
+    Check("dependency_update", "Dependency-Update-Tool", _c_dependency_update_tool,
+          needs="A file inventory, which the profile refresh records."),
+    Check("token_permissions", "Token-Permissions", _c_token_permissions,
+          needs="Refresh the profile so .github/workflows is parsed."),
+    Check("pinned_dependencies", "Pinned-Dependencies", _c_pinned_dependencies,
+          needs="Refresh the profile so .github/workflows is parsed."),
+    Check("dangerous_workflow", "Dangerous-Workflow", _c_dangerous_workflow,
+          needs="Refresh the profile so .github/workflows is parsed."),
+    Check("sbom", "SBOM", _c_sbom,
+          needs="A file inventory, which the profile refresh records."),
 ]
 
 
@@ -242,13 +330,24 @@ class FossScorecardSurveyor(BaseSurveyor):
             stats = self.registry.get_latest_project_stats(slug) or {}
             findings = {
                 kind: (self.registry.query_findings(slug, kind) or [])
-                for kind in ("ci_quality", "security_scan", "security_features", "cve_scan")
+                for kind in ("ci_quality", "security_scan", "security_features",
+                             "cve_scan", "supply_chain")
             }
+            # None, not [], when nothing is recorded: "no inventory" and "an
+            # inventory containing no SBOM" are opposite answers, and a bare
+            # empty list would make the first read as the second.
+            paths = None
+            with self.registry._conn() as conn:
+                rows = conn.execute(
+                    "SELECT file_path FROM project_file_inventory "
+                    "WHERE project_slug = ?", (slug,)).fetchall()
+            if rows:
+                paths = [r["file_path"] for r in rows]
 
             results = []
             for check in CHECKS:
                 try:
-                    state, detail = check.evaluate(stats, findings)
+                    state, detail = check.evaluate(stats, findings, paths)
                 except Exception as exc:   # one bad check must not lose the rest
                     log.debug("scorecard check %s failed: %s", check.id, exc)
                     state, detail = UNKNOWN, f"Check errored ({type(exc).__name__})."

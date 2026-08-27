@@ -31,15 +31,42 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-def compute_expected_edges(survey_group: str, step_keys: list[str]) -> set[tuple[str, str]]:
-    """The single linear chain of (prev_qualified_name, next_qualified_name)
-    pairs a Survey Definition's step_keys, in order, should produce — same
-    qualified_name convention dr_egeria_survey_publisher.py's
-    _step_qualified_name() uses. A 0- or 1-step chain has no edges at all."""
-    def qn(key: str) -> str:
-        return f"GovActionProcessStep::{survey_group}::{key}"
+#: The guard meaning "always follow this edge" — what the generator emits.
+UNCONDITIONAL_GUARD = "Any"
 
-    return {(qn(a), qn(b)) for a, b in zip(step_keys, step_keys[1:])}
+
+def _qn(survey_group: str, key: str) -> str:
+    return f"GovActionProcessStep::{survey_group}::{key}"
+
+
+def compute_expected_edges(survey_group: str, step_keys: list[str]) -> set:
+    """The single linear chain of (prev, next, guard) triples a Survey
+    Definition's step_keys, in order, should produce — same qualified_name
+    convention dr_egeria_survey_publisher.py's _step_qualified_name() uses.
+    A 0- or 1-step chain has no edges at all.
+
+    Every edge carries the unconditional guard, because a step list cannot
+    express anything else. Use expected_edges_from_document() for a definition
+    whose real edges are authored, which is all of them — this remains for the
+    case where no document can be found, and is a linear approximation, not a
+    definition.
+    """
+    return {(_qn(survey_group, a), _qn(survey_group, b), UNCONDITIONAL_GUARD)
+            for a, b in zip(step_keys, step_keys[1:])}
+
+
+def expected_edges_from_document(survey_group: str, doc) -> set:
+    """The (prev, next, guard) triples a definition's DOCUMENT authors.
+
+    This is what makes branching survivable. A step list yields one linear
+    chain; the document yields whatever was actually authored, including two
+    edges out of one step under different guards — which is how Egeria
+    expresses branching, `NextGovernanceActionProcessStep` being MULTI_LINK by
+    design.
+    """
+    return {(_qn(survey_group, prev), _qn(survey_group, nxt),
+             guard or UNCONDITIONAL_GUARD)
+            for prev, nxt, guard in getattr(doc, "links", [])}
 
 
 @dataclass
@@ -48,6 +75,7 @@ class LinkToRemove:
     prev_qualified_name: str | None
     next_qualified_name: str | None
     reason: str  # "duplicate" | "stale"
+    guard: str = ""
 
 
 @dataclass
@@ -70,31 +98,41 @@ class ReconcileResult:
         return len(self.to_remove)
 
 
-def diff_links(links: list[dict], expected_edges: set[tuple[str, str]], process_qualified_name: str) -> ReconcileResult:
+def diff_links(links: list[dict], expected_edges: set, process_qualified_name: str) -> ReconcileResult:
     """Pure diff — no network calls. Given the raw `processStepLinks` list
     from GovernanceOfficer.get_governance_process_graph()'s response and the
-    edges a Survey Definition's step chain should have, decide which live
-    link relationships to keep vs. remove.
+    edges a Survey Definition's document authors, decide which live link
+    relationships to keep vs. remove.
 
     For each expected edge, exactly the *first* matching live link is kept;
-    any further live link with the same (prev, next) pair is a duplicate.
-    Any live link whose (prev, next) pair isn't in expected_edges at all is
-    stale (left over from a prior, different chain ordering). Idempotent —
-    a fully-reconciled graph (each expected edge appearing exactly once,
-    nothing else) produces an empty to_remove list."""
+    any further live link with the same (prev, next, guard) triple is a
+    duplicate. Any live link whose triple isn't expected is stale. Idempotent
+    — a fully-reconciled graph produces an empty to_remove list.
+
+    **The guard is part of the identity, and leaving it out was destructive.**
+    Keyed on (prev, next) alone, `A -> B guard=passed` and `A -> B
+    guard=failed` read as one edge duplicated, and the second is deleted.
+    Those are two different edges: the pair of them IS the branch. This
+    reconciler exists to strip the copies Dr.Egeria's non-idempotent Link
+    commands leave behind, and a copy is identical in all three values — so
+    matching on all three removes exactly what it should and nothing more.
+    """
     result = ReconcileResult(process_qualified_name=process_qualified_name)
-    seen_edges: set[tuple[str, str]] = set()
+    seen_edges: set = set()
 
     for link in links:
         prev = (link.get("previousProcessStep") or {}).get("uniqueName")
         nxt = (link.get("nextProcessStep") or {}).get("uniqueName")
         link_guid = link.get("nextProcessStepLinkGUID")
-        edge = (prev, nxt)
+        # An edge with no recorded guard is unconditional, which is what an
+        # absent value has always meant here — not a distinct fourth state.
+        guard = link.get("guard") or UNCONDITIONAL_GUARD
+        edge = (prev, nxt, guard)
 
         if edge not in expected_edges:
-            result.to_remove.append(LinkToRemove(link_guid, prev, nxt, "stale"))
+            result.to_remove.append(LinkToRemove(link_guid, prev, nxt, "stale", guard))
         elif edge in seen_edges:
-            result.to_remove.append(LinkToRemove(link_guid, prev, nxt, "duplicate"))
+            result.to_remove.append(LinkToRemove(link_guid, prev, nxt, "duplicate", guard))
         else:
             seen_edges.add(edge)
             result.kept += 1

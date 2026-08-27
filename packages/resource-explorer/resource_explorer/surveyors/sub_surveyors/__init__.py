@@ -8,6 +8,8 @@ from resource_explorer.surveyors.sub_surveyors.documentation import Documentatio
 from resource_explorer.surveyors.sub_surveyors.security_hygiene import SecurityHygieneSurveyor
 from resource_explorer.surveyors.sub_surveyors.data_profiler import DataProfilerSurveyor
 from resource_explorer.surveyors.sub_surveyors.ci_quality import CiQualitySurveyor
+from resource_explorer.surveyors.sub_surveyors.chaoss_metrics import ChaossMetricsSurveyor
+from resource_explorer.surveyors.sub_surveyors.cii_badge import CiiBadgeSurveyor
 from resource_explorer.surveyors.sub_surveyors.community_support import CommunitySupportSurveyor
 from resource_explorer.surveyors.sub_surveyors.cve_scan import CveScanSurveyor
 from resource_explorer.surveyors.sub_surveyors.interface_surface import InterfaceSurfaceSurveyor
@@ -45,6 +47,8 @@ __all__ = [
     "SecurityHygieneSurveyor",
     "DataProfilerSurveyor",
     "CiQualitySurveyor",
+    "ChaossMetricsSurveyor",
+    "CiiBadgeSurveyor",
     "CommunitySupportSurveyor",
     "CveScanSurveyor",
     "InterfaceSurfaceSurveyor",

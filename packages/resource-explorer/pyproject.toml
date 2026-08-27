@@ -85,10 +85,16 @@ dependencies = [
     #    duplicates every edge, which makes each step look "branching" and
     #    takes the whole Survey Definition out of service until reconciled.
     #
-    # Hence the 6.0.18.4 floor. Note pyegeria moved MetadataExpert from
+    # Hence the 6.0.18.4 floor. Raised to 6.1.5 on 2026-08-27 for the
+    # engine-host trio (claim_engine_action, update_engine_action_status,
+    # get_active_claimed_engine_actions) — see egeria-python's
+    # PYEGERIA_ISSUES.md ISSUE-78. Verified against the real wheel, not
+    # assumed: full suite, live Egeria smoke tests and a live alignment scan
+    # all pass on 6.1.5, and claim_engine_action was exercised against the
+    # live platform through the client. Note pyegeria moved MetadataExpert from
     # pyegeria.omvs.metadata_explorer to pyegeria.omvs.metadata_expert in this
     # release; RE is unaffected because it imports from the top-level package.
-    "pyegeria>=6.0.18.4",
+    "pyegeria>=6.1.5",
     "mcp>=0.1.0",
     "nest-asyncio>=1.6.0",
     # Database surveying

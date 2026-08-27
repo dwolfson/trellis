@@ -114,6 +114,25 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Assessment Survey — Repo Cve Scan
+
+### Qualified Name
+GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+
+### Description
+Dependency advisories from OSV.dev, over dependencies the manifest parser already recorded. Reports coverage with the count: declared dependencies only, and only those with a pinned, parseable version.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_cve_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Assessment Survey — Repo Foss Scorecard
 
 ### Qualified Name
@@ -133,20 +152,20 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Assessment Survey — Repo Cve Scan
+Assessment Survey — Repo Cii Badge
 
 ### Qualified Name
-GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge
 
 ### Description
-Dependency advisories from OSV.dev, over dependencies the manifest parser already recorded. Reports coverage with the count: declared dependencies only, and only those with a pinned, parseable version.
+The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level with the age of the self-assessment behind it, and keeps 'no badge' apart from 'could not ask'.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
 | executes_at | resource-explorer |
 | supported_technology_type | Git Repository |
-| re_analysis_step | repo_cve_scan |
+| re_analysis_step | repo_cii_badge |
 
 ___
 
@@ -242,6 +261,18 @@ ___
 GovActionProcessStep::RepoAssessmentSurvey::repo_ci_quality
 
 ### Next Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+
+### Next Governance Action Process Step
 GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard
 
 ### Guard
@@ -254,7 +285,7 @@ ___
 GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard
 
 ### Next Governance Action Process Step
-GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge
 
 ### Guard
 Any

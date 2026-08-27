@@ -45,6 +45,24 @@ analyses:
       - cli
       - published_spec
 
+  chaoss_metrics:
+    findings_kind: chaoss_metrics
+    source: surveyors/sub_surveyors/chaoss_metrics.py:assess
+    checks:
+      - elephant_factor
+      - organizational_diversity
+      - contributor_turnover
+      - release_frequency
+      - time_to_first_response
+
+  cii_badge:
+    findings_kind: cii_badge
+    source: surveyors/sub_surveyors/cii_badge.py:assess
+    checks:
+      - badge_level
+      - badge_freshness
+      - criteria_coverage
+
   community_support:
     findings_kind: community_support
     source: surveyors/sub_surveyors/community_support.py:assess
@@ -59,6 +77,10 @@ analyses:
     findings_kind: foss_scorecard
     source: surveyors/sub_surveyors/foss_scorecard.py:CHECKS
     checks:
+      - token_permissions
+      - pinned_dependencies
+      - dangerous_workflow
+      - sbom
       - maintained
       - license
       - ci_tests

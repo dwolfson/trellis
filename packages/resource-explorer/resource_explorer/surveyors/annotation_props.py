@@ -33,9 +33,12 @@ reach for them by name.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from resource_explorer.surveyors.survey_report import AnnotationType
+
+log = logging.getLogger(__name__)
 
 
 def to_string_map(d: dict) -> dict[str, str]:
@@ -48,6 +51,42 @@ def to_string_map(d: dict) -> dict[str, str]:
     for k, v in d.items():
         result[str(k)] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
     return result
+
+
+def _annotation_type_name(ann, atype) -> str:
+    """What Egeria's `annotationType` should say: WHICH result this is.
+
+    It named the entity subtype until 2026-08-26 — "ClassificationAnnotation",
+    duplicating the `class` field beside it. 14 repo analyses share that
+    subtype, so the field distinguished nothing, and the names RE actually
+    holds (chaoss_metrics, supply_chain, cve_scan) never reached the catalog.
+    That is why publish attribution needed a local side-table: the question
+    "which analysis produced this?" was unanswerable from Egeria.
+
+    Order of preference:
+
+    1. an explicit `annotation_type_name` on the annotation — for a step that
+       emits more than one kind of result and wants to say which is which;
+    2. the name derived from `analysis_step` via the step registry;
+    3. the entity subtype name, as before.
+
+    Three is wrong, and kept deliberately: database and filesystem surveyors
+    are not in the repo step registry, so falling back preserves exactly their
+    current behaviour rather than inventing a name for them. Wrong-as-before
+    beats newly-fabricated.
+    """
+    explicit = (getattr(ann, "annotation_type_name", "") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            resolve_annotation_type,
+        )
+    except ImportError as exc:  # pragma: no cover - import guard
+        log.warning("annotation type registry unavailable (%s) — annotations will "
+                    "name their entity subtype instead of their result", exc)
+        return atype.value
+    return resolve_annotation_type(getattr(ann, "analysis_step", "")) or atype.value
 
 
 def build_annotation_props(ann, qualified_name: str) -> dict:
@@ -71,7 +110,7 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
     props: dict = {
         "class": egeria_class,
         "qualifiedName": qualified_name,
-        "annotationType": atype.value,
+        "annotationType": _annotation_type_name(ann, atype),
         "summary": ann.summary,
         "analysisStep": ann.analysis_step,
         "confidence": ann.confidence,

@@ -231,6 +231,28 @@ repo_analyses:
     run_time: minutes
     target_shape: whole_resource_only
 
+  - id: chaoss_metrics
+    name: CHAOSS Metrics
+    description: "CHAOSS community-health metrics over recorded commits, each reported on its own terms and never averaged into a score. Chiefly the elephant factor — the fewest contributors accounting for half the commits — which separates projects every other signal here rates the same: measured across the catalogue, deep_causality is 1 (one person wrote 98% of it) while kafka is 15. Organizational diversity is reported only where enough authorship is attributable; 72% of author emails in the catalogue are personal addresses with no employer in them."
+    resource_types: ["repo"]
+    intent: analysis
+    perspectives: ["Community", "Steward", "Governance", "Consumer"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    target_shape: whole_resource_only
+
+  - id: cii_badge
+    name: "OpenSSF Best Practices Badge"
+    description: "The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level together with the age of the self-assessment behind it — odpi/egeria holds a silver badge whose record was last updated in 2022, and the level alone would carry the badge's authority with none of its staleness. Keeps three outcomes apart: badged, not registered (a fact about the project), and could not be looked up (a fact about us)."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Governance", "Steward", "Consumer"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    target_shape: whole_resource_only
+
   - id: foss_scorecard
     name: FOSS Scorecard
     description: "OpenSSF-Scorecard-shaped checks computed from data already collected — maintenance, licence, CI tests, releases, contributors, SAST settings. A check that cannot be evaluated reports unknown and is EXCLUDED from the score, rather than scored zero as OpenSSF's own tool does, and the coverage is reported alongside the number: 8.0 over five checks and 8.0 over twelve are different claims. Not comparable with a published OpenSSF score, by design."
