@@ -1,6 +1,6 @@
 # Survey model: granularity, annotation types, and RE as an engine host
 
-**Status: design note. §1.1 is FIXED (2026-08-26). §1.2 and §1.3 are live and shipped.**
+**Status: design note. §1.1 and §1.3 FIXED (2026-08-26). §1.2 interlocked, not fixed.**
 **Date:** 2026-08-26
 **Supersedes in part:** `analysis-step-egeria-registration-plan.md` (D1/D3 shipped differently; D2 shipped; D4 still open)
 **Prompted by:** the question of whether RE should manage two granularities — individual
@@ -116,8 +116,28 @@ There are two distinct questions, and only one of them is this:
 | **specification coverage** | CSV ↔ docs | we said we needed a survey and never authored one | extra definitions |
 
 The second must tolerate definitions with no CSV row at all — Egeria-native surveys, and
-anything authored directly. The current scan would report those as drift. It does not today
-only because none exist yet.
+anything authored directly. The old scan would have reported those as drift, and did not only
+because none exist yet.
+
+**FIXED 2026-08-26.** Split into `definition_drift` (recovery: documents ↔ Egeria, drives the
+repair, tolerates nothing) and `specification_gap` (coverage: CSV ↔ documents, tolerates extra
+definitions, no repair button — closing a gap edits the source tree, and this panel repairs the
+catalog, not the repository).
+
+Two things fell out of doing it properly:
+
+* **Order is now compared, not just membership.** Run order is load-bearing —
+  `repo_foss_scorecard` reads what `repo_cve_scan` writes, and ran before it until earlier the
+  same day. Verified first that document order matches live Egeria exactly across all eight
+  definitions, so ordered comparison does not generate false drift.
+* **Descriptions are compared too.** Comparing only step keys is what let Egeria sit on a
+  `repo_manifest_parse` description the documents had already moved past — invisible to a scan
+  whose entire job is to notice that. The split scan found it in three definitions immediately;
+  they have since been re-authored and Egeria now matches.
+
+Coverage remains membership-only, deliberately: the CSV's full-survey row is the sentinel `*`,
+which has no order to compare, and its rows are not stored sorted. Order is authoritative in the
+documents.
 
 ---
 
@@ -304,8 +324,8 @@ Ordered by dependency, not by value.
    silently flattened.
 2. **§3 publish the real `annotationType`.** One string, already held. Independently useful,
    and it retires the `project_published_analyses` workaround.
-3. **§1.3 split the drift scan** into recovery and coverage checks. Cheap, and the current
-   direction becomes actively wrong under §4.
+3. ~~**§1.3 split the drift scan**~~ **Done 2026-08-26**, with order and description
+   comparison added — the latter caught real stale content on its first run.
 4. **§1.2 reconciler keyed on `(prev, next, guard)`** with a non-linear expected set. Required
    before any real guard is authored; not required before 1–3.
 5. **Confirm §4.3** against a live platform. Gates everything below.

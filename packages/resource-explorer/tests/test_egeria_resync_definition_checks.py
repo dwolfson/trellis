@@ -1,0 +1,124 @@
+"""Two checks that were one until 2026-08-26.
+
+`_scan_definition_drift` compared Egeria against the CSV and called Egeria
+"behind". That silently assumed the CSV was authoritative and that every
+definition should have a CSV row — so an Egeria-native survey, or one authored
+directly, would have been reported as drift. It did not, only because none
+existed yet.
+
+    recovery   docs ↔ Egeria   tolerates nothing, drives the repair
+    coverage   CSV ↔ docs      tolerates extra definitions, no repair
+
+The CSV is a specification of what surveys are NEEDED. The documents are the
+definitions, and carry ordering, guards and descriptions the CSV has no column
+for.
+"""
+from pathlib import Path
+
+from resource_explorer import egeria_resync as R
+
+DOCS = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "survey-definitions"
+
+
+# ── the document parser ─────────────────────────────────────────────────────
+def test_parses_steps_in_declared_order_ignoring_the_link_section(tmp_path):
+    """Every step name appears three more times in the Link commands. Counting
+    those would triple each step and make the parse depend on the link
+    structure — the very thing that breaks and needs detecting."""
+    doc = tmp_path / "d.md"
+    doc.write_text(
+        "## Create Governance Action Process Step\n"
+        "### Qualified Name\nGovActionProcessStep::S::step_b\n\n"
+        "### Description\nSecond, declared first.\n\n___\n\n"
+        "## Create Governance Action Process Step\n"
+        "### Qualified Name\nGovActionProcessStep::S::step_a\n\n"
+        "### Description\nFirst.\n\n___\n\n"
+        "## Create Governance Action Process\n"
+        "### Qualified Name\nGovActionProcess::S\n\n___\n\n"
+        "## Link Next Process Step\n"
+        "### Governance Action Process Step\nGovActionProcessStep::S::step_b\n\n"
+        "### Next Governance Action Process Step\nGovActionProcessStep::S::step_a\n"
+    )
+    process, steps, descriptions = R._parse_definition_doc(doc)
+    assert process == "S"
+    assert steps == ["step_b", "step_a"]          # declaration order, not sorted
+    assert descriptions["step_b"] == "Second, declared first."
+
+
+def test_a_description_cannot_be_borrowed_from_the_next_command(tmp_path):
+    """A step with no Description must report none, not inherit its
+    neighbour's — which would attribute one step's meaning to another."""
+    doc = tmp_path / "d.md"
+    doc.write_text(
+        "## Create Governance Action Process Step\n"
+        "### Qualified Name\nGovActionProcessStep::S::bare\n\n___\n\n"
+        "## Create Governance Action Process Step\n"
+        "### Qualified Name\nGovActionProcessStep::S::described\n\n"
+        "### Description\nBelongs to `described`.\n\n___\n\n"
+        "## Create Governance Action Process\n"
+        "### Qualified Name\nGovActionProcess::S\n"
+    )
+    _, _, descriptions = R._parse_definition_doc(doc)
+    assert descriptions["bare"] == ""
+    assert descriptions["described"] == "Belongs to `described`."
+
+
+def test_an_unreadable_document_yields_nothing_rather_than_raising(tmp_path):
+    assert R._parse_definition_doc(tmp_path / "absent.md") == ("", [], {})
+
+
+def test_the_process_heading_does_not_swallow_the_step_heading(tmp_path):
+    """"## Create Governance Action Process" is a prefix of the step heading.
+    Matched loosely, every step would register as the process."""
+    doc = tmp_path / "d.md"
+    doc.write_text(
+        "## Create Governance Action Process Step\n"
+        "### Qualified Name\nGovActionProcessStep::S::only\n\n___\n\n"
+        "## Create Governance Action Process\n"
+        "### Qualified Name\nGovActionProcess::S\n"
+    )
+    process, steps, _ = R._parse_definition_doc(doc)
+    assert process == "S" and steps == ["only"]
+
+
+# ── the real documents ──────────────────────────────────────────────────────
+def test_every_committed_document_parses_to_a_named_definition():
+    """A document that parses to nothing is invisible to the recovery check,
+    which would report its definition as somebody else's and never repair it."""
+    for path in sorted(DOCS.glob("*.md")):
+        process, steps, _ = R._parse_definition_doc(path)
+        assert process, f"{path.name} declares no GovActionProcess"
+        assert steps, f"{path.name} declares no steps"
+
+
+def test_the_csv_specifies_nothing_the_documents_do_not_define():
+    """The coverage check against real data. A gap here means a step can never
+    reach Egeria however often the repair runs — nothing authored it."""
+    documented = R._documented_definitions()
+    for name, want in R._intended_steps_from_csv().items():
+        entry = documented.get(name)
+        assert entry, f"CSV specifies {name}, no document defines it"
+        missing = [k for k in want if k not in entry["steps"]]
+        assert not missing, f"{name} document is behind the CSV: {missing}"
+
+
+def test_coverage_tolerates_a_document_with_no_csv_row():
+    """The CSV is not required to be complete — that is what makes it a
+    specification of what is needed rather than a definition of what exists.
+    Egeria-native surveys have no CSV row by nature."""
+    documented = R._documented_definitions()
+    specified = R._intended_steps_from_csv()
+    extra = set(documented) - set(specified)
+    gaps = R.EgeriaResync.__dict__["_scan_specification_gap"](
+        object.__new__(R.EgeriaResync))
+    assert not [g for g in gaps.items if g["definition"] in extra]
+
+
+def test_the_coverage_finding_offers_no_repair_button():
+    """Closing a coverage gap edits the source tree, and the generator may
+    rightly refuse if a document was hand-authored since. This panel repairs
+    the catalog, not the repository."""
+    finding = R.EgeriaResync.__dict__["_scan_specification_gap"](
+        object.__new__(R.EgeriaResync))
+    assert finding.repair_step == ""
+    assert finding.needs_decision is True

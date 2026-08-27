@@ -155,6 +155,7 @@ class EgeriaResync:
         res.findings.append(self._scan_unpublished_but_expected())
         res.findings.append(self._scan_local_investigations())
         res.findings.append(self._scan_definition_drift(res))
+        res.findings.append(self._scan_specification_gap())
         res.findings = [f for f in res.findings if f.count]
         return res
 
@@ -355,64 +356,132 @@ class EgeriaResync:
         )
 
     def _scan_definition_drift(self, res: ScanResult) -> Finding:
-        """Survey Definitions in Egeria that no longer match their source.
+        """RECOVERY: Egeria no longer matches the authored documents.
 
-        The CSV and the generated Dr.Egeria documents are the source of truth;
-        Egeria holds whatever was last authored into it. Adding a step to an
-        analysis moves the first and not the second, so a definition can be
-        silently short — the step exists, is runnable per-card, and simply
-        never appears in any survey.
+        The documents are the definition — they carry guards, request
+        parameters and ordering the CSV has no column for — so this is the
+        comparison the repair acts on, and it tolerates nothing.
+
+        Order is compared, not just membership. Run order is load-bearing:
+        repo_foss_scorecard reads what repo_cve_scan writes, and for a while
+        ran before it, scoring the previous run's advisories.
+
+        A definition live in Egeria with no document of ours is NOT drift. It
+        is somebody else's — an Egeria-native survey, or one authored directly
+        — and we have nothing to restore it from. Reporting it would be
+        claiming authority over a definition RE did not write.
         """
-        from resource_explorer.surveyors.survey_definition_reader import (
-            SurveyDefinitionReader,
-        )
-
+        documented = _documented_definitions()
+        behind, foreign = [], []
         try:
-            from resource_explorer.surveyors.survey_definition_reconciler import (
-                intended_steps_by_definition,
-            )
-            intended = intended_steps_by_definition()
-        except Exception:
-            intended = _intended_steps_from_csv()
-
-        behind = []
-        try:
-            reader = SurveyDefinitionReader()
+            reader = _reader()
             for cand in reader.find_candidate_process_guids("Git Repository"):
                 name = cand["qualified_name"].split("::")[-1]
-                want = intended.get(name)
-                if not want:
+                doc = documented.get(name)
+                if doc is None:
+                    foreign.append(name)
                     continue
+                want = doc["steps"]
                 try:
-                    live = [s.re_analysis_step for s in reader.fetch(cand["guid"]).steps]
+                    live_steps = reader.fetch(cand["guid"]).steps
                 except Exception as exc:
                     res.undetermined.append({
                         "kind": "survey definition", "ref": name,
-                        "reason": f"{type(exc).__name__}",
+                        "reason": type(exc).__name__,
                     })
                     continue
-                missing = [k for k in want if k not in live]
-                extra = [k for k in live if k and k not in want]
-                if missing or extra:
-                    behind.append({"definition": name, "missing": missing,
-                                   "extra": extra, "live_steps": len(live),
-                                   "intended_steps": len(want)})
+                live = [st.re_analysis_step for st in live_steps]
+
+                # Descriptions are part of the definition too. Comparing only
+                # step keys is what let Egeria sit on a description the
+                # documents had already moved past — invisible to a scan whose
+                # whole job is to notice exactly that.
+                stale = sorted(
+                    st.re_analysis_step for st in live_steps
+                    if st.re_analysis_step in doc["descriptions"]
+                    and doc["descriptions"][st.re_analysis_step]
+                    and (st.description or "").strip()
+                    != doc["descriptions"][st.re_analysis_step].strip()
+                )
+                if live == want and not stale:
+                    continue
+                behind.append({
+                    "definition": name,
+                    "missing": [k for k in want if k not in live],
+                    "extra": [k for k in live if k and k not in want],
+                    "reordered": (live != want and set(live) == set(want)),
+                    "stale_descriptions": stale,
+                    "live_steps": len(live), "documented_steps": len(want),
+                })
         except Exception as exc:
             res.undetermined.append({"kind": "survey definition", "ref": "(all)",
                                      "reason": f"{type(exc).__name__}: {str(exc)[:60]}"})
 
+        if foreign:
+            log.info("survey definitions live in Egeria with no document here: %s",
+                     ", ".join(sorted(foreign)))
         return Finding(
             key="definition_drift",
-            title="Survey Definitions behind their source",
-            detail="Steps exist and are runnable per-card but appear in no survey. "
-                   "Repairing re-executes the Dr.Egeria documents AND runs the "
-                   "step-link reconciler — never one without the other, because "
-                   "Link Next Process Step is not idempotent: the relationship "
-                   "carries a guard and is multi-link by design, so re-running it "
-                   "adds a second edge rather than merging, and a definition with "
-                   "two outgoing next-steps is refused by the reader and renders "
-                   "with zero steps.",
+            title="Survey Definitions in Egeria differ from their authored documents",
+            detail="Steps that exist and are runnable per-card but appear in no survey, "
+                   "or run in the wrong order. Repairing re-executes the Dr.Egeria "
+                   "documents AND runs the step-link reconciler — never one without "
+                   "the other, because Link Next Process Step is not idempotent: the "
+                   "relationship carries a guard and is multi-link by design, so "
+                   "re-running it adds a second edge rather than merging, and a "
+                   "definition with two outgoing next-steps is refused by the reader "
+                   "and renders with zero steps.",
             items=behind, repair_step="reauthor_survey_definitions",
+        )
+
+    def _scan_specification_gap(self) -> Finding:
+        """COVERAGE: the CSV specifies a survey that no document defines.
+
+        A different question from drift, and it was conflated with it until
+        2026-08-26. The CSV is a specification of what surveys are NEEDED; the
+        documents are the definitions. A gap here means a step will never reach
+        Egeria no matter how many times the repair runs, because nothing
+        authored it in the first place.
+
+        Deliberately no repair step. Closing this means running the generator,
+        which edits the source tree — and may rightly refuse, if a document has
+        been hand-authored since. This panel repairs the catalog, not the
+        repository, and a button here that rewrote committed files would be a
+        different kind of thing wearing the same shape.
+
+        Membership only, never order: the CSV's full-survey row is the sentinel
+        "*", which has no order to compare, and its rows are not stored sorted.
+        The documents are where order is authoritative.
+        """
+        documented = _documented_definitions()
+        specified = _intended_steps_from_csv()
+        gaps = []
+        for name, want in sorted(specified.items()):
+            entry = documented.get(name)
+            have = entry["steps"] if entry else None
+            if have is None:
+                gaps.append({"definition": name, "reason": "no document defines it",
+                             "missing": sorted(want), "specified_steps": len(want)})
+                continue
+            missing = [k for k in want if k not in have]
+            if missing:
+                gaps.append({"definition": name,
+                             "reason": "the document is behind the CSV",
+                             "missing": missing, "specified_steps": len(want),
+                             "documented_steps": len(have)})
+        # A document with no CSV row is not a gap. The CSV is not required to
+        # be complete — that is the whole point of it being a specification of
+        # what is needed rather than a definition of what exists.
+        return Finding(
+            key="specification_gap",
+            title="Surveys specified in the CSV that no document defines",
+            detail="repo_survey_types.csv says these surveys are needed, but no "
+                   "Dr.Egeria document defines them (or the document predates the "
+                   "CSV row). Until a document exists, re-authoring cannot put "
+                   "these steps into Egeria. Fix by running "
+                   "scripts/generate_repo_survey_definition.py — a source-tree "
+                   "change, which is why there is no repair button here.",
+            items=gaps, needs_decision=True,
         )
 
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
@@ -582,7 +651,14 @@ def _intended_steps_from_csv() -> dict:
     out: dict = {}
     try:
         with path.open() as fh:
-            for row in csv.DictReader(fh):
+            # Sorted by the column that means order — rows are not stored in
+            # it. Even so, callers compare membership rather than sequence:
+            # the full-survey sentinel expands to a set with no order at all,
+            # so a sorted list here is tidier, not authoritative. The documents
+            # are where order is authoritative.
+            rows = sorted(csv.DictReader(fh),
+                          key=lambda r: _as_int(r.get("step_order")))
+            for row in rows:
                 group = (row.get("survey_group") or "").strip()
                 step = (row.get("step_key") or "").strip()
                 if not group or not step:
@@ -647,3 +723,104 @@ def _documents_with_real_guards(batch) -> set:
                         found.add(filename)
                     break
     return found
+
+
+def _as_int(value) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+#: Dr.Egeria command headings this module parses. Matched on the whole
+#: stripped line, so the process heading cannot swallow the step heading it is
+#: a prefix of.
+_STEP_COMMAND = "## Create Governance Action Process Step"
+_PROCESS_COMMAND = "## Create Governance Action Process"
+
+#: How far past a command heading to look for its Qualified Name. Generated
+#: documents put it three lines down; the bound stops a malformed block from
+#: borrowing the next command's name.
+_QN_WINDOW = 12
+
+
+def _definition_docs_dir() -> "Path":
+    from pathlib import Path as _P
+    return (_P(__file__).resolve().parent.parent / "docs" / "dr-egeria"
+            / "survey-definitions")
+
+
+def _parse_definition_doc(path) -> tuple:
+    """(process_name, [step_key, ...], {step_key: description}) as DECLARED.
+
+    Reads the `Create Governance Action Process Step` blocks in file order,
+    which is the run order the generator writes and which live Egeria was
+    verified to match exactly across all eight definitions on 2026-08-26.
+
+    Deliberately ignores the `Link First/Next Process Step` section, where
+    every step name appears twice more. Parsing those would count each step
+    three times and would also make this dependent on the link structure —
+    which is precisely the thing that goes wrong and needs detecting.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return "", [], {}
+    process, steps, descriptions = "", [], {}
+    for i, raw in enumerate(lines):
+        heading = raw.strip()
+        if heading not in (_STEP_COMMAND, _PROCESS_COMMAND):
+            continue
+        qualified = _section_value(lines, i, "### Qualified Name")
+        if not qualified:
+            continue
+        if heading == _STEP_COMMAND and qualified.startswith("GovActionProcessStep::"):
+            key = qualified.rsplit("::", 1)[-1]
+            steps.append(key)
+            descriptions[key] = _section_value(lines, i, "### Description")
+        elif heading == _PROCESS_COMMAND and qualified.startswith("GovActionProcess::"):
+            process = qualified.rsplit("::", 1)[-1]
+    return process, steps, descriptions
+
+
+def _section_value(lines: list, start: int, heading: str) -> str:
+    """The first non-blank line under `heading`, within this command's block.
+
+    Bounded by the next command heading so a malformed block cannot borrow the
+    following command's value — the failure that would silently attribute one
+    step's description to another.
+    """
+    for j in range(start + 1, len(lines)):
+        stripped = lines[j].strip()
+        if stripped.startswith("## ") or stripped == "___":
+            return ""
+        if stripped != heading:
+            continue
+        for k in range(j + 1, len(lines)):
+            candidate = lines[k].strip()
+            if candidate.startswith(("###", "## ")) or candidate == "___":
+                return ""
+            if candidate:
+                return candidate
+        return ""
+    return ""
+
+
+def _documented_definitions() -> dict:
+    """{definition name: [step_key, ...]} across every authored document."""
+    out: dict = {}
+    directory = _definition_docs_dir()
+    if not directory.is_dir():
+        return out
+    for path in sorted(directory.glob("*.md")):
+        process, steps, descriptions = _parse_definition_doc(path)
+        if process and steps:
+            out[process] = {"steps": steps, "descriptions": descriptions}
+    return out
+
+
+def _reader():
+    from resource_explorer.surveyors.survey_definition_reader import (
+        SurveyDefinitionReader,
+    )
+    return SurveyDefinitionReader()
