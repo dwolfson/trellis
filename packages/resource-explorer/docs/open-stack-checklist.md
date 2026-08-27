@@ -190,10 +190,23 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
 
 ## 5. Smaller / opportunistic
 
-- [ ] `project_contributor_stats` has no real reader since CHAOSS moved to
-      `project_commits`. Either fix the writer to produce disjoint periods or
-      retire the table — a table that looks like a time series and is not is
-      exactly the trap it caused.
+- [x] **Its one reader was fixed 2026-08-27.** `project_contributor_stats` has
+      no *meaningful* reader since CHAOSS moved to `project_commits`, but it
+      does have one: an agent tool reporting a contributor's tier. It ordered
+      `period_start DESC LIMIT 1`, which — given nested trailing windows — is
+      the *narrowest* (30-day) window, so it answered "tier over the last
+      month" to a question about the contributor. Measured across the
+      catalogue: **70 of 347** contributors got a different tier that way,
+      every sampled case a core maintainer downgraded to "regular" (Apache
+      Polaris, sqlglot), and **271 more** were absent from the 30-day slice, so
+      the caller was told the tier was unknown and to "run refresh" about a
+      tier already computed. Now `ASC` — widest window. Test pins the
+      direction, since the two orderings differ by one keyword and the wrong
+      one fails silently.
+- [ ] The table itself still misleads by shape. Fix the writer to disjoint
+      periods, or retire it and derive tier from `project_commits`. Not urgent
+      now that its reader is honest — but the trap remains for the next
+      consumer.
 - [ ] `needs_republish: 7` in the Egeria Alignment scan — no automatic repair by
       design (needs a decision per resource). Worth checking whether the count
       should be growing.

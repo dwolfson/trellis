@@ -463,11 +463,25 @@ def query_contributor_profile(project_slug: str, author: str, days: int = 90) ->
             (slug, cutoff),
         ).fetchone()
 
-        # Tier from contributor_stats (most recent period)
+        # Tier from contributor_stats, over the WIDEST window available.
+        #
+        # project_contributor_stats' "periods" are nested trailing windows —
+        # 30d, 90d and 365d, all ending today — not a sequence. So the latest
+        # period_start is the NARROWEST window, and ordering DESC silently
+        # answered "tier over the last 30 days" to a question about the
+        # contributor. Measured 2026-08-27 across the catalogue: 70 of 347
+        # contributors got a different tier that way, every sampled case a
+        # core maintainer downgraded to "regular" (Apache Polaris, sqlglot),
+        # and a further 271 were absent from the 30-day slice altogether — so
+        # the caller was told "unknown (run refresh to compute tiers)" about a
+        # tier that had in fact been computed.
+        #
+        # Earliest period_start = widest window = the tier over the longest
+        # history held. ASC, deliberately.
         tier_row = conn.execute(
             """SELECT tier FROM project_contributor_stats
                WHERE project_slug = ? AND author_email = ?
-               ORDER BY period_start DESC LIMIT 1""",
+               ORDER BY period_start ASC LIMIT 1""",
             (slug, email or ""),
         ).fetchone()
         conn.close()
