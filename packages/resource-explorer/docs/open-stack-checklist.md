@@ -101,6 +101,12 @@ design note yet:**
    work apart from anyone else's. This is a deployment prerequisite, not a
    coding detail.
 
+3. **`EgeriaConfig.engine_host` is vestigial.** Declared in `config.py:147`
+   with alias `EGERIA_ENGINE_HOST` and read nowhere in the package. It reads
+   like engine-host support exists when none does — a deployment engineer
+   setting it would reasonably expect an effect. Either wire it during this
+   work or delete it; leaving it is a false affordance.
+
 Also noted: `actionStatus` is the field on `get_active_engine_actions`'
 payload, while `egeria_delegated_step` found the real key was `activityStatus`
 when reading the same concept through `get_metadata_element_by_guid`. The name
