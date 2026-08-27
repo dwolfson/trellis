@@ -676,6 +676,26 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
         log_analysis_run(registry, "repo", slug, project.display_name, "error", error, analysis_id)
         return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=error)
     summary = f"{len(result.annotations)} annotation(s)."
+
+    # Auto-publish, gated the same way survey_definition_executor.py's Survey
+    # Definition path is (has_assigned_egeria_project) — this is the "actual
+    # ask" this gating pass exists for: an Assessment/Analysis "Run →" against
+    # an assigned resource now reaches Egeria without a separate manual
+    # Publish click, same as a Survey Definition run already does. Scoped to
+    # exactly the steps that just ran (this `result`, not a fresh full
+    # survey), same as the manual Publish button's own `steps` scoping — so
+    # last-published attribution (get_last_published_annotation_types) stays
+    # accurate to what actually ran. Publish failure must not turn an
+    # otherwise-successful survey into a reported error: the findings are
+    # real and stored either way.
+    if result.annotations and registry.has_assigned_egeria_project("repo", slug):
+        try:
+            from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+            EgeriaPublisher(registry=registry).publish(result)
+        except Exception as exc:
+            summary += f" (⚠ auto-publish to Egeria failed: {exc})"
+            log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
+
     log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id)
     return AnalysisRunResult(
         status="ok", slug=slug, analysis_id=analysis_id,

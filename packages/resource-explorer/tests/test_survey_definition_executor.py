@@ -354,3 +354,63 @@ def test_multiple_candidates_raises_ambiguity_error():
         assert False, "expected SurveyDefinitionExecutorError for ambiguous candidates"
     except SurveyDefinitionExecutorError as exc:
         assert "Survey::One" in str(exc) and "Survey::Two" in str(exc)
+
+
+class TestPublishGatedOnAssignedEgeriaProject:
+    """Confirmed live 2026-08-27: this used to publish unconditionally for any
+    repo a Survey Definition ran against, decided-in-Egeria or not — the only
+    other publish path (egeria.py's manual button) has always gated this."""
+
+    def _run(self, registry, publish=None):
+        adapter = ResourceTypeAdapter(
+            entity_type="fake3",
+            technology_type="Fake Tech",
+            re_analysis_steps={"known_step": MagicMock(return_value={"annotations": ["a1"]})},
+            get_entity=lambda registry, slug: object(),
+            publish=publish or MagicMock(return_value="report-guid"),
+        )
+        register_adapter(adapter)
+        survey_def = SurveyDefinition(
+            process_guid="proc-3",
+            display_name="Fake Survey 3",
+            qualified_name="GovActionProcess::Fake3",
+            supported_technology_type="Fake Tech",
+            steps=[
+                SurveyStep(
+                    guid="s1", display_name="Known", qualified_name="Step::Known",
+                    executes_at="resource-explorer", re_analysis_step="known_step",
+                ),
+            ],
+        )
+        reader = _fake_reader(survey_def, candidates=[
+            {"guid": "proc-3", "qualified_name": "GovActionProcess::Fake3", "display_name": "Fake3"},
+        ])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+        result = executor.run(entity_type="fake3", slug="my-fake3")
+        return result, adapter
+
+    def test_unassigned_resource_skips_publish(self):
+        registry = _fake_registry()
+        registry.has_assigned_egeria_project.return_value = False
+        result, adapter = self._run(registry)
+
+        adapter.publish.assert_not_called()
+        assert result["published"] is False
+        assert result["egeria_report_guid"] == ""
+
+    def test_assigned_resource_still_publishes(self):
+        registry = _fake_registry()
+        registry.has_assigned_egeria_project.return_value = True
+        result, adapter = self._run(registry)
+
+        adapter.publish.assert_called_once()
+        assert result["published"] is True
+        assert result["egeria_report_guid"] == "report-guid"
+
+    def test_a_publish_failure_is_reported_as_an_error_not_raised(self):
+        registry = _fake_registry()
+        registry.has_assigned_egeria_project.return_value = True
+        result, adapter = self._run(registry, publish=MagicMock(side_effect=RuntimeError("egeria down")))
+
+        assert result["published"] is False
+        assert any("egeria down" in e for e in result["errors"])

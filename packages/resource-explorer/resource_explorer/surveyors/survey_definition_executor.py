@@ -342,10 +342,19 @@ class SurveyDefinitionExecutor:
 
             i += 1
 
+        # Gated on the resource actually having an assigned Egeria Project — this
+        # used to publish unconditionally for any repo a Survey Definition ran
+        # against, decided-in-Egeria or not (confirmed live 2026-08-27, alongside
+        # egeria.py's manual-publish route, which HAS always gated this). Findings
+        # are stored locally either way; only the automatic Egeria write is
+        # skipped for an unassigned resource. Manual publish is still available
+        # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
-        if step_outputs:
+        published = False
+        if step_outputs and self.registry.has_assigned_egeria_project(entity_type, slug):
             try:
                 report_guid = adapter.publish(entity, step_outputs, surveyed_at, self.registry)
+                published = True
             except Exception as exc:
                 msg = f"Failed to publish results to Egeria: {exc}"
                 log.exception(msg)
@@ -361,6 +370,7 @@ class SurveyDefinitionExecutor:
             "steps": steps_report,
             "errors": errors,
             "egeria_report_guid": report_guid,
+            "published": published,
         }
 
     def _resolve_process_guid(
