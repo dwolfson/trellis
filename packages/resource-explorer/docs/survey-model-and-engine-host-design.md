@@ -335,12 +335,22 @@ Server has got there first.
 may see an action, and only one can take it. So Kafka remains an optimization (§4.2) — correctness
 never depended on delivery.
 
-**One correction to §4.1.** `claim_engine_action` and `update_engine_action_status` exist in
-`egeria-python` `main` (commit `8362b1c`) but **not in the installed pyegeria 6.0.18.4**, which
-has only `initiate`/`get`/`find`/`cancel`. §4.1 read the working tree and reported them as
-available. They are not, yet — engine-host participation is gated on that release landing, not
-only on the design decision. The server-side capability is confirmed regardless; this is a client
-packaging gap, and the endpoint is reachable directly in the meantime.
+**The client gap is closed (2026-08-27).** `claim_engine_action`,
+`update_engine_action_status` and `get_active_claimed_engine_actions` were missing from the
+installed pyegeria 6.0.18.4 — §4.1 had read the `egeria-python` working tree and reported them as
+available when they were only on `main`. They ship in **6.1.5**, and RE is upgraded to it: 2613
+unit tests, 20 live smoke tests and a live alignment scan all pass.
+
+`claim_engine_action` now works through the client, not just as a raw POST, and refuses with a
+typed `PyegeriaUnauthorizedException` carrying `OMAG-GENERIC-HANDLERS-403-003`. That matters for
+the design: an engine-host loop needs to catch "another host got there first" as an ordinary,
+expected outcome and keep polling, distinct from a real failure. A string-matched error would
+have made that fragile.
+
+**Engine-host participation is no longer gated on anything external.** Server capability
+confirmed, client methods available, arbitration typed. What remains is RE-side work: register
+its steps as request types via `link_supported_governance_service`, and run the
+find → claim → execute → report loop.
 
 ### 4.4 What it changes
 
