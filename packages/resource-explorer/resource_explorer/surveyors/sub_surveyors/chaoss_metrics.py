@@ -60,6 +60,11 @@ log = logging.getLogger(__name__)
 
 STEP = "ChaossMetrics"
 
+#: Said once, so the annotation and the persisted finding cannot drift apart.
+_NOTHING_TO_ASSESS = ("Neither commit history nor repository stats "
+                             "are recorded, so no CHAOSS metric could be computed — "
+                             "this is not a finding about the community.")
+
 #: Email domains that identify a person's host, not their employer. A metric
 #: built on the rest would describe only the minority who commit from a
 #: corporate address.
@@ -308,10 +313,21 @@ class ChaossMetricsSurveyor(BaseSurveyor):
             stats = self.registry.get_latest_project_stats(slug) or {}
 
             if not rows and not stats:
+                # Persist the reason, not just annotate it. The annotation says
+                # "not established"; the results card reads FINDINGS, so returning
+                # without writing one made the card render an absence where a stated
+                # reason exists — "we have nothing" instead of "we could not tell, and
+                # here is why". Found 2026-08-27 via kedro_kubeflow, which has neither
+                # commits nor stats and showed a blank card.
+                self.registry.upsert_finding(
+                    slug, "chaoss_metrics",
+                    [{"check_name": "chaoss_metrics", "label": "not_established",
+                      "summary": _NOTHING_TO_ASSESS, "confidence": 0,
+                      "detail": {"known": False}}],
+                    surveyed_at=self._surveyed_at,
+                )
                 out.append(ClassificationAnnotation(
-                    summary=("Neither commit history nor repository stats "
-                             "are recorded, so no CHAOSS metric could be computed — "
-                             "this is not a finding about the community."),
+summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
                     confidence=0,

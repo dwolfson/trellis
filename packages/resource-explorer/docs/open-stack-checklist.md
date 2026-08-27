@@ -31,9 +31,33 @@ the design docs. Delete an entry when it is done — this is not a history.
       5–8 to **10–11 of 16 checks evaluated**, and scores *fell* as it rose
       (openmetadata 8.6→7.0, deep_causality 7.5→7.3) — correct, since fewer
       flattering unknowns are being excluded.
-- [ ] **Run the remaining ~48 repos.** For coverage, not validation — the
-      checks are proven. Budget for it: one large repo took 11 minutes.
-- [ ] Re-check the whole-catalogue coverage table afterwards.
+- [x] **Remaining 48 done 2026-08-27** — 96 orchestrator invocations, zero
+      failures. ~17 min for step 1, under a minute for step 2.
+- [x] **Whole-catalogue coverage:**
+
+      | analysis | before | after |
+      |---|---|---|
+      | `supply_chain` | 0/60 | **50/60** |
+      | `foss_scorecard` | 5/60 | **60/60** |
+      | `chaoss_metrics` | 8/60 | **60/60** |
+      | `cii_badge` | 8/60 | **60/60** |
+
+      The 10 without `supply_chain` genuinely have no `.github/workflows` —
+      confirmed per repo by the presence of `repo_conventions` findings, which
+      proves the parse ran.
+
+      Catalogue-wide label spread: `dangerous_workflow` 43 pass / 8 fail;
+      `pinned_dependencies` 1 pass / 14 partial / 36 fail; `token_permissions`
+      8 pass / 36 partial / 7 fail. Exactly **one** repo in sixty pins every
+      GitHub Action to a commit SHA.
+
+- [ ] **Verify the 8 `dangerous_workflow` failures.** Four were hand-checked
+      (`data_prep_kit`, `genaieval`). The other four are `docs`, `genaiinfra`,
+      `haystack_opea`, `langchain_opea` — and note they share one workflow,
+      `pr-path-detection.yml` / `pr-link-path-scan.yaml`, the same OPEA-project
+      file copied between repos. So it is likely **one upstream pattern**, not
+      four independent findings, and worth reporting upstream once rather than
+      four times.
 
 **Verified by hand, not taken on trust:** `data_prep_kit`'s 7 checkout hits were
 confirmed earlier from a local clone. `genaieval`'s hit is the *script-injection*
@@ -41,6 +65,14 @@ path, which had only synthetic coverage until now — checked against the real
 file: `pr-path-detection.yml` interpolates
 `${{ github.event.pull_request.head.ref }}`, an attacker-controlled fork branch
 name, straight into a shell `run:` block. True positive.
+
+**Also open:** a repo with no `.github/workflows` gets no `supply_chain`
+findings at all, by the parser's documented convention (three "fail" rows for a
+repo with no CI would be findings about a thing that does not exist). That is
+still right — but the card then renders an absence, where "this repo has no
+GitHub Actions workflows" is a measured, useful fact. Distinct from the
+kedro_kubeflow case just fixed: there we never looked; here we looked and found
+none. Worth a stated finding rather than silence.
 
 **Refinement worth logging:** the injection check does not distinguish
 `pull_request` from `pull_request_target`. Both are genuine injection, but only

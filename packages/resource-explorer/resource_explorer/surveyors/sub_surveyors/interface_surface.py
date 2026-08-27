@@ -36,6 +36,12 @@ log = logging.getLogger(__name__)
 
 STEP = "InterfaceSurface"
 
+#: Said once, so the annotation and the persisted finding cannot drift apart.
+_NOTHING_TO_ASSESS = ("Neither a file inventory nor parsed dependencies are "
+                             "recorded, so no interface could be detected — this is "
+                             "not a finding that it exposes none. Run the file "
+                             "inventory and dependency analyses first.")
+
 #: How a finding was established. `specified` is the strong one — a machine
 #: readable contract is committed in the repo. `implied` means a dependency
 #: suggests the capability without proving it is exposed.
@@ -186,11 +192,21 @@ class InterfaceSurfaceSurveyor(BaseSurveyor):
             if not paths and not deps:
                 # Neither input exists. "No interfaces" would be a finding about
                 # the repo; this is a finding about our coverage of it.
+                # Persist the reason, not just annotate it. The annotation says
+                # "not established"; the results card reads FINDINGS, so returning
+                # without writing one made the card render an absence where a stated
+                # reason exists — "we have nothing" instead of "we could not tell, and
+                # here is why". Found 2026-08-27 via kedro_kubeflow, which has neither
+                # commits nor stats and showed a blank card.
+                self.registry.upsert_finding(
+                    slug, "interface_surface",
+                    [{"check_name": "interface_surface", "label": "not_established",
+                      "summary": _NOTHING_TO_ASSESS, "confidence": 0,
+                      "detail": {"known": False}}],
+                    surveyed_at=self._surveyed_at,
+                )
                 out.append(ClassificationAnnotation(
-                    summary=("Neither a file inventory nor parsed dependencies are "
-                             "recorded, so no interface could be detected — this is "
-                             "not a finding that it exposes none. Run the file "
-                             "inventory and dependency analyses first."),
+summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
                     confidence=0,
