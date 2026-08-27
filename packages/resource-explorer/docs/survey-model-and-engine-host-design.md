@@ -227,8 +227,29 @@ question is unanswerable from that field. A local side-table was built rather th
 slot being noticed. If `annotationType` carried the finding kind, that attribution would come
 from the catalog for free, and the table would not exist.
 
-This is the cheapest correction in this document: it is a string, RE already has the value, and
-`AnnotationProperties` already has the field.
+**FIXED 2026-08-26.** `annotationType` now carries the result name, resolved from `analysis_step`
+through a map derived from `STEP_REGISTRY` and `ANALYSIS_KINDS` — not a hand-maintained second
+list, and not computed from string shape, since `CiQualityCheck` → `ci_quality` and
+`ApiStructureAnalysis` → `api_structure` follow no snake_case rule and a rule that looked right
+for most would quietly mislabel the rest. All 34 steps resolve; a test asserts that exhaustively,
+because an unmapped step falls back silently and would reintroduce the defect one step at a time.
+
+Steps with no analysis are named by their own step key — the four prerequisite refresh steps
+belong to a survey type rather than an analysis, so that is the most specific true name they
+have. Annotations may override with `annotation_type_name` where one step emits several
+distinguishable results. Database and filesystem surveyors are not in the repo registry and keep
+the old subtype fallback: wrong-as-before beats newly-fabricated.
+
+Verified live — a published annotation now reads back from Egeria as
+`annotation_type: "cii_badge"`, `analysis_step: "CiiBadge"`.
+
+**It does not retire `project_published_analyses`, and an earlier draft of this section claimed
+it would.** The two carry different facts: annotations record what a run *produced*, while
+`steps_run` records what a run *executed*. A step that runs and finds nothing worth annotating
+appears in the second and not the first, and collapsing them would make "we looked and found
+nothing" indistinguishable from "we never looked" — the failure this codebase exists to remove.
+Attribution can now be answered from the catalog for annotations that exist; the table still
+answers a question annotations cannot.
 
 ### 3.1 The one open modelling question
 
