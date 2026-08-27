@@ -1,6 +1,7 @@
 # Survey model: granularity, annotation types, and RE as an engine host
 
-**Status: design note. All three §1 hazards FIXED (2026-08-26). §2–§4 not built.**
+**Status: design note. §1 hazards, §3 and §4.5 (Prefect) all done 2026-08-26.**
+**Remaining: §2's granularity collapse, and §4.1's engine-host participation.**
 **Date:** 2026-08-26
 **Supersedes in part:** `analysis-step-egeria-registration-plan.md` (D1/D3 shipped differently; D2 shipped; D4 still open)
 **Prompted by:** the question of whether RE should manage two granularities — individual
@@ -387,10 +388,21 @@ the same definition with Prefect off still runs locally. Branching itself is cov
 in-process flow tests — Prefect 3 runs flows without a standing server, so the ordering asserted
 is Prefect's own.
 
-**Still open:** `SurveyDefinitionReader._parse_graph` continues to raise on branching, so a
-branching definition cannot be *fetched* yet even though the plan and the flow can both express
-and run one. That is now the only remaining blocker, and it is a change to the reader rather than
-an engine to build.
+**The reader followed, 2026-08-26.** `_parse_graph` walks the whole reachable graph in
+topological order instead of following one edge and raising on a second. Refusing was honest
+while nothing could run a branch, but it left a branching definition unreadable as well as
+unrunnable — not displayable, not diffable against its document, not repairable.
+
+Cycles still raise, and the distinction is the point: a branch is a shape that can be ordered, a
+cycle is one that cannot be, and any order for it would be a fiction.
+
+Steps the process declares but no path reaches are now reported on
+`SurveyDefinition.unreachable_step_guids` and logged, instead of being dropped because the walk
+never arrived at them — such a step was in the definition, absent from every run, and
+indistinguishable from one never authored.
+
+Verified: all eight live definitions read back to exactly their authored order, and a branching
+definition now parses, plans, and runs end to end with the untaken side reported `skipped`.
 
 ### 4.6 What it costs
 
@@ -424,9 +436,9 @@ Ordered by dependency, not by value.
    set built from the authored document. Authoring a guard is now safe end to end; running one
    is still refused, deliberately.
 5. **Confirm §4.3** against a live platform. Gates everything below.
-6. ~~**Hand sequencing to Prefect (§4.5).**~~ **Done 2026-08-26**, behind `prefect.enabled`.
-   The remaining piece is `_parse_graph`, which still refuses to fetch a branching definition —
-   a reader change, not an engine.
+6. ~~**Hand sequencing to Prefect (§4.5).**~~ **Done 2026-08-26**, behind `prefect.enabled`,
+   reader included. A branching Survey Definition can now be authored, parsed, planned, run and
+   repaired; RE sequences none of it.
 7. **Collapse `analysis_id`'s bundling role into survey types.** Migration with real blast
    radius: `resource_schedules` has live rows keyed by `analysis_id` and 27 render payloads to
    repoint. Own design pass.

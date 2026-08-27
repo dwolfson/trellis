@@ -132,7 +132,15 @@ def test_parse_graph_with_no_first_step():
     assert survey_def.steps == []
 
 
-def test_branching_step_is_rejected():
+def test_a_branching_definition_parses_with_its_guards_intact():
+    """This raised UnsupportedSurveyDefinitionError until 2026-08-26.
+
+    Refusing was honest while nothing could run a branch, but it made a
+    branching definition unreadable as well as unrunnable — not displayable,
+    not diffable against its authored document, not repairable. The plan
+    (survey_execution_plan) and the Prefect flow can both express and run one,
+    so the reader was the last thing in the way.
+    """
     step1 = _step_element("step-1", "Step::First", additional_properties={"executes_at": "resource-explorer"})
     branch_a = _step_element("a", "Step::A", additional_properties={"executes_at": "resource-explorer"})
     branch_b = _step_element("b", "Step::B", additional_properties={"executes_at": "resource-explorer"})
@@ -141,6 +149,27 @@ def test_branching_step_is_rejected():
         first_step=step1,
         next_steps=[branch_a, branch_b],
         links=[_link("step-1", "a", guard="ok"), _link("step-1", "b", guard="not-ok")],
+    )
+
+    survey_def = _reader()._parse_graph(graph)
+
+    assert [s.qualified_name for s in survey_def.steps][0] == "Step::First"
+    assert {s.qualified_name for s in survey_def.steps} == {"Step::First", "Step::A", "Step::B"}
+    # The guards are what make it a branch rather than an ambiguous chain, and
+    # they are what the executor routes on.
+    assert {(l.guard) for l in survey_def.links} == {"ok", "not-ok"}
+    assert survey_def.unreachable_step_guids == []
+
+
+def test_a_cycle_is_still_rejected():
+    """A branch is a shape that can be ordered; a cycle is one that cannot be,
+    and any order for it would be a fiction."""
+    step1 = _step_element("step-1", "Step::First", additional_properties={"executes_at": "resource-explorer"})
+    step2 = _step_element("step-2", "Step::Second", additional_properties={"executes_at": "resource-explorer"})
+    graph = _graph(
+        "proc-cycle", "GovActionProcess::Cyclic",
+        first_step=step1, next_steps=[step2],
+        links=[_link("step-1", "step-2"), _link("step-2", "step-1")],
     )
 
     with pytest.raises(UnsupportedSurveyDefinitionError):
