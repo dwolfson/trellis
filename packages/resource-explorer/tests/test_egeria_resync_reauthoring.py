@@ -85,7 +85,7 @@ def test_drift_is_computed_in_both_directions(live, want, missing, extra):
     assert [k for k in live if k and k not in want] == extra
 
 
-# ── the branching interlock ─────────────────────────────────────────────────
+# ── branching is now survivable, not refused ────────────────────────────────
 def _batch(tmp_path, **docs):
     for name, body in docs.items():
         (tmp_path / name).write_text(body)
@@ -97,38 +97,18 @@ _LINEAR = "## Link Next Process Step\n### Guard\nAny\n\n### Guard\nAny\n"
 _BRANCHING = "## Link Next Process Step\n### Guard\nAny\n\n### Guard\npolicy-present\n"
 
 
-def test_unconditional_guards_are_not_treated_as_branching(tmp_path):
-    b = _batch(tmp_path, **{"a.md": _LINEAR})
-    assert R._documents_with_real_guards(b) == set()
-
-
-def test_a_real_guard_is_detected(tmp_path):
-    b = _batch(tmp_path, **{"a.md": _LINEAR, "b.md": _BRANCHING})
-    assert R._documents_with_real_guards(b) == {"b.md"}
-
-
-def test_an_unreadable_document_counts_as_guarded(tmp_path):
-    """This gates a destructive repair, so "could not tell" must fail towards
-    refusing — the same rule _resolves() follows for an incomplete lookup."""
-    b = type("B", (), {"batch_id": "survey-definitions", "path": tmp_path,
-                       "files": ["missing.md"], "post_heal": None})()
-    assert R._documents_with_real_guards(b) == {"missing.md"}
-
-
-def test_the_repair_refuses_a_branching_definition_rather_than_flattening_it(tmp_path):
-    """heal_batch's mandatory post-heal reconciler keys duplicates on
-    (prev, next) and expects a linear chain, so it deletes a guarded branch.
-    Repairing a definition by destroying the part the CSV could not express is
-    worse than not repairing it."""
+def test_the_repair_no_longer_refuses_a_branching_definition(tmp_path):
+    """An interlock refused this while the reconciler keyed duplicates on
+    (previous, next) and would have deleted the branch. The reconciler is
+    keyed on the guard too now, so refusing would be dishonest — the repair is
+    safe for a branching definition."""
     b = _batch(tmp_path, **{"a.md": _BRANCHING})
     with patch("resource_explorer.bootstrap.discover_batches", return_value=[b]), \
-         patch("resource_explorer.bootstrap.heal_batch") as heal:
+         patch("resource_explorer.bootstrap.heal_batch", return_value=(True, "ok")) as heal:
         out = R.EgeriaResync.__dict__["_do_reauthor_survey_definitions"](
             object.__new__(R.EgeriaResync))
-    heal.assert_not_called()
-    assert out["reauthored"] is False
-    assert out["guarded_documents"] == ["a.md"]
-    assert "would delete the branch" in out["error"]
+    heal.assert_called_once_with(b)
+    assert out["reauthored"] is True
 
 
 def test_the_repair_still_runs_for_ordinary_linear_definitions(tmp_path):

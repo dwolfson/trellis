@@ -16,6 +16,7 @@ for.
 from pathlib import Path
 
 from resource_explorer import egeria_resync as R
+from resource_explorer.surveyors import survey_definition_docs as D
 
 DOCS = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "survey-definitions"
 
@@ -39,10 +40,12 @@ def test_parses_steps_in_declared_order_ignoring_the_link_section(tmp_path):
         "### Governance Action Process Step\nGovActionProcessStep::S::step_b\n\n"
         "### Next Governance Action Process Step\nGovActionProcessStep::S::step_a\n"
     )
-    process, steps, descriptions = R._parse_definition_doc(doc)
-    assert process == "S"
-    assert steps == ["step_b", "step_a"]          # declaration order, not sorted
-    assert descriptions["step_b"] == "Second, declared first."
+    parsed = D.parse_document(doc)
+    assert parsed.process == "S"
+    assert parsed.steps == ["step_b", "step_a"]   # declaration order, not sorted
+    assert parsed.descriptions["step_b"] == "Second, declared first."
+    # Links are read from the Link commands, never inferred from step order.
+    assert parsed.links == [("step_b", "step_a", "Any")]
 
 
 def test_a_description_cannot_be_borrowed_from_the_next_command(tmp_path):
@@ -58,13 +61,14 @@ def test_a_description_cannot_be_borrowed_from_the_next_command(tmp_path):
         "## Create Governance Action Process\n"
         "### Qualified Name\nGovActionProcess::S\n"
     )
-    _, _, descriptions = R._parse_definition_doc(doc)
-    assert descriptions["bare"] == ""
-    assert descriptions["described"] == "Belongs to `described`."
+    parsed = D.parse_document(doc)
+    assert parsed.descriptions["bare"] == ""
+    assert parsed.descriptions["described"] == "Belongs to `described`."
 
 
 def test_an_unreadable_document_yields_nothing_rather_than_raising(tmp_path):
-    assert R._parse_definition_doc(tmp_path / "absent.md") == ("", [], {})
+    parsed = D.parse_document(tmp_path / "absent.md")
+    assert parsed.process == "" and parsed.steps == [] and parsed.links == []
 
 
 def test_the_process_heading_does_not_swallow_the_step_heading(tmp_path):
@@ -77,8 +81,8 @@ def test_the_process_heading_does_not_swallow_the_step_heading(tmp_path):
         "## Create Governance Action Process\n"
         "### Qualified Name\nGovActionProcess::S\n"
     )
-    process, steps, _ = R._parse_definition_doc(doc)
-    assert process == "S" and steps == ["only"]
+    parsed = D.parse_document(doc)
+    assert parsed.process == "S" and parsed.steps == ["only"]
 
 
 # ── the real documents ──────────────────────────────────────────────────────
@@ -86,9 +90,12 @@ def test_every_committed_document_parses_to_a_named_definition():
     """A document that parses to nothing is invisible to the recovery check,
     which would report its definition as somebody else's and never repair it."""
     for path in sorted(DOCS.glob("*.md")):
-        process, steps, _ = R._parse_definition_doc(path)
-        assert process, f"{path.name} declares no GovActionProcess"
-        assert steps, f"{path.name} declares no steps"
+        parsed = D.parse_document(path)
+        assert parsed.process, f"{path.name} declares no GovActionProcess"
+        assert parsed.steps, f"{path.name} declares no steps"
+        assert len(parsed.links) == len(parsed.steps) - 1, (
+            f"{path.name}: {len(parsed.links)} link(s) for "
+            f"{len(parsed.steps)} step(s) — a linear chain has exactly one fewer")
 
 
 def test_the_csv_specifies_nothing_the_documents_do_not_define():

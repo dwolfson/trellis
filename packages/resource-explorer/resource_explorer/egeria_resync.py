@@ -528,32 +528,18 @@ class EgeriaResync:
             return {"reauthored": False,
                     "error": "the survey-definitions batch was not found"}
 
-        # Interlock: refuse while any document carries a real guard.
+        # An interlock stood here (2026-08-26): the repair refused to run while any
+        # document carried a guard other than "Any", because the link reconciler
+        # keyed duplicates on (previous, next) and would have deleted the branch.
+        # The reconciler is keyed on (previous, next, guard) now and reconciles
+        # against the authored document rather than a linear chain, so a branch
+        # survives the repair and the refusal is no longer honest.
         #
-        # heal_batch's mandatory post-heal is the link reconciler, which
-        # identifies a duplicate edge by (previous, next) WITHOUT considering
-        # the guard, and builds its expected set as a linear chain. Two edges
-        # that differ only by guard are therefore read as one edge duplicated,
-        # and a genuine branch is read as stale. Both are deleted. Running the
-        # repair over a branching definition would silently flatten it.
-        #
-        # Refusing is the honest behaviour until the reconciler is keyed on
-        # (previous, next, guard) — see docs/survey-model-and-engine-host-design.md
-        # section 1.2. Repairing a definition by destroying the part of it the
-        # CSV could not express is worse than not repairing it.
-        guarded = _documents_with_real_guards(batch)
-        if guarded:
-            return {
-                "reauthored": False,
-                "error": (
-                    "refused: " + ", ".join(sorted(guarded)) + " carry guards other "
-                    "than 'Any'. The link reconciler this repair must run cannot yet "
-                    "tell a guarded branch from a duplicate edge, and would delete "
-                    "the branch. Re-author these by hand until it is branch-aware."
-                ),
-                "guarded_documents": sorted(guarded),
-            }
-
+        # A branching definition is still not RUNNABLE by RE: SurveyDefinitionReader
+        # walks a single chain and raises UnsupportedSurveyDefinitionError. That is a
+        # loud, safe failure rather than silent destruction, and coordinating a
+        # branching process is Egeria's job under the engine-host model
+        # (docs/survey-model-and-engine-host-design.md section 4), not RE's.
         ok, detail = heal_batch(batch)
         return {"reauthored": bool(ok), "detail": detail,
                 "documents": len(batch.files),
@@ -635,6 +621,19 @@ class EgeriaResync:
                 "per_investigation": per_inv}
 
 
+def _as_int(value) -> int:
+    """A step_order as a number, or 0 when it cannot be read.
+
+    Used only for sorting. An unreadable order sorts first rather than raising:
+    the callers of this compare membership, not sequence, so a wrong position
+    is cosmetic where an exception would lose the whole CSV.
+    """
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
 def _intended_steps_from_csv() -> dict:
     """{definition name: [step_key, ...]} from repo_survey_types.csv.
 
@@ -690,133 +689,18 @@ def _all_step_keys() -> list:
     return sorted(STEP_REGISTRY.keys())
 
 
-#: Guard value meaning "always follow this edge" — the only one RE's generator
-#: emits and the only one the link reconciler can currently handle safely.
-UNCONDITIONAL_GUARD = "Any"
-
-
-def _documents_with_real_guards(batch) -> set:
-    """Documents declaring a guard other than `Any`.
-
-    Reads the `### Guard` sections of each Dr.Egeria document. A file that
-    cannot be read counts as guarded: this gates a destructive repair, so
-    "could not tell" must fail towards refusing, exactly as _resolves() does
-    for a lookup it cannot complete.
-    """
-    found = set()
-    for filename in getattr(batch, "files", []):
-        try:
-            lines = (batch.path / filename).read_text().splitlines()
-        except Exception:
-            # Any reason at all — missing file, unreadable, a batch without a
-            # usable path. All of them are "cannot tell", and this gates a
-            # destructive repair.
-            found.add(filename)
-            continue
-        for i, line in enumerate(lines):
-            if line.strip() != "### Guard":
-                continue
-            # The value is the next non-blank line.
-            for candidate in lines[i + 1:]:
-                if candidate.strip():
-                    if candidate.strip() != UNCONDITIONAL_GUARD:
-                        found.add(filename)
-                    break
-    return found
-
-
-def _as_int(value) -> int:
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return 0
-
-
-#: Dr.Egeria command headings this module parses. Matched on the whole
-#: stripped line, so the process heading cannot swallow the step heading it is
-#: a prefix of.
-_STEP_COMMAND = "## Create Governance Action Process Step"
-_PROCESS_COMMAND = "## Create Governance Action Process"
-
-#: How far past a command heading to look for its Qualified Name. Generated
-#: documents put it three lines down; the bound stops a malformed block from
-#: borrowing the next command's name.
-_QN_WINDOW = 12
-
-
-def _definition_docs_dir() -> "Path":
-    from pathlib import Path as _P
-    return (_P(__file__).resolve().parent.parent / "docs" / "dr-egeria"
-            / "survey-definitions")
-
-
-def _parse_definition_doc(path) -> tuple:
-    """(process_name, [step_key, ...], {step_key: description}) as DECLARED.
-
-    Reads the `Create Governance Action Process Step` blocks in file order,
-    which is the run order the generator writes and which live Egeria was
-    verified to match exactly across all eight definitions on 2026-08-26.
-
-    Deliberately ignores the `Link First/Next Process Step` section, where
-    every step name appears twice more. Parsing those would count each step
-    three times and would also make this dependent on the link structure —
-    which is precisely the thing that goes wrong and needs detecting.
-    """
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:
-        return "", [], {}
-    process, steps, descriptions = "", [], {}
-    for i, raw in enumerate(lines):
-        heading = raw.strip()
-        if heading not in (_STEP_COMMAND, _PROCESS_COMMAND):
-            continue
-        qualified = _section_value(lines, i, "### Qualified Name")
-        if not qualified:
-            continue
-        if heading == _STEP_COMMAND and qualified.startswith("GovActionProcessStep::"):
-            key = qualified.rsplit("::", 1)[-1]
-            steps.append(key)
-            descriptions[key] = _section_value(lines, i, "### Description")
-        elif heading == _PROCESS_COMMAND and qualified.startswith("GovActionProcess::"):
-            process = qualified.rsplit("::", 1)[-1]
-    return process, steps, descriptions
-
-
-def _section_value(lines: list, start: int, heading: str) -> str:
-    """The first non-blank line under `heading`, within this command's block.
-
-    Bounded by the next command heading so a malformed block cannot borrow the
-    following command's value — the failure that would silently attribute one
-    step's description to another.
-    """
-    for j in range(start + 1, len(lines)):
-        stripped = lines[j].strip()
-        if stripped.startswith("## ") or stripped == "___":
-            return ""
-        if stripped != heading:
-            continue
-        for k in range(j + 1, len(lines)):
-            candidate = lines[k].strip()
-            if candidate.startswith(("###", "## ")) or candidate == "___":
-                return ""
-            if candidate:
-                return candidate
-        return ""
-    return ""
-
-
 def _documented_definitions() -> dict:
-    """{definition name: [step_key, ...]} across every authored document."""
-    out: dict = {}
-    directory = _definition_docs_dir()
-    if not directory.is_dir():
-        return out
-    for path in sorted(directory.glob("*.md")):
-        process, steps, descriptions = _parse_definition_doc(path)
-        if process and steps:
-            out[process] = {"steps": steps, "descriptions": descriptions}
-    return out
+    """{name: {"steps": [...], "descriptions": {...}}} for the scan's use.
+
+    A thin projection of survey_definition_docs, which is the single parser for
+    these files — the link reconciler reads the same documents to build its
+    expected edge set, and two parsers of one format is how they drift apart.
+    """
+    from resource_explorer.surveyors.survey_definition_docs import (
+        documented_definitions,
+    )
+    return {name: {"steps": doc.steps, "descriptions": doc.descriptions}
+            for name, doc in documented_definitions().items()}
 
 
 def _reader():

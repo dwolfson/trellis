@@ -1,6 +1,6 @@
 # Survey model: granularity, annotation types, and RE as an engine host
 
-**Status: design note. §1.1 and §1.3 FIXED (2026-08-26). §1.2 interlocked, not fixed.**
+**Status: design note. All three §1 hazards FIXED (2026-08-26). §2–§4 not built.**
 **Date:** 2026-08-26
 **Supersedes in part:** `analysis-step-egeria-registration-plan.md` (D1/D3 shipped differently; D2 shipped; D4 still open)
 **Prompted by:** the question of whether RE should manage two granularities — individual
@@ -91,11 +91,28 @@ This is the same hazard as §1.1 one layer down, and it is reached by the same a
 a real guard. The reconciler is the mandatory post-heal step of the repair, so it runs on every
 recovery.
 
-Since 2026-08-26 the repair refuses to run while any document carries a non-`Any` guard, so this
-can no longer fire silently — but that is an interlock, not a fix. Branching definitions remain
-unrepairable until the reconciler is keyed on `(previous, next, guard)` with a non-linear
-expected set. `SurveyDefinitionReader` also treats branching as an error and refuses to run such
-a definition at all, so it is not merely the reconciler that assumes linearity.
+**FIXED 2026-08-26.** `diff_links` is keyed on `(previous, next, guard)`, and
+`reconcile_step_links` builds its expected set from the authored document rather than from a
+linear chain over the step list. A copy left by a non-idempotent Link command is identical in all
+three values, so matching on all three removes exactly what it should and nothing more.
+
+The interlock added earlier the same day — refuse to repair while any document carries a real
+guard — is gone with it, because refusing would no longer be honest.
+
+Both sides were needed. Keyed on the guard but still diffing against a linear chain, every branch
+edge would have been stale instead of duplicate: deleted either way. There is one document parser
+for this (`surveyors/survey_definition_docs.py`), shared with the §1.3 scan, because two parsers
+of one format is how they drift apart.
+
+Verified against live Egeria before and after: all eight definitions reconcile to a no-op, with
+kept counts equal to `steps − 1`. The change rewrites nothing on real data.
+
+**What is deliberately NOT fixed: RE still cannot RUN a branching definition.**
+`SurveyDefinitionReader._parse_graph` walks a single chain and raises
+`UnsupportedSurveyDefinitionError` on a second outgoing edge. That is a loud, safe failure rather
+than silent destruction, and it should stay one: evaluating guards to choose a branch is
+implementing a workflow engine inside RE, which is exactly what §4 argues Egeria should own. The
+hazard was never that RE refuses to run a branch — it was that RE destroyed one.
 
 Note the irony worth recording: `NextGovernanceActionProcessStep` is MULTI_LINK, which is why
 Dr.Egeria's link command duplicates rather than upserts — the problem that took definitions out
@@ -326,15 +343,17 @@ Ordered by dependency, not by value.
    and it retires the `project_published_analyses` workaround.
 3. ~~**§1.3 split the drift scan**~~ **Done 2026-08-26**, with order and description
    comparison added — the latter caught real stale content on its first run.
-4. **§1.2 reconciler keyed on `(prev, next, guard)`** with a non-linear expected set. Required
-   before any real guard is authored; not required before 1–3.
+4. ~~**§1.2 reconciler keyed on `(prev, next, guard)`**~~ **Done 2026-08-26**, with the expected
+   set built from the authored document. Authoring a guard is now safe end to end; running one
+   is still refused, deliberately.
 5. **Confirm §4.3** against a live platform. Gates everything below.
 6. **Collapse `analysis_id`'s bundling role into survey types.** Migration with real blast
    radius: `resource_schedules` has live rows keyed by `analysis_id` and 27 render payloads to
    repoint. Own design pass.
 7. **Engine-host participation**, polling first.
 
-Steps 1–4 are corrections to shipped code and are worth doing whether or not §4 is ever built.
+Steps 1–4 are corrections to shipped code and were worth doing whether or not §4 is ever built.
+All four are done. Everything from 5 onward depends on the engine-host decision.
 
 ---
 

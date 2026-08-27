@@ -609,11 +609,31 @@ class SurveyDefinitionReader:
         Returns a survey_definition_reconciler.ReconcileResult. Safe to call
         repeatedly — a fully-reconciled process is a no-op every time after
         the first."""
-        from resource_explorer.surveyors.survey_definition_reconciler import compute_expected_edges, diff_links
+        from resource_explorer.surveyors.survey_definition_docs import document_for
+        from resource_explorer.surveyors.survey_definition_reconciler import (
+            compute_expected_edges,
+            diff_links,
+            expected_edges_from_document,
+        )
 
         self.connect()
         process_qualified_name = f"GovActionProcess::{survey_group}"
-        expected_edges = compute_expected_edges(survey_group, step_keys)
+
+        # Prefer the authored document. A step list can only describe a linear
+        # chain, so reconciling against one deletes every branch as stale —
+        # and the branch is precisely what a step list cannot express. The
+        # linear fallback is for when no document can be found, and it is an
+        # approximation, not a definition.
+        doc = document_for(survey_group)
+        if doc is not None and doc.links:
+            expected_edges = expected_edges_from_document(survey_group, doc)
+        else:
+            log.warning(
+                "no authored document found for %s — reconciling against a linear "
+                "chain derived from its step list, which would treat any branch as "
+                "stale", survey_group,
+            )
+            expected_edges = compute_expected_edges(survey_group, step_keys)
 
         try:
             raw = self._governance_officer.get_governance_action_process_graph(guid=process_guid, output_format="JSON")

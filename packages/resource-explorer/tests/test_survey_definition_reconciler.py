@@ -21,15 +21,18 @@ def _link(prev_qn, next_qn, link_guid="link-guid"):
 class TestComputeExpectedEdges:
     def test_linear_chain(self):
         edges = compute_expected_edges("RepoCoarseScout", ["repo_health", "repo_language"])
+        # Triples since 2026-08-26: the guard is part of an edge's identity, or
+        # two branches out of one step read as one edge duplicated.
         assert edges == {
-            ("GovActionProcessStep::RepoCoarseScout::repo_health", "GovActionProcessStep::RepoCoarseScout::repo_language"),
+            ("GovActionProcessStep::RepoCoarseScout::repo_health",
+             "GovActionProcessStep::RepoCoarseScout::repo_language", "Any"),
         }
 
     def test_three_step_chain_has_two_edges(self):
         edges = compute_expected_edges("X", ["a", "b", "c"])
         assert edges == {
-            ("GovActionProcessStep::X::a", "GovActionProcessStep::X::b"),
-            ("GovActionProcessStep::X::b", "GovActionProcessStep::X::c"),
+            ("GovActionProcessStep::X::a", "GovActionProcessStep::X::b", "Any"),
+            ("GovActionProcessStep::X::b", "GovActionProcessStep::X::c", "Any"),
         }
 
     def test_single_step_has_no_edges(self):
