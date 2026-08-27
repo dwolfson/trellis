@@ -760,3 +760,60 @@ machinery inverted: producing context for other consumers rather than consuming 
 The manifest pane is one component in the shared package, not two implementations — it renders
 derivation, what packed at which rung, and what was gapped or queued. It is also where §22's
 editable-manifest feedback lives, so both apps get dynamic feedback from the same surface.
+
+## 24. Implementation task list
+
+*(Added 2026-08-27.)* The first *work* and the first *impact* are different things, and impact can
+come well before the compiler exists. Phases 0–2 produce no compiler and are worth having anyway —
+that is deliberate, not scaffolding.
+
+### Phase 0 — derivable from today's catalogs, no new architecture
+
+Needs no spec, no packer, no tree. These are §18's measurement instruments in their cheapest form.
+
+1. **Emit the derivation trace.** `question_catalog_reader.py` already resolves
+   Purpose + Perspective → questions → `analysis_ids`; return that chain instead of discarding it.
+   This is §11's derivation artifact, and it exists implicitly today.
+2. **Standing coverage report** over `question_catalog.yaml` + `analysis_catalog.yaml`:
+   Purpose × analysis and Perspective × analysis reachability. The Privacy-reaches-zero finding was
+   computed by hand once; make it a script that runs.
+3. **Assert the nesting invariant as a test**, in the manner of `tests/test_check_registry.py`, so a
+   future retag that breaks nesting fails a test rather than silently changing dispatch semantics.
+
+**This is the first point of impact.** (1) is user-visible, (2) shows where the catalog is thin,
+(3) protects the curated vocabulary. None of it commits to building a compiler.
+
+### Phase 1 — authoring, not code
+
+4. **Two columns on the analysis catalog**: `availability: materialized | schedulable` and
+   `temporal: as_of | current_only`. Vocabulary work in the CSV plus a regeneration. §20 depends
+   entirely on these and they are the cheapest items in the design.
+5. **Envelope fields captured at ingest** — `source guid`, Egeria version, Egeria timestamp,
+   `fetched_at` (§10). Additive schema; needs re-ingestion, which is cheap now.
+6. **Manifest id on feedback records** (§13). One column. Without it the signal cannot distinguish
+   wrong-evidence-selected from over-compressed from model-reasoned-badly.
+
+### Phase 2 — the containment tree
+
+7. Parse once, emit a containment tree (§15); retrieval chunks are its leaves, ladder rungs are cuts
+   across it. **The only item with a clock on it** — re-ingestion cost scales with a growing corpus.
+
+### Phase 3 — the compiler, and RE's first real flow
+
+8. `ContextSpec` schema — authored in the CSV, generated, validated (§19).
+9. **Packer as deterministic code** (§16) — budget solve, ladder, symmetry constraint, hard ceiling.
+10. Wire the **adoption gate** (§23) into RE's Chat panel with a manifest pane.
+
+**This is the first point at which the compiler impacts RE.** Everything before it is invisible.
+
+### Phase 4 — EA
+
+Gated on a decision rather than a task: **where the Investigation table lives and who writes it**
+(§17). EA cannot adopt the compile unit until that is settled, so the decision is worth making early
+even though the work is late.
+
+### Caveat
+
+The payoff scales with how much RE's Chat panel is actually used. If it is peripheral to how the
+work happens, phase 3 is a lot of machinery for a low-traffic surface — worth checking real usage
+before committing to it.
