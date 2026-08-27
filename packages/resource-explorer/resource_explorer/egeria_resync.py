@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 #: must happen before republishing (or a publish reuses a dead GUID), and
 #: republishing before relinking (or a member still has no asset to link to).
 REPAIR_STEPS = (
+    "reauthor_survey_definitions",
     "clear_stale_assets",
     "clear_orphan_publish_claims",
     "clear_stale_investigations",
@@ -153,6 +154,7 @@ class EgeriaResync:
         res.findings.append(self._scan_unlinked_members())
         res.findings.append(self._scan_unpublished_but_expected())
         res.findings.append(self._scan_local_investigations())
+        res.findings.append(self._scan_definition_drift(res))
         res.findings = [f for f in res.findings if f.count]
         return res
 
@@ -352,6 +354,67 @@ class EgeriaResync:
             items=items, repair_step="", needs_decision=True,
         )
 
+    def _scan_definition_drift(self, res: ScanResult) -> Finding:
+        """Survey Definitions in Egeria that no longer match their source.
+
+        The CSV and the generated Dr.Egeria documents are the source of truth;
+        Egeria holds whatever was last authored into it. Adding a step to an
+        analysis moves the first and not the second, so a definition can be
+        silently short — the step exists, is runnable per-card, and simply
+        never appears in any survey.
+        """
+        from resource_explorer.surveyors.survey_definition_reader import (
+            SurveyDefinitionReader,
+        )
+
+        try:
+            from resource_explorer.surveyors.survey_definition_reconciler import (
+                intended_steps_by_definition,
+            )
+            intended = intended_steps_by_definition()
+        except Exception:
+            intended = _intended_steps_from_csv()
+
+        behind = []
+        try:
+            reader = SurveyDefinitionReader()
+            for cand in reader.find_candidate_process_guids("Git Repository"):
+                name = cand["qualified_name"].split("::")[-1]
+                want = intended.get(name)
+                if not want:
+                    continue
+                try:
+                    live = [s.re_analysis_step for s in reader.fetch(cand["guid"]).steps]
+                except Exception as exc:
+                    res.undetermined.append({
+                        "kind": "survey definition", "ref": name,
+                        "reason": f"{type(exc).__name__}",
+                    })
+                    continue
+                missing = [k for k in want if k not in live]
+                extra = [k for k in live if k and k not in want]
+                if missing or extra:
+                    behind.append({"definition": name, "missing": missing,
+                                   "extra": extra, "live_steps": len(live),
+                                   "intended_steps": len(want)})
+        except Exception as exc:
+            res.undetermined.append({"kind": "survey definition", "ref": "(all)",
+                                     "reason": f"{type(exc).__name__}: {str(exc)[:60]}"})
+
+        return Finding(
+            key="definition_drift",
+            title="Survey Definitions behind their source",
+            detail="Steps exist and are runnable per-card but appear in no survey. "
+                   "Repairing re-executes the Dr.Egeria documents AND runs the "
+                   "step-link reconciler — never one without the other, because "
+                   "Link Next Process Step is not idempotent: the relationship "
+                   "carries a guard and is multi-link by design, so re-running it "
+                   "adds a second edge rather than merging, and a definition with "
+                   "two outgoing next-steps is refused by the reader and renders "
+                   "with zero steps.",
+            items=behind, repair_step="reauthor_survey_definitions",
+        )
+
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
         if entity_type != "repo":
             return ""
@@ -377,6 +440,28 @@ class EgeriaResync:
             if step in steps:
                 applied[step] = getattr(self, f"_do_{step}")()
         return {"reachable": True, "unreachable_reason": "", "applied": applied}
+
+    def _do_reauthor_survey_definitions(self) -> dict:
+        """Re-execute the survey-definitions batch, then reconcile its links.
+
+        Delegates to bootstrap.heal_batch, which already runs a batch's
+        documents in dependency order and its declared post_heal script — for
+        this batch, the link reconciler. Reusing it means the reconciler cannot
+        be forgotten, which is the failure mode that takes a definition out of
+        service: forgetting it is far easier than noticing the duplicate edges
+        it prevents.
+        """
+        from resource_explorer.bootstrap import discover_batches, heal_batch
+
+        batch = next((b for b in discover_batches()
+                      if b.batch_id == "survey-definitions"), None)
+        if batch is None:
+            return {"reauthored": False,
+                    "error": "the survey-definitions batch was not found"}
+        ok, detail = heal_batch(batch)
+        return {"reauthored": bool(ok), "detail": detail,
+                "documents": len(batch.files),
+                "post_heal": (batch.post_heal or {}).get("script", "")}
 
     def _do_clear_stale_assets(self) -> dict:
         res = ScanResult()
@@ -452,3 +537,51 @@ class EgeriaResync:
             }
         return {"members_linked": linked, "members_unlinkable": unlinkable,
                 "per_investigation": per_inv}
+
+
+def _intended_steps_from_csv() -> dict:
+    """{definition name: [step_key, ...]} from repo_survey_types.csv.
+
+    A fallback for when the reconciler module cannot be imported. The CSV is
+    the source of truth either way — the generated documents are derived from
+    it, so comparing Egeria against it is comparing against what SHOULD have
+    been authored.
+    """
+    import csv
+    from pathlib import Path
+
+    path = (Path(__file__).resolve().parent.parent / "docs" / "dr-egeria"
+            / "repo_survey_types.csv")
+    out: dict = {}
+    try:
+        with path.open() as fh:
+            for row in csv.DictReader(fh):
+                group = (row.get("survey_group") or "").strip()
+                step = (row.get("step_key") or "").strip()
+                if not group or not step:
+                    continue
+                if step == _FULL_SURVEY_SENTINEL:
+                    # The full bundle is generated FROM STEP_REGISTRY rather
+                    # than enumerated here, so the CSV carries a sentinel. A
+                    # literal read would make it look like a one-step survey
+                    # and report every other step as missing.
+                    out[group] = _all_step_keys()
+                    continue
+                out.setdefault(group, []).append(step)
+    except OSError:
+        return {}
+    return out
+
+
+#: The CSV's stand-in for "every registered step", used by the full-survey row.
+_FULL_SURVEY_SENTINEL = "*"
+
+
+def _all_step_keys() -> list:
+    try:
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            STEP_REGISTRY,
+        )
+    except ImportError:  # pragma: no cover - defensive
+        return []
+    return sorted(STEP_REGISTRY.keys())
