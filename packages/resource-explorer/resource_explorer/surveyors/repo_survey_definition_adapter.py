@@ -338,9 +338,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # extraction — no extra network call.
     "repo_manifest_parse": StepInfo(
         "repo_manifest_parse", ManifestParseSurveyor,
-        "Parses dependency manifests, CI workflow content, and repo-convention "
-        "signals from a freshly extracted zipball, refreshing project_dependencies "
-        "and project_analysis_findings (kind=\"ci_quality\"/\"repo_conventions\") — "
+        "Parses dependency manifests, CI workflow content, supply-chain signals "
+        "and repo-convention signals from a freshly extracted zipball, refreshing "
+        "project_dependencies and project_analysis_findings "
+        "(kind=\"ci_quality\"/\"repo_conventions\"/\"supply_chain\") — "
         "the three tables previously written only by full ingestion (and, for the "
         "latter two, refresh_profile), never by a survey step.",
         ["ResourceMeasureAnnotation"],
