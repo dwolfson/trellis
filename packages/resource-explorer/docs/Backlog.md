@@ -1422,6 +1422,43 @@ gracefully (a status flag, not a 500) when no server is reachable.
 survey steps. `executes_at: egeria` steps are coordinated by Egeria itself — none of this gives
 RE any more visibility into those. See "Some surveys are coordinated by Egeria, not RE" below.
 
+**Bare-host only for now, deliberately (2026-08-26):** `scripts/prefect_up.sh`/`prefect_down.sh`
+(`make prefect-up`/`prefect-down`) bring the server/work pool/deployment/worker up idempotently
+on this machine, but nothing containerizes them — no launchd/systemd unit either. Trellis isn't
+ready for containerization yet (explicit user call), so this stays a bare-host convenience
+script rather than becoming a container prematurely.
+
+**A Prefect container already exists — in `egeria-workspaces-fs`, not Trellis — and isn't
+started.** `egeria-workspaces-fs/compose-configs/optional-associated-runtimes/prefect/
+docker-compose.yaml` defines `prefect-server` (`prefecthq/prefect:3-python3.12`, matches the
+3.x this integration was verified against) and `prefect-worker`, both on `egeria_network`.
+Reviewed, not modified — three concrete gaps to close whenever Trellis containerization
+actually happens, so they aren't rediscovered from scratch:
+
+1. **Work pool name mismatch.** The container's worker runs `prefect worker start --pool
+   egeria-pool`; RE's own default (`PrefectConfig.work_pool` in `config.py`) is
+   `default-agent-pool`. As configured today, RE would deploy to a pool this worker never
+   polls — every step would sit `SCHEDULED` forever, silently, no error. Either the container's
+   pool name or RE's default needs to change to match (or `PREFECT_WORK_POOL` set explicitly in
+   whichever environment talks to this container).
+2. **The worker container has no access to RE's code.** It builds from
+   `../../../runtime-volumes/prefect/user_code` — a generic flow-code mount, not
+   `resource_explorer`. `re_survey_flow` imports `resource_explorer.surveyors.
+   survey_definition_executor` and `resource_explorer.registry` directly; nothing in the
+   compose file installs the `resource-explorer` package or mounts the RE checkout into that
+   container, so the worker would fail on import the moment it tried to run RE's flow for
+   real. Needs either the package installed into a custom image (a new Dockerfile, not the
+   generic `user_code` one) or an equivalent volume mount plus dependency install.
+3. **Separate `prefect` Postgres database, unconfirmed whether it's provisioned.** The server
+   points at `postgresql+asyncpg://prefect_user:user4prefect@egeria-shared-postgres:5442/
+   prefect` — a distinct database/role from the `egeria_advisor` database RE and EA already
+   share. Not verified from a Trellis checkout whether that role/database already exists on
+   the shared Postgres instance or still needs creating, the way RE's own `resource_explorer`
+   schema did (see root README's "Databases" section).
+
+None of these are hard blockers, but (2) in particular is real integration work, not a config
+tweak — worth sizing before assuming this container is a quick swap-in for `prefect_up.sh`.
+
 ---
 
 #### Some surveys are coordinated by Egeria, not RE — a separate visibility question, deliberately deferred
