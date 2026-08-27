@@ -1340,6 +1340,28 @@ guessed at further:
 
 ### Platform & orchestration
 
+#### Retire the ISSUE-50 workaround in `egeria_delegated_step.py` — the pyegeria bug it exists for is fixed
+
+`EgeriaDelegatedStepSurveyor` routes through `initiate_gov_action_type()` because
+`initiate_engine_action()` used to 404: it posted to a URL missing the governance engine's name
+and had no parameter to supply one (logged as ISSUE-50, 2026-08-17). The workaround needs a
+**pre-authored `GovernanceActionType` per delegated step**, which is real authoring overhead for
+every step RE wants to delegate.
+
+**Measured 2026-08-26: fixed in the installed pyegeria 6.0.18.4.** The method now takes
+`governance_engine_name` and builds
+`.../governance-engines/{name}/engine-actions/initiate` — the shape the Java route
+(`AutomatedCurationResource.java`) actually expects. `initiate_and_wait()` already exists in
+that module, kept for exactly this moment.
+
+Work: switch the primary trigger path to `initiate_and_wait()`, live-verify against a real
+delegated step, and drop the per-step `GovernanceActionType` requirement (and its probe doc) if
+verification holds. The module's comment saying the direct path is "kept for when ISSUE-50 is
+fixed" is stale and should go with it.
+
+Not urgent — the workaround works and is live-verified. It is pure overhead removal.
+
+
 #### Distributed survey orchestration via a flow tool (Prefect) — early prototype, not yet integrated
 
 RE's only execution model today is either synchronous in-process (`SurveyOrchestrator`) or the `scheduler.py` daemon-thread poller (see the "Periodic / triggered survey scheduling" item below). Neither can run survey work *near* a protected asset (a database inside a VPC, a filesystem edge agent) without deploying RE itself there, and neither gives retries/backoff/task-level telemetry for free.
