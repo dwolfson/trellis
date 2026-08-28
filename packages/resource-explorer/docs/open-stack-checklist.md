@@ -341,6 +341,26 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       similar-repo search. Three carry authorial uncertainty in the CSV
       ("repo_conventions - RAG read?") and want a decision, not a surveyor.
       This is the concrete shape of §5's agent-based post-ingestion work.
+- [x] **Automate can schedule a whole survey** — 2026-08-28 (`fd63eed`). Third
+      sub-tab, `GET /api/survey-definitions/definitions` (read from the
+      authored documents, so it survives Egeria being down), `target_kind`
+      exposed on the schedules route. §4a is done except moving
+      `RepoFullSurvey` out of the four stage tabs.
+- [ ] **`repo_profile_refresh` is schedulable but invisible to the step map.**
+      `REPO_ANALYSIS_STEP_MAP.get("repo_profile_refresh")` is None, so a reader
+      checking the map concludes it cannot be scheduled. It can: `scheduler.
+      _run_repo_survey` intercepts it earlier on `action == "profile"` and
+      chains `language_file_classification` afterwards. Same shape as
+      `rag_ingestion`, which is intercepted on its id. Nothing is broken; the
+      map simply is not the whole dispatch story and reads as though it were.
+      Either the map carries these entries or its name stops implying
+      completeness.
+- [ ] **The schedules route does not check the resource exists.** Measured
+      2026-08-28: `POST /api/schedules/repo/egeria` was accepted and stored,
+      though no repo has that slug (the real one is `egeria_git`) — the
+      typo surfaces only later, as a run-time "schedule may be stale" error
+      on a cadence nobody is watching. `_run_repo_survey` already reports it
+      properly; the cost is that it is reported a week late.
 - [ ] Egeria-side: `_parse_graph` now reads branching definitions, but no
       definition uses a guard yet. Authoring one would exercise the whole chain
       end to end on real data.

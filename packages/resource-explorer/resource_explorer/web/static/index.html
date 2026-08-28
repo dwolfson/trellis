@@ -7695,10 +7695,27 @@ function renderAutomateSurveysPanel(defs, existing) {
     const heavy = d.step_count >= 20
       ? ` <span class="text-amber-500/80" title="A long survey run on a frequent cadence is the expensive case — weekly or monthly is usually the honest choice.">⚠ long</span>`
       : '';
+    // Outcome of the last run. Three states, deliberately distinct: never
+    // scheduled, scheduled but not yet fired, and fired with a result. A
+    // scheduled survey showing nothing is the case worth being able to see —
+    // "set it and assume it works" is exactly how a cadence goes quietly dead.
+    const outcome = !sched
+      ? '<span class="text-slate-700 text-xs">—</span>'
+      : !sched.last_run_status
+        ? '<span class="text-slate-600 text-xs">not run yet</span>'
+        : sched.last_run_status === 'error'
+          ? `<button onclick="_showScheduleErrorDetail('${_esc(sched.last_run_activity_id)}')"
+               class="text-xs text-red-400 hover:text-red-300 underline decoration-dotted transition-colors">⚠ error</button>`
+          : '<span class="text-emerald-400 text-xs">✓ ok</span>';
+    const lastRun = (sched && sched.last_run)
+      ? String(sched.last_run).replace('T', ' ').substring(0, 16)
+      : (sched ? '—' : '');
     return `<tr class="hover:bg-slate-800/40 border-b border-slate-800">
       <td class="px-3 py-2 text-xs text-slate-300 whitespace-nowrap">📋 ${_esc(d.name)}${heavy}</td>
       <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">${d.step_count} step${d.step_count === 1 ? '' : 's'}</td>
       <td class="px-3 py-2">${status}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 whitespace-nowrap">${_esc(lastRun)}</td>
+      <td class="px-3 py-2">${outcome}</td>
       <td class="px-3 py-2 text-right whitespace-nowrap">
         <select id="${selId}" class="text-xs bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200">${opts}</select>
         <button onclick="_saveSurveySchedule('${_esc(d.qualified_name)}','${selId}')"
@@ -7720,6 +7737,7 @@ function renderAutomateSurveysPanel(defs, existing) {
         <div class="text-xs text-slate-500 mt-1">Individual analyses are scheduled from their own cards
           (Assessment / Analysis / Discovery) and monitored in ⏱ Schedules. This tab is only for whole surveys.</div>
       </div>
+      <div id="sched-error-detail" class="hidden text-xs bg-red-950/40 border border-red-900 rounded p-3 text-red-300"></div>
       <div class="bg-slate-950 border border-slate-800 rounded overflow-hidden">
         <table class="w-full text-left border-collapse">
           <thead>
@@ -7727,10 +7745,12 @@ function renderAutomateSurveysPanel(defs, existing) {
               <th class="px-3 py-2">Survey Definition</th>
               <th class="px-3 py-2">Size</th>
               <th class="px-3 py-2">Status</th>
+              <th class="px-3 py-2">Last run</th>
+              <th class="px-3 py-2">Result</th>
               <th class="px-3 py-2 text-right">Cadence</th>
             </tr>
           </thead>
-          <tbody>${rows || '<tr><td colspan="4" class="px-3 py-6 text-center text-xs text-slate-500">No Survey Definitions are authored yet.</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="6" class="px-3 py-6 text-center text-xs text-slate-500">No Survey Definitions are authored yet.</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
