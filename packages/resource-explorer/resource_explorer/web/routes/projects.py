@@ -806,6 +806,15 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,
         }
+    # Repo-level, carried under a reserved key so the per-analysis map keeps
+    # its shape — same convention get_analysis_last_run uses for
+    # __unattributed_surveys__. Cards use it to hide a Publish button that has
+    # nothing to do: a run auto-publishes whenever the resource has an
+    # assigned Egeria Project, so offering to publish again reads as though
+    # publishing still needed doing.
+    result["__auto_publishes__"] = {
+        "auto_publishes": registry.has_assigned_egeria_project("repo", slug),
+    }
     return result
 
 

@@ -2752,7 +2752,18 @@ function renderAnalysisCatalogCards(analyses, candidates, view, { title, emptyTe
     // keeps it visible rather than implying a precision the join can't back.
     const _localStepKeys = a.re_analysis_steps || [];
     const _cleanlyPublished = la.last_published_at && la.last_published_scope !== 'repo' && !la.last_publish_failed;
-    const publishButton = (entityType === 'repo' && slug && _localStepKeys.length && !_cleanlyPublished)
+    // Hidden too when a run publishes on its own, matching the Survey
+    // Definition cards. Auto-publish fires whenever the resource has an
+    // assigned Egeria Project, so on those repos the button offers to repeat
+    // what "Run →" already did.
+    //
+    // Except after a failure: if the last automatic attempt failed, the
+    // findings are stored and only the Egeria write is missing, so the button
+    // is a real retry rather than a duplicate — which is why this does not
+    // simply collapse into _cleanlyPublished.
+    const _autoPublishes = !!(lastActivity.__auto_publishes__ || {}).auto_publishes;
+    const _publishIsRedundant = _cleanlyPublished || (_autoPublishes && !la.last_publish_failed);
+    const publishButton = (entityType === 'repo' && slug && _localStepKeys.length && !_publishIsRedundant)
       ? `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(_localStepKeys)}, this, ${JSON.stringify(a.name)}, ${JSON.stringify(a.id)})'
            class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 transition-colors whitespace-nowrap"
            title="${la.last_publish_failed ? 'The last automatic publish attempt failed — retry it; findings are already stored, only the Egeria write needs to happen.' : "Publishes this analysis's own findings as their own SurveyReport, linked to the same Egeria asset"}">
