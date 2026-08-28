@@ -234,6 +234,24 @@ STEP_REGISTRY.
 
 Design: `docs/survey-model-and-engine-host-design.md` §4.
 
+## 4a. Full Survey should live only in Automate — blocked on a surface
+
+`RepoFullSurvey` (survey_kind `automate_full`) is appended to **every** stage
+tab, so a 34-step deep survey sits one click away on Scouting, whose whole
+purpose is the cheap look that gates it.
+
+Attempted 2026-08-27 and reverted unshipped. The stage tabs filter correctly —
+restricting the append to `intent === 'automate'` removes it from all four —
+but **the Automate view has no survey list to move it to.** `showMainView('automate')`
+renders `#automate-view`, which loads subscriptions and schedules and never
+fetches Survey Definition candidates. So the change hides Full Survey
+everywhere and gives it nowhere to appear, which is what the original
+"appended to every stage" comment was avoiding.
+
+- [ ] Give Automate a survey list (a third sub-tab beside 🔔 Subscriptions and
+      ⏱ Schedules), then restrict the append to that intent. Both halves, or
+      neither — the filter alone loses the feature.
+
 ## 4. The granularity collapse — deferred by decision
 
 `analysis_id`'s bundling role duplicates the survey type: 25 of 27 repo analyses
