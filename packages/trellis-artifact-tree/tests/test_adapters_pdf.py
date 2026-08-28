@@ -189,3 +189,75 @@ class TestOcrIsAChoice:
 
     def test_engines_cover_the_portable_and_mac_paths(self):
         assert {"easyocr", "ocrmac"} <= set(PdfAdapter._ENGINES)
+
+
+class TestDiagnostics:
+    """A conversion can succeed, produce a valid tree, and say nothing useful.
+    From the outside that looks identical to a short document."""
+
+    def _tree(self, nodes, fidelity="inferred"):
+        """Defaults to a PDF's fidelity: these diagnostics exist for sources
+        where sparse text may mean a FAILED extraction rather than a short
+        document."""
+        from dataclasses import replace
+
+        from trellis_artifact_tree.model import ArtifactTree
+        return ArtifactTree(
+            "a", replace(PROV, extraction_fidelity=fidelity), tuple(nodes)
+        )
+
+    def test_a_rasterised_page_is_flagged(self):
+        from trellis_artifact_tree.model import Node
+        from trellis_artifact_tree.diagnostics import diagnose
+
+        t = self._tree([Node("r", "a", "document"),
+                        Node("s", "a", "text", parent_id="r",
+                             rungs={Rung.FULL: "page 1 of 9"})])
+        d = diagnose(t)
+        assert d.near_empty and "OCR" in d.finding
+
+    def test_node_count_is_not_the_signal(self):
+        """egeria-docs concept pages have a MEDIAN of one content node each and
+        are perfectly good documents. An earlier '<= 1 node' rule flagged every
+        one of them."""
+        from trellis_artifact_tree.model import Node
+        from trellis_artifact_tree.diagnostics import diagnose
+
+        t = self._tree([Node("r", "a", "document"),
+                        Node("s", "a", "section", parent_id="r",
+                             rungs={Rung.FULL: "x" * 500})], fidelity="structural")
+        assert not diagnose(t).near_empty
+
+    def test_structureless_is_distinct_from_near_empty(self):
+        """The OmniGraffle case: 49 content nodes and 6,765 characters of real
+        diagram labels, and zero sections. Usable, but a packer cannot cut it
+        by depth."""
+        from trellis_artifact_tree.model import Node
+        from trellis_artifact_tree.diagnostics import diagnose
+
+        t = self._tree([Node("r", "a", "document")] + [
+            Node(f"n{i}", "a", "text", parent_id="r", ordinal=i,
+                 rungs={Rung.FULL: "label " * 20})
+            for i in range(20)
+        ])
+        d = diagnose(t)
+        assert not d.near_empty and d.structureless
+        assert "cut it by depth" in d.finding
+
+    def test_short_markdown_is_not_a_finding(self):
+        """20% of 15,983 artifacts are near-empty and almost all are short
+        markdown stubs -- 49% of one corpus. Nothing can be done about a short
+        file, and reporting 3,177 of them would bury the case that matters."""
+        from dataclasses import replace
+
+        from trellis_artifact_tree.model import ArtifactTree, Node
+        from trellis_artifact_tree.diagnostics import diagnose
+
+        nodes = (Node("r", "a", "document"),
+                 Node("s", "a", "section", parent_id="r", rungs={Rung.FULL: "tiny"}))
+        structural = ArtifactTree("a", replace(PROV, extraction_fidelity="structural"), nodes)
+        inferred = ArtifactTree("a", replace(PROV, extraction_fidelity="inferred"), nodes)
+
+        assert diagnose(structural).near_empty          # still true
+        assert diagnose(structural).finding == ""       # but not reported
+        assert diagnose(inferred).finding != ""         # this one is

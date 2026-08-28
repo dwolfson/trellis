@@ -52,6 +52,13 @@ class TreeBuildResult:
     stored: int = 0
     skipped: int = 0
     reason: str = ""
+    # Trees that parsed fine and say nothing useful -- a rasterised page or a
+    # scanned document yields a valid, empty tree and Docling reports no error.
+    # Counted, not listed: 20% of all artifacts are near-empty and almost all
+    # are short markdown stubs, so per-artifact reporting would bury the cases
+    # that matter. Only fidelities where OCR could help are counted at all.
+    near_empty: int = 0
+    structureless: int = 0
 
     def __bool__(self) -> bool:
         return self.stored > 0
@@ -125,6 +132,7 @@ def build_trees(
             )
 
         stored = skipped = 0
+        near_empty = structureless = 0
         for source_id, source in files:
             try:
                 artifact_id = f"{project_slug}:{source_id}"
@@ -138,6 +146,14 @@ def build_trees(
                 )
                 store.put(tree)
                 stored += 1
+                from trellis_artifact_tree.diagnostics import diagnose
+
+                d = diagnose(tree)
+                if d.actionable and d.near_empty:
+                    near_empty += 1
+                    logger.warning("artifact tree: %s — %s", source_id, d.finding)
+                elif d.structureless:
+                    structureless += 1
             except Exception:
                 # One unparseable artifact must not abandon the rest -- but it
                 # is counted, so a caller can tell a clean run from a lossy one.
@@ -146,6 +162,7 @@ def build_trees(
         return TreeBuildResult(
             status="partial" if skipped else "stored",
             stored=stored, skipped=skipped,
+            near_empty=near_empty, structureless=structureless,
         )
     except Exception as exc:
         logger.warning(

@@ -579,6 +579,14 @@ class IngestionPipeline:
         console, not logging: this module reports through rich throughout, and
         a logger here would be the only one in the file.
         """
+        if result.near_empty:
+            # The only reliable way to learn OCR was needed: Docling reports no
+            # error for a page it could not read.
+            self.console.print(
+                f"[yellow]{result.near_empty} artifact(s) in {project_slug} "
+                f"parsed to almost no text — likely rasterised or scanned. "
+                f"Enable OCR (PDF_OCR_ENABLED=true) to read them.[/yellow]"
+            )
         if result.status in ("disabled", "stored"):
             return
         self.console.print(

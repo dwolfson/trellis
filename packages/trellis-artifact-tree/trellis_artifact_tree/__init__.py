@@ -24,6 +24,7 @@ from trellis_artifact_tree.adapters_pdf import (
     tree_from_items,
 )
 from trellis_artifact_tree.config import ArtifactTreeConfig
+from trellis_artifact_tree.diagnostics import TreeDiagnosis, diagnose
 from trellis_artifact_tree.model import (
     ArtifactTree,
     Node,
@@ -43,6 +44,7 @@ __all__ = [
     "ArtifactTreeStore",
     "CodeAdapter",
     "DocItem",
+    "TreeDiagnosis",
     "DoclingDocumentAdapter",
     "GenericTextAdapter",
     "HtmlAdapter",
@@ -53,6 +55,7 @@ __all__ = [
     "Rung",
     "TreeError",
     "create_schema_sql",
+    "diagnose",
     "items_from_docling",
     "tree_from_items",
     "validate",
