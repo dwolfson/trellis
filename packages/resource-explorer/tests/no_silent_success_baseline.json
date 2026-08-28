@@ -29,7 +29,6 @@
   "resource_explorer/ingestion/dependency_parser.py::_parse_requirements": 1,
   "resource_explorer/ingestion/dependency_parser.py::_parse_setup_py": 1,
   "resource_explorer/ingestion/pipeline.py::_count_repo_stats": 1,
-  "resource_explorer/ingestion/pipeline.py::_ingest_pdfs": 3,
   "resource_explorer/ingestion/pipeline.py::_ingest_releases": 1,
   "resource_explorer/ingestion/pipeline.py::_local_files": 1,
   "resource_explorer/ingestion/pipeline.py::_local_files_for_paths": 2,

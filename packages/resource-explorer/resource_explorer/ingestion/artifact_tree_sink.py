@@ -189,12 +189,45 @@ def build_code_trees(
     )
 
 
+def build_pdf_trees_from_documents(
+    documents: list[tuple[str, object]],
+    project_slug: str,
+    source_version: str = "",
+) -> TreeBuildResult:
+    """Trees from ALREADY-CONVERTED Docling documents.
+
+    `documents` is (display_path, DoclingDocument). Preferred over
+    build_pdf_trees() wherever the caller is also chunking the same PDFs:
+    conversion is the expensive step, and converting once for chunks and again
+    for the tree doubles the cost of a PDF-heavy ingest for no benefit.
+    """
+    from resource_explorer.config import get_config
+
+    if not get_config().artifact_tree.enabled:
+        return TreeBuildResult("disabled")
+
+    try:
+        from trellis_artifact_tree.adapters_pdf import DoclingDocumentAdapter
+    except Exception as exc:
+        return TreeBuildResult("unavailable", reason=f"{type(exc).__name__}: {exc}")
+
+    return build_trees(
+        documents, project_slug, source_version=source_version,
+        adapter=DoclingDocumentAdapter(),
+    )
+
+
 def build_pdf_trees(
     paths: list[tuple[str, str]],
     project_slug: str,
     source_version: str = "",
 ) -> TreeBuildResult:
-    """Trees from PDFs. `paths` is (display_path, absolute_path).
+    """Trees from PDFs by path, converting them itself.
+
+    Use build_pdf_trees_from_documents() instead when the caller is also
+    chunking the same files -- this one pays for a second conversion.
+
+    `paths` is (display_path, absolute_path).
 
     The display path is what provenance records and what the artifact id is
     keyed on -- an absolute path is a property of this machine's checkout, not

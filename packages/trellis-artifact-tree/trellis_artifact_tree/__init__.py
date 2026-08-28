@@ -15,7 +15,13 @@ from trellis_artifact_tree.adapters import (
     MarkdownAdapter,
 )
 from trellis_artifact_tree.adapters_code import CodeAdapter
-from trellis_artifact_tree.adapters_pdf import DocItem, PdfAdapter, tree_from_items
+from trellis_artifact_tree.adapters_pdf import (
+    DoclingDocumentAdapter,
+    DocItem,
+    items_from_docling,
+    PdfAdapter,
+    tree_from_items,
+)
 from trellis_artifact_tree.config import ArtifactTreeConfig
 from trellis_artifact_tree.model import (
     ArtifactTree,
@@ -36,6 +42,7 @@ __all__ = [
     "ArtifactTreeStore",
     "CodeAdapter",
     "DocItem",
+    "DoclingDocumentAdapter",
     "GenericTextAdapter",
     "MarkdownAdapter",
     "PdfAdapter",
@@ -44,6 +51,7 @@ __all__ = [
     "Rung",
     "TreeError",
     "create_schema_sql",
+    "items_from_docling",
     "tree_from_items",
     "validate",
 ]

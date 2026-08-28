@@ -115,6 +115,49 @@ def tree_from_items(
     )
 
 
+def items_from_docling(document) -> list[DocItem]:
+    """Project a converted DoclingDocument onto the four fields the mapping
+    needs.
+
+    Public because conversion is the expensive step and a caller that has
+    already paid it should not pay again. Resource Explorer converts each PDF
+    once and feeds the result to both its chunker and this tree builder --
+    without this seam, an ingest run converts every PDF twice.
+
+    Duck-typed rather than importing Docling types: this function is then
+    importable and testable without the [pdf] extra installed.
+    """
+    out: list[DocItem] = []
+    for item, _level in document.iterate_items():
+        label = getattr(getattr(item, "label", None), "value", "") or ""
+        text = getattr(item, "text", "") or ""
+        out.append(DocItem(label=label, text=text,
+                           level=int(getattr(item, "level", 1) or 1)))
+    return out
+
+
+class DoclingDocumentAdapter:
+    """For callers that converted already: `source` is a DoclingDocument, not a
+    path. Same mapping and same fidelity as PdfAdapter -- only the conversion
+    step is skipped, because someone else already ran it."""
+
+    name = "pdf-document"
+    fidelity = "inferred"
+
+    def handles(self, kind: str) -> bool:
+        return kind.lower() in {"docling-document", "docling"}
+
+    def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree:
+        if isinstance(source, (str, bytes)):
+            raise TypeError(
+                "DoclingDocumentAdapter needs a converted DoclingDocument; "
+                "use PdfAdapter for a path"
+            )
+        return tree_from_items(
+            artifact_id, items_from_docling(source), provenance, self.fidelity
+        )
+
+
 class PdfAdapter:
     """Docling-backed. `source` is a path -- Docling reads the file itself, and
     handing it bytes we just read would only make it write them back out."""
@@ -139,14 +182,7 @@ class PdfAdapter:
                 "pip install 'trellis-artifact-tree[pdf]'"
             ) from exc
 
-        doc = DocumentConverter().convert(path).document
-        out: list[DocItem] = []
-        for item, _level in doc.iterate_items():
-            label = getattr(getattr(item, "label", None), "value", "") or ""
-            text = getattr(item, "text", "") or ""
-            out.append(DocItem(label=label, text=text,
-                               level=int(getattr(item, "level", 1) or 1)))
-        return out
+        return items_from_docling(DocumentConverter().convert(path).document)
 
     def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree:
         if not isinstance(source, str):

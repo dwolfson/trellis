@@ -157,3 +157,63 @@ class TestEmptyIsNotAFailure:
              patch("resource_explorer.config.get_config", return_value=_cfg(True)):
             assert sink.build_trees([], "amundsen").status == "stored"
             store.assert_not_called()
+
+
+class TestSharedDoclingConversion:
+    """Docling conversion is the expensive step in a PDF ingest. Converting
+    once for chunks and again for the tree doubles the cost of a PDF-heavy
+    repo for no benefit."""
+
+    def test_documents_are_passed_through_without_reconversion(self):
+        store = MagicMock()
+        document = object()
+        with patch.object(sink, "_store", return_value=store), \
+             patch("resource_explorer.config.get_config", return_value=_cfg(True)), \
+             patch("docling.document_converter.DocumentConverter") as conv:
+            result = sink.build_pdf_trees_from_documents(
+                [("docs/paper.pdf", document)], "amundsen",
+            )
+        conv.assert_not_called()
+        assert result.status in ("stored", "partial")
+
+    def test_parse_pdf_with_a_document_does_not_convert(self):
+        from resource_explorer.ingestion.doc_parser import DocParser
+
+        document = MagicMock()
+        document.export_to_markdown.return_value = "# T\nbody text here"
+        with patch("docling.document_converter.DocumentConverter") as conv:
+            chunks = DocParser(50, 5).parse_pdf("/tmp/x.pdf", "amundsen", document=document)
+        conv.assert_not_called()
+        document.export_to_markdown.assert_called_once()
+        assert chunks and chunks[0].metadata["type"] == "pdf"
+
+
+class TestIngestPdfsConvertsOncePerFile:
+    """The end-to-end property: one DocumentConverter for the collection, and
+    one conversion per file feeding both the chunker and the tree."""
+
+    def test_one_converter_and_one_conversion_per_file(self, tmp_path):
+        from resource_explorer.ingestion.pipeline import IngestionPipeline
+
+        (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "b.pdf").write_bytes(b"%PDF-1.4")
+
+        document = MagicMock()
+        document.export_to_markdown.return_value = "# T\nbody"
+        converter = MagicMock()
+        converter.convert.return_value = MagicMock(document=document)
+
+        ctype = MagicMock(chunk_size=50, chunk_overlap=5)
+        with patch("resource_explorer.registry.ProjectRegistry"), \
+             patch("resource_explorer.vector_store_pg.MultiCollectionStore"), \
+             patch("docling.document_converter.DocumentConverter",
+                   return_value=converter) as conv_cls, \
+             patch("resource_explorer.config.get_config", return_value=_cfg(False)):
+            pipeline = IngestionPipeline.__new__(IngestionPipeline)
+            pipeline.console = MagicMock()
+            chunks = pipeline._ingest_pdfs(tmp_path, "amundsen", ctype)
+
+        assert conv_cls.call_count == 1, "one converter for the whole collection"
+        assert converter.convert.call_count == 2, "one conversion per file, not two"
+        assert chunks

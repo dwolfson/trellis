@@ -99,3 +99,48 @@ class TestContract:
     def test_no_items_still_yields_a_valid_tree(self):
         t = tree_from_items("z", [], PROV)
         assert len(t.nodes) == 1
+
+
+class FakeItem:
+    def __init__(self, label, text, level=1):
+        self.label = type("L", (), {"value": label})()
+        self.text = text
+        self.level = level
+
+
+class FakeDoc:
+    def __init__(self, items): self._items = items
+    def iterate_items(self): return [(i, 0) for i in self._items]
+
+
+class TestSharedConversion:
+    """Conversion is the expensive step. A caller that already paid for it --
+    RE converts each PDF once and feeds both its chunker and this builder --
+    must not pay again."""
+
+    def test_items_from_docling_needs_no_docling(self):
+        from trellis_artifact_tree.adapters_pdf import items_from_docling
+
+        items = items_from_docling(FakeDoc([
+            FakeItem("title", "T"), FakeItem("section_header", "S", 2),
+            FakeItem("text", "body"),
+        ]))
+        assert [(i.label, i.text, i.level) for i in items] == [
+            ("title", "T", 1), ("section_header", "S", 2), ("text", "body", 1),
+        ]
+
+    def test_document_adapter_maps_without_converting(self):
+        from trellis_artifact_tree.adapters_pdf import DoclingDocumentAdapter
+
+        doc = FakeDoc([FakeItem("title", "T"), FakeItem("text", "body")])
+        t = DoclingDocumentAdapter().parse("z", doc, PROV)
+        assert [n.title for n in t.nodes if n.title] == ["paper.pdf", "T"]
+        assert t.provenance.extraction_fidelity == "inferred"
+
+    def test_document_adapter_rejects_a_path(self):
+        import pytest
+
+        from trellis_artifact_tree.adapters_pdf import DoclingDocumentAdapter
+
+        with pytest.raises(TypeError, match="use PdfAdapter for a path"):
+            DoclingDocumentAdapter().parse("z", "/tmp/x.pdf", PROV)

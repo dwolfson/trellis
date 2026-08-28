@@ -35,12 +35,21 @@ class DocParser:
                 ))
         return chunks
 
-    def parse_pdf(self, file_path: str, project_slug: str) -> list[DocChunk]:
-        """Use Docling for layout-aware PDF parsing."""
-        from docling.document_converter import DocumentConverter
-        converter = DocumentConverter()
-        result = converter.convert(file_path)
-        text = result.document.export_to_markdown()
+    def parse_pdf(
+        self, file_path: str, project_slug: str, document=None,
+    ) -> list[DocChunk]:
+        """Use Docling for layout-aware PDF parsing.
+
+        `document` lets a caller that has ALREADY converted the file pass the
+        result in, so conversion happens once. Docling conversion is by far the
+        expensive step here, and the containment-tree builder needs the same
+        converted document -- without this parameter an ingest run converts
+        every PDF twice. Left optional so existing callers are unaffected.
+        """
+        if document is None:
+            from docling.document_converter import DocumentConverter
+            document = DocumentConverter().convert(file_path).document
+        text = document.export_to_markdown()
         return [
             DocChunk(
                 text=chunk,
