@@ -18,6 +18,9 @@ dependencies = [
     # Shared vector-store implementation (BaseVectorStore/PgVectorStore),
     # extracted alongside Egeria Advisor's equivalent — packages/trellis-vectorstore
     "trellis-vectorstore",
+    # Containment trees over ingested artifacts, OFF by default
+    # (ARTIFACT_TREE_ENABLED) — packages/trellis-artifact-tree
+    "trellis-artifact-tree",
     # Embeddings & LLM
     "sentence-transformers>=3.3.0",
     "ollama>=0.4.0",

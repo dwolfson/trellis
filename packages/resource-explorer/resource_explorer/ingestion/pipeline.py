@@ -613,10 +613,30 @@ class IngestionPipeline:
         from resource_explorer.ingestion.doc_parser import DocParser
         parser = DocParser(ctype.chunk_size, ctype.chunk_overlap)
         chunks = []
+        walked: list[tuple[str, str]] = []
         for path, content in self._local_files(local_root, ctype.file_extensions):
+            walked.append((path, content))
             chunks.extend(parser.parse_markdown(content, path, project_slug))
         for path, content in self._local_files_for_paths(extra_paths or [], ctype.file_extensions):
+            walked.append((path, content))
             chunks.extend(parser.parse_markdown(content, path, project_slug))
+
+        # Containment trees, off by default (ARTIFACT_TREE_ENABLED). Built from
+        # the SAME walk rather than a second read, and in addition to the chunks
+        # above, never instead of them -- see artifact_tree_sink's docstring.
+        # Fail-soft by construction: this cannot reduce what gets ingested.
+        from resource_explorer.ingestion.artifact_tree_sink import build_trees
+        tree_result = build_trees(walked, project_slug, kind="markdown")
+        if tree_result.status not in ("disabled", "stored"):
+            # console, not logging: this module reports through rich
+            # throughout, and a logger here would be the only one in the file.
+            self.console.print(
+                f"[yellow]artifact trees for {project_slug}: "
+                f"{tree_result.status} "
+                f"(stored={tree_result.stored} skipped={tree_result.skipped})"
+                f"{' — ' + tree_result.reason if tree_result.reason else ''}[/yellow]"
+            )
+
         return chunks
 
     def _ingest_web_docs(
