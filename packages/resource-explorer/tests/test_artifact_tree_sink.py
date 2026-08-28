@@ -99,3 +99,61 @@ class TestFailSoft:
             result = sink.build_trees(FILES, "amundsen")
         assert (result.status, result.stored, result.skipped) == ("partial", 1, 1)
         assert store.put.call_count == 2
+
+
+class TestCodeTrees:
+    def test_unsupported_language_is_named_once_not_skipped_per_file(self):
+        """go_code is a real collection here and the tree package has no Go
+        grammar. A thousand identical per-file warnings would be noise hiding
+        one fact, so the gap is checked up front and named."""
+        with patch("resource_explorer.config.get_config", return_value=_cfg(True)):
+            result = sink.build_code_trees(FILES, "amundsen", "go")
+        assert result.status == "unsupported"
+        assert "go" in result.reason and "python" in result.reason
+        assert result.stored == 0
+
+    def test_supported_language_pins_one_adapter(self):
+        store = MagicMock()
+        py_files = [("a.py", "class A:\n    def m(self):\n        pass\n")]
+        with patch.object(sink, "_store", return_value=store), \
+             patch("resource_explorer.config.get_config", return_value=_cfg(True)):
+            result = sink.build_code_trees(py_files, "amundsen", "python")
+        assert (result.status, result.stored) == ("stored", 1)
+        tree = store.put.call_args.args[0]
+        assert {n.kind for n in tree.nodes} == {"module", "class", "function"}
+
+    def test_disabled_short_circuits_before_importing_the_adapter(self):
+        with patch("resource_explorer.config.get_config", return_value=_cfg(False)):
+            assert sink.build_code_trees(FILES, "amundsen", "python").status == "disabled"
+
+
+class TestPdfTrees:
+    def test_display_path_keys_the_artifact_not_the_absolute_path(self):
+        """An absolute path is a property of this checkout, not of the
+        document -- keying on it would make the same PDF a different artifact
+        on every host."""
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter.parse.return_value = "tree-sentinel"
+        with patch.object(sink, "_store", return_value=store), \
+             patch("trellis_artifact_tree.adapters_pdf.PdfAdapter", return_value=adapter), \
+             patch("resource_explorer.config.get_config", return_value=_cfg(True)):
+            sink.build_pdf_trees([("docs/paper.pdf", "/tmp/x/docs/paper.pdf")], "amundsen")
+        artifact_id, source, prov = adapter.parse.call_args.args
+        assert artifact_id == "amundsen:docs/paper.pdf"
+        assert source == "/tmp/x/docs/paper.pdf"   # the adapter still opens the real file
+        assert prov.source_id == "docs/paper.pdf"
+
+    def test_disabled_short_circuits(self):
+        with patch("resource_explorer.config.get_config", return_value=_cfg(False)):
+            assert sink.build_pdf_trees([], "amundsen").status == "disabled"
+
+
+class TestEmptyIsNotAFailure:
+    def test_no_files_is_a_clean_run(self):
+        """A collection with nothing to parse is not the same as a broken one,
+        and must not open a connection to discover that."""
+        with patch.object(sink, "_store") as store, \
+             patch("resource_explorer.config.get_config", return_value=_cfg(True)):
+            assert sink.build_trees([], "amundsen").status == "stored"
+            store.assert_not_called()

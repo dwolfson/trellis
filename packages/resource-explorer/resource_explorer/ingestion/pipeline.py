@@ -573,6 +573,20 @@ class IngestionPipeline:
                         pass
         return results
 
+    def _report_tree_result(self, result, project_slug: str) -> None:
+        """Surface anything other than a clean run or a disabled feature.
+
+        console, not logging: this module reports through rich throughout, and
+        a logger here would be the only one in the file.
+        """
+        if result.status in ("disabled", "stored"):
+            return
+        self.console.print(
+            f"[yellow]artifact trees for {project_slug}: {result.status} "
+            f"(stored={result.stored} skipped={result.skipped})"
+            f"{' — ' + result.reason if result.reason else ''}[/yellow]"
+        )
+
     # ── per-collection-type ingestors ─────────────────────────────────────────
 
     _CTYPE_LANGUAGE: dict[str, str] = {
@@ -596,13 +610,25 @@ class IngestionPipeline:
 
         chunks = []
         all_symbols = []
+        walked: list[tuple[str, str]] = []
         for path, content in self._local_files(local_root, ctype.file_extensions):
+            walked.append((path, content))
             chunks.extend(parser.parse(path, content, project_slug))
             if extractor:
                 all_symbols.extend(extractor.extract(path, content, project_slug, language))
 
         if all_symbols:
             self.registry.upsert_code_symbols(project_slug, all_symbols)
+
+        # Containment trees, off by default. Distinct from the symbols above:
+        # a symbol table answers what is declared and where it is referenced,
+        # a tree answers what contains what so a unit can be dropped or
+        # summarised coherently. Same walk, no second read.
+        if language:
+            from resource_explorer.ingestion.artifact_tree_sink import build_code_trees
+            self._report_tree_result(
+                build_code_trees(walked, project_slug, language), project_slug,
+            )
 
         return chunks
 
@@ -626,16 +652,9 @@ class IngestionPipeline:
         # above, never instead of them -- see artifact_tree_sink's docstring.
         # Fail-soft by construction: this cannot reduce what gets ingested.
         from resource_explorer.ingestion.artifact_tree_sink import build_trees
-        tree_result = build_trees(walked, project_slug, kind="markdown")
-        if tree_result.status not in ("disabled", "stored"):
-            # console, not logging: this module reports through rich
-            # throughout, and a logger here would be the only one in the file.
-            self.console.print(
-                f"[yellow]artifact trees for {project_slug}: "
-                f"{tree_result.status} "
-                f"(stored={tree_result.stored} skipped={tree_result.skipped})"
-                f"{' — ' + tree_result.reason if tree_result.reason else ''}[/yellow]"
-            )
+        self._report_tree_result(
+            build_trees(walked, project_slug, kind="markdown"), project_slug,
+        )
 
         return chunks
 
@@ -712,23 +731,33 @@ class IngestionPipeline:
         from resource_explorer.ingestion.doc_parser import DocParser
         parser = DocParser(ctype.chunk_size, ctype.chunk_overlap)
         chunks = []
+        # (display_path, absolute_path). The display path keys the artifact:
+        # an absolute path is a property of this checkout, not of the document.
+        pdfs: list[tuple[str, str]] = []
         for path in local_root.rglob("*.pdf"):
+            pdfs.append((str(path.relative_to(local_root)), str(path)))
             try:
                 chunks.extend(parser.parse_pdf(str(path), project_slug))
             except Exception:
                 pass
-        for _display, abs_path in (extra_paths or []):
+        for display, abs_path in (extra_paths or []):
             if abs_path.is_file() and abs_path.suffix.lower() == ".pdf":
+                pdfs.append((f"{display}/{abs_path.name}", str(abs_path)))
                 try:
                     chunks.extend(parser.parse_pdf(str(abs_path), project_slug))
                 except Exception:
                     pass
             elif abs_path.is_dir():
                 for pdf in abs_path.rglob("*.pdf"):
+                    pdfs.append((f"{display}/{pdf.relative_to(abs_path)}", str(pdf)))
                     try:
                         chunks.extend(parser.parse_pdf(str(pdf), project_slug))
                     except Exception:
                         pass
+
+        from resource_explorer.ingestion.artifact_tree_sink import build_pdf_trees
+        self._report_tree_result(build_pdf_trees(pdfs, project_slug), project_slug)
+
         return chunks
 
     def _ingest_releases(self, repo, project_slug: str, ctype: CollectionType) -> list:

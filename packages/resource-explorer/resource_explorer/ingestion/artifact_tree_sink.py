@@ -3,20 +3,19 @@
 Off by default (`ARTIFACT_TREE_ENABLED`). Off means today's behaviour exactly:
 this module opens no connection, creates no table, and does no work.
 
-On, it builds a tree per file **in addition to** the chunks that walk already
-produces. Not instead of: chunks are retrieval units sized by content profile,
-tree nodes are containment units that compression rungs are cut from, and
-neither derives from the other (docs/context-compilation-design.md §15). The two
-come from the same walk over the same files, which is the point — one read, two
-representations.
+On, it builds a tree per artifact **in addition to** the chunks that walk
+already produces. Not instead of: chunks are retrieval units sized by content
+profile, tree nodes are containment units that compression rungs are cut from,
+and neither derives from the other (docs/context-compilation-design.md §15). The
+two come from the same walk over the same files -- one read, two representations.
 
 **Never breaks ingestion, and never lies about it.** A failure here does not
 propagate -- a tree is an optimisation over a working pipeline and a broken one
 must not cost the corpus -- but it is not swallowed into a success-shaped return
 either. build_trees() hands back a TreeBuildResult carrying an explicit status,
-so "the feature is off", "there was nothing to parse", "some files were skipped"
-and "the store was unreachable" are four distinguishable outcomes rather than
-four zeros. Returning a bare 0 for all of them is the exact shape
+so "the feature is off", "no adapter for this language", "some files were
+skipped" and "the store was unreachable" are distinguishable outcomes rather
+than four zeros. Returning a bare 0 for all of them is the exact shape
 tests/test_no_silent_success.py ratchets against, and it was the first thing
 this module got wrong.
 """
@@ -31,14 +30,21 @@ logger = logging.getLogger(__name__)
 _schema_ready = False
 
 
+def _reset_for_tests() -> None:
+    """Testing hook -- the schema-created guard is process-global."""
+    global _schema_ready
+    _schema_ready = False
+
+
 @dataclass(frozen=True)
 class TreeBuildResult:
     """What actually happened, in a form a caller can branch on.
 
     status:
       "disabled"    -- feature off; nothing attempted, nothing wrong
-      "stored"      -- every file parsed and persisted
-      "partial"     -- some files skipped; `skipped` says how many
+      "stored"      -- every artifact parsed and persisted
+      "partial"     -- some skipped; `skipped` says how many
+      "unsupported" -- no adapter for this kind; a gap to fill, not a failure
       "unavailable" -- setup failed; nothing stored, `reason` says why
     """
 
@@ -49,12 +55,6 @@ class TreeBuildResult:
 
     def __bool__(self) -> bool:
         return self.stored > 0
-
-
-def _reset_for_tests() -> None:
-    """Testing hook — the schema-created guard is process-global."""
-    global _schema_ready
-    _schema_ready = False
 
 
 def _store():
@@ -79,16 +79,27 @@ def build_trees(
     project_slug: str,
     kind: str = "markdown",
     source_version: str = "",
+    adapter=None,
 ) -> TreeBuildResult:
-    """Build and persist a tree per file.
+    """Build and persist a tree per item.
 
-    `files` is the (path, content) shape the pipeline's own walkers already
-    yield, so callers pass what they have rather than re-reading anything.
+    `files` is a list of (source_id, source). For text formats that is the
+    (path, content) shape the pipeline's own walkers already yield, so callers
+    pass what they have rather than re-reading anything. For PDFs the source is
+    a path, because Docling opens the file itself -- handing it bytes we had
+    just read would only make it write them back out.
+
+    `adapter` pins the adapter instead of resolving `kind` through the default
+    registry. Code needs that: one CodeAdapter is built per language, so the
+    language is a property of the adapter rather than something re-derived per
+    file.
     """
     from resource_explorer.config import get_config
 
     if not get_config().artifact_tree.enabled:
         return TreeBuildResult("disabled")
+    if not files:
+        return TreeBuildResult("stored")
 
     global _schema_ready
     try:
@@ -101,30 +112,37 @@ def build_trees(
 
         registry = AdapterRegistry()
         fetched_at = datetime.now(timezone.utc).isoformat()
+
+        def prov(source_id: str) -> Provenance:
+            return Provenance(
+                source_kind="repo",
+                source_id=source_id,
+                fetched_at=fetched_at,
+                # The commit the content came from, when the caller knows it.
+                # Without it a tree can be read back but not placed in time,
+                # which is what the design's as-of work needs.
+                source_version=source_version,
+            )
+
         stored = skipped = 0
-        for path, content in files:
+        for source_id, source in files:
             try:
-                tree = registry.parse(
-                    artifact_id=f"{project_slug}:{path}",
-                    kind=kind,
-                    source=content,
-                    provenance=Provenance(
-                        source_kind="repo",
-                        source_id=path,
-                        fetched_at=fetched_at,
-                        # The commit the content came from, when the caller
-                        # knows it. Without it a tree can be read back but not
-                        # placed in time, which is what §10's as-of work needs.
-                        source_version=source_version,
-                    ),
+                artifact_id = f"{project_slug}:{source_id}"
+                tree = (
+                    adapter.parse(artifact_id, source, prov(source_id))
+                    if adapter is not None
+                    else registry.parse(
+                        artifact_id=artifact_id, kind=kind,
+                        source=source, provenance=prov(source_id),
+                    )
                 )
                 store.put(tree)
                 stored += 1
             except Exception:
-                # One unparseable file must not abandon the rest -- but it is
-                # counted, so a caller can tell a clean run from a lossy one.
+                # One unparseable artifact must not abandon the rest -- but it
+                # is counted, so a caller can tell a clean run from a lossy one.
                 skipped += 1
-                logger.warning("artifact tree: skipped %s", path, exc_info=True)
+                logger.warning("artifact tree: skipped %s", source_id, exc_info=True)
         return TreeBuildResult(
             status="partial" if skipped else "stored",
             stored=stored, skipped=skipped,
@@ -135,3 +153,64 @@ def build_trees(
             "(ingestion continues with chunks)", exc_info=True,
         )
         return TreeBuildResult("unavailable", reason=f"{type(exc).__name__}: {exc}")
+
+
+def build_code_trees(
+    files: list[tuple[str, str]],
+    project_slug: str,
+    language: str,
+    source_version: str = "",
+) -> TreeBuildResult:
+    """Trees from source, one CodeAdapter per language.
+
+    An unsupported language returns "unsupported" rather than skipping every
+    file individually: `go_code` is a real collection in this pipeline and the
+    tree package has no Go grammar, so a thousand identical per-file warnings
+    would be noise hiding one fact. Checked once, up front, and named.
+    """
+    from resource_explorer.config import get_config
+
+    if not get_config().artifact_tree.enabled:
+        return TreeBuildResult("disabled")
+
+    try:
+        from trellis_artifact_tree.adapters_code import SPECS, CodeAdapter
+    except Exception as exc:
+        return TreeBuildResult("unavailable", reason=f"{type(exc).__name__}: {exc}")
+
+    if language not in SPECS:
+        return TreeBuildResult(
+            "unsupported",
+            reason=f"no grammar for {language!r} (have: {', '.join(sorted(SPECS))})",
+        )
+    return build_trees(
+        files, project_slug, source_version=source_version,
+        adapter=CodeAdapter(language=language),
+    )
+
+
+def build_pdf_trees(
+    paths: list[tuple[str, str]],
+    project_slug: str,
+    source_version: str = "",
+) -> TreeBuildResult:
+    """Trees from PDFs. `paths` is (display_path, absolute_path).
+
+    The display path is what provenance records and what the artifact id is
+    keyed on -- an absolute path is a property of this machine's checkout, not
+    of the artifact, and would make the same document a different artifact on
+    every host.
+    """
+    from resource_explorer.config import get_config
+
+    if not get_config().artifact_tree.enabled:
+        return TreeBuildResult("disabled")
+
+    try:
+        from trellis_artifact_tree.adapters_pdf import PdfAdapter
+    except Exception as exc:
+        return TreeBuildResult("unavailable", reason=f"{type(exc).__name__}: {exc}")
+
+    return build_trees(
+        paths, project_slug, source_version=source_version, adapter=PdfAdapter(),
+    )
