@@ -311,6 +311,71 @@ def _r_community(reg, p) -> tuple:
     return (value, MEASURED if known or elephant else NOT_ESTABLISHED)
 
 
+def _survey_candidates(p) -> tuple:
+    """(candidates, reachable) for this resource's technology type.
+
+    The only reader here that leaves the database. Both questions below ask
+    what RE itself can run, and that lives in Egeria's authored Survey
+    Definitions — there is no local copy to consult. The reader is cached
+    (SurveyDefinitionReader's own candidates cache), so this is usually not a
+    round trip.
+
+    Unreachable returns (…, False) rather than raising or returning an empty
+    list: "no Survey Definition is authored for this" and "we could not ask"
+    are opposite answers, and the second must never be reported as the first.
+    """
+    try:
+        from resource_explorer.surveyors.survey_definition_reader import (
+            SurveyDefinitionReader,
+        )
+        reader = SurveyDefinitionReader()
+        return (reader.find_candidate_process_guids("Git Repository"), True)
+    except Exception as exc:
+        log.debug("survey definition candidates unavailable: %s", exc)
+        return ([], False)
+
+
+def _r_which_survey(reg, p) -> tuple:
+    """Which Survey Definition to run — answered from what is actually authored.
+
+    Was classified `direct` with nowhere declared to read it from, so it fell
+    through to generic retrieval like the maintained/community questions did.
+    The answer is the candidate list RE already builds for the Survey tab.
+    """
+    candidates, reachable = _survey_candidates(p)
+    if not reachable:
+        return ({"detail": "Egeria could not be reached, so what is authored "
+                           "for this technology type is unknown."},
+                NOT_ESTABLISHED)
+    if not candidates:
+        return ({"candidates": []}, NOTHING_FOUND)
+    names = [c.get("qualified_name", "").split("::")[-1] for c in candidates]
+    return ({"count": len(candidates), "candidates": names,
+             # Named rather than ranked: which to run depends on what the
+             # caller wants to learn, and a recommendation here would be this
+             # layer deciding that on their behalf.
+             "note": "Cheapest first is the usual order; the Survey tab shows "
+                     "each one's step count and speed tag."},
+            MEASURED)
+
+
+def _r_survey_definition_exists(reg, p) -> tuple:
+    """Whether ANY Survey Definition is authored for this technology type.
+
+    The empty case is the whole point of the question — it asks whether the
+    absence is a catalog gap — so NOTHING_FOUND here is a real answer, and is
+    kept strictly apart from the unreachable case.
+    """
+    candidates, reachable = _survey_candidates(p)
+    if not reachable:
+        return ({"detail": "Egeria could not be reached, so whether anything "
+                           "is authored is unknown — this is not a finding "
+                           "that nothing is."}, NOT_ESTABLISHED)
+    return ({"authored": bool(candidates), "count": len(candidates),
+             "technology_type": "Git Repository"},
+            MEASURED if candidates else NOTHING_FOUND)
+
+
 def _r_description(reg, p) -> tuple:
     d = (getattr(p, "description", "") or "").strip()
     return ({"description": d}, MEASURED if d else NOTHING_FOUND)
@@ -460,6 +525,10 @@ RESOURCE_STATE_SOURCES = {
     "Who maintains this repository?": (_r_maintainers, "project_commits"),
     "How widely adopted and active is the community around this repository?":
         (_r_community, "community_support"),
+    "Which Survey Definition should I run — a quick coarse check or the full deep survey?":
+        (_r_which_survey, "survey_definitions"),
+    "Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap?":
+        (_r_survey_definition_exists, "survey_definitions"),
     "Has this repository already been catalogued in Egeria and when?":
         (_r_catalogued, "egeria_catalogue_state"),
     "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
