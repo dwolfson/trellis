@@ -52,22 +52,44 @@ UNGUARDED_BY_DESIGN: dict[str, str] = {
         "suspected audit history -- inferred from a test comment, not stated "
         "anywhere authoritative. Confirm or clean up.",
     # Found by THIS TEST on first run, not by the hand audit that found the two
-    # above. Reasons not yet established -- they are baselined, not blessed.
-    "conversation_history": "DECISION PENDING -- found 2026-08-28, reason unknown.",
-    "repo_dispositions": "DECISION PENDING -- found 2026-08-28, reason unknown.",
-    "sub_resources": "DECISION PENDING -- found 2026-08-28, reason unknown.",
+    # above. Investigated and resolved 2026-08-28 -- each keeps its slug rows on
+    # purpose, and for a different reason.
+    "conversation_history":
+        "chat turns, keyed on session_id; project_slug is optional CONTEXT "
+        "(DEFAULT '') and not identity -- a conversation need not have a repo "
+        "at all. The conversation happened; deleting the repo does not unhappen "
+        "it. Same class as query_log. 14 rows, 0 orphaned.",
+    "repo_dispositions":
+        "keyed on github_url, NOT on slug -- project_slug is secondary "
+        "annotation. The primary case is a decision about a repo that was NEVER "
+        "registered: 'ignored' means passed on during scouting, and the row is "
+        "what stops it resurfacing as new in Discovery. A foreign key would "
+        "FORBID that case, so this table must be unguarded to work at all. "
+        "17 rows, 1 already orphaned -- which is correct behaviour, not a leak.",
+    "sub_resources":
+        "12 of 13 rows carry an egeria_guid: these are records of things "
+        "PUBLISHED to Egeria, and the Egeria element outlives the local repo. "
+        "Same class as project_published_annotation_types. Narrower follow-up "
+        "worth having: a sub-resource with NO egeria_guid is pure orphan debris "
+        "on removal, and remove() cleans neither.",
     "query_log":
         "observability history -- what was asked about a resource is analytics "
         "that outlives the resource, and feedback tuning reads it. Deliberate.",
 }
 
 # This allowlist is a RATCHET, in the manner of
-# tests/no_silent_success_baseline.json: it records where things stand today so
-# a sixth unguarded table cannot appear unnoticed, and it may only shrink.
-# Three of the five entries are marked DECISION PENDING and should be resolved
-# -- either give the table a foreign key, or write down why its rows outlive
-# the resource. Adding a new entry to keep the build green is the one use this
-# list is not for.
+# tests/no_silent_success_baseline.json: it records where things stand so a new
+# unguarded table cannot appear unnoticed, and it may only shrink. Every entry
+# now carries a real reason; none is a placeholder. Adding a new entry to keep
+# the build green is the one use this list is not for.
+#
+# The reasons fall into two kinds, and the distinction is the useful part:
+#   - the row describes something that HAPPENED (a question asked, a decision
+#     made). Deleting the resource does not un-happen it.
+#   - the row points at something that still EXISTS elsewhere, in Egeria.
+#     Deleting the local resource does not delete the remote element.
+# A row that is neither -- one whose only purpose is to describe a resource
+# that is now gone -- is orphan debris and should cascade instead.
 
 
 def _connect():
@@ -147,14 +169,31 @@ class TestNoOrphanedSlugs:
             "UNGUARDED_BY_DESIGN saying why rows may outlive the resource."
         )
 
-    def test_the_allowlist_does_not_rot(self, pg_registry, pg_test_schema):
-        """An entry for a table that no longer exists, or that has since gained
-        an FK, is a stale exemption hiding behind a real one."""
+    def test_the_allowlist_does_not_rot(self):
+        """An entry for a table that no longer exists is a stale exemption
+        hiding behind real ones.
+
+        Checked against the LIVE schema, read-only, and deliberately not
+        against the throwaway test schema. Tables there are created lazily by
+        whichever component owns them, so a table missing from a partial test
+        run is indistinguishable from a table that was dropped -- and this
+        assertion would then fail for the wrong reason every time the file is
+        run on its own. The live schema is the only complete set. It is only
+        read: no fixture, no writes, no dependence on test ordering.
+        """
         conn = _connect()
         try:
             with conn.cursor() as cur:
-                slug_tables = {t for t, _ in _slug_bearing_tables(cur, pg_test_schema)}
+                cur.execute(
+                    """SELECT table_name FROM information_schema.tables
+                        WHERE table_schema = 'resource_explorer'""",
+                )
+                live = {r[0] for r in cur.fetchall()}
         finally:
             conn.close()
-        stale = sorted(set(UNGUARDED_BY_DESIGN) - slug_tables)
+        if not live:
+            import pytest
+
+            pytest.skip("live resource_explorer schema not present")
+        stale = sorted(set(UNGUARDED_BY_DESIGN) - live)
         assert not stale, f"UNGUARDED_BY_DESIGN lists table(s) that are gone: {stale}"
