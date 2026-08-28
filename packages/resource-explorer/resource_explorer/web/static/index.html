@@ -7511,13 +7511,14 @@ let _curateAllTagsCache = [];  // for the add-tag <datalist> — refreshed each 
 // Analysis/Discovery cards) — this tab, like Admin's old one, is
 // monitoring, not an editor (unchanged division of responsibility, see
 // CLAUDE.md's "Scheduling vs. monitoring schedules" note).
-let _automateSubTab = 'subscriptions';  // 'subscriptions' | 'schedules'
+let _automateSubTab = 'subscriptions';  // 'subscriptions' | 'schedules' | 'surveys'
 let _automateFilterToSelected = false;
 
 function _automateSubnavHtml(active) {
   const tabs = [
     { tab: 'subscriptions', label: '🔔 Subscriptions' },
     { tab: 'schedules',     label: '⏱ Schedules' },
+    { tab: 'surveys',       label: '📋 Surveys' },
   ];
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_setAutomateSubTab('${t.tab}')"
@@ -7532,6 +7533,7 @@ function _setAutomateSubTab(tab) {
 
 function loadAutomatePanel() {
   if (_automateSubTab === 'schedules') loadAutomateSchedulesPanel();
+  else if (_automateSubTab === 'surveys') loadAutomateSurveysPanel();
   else loadAutomateSubscriptionsPanel();
 }
 
@@ -7629,6 +7631,127 @@ async function _toggleSubscription(id, action) {
   }
 }
 
+// 📋 Surveys sub-tab — put a whole Survey Definition on a cadence.
+//
+// The one place a recurring "run everything" bundle belongs. Until
+// 2026-08-28 a schedule could only name an analysis, so a survey could be
+// authored, listed and run by hand but never scheduled; that is why
+// RepoFullSurvey still sits as a card in four stage tabs, offering a 34-step
+// run from surfaces meant for cheap single checks.
+//
+// Unlike ⏱ Schedules (global, monitoring-only) this one edits, and it is
+// per-resource because a schedule is. The definition list itself comes from
+// the authored documents, not Egeria, so this keeps working while Egeria is
+// down — the same local-first guarantee the executor has.
+async function loadAutomateSurveysPanel() {
+  const view = document.getElementById('automate-view');
+  view.innerHTML = _automateSubnavHtml('surveys') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading surveys…</div>';
+  if (!selectedProject) {
+    view.innerHTML = _automateSubnavHtml('surveys') + `
+      <div class="space-y-3">
+        <h1 class="text-lg font-bold text-slate-100 flex items-center gap-2">📋 Automate — schedule a survey</h1>
+        <p class="text-xs text-slate-400">A schedule belongs to a resource, so pick a repo in the left sidebar first.
+          The surveys themselves are catalog-wide — the same eight are offered for every repo.</p>
+      </div>`;
+    return;
+  }
+  try {
+    const [defs, existing] = await Promise.all([
+      fetch('/api/survey-definitions/definitions').then(r => r.ok ? r.json() : []),
+      fetch(`/api/schedules/repo/${encodeURIComponent(selectedProject)}`).then(r => r.ok ? r.json() : []).catch(() => []),
+    ]);
+    renderAutomateSurveysPanel(defs, existing);
+  } catch(e) {
+    view.innerHTML = _automateSubnavHtml('surveys') +
+      `<div class="text-red-400 text-xs p-4">Failed to load: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAutomateSurveysPanel(defs, existing) {
+  const view = document.getElementById('automate-view');
+  // Only survey-targeted schedules belong here. An analysis schedule for the
+  // same repo is a different thing and is shown in ⏱ Schedules; listing it
+  // here would suggest scheduling a survey had already been done.
+  const byRef = {};
+  for (const s of (existing || [])) {
+    if (s.target_kind === 'survey') byRef[s.analysis_id] = s;
+  }
+
+  const rows = (defs || []).map(d => {
+    const sched = byRef[d.qualified_name];
+    const selId = `survey-cadence-${d.name}`;
+    const current = sched ? sched.schedule : 'manual';
+    const opts = ['manual', 'daily', 'weekly', 'monthly'].map(o =>
+      `<option value="${o}"${o === current ? ' selected' : ''}>${o}</option>`).join('');
+    // Step count is the only honest cost signal available: a survey has no
+    // cost tier (its steps do, and which run can depend on guards), so the
+    // panel shows what it knows rather than a tier nobody computed.
+    const status = sched
+      ? (sched.enabled
+          ? `<span class="text-emerald-400 text-xs">● scheduled ${_esc(sched.schedule)}</span>`
+          : `<span class="text-slate-500 text-xs">○ ${_esc(sched.schedule)} (disabled)</span>`)
+      : '<span class="text-slate-600 text-xs">— not scheduled</span>';
+    const heavy = d.step_count >= 20
+      ? ` <span class="text-amber-500/80" title="A long survey run on a frequent cadence is the expensive case — weekly or monthly is usually the honest choice.">⚠ long</span>`
+      : '';
+    return `<tr class="hover:bg-slate-800/40 border-b border-slate-800">
+      <td class="px-3 py-2 text-xs text-slate-300 whitespace-nowrap">📋 ${_esc(d.name)}${heavy}</td>
+      <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">${d.step_count} step${d.step_count === 1 ? '' : 's'}</td>
+      <td class="px-3 py-2">${status}</td>
+      <td class="px-3 py-2 text-right whitespace-nowrap">
+        <select id="${selId}" class="text-xs bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200">${opts}</select>
+        <button onclick="_saveSurveySchedule('${_esc(d.qualified_name)}','${selId}')"
+          class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors ml-1">Schedule</button>
+        ${sched ? `<button onclick="_deleteAutomateSchedule('repo','${_esc(selectedProject)}','${_esc(d.qualified_name)}')"
+          class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors ml-1" title="Remove this schedule">🗑️</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _automateSubnavHtml('surveys') + `
+    <div class="space-y-4">
+      <div>
+        <h1 class="text-lg font-bold text-slate-100 flex items-center gap-2">📋 Automate — schedule a survey</h1>
+        <p class="text-xs text-slate-400 mt-1">Put a whole Survey Definition on a cadence for
+          <span class="text-slate-200 font-medium">${_esc(selectedProject)}</span>. A survey runs its steps in the order
+          the definition declares and publishes on the same terms a hand-started run does — a scheduled survey and a
+          manual one differ only in what triggered them.</p>
+        <div class="text-xs text-slate-500 mt-1">Individual analyses are scheduled from their own cards
+          (Assessment / Analysis / Discovery) and monitored in ⏱ Schedules. This tab is only for whole surveys.</div>
+      </div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-hidden">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-900 text-slate-300 text-xs uppercase font-semibold border-b border-slate-800">
+              <th class="px-3 py-2">Survey Definition</th>
+              <th class="px-3 py-2">Size</th>
+              <th class="px-3 py-2">Status</th>
+              <th class="px-3 py-2 text-right">Cadence</th>
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="4" class="px-3 py-6 text-center text-xs text-slate-500">No Survey Definitions are authored yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function _saveSurveySchedule(qualifiedName, selectId) {
+  const cadence = document.getElementById(selectId).value;
+  try {
+    const resp = await fetch(`/api/schedules/repo/${encodeURIComponent(selectedProject)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ analysis_id: qualifiedName, schedule: cadence, target_kind: 'survey' }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    showToast('success', `Survey scheduled ${cadence}.`);
+    loadAutomateSurveysPanel();
+  } catch(e) {
+    showToast('error', `Could not schedule: ${_esc(e.message)}`);
+  }
+}
+
 // ⏱ Schedules sub-tab — moved verbatim from Admin (2026-08-13). Global,
 // read-mostly overview across every resource; to add or change a cadence,
 // use the ⏱ Schedule action on the analysis card itself
@@ -7716,7 +7839,10 @@ async function _deleteAutomateSchedule(entityType, slug, analysisId) {
     const res = await fetch(`/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     showToast('success', 'Schedule removed.', 3000);
-    loadAutomateSchedulesPanel();
+    // Refresh whichever sub-tab asked, not always Schedules — deleting a
+    // survey schedule from the 📋 Surveys tab used to bounce the user into
+    // ⏱ Schedules, which reads as the click having navigated somewhere.
+    loadAutomatePanel();
   } catch(e) {
     showToast('error', `Failed to remove schedule: ${_esc(e.message)}`, 5000);
   }

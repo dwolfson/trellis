@@ -171,6 +171,40 @@ def _derived_from_steps(steps: list[dict], declared: list | None = None) -> dict
             "perspectives_source": "derived" if perspectives else ""}
 
 
+@router.get("/definitions")
+def list_definitions() -> list[dict]:
+    """Every authored Survey Definition, read locally from its document.
+
+    Deliberately NOT the candidates route. That one asks "which definitions
+    suit THIS resource", needs a Technology Type, and calls Egeria. Automate's
+    survey list asks "what surveys exist to put on a cadence", which is a
+    property of the catalog rather than of any one repo — and answering it
+    from `documented_definitions()` keeps the whole scheduling surface working
+    with Egeria unreachable, which is the local-first guarantee
+    docs/survey-model-and-engine-host-design.md §4.6 insists on.
+
+    `qualified_name` is what callers must store and pass back. The bare name
+    does NOT resolve: verified live 2026-08-28, find_process_guid_by_name
+    returns None for "RepoAssessmentSurvey" and the real GUID for
+    "GovActionProcess::RepoAssessmentSurvey". Returning both, with the usable
+    one named unambiguously, is why this route exists rather than leaving the
+    frontend to reassemble a prefix.
+    """
+    from resource_explorer.surveyors.survey_definition_docs import (
+        _PROCESS_PREFIX, documented_definitions,
+    )
+    return [
+        {
+            "name": name,
+            "qualified_name": f"{_PROCESS_PREFIX}{name}",
+            "step_count": len(doc.steps),
+            "branches": doc.branches,
+            "resource_type": "repo",
+        }
+        for name, doc in sorted(documented_definitions().items())
+    ]
+
+
 @router.get("/{entity_type}/{slug}/candidates")
 async def list_candidates(
     entity_type: str, slug: str,

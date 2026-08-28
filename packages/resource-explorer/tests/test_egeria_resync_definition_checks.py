@@ -172,3 +172,41 @@ def test_never_catalogued_is_not_reported_as_a_lost_asset(pg_registry):
     assert "never catalogued" in by_slug["never_published"]["cause"]
     # The title must not assert loss for the ones that never had an asset.
     assert "1 lost an asset, 1 never had one" in finding.title
+
+
+def test_a_repo_with_no_project_decided_is_marked_not_publish_ready(pg_registry):
+    """The finding recommends a publish call the route will refuse for some
+    of its own members.
+
+    The publish route's Part 5 gate rejects an `unset` Egeria Project context
+    with 428. Measured live 2026-08-28, the three repos that could not publish
+    were the three that had LOST an asset, while the never-catalogued ones
+    could — so a reader following the finding's advice hits a wall on exactly
+    the repos its wording emphasises. publish_ready carries that per item.
+    """
+    from resource_explorer.registry import Project
+
+    registry = pg_registry
+    for slug, status in (("decided", "linked"), ("undecided", "unset")):
+        registry.add(Project(slug=slug, display_name=slug,
+                             github_url=f"https://github.com/x/{slug}"))
+        with registry._conn() as conn:
+            conn.execute(
+                "INSERT INTO entity_egeria_project_context "
+                "(entity_type, entity_slug, status) VALUES (?,?,?)",
+                ("repo", slug, status),
+            )
+
+    scanner = object.__new__(R.EgeriaResync)
+    scanner._registry = registry
+    finding = R.EgeriaResync.__dict__["_scan_unpublished_but_expected"](scanner)
+    by_slug = {i["slug"]: i for i in finding.items}
+
+    assert by_slug["decided"]["publish_ready"] is True
+    assert by_slug["decided"]["blocked_reason"] == ""
+    assert by_slug["undecided"]["publish_ready"] is False
+    assert "428" in by_slug["undecided"]["blocked_reason"]
+    assert "1 awaiting a Project" in finding.title
+    # Assigning a Project is the ENTRY condition, not the exit — say so, since
+    # a reader who assigns one and sees no change will otherwise assume a bug.
+    assert "does NOT clear this" in finding.detail
