@@ -557,3 +557,33 @@ class PgVectorStore(BaseVectorStore):
             self._logger.info(f"Dropped table: {table}")
         finally:
             self._put_conn(conn)
+
+    def rename_collection(self, old_name: str, new_name: str) -> None:
+        """Rename a collection's underlying table in place — an `ALTER TABLE
+        ... RENAME TO`, not a drop+recreate. Added for RE's repo-rename repair
+        operation (see resource_explorer/repair.py): a collection name embeds
+        its owning slug (`{slug}_{collection_type}`), so renaming the slug
+        means renaming every collection table it owns. Doing that as a plain
+        rename — rather than dropping the old table and re-embedding from
+        source — is the whole point: the content did not change, only the
+        name it is filed under, and re-embedding a large repo is exactly the
+        cost this avoids.
+
+        Raises if `old_name` does not exist or `new_name` already does — a
+        rename onto an existing table would silently merge two unrelated
+        collections' rows under Postgres' RENAME semantics being a no-op
+        error in that case is what we want, not what to swallow.
+        """
+        self.connect()
+        old_table = self._table(old_name)
+        new_table = self._table(new_name)
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f'ALTER TABLE {self._qualified(old_table)} RENAME TO "{new_table}"'
+                )
+            conn.commit()
+            self._logger.info(f"Renamed table: {old_table} -> {new_table}")
+        finally:
+            self._put_conn(conn)
