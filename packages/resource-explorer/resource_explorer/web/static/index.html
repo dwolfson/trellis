@@ -3512,13 +3512,24 @@ function _renderWebsiteIngestionResults(data) {
   </div>`;
 }
 
+// Custom renderers defer their EMPTY state to _renderEmptyResultState, which
+// reads `_status` from the reader. Each used to hardcode its own sentence, and
+// every one of them said "yet" — "No data files profiled yet", "No symbols
+// extracted yet" — which asserts the scan has not happened. For 52 of 60 repos
+// the data-profile scan HAS happened and the honest answer is that the repo
+// contains no CSV/Parquet/XLSX files at all; the reader already says exactly
+// that in `_status.hint`, and the renderer was throwing it away.
+//
+// This is the same fix findings_list and metrics already had (2026-08-24) —
+// the custom branches were simply missed, and kept asserting "not run" about
+// measured absence.
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'website_ingestion') return _renderWebsiteIngestionResults(data);
   if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
   if (analysisId === 'dependency_analysis') {
     const ecosystems = Object.entries(data.by_ecosystem || {});
-    if (!ecosystems.length) return `<div class="text-xs text-slate-500">No dependencies found. Run "Refresh &amp; profile" to re-scan.</div>`;
+    if (!ecosystems.length) return _renderEmptyResultState(data);
     return `<div class="text-xs text-slate-400 mb-1">${data.total} dependenc${data.total === 1 ? 'y' : 'ies'} across ${ecosystems.length} ecosystem(s)</div>` +
       ecosystems.map(([eco, deps]) => `
         <div class="text-xs">
@@ -3530,7 +3541,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
         </div>`).join('');
   }
   if (analysisId === 'data_file_profiling') {
-    if (!data.profiles || !data.profiles.length) return `<div class="text-xs text-slate-500">No data files profiled yet.</div>`;
+    if (!data.profiles || !data.profiles.length) return _renderEmptyResultState(data);
     return `<div class="text-xs text-slate-400 mb-1">${data.total} data file(s) profiled</div>` +
       data.profiles.slice(0, 8).map(p => `
         <div class="text-xs text-slate-300 flex justify-between gap-2">
@@ -3539,7 +3550,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
         </div>`).join('');
   }
   if (analysisId === 'language_file_classification') {
-    if (!data.by_type || !data.by_type.length) return `<div class="text-xs text-slate-500">No classification yet — run "Refresh coarse profile" from the Survey tab.</div>`;
+    if (!data.by_type || !data.by_type.length) return _renderEmptyResultState(data);
     return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
       data.by_type.map(t => `
         <div class="text-xs text-slate-300 flex justify-between gap-2">
@@ -3549,7 +3560,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
   }
   if (analysisId === 'api_structure') {
     const langs = Object.entries(data.by_language || {});
-    if (!langs.length) return `<div class="text-xs text-slate-500">No indexed symbols yet.</div>`;
+    if (!langs.length) return _renderEmptyResultState(data);
     return `<div class="text-xs text-slate-400 mb-1">${data.relationship_count} inheritance relationship(s)</div>` +
       langs.map(([lang, kinds]) => `
         <div class="text-xs text-slate-300">
@@ -3559,7 +3570,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
   }
   if (analysisId === 'code_symbol_extraction') {
     const langs = Object.entries(data.by_language || {});
-    if (!data.symbol_count) return `<div class="text-xs text-slate-500">No symbols extracted yet.</div>`;
+    if (!data.symbol_count) return _renderEmptyResultState(data);
     return `<div class="text-xs text-slate-400 mb-1">${data.symbol_count} symbol(s)${data.surveyed_at ? ` · extracted ${_relTime(data.surveyed_at)}` : ''}, ${data.relationship_count} inheritance relationship(s)</div>` +
       langs.map(([lang, count]) => `
         <div class="text-xs text-slate-300 flex justify-between gap-2">
@@ -3623,7 +3634,7 @@ function _renderCustomAnalysisResults(analysisId, data) {
       + _renderDeploymentInterfaces(data.interfaces);
   }
   if (analysisId === 'sub_resource_survey') {
-    if (!data.findings || !data.findings.length) return `<div class="text-xs text-slate-500">No sub-resource survey run yet.</div>`;
+    if (!data.findings || !data.findings.length) return _renderEmptyResultState(data);
     const worthy = data.findings.filter(f => f.label === 'worthy');
     return `<div class="text-xs text-slate-400 mb-1">${worthy.length} of ${data.findings.length} sub-resource(s) worth cataloging</div>` +
       worthy.slice(0, 8).map(f => `

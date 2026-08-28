@@ -15,6 +15,7 @@ resource_explorer/surveyors/filesystem/survey_definition_adapter.py.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,6 +24,8 @@ from typing import Any, Callable
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
 log = logging.getLogger(__name__)
+
+from resource_explorer.activity_logger import log_survey
 
 
 class SurveyDefinitionExecutorError(RuntimeError):
@@ -381,6 +384,46 @@ class SurveyDefinitionExecutor:
                 log.exception(msg)
                 errors.append(msg)
 
+        # Record that this Survey Definition ran.
+        #
+        # It never did. The executor has carried zero log_survey calls since it
+        # was written, so a Survey Definition could run any number of times and
+        # its card still read "Never run" — get_survey_definition_last_activity
+        # looks for an activity row of operation 'survey' keyed on
+        # `survey_definition_ref`, and nothing wrote one. The card was reporting
+        # the activity log accurately; the log was empty.
+        #
+        # The ref is what makes the row attributable to THIS definition rather
+        # than to the repo generally.
+        ran = sum(1 for r in steps_report if r.get("status") in ("ok", "triggered"))
+        try:
+            log_survey(
+                self.registry, entity_type, slug,
+                getattr(entity, "display_name", "") or slug,
+                getattr(entity, "github_url", "") or "",
+                intent="discovery",
+                status="error" if errors else "ok",
+                summary=(f"{survey_def.display_name}: {ran} of {len(steps_report)} step(s) ran"
+                         + (f", {len(errors)} error(s)" if errors else "")),
+                detail=json.dumps({
+                    "survey_definition_ref": process_qn,
+                    "process_guid": process_guid,
+                    "steps": steps_report,
+                    "errors": errors,
+                    "published": published,
+                    "egeria_report_guid": report_guid,
+                }),
+            )
+            run_recorded = True
+        except Exception as exc:
+            # A survey that ran must not report failure because its bookkeeping
+            # failed — but the caller has to be able to tell. Returned as a
+            # field, not just logged: a silent miss here is precisely what
+            # produced "Never run", and a second silent miss would look
+            # identical to the first.
+            run_recorded = False
+            log.warning("could not record the survey run for %s: %s", process_qn, exc)
+
         return {
             "source": "survey-definition",
             "entity_type": entity_type,
@@ -392,6 +435,9 @@ class SurveyDefinitionExecutor:
             "errors": errors,
             "egeria_report_guid": report_guid,
             "published": published,
+            # False when the run happened but could not be written to the
+            # activity log — the card will say "Never run" and be wrong.
+            "run_recorded": run_recorded,
         }
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs):
