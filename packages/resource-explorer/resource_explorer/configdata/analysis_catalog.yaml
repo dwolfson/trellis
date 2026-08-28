@@ -213,7 +213,7 @@ repo_analyses:
     name: Community Support
     description: "Is this supported by a community, or merely popular? Reports attention, participation and channels as SEPARATE dimensions and names the weakest, rather than averaging them. repository_health's community_score is dominated by stars and forks — measured on the real catalog, it scores docling_graph 100/100 with four contributors, and 22 of 59 repos have six or fewer. Responsiveness is reported as not established: issue and pull-request response times are not collected, and an open-issue count says nothing about whether anyone replies."
     resource_types: ["repo"]
-    intent: discovery
+    intent: assessment
     perspectives: ["Community", "Consumer", "Steward", "Governance"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -235,7 +235,7 @@ repo_analyses:
     name: CHAOSS Metrics
     description: "CHAOSS community-health metrics over recorded commits, each reported on its own terms and never averaged into a score. Chiefly the elephant factor — the fewest contributors accounting for half the commits — which separates projects every other signal here rates the same: measured across the catalogue, deep_causality is 1 (one person wrote 98% of it) while kafka is 15. Organizational diversity is reported only where enough authorship is attributable; 72% of author emails in the catalogue are personal addresses with no employer in them."
     resource_types: ["repo"]
-    intent: analysis
+    intent: assessment
     perspectives: ["Community", "Steward", "Governance", "Consumer"]
     annotation_types: ["ClassificationAnnotation"]
     source: local

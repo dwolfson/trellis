@@ -85,6 +85,13 @@ class TestFilterByIntent:
         ids = {a["id"] for a in analyses}
         assert ids == {
             "security_scan", "documentation_coverage", "security_features", "ci_quality",
+            # Moved here 2026-08-28. Both report dimensions separately rather
+            # than averaging, so neither produces a single score — but each
+            # renders a judgement against a named external rubric (CHAOSS; the
+            # weakest support dimension), and evaluating against criteria is
+            # what this stage is for. Cost did not decide it: community_support
+            # fetches nothing and was Discovery on that basis until now.
+            "chaoss_metrics", "community_support",
             # Added 2026-08-26: OpenSSF-Scorecard-shaped checks. Assessment
             # because it evaluates against criteria, which is this stage's
             # signature — even though it fetches nothing.
@@ -141,10 +148,10 @@ class TestFilterByIntent:
         # findings instead of collecting anything.
         assert ids == {"license_classification", "maturity", "repo_conventions",
                        "repo_classification", "architecture_summary",
-                       # community_support (2026-08-26) reads project_stats and
-                       # fetches nothing — the same consume-what-Scouting-
-                       # collected shape as architecture_summary above.
-                       "community_support",
+                       # community_support was here from 2026-08-26 until
+                       # 2026-08-28, when it moved to Assessment: naming the
+                       # weakest dimension is a judgement against criteria, and
+                       # that signature outranks its zero-fetch cost.
                        "interface_surface"} \
                        | self.DISCOVERY_FETCHES_ANYWAY
         for aid in ids - self.DISCOVERY_FETCHES_ANYWAY:

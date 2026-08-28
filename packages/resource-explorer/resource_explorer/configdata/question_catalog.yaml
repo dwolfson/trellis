@@ -872,7 +872,7 @@ repo_questions:
     note: cii_badge
   answering_mechanism: External Service Query
 - question: How concentrated is authorship — would the project survive losing its top contributors?
-  stage: Analysis
+  stage: Assessment
   perspectives:
   - Governance
   - Steward

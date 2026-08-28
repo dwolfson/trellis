@@ -110,6 +110,9 @@ class TestRegistration:
         assert "community_support" in REPO_ANALYSIS_RESULTS_MAP
         entry = next(a for a in get_analyses("repo", include_egeria_live=False)
                      if a["id"] == "community_support")
-        assert entry["intent"] == "discovery", "zero-fetch derivation is Discovery-tier"
+        # Discovery until 2026-08-28 on zero-fetch grounds; Assessment now,
+        # because naming the weakest support dimension is a judgement
+        # against criteria and that signature outranks cost.
+        assert entry["intent"] == "assessment"
         for p in entry["perspectives"]:
             assert p == "all" or p in EGERIA_PERSPECTIVES
