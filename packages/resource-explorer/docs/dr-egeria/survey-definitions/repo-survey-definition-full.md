@@ -1072,6 +1072,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+What languages and file types make up this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 Is this repository actively maintained?
 
 ___
@@ -1144,6 +1153,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 What explicit license does the repository use, and are there non-standard or copyleft terms?
 
 ___
@@ -1154,6 +1172,60 @@ Full Survey (all steps)
 
 ### Scope Reference
 Is there a validation / deployment test for it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+What kinds of integrations does it support?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+How concentrated is authorship — would the project survive losing its top contributors?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+Are there outstanding CVEs?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+How does it score against OpenSSF Scorecard-style criteria?
 
 ___
 
@@ -1199,4 +1271,22 @@ Full Survey (all steps)
 
 ### Scope Reference
 Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+What is its internal architecture — what components exist and how do they relate?
 

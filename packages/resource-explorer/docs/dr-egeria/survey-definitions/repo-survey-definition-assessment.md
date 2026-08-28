@@ -335,3 +335,39 @@ Assessment Survey
 ### Scope Reference
 Is there a validation / deployment test for it?
 
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+Are there outstanding CVEs?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+Is this repository actively maintained?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+How does it score against OpenSSF Scorecard-style criteria?
+
+___
+
+## Link Element To Scope
+### Target Element
+Assessment Survey
+
+### Scope Reference
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+

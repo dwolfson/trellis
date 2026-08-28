@@ -93,7 +93,24 @@ class TestScoutingQuestionsRoute:
         assert license_q2["has_data"] is True
 
     def test_gap_kind_question_has_data_is_none(self, client):
+        """A question nothing answers reports has_data as None, not False.
+
+        None is "we never looked"; False is "we looked and found nothing". The
+        whole point of the kind vocabulary is keeping those apart.
+
+        This used to name "Are there outstanding CVEs?" as its example, and
+        broke on 2026-08-28 when cve_scan closed that gap — the test failed for
+        the best possible reason, but it read like a regression. Gap questions
+        are selected by kind now, so closing one is progress rather than a
+        failure. The count assertion is deliberate: if every gap is ever
+        closed, this test should be removed on purpose, not pass vacuously.
+        """
         resp = client.get("/api/projects/myproj/scouting-questions?phase=analysis")
-        gap_q = next(q for q in resp.json()["questions"] if q["question"] == "Are there outstanding CVEs?")
-        assert gap_q["kind"] == "gap"
-        assert gap_q["has_data"] is None
+        gaps = [q for q in resp.json()["questions"] if q["kind"] == "gap"]
+        assert gaps, (
+            "no gap-kind questions left in the analysis phase — if that is real, "
+            "delete this test deliberately rather than letting it pass on an "
+            "empty list"
+        )
+        for q in gaps:
+            assert q["has_data"] is None, q["question"]

@@ -235,6 +235,24 @@ ___
 Coarse Profile Survey
 
 ### Scope Reference
+What languages and file types make up this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Coarse Profile Survey
+
+### Scope Reference
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Element To Scope
+### Target Element
+Coarse Profile Survey
+
+### Scope Reference
 Is this repository actively maintained?
 
 ___

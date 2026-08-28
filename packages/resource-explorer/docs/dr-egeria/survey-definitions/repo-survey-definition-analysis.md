@@ -361,3 +361,57 @@ Analysis Survey
 ### Scope Reference
 What dependencies does this require?
 
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+Who maintains this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+How widely adopted and active is the community around this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+Is there a current, published, security analysis?
+
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+How concentrated is authorship — would the project survive losing its top contributors?
+
