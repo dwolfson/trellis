@@ -154,3 +154,45 @@ class TestKnownGaps:
         instead of being rediscovered by hand every few months."""
         assert "questions_with_no_analysis" in report
         assert isinstance(report["axes"]["perspectives"]["tags_reaching_nothing"], list)
+
+
+class TestFeedbackCarriesDerivation:
+    """A rating must be traceable to *why* those sources were chosen, not only
+    to which chunks came back. Without it a thumbs-down cannot distinguish
+    "wrong questions selected" from "right questions, bad answer" -- different
+    fixes. See docs/context-compilation-design.md §13.
+    """
+
+    def test_record_query_persists_derivation(self, tmp_path):
+        import json as _json
+
+        from resource_explorer.observability.metrics_collector import MetricsCollector
+
+        mc = MetricsCollector(database_url=f"sqlite:///{tmp_path / 'm.db'}")
+        deriv = {
+            "matched_purposes": ["Certify"],
+            "matched_perspectives": ["Security"],
+            "analysis_ids": ["security_scan"],
+        }
+        mc.record_query(
+            query="is this ready to adopt?", intent="assessment",
+            project_slug="amundsen", response="...", derivation=deriv,
+        )
+        with mc._conn() as conn:
+            row = conn.execute(
+                "SELECT derivation FROM query_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert _json.loads(row["derivation"]) == deriv
+
+    def test_derivation_is_optional(self, tmp_path):
+        """Free-text RAG queries have no catalog behind them; absence must be
+        an empty object, never a crash or a NULL that reads as data."""
+        from resource_explorer.observability.metrics_collector import MetricsCollector
+
+        mc = MetricsCollector(database_url=f"sqlite:///{tmp_path / 'm.db'}")
+        mc.record_query(query="anything", intent="analysis", project_slug=None, response="x")
+        with mc._conn() as conn:
+            row = conn.execute(
+                "SELECT derivation FROM query_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row["derivation"] == "{}"

@@ -8734,6 +8734,58 @@ function _questionsPerspectiveList(data) {
   return [...set].sort();
 }
 
+// ── derivation: why is this question here, and what answers it ──────────────
+// The chain Purpose + Perspective -> question -> analysis_ids/checks is
+// computed server-side (question_catalog_reader.get_questions()) and returned
+// on each entry as `derivation`. It was previously computed and discarded.
+// See docs/context-compilation-design.md §11 -- this is the explanation with
+// content, as distinct from "what got shown".
+//
+// matched_perspectives is recomputed here rather than read from the payload:
+// this view filters by Perspective client-side so chip toggles re-render
+// without a refetch, which means the server never saw the active set.
+function _derivationHtml(q) {
+  const d = q.derivation || {};
+  const active = _activePerspectives();
+  const matchedPersp = (q.perspectives || []).filter(p => active.has(p));
+  const bits = [];
+
+  if (matchedPersp.length) {
+    bits.push(`<div><span class="text-slate-500">Shown because perspective:</span>
+      <span class="text-slate-300">${matchedPersp.map(p => _esc(p)).join(', ')}</span></div>`);
+  } else if (active.size) {
+    bits.push('<div class="text-slate-500">Shown because no perspective filter matched it away</div>');
+  }
+
+  if ((q.purposes || []).length) {
+    bits.push(`<div><span class="text-slate-500">Serves purpose:</span>
+      <span class="text-slate-300">${(q.purposes || []).map(p => _esc(p)).join(', ')}</span></div>`);
+  }
+
+  const ids = d.analysis_ids || q.analysis_ids || [];
+  const checks = d.checks || [];
+  if (ids.length) {
+    bits.push(`<div><span class="text-slate-500">Answered by:</span>
+      <span class="text-cyan-400">${ids.map(a => _esc(a)).join(', ')}</span></div>`);
+  } else {
+    // 25 of 41 questions have no analysis behind them -- say so rather than
+    // showing an empty section that reads as "nothing to report".
+    bits.push(`<div class="text-amber-500/80">No analysis answers this yet${
+      q.answering_mechanism ? ' — ' + _esc(q.answering_mechanism) : ''}</div>`);
+  }
+  if (checks.length) {
+    bits.push(`<div><span class="text-slate-500">Checks:</span>
+      <span class="text-slate-400">${checks.map(c => _esc(c)).join(', ')}</span></div>`);
+  }
+  return bits.join('');
+}
+
+function _toggleDerivation(ev, id) {
+  ev.stopPropagation();   // the row itself answers the question in chat
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('hidden');
+}
+
 function renderScoutingQuestions(data) {
   const view = document.getElementById('scouting-questions-view');
   const questions = (data.questions || []).filter(q =>
@@ -8745,8 +8797,9 @@ function renderScoutingQuestions(data) {
       class="text-xs px-2.5 py-1 rounded capitalize transition-colors ${p === _questionsPhase ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${p}</button>`).join('');
 
 
-  const rows = questions.map(q => {
+  const rows = questions.map((q, _qi) => {
     const status = _questionStatus(q);
+    const derivId = `qderiv-${_qi}`;
     // Stage gets its own pinned badge, not buried in the small
     // perspectives line (per direct feedback, 2026-08-13). Asked At/
     // Answered At collapsed into one "stage" field 2026-08-14 (see
@@ -8772,6 +8825,12 @@ function renderScoutingQuestions(data) {
           </div>
           <div class="text-[10px] text-slate-500 mt-0.5">${(q.perspectives || []).map(p => _esc(p)).join(' · ')}</div>
           ${q.note ? `<div class="text-[10px] text-slate-600 mt-0.5">${_esc(q.note)}</div>` : ''}
+          <button onclick="_toggleDerivation(event, '${derivId}')"
+                  class="text-[10px] text-slate-600 hover:text-cyan-400 mt-0.5 transition-colors"
+                  title="Why is this question here, and what answers it?">why?</button>
+          <div id="${derivId}" class="hidden mt-1 pl-2 border-l border-slate-700 space-y-0.5 text-[10px]">
+            ${_derivationHtml(q)}
+          </div>
         </div>
       </div>`;
   }).join('') || '<div class="text-xs text-slate-500 py-4 text-center">No questions for this stage and perspective.</div>';
