@@ -188,3 +188,63 @@ class TestHtmlAdapter:
         from trellis_artifact_tree.adapters import HtmlAdapter
 
         assert "tree_from_items" in inspect.getsource(HtmlAdapter.parse)
+
+
+class TestHtmlSegmentation:
+    """Found by running the adapter on real pages rather than by review.
+
+    A 170KB Javadoc class index produced FOUR nodes, one of them a 27,229-char
+    blob — parsed without error, and unusable for budgeting because a packer
+    cannot cut it.
+    """
+
+    def _nodes(self, html):
+        """Content nodes only — the root and heading nodes carry an IDENTIFIERS
+        rung of their own, and counting them hides what is being measured."""
+        from trellis_artifact_tree.adapters import HtmlAdapter
+        from trellis_artifact_tree.model import Rung
+
+        t = HtmlAdapter().parse("x", html, PROV)
+        return [n for n in t.nodes if Rung.FULL in n.rungs]
+
+    def test_list_items_become_their_own_nodes(self):
+        nodes = self._nodes("<h1>T</h1><ul><li>alpha</li><li>beta</li><li>gamma</li></ul>")
+        texts = [list(n.rungs.values())[0] for n in nodes]
+        assert "alpha" in texts and "beta" in texts and "gamma" in texts
+
+    def test_unclosed_tags_still_split(self):
+        """Unclosed <li> and <p> are legal HTML and common in generated pages.
+        Waiting for the end tag loses the boundary entirely."""
+        nodes = self._nodes("<h1>T</h1><ul><li>alpha<li>beta<li>gamma</ul>")
+        assert len(nodes) >= 3
+
+    def test_table_rows_are_the_unit_not_cells(self):
+        """A node per cell is finer than any packer needs and buries a table's
+        shape in its contents."""
+        nodes = self._nodes(
+            "<h1>T</h1><table><tr><td>a1</td><td>a2</td></tr>"
+            "<tr><td>b1</td><td>b2</td></tr></table>"
+        )
+        texts = [list(n.rungs.values())[0] for n in nodes]
+        assert any("a1" in t and "a2" in t for t in texts), "cells should stay together"
+
+    def test_a_runaway_run_is_capped(self):
+        """The safety net for markup the tag set does not describe. Modern
+        Javadoc renders its class index as nested <div>s, which no reasonable
+        block-tag list covers."""
+        from trellis_artifact_tree.adapters import HtmlAdapter
+
+        blob = "<div>" + ("word " * 4000) + "</div>"
+        nodes = self._nodes(f"<h1>T</h1>{blob}")
+        assert len(nodes) > 2, "a single enormous run must be broken up"
+        largest = max(len(list(n.rungs.values())[0]) for n in nodes)
+        assert largest <= HtmlAdapter._MAX_RUN_CHARS + 200
+
+    def test_the_cap_does_not_touch_well_formed_pages(self):
+        """Adding `div` to the block set fixed the pathological page and ruined
+        every other one: 755 nodes with a median of 32 characters. The cap is a
+        limit, not the mechanism — ordinary pages must segment on tags alone."""
+        html = "<h1>T</h1>" + "".join(f"<p>paragraph {i}</p>" for i in range(5))
+        nodes = self._nodes(html)
+        assert len(nodes) == 5
+        assert all(len(list(n.rungs.values())[0]) < 60 for n in nodes)

@@ -210,6 +210,27 @@ class HtmlAdapter:
     name = "html"
     fidelity = "structural"
     _SKIP = {"script", "style", "noscript"}
+    # Block elements that end a text run. Without these, everything between two
+    # headings accumulates into ONE node: a 170KB Javadoc class index collapsed
+    # to 4 nodes with a single 27KB text blob, which a packer cannot cut at all.
+    # Measured on real pages -- prose hides this, tables and lists do not.
+    #
+    # `td` is deliberately absent: a node per cell is finer than any packer
+    # needs and would bury a table's shape in its contents. A row is the unit.
+    _BLOCKS = {"p", "li", "tr", "dt", "dd", "pre", "blockquote", "figcaption"}
+
+    # Safety net for markup these tags do not describe. Modern Javadoc renders
+    # its class index as nested <div>s, so the tag set above left a 170KB page
+    # as ONE 27,229-character node -- unusable for budgeting. Adding `div` to
+    # the set fixes that page and ruins every other: 755 nodes with a MEDIAN of
+    # 32 characters, fragments rather than units.
+    #
+    # So the tag set stays conservative and handles semantics, and this cap
+    # handles the pathological case. 4000 characters is above the largest node
+    # any well-formed page here produced (460) and well below the blob it
+    # exists to break up. A capped split is a worse boundary than a real tag,
+    # which is why it is a limit and not the mechanism.
+    _MAX_RUN_CHARS = 4000
 
     def handles(self, kind: str) -> bool:
         return kind.lower() in {"html", "htm", ".html", ".htm", "text/html", "web"}
@@ -229,11 +250,11 @@ class HtmlAdapter:
                 self.skipping = 0
                 self.buf: list[str] = []
 
-            def _flush_text(self) -> None:
+            def _flush_text(self, label: str = "text") -> None:
                 body = " ".join(" ".join(self.buf).split())
                 self.buf = []
                 if body:
-                    items.append(DocItem(label="text", text=body))
+                    items.append(DocItem(label=label, text=body))
 
             def handle_starttag(self, tag, attrs):
                 if tag in HtmlAdapter._SKIP:
@@ -242,10 +263,17 @@ class HtmlAdapter:
                     self._flush_text()
                     self.heading_level = int(tag[1])
                     self.buf = []
+                elif tag in HtmlAdapter._BLOCKS and self.heading_level is None:
+                    # Flush on the way IN as well as out: unclosed <li> and <p>
+                    # are legal HTML and common in generated pages, so waiting
+                    # for the end tag loses the boundary entirely.
+                    self._flush_text(label="list_item" if tag == "li" else "text")
 
             def handle_endtag(self, tag):
                 if tag in HtmlAdapter._SKIP and self.skipping:
                     self.skipping -= 1
+                elif tag in HtmlAdapter._BLOCKS and self.heading_level is None:
+                    self._flush_text(label="list_item" if tag == "li" else "text")
                 elif self.heading_level and len(tag) == 2 and tag[0] == "h":
                     title = " ".join(" ".join(self.buf).split())
                     self.buf = []
@@ -256,8 +284,26 @@ class HtmlAdapter:
                     self.heading_level = None
 
             def handle_data(self, data):
-                if not self.skipping:
-                    self.buf.append(data)
+                if self.skipping:
+                    return
+                self.buf.append(data)
+                if self.heading_level is not None:
+                    return
+                # Split, do not merely flush. A parser hands back one data
+                # callback per text run, so an oversized run arrives WHOLE:
+                # flushing at the boundary still emits the whole thing as one
+                # node, and the cap silently does nothing. Found by a test that
+                # fed 20,000 characters in a single chunk.
+                cap = HtmlAdapter._MAX_RUN_CHARS
+                while sum(len(b) for b in self.buf) > cap:
+                    joined = " ".join(" ".join(self.buf).split())
+                    if len(joined) <= cap:
+                        self.buf = [joined]
+                        break
+                    cut = joined.rfind(" ", 0, cap)          # never mid-word
+                    cut = cut if cut > cap // 2 else cap
+                    items.append(DocItem(label="text", text=joined[:cut].strip()))
+                    self.buf = [joined[cut:]]
 
         collector = _Collector()
         collector.feed(text)
