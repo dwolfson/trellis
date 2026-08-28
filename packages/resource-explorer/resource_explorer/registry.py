@@ -323,6 +323,15 @@ class PostgresCursorWrapper:
         return self.raw_cursor.rowcount
 
 
+#: What a schedule row's `analysis_id` refers to. Running always goes through a
+#: survey type by preference (a single analysis gets a single-step survey type,
+#: so there is one way to run things rather than two) — TARGET_ANALYSIS remains
+#: for the rows that predate that and for resource types with no authored
+#: Survey Definitions.
+TARGET_ANALYSIS = "analysis"
+TARGET_SURVEY = "survey"
+
+
 class ProjectRegistry:
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
@@ -1366,6 +1375,25 @@ class ProjectRegistry:
                 conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_status TEXT DEFAULT ''")
             if "last_run_activity_id" not in existing_sched:
                 conn.execute("ALTER TABLE resource_schedules ADD COLUMN last_run_activity_id TEXT DEFAULT ''")
+            # Migration: target_kind — what `analysis_id` refers to.
+            #
+            # A schedule could only ever name an analysis, so scheduling a
+            # SURVEY had nowhere to go, which is what blocked Automate's survey
+            # section (docs/granularity-pass.md). `analysis_id` now holds either
+            # an analysis id or a Survey Definition's qualified name, and this
+            # column says which.
+            #
+            # The column is added rather than the key rebuilt on purpose: the
+            # primary key (entity_type, entity_slug, analysis_id) stays correct
+            # either way, because the two namespaces cannot collide — a survey
+            # reference is always "GovActionProcess::…" and no analysis id
+            # contains "::". Rebuilding a primary key to express something the
+            # existing one already distinguishes would be migration risk bought
+            # for nothing.
+            if "target_kind" not in existing_sched:
+                conn.execute(
+                    "ALTER TABLE resource_schedules ADD COLUMN target_kind "
+                    "TEXT NOT NULL DEFAULT 'analysis'")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS survey_definition_cache (
                     entity_type            TEXT NOT NULL,
@@ -2038,17 +2066,33 @@ class ProjectRegistry:
         analysis_id: str,
         schedule: str,
         enabled: bool = True,
+        target_kind: str = TARGET_ANALYSIS,
     ) -> None:
+        """Schedule an analysis or a Survey Definition.
+
+        `analysis_id` is the target reference either way — an analysis id, or a
+        survey's qualified name when target_kind is "survey". Named for its
+        original meaning because renaming it would reach through the schedules
+        API, its routes and the frontend for no behavioural gain; the docstring
+        carries what the name no longer does.
+        """
+        if target_kind not in (TARGET_ANALYSIS, TARGET_SURVEY):
+            raise ValueError(
+                f"unknown target_kind {target_kind!r}; expected "
+                f"{TARGET_ANALYSIS!r} or {TARGET_SURVEY!r}")
         next_run = self._next_run_iso(schedule, enabled)
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO resource_schedules
-                   (entity_type, entity_slug, analysis_id, schedule, enabled, next_run)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                   (entity_type, entity_slug, analysis_id, schedule, enabled,
+                    next_run, target_kind)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(entity_type, entity_slug, analysis_id) DO UPDATE SET
                      schedule=excluded.schedule, enabled=excluded.enabled,
-                     next_run=excluded.next_run""",
-                (entity_type, entity_slug, analysis_id, schedule, int(enabled), next_run),
+                     next_run=excluded.next_run,
+                     target_kind=excluded.target_kind""",
+                (entity_type, entity_slug, analysis_id, schedule, int(enabled),
+                 next_run, target_kind),
             )
 
     def update_schedule_after_run(

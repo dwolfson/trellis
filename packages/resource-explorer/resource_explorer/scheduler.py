@@ -72,6 +72,8 @@ import time
 
 log = logging.getLogger(__name__)
 
+from resource_explorer.registry import TARGET_ANALYSIS, TARGET_SURVEY
+
 _CHECK_INTERVAL_SECONDS = 900  # 15 minutes
 _started = False
 _lock = threading.Lock()
@@ -236,7 +238,9 @@ def _run_due() -> None:
                 entity_location = project.github_url if project else ""
                 errors = batched[batch_key]
             else:
-                entity_name, entity_location, errors = _execute(entity_type, entity_slug, analysis_id, registry, next_run)
+                entity_name, entity_location, errors = _execute(
+                    entity_type, entity_slug, analysis_id, registry, next_run,
+                    target_kind=sched.get("target_kind") or TARGET_ANALYSIS)
             status = "error" if errors else "ok"
             detail = "; ".join(errors) if errors else ""
         except Exception as exc:
@@ -347,7 +351,8 @@ def _catalog_entry(entity_type: str, analysis_id: str) -> dict | None:
 
 
 def _execute(
-    entity_type: str, entity_slug: str, analysis_id: str, registry, next_run: str = ""
+    entity_type: str, entity_slug: str, analysis_id: str, registry,
+    next_run: str = "", target_kind: str = TARGET_ANALYSIS,
 ) -> tuple[str, str, list[str]]:
     """Returns (entity_name, entity_location, errors) — errors is [] on a
     clean run. Only truly unexpected failures propagate to the caller.
@@ -355,12 +360,48 @@ def _execute(
     Dispatch — see module docstring for the (a)/(b)/(c)/(d) breakdown
     (database) and the repo-specific paragraph beneath it.
     """
+    if target_kind == TARGET_SURVEY:
+        return _run_scheduled_survey(entity_type, entity_slug, analysis_id, registry)
     if entity_type == "repo":
         return _run_repo_survey(entity_slug, analysis_id, registry)
     elif entity_type == "database":
         return _run_db_survey(entity_slug, analysis_id, registry, next_run)
     else:
         return (entity_slug, "", [f"Unknown entity_type '{entity_type}'"])
+
+
+def _run_scheduled_survey(
+    entity_type: str, entity_slug: str, survey_ref: str, registry
+) -> tuple[str, str, list[str]]:
+    """Run a scheduled Survey Definition.
+
+    A schedule could only name an analysis until 2026-08-28, so a survey could
+    be authored, listed and run by hand but never put on a cadence. The
+    reference is the definition's qualified name; run_survey_definition records
+    the run and auto-publishes on the same terms a manual run does, so a
+    scheduled survey and a hand-started one differ only in what triggered them.
+    """
+    from resource_explorer.surveyors.survey_definition_executor import (
+        run_survey_definition,
+    )
+
+    entity = (registry.get(entity_slug) if entity_type == "repo"
+              else registry.get_database(entity_slug))
+    name = getattr(entity, "display_name", "") or entity_slug
+    location = getattr(entity, "github_url", "") or ""
+    try:
+        result = run_survey_definition(
+            entity_type, entity_slug, survey_definition_ref=survey_ref)
+    except Exception as exc:
+        log.exception("scheduled survey %s failed for %s", survey_ref, entity_slug)
+        return (name, location, [f"Survey '{survey_ref}' failed: {exc}"])
+    errors = list(result.get("errors") or [])
+    # A survey whose run could not be recorded still ran. Surfaced as an error
+    # on the schedule rather than passed over, since the schedules view is
+    # where someone would look to find out whether it did.
+    if result.get("run_recorded") is False:
+        errors.append(f"Survey '{survey_ref}' ran but its run could not be recorded")
+    return (name, location, errors)
 
 
 def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, list[str]]:
