@@ -56,7 +56,7 @@ class GoSymbolExtractor:
         from resource_explorer.ingestion.ast_chunker import ASTChunker
         return ASTChunker()._get_parser("go")
 
-    def extract(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def extract(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
         parser = self._get_parser()
         if parser is None:
             return []  # tree-sitter-go unavailable (optional [ast] extra) — caller falls back to regex
@@ -69,13 +69,13 @@ class GoSymbolExtractor:
         symbols: list[CodeSymbol] = []
         for node in tree.root_node.children:
             if node.type == "type_declaration":
-                symbols.extend(self._extract_type_decl(node, file_path, project_slug))
+                symbols.extend(self._extract_type_decl(node, file_path, resource_slug))
             elif node.type == "function_declaration":
-                sym = self._extract_function(node, file_path, project_slug)
+                sym = self._extract_function(node, file_path, resource_slug)
                 if sym:
                     symbols.append(sym)
             elif node.type == "method_declaration":
-                sym = self._extract_method(node, file_path, project_slug)
+                sym = self._extract_method(node, file_path, resource_slug)
                 if sym:
                     symbols.append(sym)
         return symbols
@@ -83,7 +83,7 @@ class GoSymbolExtractor:
     # ── type declarations (struct / interface) — a type_declaration can hold
     # multiple comma/paren-grouped type_specs, so this yields 0..N symbols ──
 
-    def _extract_type_decl(self, node, file_path: str, project_slug: str) -> list[CodeSymbol]:
+    def _extract_type_decl(self, node, file_path: str, resource_slug: str) -> list[CodeSymbol]:
         out: list[CodeSymbol] = []
         for spec in node.children:
             if spec.type != "type_spec":
@@ -101,7 +101,7 @@ class GoSymbolExtractor:
                     continue  # type alias (e.g. `type ID = string`) — not a symbol worth indexing
                 name = name_node.text.decode()
                 out.append(CodeSymbol(
-                    project_slug=project_slug, file_path=file_path, language="go",
+                    resource_slug=resource_slug, file_path=file_path, language="go",
                     kind=kind, name=name, qualified_name=name, signature="",
                     docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 ))
@@ -111,7 +111,7 @@ class GoSymbolExtractor:
 
     # ── free function ──────────────────────────────────────────────────────
 
-    def _extract_function(self, node, file_path: str, project_slug: str) -> CodeSymbol | None:
+    def _extract_function(self, node, file_path: str, resource_slug: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -122,7 +122,7 @@ class GoSymbolExtractor:
             result = _result_text(node.child_by_field_name("result"))
             sig = params_text + (f" -> {result}" if result else "")
             return CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="go",
+                resource_slug=resource_slug, file_path=file_path, language="go",
                 kind="function", name=name, qualified_name=name, signature=sig,
                 docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 return_type=result,
@@ -132,7 +132,7 @@ class GoSymbolExtractor:
 
     # ── method (has a receiver) ────────────────────────────────────────────
 
-    def _extract_method(self, node, file_path: str, project_slug: str) -> CodeSymbol | None:
+    def _extract_method(self, node, file_path: str, resource_slug: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -145,7 +145,7 @@ class GoSymbolExtractor:
             sig = params_text + (f" -> {result}" if result else "")
             qualified_name = f"{receiver_type}.{name}" if receiver_type else name
             return CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="go",
+                resource_slug=resource_slug, file_path=file_path, language="go",
                 kind="method", name=name, qualified_name=qualified_name, signature=sig,
                 docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 parent_class=receiver_type, return_type=result,

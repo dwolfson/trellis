@@ -13,8 +13,8 @@ class DocAgent(BaseExplorerAgent):
         from resource_explorer.agents.tools import vector_search
         return [vector_search]
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
-        slug = project_slug or self._infer_project_slug(query)
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        slug = resource_slug or self._infer_project_slug(query)
         from resource_explorer.collection_router import CollectionRouter
         collections = CollectionRouter().select(query, slug)
         if not collections:
@@ -22,7 +22,7 @@ class DocAgent(BaseExplorerAgent):
 
         context_lines = []
         if slug:
-            context_lines.append(f"Project: {project_slug}")
+            context_lines.append(f"Project: {resource_slug}")
         context_lines.append(f"Available collections: {', '.join(collections)}")
         context_lines.append(f"\nQuestion: {query}")
         prompt = "\n".join(context_lines)

@@ -21,8 +21,8 @@ class HealthAgent(BaseExplorerAgent):
         from resource_explorer.agents.tools import query_project_stats, query_top_committers
         return [query_project_stats, query_top_committers]
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
-        slug = project_slug or self._infer_project_slug(query)
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        slug = resource_slug or self._infer_project_slug(query)
 
         if not slug:
             return self._clarification_response(query)
@@ -45,36 +45,36 @@ class HealthAgent(BaseExplorerAgent):
 
     # ── fallback ───────────────────────────────────────────────────────────────
 
-    def _fetch_health(self, project_slug: str | None) -> str:
-        if not project_slug:
+    def _fetch_health(self, resource_slug: str | None) -> str:
+        if not resource_slug:
             return ""
         registry = ProjectRegistry()
-        project = registry.get(project_slug)
+        project = registry.get(resource_slug)
         if not project:
             return ""
-        base = self._sqlite_stats(registry.db_path, project_slug)
+        base = self._sqlite_stats(registry.db_path, resource_slug)
         if not base:
             return ""
-        sections = self._format_health_sections(project_slug, base)
+        sections = self._format_health_sections(resource_slug, base)
         github_extra = self._github_health(project)
         if github_extra:
             sections.extend(["", "Pull Requests (live):"] + github_extra)
         return "\n".join(sections)
 
-    def _sqlite_stats(self, db_path: str, project_slug: str) -> dict:
+    def _sqlite_stats(self, db_path: str, resource_slug: str) -> dict:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-                (project_slug,),
+                (resource_slug,),
             ).fetchone()
             conn.close()
             return dict(row) if row else {}
         except Exception:
             return {}
 
-    def _format_health_sections(self, project_slug: str, d: dict) -> list[str]:
+    def _format_health_sections(self, resource_slug: str, d: dict) -> list[str]:
         commits_30d = d.get("commits_30d") or 0
         commits_90d = d.get("commits_90d") or 0
         contributors = d.get("contributors_count") or 0
@@ -101,7 +101,7 @@ class HealthAgent(BaseExplorerAgent):
         release_cadence = f"{releases} total release(s)" if releases and commits_90d else "Unknown"
 
         return [
-            f"Project: {project_slug}",
+            f"Project: {resource_slug}",
             "",
             "Activity:",
             f"  Status: {activity_status}",

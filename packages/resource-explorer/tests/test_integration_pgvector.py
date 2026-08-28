@@ -228,7 +228,7 @@ class TestEndToEndIntegration:
         pipeline = IngestionPipeline()
         pipeline.registry = registry
         count = pipeline._ingest_collection(
-            repo=None, project_slug="fixtureproj", collection_name="fixtureproj_python_code",
+            repo=None, resource_slug="fixtureproj", collection_name="fixtureproj_python_code",
             ctype=COLLECTION_TYPES["python_code"], local_root=repo_dir,
         )
         assert count > 0
@@ -248,7 +248,7 @@ class TestEndToEndIntegration:
         monkeypatch.setattr(QueryProcessor, "classify", lambda self, query: QueryIntent.GENERAL)
 
         rag = rag_mod.RAGSystem()
-        response = rag.query("How does the widget calculate its price with tax?", project_slug="fixtureproj")
+        response = rag.query("How does the widget calculate its price with tax?", resource_slug="fixtureproj")
 
         assert "STUB_RESPONSE::" in response
         assert "calculate_widget_price" in response  # real retrieved chunk content

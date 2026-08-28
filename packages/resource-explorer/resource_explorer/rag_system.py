@@ -30,77 +30,77 @@ class RAGSystem:
         self.llm = get_llm()
         self._init_observability()
 
-    def query(self, query: str, project_slug: str | None = None) -> str:
+    def query(self, query: str, resource_slug: str | None = None) -> str:
         intent = self.processor.classify(query)
 
-        cached = self.cache.get(query, project_slug, intent.value)
+        cached = self.cache.get(query, resource_slug, intent.value)
         if cached:
             threading.Thread(
                 target=self._track,
-                args=(query, intent, project_slug, cached, 0, True, []),
+                args=(query, intent, resource_slug, cached, 0, True, []),
                 daemon=True,
             ).start()
             return cached
 
         t0 = time.monotonic()
-        response, chunk_refs = self._route(query, intent, project_slug)
+        response, chunk_refs = self._route(query, intent, resource_slug)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        self.cache.set(query, project_slug, intent.value, response)
+        self.cache.set(query, resource_slug, intent.value, response)
 
         threading.Thread(
             target=self._track,
-            args=(query, intent, project_slug, response, latency_ms, False, chunk_refs),
+            args=(query, intent, resource_slug, response, latency_ms, False, chunk_refs),
             daemon=True,
         ).start()
 
         return response
 
-    def _route(self, query: str, intent: QueryIntent, project_slug: str | None) -> tuple[str, list[str]]:
+    def _route(self, query: str, intent: QueryIntent, resource_slug: str | None) -> tuple[str, list[str]]:
         """Returns (response, chunk_refs) — chunk_refs empty for non-RAG agents."""
         if intent == QueryIntent.STATISTICAL:
             from resource_explorer.agents.stats_agent import StatsAgent
-            return StatsAgent().handle(query, project_slug), []
+            return StatsAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.DEPENDENCY:
             from resource_explorer.agents.dependency_agent import DependencyAgent
-            return DependencyAgent().handle(query, project_slug), []
+            return DependencyAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.INTEGRATION:
             from resource_explorer.agents.integration_agent import IntegrationAgent
-            return IntegrationAgent().handle(query, project_slug), []
+            return IntegrationAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.COMPARISON:
             from resource_explorer.agents.compare_agent import CompareAgent
-            return CompareAgent().handle(query, project_slug), []
+            return CompareAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.HEALTH:
             from resource_explorer.agents.health_agent import HealthAgent
-            return HealthAgent().handle(query, project_slug), []
+            return HealthAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.CODE_INVENTORY:
             from resource_explorer.agents.code_agent import CodeAgent
-            return CodeAgent().handle(query, project_slug), []
+            return CodeAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.EXAMPLES:
             from resource_explorer.agents.examples_agent import ExamplesAgent
-            return ExamplesAgent().handle(query, project_slug), []
+            return ExamplesAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.CODE_SEARCH:
             from resource_explorer.agents.code_agent import CodeAgent
-            return CodeAgent().handle(query, project_slug), []
+            return CodeAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.CONCEPTUAL:
             from resource_explorer.agents.doc_agent import DocAgent
-            return DocAgent().handle(query, project_slug), []
+            return DocAgent().handle(query, resource_slug), []
 
         if intent == QueryIntent.SURVEY_META:
             from resource_explorer.agents.survey_meta_agent import SurveyMetaAgent
-            return SurveyMetaAgent().handle(query, project_slug), []
+            return SurveyMetaAgent().handle(query, resource_slug), []
 
-        return self._rag(query, project_slug)
+        return self._rag(query, resource_slug)
 
-    def stream(self, query: str, project_slug: str | None = None):
+    def stream(self, query: str, resource_slug: str | None = None):
         """
         Streaming variant of query(). Yields text chunks as they are generated.
 
@@ -119,7 +119,7 @@ class RAGSystem:
         intent = self.processor.classify(query)
         query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
 
-        cached = self.cache.get(query, project_slug, intent.value)
+        cached = self.cache.get(query, resource_slug, intent.value)
         if cached:
             yield cached
             yield {"_done": True, "intent": intent.value, "hash": query_hash, "cached": True}
@@ -127,11 +127,11 @@ class RAGSystem:
 
         if intent != QueryIntent.GENERAL:
             # Agent paths: run to completion, then yield
-            response, chunk_refs = self._route(query, intent, project_slug)
-            self.cache.set(query, project_slug, intent.value, response)
+            response, chunk_refs = self._route(query, intent, resource_slug)
+            self.cache.set(query, resource_slug, intent.value, response)
             threading.Thread(
                 target=self._track,
-                args=(query, intent, project_slug, response, 0, False, chunk_refs),
+                args=(query, intent, resource_slug, response, 0, False, chunk_refs),
                 daemon=True,
             ).start()
             yield response
@@ -139,7 +139,7 @@ class RAGSystem:
             return
 
         # General RAG — stream the LLM synthesis
-        collections = self.router.select(query, project_slug)
+        collections = self.router.select(query, resource_slug)
         results = self.store.search(query, collections)
         if not results:
             msg = "I don't have enough information in the indexed content to answer that."
@@ -149,7 +149,7 @@ class RAGSystem:
 
         chunk_refs = [f"{r.collection}:{r.id}" for r in results]
         context = "\n\n---\n\n".join(r.text for r in results)
-        prompt = build_rag_prompt(query, context, project_slug)
+        prompt = build_rag_prompt(query, context, resource_slug)
 
         full_response: list[str] = []
         for chunk in self.llm.stream(prompt):
@@ -157,22 +157,22 @@ class RAGSystem:
             yield chunk
 
         response = "".join(full_response)
-        self.cache.set(query, project_slug, intent.value, response)
+        self.cache.set(query, resource_slug, intent.value, response)
         threading.Thread(
             target=self._track,
-            args=(query, intent, project_slug, response, 0, False, chunk_refs),
+            args=(query, intent, resource_slug, response, 0, False, chunk_refs),
             daemon=True,
         ).start()
         yield {"_done": True, "intent": intent.value, "hash": query_hash, "cached": False}
 
-    def _rag(self, query: str, project_slug: str | None) -> tuple[str, list[str]]:
-        collections = self.router.select(query, project_slug)
+    def _rag(self, query: str, resource_slug: str | None) -> tuple[str, list[str]]:
+        collections = self.router.select(query, resource_slug)
         results = self.store.search(query, collections)
         if not results:
             return "I don't have enough information in the indexed content to answer that.", []
         chunk_refs = [f"{r.collection}:{r.id}" for r in results]
         context = "\n\n---\n\n".join(r.text for r in results)
-        prompt = build_rag_prompt(query, context, project_slug)
+        prompt = build_rag_prompt(query, context, resource_slug)
         return self.llm.complete(prompt), chunk_refs
 
     def _init_observability(self) -> None:
@@ -185,7 +185,7 @@ class RAGSystem:
         self,
         query: str,
         intent: QueryIntent,
-        project_slug: str | None,
+        resource_slug: str | None,
         response: str,
         latency_ms: int = 0,
         cache_hit: bool = False,
@@ -193,7 +193,7 @@ class RAGSystem:
     ) -> None:
         try:
             self.metrics.record_query(
-                query, intent.value, project_slug, response,
+                query, intent.value, resource_slug, response,
                 latency_ms=latency_ms, cache_hit=cache_hit,
                 chunk_refs=chunk_refs or [],
             )

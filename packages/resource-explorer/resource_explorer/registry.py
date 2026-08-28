@@ -2342,7 +2342,7 @@ class ProjectRegistry:
                     (slug, datetime.utcnow().isoformat(), file_count, lines_of_code),
                 )
 
-    def upsert_code_symbols(self, project_slug: str, symbols: list) -> None:
+    def upsert_code_symbols(self, resource_slug: str, symbols: list) -> None:
         """Insert or replace extracted code symbols, and derive+write
         inherits_from relationship rows from each class-kind symbol's
         `bases` list in the same call — mirroring Egeria Advisor's own
@@ -2352,7 +2352,7 @@ class ProjectRegistry:
         """
         if not symbols:
             return
-        slug = self._normalize_slug(project_slug)
+        slug = self._normalize_slug(resource_slug)
         rows = [
             (
                 slug, s.file_path, s.language, s.kind, s.name, s.qualified_name,
@@ -2393,7 +2393,7 @@ class ProjectRegistry:
                     relationships,
                 )
 
-    def clear_code_symbols(self, project_slug: str, language: str | None = None) -> None:
+    def clear_code_symbols(self, resource_slug: str, language: str | None = None) -> None:
         """Remove symbol (and, when clearing a whole project, relationship)
         entries. Relationships aren't language-tagged themselves, so a
         language-filtered clear leaves them alone — they get reconciled
@@ -2401,7 +2401,7 @@ class ProjectRegistry:
         project via ON CONFLICT DO NOTHING (stale target names, e.g. from a
         renamed/removed base class, are a known accepted gap — see migration
         plan decision D3, matching Egeria Advisor's own equivalent behavior)."""
-        slug = self._normalize_slug(project_slug)
+        slug = self._normalize_slug(resource_slug)
         with self._conn() as conn:
             if language:
                 conn.execute(
@@ -2416,14 +2416,14 @@ class ProjectRegistry:
                     "DELETE FROM project_code_relationships WHERE project_slug = ?", (slug,)
                 )
 
-    def get_code_symbol_file_paths(self, project_slug: str) -> list[str]:
+    def get_code_symbol_file_paths(self, resource_slug: str) -> list[str]:
         """Distinct file paths with at least one indexed code symbol —
         D2(c) (docs/repo-survey-catalog-completion-plan.md): a confirmed
         duplicate, hand-rolled independently by both
         sub_surveyors/file_structure.py (top-level directory breakdown) and
         sub_surveyors/security_hygiene.py (security-file presence check)
         before this method existed."""
-        slug = self._normalize_slug(project_slug)
+        slug = self._normalize_slug(resource_slug)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
@@ -2432,11 +2432,11 @@ class ProjectRegistry:
         return [r["file_path"] for r in rows]
 
     def get_code_relationships(
-        self, project_slug: str, relationship_type: str = "inherits_from"
+        self, resource_slug: str, relationship_type: str = "inherits_from"
     ) -> list[dict]:
         """All relationship rows for a project, e.g. for CodeIntelAgent-style
         inheritance/hierarchy queries."""
-        slug = self._normalize_slug(project_slug)
+        slug = self._normalize_slug(resource_slug)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT source_name, target_name FROM project_code_relationships "
@@ -2445,11 +2445,11 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def upsert_contributor_stats(self, project_slug: str, rows: list[dict]) -> None:
+    def upsert_contributor_stats(self, resource_slug: str, rows: list[dict]) -> None:
         """Insert or replace aggregated per-contributor stats for a time period."""
         if not rows:
             return
-        slug = self._normalize_slug(project_slug)
+        slug = self._normalize_slug(resource_slug)
         with self._conn() as conn:
             conn.executemany(
                 """INSERT INTO project_contributor_stats
@@ -3714,7 +3714,7 @@ class ProjectRegistry:
         session_id: str,
         role: str,
         content: str,
-        project_slug: str | None = None,
+        resource_slug: str | None = None,
     ) -> None:
         """Append a single turn (user or assistant) to the conversation log."""
         with self._conn() as conn:
@@ -3727,7 +3727,7 @@ class ProjectRegistry:
             conn.execute(
                 "INSERT INTO conversation_history (session_id, turn_idx, role, content, project_slug, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, next_idx, role, content, project_slug or "", datetime.utcnow().isoformat()),
+                (session_id, next_idx, role, content, resource_slug or "", datetime.utcnow().isoformat()),
             )
 
     def load_turns(self, session_id: str, limit: int = 40) -> list[dict]:
@@ -3769,7 +3769,7 @@ class ProjectRegistry:
 
     def set_disposition(
         self, github_url: str, disposition: str,
-        reason: str = "", decided_by: str = "", project_slug: str = "",
+        reason: str = "", decided_by: str = "", resource_slug: str = "",
     ) -> None:
         """Upsert the current triage disposition for a repo — one row per
         github_url, overwriting any prior decision (unlike the append-only
@@ -3792,7 +3792,7 @@ class ProjectRegistry:
                        decided_by = excluded.decided_by,
                        decided_at = excluded.decided_at,
                        project_slug = excluded.project_slug""",
-                (key, disposition, reason, decided_by, decided_at, project_slug),
+                (key, disposition, reason, decided_by, decided_at, resource_slug),
             )
             conn.execute(
                 """INSERT INTO repo_disposition_history
@@ -5628,12 +5628,12 @@ class ProjectRegistry:
             cursor = conn.execute("DELETE FROM project_groups WHERE slug = ?", (slug,))
             return cursor.rowcount
 
-    def set_project_group(self, project_slug: str, group_slug: str) -> None:
+    def set_project_group(self, resource_slug: str, group_slug: str) -> None:
         """Assign a repository to a group."""
-        project_slug = self._normalize_slug(project_slug)
+        resource_slug = self._normalize_slug(resource_slug)
         group_slug = self._normalize_slug(group_slug) if group_slug else ""
         with self._conn() as conn:
-            conn.execute("UPDATE projects SET group_slug = ? WHERE slug = ?", (group_slug, project_slug))
+            conn.execute("UPDATE projects SET group_slug = ? WHERE slug = ?", (group_slug, resource_slug))
 
     def set_database_group(self, database_slug: str, group_slug: str) -> None:
         """Assign a database to a group."""

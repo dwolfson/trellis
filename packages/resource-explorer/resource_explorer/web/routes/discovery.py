@@ -587,7 +587,7 @@ async def set_repo_disposition(body: DispositionRequest) -> DispositionResponse:
     project = registry.get_by_github_url(body.github_url)
     registry.set_disposition(
         body.github_url, body.disposition, reason=body.reason,
-        project_slug=project.slug if project else "",
+        resource_slug=project.slug if project else "",
     )
     return DispositionResponse(status="ok", github_url=body.github_url, disposition=body.disposition)
 

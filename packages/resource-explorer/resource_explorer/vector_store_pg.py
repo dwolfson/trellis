@@ -140,8 +140,8 @@ class MultiCollectionStore:
         self._cfg = get_config()
         self._store = _get_shared_store()
 
-    def collection_name(self, project_slug: str, collection_type: str) -> str:
-        safe_slug = re.sub(r"[^a-z0-9_]", "_", project_slug.lower())
+    def collection_name(self, resource_slug: str, collection_type: str) -> str:
+        safe_slug = re.sub(r"[^a-z0-9_]", "_", resource_slug.lower())
         return f"{safe_slug}_{collection_type}"
 
     def collection_exists(self, collection: str) -> bool:

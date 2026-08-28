@@ -83,7 +83,7 @@ def _store():
 
 def build_trees(
     files: list[tuple[str, str]],
-    project_slug: str,
+    resource_slug: str,
     kind: str = "markdown",
     source_version: str = "",
     adapter=None,
@@ -135,7 +135,7 @@ def build_trees(
         near_empty = structureless = 0
         for source_id, source in files:
             try:
-                artifact_id = f"{project_slug}:{source_id}"
+                artifact_id = f"{resource_slug}:{source_id}"
                 tree = (
                     adapter.parse(artifact_id, source, prov(source_id))
                     if adapter is not None
@@ -174,7 +174,7 @@ def build_trees(
 
 def build_code_trees(
     files: list[tuple[str, str]],
-    project_slug: str,
+    resource_slug: str,
     language: str,
     source_version: str = "",
 ) -> TreeBuildResult:
@@ -201,14 +201,14 @@ def build_code_trees(
             reason=f"no grammar for {language!r} (have: {', '.join(sorted(SPECS))})",
         )
     return build_trees(
-        files, project_slug, source_version=source_version,
+        files, resource_slug, source_version=source_version,
         adapter=CodeAdapter(language=language),
     )
 
 
 def build_pdf_trees_from_documents(
     documents: list[tuple[str, object]],
-    project_slug: str,
+    resource_slug: str,
     source_version: str = "",
 ) -> TreeBuildResult:
     """Trees from ALREADY-CONVERTED Docling documents.
@@ -229,14 +229,14 @@ def build_pdf_trees_from_documents(
         return TreeBuildResult("unavailable", reason=f"{type(exc).__name__}: {exc}")
 
     return build_trees(
-        documents, project_slug, source_version=source_version,
+        documents, resource_slug, source_version=source_version,
         adapter=DoclingDocumentAdapter(),
     )
 
 
 def build_pdf_trees(
     paths: list[tuple[str, str]],
-    project_slug: str,
+    resource_slug: str,
     source_version: str = "",
 ) -> TreeBuildResult:
     """Trees from PDFs by path, converting them itself.
@@ -262,5 +262,5 @@ def build_pdf_trees(
         return TreeBuildResult("unavailable", reason=f"{type(exc).__name__}: {exc}")
 
     return build_trees(
-        paths, project_slug, source_version=source_version, adapter=PdfAdapter(),
+        paths, resource_slug, source_version=source_version, adapter=PdfAdapter(),
     )

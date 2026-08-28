@@ -54,7 +54,7 @@ class SurveyOrchestrator:
         self._data_path = data_path  # local clone path for DataProfilerSurveyor Tier 2
 
     def run(
-        self, project_slug: str, steps: list[str] | None = None,
+        self, resource_slug: str, steps: list[str] | None = None,
         scope_locator: str = "", fast: bool = False,
         max_fetch_cost: str | None = None, max_compute_cost: str | None = None,
     ) -> SurveyResult:
@@ -90,9 +90,9 @@ class SurveyOrchestrator:
             survey types, no scheduler changes; see the plan's "Out of
             scope".
         """
-        project = self._registry.get(project_slug)
+        project = self._registry.get(resource_slug)
         if project is None:
-            raise ValueError(f"Project '{project_slug}' not found in registry.")
+            raise ValueError(f"Project '{resource_slug}' not found in registry.")
 
         surveyed_at_dt = datetime.utcnow()
         # Shared run-timestamp, passed into the surveyors that persist
@@ -105,7 +105,7 @@ class SurveyOrchestrator:
         surveyed_at = surveyed_at_dt.isoformat()
 
         result = SurveyResult(
-            project_slug=project.slug,
+            resource_slug=project.slug,
             project_display_name=project.display_name,
             github_url=project.github_url,
             surveyed_at=surveyed_at_dt,

@@ -106,7 +106,7 @@ def ask(
         project = _maybe_resolve_alias(query)
 
     system = RAGSystem()
-    response = system.query(query, project_slug=project)
+    response = system.query(query, resource_slug=project)
     console.print(response)
     query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
     FeedbackCollector().prompt_and_collect(query_hash)
@@ -119,7 +119,7 @@ def chat(
 ):
     """Start an interactive multi-turn chat session."""
     from resource_explorer.cli.interactive import InteractiveSession
-    InteractiveSession(project_slug=project, session_id=session_id).run()
+    InteractiveSession(resource_slug=project, session_id=session_id).run()
 
 
 @app.command(name="add-docs")
@@ -399,8 +399,8 @@ def _print_survey_report(result) -> None:
     from resource_explorer.surveyors.survey_report import AnnotationType
     console.print(f"\n[bold]Survey Report: {result.project_display_name}[/bold]")
     console.print(f"GitHub: {result.github_url}")
-    if result.project_slug != result.project_display_name:
-        console.print(f"Slug:   {result.project_slug}")
+    if result.resource_slug != result.project_display_name:
+        console.print(f"Slug:   {result.resource_slug}")
     console.print(f"Surveyed at: {result.surveyed_at.isoformat()}")
     console.print(f"Annotations: {len(result.annotations)}  |  Errors: {len(result.errors)}\n")
 

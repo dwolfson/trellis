@@ -21,7 +21,7 @@ class DependencyParser:
       Java    — pom.xml
     """
 
-    def parse(self, local_root: Path, project_slug: str) -> list[dict]:
+    def parse(self, local_root: Path, resource_slug: str) -> list[dict]:
         deps: list[dict] = []
         root = Path(local_root)
 

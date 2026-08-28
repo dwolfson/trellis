@@ -16,7 +16,7 @@ class NotebookParser:
     Code cells go into the examples collection; markdown cells go into markdown_docs.
     """
 
-    def parse(self, file_path: str, project_slug: str) -> list[NotebookChunk]:
+    def parse(self, file_path: str, resource_slug: str) -> list[NotebookChunk]:
         import json
         with open(file_path) as f:
             nb = json.load(f)
@@ -32,7 +32,7 @@ class NotebookParser:
                     "file_path": file_path,
                     "cell_type": cell["cell_type"],
                     "cell_index": i,
-                    "project_slug": project_slug,
+                    "project_slug": resource_slug,
                 },
             ))
         return chunks

@@ -128,7 +128,7 @@ def _stats_server() -> Server:
         if not slug:
             reply: Message = yield _ask_project_status(context)
             slug = _slug_from_reply(reply)
-        yield agent.handle(query, project_slug=slug)
+        yield agent.handle(query, resource_slug=slug)
 
     return server
 
@@ -153,7 +153,7 @@ def _code_server() -> Server:
     def code_fn(message: Message) -> str:
         from resource_explorer.agents.code_agent import CodeAgent
         query, slug = _project_scope(_text(message))
-        return CodeAgent().handle(query, project_slug=slug)
+        return CodeAgent().handle(query, resource_slug=slug)
 
     return server
 
@@ -178,7 +178,7 @@ def _docs_server() -> Server:
     def docs_fn(message: Message) -> str:
         from resource_explorer.agents.doc_agent import DocAgent
         query, slug = _project_scope(_text(message))
-        return DocAgent().handle(query, project_slug=slug)
+        return DocAgent().handle(query, resource_slug=slug)
 
     return server
 
@@ -209,7 +209,7 @@ def _health_server() -> Server:
         if not slug:
             reply: Message = yield _ask_project_status(context)
             slug = _slug_from_reply(reply)
-        yield agent.handle(query, project_slug=slug)
+        yield agent.handle(query, resource_slug=slug)
 
     return server
 
@@ -350,7 +350,7 @@ def _orchestrator_server(agent_ports: dict[str, int]) -> Server:
     def orchestrator_fn(message: Message) -> str:
         from resource_explorer.rag_system import RAGSystem
         query, slug = _project_scope(_text(message))
-        return RAGSystem().query(query, project_slug=slug)
+        return RAGSystem().query(query, resource_slug=slug)
 
     return server
 

@@ -54,7 +54,7 @@ class JsSymbolExtractor:
         # module (ast_chunker.py's _TS_MODULE) — see module docstring.
         return ASTChunker()._get_parser(language)
 
-    def extract(self, file_path: str, content: str, project_slug: str, language: str) -> list[CodeSymbol]:
+    def extract(self, file_path: str, content: str, resource_slug: str, language: str) -> list[CodeSymbol]:
         parser = self._get_parser(language)
         if parser is None:
             return []  # tree-sitter-javascript unavailable (optional [ast] extra) — caller falls back to regex
@@ -65,41 +65,41 @@ class JsSymbolExtractor:
             return []
 
         symbols: list[CodeSymbol] = []
-        self._walk(tree.root_node, file_path, project_slug, language, parent_class="", symbols=symbols)
+        self._walk(tree.root_node, file_path, resource_slug, language, parent_class="", symbols=symbols)
         return symbols
 
     # ── tree walking ────────────────────────────────────────────────────────
 
-    def _walk(self, node, file_path: str, project_slug: str, language: str, parent_class: str, symbols: list[CodeSymbol]) -> None:
+    def _walk(self, node, file_path: str, resource_slug: str, language: str, parent_class: str, symbols: list[CodeSymbol]) -> None:
         if node.type == "class_declaration":
-            sym = self._extract_class(node, file_path, project_slug, language)
+            sym = self._extract_class(node, file_path, resource_slug, language)
             if sym:
                 symbols.append(sym)
                 body = next((c for c in node.children if c.type == "class_body"), None)
                 if body:
                     for child in body.children:
-                        self._walk(child, file_path, project_slug, language, sym.name, symbols)
+                        self._walk(child, file_path, resource_slug, language, sym.name, symbols)
         elif node.type == "method_definition":
-            sym = self._extract_method(node, file_path, project_slug, language, parent_class)
+            sym = self._extract_method(node, file_path, resource_slug, language, parent_class)
             if sym:
                 symbols.append(sym)
         elif node.type in ("function_declaration", "generator_function_declaration"):
-            sym = self._extract_function(node, file_path, project_slug, language)
+            sym = self._extract_function(node, file_path, resource_slug, language)
             if sym:
                 symbols.append(sym)
         elif node.type == "variable_declarator":
-            sym = self._extract_arrow_variable(node, file_path, project_slug, language)
+            sym = self._extract_arrow_variable(node, file_path, resource_slug, language)
             if sym:
                 symbols.append(sym)
             # Don't recurse into the initializer — an arrow function's own
             # body isn't a declaration boundary worth walking further.
         else:
             for child in node.children:
-                self._walk(child, file_path, project_slug, language, parent_class, symbols)
+                self._walk(child, file_path, resource_slug, language, parent_class, symbols)
 
     # ── class ───────────────────────────────────────────────────────────────
 
-    def _extract_class(self, node, file_path: str, project_slug: str, language: str) -> CodeSymbol | None:
+    def _extract_class(self, node, file_path: str, resource_slug: str, language: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -107,7 +107,7 @@ class JsSymbolExtractor:
             name = name_node.text.decode()
             superclass = _superclass_name(node)
             return CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="class", name=name, qualified_name=name, signature="",
                 docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 bases=[superclass] if superclass else [],
@@ -117,7 +117,7 @@ class JsSymbolExtractor:
 
     # ── class method ────────────────────────────────────────────────────────
 
-    def _extract_method(self, node, file_path: str, project_slug: str, language: str, parent_class: str) -> CodeSymbol | None:
+    def _extract_method(self, node, file_path: str, resource_slug: str, language: str, parent_class: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None or name_node.type not in _METHOD_NAME_FIELD_TYPES:
@@ -130,7 +130,7 @@ class JsSymbolExtractor:
             params_text = params.text.decode() if params else "()"
             qualified_name = f"{parent_class}.{name}" if parent_class else name
             return CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="method", name=name, qualified_name=qualified_name, signature=params_text,
                 docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 parent_class=parent_class, is_async=_is_async(node),
@@ -141,7 +141,7 @@ class JsSymbolExtractor:
 
     # ── free / generator function ──────────────────────────────────────────
 
-    def _extract_function(self, node, file_path: str, project_slug: str, language: str) -> CodeSymbol | None:
+    def _extract_function(self, node, file_path: str, resource_slug: str, language: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -150,7 +150,7 @@ class JsSymbolExtractor:
             params = node.child_by_field_name("parameters")
             params_text = params.text.decode() if params else "()"
             return CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="function", name=name, qualified_name=name, signature=params_text,
                 docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 is_async=_is_async(node),
@@ -160,7 +160,7 @@ class JsSymbolExtractor:
 
     # ── const/let/var foo = (...) => {...} ─────────────────────────────────
 
-    def _extract_arrow_variable(self, node, file_path: str, project_slug: str, language: str) -> CodeSymbol | None:
+    def _extract_arrow_variable(self, node, file_path: str, resource_slug: str, language: str) -> CodeSymbol | None:
         try:
             value = node.child_by_field_name("value")
             if value is None or value.type != "arrow_function":
@@ -179,7 +179,7 @@ class JsSymbolExtractor:
             else:
                 params_text = params.text.decode()
             return CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="function", name=name, qualified_name=name, signature=params_text,
                 docstring="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                 is_async=_is_async(value),

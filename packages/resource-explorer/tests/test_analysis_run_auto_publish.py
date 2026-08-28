@@ -41,7 +41,7 @@ def client(registry, monkeypatch):
 def _fake_survey_result(errors=None, with_annotation=True):
     from resource_explorer.surveyors.survey_report import SurveyResult
     result = SurveyResult(
-        project_slug="myproj", project_display_name="My Project",
+        resource_slug="myproj", project_display_name="My Project",
         github_url="https://github.com/test/myproj",
     )
     result.errors = errors or []

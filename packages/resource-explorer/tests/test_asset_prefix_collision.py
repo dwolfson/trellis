@@ -16,7 +16,7 @@ from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
 
 class _Result:
-    project_slug = "docling"
+    resource_slug = "docling"
     project_display_name = "docling"
     github_url = "https://github.com/docling-project/docling"
 

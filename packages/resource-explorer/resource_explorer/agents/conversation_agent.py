@@ -21,17 +21,17 @@ class ConversationAgent(BaseExplorerAgent):
 
     def __init__(
         self,
-        project_slug: str | None = None,
+        resource_slug: str | None = None,
         rag_system=None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.project_slug = project_slug
+        self.resource_slug = resource_slug
         self._rag = rag_system  # optional pre-warmed fallback; created lazily if None
         self._agent = None  # lazy-init; kept alive across turns
 
     def system_prompt(self) -> str:
-        scope = f" for the {self.project_slug} project/resource" if self.project_slug else ""
+        scope = f" for the {self.resource_slug} project/resource" if self.resource_slug else ""
         return (
             f"You are a knowledgeable assistant{scope} for exploring resources in the metadata catalog, including Git projects, databases, and filesystems. "
             "Use your available tools to answer questions about source code, documentation, "
@@ -109,15 +109,15 @@ class ConversationAgent(BaseExplorerAgent):
         except Exception:
             pass
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
-        slug = project_slug or self.project_slug or self._infer_project_slug(query)
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        slug = resource_slug or self.resource_slug or self._infer_project_slug(query)
 
         # Delegate example generation to the specialist — BeeAI + small models produce
         # incomplete responses for this intent without the dedicated context/fallback loop.
         from resource_explorer.query_processor import QueryProcessor, QueryIntent
         if QueryProcessor().classify(query) == QueryIntent.EXAMPLES:
             from resource_explorer.agents.examples_agent import ExamplesAgent
-            return ExamplesAgent().handle(query, project_slug=slug)
+            return ExamplesAgent().handle(query, resource_slug=slug)
 
         lines: list[str] = []
         if slug:
@@ -136,7 +136,7 @@ class ConversationAgent(BaseExplorerAgent):
             if self._rag is None:
                 from resource_explorer.rag_system import RAGSystem
                 self._rag = RAGSystem()
-            return self._rag.query(query, project_slug=slug)
+            return self._rag.query(query, resource_slug=slug)
 
     def _run_persistent(self, prompt: str) -> str:
         """Run the persistent agent, reusing the same instance so TokenMemory accumulates."""
