@@ -277,6 +277,22 @@ def refresh(
                         console.print(f"  [dim]Stats updated ({n} commits, {history}d lookback).[/dim]")
                 except Exception as exc:
                     console.print(f"  [dim]Stats update skipped: {exc}[/dim]")
+            # Collections were proposed once, at onboarding, from the repo as
+            # it stood then. Nothing re-evaluates them, so a repo that gains
+            # PDFs keeps ignoring them forever. This is a query over the file
+            # inventory the refresh just updated -- no scan, no extra fetch.
+            # It reports only: enabling a collection changes what gets embedded
+            # and costs real ingestion time, so that stays a human decision.
+            try:
+                from resource_explorer.collection_drift import detect_drift
+                for finding in detect_drift(registry, project.slug):
+                    console.print(
+                        f"  [yellow]Eligible but not enabled — {finding.summary}[/yellow]"
+                    )
+                    for path in finding.sample_paths:
+                        console.print(f"      [dim]{path}[/dim]")
+            except Exception as exc:
+                console.print(f"  [dim]Collection drift check skipped: {exc}[/dim]")
             console.print(f"  [green]✓ Done[/green]")
         except Exception as exc:
             console.print(f"  [red]✗ Failed: {exc}[/red]")
