@@ -261,8 +261,19 @@ Migration risk was the blocker; that is now moot — Egeria can be wiped and
 rebuilt (export/import round-trips 62 resources, bulk republish works). So this
 is about the model being right, not about data.
 
-- [ ] Own design pass. Touches `resource_schedules` (keyed by `analysis_id`) and
-      27 render payloads.
+- [x] **Design pass done 2026-08-28** — `docs/granularity-pass.md`. It
+      recommends a **smaller** change than the one it set out to design, and
+      the checklist's own risk note was wrong: `resource_schedules` has **one**
+      row, and the whole bundling role is **6 rows** across three tables. The
+      74k rows are keyed by finding `kind`, which turns out to be its own
+      vocabulary already — 5 kinds are not analysis ids, and 12 analyses have
+      no kind at all — so the results half was never the same thing under
+      another name and does not move.
+- [ ] **Widen the schedule target** to `(target_kind, target_ref)` so a survey
+      type can be scheduled, not only an analysis. Six rows migrate. This is
+      the whole change, and it is what §4a is waiting on.
+- [ ] Decide the §6 open question: should an analysis stay independently
+      runnable once surveys are schedulable, or become view-only?
 
 Design: `docs/survey-model-and-engine-host-design.md` §2.
 
