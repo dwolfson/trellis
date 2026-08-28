@@ -70,9 +70,18 @@ collections as data rather than as choices:
 **Overlap is not independently tuned — it is 19.5% of chunk size in all three.** So the profiler
 does not derive four parameters. It derives *one*, and the rest follow:
 
-- `chunk_size` ← a high percentile of the slice's unit-size distribution. The goal is that a
-  typical containment unit survives un-split, because splitting a unit is what makes a chunk
-  incoherent. p75 is the starting hypothesis, not a result.
+- `chunk_size` ← a high percentile of the slice's **whole-document** size distribution. **Measured
+  2026-08-28 against trees RE had already stored — see §7, which was run before this was written
+  and falsified the first version of this line.** The original hypothesis was p75 of *unit*
+  (section) size; that gives 340 / 164 / 356 tokens for concepts / types / general, which bears no
+  relation to EA's 768 / 1024 / 1536 and gets the ordering wrong. p75 of whole-document size gives
+  931 / 844 / 1742 — every one within ~20% of the hand-picked value.
+
+  The correction matters more than the number. For this corpus the coherent retrieval unit is the
+  **document**, not the section: concepts have a median of 1 section per document (they *are*
+  single-section documents) and types 4. Sections are fragments; documents are answers. A
+  profiler tuned to "never split a section" would have optimised for the wrong thing while
+  looking principled.
 - `overlap` ← a fixed fraction of `chunk_size` (~20%), until something shows otherwise.
 - `min_score`, `top_k` ← inversely related to chunk size in EA's data: short precise units want a
   high threshold and few results, long discursive ones the reverse.
@@ -131,8 +140,28 @@ filenames.
 **Profile `egeria-docs` and see whether the derived chunk sizes land near EA's hand-picked
 768 / 1024 / 1536.**
 
-This is the cleanest validation available anywhere in this design, because the answer is already
-written down by someone who read the corpus:
+**Run 2026-08-28, against trees already in `artifact_tree` from RE's own ingest — no new code, no
+re-parse.** Results:
+
+| slice | docs | median sections/doc | p75 section | p75 whole-doc | EA chunk |
+|---|---|---|---|---|---|
+| concepts | 179 | 1 | 340 | 931 | 768 |
+| types | 168 | 4 | 164 | 844 | 1024 |
+| general | 562 | 3 | 356 | 1742 | 1536 |
+
+Section size fails badly — wrong magnitude and wrong ordering (it makes `types` the smallest,
+where EA gives it the middle value). Whole-document p75 lands within ~20% on all three. §3 has
+been corrected accordingly.
+
+Two things this bought that no amount of design would have:
+
+- The hand-picked numbers were **not arbitrary** — they encode a real property of the corpus, and
+  one a computation can recover.
+- The signal a careful reader was using was **document size, not unit size** — the exact "missing
+  signal" case this section was written to catch, caught on the first run.
+
+The original framing of the three possible outcomes, kept because the reasoning still applies to
+the next slice profiled:
 
 - **They land close** — the derivation captures what a careful reader was doing, and the
   hand-tuning can be replaced with a computation.
