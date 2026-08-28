@@ -17,6 +17,7 @@ resource-explorer = { workspace = true }
 egeria-advisor = { workspace = true }
 trellis-microflow = { workspace = true }
 trellis-vectorstore = { workspace = true }
+trellis-artifact-tree = { workspace = true }
 
 [tool.uv]
 # Combining both members' constraints in one resolution otherwise pulls an
