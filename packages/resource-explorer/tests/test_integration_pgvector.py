@@ -59,6 +59,33 @@ class TestVectorStoreIntegration:
         pg_store.delete_collection(col)
         assert pg_store.collection_exists(col) is False
 
+    def test_rename_collection_preserves_rows(self, pg_store):
+        """The repo-rename repair operation's core guarantee: renaming is an
+        ALTER TABLE, not a drop+reingest, so existing rows survive under the
+        new name."""
+        old, new = "it_vs_rename_old", "it_vs_rename_new"
+        pg_store.delete_collection(old)
+        pg_store.delete_collection(new)
+        pg_store.create_collection(old)
+        pg_store.insert_data(old, texts=["a chunk that must survive the rename"],
+                             ids=["r1"], metadata=[{"file_path": "keep.md"}])
+
+        pg_store.rename_collection(old, new)
+
+        assert pg_store.collection_exists(old) is False
+        assert pg_store.collection_exists(new) is True
+        stats = pg_store.get_collection_stats(new)
+        assert stats["num_entities"] == 1
+
+    def test_rename_collection_onto_existing_name_raises(self, pg_store):
+        old, new = "it_vs_rename_collide_old", "it_vs_rename_collide_new"
+        pg_store.delete_collection(old)
+        pg_store.delete_collection(new)
+        pg_store.create_collection(old)
+        pg_store.create_collection(new)
+        with pytest.raises(Exception):
+            pg_store.rename_collection(old, new)
+
     def test_multi_collection_store_wrapper_real_round_trip(self, pg_test_schema, monkeypatch):
         """The MultiCollectionStore compatibility wrapper every real call site
         uses (not just the lower-level PgVectorStore) — insert/search/count/
@@ -81,8 +108,14 @@ class TestVectorStoreIntegration:
 
         assert store.list_source_files([col]) == ["README.md"]
 
-        store.drop_collection(col)
+        renamed = store.collection_name("itproj_renamed", "markdown_docs")
+        store.rename_collection(col, renamed)
         assert store.collection_exists(col) is False
+        assert store.collection_exists(renamed) is True
+        assert store.count(renamed) == 1
+
+        store.drop_collection(renamed)
+        assert store.collection_exists(renamed) is False
 
 
 class TestRegistryIntegration:

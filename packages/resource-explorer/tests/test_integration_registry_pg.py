@@ -159,3 +159,60 @@ class TestRemoveCannotForgetANewTable:
             "projects.slug — on Postgres removing a project with rows in those "
             "tables raises ForeignKeyViolation."
         )
+
+    def test_rename_project_slug_covers_every_table_with_a_fk(self, pg_registry, pg_test_schema):
+        """The same structural guard, for rename_project_slug()'s own
+        enumeration (_PROJECT_SLUG_TABLES) — a table added later needs to be
+        in both lists, and this catches the rename side forgetting one just
+        as directly as the test above catches remove() forgetting one."""
+        with pg_registry._conn() as conn:
+            rows = conn.execute("""
+                SELECT tc.table_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                  ON tc.constraint_name = ccu.constraint_name
+                 AND tc.table_schema = ccu.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema = %s
+                  AND ccu.table_name = 'projects'
+            """, (pg_test_schema,)).fetchall()
+        referencing = sorted({r["table_name"] for r in rows})
+        assert referencing, "no FKs found — the schema was not created as expected"
+
+        from resource_explorer.registry import ProjectRegistry
+        missing = [t for t in referencing if t not in ProjectRegistry._PROJECT_SLUG_TABLES]
+        assert not missing, (
+            f"rename_project_slug()'s _PROJECT_SLUG_TABLES is missing {missing}, which "
+            "hold a foreign key to projects.slug — a rename would leave those rows "
+            "pointing at a slug that no longer exists."
+        )
+
+
+class TestRenameProjectSlugOnRealPostgres:
+    """rename_project_slug()'s insert-new/update-children/delete-old
+    ordering exists specifically to satisfy Postgres' FK enforcement
+    (SQLite's PRAGMA mirrors it, but this is the backend the ordering was
+    actually designed against)."""
+
+    def test_rename_succeeds_with_fk_children_present(self, pg_registry):
+        slug = "pg_itest_rename_src"
+        new_slug = "pg_itest_rename_dst"
+        for s in (slug, new_slug):
+            existing = pg_registry.get(s)
+            if existing:
+                pg_registry.remove(s)
+        pg_registry.add(Project(slug=slug, display_name="Rename Me",
+                                github_url="https://github.com/test/rename-me",
+                                collections=[]))
+        pg_registry.upsert_file_inventory(slug, [("README.md", 10)])
+        pg_registry.upsert_finding(slug, "ci_quality",
+                                   [{"check_name": "c", "label": "pass", "summary": "s"}])
+
+        try:
+            pg_registry.rename_project_slug(slug, new_slug)  # would raise on FK violation
+            assert pg_registry.get(slug) is None
+            assert pg_registry.get(new_slug) is not None
+            assert pg_registry.get_file_inventory(new_slug) == ["README.md"]
+        finally:
+            pg_registry.remove(new_slug) if pg_registry.get(new_slug) else None
+            pg_registry.remove(slug) if pg_registry.get(slug) else None
