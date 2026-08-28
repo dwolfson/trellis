@@ -278,7 +278,11 @@ async def list_candidates(
         from resource_explorer.registry import ProjectRegistry
         from resource_explorer.surveyors.repo_survey_definition_adapter import get_survey_definition_speed_tag
 
-        last_activity_by_ref = ProjectRegistry().get_survey_definition_last_activity(entity_type, slug)
+        _reg = ProjectRegistry()
+        last_activity_by_ref = _reg.get_survey_definition_last_activity(entity_type, slug)
+        # The same gate the executor uses to decide whether to auto-publish, so
+        # the button and the behaviour cannot disagree.
+        auto_publishes = _reg.has_assigned_egeria_project(entity_type, slug)
 
         detailed = []
         for c in thin_candidates:
@@ -333,6 +337,13 @@ async def list_candidates(
                 # see get_survey_definition_speed_tag's docstring for how
                 # it's derived (Survey Definitions have no such field of
                 # their own to read).
+                # Whether a run of this survey will publish to Egeria on its
+                # own. Survey Definition runs auto-publish whenever the
+                # resource has an assigned Egeria Project (5153a75), so a
+                # manual Publish button beside them offers to do again what
+                # just happened. Repo-level rather than per-candidate, but
+                # carried on each so the button that reads it has it.
+                "auto_publishes": auto_publishes,
                 "run_time": get_survey_definition_speed_tag(steps),
                 # A Survey Definition has no perspectives of its own in Egeria,
                 # so the Survey tab's perspective filter could only ever filter

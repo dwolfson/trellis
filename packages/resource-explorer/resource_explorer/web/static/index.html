@@ -6674,6 +6674,15 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
         // are already there. A button here would either no-op or re-publish
         // what Egeria wrote, under Resource Explorer's name.
         if (c.publishes_itself) return '';
+        // Nothing to offer either when running this survey publishes on its
+        // own. Survey Definition runs auto-publish whenever the resource has
+        // an assigned Egeria Project (5153a75), so the button was offering to
+        // repeat what had just happened — which reads as though publishing
+        // still needed doing. The manual route remains for the cases the
+        // auto-publish gate deliberately excludes: an unassigned resource, or
+        // a re-publish, both reachable from the deep report's own
+        // "Publish survey →".
+        if (c.auto_publishes) return '';
         const stepKeys = (c.steps || []).map(s => s.re_analysis_step).filter(Boolean);
         if (entityType !== 'repo' || !stepKeys.length) return '';
         return `<button onclick='_publishScopedSteps(${JSON.stringify(slug)}, ${JSON.stringify(stepKeys)}, this, ${JSON.stringify(c.display_name || c.qualified_name)}, ${JSON.stringify(c.qualified_name)})'
