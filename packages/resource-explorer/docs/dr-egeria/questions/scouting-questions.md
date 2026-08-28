@@ -156,7 +156,7 @@ User Questions
 Who maintains this repository?
 
 ### Description
-Ownership/contact signal — org, top contributors — from GitHub API metadata, relevant before any deeper trust assessment.
+repository_health alone answers 'is it maintained', not 'by whom' — the two questions returned the same text until chaoss_metrics, built on project_commits, gave this one its own source.
 
 ### Summary
 Are they reputable?
@@ -225,7 +225,7 @@ User Questions
 How widely adopted and active is the community around this repository?
 
 ### Description
-Stars/forks/contributor-count and issue/PR responsiveness as an adoption/health proxy — cheap GitHub API signal, not a quality judgment on its own.
+Stars are attention, not community. community_support reports the dimensions separately and names the weakest rather than averaging, so 'popular but unsupported' stays visible instead of averaging out.
 
 ### Summary
 Reduces adoption risk, provides a health proxy, and ensures community support and responsiveness.
@@ -343,7 +343,7 @@ User Questions
 Are there outstanding CVEs?
 
 ### Description
-No CVE/dependency-vulnerability scan exists in RE today — real gap; candidate tools: OSV.dev (Google/OpenSSF vulnerability API), OWASP Dependency-Track (SBOM-based CVE monitoring), Trivy/Grype (manifest+lockfile scanners).
+Closed 2026-08-26 by cve_scan, which queries OSV.dev for advisories against the dependencies manifest_parse recorded. Reports coverage as prominently as the count — DECLARED dependencies only, so a zero is 'none found in what we can see', not 'none exist'.
 
 ### Summary
 Understand the risk.
@@ -1534,7 +1534,7 @@ User Questions
 What kinds of integrations does it support?
 
 ### Description
-Needs content read (API docs, integration guides) — RAG-tier, real gap.
+interface_surface answers the structural half — which interfaces exist and whether they are documented. Which named third-party systems it integrates with still needs a content read and has no surveyor.
 
 ### Summary
 Can we connect it to our ecosystem?
@@ -2054,7 +2054,7 @@ User Questions
 Is there a current, published, security analysis?
 
 ### Description
-security_scan/security_features cover SECURITY.md/CI/LICENSE presence and GitHub's native security toggles (Assessment); repo_conventions' security_policy_content goes one step further and keyword-scans for actual disclosure-process language, not just file presence. A real third-party deep scan is still Analysis-tier, real gap; candidate tools: OpenSSF Scorecard (automated repo health/security checks), CHAOSS GrimoireLab/Augur (Linux Foundation project-health tooling) for the community-responsiveness dimension.
+The GAP note here named OpenSSF Scorecard and CHAOSS as candidate tooling; both landed 2026-08-26 as foss_scorecard and chaoss_metrics, and cii_badge reads the real published badge. Still MIXED rather than answered: a published third-party audit is a different artifact from any of these, and nothing detects one.
 
 ### Summary
 Third-party audit and security posture.
@@ -3087,6 +3087,578 @@ Is there a Survey Definition authored for this resource's technology type at all
 
 ### Scope Reference
 Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+### Description
+repo_classification exists and nothing asked for it. It also decides whether architecture recovery is worth running, so it gates later tiers.
+
+### Summary
+The same signal means different things depending on what the repo is; a tutorial with no tests is fine, a library with none is not.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What is its internal architecture — what components exist and how do they relate?
+
+### Description
+architecture_recovery, architecture_summary and architecture_doc_lens all exist; no question referenced any of them. The doc lens specifically compares documented architecture against recovered architecture.
+
+### Summary
+I need to know what I would be taking on before committing to it, and whether its own documentation matches what the code actually does.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What is its internal architecture — what components exist and how do they relate?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+What is its internal architecture — what components exist and how do they relate?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What is its internal architecture — what components exist and how do they relate?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What is its internal architecture — what components exist and how do they relate?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What is its internal architecture — what components exist and how do they relate?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What languages and file types make up this repository?
+
+### Description
+language_file_classification is one of the oldest analyses here and no question referenced it.
+
+### Summary
+Language mix is the cheapest signal of whether this is something we can maintain in-house.
+
+### Usage
+Typically asked and answerable during Scouting.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What languages and file types make up this repository?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+What languages and file types make up this repository?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What languages and file types make up this repository?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What languages and file types make up this repository?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What languages and file types make up this repository?
+
+### Scope Reference
+Scouting
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What data files does it ship, and what shape are they?
+
+### Description
+data_file_profiling exists and no question referenced it.
+
+### Summary
+Bundled data can carry licensing and privacy obligations that the repo's own licence does not cover.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What data files does it ship, and what shape are they?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What data files does it ship, and what shape are they?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+What APIs and code symbols does it expose to callers?
+
+### Description
+api_structure and interface_surface both exist; neither was referenced by a question.
+
+### Summary
+The published surface is what we would actually be coupling to, and what breaks on upgrade.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::App/AI Builder
+
+### Question Name
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+What APIs and code symbols does it expose to callers?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+What APIs and code symbols does it expose to callers?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How does it score against OpenSSF Scorecard-style criteria?
+
+### Description
+foss_scorecard computes Scorecard-shaped checks from data already collected — it is NOT the upstream OpenSSF tool's own run, and a check it cannot evaluate is reported as not-established rather than as a failure.
+
+### Summary
+A named, comparable rubric is what lets me weigh several candidates against each other rather than judging each on its own terms.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How does it score against OpenSSF Scorecard-style criteria?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+How does it score against OpenSSF Scorecard-style criteria?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+How does it score against OpenSSF Scorecard-style criteria?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+How does it score against OpenSSF Scorecard-style criteria?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How does it score against OpenSSF Scorecard-style criteria?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+### Description
+cii_badge reads the real badge from bestpractices.dev rather than estimating one, and reports level together with the age of the self-assessment. No question referenced it.
+
+### Summary
+A badge is a public claim by the project about itself; its age tells me how much the claim is still worth.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Community
+
+### Question Name
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How concentrated is authorship — would the project survive losing its top contributors?
+
+### Description
+chaoss_metrics reports the elephant factor and related CHAOSS metrics on their own terms, never averaged into a score. No question referenced it.
+
+### Summary
+A healthy commit rate produced by one person is a different risk from the same rate produced by twenty.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How concentrated is authorship — would the project survive losing its top contributors?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+How concentrated is authorship — would the project survive losing its top contributors?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+How concentrated is authorship — would the project survive losing its top contributors?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Community
+
+### Question Name
+How concentrated is authorship — would the project survive losing its top contributors?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How concentrated is authorship — would the project survive losing its top contributors?
+
+### Scope Reference
+Assessment
 
 ### Scope Category
 Asked At

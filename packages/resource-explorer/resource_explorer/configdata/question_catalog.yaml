@@ -63,9 +63,11 @@ repo_questions:
     kind: analysis
     analysis_ids:
     - repository_health
-    checks: []
-    note: repository_health
-  answering_mechanism: Git Statistics
+    - foss_scorecard
+    checks:
+    - foss_scorecard:maintained
+    note: 'repository_health + foss_scorecard [checks: foss_scorecard:maintained]'
+  answering_mechanism: Git Statistics + Code Analysis
 - question: What does this repository do?
   stage: Scouting
   perspectives:
@@ -95,8 +97,9 @@ repo_questions:
     kind: analysis
     analysis_ids:
     - repository_health
+    - chaoss_metrics
     checks: []
-    note: repository_health
+    note: repository_health + chaoss_metrics (contributor identities and concentration)
   answering_mechanism: Git Statistics
 - question: How widely adopted and active is the community around this repository?
   stage: Scouting
@@ -110,9 +113,12 @@ repo_questions:
     kind: analysis
     analysis_ids:
     - repository_health
+    - community_support
+    - chaoss_metrics
     checks: []
-    note: repository_health
-  answering_mechanism: Git Statistics
+    note: repository_health + community_support (attention, participation and channels as separate dimensions,
+      weakest named) + chaoss_metrics
+  answering_mechanism: Git Statistics + Code Analysis
 - question: Has this repository already been catalogued in Egeria and when?
   stage: Discovery
   perspectives:
@@ -139,12 +145,12 @@ repo_questions:
   - Certify
   - Maintain
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - cve_scan
     checks: []
-    note: 'GAP: CVE/dependency-vulnerability scan (candidate: OSV.dev, OWASP Dependency-Track, Trivy,
-      Grype)'
-  answering_mechanism: Gap
+    note: cve_scan
+  answering_mechanism: External Service Query
 - question: Is there any existing use within our organization?
   stage: Discovery
   perspectives:
@@ -400,11 +406,14 @@ repo_questions:
   - Select
   - Deploy
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: partial
+    analysis_ids:
+    - interface_surface
     checks: []
-    note: 'GAP: RAG content read (API docs/integration guides) — no structured surveyor'
-  answering_mechanism: RAG Queries
+    note: 'PARTIAL: interface_surface (what can be talked to, and whether the contract is written down
+      — from the file inventory and declared dependencies); GAP remains for the prose read of integration
+      guides'
+  answering_mechanism: Code Analysis + RAG Queries
 - question: Does this fit within or need to extend our existing infrastructure estate?
   stage: Analysis/Enrichment
   perspectives:
@@ -513,15 +522,16 @@ repo_questions:
     kind: mixed
     analysis_ids:
     - security_scan
+    - chaoss_metrics
+    - cii_badge
+    - foss_scorecard
     - security_features
     - repo_conventions
-    checks:
-    - repo_conventions:security_policy_content
-    - security_scan:security_policy
-    note: 'MIXED: security_scan + security_features + repo_conventions (security_policy_content); GAP:
-      real deep scan (candidate: OpenSSF Scorecard, CHAOSS GrimoireLab/Augur) [checks: repo_conventions:security_policy_content,
-      security_scan:security_policy]'
-  answering_mechanism: Code Analysis
+    checks: []
+    note: 'MIXED: cii_badge (the real OpenSSF Best Practices badge, read from bestpractices.dev) + foss_scorecard
+      (OpenSSF-Scorecard-shaped checks computed locally, NOT the upstream tool''s own run) + chaoss_metrics;
+      security_scan + security_features + repo_conventions for hygiene signals'
+  answering_mechanism: External Service Query + Code Analysis
 - question: Does it fit into our governance frameworks?
   stage: Analysis/Enrichment
   perspectives:
@@ -739,3 +749,141 @@ repo_questions:
     checks: []
     note: N/A — direct field (Survey Definition candidates list, empty-result case)
   answering_mechanism: Direct Field
+- question: What kind of thing is this repository — a library, an application, a tool, or samples?
+  stage: Discovery
+  perspectives:
+  - Consumer
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - repo_classification
+    checks: []
+    note: repo_classification
+  answering_mechanism: Code Analysis
+- question: What is its internal architecture — what components exist and how do they relate?
+  stage: Discovery
+  perspectives:
+  - App/AI Builder
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Learn
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - architecture_recovery
+    - architecture_doc_lens
+    - architecture_summary
+    checks: []
+    note: architecture_recovery + architecture_summary + architecture_doc_lens
+  answering_mechanism: Code Analysis
+- question: What languages and file types make up this repository?
+  stage: Scouting
+  perspectives:
+  - Consumer
+  - Data Expert
+  - Architecture
+  purposes:
+  - Explore
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - language_file_classification
+    checks: []
+    note: language_file_classification
+  answering_mechanism: Code Analysis
+- question: What data files does it ship, and what shape are they?
+  stage: Analysis
+  perspectives:
+  - Data Owner
+  - Privacy
+  - Data Expert
+  purposes:
+  - Explore
+  - Assess
+  answering:
+    kind: analysis
+    analysis_ids:
+    - data_file_profiling
+    checks: []
+    note: data_file_profiling
+  answering_mechanism: Code Analysis
+- question: What APIs and code symbols does it expose to callers?
+  stage: Analysis
+  perspectives:
+  - Consumer
+  - App/AI Builder
+  - Data Expert
+  - Architecture
+  purposes:
+  - Select
+  - Deploy
+  - Learn
+  answering:
+    kind: analysis
+    analysis_ids:
+    - interface_surface
+    - api_structure
+    checks: []
+    note: api_structure + interface_surface
+  answering_mechanism: Code Analysis
+- question: How does it score against OpenSSF Scorecard-style criteria?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Select
+  answering:
+    kind: analysis
+    analysis_ids:
+    - foss_scorecard
+    checks: []
+    note: foss_scorecard
+  answering_mechanism: Code Analysis
+- question: Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment
+    behind it?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Community
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  - Attest
+  answering:
+    kind: analysis
+    analysis_ids:
+    - cii_badge
+    checks: []
+    note: cii_badge
+  answering_mechanism: External Service Query
+- question: How concentrated is authorship — would the project survive losing its top contributors?
+  stage: Assessment
+  perspectives:
+  - Governance
+  - Steward
+  - Community
+  purposes:
+  - Assess
+  - Maintain
+  answering:
+    kind: analysis
+    analysis_ids:
+    - chaoss_metrics
+    checks: []
+    note: chaoss_metrics
+  answering_mechanism: Git Statistics

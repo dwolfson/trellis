@@ -135,3 +135,12 @@ GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary
 ### Guard
 Any
 
+___
+
+## Link Element To Scope
+### Target Element
+Repo Architecture Discovery
+
+### Scope Reference
+What is its internal architecture — what components exist and how do they relate?
+

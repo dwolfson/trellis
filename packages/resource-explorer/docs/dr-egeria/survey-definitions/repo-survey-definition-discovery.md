@@ -204,6 +204,15 @@ ___
 Repo Discovery Survey
 
 ### Scope Reference
+What kind of thing is this repository — a library, an application, a tool, or samples?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
 What explicit license does the repository use, and are there non-standard or copyleft terms?
 
 ___
@@ -277,4 +286,31 @@ Repo Discovery Survey
 
 ### Scope Reference
 Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+How widely adopted and active is the community around this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+What kinds of integrations does it support?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+What APIs and code symbols does it expose to callers?
 

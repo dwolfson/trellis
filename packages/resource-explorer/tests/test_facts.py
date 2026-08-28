@@ -443,3 +443,62 @@ class TestCrossResourceResolvers:
             nd.detect_change = original
         assert state == NOT_ESTABLISHED
         assert value["changed_count"] == 0 and value["unchanged_count"] == 0
+
+
+# ── questions that were falling through to raw statistics ───────────────────
+def test_maintained_answers_with_a_verdict_not_statistics(pg_registry):
+    """The question was not in the fact layer at all, so it fell through to
+    generic retrieval, which returned commit counts and left the verdict to the
+    reader. foss_scorecard already computes the verdict."""
+    from resource_explorer.facts import RESOURCE_STATE_SOURCES
+    from resource_explorer.registry import Project
+    from resource_explorer.surveyors.result_status import MEASURED, NEVER_RUN
+
+    reg = pg_registry
+    reg.add(Project(slug="m", display_name="m", github_url="https://github.com/x/m"))
+    fn, _ = RESOURCE_STATE_SOURCES["Is this repository actively maintained?"]
+
+    # Nothing run yet: never_run, not a fabricated "no".
+    assert fn(reg, reg.get("m"))[1] == NEVER_RUN
+
+    reg.upsert_finding("m", "foss_scorecard", [
+        {"check_name": "maintained", "label": "pass",
+         "summary": "332 commit(s) in the last 90 days.", "confidence": 100,
+         "detail": {}}], surveyed_at="2026-08-27T00:00:00")
+    value, state = fn(reg, reg.get("m"))
+    assert state == MEASURED
+    assert value["maintained"] is True and value["verdict"] == "pass"
+    assert "332" in value["detail"]
+
+
+def test_maintainers_merge_one_person_committing_under_two_addresses(pg_registry):
+    """One human with a GitHub noreply address and a personal one was counted
+    as two maintainers, which understates exactly the concentration this
+    question exists to surface. Measured on egeria_git: 241 + 132 of 375
+    commits reported as two people at 64% and 35%, when it is one at 99.5%."""
+    from resource_explorer.facts import RESOURCE_STATE_SOURCES
+    from resource_explorer.registry import Project
+
+    reg = pg_registry
+    reg.add(Project(slug="w", display_name="w", github_url="https://github.com/x/w"))
+    with reg._conn() as conn:
+        for email, n in (("a@users.noreply.github.com", 241), ("a@gmail.com", 132)):
+            for i in range(n):
+                conn.execute(
+                    "INSERT INTO project_commits (project_slug, sha, message, "
+                    "author_name, author_email, committed_at) VALUES (?,?,?,?,?,?)",
+                    ("w", f"{email}-{i}", "x", "Mandy Chessell", email,
+                     "2026-08-01T00:00:00"))
+        for i in range(2):
+            conn.execute(
+                "INSERT INTO project_commits (project_slug, sha, message, "
+                "author_name, author_email, committed_at) VALUES (?,?,?,?,?,?)",
+                ("w", f"k{i}", "x", "Karth", "k@example.com", "2026-08-01T00:00:00"))
+
+    value, _ = RESOURCE_STATE_SOURCES["Who maintains this repository?"][0](reg, reg.get("w"))
+    assert value["people"] == 2, "two humans, not three commit identities"
+    assert value["commit_identities"] == 3, "the split is reported, not hidden"
+    top = value["top_authors"][0]
+    assert top["name"] == "Mandy Chessell"
+    assert top["emails"] == 2, "the merge must be inspectable"
+    assert top["share"] > 0.99, f"expected ~99.5%, got {top['share']:.1%}"

@@ -277,6 +277,22 @@ def refresh(
                         console.print(f"  [dim]Stats updated ({n} commits, {history}d lookback).[/dim]")
                 except Exception as exc:
                     console.print(f"  [dim]Stats update skipped: {exc}[/dim]")
+            # Collections were proposed once, at onboarding, from the repo as
+            # it stood then. Nothing re-evaluates them, so a repo that gains
+            # PDFs keeps ignoring them forever. This is a query over the file
+            # inventory the refresh just updated -- no scan, no extra fetch.
+            # It reports only: enabling a collection changes what gets embedded
+            # and costs real ingestion time, so that stays a human decision.
+            try:
+                from resource_explorer.collection_drift import detect_drift
+                for finding in detect_drift(registry, project.slug):
+                    console.print(
+                        f"  [yellow]Eligible but not enabled — {finding.summary}[/yellow]"
+                    )
+                    for path in finding.sample_paths:
+                        console.print(f"      [dim]{path}[/dim]")
+            except Exception as exc:
+                console.print(f"  [dim]Collection drift check skipped: {exc}[/dim]")
             console.print(f"  [green]✓ Done[/green]")
         except Exception as exc:
             console.print(f"  [red]✗ Failed: {exc}[/red]")
@@ -686,6 +702,152 @@ def aliases_remove(
         console.print(f'[green]Alias "{alias}" removed.[/green]')
     else:
         console.print(f'[yellow]Alias "{alias}" not found.[/yellow]')
+
+
+repair_app = typer.Typer(
+    name="repair",
+    help="Repair a repo's registration: rename it, fix its github_url, enable a "
+         "drift-flagged collection, or fix an investigation membership.",
+)
+app.add_typer(repair_app)
+
+
+@repair_app.command(name="rename")
+def repair_rename(
+    slug: str = typer.Argument(help="Current repo slug"),
+    new_slug: str = typer.Argument(help="New slug"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Rename a repo's slug — across the registry AND its pgvector collections.
+
+    See docs/repair-operations-design.md for exactly what this moves and
+    what it refuses. Shared collections another repo also lists are left
+    untouched; only this repo's own collections are renamed.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.repair import RepairError, rename_repo
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        console.print(f"[red]Repo '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    if not yes:
+        typer.confirm(
+            f"Rename '{slug}' to '{new_slug}'? This moves {len(project.collections)} "
+            f"pgvector collection(s) and every registry row that references it.",
+            abort=True,
+        )
+    try:
+        result = rename_repo(slug, new_slug, registry=registry)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Renamed '{result.old_slug}' -> '{result.new_slug}'.[/green]")
+    for line in result.renamed_collections:
+        console.print(f"  [dim]collection: {line}[/dim]")
+    if result.unchanged_shared_collections:
+        console.print(f"  [dim]shared collections left unchanged: {result.unchanged_shared_collections}[/dim]")
+
+
+@repair_app.command(name="set-github-url")
+def repair_set_github_url(
+    slug: str = typer.Argument(help="Repo slug"),
+    new_url: str = typer.Argument(help="Correct github_url"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Confirm dropping existing collections"),
+):
+    """Correct a repo's github_url. Drops its existing collections (they were
+    embedded from the wrong repo) and leaves it needing a re-index — run
+    `resource-explorer refresh <slug>` afterward."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.repair import RepairError, change_github_url
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        console.print(f"[red]Repo '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    if not yes:
+        typer.confirm(
+            f"Change github_url for '{slug}' from {project.github_url!r} to {new_url!r}? "
+            f"This drops all {len(project.collections)} existing collection(s); "
+            f"you'll need to re-index afterward.",
+            abort=True,
+        )
+    try:
+        result = change_github_url(slug, new_url, confirm=True, registry=registry)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]'{slug}' now points at {result['new_url']}.[/green]")
+    console.print(f"  [yellow]Dropped {len(result['dropped_collections'])} collection(s) — run "
+                  f"'resource-explorer refresh {slug}' to re-index.[/yellow]")
+
+
+@repair_app.command(name="enable-collection")
+def repair_enable_collection(
+    slug: str = typer.Argument(help="Repo slug"),
+    collection_type: str = typer.Argument(help="Collection type name, e.g. 'pdfs' (see collection_drift output)"),
+):
+    """Turn on a collection type collection_drift flagged as eligible but not enabled."""
+    from resource_explorer.repair import RepairError, enable_collection
+    try:
+        result = enable_collection(slug, collection_type)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Enabled '{result['collection']}' — {result['chunks_inserted']} chunk(s) inserted.[/green]")
+
+
+@repair_app.command(name="list-memberships")
+def repair_list_memberships(slug: str = typer.Argument(help="Repo slug")):
+    """Which investigations this repo is a Folio member of."""
+    from resource_explorer.repair import RepairError, list_repo_investigation_memberships
+    try:
+        rows = list_repo_investigation_memberships(slug)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if not rows:
+        console.print(f"[dim]'{slug}' is not a member of any investigation.[/dim]")
+        return
+    from rich.table import Table
+    tbl = Table("Investigation", "Status", "State", "Rationale")
+    for r in rows:
+        tbl.add_row(r["investigation_slug"], r["status"], r["state"], r["membership_rationale"])
+    console.print(tbl)
+
+
+@repair_app.command(name="repoint-membership")
+def repair_repoint_membership(
+    slug: str = typer.Argument(help="Repo slug"),
+    from_investigation: str = typer.Argument(help="Investigation slug to remove membership from"),
+    to_investigation: str = typer.Argument(help="Investigation slug to add membership to"),
+):
+    """Move a repo's investigation membership from one investigation to another."""
+    from resource_explorer.repair import RepairError, repoint_investigation_member
+    try:
+        result = repoint_investigation_member(slug, from_investigation, to_investigation)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]'{slug}' moved from '{from_investigation}' to '{to_investigation}'.[/green]")
+
+
+@repair_app.command(name="drop-membership")
+def repair_drop_membership(
+    slug: str = typer.Argument(help="Repo slug"),
+    investigation_slug: str = typer.Argument(help="Investigation slug to drop membership from"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Drop a repo from one investigation's Folio."""
+    from resource_explorer.repair import RepairError, drop_investigation_member
+    if not yes:
+        typer.confirm(f"Drop '{slug}' from investigation '{investigation_slug}'?", abort=True)
+    try:
+        drop_investigation_member(slug, investigation_slug)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]'{slug}' dropped from '{investigation_slug}'.[/green]")
 
 
 @app.command()

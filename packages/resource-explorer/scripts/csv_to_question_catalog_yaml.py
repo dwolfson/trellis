@@ -34,28 +34,37 @@ from pathlib import Path
 
 import yaml
 
-# Real repo_analyses ids from configdata/analysis_catalog.yaml — kept as a
-# literal list (not read live from that file) so this script has no import
-# dependency on the resource_explorer package; re-sync by hand if that
-# catalog's id set changes (rare — ids are stable identifiers by convention,
-# see that file's own header comment).
-KNOWN_ANALYSIS_IDS = [
-    "language_file_classification",
-    "repository_health",
-    "dependency_analysis",
-    "security_scan",
-    "documentation_coverage",
-    "license_classification",
-    "security_features",
-    "ci_quality",
-    "maturity",
-    "repo_conventions",
-    "data_file_profiling",
-    "api_structure",
-    "repo_profile_refresh",
-    "rag_ingestion",
-    "egeria_publish",
-]
+_ANALYSIS_CATALOG_PATH = (
+    Path(__file__).parent.parent / "resource_explorer" / "configdata" / "analysis_catalog.yaml"
+)
+
+
+def _load_known_analysis_ids() -> list[str]:
+    """Valid repo analysis ids, read live from configdata/analysis_catalog.yaml.
+
+    This was a hand-synced literal of 15 ids until 2026-08-28, when the real
+    catalog had 29. The 14 it had never been re-synced with — `cve_scan`,
+    `foss_scorecard`, `chaoss_metrics`, `cii_badge`, `community_support`,
+    `interface_surface` among them — were unrecognizable to `_parse_answering`,
+    so a CSV row naming one was silently emptied of its `analysis_ids` and
+    tagged `kind: unknown`. A question could not be wired to a real analysis
+    that the generator did not know existed, and nothing said so.
+
+    Read live for the same reason `_load_known_checks` below is: a stale copy
+    drops refs silently, where reading the real file fails loudly if it moves.
+    Still no import dependency on the resource_explorer package — this parses
+    the YAML directly.
+    """
+    if not _ANALYSIS_CATALOG_PATH.exists():
+        raise FileNotFoundError(
+            f"analysis catalog not found at {_ANALYSIS_CATALOG_PATH}; the "
+            f"question catalog cannot be generated without it."
+        )
+    cat = yaml.safe_load(_ANALYSIS_CATALOG_PATH.read_text()) or {}
+    return [a["id"] for a in (cat.get("repo_analyses") or []) if a.get("id")]
+
+
+KNOWN_ANALYSIS_IDS = _load_known_analysis_ids()
 
 
 # Purpose vocabulary — the controlled kinds from
@@ -151,6 +160,32 @@ def _parse_purposes(raw: str) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+_PARENTHETICAL_RE = re.compile(r"\([^)]*\)")
+
+
+def _is_pure_analysis_list(prose: str) -> bool:
+    """Whether the note names only known analyses, joined by `+`.
+
+    A single bare id was the only shape recognized as `kind: analysis` until
+    2026-08-28. A question answered by two analyses together — "repository_health
+    + chaoss_metrics" — fell through to `unknown`, which reads as "nobody has
+    classified this" rather than "answered, by two things". Eight rows sat in
+    that state.
+
+    A trailing `(parenthetical)` gloss is stripped before the test, so an author
+    can say which part each analysis contributes without losing the
+    classification. Anything else in the prose — a dash, a "RAG read?", a
+    GAP/PARTIAL/MIXED prefix (already handled above) — leaves this False, so
+    genuinely mixed notes still surface as such rather than being flattened
+    into a confident `analysis`.
+    """
+    stripped = _PARENTHETICAL_RE.sub("", prose).strip()
+    if not stripped:
+        return False
+    parts = [p.strip() for p in stripped.split("+")]
+    return all(p in KNOWN_ANALYSIS_IDS for p in parts if p)
+
+
 def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
     note = (note or "").strip()
     prose = _strip_checks_suffix(note)
@@ -167,7 +202,7 @@ def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
         kind = "chart"
     elif prose.upper().startswith("N/A"):
         kind = "direct"
-    elif prose in KNOWN_ANALYSIS_IDS:
+    elif _is_pure_analysis_list(prose):
         kind = "analysis"
     else:
         # Free text that doesn't match any known convention — surfaced as

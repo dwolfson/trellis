@@ -210,6 +210,13 @@ class MultiCollectionStore:
     def drop_collection(self, collection: str) -> None:
         self._store.delete_collection(collection)
 
+    def rename_collection(self, old_collection: str, new_collection: str) -> None:
+        """Rename a collection's pgvector table in place, preserving its rows
+        — used by the repo-rename repair operation. See
+        PgVectorStore.rename_collection's docstring (trellis-vectorstore) for
+        why this is a rename rather than a drop+reingest."""
+        self._store.rename_collection(old_collection, new_collection)
+
     def count(self, collection: str) -> int:
         return int(self._store.get_collection_stats(collection).get("num_entities", 0))
 

@@ -326,3 +326,21 @@ Scouting Survey
 ### Scope Reference
 How is it supported?
 
+___
+
+## Link Element To Scope
+### Target Element
+Scouting Survey
+
+### Scope Reference
+What languages and file types make up this repository?
+
+___
+
+## Link Element To Scope
+### Target Element
+Scouting Survey
+
+### Scope Reference
+What data files does it ship, and what shape are they?
+

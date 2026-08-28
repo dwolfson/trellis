@@ -289,6 +289,39 @@ class FeedbackConfig(BaseSettings):
     model_config = _ENV_FILE_CONFIG
 
 
+class ArtifactTreeSettings(BaseSettings):
+    """Containment trees over ingested artifacts (trellis-artifact-tree).
+
+    OFF BY DEFAULT, and off means byte-for-byte today's behaviour: no tree is
+    built, no connection is opened, no table is created. On means trees are
+    built and persisted IN ADDITION to the existing chunking — not instead of
+    it. Chunks are retrieval units sized by content profile; tree nodes are
+    containment units that compression rungs are cut from. Replacing one with
+    the other is the conflation docs/context-compilation-design.md §15 exists
+    to prevent, so both are produced from the same walk.
+
+    Connection details are deliberately NOT separate env vars: the tree lives
+    in the same Postgres as pgvector (that being the reason pgvector was chosen
+    over a standalone vector store — structure and vectors join in one query).
+    Only the schema is its own, because both RE and EA write trees and the
+    tables therefore belong to neither app's schema.
+    """
+    enabled: bool = Field(default=False, alias="ARTIFACT_TREE_ENABLED")
+    schema_name: str = Field(default="artifact_tree", alias="ARTIFACT_TREE_SCHEMA")
+    # OCR for PDFs. Off by default because Docling's DEFAULT engine is broken
+    # here (rapidocr needs omegaconf, which soda-core's antlr4 pin holds at
+    # 2.0.6, which rejects rapidocr's own PosixPath) -- with it on, EVERY
+    # conversion fails. Not because OCR is unwanted: tables and headings
+    # extract without it, but text inside a scanned page or a diagram does not.
+    # Turning it on needs a different engine, not the soda migration:
+    #   pip install 'trellis-artifact-tree[ocr]'      -> easyocr, portable
+    #   pip install 'trellis-artifact-tree[ocr-mac]'  -> ocrmac, macOS, lighter
+    pdf_ocr: bool = Field(default=False, alias="PDF_OCR_ENABLED")
+    pdf_ocr_engine: str = Field(default="easyocr", alias="PDF_OCR_ENGINE")
+
+    model_config = _ENV_FILE_CONFIG
+
+
 class ExplorerConfig(BaseSettings):
     pgvector: PgVectorConfig = Field(default_factory=PgVectorConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -303,6 +336,7 @@ class ExplorerConfig(BaseSettings):
     prefect: PrefectConfig = Field(default_factory=PrefectConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
+    artifact_tree: ArtifactTreeSettings = Field(default_factory=ArtifactTreeSettings)
 
     model_config = SettingsConfigDict(
         env_file=".env",

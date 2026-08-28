@@ -573,6 +573,28 @@ class IngestionPipeline:
                         pass
         return results
 
+    def _report_tree_result(self, result, project_slug: str) -> None:
+        """Surface anything other than a clean run or a disabled feature.
+
+        console, not logging: this module reports through rich throughout, and
+        a logger here would be the only one in the file.
+        """
+        if result.near_empty:
+            # The only reliable way to learn OCR was needed: Docling reports no
+            # error for a page it could not read.
+            self.console.print(
+                f"[yellow]{result.near_empty} artifact(s) in {project_slug} "
+                f"parsed to almost no text — likely rasterised or scanned. "
+                f"Enable OCR (PDF_OCR_ENABLED=true) to read them.[/yellow]"
+            )
+        if result.status in ("disabled", "stored"):
+            return
+        self.console.print(
+            f"[yellow]artifact trees for {project_slug}: {result.status} "
+            f"(stored={result.stored} skipped={result.skipped})"
+            f"{' — ' + result.reason if result.reason else ''}[/yellow]"
+        )
+
     # ── per-collection-type ingestors ─────────────────────────────────────────
 
     _CTYPE_LANGUAGE: dict[str, str] = {
@@ -596,13 +618,25 @@ class IngestionPipeline:
 
         chunks = []
         all_symbols = []
+        walked: list[tuple[str, str]] = []
         for path, content in self._local_files(local_root, ctype.file_extensions):
+            walked.append((path, content))
             chunks.extend(parser.parse(path, content, project_slug))
             if extractor:
                 all_symbols.extend(extractor.extract(path, content, project_slug, language))
 
         if all_symbols:
             self.registry.upsert_code_symbols(project_slug, all_symbols)
+
+        # Containment trees, off by default. Distinct from the symbols above:
+        # a symbol table answers what is declared and where it is referenced,
+        # a tree answers what contains what so a unit can be dropped or
+        # summarised coherently. Same walk, no second read.
+        if language:
+            from resource_explorer.ingestion.artifact_tree_sink import build_code_trees
+            self._report_tree_result(
+                build_code_trees(walked, project_slug, language), project_slug,
+            )
 
         return chunks
 
@@ -613,10 +647,23 @@ class IngestionPipeline:
         from resource_explorer.ingestion.doc_parser import DocParser
         parser = DocParser(ctype.chunk_size, ctype.chunk_overlap)
         chunks = []
+        walked: list[tuple[str, str]] = []
         for path, content in self._local_files(local_root, ctype.file_extensions):
+            walked.append((path, content))
             chunks.extend(parser.parse_markdown(content, path, project_slug))
         for path, content in self._local_files_for_paths(extra_paths or [], ctype.file_extensions):
+            walked.append((path, content))
             chunks.extend(parser.parse_markdown(content, path, project_slug))
+
+        # Containment trees, off by default (ARTIFACT_TREE_ENABLED). Built from
+        # the SAME walk rather than a second read, and in addition to the chunks
+        # above, never instead of them -- see artifact_tree_sink's docstring.
+        # Fail-soft by construction: this cannot reduce what gets ingested.
+        from resource_explorer.ingestion.artifact_tree_sink import build_trees
+        self._report_tree_result(
+            build_trees(walked, project_slug, kind="markdown"), project_slug,
+        )
+
         return chunks
 
     def _ingest_web_docs(
@@ -639,6 +686,16 @@ class IngestionPipeline:
                     text=chunk_text,
                     metadata={"file_path": path, "project_slug": project_slug, "type": "web"},
                 ))
+
+        # Trees from the ORIGINAL markup, not the tag-stripped text above.
+        # Stripping is right for retrieval and lossy for structure: it throws
+        # away the h1-h6 hierarchy the page actually declares, which is exactly
+        # what a containment tree is for.
+        from resource_explorer.ingestion.artifact_tree_sink import build_trees
+        self._report_tree_result(
+            build_trees(all_files, project_slug, kind="html"), project_slug,
+        )
+
         return chunks
 
     def _ingest_api_specs(
@@ -692,23 +749,54 @@ class IngestionPipeline:
         from resource_explorer.ingestion.doc_parser import DocParser
         parser = DocParser(ctype.chunk_size, ctype.chunk_overlap)
         chunks = []
-        for path in local_root.rglob("*.pdf"):
+        # (display_path, converted DoclingDocument). The display path keys the
+        # artifact: an absolute path is a property of this checkout, not of the
+        # document, and would make the same PDF a different artifact per host.
+        converted: list[tuple[str, object]] = []
+
+        # One converter for the whole collection, and one conversion per file.
+        # Both matter: DocumentConverter() was being constructed per file, and
+        # the chunker and the tree builder each used to convert independently,
+        # so a PDF-heavy repo paid for conversion twice over.
+        _converter = None
+
+        def _convert(path_str: str):
+            nonlocal _converter
+            if _converter is None:
+                from resource_explorer.ingestion.doc_parser import build_pdf_converter
+                _converter = build_pdf_converter()
+            return _converter.convert(path_str).document
+
+        def _handle(display: str, abs_str: str) -> None:
             try:
-                chunks.extend(parser.parse_pdf(str(path), project_slug))
+                document = _convert(abs_str)
+            except Exception:
+                # Unchanged from before: an unconvertible PDF is skipped, and
+                # now it yields neither chunks nor a tree rather than half of
+                # each.
+                return
+            converted.append((display, document))
+            try:
+                chunks.extend(parser.parse_pdf(abs_str, project_slug, document=document))
             except Exception:
                 pass
-        for _display, abs_path in (extra_paths or []):
+
+        for path in local_root.rglob("*.pdf"):
+            _handle(str(path.relative_to(local_root)), str(path))
+        for display, abs_path in (extra_paths or []):
             if abs_path.is_file() and abs_path.suffix.lower() == ".pdf":
-                try:
-                    chunks.extend(parser.parse_pdf(str(abs_path), project_slug))
-                except Exception:
-                    pass
+                _handle(f"{display}/{abs_path.name}", str(abs_path))
             elif abs_path.is_dir():
                 for pdf in abs_path.rglob("*.pdf"):
-                    try:
-                        chunks.extend(parser.parse_pdf(str(pdf), project_slug))
-                    except Exception:
-                        pass
+                    _handle(f"{display}/{pdf.relative_to(abs_path)}", str(pdf))
+
+        from resource_explorer.ingestion.artifact_tree_sink import (
+            build_pdf_trees_from_documents,
+        )
+        self._report_tree_result(
+            build_pdf_trees_from_documents(converted, project_slug), project_slug,
+        )
+
         return chunks
 
     def _ingest_releases(self, repo, project_slug: str, ctype: CollectionType) -> list:

@@ -234,6 +234,24 @@ STEP_REGISTRY.
 
 Design: `docs/survey-model-and-engine-host-design.md` §4.
 
+## 4a. Full Survey should live only in Automate — blocked on a surface
+
+`RepoFullSurvey` (survey_kind `automate_full`) is appended to **every** stage
+tab, so a 34-step deep survey sits one click away on Scouting, whose whole
+purpose is the cheap look that gates it.
+
+Attempted 2026-08-27 and reverted unshipped. The stage tabs filter correctly —
+restricting the append to `intent === 'automate'` removes it from all four —
+but **the Automate view has no survey list to move it to.** `showMainView('automate')`
+renders `#automate-view`, which loads subscriptions and schedules and never
+fetches Survey Definition candidates. So the change hides Full Survey
+everywhere and gives it nowhere to appear, which is what the original
+"appended to every stage" comment was avoiding.
+
+- [ ] Give Automate a survey list (a third sub-tab beside 🔔 Subscriptions and
+      ⏱ Schedules), then restrict the append to that intent. Both halves, or
+      neither — the filter alone loses the feature.
+
 ## 4. The granularity collapse — deferred by decision
 
 `analysis_id`'s bundling role duplicates the survey type: 25 of 27 repo analyses
@@ -243,8 +261,21 @@ Migration risk was the blocker; that is now moot — Egeria can be wiped and
 rebuilt (export/import round-trips 62 resources, bulk republish works). So this
 is about the model being right, not about data.
 
-- [ ] Own design pass. Touches `resource_schedules` (keyed by `analysis_id`) and
-      27 render payloads.
+- [x] **Design pass done 2026-08-28** — `docs/granularity-pass.md`. It
+      recommends a **smaller** change than the one it set out to design, and
+      the checklist's own risk note was wrong: `resource_schedules` has **one**
+      row, and the whole bundling role is **6 rows** across three tables. The
+      74k rows are keyed by finding `kind`, which turns out to be its own
+      vocabulary already — 5 kinds are not analysis ids, and 12 analyses have
+      no kind at all — so the results half was never the same thing under
+      another name and does not move.
+- [x] **Widen the schedule target** — done 2026-08-28 (`aeec939`).
+      `resource_schedules` gained `target_kind` (`analysis` | `survey`,
+      defaulted by ALTER TABLE), `save_schedule` validates it, and
+      `scheduler._execute` dispatches a survey target through
+      `run_survey_definition`. §4a is no longer blocked on schema.
+- [ ] Decide the §6 open question: should an analysis stay independently
+      runnable once surveys are schedulable, or become view-only?
 
 Design: `docs/survey-model-and-engine-host-design.md` §2.
 
@@ -278,9 +309,38 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       two want different actions: restoring a known asset versus a first
       publish. The finding now states which is which, from whether a completed
       `catalog` operation exists in the activity log.
-- [ ] Those seven still need publishing — a decision per resource, by design,
-      since publishing is a write. `POST /api/egeria/{slug}/publish` with
-      `steps: ['repo_health']` is the cheap one-step form.
+- [x] `unitycatalog` published 2026-08-28 — asset
+      `8a9b783a-4871-4100-86df-9c705a13849e`, report
+      `3c1aa491-8ea4-4110-a6d8-a6c3ca71aec0`. Six left.
+- [ ] **The remaining three "lost" repos cannot use that call.** Measured
+      2026-08-28: `docling_eval`, `openlineage` and `openmetadata` all carry
+      an Egeria Project context of `unset`, and the publish route's Part 5
+      gate returns 428 for `unset` unless an investigation supplies one by
+      inheritance — none does. So the finding's own advice ("POST
+      /api/egeria/{slug}/publish with steps ['repo_health']") is refused for
+      exactly the repos it is offered for, and the panel does not say so.
+      The three that CAN run it are the three never-catalogued ones (`docs`,
+      `enterprise_rag`, `genaicomps`), which are `linked` — the inverse of
+      what the wording implies. Either the finding names the gate, or the
+      gate's 428 body carries the remedy; deciding which is the work.
+- [ ] The decision the gate actually wants is which Egeria Project each of
+      the three belongs to. That names a real catalog object and stays a
+      human call.
+- [x] **Question catalog wired to the analyses that answer it** — 2026-08-28
+      (`f0abe27`, `41b5c5f`, `b11536a`). The generator carried
+      `KNOWN_ANALYSIS_IDS` as a hand-synced literal of 15 against a real
+      catalog of 29, so 14 analyses were unrecognizable to it and a CSV row
+      naming one was silently emptied and tagged `unknown` — the reason 18
+      analyses had no question. Reads the catalog live now. Three stale GAP
+      notes closed, three questions that shared `repository_health` given
+      their own sources, eight questions added. 49 questions; 6 analyses
+      unreferenced and correctly so (refresh actions, not questions).
+- [ ] **9 questions still answer nothing** (6 `gap`, 3 `unknown`). Six need a
+      content read nothing does yet — upgrade process, CLA/DCO provenance,
+      telemetry detection, AI/ML model-card licensing, secret handling,
+      similar-repo search. Three carry authorial uncertainty in the CSV
+      ("repo_conventions - RAG read?") and want a decision, not a surveyor.
+      This is the concrete shape of §5's agent-based post-ingestion work.
 - [ ] Egeria-side: `_parse_graph` now reads branching definitions, but no
       definition uses a guard yet. Authoring one would exercise the whole chain
       end to end on real data.

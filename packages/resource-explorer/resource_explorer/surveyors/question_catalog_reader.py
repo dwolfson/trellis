@@ -118,9 +118,11 @@ def get_questions(
     resource_type: str = "repo",
     phase: str | None = None,
     perspectives: list[str] | None = None,
+    purposes: list[str] | None = None,
 ) -> list[dict]:
     """Return question catalog entries for a resource type, optionally
-    filtered by funnel-stage phase and/or Perspective set.
+    filtered by funnel-stage phase and/or Perspective set, and optionally
+    ORDERED by Purpose.
 
     phase: matched against the entry's (single) `stage` field
     (case-insensitive). A stage may be slash-combined (e.g.
@@ -133,7 +135,23 @@ def get_questions(
     perspectives: OR-matched against each entry's perspectives list, same
     semantics as analysis_catalog_reader.get_analyses()'s perspective
     filter and the UI's activePerspectives multi-select — empty/None means
-    no filter (show everything for the phase)."""
+    no filter (show everything for the phase).
+
+    purposes: **ORDERS, never excludes.** Entries serving any of the given
+    Purposes sort first; everything else follows in catalog order. This is
+    the asymmetry measured in docs/investigation-framing-design.md §3 —
+    Purpose discriminates (overlap 0.22) and Perspective does not (0.37,
+    strictly nested sets), so Perspective filters what is *shown* while
+    Purpose ranks what comes *first*. Filtering on Purpose here would be a
+    bug: nothing is hidden by it. Empty/None leaves catalog order untouched.
+
+    Every returned entry carries a `derivation` key recording why it is in
+    the result — which Perspectives and Purposes matched, and whether
+    Purpose promoted it. That chain (Purpose + Perspective → question →
+    analysis_ids) is the explanation a user actually asks for, and it is
+    already implicit in this function; `derivation` just stops discarding
+    it. See docs/context-compilation-design.md §11.
+    """
     entries = [e.to_dict() for e in _load().get(resource_type, [])]
 
     if phase:
@@ -149,5 +167,25 @@ def get_questions(
             e for e in entries
             if wanted.intersection(p.lower() for p in e["perspectives"])
         ]
+
+    wanted_persp = {p.lower() for p in (perspectives or [])}
+    wanted_purp = {p.lower() for p in (purposes or [])}
+
+    for e in entries:
+        matched_persp = [p for p in e["perspectives"] if p.lower() in wanted_persp]
+        matched_purp = [p for p in e["purposes"] if p.lower() in wanted_purp]
+        e["derivation"] = {
+            "phase": phase or "",
+            "matched_perspectives": matched_persp,
+            "matched_purposes": matched_purp,
+            "purpose_ranked": bool(matched_purp),
+            "analysis_ids": list(e["answering"]["analysis_ids"]),
+            "checks": list(e["answering"]["checks"]),
+        }
+
+    if wanted_purp:
+        # Stable: promoted entries keep catalog order among themselves, and
+        # so does everything else. Nothing is dropped.
+        entries.sort(key=lambda e: not e["derivation"]["purpose_ranked"])
 
     return entries

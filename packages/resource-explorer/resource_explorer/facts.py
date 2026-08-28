@@ -174,6 +174,208 @@ UNANSWERABLE_KINDS = {
 #: Each resolver returns (value_dict, state) — and returns NOTHING_FOUND rather
 #: than a fabricated negative when the state is genuinely absent, so "no
 #: description" cannot become "this repo does nothing".
+def _finding(reg, slug: str, kind: str, check: str) -> dict:
+    """One named check from an analysis's persisted findings, or {}.
+
+    The point of reading findings rather than the raw table underneath: the
+    analysis has already turned numbers into a judgement, with its coverage and
+    caveats attached. Re-deriving a verdict here would be a second opinion that
+    can disagree with the card the user is looking at.
+    """
+    for row in (reg.query_findings(slug, kind) or []):
+        if row.get("check_name") == check:
+            return row
+    return {}
+
+
+def _r_maintained(reg, p) -> tuple:
+    """Answered from the FOSS scorecard's own `maintained` check.
+
+    The question was falling through to generic retrieval, which returned commit
+    statistics and left the verdict to the reader. The verdict already exists:
+    `foss_scorecard._c_maintained` reads archived state and 90-day commit
+    counts and says pass/partial/fail with the number behind it.
+    """
+    row = _finding(reg, p.slug, "foss_scorecard", "maintained")
+    if not row:
+        return ({}, NEVER_RUN)
+    label = (row.get("label") or "").lower()
+    if label == "unknown":
+        return ({"detail": row.get("summary", "")}, NOT_ESTABLISHED)
+    return ({"maintained": label in ("pass", "partial"),
+             "verdict": label, "detail": row.get("summary", "")}, MEASURED)
+
+
+def _r_maintainers(reg, p) -> tuple:
+    """Who actually writes the code, from recorded commits.
+
+    Deliberately NOT `project_stats.contributors_count`. That is GitHub's
+    all-time figure — everyone who ever landed a commit, including one-off PRs
+    from years ago — and quoting it answers "how many people have ever touched
+    this", which is not the question. Measured on egeria_git: 63 by that count,
+    3 authors in the commits actually recorded, and one of them wrote over half.
+    """
+    with reg._conn() as conn:
+        rows = conn.execute(
+            "SELECT author_name, author_email, count(*) AS commits "
+            "FROM project_commits WHERE project_slug = ? "
+            "GROUP BY author_name, author_email ORDER BY commits DESC",
+            (p.slug,),
+        ).fetchall()
+    if not rows:
+        return ({}, NOTHING_FOUND)
+    total = sum(r["commits"] for r in rows)
+
+    # Merge identities that share a name. One person commonly commits under
+    # two addresses — a GitHub noreply and a personal one — and counting those
+    # separately splits them into two apparent maintainers, understating
+    # exactly the concentration this question is asked to find. Measured on
+    # egeria_git: "Mandy Chessell" under a noreply and a gmail address holds
+    # 241 + 132 of 375 commits, which is 99.5% reported as two people at 64%
+    # and 35%.
+    #
+    # Two people really can share a name, so the merge is reported rather than
+    # hidden: `emails` says how many addresses were folded together, and a
+    # reader who doubts it can look.
+    merged: dict = {}
+    for r in rows:
+        key = (r["author_name"] or "").strip().lower() or (r["author_email"] or "")
+        entry = merged.setdefault(key, {"name": r["author_name"], "commits": 0,
+                                        "emails": 0})
+        entry["commits"] += r["commits"]
+        entry["emails"] += 1
+    people = sorted(merged.values(), key=lambda e: -e["commits"])
+    top = [{**e, "share": round(e["commits"] / total, 3)} for e in people[:5]]
+    concentration = _finding(reg, p.slug, "chaoss_metrics", "elephant_factor")
+    return ({"people": len(people),
+             # Kept alongside, because the difference between them IS the
+             # finding when one person commits under several addresses.
+             "commit_identities": len(rows),
+             "commits": total, "top_authors": top,
+             # Named so an answer can say "three authors, one of whom wrote
+             # 64%" instead of a bare list that reads as a team of three peers.
+             "concentration": concentration.get("label", ""),
+             "concentration_detail": concentration.get("summary", "")},
+            MEASURED)
+
+
+def _r_community(reg, p) -> tuple:
+    """Community as the analyses report it, not as a contributor count.
+
+    `community_support` reports the WEAKEST dimension rather than averaging,
+    and `chaoss_metrics` reports how concentrated authorship is. Both exist
+    because a raw count says a four-contributor project has a community of
+    four, and a 63-contributor count says a project one person maintains has a
+    community of 63. Neither is true in the sense the question means.
+    """
+    rows = {r["check_name"]: r for r in (reg.query_findings(p.slug, "community_support") or [])}
+    elephant = _finding(reg, p.slug, "chaoss_metrics", "elephant_factor")
+    if not rows and not elephant:
+        return ({}, NEVER_RUN)
+    stats = reg.get_latest_project_stats(p.slug) or {}
+    known = {k: v.get("label") for k, v in rows.items()
+             if v.get("label") and v.get("label") != "not_established"}
+    value = {
+        "attention": known.get("attention", ""),
+        "participation": known.get("participation", ""),
+        "channels": known.get("channels", ""),
+        "widely_used_narrowly_maintained":
+            known.get("attention_exceeds_participation") == "yes",
+        "authorship_concentration": elephant.get("label", ""),
+        "detail": elephant.get("summary", ""),
+        # Included, but labelled for what it is, so an answer can cite it
+        # without implying it measures the active community.
+        "github_all_time_contributor_count": stats.get("contributors_count"),
+        "stars": stats.get("stars"),
+    }
+
+    # The two dimensions can disagree, and when they do the disagreement IS the
+    # answer. `participation` is derived from GitHub's all-time contributor
+    # count, `authorship_concentration` from the commits actually recorded — so
+    # a project can read "broad" and "sole" at once. On egeria_git that is
+    # exactly what happens: 63 people have contributed at some point, and one
+    # of them wrote over half of the 375 recorded commits.
+    #
+    # Surfaced rather than resolved here. Picking a winner would be this layer
+    # overruling an analysis card the user can also see, and the honest answer
+    # to "how active is the community" is that the two measures point different
+    # ways for different reasons.
+    if value["participation"] in ("broad", "team") and \
+            value["authorship_concentration"] in ("sole", "narrow"):
+        value["measures_disagree"] = (
+            f"{stats.get('contributors_count')} people have contributed at some "
+            "point, but authorship of the commits actually recorded is "
+            f"{value['authorship_concentration']}. The first counts everyone who "
+            "ever landed a commit; the second reflects who writes the code now."
+        )
+    return (value, MEASURED if known or elephant else NOT_ESTABLISHED)
+
+
+def _survey_candidates(p) -> tuple:
+    """(candidates, reachable) for this resource's technology type.
+
+    The only reader here that leaves the database. Both questions below ask
+    what RE itself can run, and that lives in Egeria's authored Survey
+    Definitions — there is no local copy to consult. The reader is cached
+    (SurveyDefinitionReader's own candidates cache), so this is usually not a
+    round trip.
+
+    Unreachable returns (…, False) rather than raising or returning an empty
+    list: "no Survey Definition is authored for this" and "we could not ask"
+    are opposite answers, and the second must never be reported as the first.
+    """
+    try:
+        from resource_explorer.surveyors.survey_definition_reader import (
+            SurveyDefinitionReader,
+        )
+        reader = SurveyDefinitionReader()
+        return (reader.find_candidate_process_guids("Git Repository"), True)
+    except Exception as exc:
+        log.debug("survey definition candidates unavailable: %s", exc)
+        return ([], False)
+
+
+def _r_which_survey(reg, p) -> tuple:
+    """Which Survey Definition to run — answered from what is actually authored.
+
+    Was classified `direct` with nowhere declared to read it from, so it fell
+    through to generic retrieval like the maintained/community questions did.
+    The answer is the candidate list RE already builds for the Survey tab.
+    """
+    candidates, reachable = _survey_candidates(p)
+    if not reachable:
+        return ({"detail": "Egeria could not be reached, so what is authored "
+                           "for this technology type is unknown."},
+                NOT_ESTABLISHED)
+    if not candidates:
+        return ({"candidates": []}, NOTHING_FOUND)
+    names = [c.get("qualified_name", "").split("::")[-1] for c in candidates]
+    return ({"count": len(candidates), "candidates": names,
+             # Named rather than ranked: which to run depends on what the
+             # caller wants to learn, and a recommendation here would be this
+             # layer deciding that on their behalf.
+             "note": "Cheapest first is the usual order; the Survey tab shows "
+                     "each one's step count and speed tag."},
+            MEASURED)
+
+
+def _r_survey_definition_exists(reg, p) -> tuple:
+    """Whether ANY Survey Definition is authored for this technology type.
+
+    The empty case is the whole point of the question — it asks whether the
+    absence is a catalog gap — so NOTHING_FOUND here is a real answer, and is
+    kept strictly apart from the unreachable case.
+    """
+    candidates, reachable = _survey_candidates(p)
+    if not reachable:
+        return ({"detail": "Egeria could not be reached, so whether anything "
+                           "is authored is unknown — this is not a finding "
+                           "that nothing is."}, NOT_ESTABLISHED)
+    return ({"authored": bool(candidates), "count": len(candidates),
+             "technology_type": "Git Repository"},
+            MEASURED if candidates else NOTHING_FOUND)
+
+
 def _r_description(reg, p) -> tuple:
     d = (getattr(p, "description", "") or "").strip()
     return ({"description": d}, MEASURED if d else NOTHING_FOUND)
@@ -319,6 +521,14 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #: ABOUT, used as the analysis_id slot so the envelope reads sensibly.
 RESOURCE_STATE_SOURCES = {
     "What does this repository do?": (_r_description, "description"),
+    "Is this repository actively maintained?": (_r_maintained, "foss_scorecard"),
+    "Who maintains this repository?": (_r_maintainers, "project_commits"),
+    "How widely adopted and active is the community around this repository?":
+        (_r_community, "community_support"),
+    "Which Survey Definition should I run — a quick coarse check or the full deep survey?":
+        (_r_which_survey, "survey_definitions"),
+    "Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap?":
+        (_r_survey_definition_exists, "survey_definitions"),
     "Has this repository already been catalogued in Egeria and when?":
         (_r_catalogued, "egeria_catalogue_state"),
     "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":

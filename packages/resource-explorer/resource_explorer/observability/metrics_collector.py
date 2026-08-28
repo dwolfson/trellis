@@ -77,6 +77,7 @@ class MetricsCollector:
                     cache_hit INTEGER DEFAULT 0,
                     response_length INTEGER,
                     chunk_refs TEXT DEFAULT '[]',
+                    derivation TEXT DEFAULT '{}',
                     feedback INTEGER
                 )
             """)
@@ -106,6 +107,13 @@ class MetricsCollector:
                 existing = {r[1] for r in conn.execute("PRAGMA table_info(query_log)").fetchall()}
             if "chunk_refs" not in existing:
                 conn.execute("ALTER TABLE query_log ADD COLUMN chunk_refs TEXT DEFAULT '[]'")
+            # Why these sources were selected, as distinct from chunk_refs'
+            # "which chunks came back". A thumbs-down is otherwise ambiguous
+            # between "the wrong questions/analyses were chosen" and "the right
+            # ones were chosen and the answer was still bad" -- different fixes.
+            # See docs/context-compilation-design.md §13.
+            if "derivation" not in existing:
+                conn.execute("ALTER TABLE query_log ADD COLUMN derivation TEXT DEFAULT '{}'")
 
     def record_query(
         self,
@@ -116,18 +124,28 @@ class MetricsCollector:
         latency_ms: int = 0,
         cache_hit: bool = False,
         chunk_refs: list[str] | None = None,
+        derivation: dict | None = None,
     ) -> None:
+        """Record one query.
+
+        derivation: the selection chain behind this answer -- Purpose and
+        Perspective matched, questions raised, analysis ids dispatched to (the
+        shape question_catalog_reader.get_questions() now returns per entry).
+        Distinct from chunk_refs, which says what retrieval returned rather
+        than why it was asked for. Optional: a query with no catalog behind it
+        (free-text RAG) simply has none.
+        """
         import hashlib
         query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO query_log
                    (timestamp, query_hash, intent, project_slug, latency_ms,
-                    cache_hit, response_length, chunk_refs)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    cache_hit, response_length, chunk_refs, derivation)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (datetime.utcnow().isoformat(), query_hash, intent, project_slug,
                  latency_ms, int(cache_hit), len(response),
-                 json.dumps(chunk_refs or [])),
+                 json.dumps(chunk_refs or []), json.dumps(derivation or {})),
             )
         # Non-blocking MLflow logging (already called from a daemon thread)
         try:

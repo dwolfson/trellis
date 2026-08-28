@@ -20,6 +20,7 @@ resolution-markers = [
 members = [
     "egeria-advisor",
     "resource-explorer",
+    "trellis-artifact-tree",
     "trellis-microflow",
     "trellis-vectorstore",
     "trellis-workspace",
@@ -7932,6 +7933,7 @@ dependencies = [
     { name = "textual" },
     { name = "tree-sitter" },
     { name = "tree-sitter-java" },
+    { name = "trellis-artifact-tree" },
     { name = "trellis-microflow" },
     { name = "trellis-vectorstore" },
     { name = "typer" },
@@ -8018,6 +8020,7 @@ requires-dist = [
     { name = "tree-sitter-java", specifier = ">=0.21" },
     { name = "tree-sitter-javascript", marker = "extra == 'ast'", specifier = ">=0.21" },
     { name = "tree-sitter-python", marker = "extra == 'ast'", specifier = ">=0.21" },
+    { name = "trellis-artifact-tree", editable = "packages/trellis-artifact-tree" },
     { name = "trellis-microflow", editable = "packages/trellis-microflow" },
     { name = "trellis-vectorstore", editable = "packages/trellis-vectorstore" },
     { name = "typer", specifier = ">=0.12.0" },
@@ -9430,6 +9433,28 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ab/dd84f0e2337296a5f09749f7b5483215d75c8fa9e33738522e5ed81f7254/tree_sitter_typescript-0.23.2-cp39-abi3-win_amd64.whl", hash = "sha256:3f730b66396bc3e11811e4465c41ee45d9e9edd6de355a58bbbc49fa770da8f9", size = 278015, upload-time = "2024-11-11T02:36:07.631Z" },
     { url = "https://files.pythonhosted.org/packages/9f/e4/81f9a935789233cf412a0ed5fe04c883841d2c8fb0b7e075958a35c65032/tree_sitter_typescript-0.23.2-cp39-abi3-win_arm64.whl", hash = "sha256:05db58f70b95ef0ea126db5560f3775692f609589ed6f8dd0af84b7f19f1cbb7", size = 274052, upload-time = "2024-11-11T02:36:09.514Z" },
 ]
+
+[[package]]
+name = "trellis-artifact-tree"
+version = "0.1.0"
+source = { editable = "packages/trellis-artifact-tree" }
+dependencies = [
+    { name = "psycopg2-binary" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "psycopg2-binary", specifier = ">=2.9.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "trellis-microflow"

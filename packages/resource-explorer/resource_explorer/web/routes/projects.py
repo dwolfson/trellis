@@ -501,11 +501,18 @@ class QuestionChecklistEntry(BaseModel):
     # analysis backs these, so there's nothing to check); True/False only
     # for analysis/partial/mixed kinds, computed best-effort per resource.
     has_data: bool | None = None
+    purposes: list[str] = []
+    # Why this entry is in the result: which Perspectives/Purposes matched
+    # and whether Purpose promoted it. See docs/context-compilation-design.md
+    # §11 -- the derivation is the explanation with content, distinct from
+    # "what got shown".
+    derivation: dict = {}
 
 
 class QuestionChecklist(BaseModel):
     phase: str
     perspectives: list[str] = []
+    purposes: list[str] = []
     questions: list[QuestionChecklistEntry] = []
 
 
@@ -545,6 +552,7 @@ async def get_scouting_questions(
     slug: str,
     phase: str = "scouting",
     perspectives: str | None = None,
+    purposes: str | None = None,
 ) -> QuestionChecklist:
     """Per-phase Question checklist — which of the authored Scouting
     questions (docs/dr-egeria/resource_questions.csv, via
@@ -562,7 +570,12 @@ async def get_scouting_questions(
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
     persp_list = [p.strip() for p in (perspectives or "").split(",") if p.strip()]
-    entries = get_questions("repo", phase=phase, perspectives=persp_list or None)
+    purp_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
+    entries = get_questions(
+        "repo", phase=phase,
+        perspectives=persp_list or None,
+        purposes=purp_list or None,
+    )
 
     checklist = []
     for e in entries:
@@ -581,9 +594,13 @@ async def get_scouting_questions(
             note=answering["note"],
             answering_mechanism=e.get("answering_mechanism", ""),
             has_data=has_data,
+            purposes=e.get("purposes", []),
+            derivation=e.get("derivation", {}),
         ))
 
-    return QuestionChecklist(phase=phase, perspectives=persp_list, questions=checklist)
+    return QuestionChecklist(
+        phase=phase, perspectives=persp_list, purposes=purp_list, questions=checklist
+    )
 
 
 # POST /{slug}/profile-scan was retired 2026-08-20. It refreshed
@@ -789,6 +806,15 @@ async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,
         }
+    # Repo-level, carried under a reserved key so the per-analysis map keeps
+    # its shape — same convention get_analysis_last_run uses for
+    # __unattributed_surveys__. Cards use it to hide a Publish button that has
+    # nothing to do: a run auto-publishes whenever the resource has an
+    # assigned Egeria Project, so offering to publish again reads as though
+    # publishing still needed doing.
+    result["__auto_publishes__"] = {
+        "auto_publishes": registry.has_assigned_egeria_project("repo", slug),
+    }
     return result
 
 

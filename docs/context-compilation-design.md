@@ -626,6 +626,21 @@ does not silently omit. This preserves the existing scheduler/outbox architectur
 competing with it, and it is consistent with the standing decision that shared analytics are
 **materialized, not live-called**.
 
+**Implementation finding (2026-08-27).** Two corrections from building this:
+
+- **`availability` is derived, not tagged.** The analysis catalog already carries `run_time`
+  (`fast` / `minutes` / `async`), which is the same cost signal. `AnalysisCatalogEntry.availability`
+  maps `fast` → `inline` and everything else → `queued`, with unknown values treated as `queued`
+  because guessing cheap is the dangerous direction. A second hand-maintained column would be one
+  more thing to keep consistent with the first — §19's argument against multiplying the vocabulary
+  applies to the catalog's own columns, not only to new axes.
+- **`temporal` does not belong on the analysis catalog at all.** The compiler reads *stored,
+  timestamped* analysis results, never a live run — so every analysis is as-of-able over its own
+  results, and tagging 34 entries `as_of` would be a column with one value. `current_only` is a
+  property of resolvers that query a live source at compile time (a direct API fetch, an unstamped
+  registry read), so the declaration belongs on **resolver kind**, not on analyses. An earlier draft
+  of this section put it on both.
+
 **And this is what rescues determinism.** §14 asks for byte-identical recompiles, which is
 impossible if an agent runs inside the compile — agents are nondeterministic. The resolution is
 that the guarantee is over *materialized inputs*: `same spec + same as_of + same materialized state
@@ -695,3 +710,125 @@ directly to the per-user partitioning item.
 rating says the answer was poor; an edit says *what was wrong with the context* — this section
 needed more budget, that one was irrelevant. Those are gradients rather than scalars, and they
 arrive already attached to the manifest that §13 needs them attached to.
+
+## 23. What this actually looks like in RE and EA
+
+*(Added 2026-08-27 — the document described the machinery without ever saying what a user does with
+it. Proposals, unmeasured like the rest.)*
+
+### RE
+
+**Today:** the Chat panel is RAG-backed, scoped to whichever resource is selected, and independent
+of the active intent. It assembles its own context, and nothing about the Investigation, the
+Purpose, or the Perspective chips reaches it.
+
+**Under this design:** the panel becomes Investigation-scoped and axis-aware, and the assembly moves
+out of it. Three flows, in the order they are worth building:
+
+**1. The adoption gate (`Purpose = Certify` or `Assess`).** A user with an active Investigation,
+Perspective chips set to Security, in the Assessment intent, selects a repo and asks whether it is
+ready to adopt. The compiler picks the spec Purpose ranks first, packs the materialized evidence
+(`security_scan`, `license_classification`, the supply-chain scorecard checks), and cites each span
+by `(guid, version, as_of)`. The manifest shows what ranked in, what fell below the budget line, and
+that one analysis has not run and is queued (§20). This is the smallest flow that exercises the
+entire path — spec, resolvers, budget, envelope, manifest, gap — which is why it goes first.
+
+**2. Impact (`Purpose = Maintain`).** "What breaks if this changes." The dependency closure is
+bounded by **Investigation membership first, depth second** — the membership join is the frontier,
+not an arbitrary depth-N walk. This is the flow where hand-assembled context is most obviously
+fragile today.
+
+**3. Comparison (`Purpose = Select`).** "Which of these three should we adopt." Exercises the
+symmetric packing constraint (§6), and is the first flow that can silently produce a *biased* answer
+rather than a poor one, so it should not be first.
+
+**Where it plugs in:** `question_catalog_reader` already resolves Purpose and Perspective to
+questions and `analysis_ids` — that becomes spec selection rather than checklist display. Analyses
+are already materialized in the registry. The visible new surface is a manifest pane in the Chat
+panel.
+
+### EA
+
+**Today:** report specs compile to human-readable reports, and a separate tiered classifier routes
+Q&A to 10+ specialist agents, each gathering its own context.
+
+**Under this design**, two uses, which are the same machinery pointed differently:
+
+**1. Narrate a report from its own evidence.** A report spec already declares what to fetch and
+show. The compiler packs *that resolved data* plus its provenance, so the narration cites the rows
+it is describing and cannot drift from them. The spec is unchanged; a second consumer is added
+beside the renderer.
+
+**2. Q&A with real sections rather than retrieved chunks.** A question compiles to a spec whose
+sections are the relevant Egeria elements (at `as_of`), the report specs that touch them, the shared
+corpus, and RE's code symbols — the last via the cross-schema read already established in
+`advisor/re_code_symbol_reader.py`, not a new integration.
+
+**3. AI-Ready Data Products** (still open in the Egeria Overview dashboard work). This design offers
+a testable definition rather than a vague tile: **a data product is AI-ready when it ships a
+compilable context spec** — declared sections, resolvers that answer, provenance, and a known
+budget. That converts "is this AI-ready?" from a judgement into a check, and it is the same
+machinery inverted: producing context for other consumers rather than consuming it.
+
+### Shared
+
+The manifest pane is one component in the shared package, not two implementations — it renders
+derivation, what packed at which rung, and what was gapped or queued. It is also where §22's
+editable-manifest feedback lives, so both apps get dynamic feedback from the same surface.
+
+## 24. Implementation task list
+
+*(Added 2026-08-27.)* The first *work* and the first *impact* are different things, and impact can
+come well before the compiler exists. Phases 0–2 produce no compiler and are worth having anyway —
+that is deliberate, not scaffolding.
+
+### Phase 0 — derivable from today's catalogs, no new architecture
+
+Needs no spec, no packer, no tree. These are §18's measurement instruments in their cheapest form.
+
+1. **Emit the derivation trace.** `question_catalog_reader.py` already resolves
+   Purpose + Perspective → questions → `analysis_ids`; return that chain instead of discarding it.
+   This is §11's derivation artifact, and it exists implicitly today.
+2. **Standing coverage report** over `question_catalog.yaml` + `analysis_catalog.yaml`:
+   Purpose × analysis and Perspective × analysis reachability. The Privacy-reaches-zero finding was
+   computed by hand once; make it a script that runs.
+3. **Assert the nesting invariant as a test**, in the manner of `tests/test_check_registry.py`, so a
+   future retag that breaks nesting fails a test rather than silently changing dispatch semantics.
+
+**This is the first point of impact.** (1) is user-visible, (2) shows where the catalog is thin,
+(3) protects the curated vocabulary. None of it commits to building a compiler.
+
+### Phase 1 — authoring, not code
+
+4. **Two columns on the analysis catalog**: `availability: materialized | schedulable` and
+   `temporal: as_of | current_only`. Vocabulary work in the CSV plus a regeneration. §20 depends
+   entirely on these and they are the cheapest items in the design.
+5. **Envelope fields captured at ingest** — `source guid`, Egeria version, Egeria timestamp,
+   `fetched_at` (§10). Additive schema; needs re-ingestion, which is cheap now.
+6. **Manifest id on feedback records** (§13). One column. Without it the signal cannot distinguish
+   wrong-evidence-selected from over-compressed from model-reasoned-badly.
+
+### Phase 2 — the containment tree
+
+7. Parse once, emit a containment tree (§15); retrieval chunks are its leaves, ladder rungs are cuts
+   across it. **The only item with a clock on it** — re-ingestion cost scales with a growing corpus.
+
+### Phase 3 — the compiler, and RE's first real flow
+
+8. `ContextSpec` schema — authored in the CSV, generated, validated (§19).
+9. **Packer as deterministic code** (§16) — budget solve, ladder, symmetry constraint, hard ceiling.
+10. Wire the **adoption gate** (§23) into RE's Chat panel with a manifest pane.
+
+**This is the first point at which the compiler impacts RE.** Everything before it is invisible.
+
+### Phase 4 — EA
+
+Gated on a decision rather than a task: **where the Investigation table lives and who writes it**
+(§17). EA cannot adopt the compile unit until that is settled, so the decision is worth making early
+even though the work is late.
+
+### Caveat
+
+The payoff scales with how much RE's Chat panel is actually used. If it is peripheral to how the
+work happens, phase 3 is a lot of machinery for a low-traffic surface — worth checking real usage
+before committing to it.
