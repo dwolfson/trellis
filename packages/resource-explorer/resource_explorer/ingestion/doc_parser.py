@@ -47,8 +47,22 @@ class DocParser:
         every PDF twice. Left optional so existing callers are unaffected.
         """
         if document is None:
-            from docling.document_converter import DocumentConverter
-            document = DocumentConverter().convert(file_path).document
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+
+            # OCR off deliberately -- Docling's default engine (rapidocr) pulls
+            # omegaconf, which cannot resolve above 2.0.6 here because
+            # soda-core pins antlr4 to 4.11; 2.0.6 then rejects the PosixPath
+            # rapidocr passes for Global.model_root_dir and EVERY conversion
+            # fails. Off, digital PDFs convert and scanned ones lose their text
+            # -- strictly better than losing all of them. See
+            # trellis_artifact_tree.adapters_pdf.PdfAdapter.ocr.
+            options = PdfPipelineOptions()
+            options.do_ocr = False
+            document = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+            ).convert(file_path).document
         text = document.export_to_markdown()
         return [
             DocChunk(

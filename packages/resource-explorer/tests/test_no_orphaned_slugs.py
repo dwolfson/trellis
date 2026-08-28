@@ -56,6 +56,9 @@ UNGUARDED_BY_DESIGN: dict[str, str] = {
     "conversation_history": "DECISION PENDING -- found 2026-08-28, reason unknown.",
     "repo_dispositions": "DECISION PENDING -- found 2026-08-28, reason unknown.",
     "sub_resources": "DECISION PENDING -- found 2026-08-28, reason unknown.",
+    "query_log":
+        "observability history -- what was asked about a resource is analytics "
+        "that outlives the resource, and feedback tuning reads it. Deliberate.",
 }
 
 # This allowlist is a RATCHET, in the manner of

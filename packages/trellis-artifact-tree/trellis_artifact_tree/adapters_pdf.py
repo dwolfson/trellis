@@ -172,17 +172,34 @@ class PdfAdapter:
     def handles(self, kind: str) -> bool:
         return kind.lower() in self._KINDS
 
-    @staticmethod
-    def _convert(path: str) -> list[DocItem]:
+    # OCR is OFF by default, and that is a deliberate default rather than a
+    # performance tweak. Docling's standard install uses rapidocr, which pulls
+    # omegaconf; omegaconf cannot resolve above 2.0.6 in this workspace (a
+    # soda-core dependency pins antlr4 to 4.11 while every Path-aware omegaconf
+    # needs 4.8/4.9), and 2.0.6 rejects the PosixPath rapidocr hands it for
+    # Global.model_root_dir. With OCR on, EVERY conversion fails. With it off,
+    # digital PDFs convert correctly and scanned ones lose their text -- which
+    # is strictly better than losing everything. Turn it back on once the
+    # dependency conflict is resolved.
+    ocr: bool = False
+
+    def _convert(self, path: str) -> list[DocItem]:
         try:
-            from docling.document_converter import DocumentConverter
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
         except ImportError as exc:  # pragma: no cover - depends on install
             raise ImportError(
                 "the pdf adapter needs the [pdf] extra: "
                 "pip install 'trellis-artifact-tree[pdf]'"
             ) from exc
 
-        return items_from_docling(DocumentConverter().convert(path).document)
+        options = PdfPipelineOptions()
+        options.do_ocr = self.ocr
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+        )
+        return items_from_docling(converter.convert(path).document)
 
     def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree:
         if not isinstance(source, str):
