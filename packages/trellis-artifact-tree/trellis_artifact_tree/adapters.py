@@ -1,10 +1,20 @@
 """Turning source material into trees.
 
-The package boundary matters here. This module defines **the contract** a parse
-must satisfy, the **registry** that resolves a source kind to an adapter, and
-the two adapters that need nothing beyond the standard library. Adapters that
-need tree-sitter, a PDF library, or an office-format reader live in the apps
-that already depend on them -- this package never grows a parser dependency.
+This module defines **the contract** a parse must satisfy, the **registry** that
+resolves a source kind to an adapter, and the two adapters that need nothing
+beyond the standard library.
+
+Adapters needing tree-sitter or a PDF library belong here too, in sibling
+modules behind optional extras (`[code]`, `[pdf]`) -- not in the apps. An
+earlier version of this docstring said they lived in "the apps that already
+depend on them"; both apps already depend on both libraries, so that rule named
+both and routed nothing, and following it would have duplicated the same parser
+twice. The real requirement is that a consumer wanting only the model and store
+pays for no parser, which extras give without the duplication.
+
+Adapters from an extra must import their library INSIDE parse(), not at module
+import time, so that importing this package with the extra uninstalled fails at
+resolve() with a clear message rather than at import with a stack trace.
 
 **Absence of an adapter degrades, it never blocks.** An unrecognised kind falls
 back to GenericTextAdapter: one rung, flat blocks, no structure. The artifact is

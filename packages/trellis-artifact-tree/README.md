@@ -11,11 +11,18 @@ But it means **both apps produce trees**, not just consume them — so the
 cross-schema read pattern that works for RE's code symbols cannot serve this.
 The write path has to live somewhere both apps can call.
 
-**What it is not.** Not a parser: adapters live in the apps, and this package
-only defines the shape a parse must produce. Not a vector store: embeddings are
-`trellis-vectorstore`'s business, and a leaf node references its chunks by id.
-Both live in the same Postgres, so structure and vectors join in one query
-without either package knowing the other's tables.
+**Adapters live here, behind extras.** Code and PDF parsing are common to both
+apps -- both already depend on `docling` and `tree-sitter` today -- so putting
+those adapters "in the app that needs them" would name both apps and duplicate
+the parser. Instead the core install is stdlib-only (model, store, registry,
+markdown, generic fallback) and heavier adapters come from extras:
+`trellis-artifact-tree[code]`, `[pdf]`. A consumer that only wants the model and
+store pays for neither.
+
+**Not a vector store.** Embeddings are `trellis-vectorstore`'s business, and a
+leaf node references its chunks by id. Both live in the same Postgres, so
+structure and vectors join in one query without either package knowing the
+other's tables.
 
 **The distinction it exists to hold.** Chunk size is a *tuned parameter* driven
 by artifact category and content profile. Rung boundaries are a *containment*
