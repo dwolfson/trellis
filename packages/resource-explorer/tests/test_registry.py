@@ -919,6 +919,38 @@ class TestSurveyDefinitionLastActivityRepoWideFallback:
         activity = db.get_survey_definition_last_activity("repo", "s")
         assert activity["RefY"]["last_published_scope"] == "repo"
 
+    def test_executor_publish_flag_is_trusted_even_when_its_own_run_row_is_newer(self, db):
+        """Confirmed live 2026-08-28: SurveyDefinitionExecutor.run() (added
+        2026-08-27, see get_survey_definition_last_activity's own 'survey' row
+        comment) calls adapter.publish() BEFORE it logs the 'survey' row
+        recording the run — so the run's own timestamp is always a few ms
+        *after* its untagged 'catalog' row's timestamp, permanently failing
+        the repo-wide fallback's `last_run_at <= repo_wide_publish_at` check.
+        Running RepoCoarseScout against egeria_docs published successfully
+        (a real 'catalog' row existed) yet the candidate still showed
+        unpublished. The 'survey' row's own `detail.published` must be
+        trusted directly rather than relying on the timestamp heuristic."""
+        from resource_explorer.activity_logger import log_catalog, log_survey
+
+        # Untagged catalog row lands first (adapter.publish() runs first).
+        log_catalog(
+            db, entity_type="repo", entity_slug="s", entity_name="s",
+            entity_location="", status="ok",
+            summary="published", detail=json.dumps({}),
+        )
+        # The survey row recording the run lands after, with its own outcome.
+        log_survey(
+            db, entity_type="repo", entity_slug="s", entity_name="s",
+            entity_location="", intent="discovery", status="ok",
+            summary="ran", detail=json.dumps({
+                "survey_definition_ref": "RefZ", "published": True,
+            }),
+        )
+
+        activity = db.get_survey_definition_last_activity("repo", "s")
+        assert activity["RefZ"]["last_published_scope"] == "candidate"
+        assert "last_published_at" in activity["RefZ"]
+
 
 class TestAnalysisLastRunPublishFailedFlag:
     """last_publish_failed backs the ☁ Publish button's visibility (2026-08-27):

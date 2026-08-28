@@ -4880,6 +4880,23 @@ class ProjectRegistry:
             if row["operation"] == "survey" and "last_run_at" not in entry:
                 entry["last_run_at"] = row["ts"]
                 entry["last_run_status"] = row["status"]
+                # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
+                # BEFORE it logs the 'survey' row that records the run itself
+                # — adapter.publish() runs first, its own untagged 'catalog'
+                # row lands a few ms earlier, and this row's timestamp always
+                # ends up >= repo_wide_publish_at below as a result. That
+                # ordering permanently defeats the repo-wide fallback's
+                # `last_run_at <= repo_wide_publish_at` check for every future
+                # auto-published run — confirmed live 2026-08-28 running
+                # RepoCoarseScout against egeria_docs: publish genuinely
+                # succeeded (a real 'catalog' row exists) yet the candidate
+                # still showed unpublished. The executor already puts its own
+                # outcome in this very row's detail (`"published": bool`) —
+                # trust that directly instead of leaning on the fuzzy
+                # timestamp heuristic for runs that carry it.
+                if detail.get("published") is True:
+                    entry["last_published_at"] = row["ts"]
+                    entry["last_published_scope"] = "candidate"
             elif row["operation"] == "catalog" and "last_published_at" not in entry:
                 entry["last_published_at"] = row["ts"]
                 entry["last_published_scope"] = "candidate"
