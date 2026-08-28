@@ -2243,6 +2243,41 @@ class ProjectRegistry:
                 (homepage_url, slug),
             )
 
+    def update_github_url(self, slug: str, github_url: str) -> None:
+        """Change which repository this slug points at.
+
+        SQL-only — does not touch pgvector or reset collections/
+        last_indexed_at. Callers MUST go through repair.change_github_url()
+        instead of calling this directly: the old content still sits in
+        this repo's collections, embedded from the repo the URL *used* to
+        point at, and nothing here makes that stale state unreachable. See
+        repair.py's docstring for why that has to be a forced invalidation
+        or a refusal, never silent.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET github_url = ? WHERE slug = ?",
+                (github_url, slug),
+            )
+
+    def invalidate_indexing(self, slug: str) -> None:
+        """Reset a repo to the same "not yet indexed" state a freshly-added
+        repo starts in — collections=[], last_indexed_at="". Used by
+        repair.change_github_url() after the old collections have been
+        dropped, so the repo doesn't keep advertising content that came
+        from a URL it no longer points at. Reuses the existing "never
+        indexed" representation rather than inventing a new status value,
+        so every UI path that already knows how to say "index this repo"
+        handles the post-URL-change state for free.
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET collections = '[]', last_indexed_at = '' WHERE slug = ?",
+                (slug,),
+            )
+
     def update_ingestion_stats(self, slug: str, file_count: int, lines_of_code: int) -> None:
         """Update the most recent project_stats row with counts from actual ingestion."""
         slug = self._normalize_slug(slug)
@@ -2437,6 +2472,123 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_data_profile_snapshots WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_api_structure_snapshots WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
+
+    # Every table with a project_slug column, in the order the FK-declared
+    # ones (see grep for `REFERENCES projects(slug)` — 17 of the 20 below)
+    # need to be touched relative to the `projects` row itself: AFTER a new
+    # `projects` row exists for new_slug, since a bare UPDATE of a child row
+    # to project_slug=new_slug while only old_slug's parent row exists would
+    # fail the FK check on Postgres. Doing the parent-row swap first (insert
+    # new, repoint children, delete old) sidesteps needing DEFERRABLE
+    # constraints or a temporary FK disable — neither of which this schema
+    # declares. The three without a declared FK (project_published_
+    # annotation_types, project_published_analyses, repo_dispositions) are
+    # included anyway: rename must not silently orphan their rows just
+    # because nothing enforces referential integrity on them.
+    _PROJECT_SLUG_TABLES: tuple[str, ...] = (
+        "project_stats", "project_commits", "project_code_symbols",
+        "project_code_relationships", "project_aliases",
+        "project_contributor_stats", "conversation_history",
+        "project_dependencies", "project_file_type_counts",
+        "project_file_inventory", "project_egeria_surveys",
+        "project_published_annotation_types", "project_published_analyses",
+        "project_data_profiles", "project_data_profile_snapshots",
+        "project_security_findings", "project_documentation_findings",
+        "project_api_structure_snapshots", "project_analysis_findings",
+        "project_analysis_metrics",
+    )
+
+    # Every table keyed by (entity_type, entity_slug) that can carry
+    # entity_type='repo' rows. Unlike the tables above these have no FK to
+    # `projects` at all (entity_type also covers 'database'/'filesystem'/
+    # other kinds), so they can be updated in any order relative to the
+    # `projects` row swap.
+    _ENTITY_SLUG_TABLES: tuple[str, ...] = (
+        "activity_log", "resource_context", "resource_tags",
+        "resource_feedback", "resource_curator_notes", "resource_schedules",
+        "survey_definition_cache", "egeria_linkage_status",
+        "resource_working_set", "entity_egeria_project_context",
+        "working_set_members", "notification_subscriptions",
+    )
+
+    def rename_project_slug(self, old_slug: str, new_slug: str, *,
+                            new_collections_json: str | None = None) -> dict:
+        """Rename a repo's slug across every table that carries it — the
+        SQL-only half of a repair-operation rename. Does NOT touch pgvector
+        (see repair.py's rename_repo(), which renames the owned collection
+        tables first and only calls this once those renames have all
+        succeeded — so a failure here never leaves a collection pointing at
+        a slug the registry no longer has).
+
+        Refuses (ValueError, no writes) rather than silently merging when:
+          - old_slug is not registered
+          - new_slug is already registered (including old_slug == new_slug
+            after normalization, which would otherwise be a same-row no-op
+            that looks like success but changed nothing)
+
+        `projects.slug` is the PK every child table's project_slug is a
+        soft-FK to (17 of 20 with a declared constraint — see
+        _PROJECT_SLUG_TABLES' comment), so the swap goes: insert a new
+        `projects` row under new_slug (copying every column, with
+        `collections` already rewritten by the caller to its
+        renamed-collection-table names), repoint every child row from
+        old_slug to new_slug, THEN delete the old `projects` row — never the
+        reverse, or Postgres rejects the child UPDATEs with a dangling FK.
+        """
+        old = self._normalize_slug(old_slug)
+        new = self._normalize_slug(new_slug)
+        if not self.exists(old):
+            raise ValueError(f"repo '{old_slug}' is not registered")
+        if old == new:
+            raise ValueError(f"new slug '{new}' is the same as the current slug")
+        if self.exists(new):
+            raise ValueError(f"a repo with slug '{new}' already exists")
+
+        touched: dict[str, int] = {}
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM projects WHERE slug = ?", (old,)).fetchone()
+            cols = [k for k in row.keys() if k != "slug"]
+            values = [new] + [
+                new_collections_json if (c == "collections" and new_collections_json is not None)
+                else row[c]
+                for c in cols
+            ]
+            placeholders = ", ".join(["?"] * len(values))
+            conn.execute(
+                f"INSERT INTO projects (slug, {', '.join(cols)}) VALUES ({placeholders})",
+                values,
+            )
+
+            for table in self._PROJECT_SLUG_TABLES:
+                cur = conn.execute(
+                    f"UPDATE {table} SET project_slug = ? WHERE project_slug = ?", (new, old)
+                )
+                touched[table] = cur.rowcount
+            for table in self._ENTITY_SLUG_TABLES:
+                cur = conn.execute(
+                    f"UPDATE {table} SET entity_slug = ? WHERE entity_type = 'repo' AND entity_slug = ?",
+                    (new, old),
+                )
+                touched[table] = cur.rowcount
+            cur = conn.execute(
+                "UPDATE sub_resources SET resource_slug = ? WHERE resource_type = 'repo' AND resource_slug = ?",
+                (new, old),
+            )
+            touched["sub_resources"] = cur.rowcount
+            cur = conn.execute(
+                "UPDATE repo_dispositions SET project_slug = ? WHERE project_slug = ?", (new, old)
+            )
+            touched["repo_dispositions"] = cur.rowcount
+            # Sub-projects (subproject_path monorepo entries) point back at
+            # their parent by slug — the parent row itself was already
+            # re-inserted above, but children still say parent_slug=old.
+            cur = conn.execute(
+                "UPDATE projects SET parent_slug = ? WHERE parent_slug = ?", (new, old)
+            )
+            touched["projects.parent_slug"] = cur.rowcount
+
+            conn.execute("DELETE FROM projects WHERE slug = ?", (old,))
+        return touched
 
     # ── alias management ──────────────────────────────────────────────────────
 
@@ -4006,6 +4158,36 @@ class ProjectRegistry:
         """
         folio = self.investigation_working_set_slug(investigation_slug)
         return self.list_working_set_members(folio) if folio else []
+
+    def find_entity_investigations(self, entity_type: str, entity_slug: str) -> list[dict]:
+        """The reverse of list_investigation_members(): which investigations'
+        Folios this entity is in scope for. Folio-only, matching
+        list_investigation_members' own reasoning — WorkingSet (per-
+        disposition) membership implies Folio membership so this still finds
+        it, but a WorkingSet-only match with no Folio row would mean the
+        two tables have drifted, not that the entity is legitimately
+        "in scope but unjudged" from a different angle.
+
+        Backs the admin repair surface's repoint/drop-membership operation
+        (repair.py) — an entity-centric view where nothing existed before;
+        investigations.py's own members endpoints are all investigation-
+        centric ("what's in this investigation"), not "which investigations
+        is this repo in".
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT i.slug AS investigation_slug, i.display_name, i.status,
+                          wsm.state, wsm.membership_rationale, wsm.added_at
+                   FROM working_set_members wsm
+                   JOIN working_sets ws ON ws.slug = wsm.working_set_slug
+                                        AND ws.collection_kind = 'folio'
+                   JOIN investigation_resource_lists rl ON rl.working_set_slug = ws.slug
+                   JOIN investigations i ON i.slug = rl.investigation_slug
+                   WHERE wsm.entity_type = ? AND wsm.entity_slug = ?
+                   ORDER BY i.display_name""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def set_investigation_disposition(self, investigation_slug: str, entity_type: str,
                                       entity_slug: str, disposition: str,
