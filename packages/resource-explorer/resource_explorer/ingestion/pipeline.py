@@ -678,6 +678,16 @@ class IngestionPipeline:
                     text=chunk_text,
                     metadata={"file_path": path, "project_slug": project_slug, "type": "web"},
                 ))
+
+        # Trees from the ORIGINAL markup, not the tag-stripped text above.
+        # Stripping is right for retrieval and lossy for structure: it throws
+        # away the h1-h6 hierarchy the page actually declares, which is exactly
+        # what a containment tree is for.
+        from resource_explorer.ingestion.artifact_tree_sink import build_trees
+        self._report_tree_result(
+            build_trees(all_files, project_slug, kind="html"), project_slug,
+        )
+
         return chunks
 
     def _ingest_api_specs(

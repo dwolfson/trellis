@@ -130,3 +130,61 @@ class TestRegistry:
     def test_builtins_satisfy_the_protocol(self):
         assert isinstance(MarkdownAdapter(), Adapter)
         assert isinstance(GenericTextAdapter(), Adapter)
+
+
+class TestHtmlAdapter:
+    """HTML states a hierarchy. Letting it fall through to the generic
+    fallback would flatten a documentation site into blank-line blocks and
+    discard structure the document actually declares."""
+
+    HTML = (
+        "<html><head><style>body{color:red}</style></head><body>"
+        "<h1>Top</h1><p>intro text</p>"
+        "<h2>Sub A</h2><p>a body</p>"
+        "<h4>Deep</h4><p>deep body</p>"
+        "<h2>Sub B</h2><p>b body</p>"
+        "<script>var x=1;</script>"
+        "</body></html>"
+    )
+
+    def _tree(self):
+        from trellis_artifact_tree.adapters import HtmlAdapter
+
+        return HtmlAdapter().parse("w", self.HTML, PROV)
+
+    def test_headings_nest_by_level(self):
+        t = self._tree()
+        by = {n.title: n for n in t.nodes if n.title}
+        assert by["Sub A"].parent_id == by["Top"].node_id
+        assert by["Sub B"].parent_id == by["Top"].node_id
+
+    def test_level_skips_do_not_invent_nodes(self):
+        t = self._tree()
+        by = {n.title: n for n in t.nodes if n.title}
+        assert by["Deep"].parent_id == by["Sub A"].node_id
+
+    def test_script_and_style_content_is_excluded(self):
+        """Otherwise a packer pays tokens for CSS and JavaScript."""
+        blob = " ".join(
+            v for n in self._tree().nodes for v in n.rungs.values()
+        )
+        assert "color:red" not in blob and "var x" not in blob
+
+    def test_body_text_attaches_to_the_open_section(self):
+        t = self._tree()
+        by = {n.title: n for n in t.nodes if n.title}
+        body = next(n for n in t.nodes if "a body" in " ".join(n.rungs.values()))
+        assert body.parent_id == by["Sub A"].node_id
+
+    def test_registry_prefers_it_over_the_generic_fallback(self):
+        for kind in ("html", ".HTM", "text/html", "web"):
+            assert AdapterRegistry().resolve(kind).name == "html"
+
+    def test_shares_one_containment_algorithm_with_pdf(self):
+        """Three implementations of 'headings nest by level, and levels skip'
+        would be three places to fix the same bug."""
+        import inspect
+
+        from trellis_artifact_tree.adapters import HtmlAdapter
+
+        assert "tree_from_items" in inspect.getsource(HtmlAdapter.parse)

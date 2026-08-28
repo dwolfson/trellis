@@ -12,6 +12,7 @@ from trellis_artifact_tree.adapters import (
     Adapter,
     AdapterRegistry,
     GenericTextAdapter,
+    HtmlAdapter,
     MarkdownAdapter,
 )
 from trellis_artifact_tree.adapters_code import CodeAdapter
@@ -44,6 +45,7 @@ __all__ = [
     "DocItem",
     "DoclingDocumentAdapter",
     "GenericTextAdapter",
+    "HtmlAdapter",
     "MarkdownAdapter",
     "PdfAdapter",
     "Node",

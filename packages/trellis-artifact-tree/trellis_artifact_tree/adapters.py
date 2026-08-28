@@ -190,6 +190,81 @@ class MarkdownAdapter:
         return _finish(artifact_id, provenance, self.fidelity, nodes)
 
 
+class HtmlAdapter:
+    """HTML headings as containment. Stdlib only -- html.parser recovers h1-h6,
+    which is the one thing the tree needs, without a parsing library.
+
+    Worth doing rather than letting HTML fall through to GenericTextAdapter:
+    the fallback would flatten a documentation site into blank-line blocks and
+    throw away a hierarchy the document actually states. Tag-stripping to plain
+    text, which is what RE's web_docs chunker does, is right for retrieval and
+    lossy for structure -- these are the two different axes the whole tree
+    exists to keep apart.
+
+    Reuses tree_from_items(), so HTML, PDF and any other heading-and-body
+    format share ONE containment algorithm. Three implementations of
+    "headings nest by level, and levels skip" would be three places to fix the
+    same bug.
+    """
+
+    name = "html"
+    fidelity = "structural"
+    _SKIP = {"script", "style", "noscript"}
+
+    def handles(self, kind: str) -> bool:
+        return kind.lower() in {"html", "htm", ".html", ".htm", "text/html", "web"}
+
+    def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree:
+        from html.parser import HTMLParser
+
+        from trellis_artifact_tree.adapters_pdf import DocItem, tree_from_items
+
+        text = _require_text(source, self.name)
+        items: list[DocItem] = []
+
+        class _Collector(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self.heading_level: int | None = None
+                self.skipping = 0
+                self.buf: list[str] = []
+
+            def _flush_text(self) -> None:
+                body = " ".join(" ".join(self.buf).split())
+                self.buf = []
+                if body:
+                    items.append(DocItem(label="text", text=body))
+
+            def handle_starttag(self, tag, attrs):
+                if tag in HtmlAdapter._SKIP:
+                    self.skipping += 1
+                elif len(tag) == 2 and tag[0] == "h" and tag[1].isdigit():
+                    self._flush_text()
+                    self.heading_level = int(tag[1])
+                    self.buf = []
+
+            def handle_endtag(self, tag):
+                if tag in HtmlAdapter._SKIP and self.skipping:
+                    self.skipping -= 1
+                elif self.heading_level and len(tag) == 2 and tag[0] == "h":
+                    title = " ".join(" ".join(self.buf).split())
+                    self.buf = []
+                    if title:
+                        items.append(DocItem(
+                            label="section_header", text=title, level=self.heading_level,
+                        ))
+                    self.heading_level = None
+
+            def handle_data(self, data):
+                if not self.skipping:
+                    self.buf.append(data)
+
+        collector = _Collector()
+        collector.feed(text)
+        collector._flush_text()
+        return tree_from_items(artifact_id, items, provenance, self.fidelity)
+
+
 class AdapterRegistry:
     """Resolves a source kind to an adapter, falling back rather than failing.
 
@@ -200,7 +275,10 @@ class AdapterRegistry:
 
     def __init__(self, adapters: list[Adapter] | None = None,
                  fallback: Adapter | None = None) -> None:
-        self._adapters = list(adapters) if adapters is not None else [MarkdownAdapter()]
+        self._adapters = (
+            list(adapters) if adapters is not None
+            else [MarkdownAdapter(), HtmlAdapter()]
+        )
         self._fallback = fallback or GenericTextAdapter()
 
     def register(self, adapter: Adapter) -> None:
