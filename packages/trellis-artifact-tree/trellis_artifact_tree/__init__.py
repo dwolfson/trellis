@@ -1,6 +1,12 @@
 """Shared containment tree over ingested artifacts.
 
 See README.md for why this is a package rather than one app's table.
+
+CodeAdapter and PdfAdapter are importable without their extras installed -- they
+import tree_sitter and docling inside parse(), so a missing extra surfaces at
+the point of use with an install hint rather than as an import-time stack trace.
+Neither is in AdapterRegistry's defaults: the default registry stays stdlib-only
+(markdown plus the generic fallback), and an app registers what it installed.
 """
 from trellis_artifact_tree.adapters import (
     Adapter,
@@ -8,6 +14,8 @@ from trellis_artifact_tree.adapters import (
     GenericTextAdapter,
     MarkdownAdapter,
 )
+from trellis_artifact_tree.adapters_code import CodeAdapter
+from trellis_artifact_tree.adapters_pdf import DocItem, PdfAdapter, tree_from_items
 from trellis_artifact_tree.config import ArtifactTreeConfig
 from trellis_artifact_tree.model import (
     ArtifactTree,
@@ -26,12 +34,16 @@ __all__ = [
     "ArtifactTree",
     "ArtifactTreeConfig",
     "ArtifactTreeStore",
+    "CodeAdapter",
+    "DocItem",
     "GenericTextAdapter",
     "MarkdownAdapter",
+    "PdfAdapter",
     "Node",
     "Provenance",
     "Rung",
     "TreeError",
     "create_schema_sql",
+    "tree_from_items",
     "validate",
 ]

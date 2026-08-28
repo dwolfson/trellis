@@ -45,7 +45,21 @@ class Adapter(Protocol):
 
     def handles(self, kind: str) -> bool: ...
 
-    def parse(self, artifact_id: str, text: str, provenance: Provenance) -> ArtifactTree: ...
+    def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree: ...
+    """`source` is str for text adapters, and bytes or a path for binary ones
+    (a PDF is not a str). Each adapter states what it accepts and raises
+    TypeError on anything else -- a binary adapter handed a str should fail
+    loudly, not decode it into nonsense."""
+
+
+def _require_text(source, adapter_name: str) -> str:
+    """Text adapters need str. Decoding bytes here would let a binary file
+    parse into plausible garbage instead of failing where it can be seen."""
+    if not isinstance(source, str):
+        raise TypeError(
+            f"{adapter_name} adapter needs str, got {type(source).__name__}"
+        )
+    return source
 
 
 def _finish(
@@ -78,7 +92,8 @@ class GenericTextAdapter:
     def handles(self, kind: str) -> bool:
         return True  # the fallback handles everything
 
-    def parse(self, artifact_id: str, text: str, provenance: Provenance) -> ArtifactTree:
+    def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree:
+        text = _require_text(source, self.name)
         root = Node(f"{artifact_id}:root", artifact_id, "document",
                     title=provenance.source_id)
         nodes = [root]
@@ -118,7 +133,8 @@ class MarkdownAdapter:
     def handles(self, kind: str) -> bool:
         return kind.lower() in {"markdown", "md", "text/markdown", ".md"}
 
-    def parse(self, artifact_id: str, text: str, provenance: Provenance) -> ArtifactTree:
+    def parse(self, artifact_id: str, source, provenance: Provenance) -> ArtifactTree:
+        text = _require_text(source, self.name)
         root = Node(f"{artifact_id}:root", artifact_id, "document",
                     title=provenance.source_id,
                     rungs={Rung.IDENTIFIERS: provenance.source_id})
@@ -198,6 +214,6 @@ class AdapterRegistry:
                 return adapter
         return self._fallback
 
-    def parse(self, artifact_id: str, kind: str, text: str,
+    def parse(self, artifact_id: str, kind: str, source,
               provenance: Provenance) -> ArtifactTree:
-        return self.resolve(kind).parse(artifact_id, text, provenance)
+        return self.resolve(kind).parse(artifact_id, source, provenance)

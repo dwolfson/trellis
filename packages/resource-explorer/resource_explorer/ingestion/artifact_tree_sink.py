@@ -107,7 +107,7 @@ def build_trees(
                 tree = registry.parse(
                     artifact_id=f"{project_slug}:{path}",
                     kind=kind,
-                    text=content,
+                    source=content,
                     provenance=Provenance(
                         source_kind="repo",
                         source_id=path,
