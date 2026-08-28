@@ -619,6 +619,11 @@
            loadAdminQuestionCatalogPanel() below. -->
       <div id="admin-question-catalog-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <div id="admin-resync-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Repair view (Admin) — repo repair operations: rename, github_url
+           correction, drift-flagged collection enablement, investigation-
+           membership repoint/drop. See resource_explorer/repair.py and
+           docs/repair-operations-design.md. -->
+      <div id="admin-repair-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -8387,11 +8392,12 @@ function showMainView(tab) {
   const adminEgeriaLinksView = document.getElementById('admin-egeria-links-view');
   const adminQuestionCatalogView = document.getElementById('admin-question-catalog-view');
   const adminPrefectView = document.getElementById('admin-prefect-view');
+  const adminRepairView = document.getElementById('admin-repair-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The header Perspective row used to be hidden on the Questions tab, which
   // had its own filter over a different vocabulary. Both vocabularies are
   // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
@@ -8505,6 +8511,10 @@ function showMainView(tab) {
     document.getElementById('admin-resync-view').classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminResyncPanel();
+  } else if (tab === 'admin-repair') {
+    adminRepairView.classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminRepairPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -11314,6 +11324,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
     { tab: 'admin-prefect',           label: '⚡ Prefect' },
     { tab: 'admin-resync',            label: '🔄 Egeria Alignment' },
+    { tab: 'admin-repair',            label: '🔧 Repair' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -12343,6 +12354,277 @@ async function deleteAdminGroup(slug) {
     loadAdminGroupsPanel();
   } catch(e) {
     showToast('error', `Failed to delete group: ${_esc(e.message)}`, 6000);
+  }
+}
+
+// ── Admin — Repair: rename a repo, correct its github_url, enable a
+// drift-flagged collection, repoint/drop an investigation membership. Four
+// operations, one repo-scoped panel — see resource_explorer/repair.py and
+// docs/repair-operations-design.md for what each one guarantees and
+// refuses. Repo-only for now (matches the sub-resource funnel's own Phase 1
+// scope note elsewhere in this file): databases/filesystems don't have the
+// slug-embeds-collection-name problem rename exists for. ───────────────────
+let _repairRepos = [];          // [{slug, display_name}] from GET /api/projects/
+let _repairInvestigations = []; // [{slug, display_name}] from GET /api/investigations/
+let _repairSelectedSlug = '';
+let _repairDrift = [];
+let _repairMemberships = [];
+
+async function loadAdminRepairPanel() {
+  const view = document.getElementById('admin-repair-view');
+  view.innerHTML = _adminSubnavHtml('admin-repair') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading repos…</div>';
+  try {
+    const [reposRes, invRes] = await Promise.all([
+      fetch('/api/projects/?include_ignored=true&include_working_set_hidden=true'),
+      fetch('/api/investigations/?include_closed=true'),
+    ]);
+    if (!reposRes.ok) throw new Error(`HTTP ${reposRes.status}`);
+    _repairRepos = await reposRes.json();
+    _repairInvestigations = invRes.ok ? await invRes.json() : [];
+    renderAdminRepairPanel();
+  } catch(e) {
+    view.innerHTML = _adminSubnavHtml('admin-repair') +
+      `<div class="text-red-400 text-xs p-4">Failed to load repair panel: ${_esc(e.message)}</div>`;
+  }
+}
+
+function renderAdminRepairPanel() {
+  const view = document.getElementById('admin-repair-view');
+  const repo = _repairRepos.find(r => r.slug === _repairSelectedSlug);
+  const options = _repairRepos.map(r =>
+    `<option value="${_esc(r.slug)}" ${r.slug === _repairSelectedSlug ? 'selected' : ''}>${_esc(r.display_name)} (${_esc(r.slug)})</option>`
+  ).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-repair') + `
+    <div class="p-6 space-y-6 max-w-4xl">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-100 flex items-center gap-2">🔧 Repair</h1>
+        <p class="text-xs text-slate-400 mt-1">Fix a repo registered under the wrong name or URL, turn on a
+          collection type drift detection flagged, or move it between investigations. Each action below
+          explains what it does before it does it.</p>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+        <label class="text-[10px] text-slate-500 uppercase font-semibold block mb-1">Repo</label>
+        <select id="repair-repo-select" onchange="selectRepairRepo(this.value)"
+                class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200">
+          <option value="">— choose a repo —</option>
+          ${options}
+        </select>
+      </div>
+
+      <div id="repair-repo-detail">${repo ? '' : '<div class="text-slate-500 text-xs text-center py-8">Choose a repo above to see repair actions.</div>'}</div>
+    </div>
+  `;
+  if (repo) renderRepairRepoDetail(repo);
+}
+
+function selectRepairRepo(slug) {
+  _repairSelectedSlug = slug;
+  _repairDrift = [];
+  _repairMemberships = [];
+  renderAdminRepairPanel();
+  if (slug) {
+    fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/drift`)
+      .then(r => r.ok ? r.json() : [])
+      .then(rows => { _repairDrift = rows; renderRepairDriftSection(); })
+      .catch(() => {});
+    fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships`)
+      .then(r => r.ok ? r.json() : [])
+      .then(rows => { _repairMemberships = rows; renderRepairMembershipsSection(); })
+      .catch(() => {});
+  }
+}
+
+function renderRepairRepoDetail(repo) {
+  const detail = document.getElementById('repair-repo-detail');
+  if (!detail) return;
+  detail.innerHTML = `
+    <div class="space-y-6">
+      <!-- Rename -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-3">
+        <h3 class="text-slate-200 font-semibold text-xs uppercase tracking-wide">Rename slug</h3>
+        <p class="text-xs text-slate-400">Moves every registry row and this repo's own pgvector collections to
+          the new slug. Shared collections other repos also use are left untouched. Refuses if the new slug
+          is already taken.</p>
+        <div class="flex gap-2 items-center">
+          <span class="text-xs font-mono text-slate-400">${_esc(repo.slug)}</span>
+          <span class="text-slate-600">→</span>
+          <input id="repair-rename-input" type="text" placeholder="new_slug"
+                 class="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+          <button onclick="submitRepairRename('${_esc(repo.slug)}')"
+                  class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Rename</button>
+        </div>
+      </div>
+
+      <!-- github_url -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-3">
+        <h3 class="text-slate-200 font-semibold text-xs uppercase tracking-wide">Correct github_url</h3>
+        <p class="text-xs text-slate-400">Current: <span class="font-mono text-slate-300">${_esc(repo.github_url)}</span>.
+          Changing this drops every existing collection (${repo.collections.length}) — they were embedded from the
+          old URL — and leaves the repo needing a re-index.</p>
+        <div class="flex gap-2 items-center">
+          <input id="repair-url-input" type="text" placeholder="https://github.com/org/correct-repo"
+                 class="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+          <button onclick="submitRepairGithubUrl('${_esc(repo.slug)}')"
+                  class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-semibold transition-colors">Change URL</button>
+        </div>
+      </div>
+
+      <!-- Drift -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-3">
+        <h3 class="text-slate-200 font-semibold text-xs uppercase tracking-wide">Collection drift</h3>
+        <p class="text-xs text-slate-400">Collection types this repo is eligible for but hasn't enabled.</p>
+        <div id="repair-drift-section" class="text-xs text-slate-500">Loading…</div>
+      </div>
+
+      <!-- Investigation memberships -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-3">
+        <h3 class="text-slate-200 font-semibold text-xs uppercase tracking-wide">Investigation memberships</h3>
+        <p class="text-xs text-slate-400">Which investigations this repo is in scope for — repoint it to a
+          different investigation, or drop it entirely.</p>
+        <div id="repair-memberships-section" class="text-xs text-slate-500">Loading…</div>
+      </div>
+    </div>
+  `;
+  renderRepairDriftSection();
+  renderRepairMembershipsSection();
+}
+
+function renderRepairDriftSection() {
+  const el = document.getElementById('repair-drift-section');
+  if (!el) return;
+  if (!_repairDrift.length) {
+    el.innerHTML = '<div class="text-slate-600">No drift — everything eligible is already enabled.</div>';
+    return;
+  }
+  el.innerHTML = _repairDrift.map(f => `
+    <div class="flex items-center justify-between border-b border-slate-850 py-2 last:border-b-0">
+      <div>
+        <span class="font-mono text-cyan-400">${_esc(f.collection_type)}</span>
+        <span class="text-slate-500"> — ${f.matching_files} matching file(s), needs ${f.min_required}</span>
+      </div>
+      <button onclick="submitRepairEnableCollection('${_esc(_repairSelectedSlug)}', '${_esc(f.collection_type)}')"
+              class="px-2 py-1 bg-emerald-800 hover:bg-emerald-700 text-emerald-100 rounded text-[11px] font-semibold transition-colors">+ Enable</button>
+    </div>
+  `).join('');
+}
+
+function renderRepairMembershipsSection() {
+  const el = document.getElementById('repair-memberships-section');
+  if (!el) return;
+  if (!_repairMemberships.length) {
+    el.innerHTML = '<div class="text-slate-600">Not a member of any investigation.</div>';
+    return;
+  }
+  const otherInvestigations = _repairInvestigations.filter(
+    i => !_repairMemberships.some(m => m.investigation_slug === i.slug)
+  );
+  el.innerHTML = _repairMemberships.map(m => `
+    <div class="flex items-center justify-between border-b border-slate-850 py-2 last:border-b-0 gap-2">
+      <div class="min-w-0">
+        <span class="text-slate-200">${_esc(m.display_name)}</span>
+        <span class="text-slate-600 font-mono text-[10px]"> (${_esc(m.investigation_slug)}, ${_esc(m.status)})</span>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <select id="repair-repoint-target-${_esc(m.investigation_slug)}"
+                class="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-300">
+          ${otherInvestigations.map(i => `<option value="${_esc(i.slug)}">${_esc(i.display_name)}</option>`).join('') || '<option value="">— no other investigations —</option>'}
+        </select>
+        <button onclick="submitRepairRepoint('${_esc(_repairSelectedSlug)}', '${_esc(m.investigation_slug)}')"
+                class="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-semibold transition-colors">Repoint</button>
+        <button onclick="submitRepairDropMembership('${_esc(_repairSelectedSlug)}', '${_esc(m.investigation_slug)}')"
+                class="px-2 py-1 bg-red-900 hover:bg-red-800 text-red-200 rounded text-[11px] font-semibold transition-colors">Drop</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function submitRepairRename(slug) {
+  const input = document.getElementById('repair-rename-input');
+  const newSlug = (input?.value || '').trim();
+  if (!newSlug) { showToast('error', 'Enter a new slug first.', 4000); return; }
+  if (!confirm(`Rename '${slug}' to '${newSlug}'? This moves every registry row and pgvector collection.`)) return;
+  try {
+    const res = await fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/rename`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({new_slug: newSlug}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast('success', `Renamed '${slug}' → '${data.new_slug}'.`, 5000);
+    _repairSelectedSlug = data.new_slug;
+    loadAdminRepairPanel();
+  } catch(e) {
+    showToast('error', `Rename failed: ${_esc(e.message)}`, 6000);
+  }
+}
+
+async function submitRepairGithubUrl(slug) {
+  const input = document.getElementById('repair-url-input');
+  const newUrl = (input?.value || '').trim();
+  if (!newUrl) { showToast('error', 'Enter the correct github_url first.', 4000); return; }
+  if (!confirm(`Change github_url for '${slug}' to '${newUrl}'? This drops all existing collections — you'll need to re-index afterward.`)) return;
+  try {
+    const res = await fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/github-url`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({new_url: newUrl, confirm: true}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast('success', `'${slug}' now points at ${data.new_url}. Run refresh to re-index.`, 6000);
+    loadAdminRepairPanel();
+  } catch(e) {
+    showToast('error', `URL change failed: ${_esc(e.message)}`, 6000);
+  }
+}
+
+async function submitRepairEnableCollection(slug, collectionType) {
+  try {
+    const res = await fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/collections/enable`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({collection_type: collectionType}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast('success', `Enabled '${data.collection}' — ${data.chunks_inserted} chunk(s) inserted.`, 5000);
+    selectRepairRepo(slug);
+  } catch(e) {
+    showToast('error', `Enable failed: ${_esc(e.message)}`, 6000);
+  }
+}
+
+async function submitRepairRepoint(slug, fromInvestigation) {
+  const select = document.getElementById(`repair-repoint-target-${CSS.escape(fromInvestigation)}`);
+  const toInvestigation = select?.value;
+  if (!toInvestigation) { showToast('error', 'No other investigation to repoint to.', 4000); return; }
+  try {
+    const res = await fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/repoint`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({from_investigation: fromInvestigation, to_investigation: toInvestigation}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast('success', `Moved '${slug}' to '${data.to_investigation}'.`, 5000);
+    selectRepairRepo(slug);
+  } catch(e) {
+    showToast('error', `Repoint failed: ${_esc(e.message)}`, 6000);
+  }
+}
+
+async function submitRepairDropMembership(slug, investigationSlug) {
+  if (!confirm(`Drop '${slug}' from investigation '${investigationSlug}'?`)) return;
+  try {
+    const res = await fetch(`/api/admin/repair/repos/${encodeURIComponent(slug)}/memberships/${encodeURIComponent(investigationSlug)}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast('success', `Dropped '${slug}' from '${investigationSlug}'.`, 4000);
+    selectRepairRepo(slug);
+  } catch(e) {
+    showToast('error', `Drop failed: ${_esc(e.message)}`, 6000);
   }
 }
 
