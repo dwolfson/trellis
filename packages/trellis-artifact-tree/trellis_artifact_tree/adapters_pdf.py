@@ -172,16 +172,70 @@ class PdfAdapter:
     def handles(self, kind: str) -> bool:
         return kind.lower() in self._KINDS
 
-    # OCR is OFF by default, and that is a deliberate default rather than a
-    # performance tweak. Docling's standard install uses rapidocr, which pulls
-    # omegaconf; omegaconf cannot resolve above 2.0.6 in this workspace (a
-    # soda-core dependency pins antlr4 to 4.11 while every Path-aware omegaconf
-    # needs 4.8/4.9), and 2.0.6 rejects the PosixPath rapidocr hands it for
-    # Global.model_root_dir. With OCR on, EVERY conversion fails. With it off,
-    # digital PDFs convert correctly and scanned ones lose their text -- which
-    # is strictly better than losing everything. Turn it back on once the
-    # dependency conflict is resolved.
+    # --- OCR ---------------------------------------------------------------
+    #
+    # OCR is not what extracts tables. `do_table_structure` is a separate
+    # Docling stage (TableFormer), on by default, and it works with OCR off --
+    # measured: a webinar deck yielded 2 tables and 32 section headers with
+    # `ocr=False`. Layout, headings, lists and tables all come from the layout
+    # models, not from OCR.
+    #
+    # OCR is for text that exists only as PIXELS: a scanned page, or words
+    # rendered inside a diagram image. Those are real cases here -- an
+    # architecture diagram whose labels are the content is invisible without it,
+    # and Docling reports such a region as a bare `picture`.
+    #
+    # Default off because Docling's DEFAULT engine is broken in this workspace,
+    # not because OCR is unwanted. rapidocr needs omegaconf, which cannot
+    # resolve above 2.0.6 while soda-core pins antlr4 to 4.11, and 2.0.6 rejects
+    # the PosixPath rapidocr passes for Global.model_root_dir -- so with the
+    # default engine EVERY conversion fails, not just scanned ones.
+    #
+    # The fix for wanting OCR is therefore NOT the soda migration. It is picking
+    # a different engine: neither `ocrmac` (3 dependencies, macOS Vision) nor
+    # `easyocr` (12, torch-based and cross-platform, and torch is already
+    # present) depends on omegaconf at all.
+    #
+    #   ocr=False                      digital PDFs; tables and headings still work
+    #   ocr=True, engine="easyocr"     scanned pages or diagram text, portable
+    #   ocr=True, engine="ocrmac"      same, macOS only, far lighter
+    #   ocr=True, engine="rapidocr"    blocked until the omegaconf conflict clears
     ocr: bool = False
+    ocr_engine: str = "easyocr"
+
+    _ENGINES = {
+        "easyocr": ("EasyOcrOptions", "easyocr"),
+        "ocrmac": ("OcrMacOptions", "ocrmac"),
+        "tesseract": ("TesseractOcrOptions", "tesserocr"),
+        "rapidocr": ("RapidOcrOptions", "rapidocr"),
+    }
+
+    def __init__(self, ocr: bool | None = None, ocr_engine: str | None = None) -> None:
+        if ocr is not None:
+            self.ocr = ocr
+        if ocr_engine is not None:
+            self.ocr_engine = ocr_engine
+
+    def _ocr_options(self):
+        """Build engine options, failing with a usable message rather than an
+        ImportError from three libraries down."""
+        import importlib.util
+
+        if self.ocr_engine not in self._ENGINES:
+            raise ValueError(
+                f"unknown OCR engine {self.ocr_engine!r}; "
+                f"known: {', '.join(sorted(self._ENGINES))}"
+            )
+        options_name, package = self._ENGINES[self.ocr_engine]
+        if importlib.util.find_spec(package) is None:
+            raise ImportError(
+                f"OCR engine {self.ocr_engine!r} needs the {package!r} package. "
+                f"Note rapidocr is Docling's default and is currently unusable "
+                f"here (omegaconf conflict); easyocr and ocrmac are not."
+            )
+        from docling.datamodel import pipeline_options as po
+
+        return getattr(po, options_name)()
 
     def _convert(self, path: str) -> list[DocItem]:
         try:
@@ -196,6 +250,12 @@ class PdfAdapter:
 
         options = PdfPipelineOptions()
         options.do_ocr = self.ocr
+        # Left on regardless of OCR: table structure recognition is a separate
+        # Docling stage and works without it. Tying them together would mean
+        # enabling OCR just to read a table.
+        options.do_table_structure = True
+        if self.ocr:
+            options.ocr_options = self._ocr_options()
         converter = DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
         )

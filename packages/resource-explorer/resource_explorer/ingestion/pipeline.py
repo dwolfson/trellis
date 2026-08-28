@@ -755,8 +755,8 @@ class IngestionPipeline:
         def _convert(path_str: str):
             nonlocal _converter
             if _converter is None:
-                from docling.document_converter import DocumentConverter
-                _converter = DocumentConverter()
+                from resource_explorer.ingestion.doc_parser import build_pdf_converter
+                _converter = build_pdf_converter()
             return _converter.convert(path_str).document
 
         def _handle(display: str, abs_str: str) -> None:

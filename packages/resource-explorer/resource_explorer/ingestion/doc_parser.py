@@ -11,6 +11,41 @@ class DocChunk:
     metadata: dict  # source_url, file_path, page_number (PDFs), project_slug
 
 
+def build_pdf_converter(ocr: bool | None = None, engine: str | None = None):
+    """One place that decides how a PDF is converted.
+
+    Both the chunker and the containment-tree builder go through this, so they
+    cannot drift into converting the same file two different ways -- which
+    would be invisible until their outputs disagreed.
+
+    Table structure recognition is left ON regardless: it is a separate Docling
+    stage from OCR and works without it (measured: 2 tables and 32 headings from
+    a webinar deck with OCR off). OCR is only for text that exists as pixels --
+    a scanned page, or labels rendered inside a diagram image.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    from resource_explorer.config import get_config
+
+    cfg = get_config().artifact_tree
+    use_ocr = cfg.pdf_ocr if ocr is None else ocr
+
+    options = PdfPipelineOptions()
+    options.do_ocr = use_ocr
+    options.do_table_structure = True
+    if use_ocr:
+        from trellis_artifact_tree.adapters_pdf import PdfAdapter
+
+        options.ocr_options = PdfAdapter(
+            ocr=True, ocr_engine=engine or cfg.pdf_ocr_engine
+        )._ocr_options()
+    return DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+    )
+
+
 class DocParser:
     """
     Parses documentation into chunks for embedding.
@@ -47,22 +82,7 @@ class DocParser:
         every PDF twice. Left optional so existing callers are unaffected.
         """
         if document is None:
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
-            from docling.document_converter import DocumentConverter, PdfFormatOption
-
-            # OCR off deliberately -- Docling's default engine (rapidocr) pulls
-            # omegaconf, which cannot resolve above 2.0.6 here because
-            # soda-core pins antlr4 to 4.11; 2.0.6 then rejects the PosixPath
-            # rapidocr passes for Global.model_root_dir and EVERY conversion
-            # fails. Off, digital PDFs convert and scanned ones lose their text
-            # -- strictly better than losing all of them. See
-            # trellis_artifact_tree.adapters_pdf.PdfAdapter.ocr.
-            options = PdfPipelineOptions()
-            options.do_ocr = False
-            document = DocumentConverter(
-                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
-            ).convert(file_path).document
+            document = build_pdf_converter().convert(file_path).document
         text = document.export_to_markdown()
         return [
             DocChunk(

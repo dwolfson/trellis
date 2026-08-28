@@ -42,6 +42,18 @@ code = [
 pdf = [
     "docling>=2.0.0",
 ]
+# OCR engines. Deliberately NOT bundled into [pdf]: OCR is only needed for text
+# that exists as pixels -- scanned pages, or labels inside a diagram -- and
+# tables, headings and lists all extract without it. Docling's own default
+# engine (rapidocr) is excluded on purpose: it depends on omegaconf, which
+# cannot resolve above 2.0.6 alongside soda-core's antlr4 pin, and with it
+# selected every conversion fails rather than only scanned ones.
+ocr = [
+    "easyocr>=1.7.0",     # cross-platform, torch-based; torch is already present
+]
+ocr-mac = [
+    "ocrmac>=1.0.0",      # macOS Vision; 3 dependencies, far lighter than easyocr
+]
 dev = [
     "pytest>=8.3.0",
     "pytest-cov>=5.0.0",

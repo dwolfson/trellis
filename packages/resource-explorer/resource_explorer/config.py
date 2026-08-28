@@ -308,6 +308,16 @@ class ArtifactTreeSettings(BaseSettings):
     """
     enabled: bool = Field(default=False, alias="ARTIFACT_TREE_ENABLED")
     schema_name: str = Field(default="artifact_tree", alias="ARTIFACT_TREE_SCHEMA")
+    # OCR for PDFs. Off by default because Docling's DEFAULT engine is broken
+    # here (rapidocr needs omegaconf, which soda-core's antlr4 pin holds at
+    # 2.0.6, which rejects rapidocr's own PosixPath) -- with it on, EVERY
+    # conversion fails. Not because OCR is unwanted: tables and headings
+    # extract without it, but text inside a scanned page or a diagram does not.
+    # Turning it on needs a different engine, not the soda migration:
+    #   pip install 'trellis-artifact-tree[ocr]'      -> easyocr, portable
+    #   pip install 'trellis-artifact-tree[ocr-mac]'  -> ocrmac, macOS, lighter
+    pdf_ocr: bool = Field(default=False, alias="PDF_OCR_ENABLED")
+    pdf_ocr_engine: str = Field(default="easyocr", alias="PDF_OCR_ENGINE")
 
     model_config = _ENV_FILE_CONFIG
 

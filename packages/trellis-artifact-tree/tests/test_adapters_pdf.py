@@ -144,3 +144,48 @@ class TestSharedConversion:
 
         with pytest.raises(TypeError, match="use PdfAdapter for a path"):
             DoclingDocumentAdapter().parse("z", "/tmp/x.pdf", PROV)
+
+
+class TestOcrIsAChoice:
+    """OCR is off by default because Docling's DEFAULT ENGINE is broken here,
+    not because OCR is unwanted. Tables and headings extract without it; text
+    that exists only as pixels does not.
+    """
+
+    def test_off_by_default(self):
+        a = PdfAdapter()
+        assert a.ocr is False
+        assert a.ocr_engine == "easyocr", "the default engine must not be rapidocr"
+
+    def test_table_extraction_does_not_depend_on_ocr(self):
+        """do_table_structure is a separate Docling stage. Conflating them
+        would mean turning OCR on just to read a table."""
+        import inspect
+
+        src = inspect.getsource(PdfAdapter._convert)
+        assert "do_table_structure = True" in src
+
+    def test_unknown_engine_is_named(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="unknown OCR engine"):
+            PdfAdapter(ocr=True, ocr_engine="nope")._ocr_options()
+
+    def test_missing_engine_says_which_package_and_why_not_rapidocr(self):
+        """The failure a user actually hits: OCR requested, engine not
+        installed. An ImportError from three libraries down would not say
+        which package, and would not warn that the obvious choice is the
+        broken one."""
+        import importlib.util
+
+        import pytest
+
+        if importlib.util.find_spec("easyocr") is not None:
+            pytest.skip("easyocr installed; this covers the not-installed path")
+        with pytest.raises(ImportError) as exc:
+            PdfAdapter(ocr=True, ocr_engine="easyocr")._ocr_options()
+        assert "easyocr" in str(exc.value)
+        assert "rapidocr" in str(exc.value), "must warn the default engine is unusable"
+
+    def test_engines_cover_the_portable_and_mac_paths(self):
+        assert {"easyocr", "ocrmac"} <= set(PdfAdapter._ENGINES)

@@ -207,7 +207,7 @@ class TestIngestPdfsConvertsOncePerFile:
         ctype = MagicMock(chunk_size=50, chunk_overlap=5)
         with patch("resource_explorer.registry.ProjectRegistry"), \
              patch("resource_explorer.vector_store_pg.MultiCollectionStore"), \
-             patch("docling.document_converter.DocumentConverter",
+             patch("resource_explorer.ingestion.doc_parser.build_pdf_converter",
                    return_value=converter) as conv_cls, \
              patch("resource_explorer.config.get_config", return_value=_cfg(False)):
             pipeline = IngestionPipeline.__new__(IngestionPipeline)
@@ -215,5 +215,7 @@ class TestIngestPdfsConvertsOncePerFile:
             chunks = pipeline._ingest_pdfs(tmp_path, "amundsen", ctype)
 
         assert conv_cls.call_count == 1, "one converter for the whole collection"
+        # build_pdf_converter is the single decision point for how a PDF is
+        # converted, so the chunker and the tree cannot drift apart on OCR.
         assert converter.convert.call_count == 2, "one conversion per file, not two"
         assert chunks
