@@ -70,18 +70,28 @@ collections as data rather than as choices:
 **Overlap is not independently tuned — it is 19.5% of chunk size in all three.** So the profiler
 does not derive four parameters. It derives *one*, and the rest follow:
 
-- `chunk_size` ← a high percentile of the slice's **whole-document** size distribution. **Measured
-  2026-08-28 against trees RE had already stored — see §7, which was run before this was written
-  and falsified the first version of this line.** The original hypothesis was p75 of *unit*
-  (section) size; that gives 340 / 164 / 356 tokens for concepts / types / general, which bears no
-  relation to EA's 768 / 1024 / 1536 and gets the ordering wrong. p75 of whole-document size gives
-  931 / 844 / 1742 — every one within ~20% of the hand-picked value.
+- `chunk_size` ← **pick the unit first, then take a high percentile of that unit's size.**
+  Revised twice, both times by measurement (§7). v1 said unit size; v2 said whole-document size;
+  neither generalises, and the reason is that *which* unit is coherent varies by slice:
 
-  The correction matters more than the number. For this corpus the coherent retrieval unit is the
-  **document**, not the section: concepts have a median of 1 section per document (they *are*
-  single-section documents) and types 4. Sections are fragments; documents are answers. A
-  profiler tuned to "never split a section" would have optimised for the wrong thing while
-  looking principled.
+  | slice | units/doc | p75 unit | p75 doc |
+  |---|---|---|---|
+  | egeria-docs `concepts` | 1 | 340 | 905 |
+  | egeria-python `pyegeria` (code) | 23 | 495 | 32,467 |
+  | egeria-python `commands` (code) | 3 | 480 | 2,568 |
+  | egeria-python `sample-data` (md) | 20 | 29 | 1,728 |
+
+  **Units per document is the discriminator, and it is already in the tree.** Where it is ~1 the
+  document *is* the unit (a concept page is one section), so size to the document. Where it is
+  many, the unit is sub-document — a function, a template — and document size is meaningless:
+  `pyegeria`'s 32,467-token p75 is not a chunk size, it is a module.
+
+  This also explains why RE and EA disagree by 2× on the same corpus without either being wrong.
+  **RE's constants track p75 unit size** (`markdown_docs`=384 vs measured 340; `python_code`=512 vs
+  495 and 480). **EA's track p75 document size** (768 vs 905). They chunk different things because
+  they answer different retrieval questions, and a profiler that picks one rule for both would
+  silently break whichever app it did not resemble.
+
 - `overlap` ← a fixed fraction of `chunk_size` (~20%), until something shows otherwise.
 - `min_score`, `top_k` ← inversely related to chunk size in EA's data: short precise units want a
   high threshold and few results, long discursive ones the reverse.
@@ -159,6 +169,13 @@ Two things this bought that no amount of design would have:
   one a computation can recover.
 - The signal a careful reader was using was **document size, not unit size** — the exact "missing
   signal" case this section was written to catch, caught on the first run.
+
+**Second run, `egeria_python_git` — a corpus with no hand-tuned baseline to reverse-engineer.**
+This is where whole-document size failed: it gives 32,467 tokens for `pyegeria`, which is a module,
+not a chunk. The units-per-document discriminator above came out of that failure and is the version
+now in §3. Notably `sample-data` (Dr.Egeria templates) has a p75 *unit* of **29 tokens** across 20
+units per document — neither RE's 384 nor EA's 768 fits it, and it is the clearest case in either
+corpus for a slice needing its own derived number rather than a shared constant.
 
 The original framing of the three possible outcomes, kept because the reasoning still applies to
 the next slice profiled:
