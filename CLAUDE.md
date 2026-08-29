@@ -35,6 +35,17 @@ git checkout -- path/one
 `git stash push -- <paths>` is the safe door into the same room as `git stash`. Reach for it
 rather than working around the rule.
 
+**But the pathspec form is safer, not safe — `git checkout -- <path>` still reverts whatever is in
+that path, including someone else's uncommitted work.** On 2026-08-29 an agent ran `uv sync`, saw it
+had modified `pyproject.toml` and `uv.lock`, and reverted them with exactly the pathspec form above.
+It was following this rule correctly and still destroyed another session's workspace wiring, because
+those files carried that session's edits too. Reverting to HEAD is destructive at *any* scope.
+
+So before any `checkout`/`restore` of a path, **read `git status` for that path first**. If a change
+you did not make is in it, do not revert — ask whoever is active. Files that several sessions edit
+for unrelated reasons (`pyproject.toml`, `uv.lock`, `CLAUDE.md`, the backlogs) are the ones this
+catches, because nothing about your own task suggests anyone else would be in them.
+
 Before committing, read `git status` and confirm every staged path is yours. An unexpected file is
 a signal that another session is mid-write, not something to sweep in. If naming paths is tedious,
 it is because the change is large, not because the rule is wrong.
@@ -60,6 +71,33 @@ Absent that, **rule 1 is the only control that actually operates.** Treat it acc
 
 **Before committing, read `git status` and confirm every staged path is yours.** An unexpected file
 is a signal that another session is mid-write, not something to sweep in.
+
+## uv: `uv sync` is destructive in this workspace
+
+Same failure mode as the git rules above, in a different tool — and harder to suspect, because the
+command's name suggests "make consistent" and its effect here is "remove".
+
+**Use `uv sync --all-packages --extra dev`. Never a bare `uv sync`.**
+
+Two ways the short form goes wrong, both observed on 2026-08-29:
+
+**From the workspace root, a bare `uv sync` uninstalls the entire venv.** The root is a *virtual*
+project — `pyproject.toml` declares `dependencies = []` and has no `[build-system]`, deliberately, so
+that it exists only to hold workspace membership. `uv sync` therefore resolves the root's
+dependencies, correctly concludes that nothing should be installed, and removes everything.
+
+**From a package directory, it re-resolves the shared venv down to that one package.** All sessions
+here share one `.venv`, so `uv sync` run inside `packages/resource-explorer/` uninstalled
+`trellis_context` — leaving another session's `tests/test_context_compile.py` unable to collect at
+all, in a file that session had not touched. Adding `--extra dev` to a package-scoped sync does not
+save you; the scope is the problem.
+
+`--all-extras` does **not** work as a substitute on macOS: it pulls `onnxruntime-gpu`, which ships no
+arm64 wheel, and the sync fails outright.
+
+If you only need one package's dependencies installed, scope it explicitly with `--package <name>`
+rather than by changing directory — but in a shared checkout, prefer `--all-packages` and leave the
+venv in a state the next session can use.
 
 ## DCO sign-off
 
