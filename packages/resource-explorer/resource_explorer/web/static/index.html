@@ -1319,7 +1319,15 @@ let selectedDatabase = null;
 let selectedFilesystem = null;
 let currentNavIntent  = 'scouting';  // 'scouting'|'discovery'|'assessment'|'analysis'|'enrichment'|'understanding'|'curate' — the new primary nav axis
 let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent
-let activePerspectives = new Set();  // 'dba'|'data_scientist'|'steward'|'security' — concurrent, not exclusive (unlike intent/facet); empty set = no filter ("all")
+let activePerspectives = new Set();  // Egeria's own 12 — 'Admin'|'App/AI Builder'|'Architecture'|'Community'|
+                                     // 'Consumer'|'Data Expert'|'Data Owner'|'Financial'|'Governance'|'Privacy'|
+                                     // 'Security'|'Steward'. Populated from /api/analyses/perspectives, so the
+                                     // API is the vocabulary, not this list. Concurrent, not exclusive (unlike
+                                     // intent/facet); empty set = no filter ("all").
+                                     // Was 'dba'|'data_scientist'|'steward'|'security' until 2026-08-26, when
+                                     // RE's own four were retired (CLAUDE.md, Perspective row). The comment
+                                     // outlived them by two days — anything reading it to build a request would
+                                     // have sent a vocabulary the backend no longer knows.
 let compareSet       = new Set();
 let lastQueryHash    = null;
 let lastAssistantEl  = null;
