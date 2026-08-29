@@ -530,24 +530,20 @@ class EgeriaPublisher:
     # ── annotations ───────────────────────────────────────────────────────────
 
     def _create_annotations(self, result: SurveyResult, report_guid: str) -> None:
-        for i, ann in enumerate(result.annotations):
-            qualified_name = (
-                f"Annotation::{result.project_slug}::{result.surveyed_at.isoformat()}::{i}"
-            )
-            props = self._build_annotation_props(ann, qualified_name)
-            body = {
-                "class": "NewElementRequestBody",
-                "parentGUID": report_guid,
-                "parentRelationshipTypeName": "ReportedAnnotation",
-                "properties": props,
-            }
-            try:
-                self._discovery.create_annotation(body=body)
-            except Exception as exc:
-                log.warning(
-                    "Failed to create annotation %d (%s): %s",
-                    i, ann.annotation_type.value, exc,
-                )
+        """Delegates to the shared implementation — see annotation_props.py.
+
+        Kept as a method (rather than inlining the call at the one call site)
+        because tests reach for it by name. The qualifiedName prefix built
+        here — and specifically `result.surveyed_at.isoformat()`, this run's
+        own timestamp, NOT recomputed at publish time — is this run's
+        identity; do not remove it as a "fix"."""
+        from resource_explorer.surveyors.annotation_props import publish_annotations
+
+        qualified_name_prefix = f"Annotation::{result.project_slug}::{result.surveyed_at.isoformat()}"
+        publish_annotations(
+            self._discovery, self._find_element_guid,
+            result.annotations, report_guid, qualified_name_prefix,
+        )
 
     # ── sub-resource cataloging (repo scope-narrowing funnel doc, D2/D3) ────
 
