@@ -299,7 +299,7 @@ Two things worth someone's attention:
   re-run discharges, and the practice is the transferable part: a prediction in the slot where
   a measurement belongs is the substitution this file exists to avoid, and the cost of holding
   the line was one 25-minute run. Full breakdown and the named skips in
-  `docs/arch-recovery-handoff-2026-08-24.md`.
+  `docs/archive/arch-recovery-handoff-2026-08-24.md`.
 - **The 6 repos with no role have no file inventory** — never ingested, so nothing to classify.
   Correct behaviour, and the card now says which kind of nothing it is rather than showing a
   blank.
