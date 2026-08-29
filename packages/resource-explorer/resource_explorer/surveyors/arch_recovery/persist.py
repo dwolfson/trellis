@@ -23,11 +23,32 @@ oversight — see the port's write-up for the trade.
 """
 from __future__ import annotations
 
+import logging
+
 from resource_explorer.step_outcome import PARTIAL, RECOVERED, StepOutcome
 
-from .ir import Component, Evidence
+from .ir import IR, Component, Evidence
+
+log = logging.getLogger(__name__)
 
 KIND = "architecture_recovery"
+
+#: The rendered proposal lives under its OWN kind, not under `KIND`.
+#:
+#: Not a filing preference — a measured consequence. `context_compile.py` calls
+#: `query_findings(slug, analysis_id)`, which defaults to whole-resource scope.
+#: Every `architecture_recovery` finding is written at COMPONENT scope, so that
+#: query returns nothing and the compiler correctly falls through to the
+#: analysis's own results reader. A whole-resource finding under `KIND` would
+#: make it return exactly one row — a Mermaid blob — and **suppress that
+#: fallback**, replacing the architecture section with a picture drawn for a
+#: curator rather than evidence a model can reason over. Capping its size
+#: downstream limits the damage but does not restore the reader.
+#:
+#: Same precedent, same reason: ports and wires live under
+#: `architecture_interfaces` with their own results reader, because they are
+#: not components either.
+DIAGRAM_KIND = "architecture_diagram"
 
 
 def scope_locator_for(component: Component) -> str:
@@ -252,9 +273,10 @@ def persist_ir(
     # them a type or a score would invent evidence to make a grouping look like
     # a finding, which is the failure `no metric, no number` (design §5) exists
     # to prevent. They are grouping structure and say so.
+    # Shared with mermaid.py's renderer, which must draw exactly the set this
+    # synthesises — see scope_hierarchy.missing_ancestors.
     present = {c.slug for c in components}
-    referenced = {c.parent_slug for c in components if c.parent_slug}
-    missing = sorted(referenced - present)
+    missing = scope_hierarchy.missing_ancestors(components)
     for anc_slug in missing:
         if anc_slug in derived_structural:
             # Derived from a scope locator, so the slug IS the scope — no
@@ -361,7 +383,77 @@ def persist_ir(
         _persist_interfaces(registry, slug, surveyed_at, ports or [], wires or [],
                             name_to_scope)
 
+    _persist_diagram(registry, slug, components, ports or [], wires or [],
+                     surveyed_at, run_scope)
+
     return slug_to_scope
+
+
+def _persist_diagram(registry, slug: str, components: list[Component],
+                     ports: list[dict], wires: list[dict],
+                     surveyed_at: str, run_scope: str) -> None:
+    """Render the proposal as Mermaid and store it, once per run.
+
+    **Why this is written at analysis time rather than at read time.** Under
+    *report, then curate* (`docs/architecture-recovery-report-then-curate.md`)
+    the diagram is what a curator reads to decide whether the recovered
+    architecture is a good enough fit to materialise. It therefore has to be a
+    record of what THIS run proposed, captured beside the evidence it was drawn
+    from — not something re-derived later from an IR that has since moved. When
+    Phase 2 publishes proposals to Egeria, this value is what goes into the
+    annotation; pyegeria's own `MERMAID` output cannot produce it, because a
+    proposal's components are not Egeria elements yet.
+
+    Not written when there are no components: a diagram of nothing tells a
+    curator nothing, and publishing one would imply a proposal exists where the
+    run in fact found none. The component-count metric above already records
+    that outcome, and it is the row designed to carry it.
+    """
+    if not components:
+        return
+    from . import mermaid
+
+    ir = IR(target=slug, checkout="", components=list(components),
+            ports=list(ports), wires=list(wires))
+    try:
+        diagram = mermaid.render(ir)
+        caption = mermaid.caption(ir)
+    except Exception as exc:
+        # A rendering failure must not lose the run's findings — everything
+        # above is already written by this point, and the diagram is a view of
+        # it, not the thing itself.
+        log.warning("architecture diagram not rendered for %s: %s", slug, exc)
+        return
+
+    registry.upsert_finding(
+        slug, DIAGRAM_KIND,
+        [{
+            "check_name": "architecture_diagram",
+            "label": "Diagram",
+            "summary": caption,
+            # Not a confidence claim. The diagram asserts nothing of its own —
+            # it renders claims that each carry their own confidence, which is
+            # drawn on the nodes. 100 here would read as certainty about the
+            # architecture; anything lower would read as doubt about the
+            # drawing. The value is meaningless either way, so the honest
+            # reading is in `summary` and on the nodes themselves.
+            "confidence": 0,
+            "detail": {
+                "format": "mermaid",
+                "mermaid": diagram,
+                "projection_depth": mermaid.projection.DEFAULT_PROJECTION_DEPTH,
+                "run_scope": run_scope,
+                "not_a_claim": True,
+                # Stored regardless, but labelled: a consumer must be able to
+                # find out that this will not draw without discovering it at
+                # the moment a curator opens it. Not truncated — a silently
+                # shortened architecture is a different architecture.
+                "char_count": len(diagram),
+                "exceeds_renderer_limit": mermaid.exceeds_renderer_limit(diagram),
+            },
+        }],
+        surveyed_at=surveyed_at, scope_locator="",
+    )
 
 
 def _persist_interfaces(registry, slug: str, surveyed_at: str,
