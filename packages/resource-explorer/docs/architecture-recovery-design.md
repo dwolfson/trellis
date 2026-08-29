@@ -2038,8 +2038,26 @@ what, when — but is not the drift mechanism.
 
 ### 8.4 Prerequisite
 
-Reliable writes. RE's publishers are fire-and-forget today (current-state doc §0), and this feature
-writes far more elements per run. **The outbox/retry work is a prerequisite, not a nice-to-have** — a
+Reliable writes. RE's publishers are fire-and-forget today — **re-derived from the code, not
+cited**: an earlier version of this sentence attributed the phrase to the current-state doc §0 and
+it does not appear there at all (checked 2026-08-26, zero occurrences). The characterisation holds;
+the citation did not, and a false citation is worse than none because it stops the next reader
+checking. This feature writes far more elements per run.
+
+**Annotations are not idempotent, and this blocks a naive outbox.** Found 2026-08-26 while
+designing the retry: an annotation's qualifiedName is
+`Annotation::{slug}::{surveyed_at.isoformat()}::{i}` (`egeria_publisher.py:535`), so the **run
+timestamp is part of its identity**. A retry carries a new timestamp, mints a new qualifiedName, and
+therefore *creates a second annotation rather than converging on the first*. An outbox over that
+turns one transient failure into unbounded duplicates — strictly worse than today's silent loss,
+because a duplicate is invisible where a missing write at least leaves a gap.
+
+The asset path (`_find_or_create_asset`) and `publish_sub_resources` already do lookup-then-create
+and are safe to retry. **So the prerequisite for outbox/retry is itself a prerequisite: annotation
+identity has to stop containing the run timestamp before any retry mechanism is built on top of
+it.** Design in `docs/outbox-publishing-design.md`.
+
+**The outbox/retry work is a prerequisite, not a nice-to-have** — a
 half-published blueprint is worse than none.
 
 ---
