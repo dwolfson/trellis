@@ -252,9 +252,70 @@ def _dockerfile_ports(root: str, rel: str, component: str) -> list[dict]:
     return out
 
 
+#: A compose environment value that names another service. Matches the forms
+#: that actually occur — `zookeeper:2181`, `http://minio:9000`, `tcp://etcd:2379`,
+#: and a bare `minio` — capturing scheme and port where present so a wire can
+#: carry a protocol rather than only a direction.
+_ENV_REF_RE = re.compile(
+    r"(?:(?P<scheme>[a-z][a-z0-9+.-]*)://)?"      # optional scheme
+    r"(?P<host>[A-Za-z0-9_][A-Za-z0-9_.-]*)"       # host token
+    r"(?::(?P<port>\d{2,5}))?"                     # optional :port
+)
+
+
+def _env_items(body: dict):
+    """Compose accepts `environment` as a list of `KEY=value` or as a mapping."""
+    env = body.get("environment")
+    if isinstance(env, dict):
+        for k, v in env.items():
+            yield str(k), "" if v is None else str(v)
+    elif isinstance(env, list):
+        for entry in env:
+            if not isinstance(entry, str):
+                continue
+            k, _, v = entry.partition("=")
+            yield k.strip(), v.strip()
+
+
+def _env_wire_targets(body: dict, self_key: str, services: dict) -> list[tuple[str, str, str, str]]:
+    """`(target_key, scheme, port, evidence)` for every env value naming another service.
+
+    **Why this exists.** Until 2026-08-29 the only wire source in this module was
+    compose `depends_on`, which the code below is careful to note *"states startup
+    ordering … but says nothing about whether traffic returns"*. An environment
+    value naming another service is the stronger declaration: `KAFKA_CFG_
+    ZOOKEEPER_CONNECT=zookeeper:2181` says this service connects to that one, on
+    that port, and often names the protocol. Measured on the corpus, reading only
+    `depends_on` yielded 454 distinct wires across 3,215 components — too few for
+    any interaction measure to mean anything (a cluster with one internal wire
+    and no boundary wires scored a perfect 1.0 cohesion).
+
+    Matching is on **whole host tokens against declared service names**, so
+    `myzookeeper` does not match `zookeeper`. A service naming itself is skipped:
+    a self-reference is configuration, not an edge.
+    """
+    out: list[tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+    for key, value in _env_items(body):
+        if not value:
+            continue
+        for token in re.split(r"[\s,;]+", value):
+            m = _ENV_REF_RE.fullmatch(token.strip().rstrip("/"))
+            if not m:
+                continue
+            host = m.group("host")
+            if host not in services or host == self_key or host in seen:
+                continue
+            seen.add(host)
+            out.append((host, (m.group("scheme") or "").lower(),
+                        m.group("port") or "", f"{key}={value}"))
+    return out
+
+
 def _compose_interfaces(root: str, rel: str, service_names: dict[str, str],
                         ) -> tuple[list[dict], list[dict]]:
-    """Ports from `ports:`/`expose:`, wires from `depends_on`.
+    """Ports from `ports:`/`expose:`; wires from `depends_on` AND from
+    environment values that name another service.
 
     `ports:` publishes to the host, `expose:` makes a port reachable only
     within the compose network — both are inbound, and the distinction is
@@ -311,7 +372,34 @@ def _compose_interfaces(root: str, rel: str, service_names: dict[str, str],
                 True, rel, _line_of(text, dep),
                 f"{name} depends on {service_names.get(dep, dep)}",
             ))
-    return ports, wires
+
+        # Environment values naming another service — a stronger declaration
+        # than depends_on, and the one that was being ignored.
+        for target_key, scheme, port, evidence in _env_wire_targets(body, key, services):
+            target = service_names.get(target_key, target_key)
+            detail = f"compose `{evidence}`"
+            wires.append(_wire_dict(
+                name, target, scheme, "compose environment reference",
+                # Still the weaker claim: the value says this service is
+                # configured to reach that one, not that data comes back.
+                True, rel, _line_of(text, evidence.split("=", 1)[-1] or evidence),
+                f"{name} is configured to reach {target}"
+                + (f" on port {port}" if port else "") + f" ({detail})",
+            ))
+
+    # One architectural edge per (source, target), following the same merge
+    # `imports.build_graph` performs on import edges. Where both a depends_on
+    # and an environment reference exist for a pair, the environment reference
+    # wins: it is the stronger evidence, and counting the pair twice would
+    # inflate every interaction measure computed over these wires.
+    merged: dict[tuple[str, str], dict] = {}
+    for w in wires:
+        pair = (w["source"], w["target"])
+        prior = merged.get(pair)
+        if prior is None or (prior["integrationStyle"] == "compose depends_on"
+                             and w["integrationStyle"] != "compose depends_on"):
+            merged[pair] = w
+    return ports, list(merged.values())
 
 
 def propose(root: str, first_party: list[str], components: list[Component],
