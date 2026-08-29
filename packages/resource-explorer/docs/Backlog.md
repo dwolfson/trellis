@@ -1641,6 +1641,27 @@ The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-downloa
 
 ---
 
+#### RE has no login at all, and its identity is inconsistent across 26 sites
+
+Dan, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
+(ultimately) to support multi-user."*
+
+`/api/egeria/whoami` returns `get_config().egeria.user_id` and the comment above it says it is
+*"deliberately NOT a login mechanism"* — so the header's "Connected as: erinoverview" is cosmetic.
+Identity is read from `os.getenv("EGERIA_USER", …)` at **26 sites**, each building its own pyegeria
+client, with four different fallbacks (4x `_DEFAULT_USER`, 3x `"steward"`, 3x `"erinoverview"`,
+1x `""`), so **which identity an RE operation acts as depends on which module built the client**.
+
+Full reasoning and the recommendation to extract `trellis-auth` rather than build a second login:
+`docs/trellis-auth-extraction.md` at the Trellis root. Four parts, and the package is the smallest:
+the extraction; a login UI in RE's SPA (it has never had one); collapsing the 26 sites onto the
+authenticated identity; and **the design question that should be settled first** — what RE does when
+nobody is logged in, since surveys and schedulers run unattended and a scheduled survey has no user.
+That needs a declared service identity, which is a legitimate configured account and NOT the same as
+the silent fallback EA's SS-4 decision removes.
+
+---
+
 #### HIGH — extract a shared query cache into a Trellis package; it fixes a live bug in Egeria Advisor
 
 Full detail: `docs/re-ea-consolidation-audit.md` item 1.

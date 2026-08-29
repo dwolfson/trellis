@@ -199,6 +199,80 @@ always hits the in-memory registration from step 3.
 
 ---
 
+## Serving curator review of survey proposals
+
+**Added 2026-08-29.** Resource Explorer's architecture recovery is moving to a *report, then curate*
+model (`resource-explorer/docs/architecture-recovery-report-then-curate.md`): RE publishes what the
+analysis **proposes** — components, nesting, ports, wires, candidate blueprints — as annotations on a
+`SurveyReport`, and raises an RFA asking a curator to review it and decide whether to create real
+Egeria artifacts. Nothing structural is created until a human says so.
+
+That makes a curator's review surface **a report over a SurveyReport's annotations** — which is what
+this builder is for. The crude first tier of curation tooling can therefore be a Report Spec rather
+than bespoke UI in RE.
+
+### What already supports this
+
+The pyegeria side is largely in place. `DataDiscovery` (`pyegeria/omvs/data_discovery.py`) exposes
+the fetch functions a spec needs, and they are already report-spec-aware:
+
+| Function | Note |
+|---|---|
+| `get_annotations_for_element(element_guid, …)` | **`report_spec` defaults to `"Annotations"`** — annotations are already a format-set target |
+| `find_annotations(search_string, …)` | `report_spec` defaults to `"Referenceable"` |
+| `get_annotations_by_analysis_step`, `get_annotations_by_annotation_type` | natural filters for "show me only the architecture-recovery annotations" |
+| `find_analysis_reports`, `get_analysis_reports_by_name`, `get_analysis_report_by_guid` | reach the SurveyReport the RFA points at |
+
+Their parameters map **one-to-one onto this builder's three categories** (see *Three parameter
+categories*), which is the strongest sign the fit is real rather than forced:
+
+- `search_string` / element GUID → **content_filters**
+- `graph_query_depth`, `output_format` → **shape_defaults**
+- `start_from`, `page_size` → **performance_hints**
+
+`MERMAID` and `REPORT-GRAPH` are already supported output formats
+(`pyegeria/view/format_set_executor.py:535,834`), alongside a `mermaid_utilities` module.
+
+### The finding that shapes the design: pyegeria cannot draw a proposal
+
+It is tempting to assume `output_format="MERMAID"` renders the proposed architecture. **It cannot.**
+That path graphs *Egeria elements*, and a proposal's components **do not exist as elements** — that
+is the entire point of report-then-curate. There is nothing for pyegeria to traverse.
+
+So the division of labour is:
+
+- **RE generates the Mermaid at publish time** and carries it *in the annotation*. It is a record of
+  what the analysis said, captured as of that run alongside the evidence it was drawn from.
+- **The report spec surfaces it.** The spec's job is to present a value the annotation already holds,
+  not to derive a picture from a graph.
+- **After materialisation**, pyegeria's own `MERMAID` output becomes usable, because the components
+  are then real elements. That is what makes "what I approved" versus "what exists" a diff of two
+  diagrams.
+
+### What this builder needs, and does not have
+
+1. **Survey Report and Annotation as target types.** The catalog carries 150 specs; a scan for
+   survey- or annotation-shaped target types returns **none**. The three that look close —
+   `Solution Blueprint`, `Solution Component`, `Solution Role` (2 each) — are auto-generated
+   Dr.Egeria *create-template* attribute sets, not query reports, so they describe the materialised
+   side and only after a curator has built it.
+   **This is the same root cause as IB-9**: the type registry is built from the 75 `target_type`
+   values that have a Dr.Egeria create template, and annotations are not authored that way, so they
+   are structurally invisible to it. IB-9's live-type-listing refresh is the fix for both.
+2. **A pass-through column format for embedded Mermaid.** Columns support `False | True |
+   "bulleted-list"`; the Mermaid source is a text blob that must reach the output unmangled.
+3. **`MERMAID` / `REPORT-GRAPH` exposed as output formats in the builder UI**, since they are
+   meaningful for this spec in a way they are not for a tabular catalog report.
+4. **Parameterisation by report GUID.** The RFA is per SurveyReport and carries a link to it, so the
+   spec is run *against one report* — a content filter supplied at run time, which the run modal
+   already pre-fills for content filters.
+
+None of this is a change to the spec model itself. It is target-type coverage, one column format,
+two output formats, and a parameter — which is the argument for using this builder rather than
+building a second review surface inside RE.
+
+---
+
 ## Known gaps (not yet implemented)
 
 - **Discovery / meta-level navigation** — "databases" is ambiguous across conceptual, logical,
