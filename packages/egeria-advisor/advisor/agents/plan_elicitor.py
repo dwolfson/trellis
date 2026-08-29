@@ -959,12 +959,16 @@ class PlanElicitor:
 
         Appends to the *parent's* `Sub-Projects` field (Reference Name List,
         top-down) rather than setting `Parent ID` on each child (bottom-up).
-        `Parent ID`/`Parent Relationship Type Name` only exist in the advanced
-        Create Project template, and _load_template()/_compose_command_block()
-        always validate against the basic-tier template regardless of
-        spec["mode"] — an advanced-only field is silently dropped from the
-        rendered document (see BACKLOG.md PC-1). `Sub-Projects` is basic-tier
-        and actually survives composition.
+
+        This was originally a workaround: `Parent ID`/`Parent Relationship Type
+        Name` exist only in the advanced Create Project template, and
+        _load_template()/_compose_command_block() used to validate against the
+        basic tier regardless of spec["mode"], so an advanced-only field was
+        silently dropped from the rendered document (BACKLOG.md PC-1).
+        **That root cause is fixed** — composition now loads the draft's own
+        tier — so the bottom-up form would render in advanced mode. The
+        top-down `Sub-Projects` form is kept anyway: it is basic-tier, so it
+        works at *both* tiers, which the bottom-up form does not.
         """
         hier = self._parse_hierarchy_request(user_response)
         if not hier:
@@ -1738,6 +1742,15 @@ class PlanElicitor:
 
         for cmd in commands:
             action = cmd["action"]
+            # DELIBERATELY still basic-tier, even in advanced mode — this is the
+            # half of PC-1 that is a product decision, not a bug fix, and it is
+            # Dan's call (BACKLOG.md PC-1, "elicitation half"). Loading the
+            # advanced template here would make advanced mode ask about every
+            # advanced-only field: measured 2026-08-28 across all 325 commands,
+            # a mean of 27.4 optional questions per command instead of today's
+            # 8.4 — roughly 137 questions on a five-command plan, versus ~42.
+            # The composition half is fixed regardless, so advanced fields set
+            # any other way (pre_filled, NL relationship editing) now survive.
             template = agent._load_template(action)
             if not template:
                 continue
@@ -1889,11 +1902,18 @@ class PlanElicitor:
             return doc_content
 
     def _merge_answers_into_commands(self, spec: Dict) -> List[Dict]:
-        """Build a commands list with params merged from spec answers (for compose_document)."""
+        """Build a commands list with params merged from spec answers (for compose_document).
+
+        Loads templates at the draft's own tier. Before that (BACKLOG.md PC-1)
+        this always loaded basic, so any advanced-only field a user had set —
+        `Parent ID`, `Parent Relationship Type Name`, anything reached through
+        NL relationship editing — was dropped here without an error.
+        """
         from advisor.agents.governance_plan_agent import GovernancePlanAgent, _command_order_key
         from advisor.action_catalog import get_action_catalog
         agent   = GovernancePlanAgent()
         catalog = get_action_catalog()
+        mode    = spec.get("mode") or "basic"
         result  = []
         for cmd in spec["commands_identified"]:
             action      = cmd["action"]
@@ -1904,7 +1924,7 @@ class PlanElicitor:
                 params[k] = v
             if cmd.get("display_name") and "Display Name" not in params:
                 params["Display Name"] = cmd["display_name"]
-            template  = agent._load_template(action)
+            template  = agent._load_template(action, mode)
             narrative = (
                 cmd.get("narrative")
                 or cmd.get("rationale")
