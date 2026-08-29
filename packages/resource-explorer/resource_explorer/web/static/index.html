@@ -10750,7 +10750,11 @@ async function runQuery(query, projectSlug, databaseSlug) {
 
   let accumulated = '';
   try {
-    const payload = { query, project_slug: projectSlug, session_id: sessionId };
+    // Spread, not the Set itself: JSON.stringify(new Set(['Security'])) is "{}",
+    // silently — indistinguishable from no chips selected, which is a real state
+    // the compile accepts. A plausible answer rather than an error.
+    const payload = { query, project_slug: projectSlug, session_id: sessionId,
+                      perspectives: [...activePerspectives] };
     if (databaseSlug) payload.database_slug = databaseSlug;
     const res = await fetch('/api/query/stream', {
       method: 'POST',
