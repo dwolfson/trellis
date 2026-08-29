@@ -61,6 +61,32 @@ class CompiledContext:
     derivation: list[dict]
 
 
+#: No single finding may take more than this share of a section's FULL rung.
+#: Findings are written for whatever consumer the surveyor had in mind, and some
+#: of those are not prose: a rendered diagram, a serialised graph, a file listing.
+#: One of them can consume a whole section's budget and crowd out every other
+#: check in the same analysis, which is a worse context than omitting it.
+#: Truncation is marked, never silent — an elided finding that looked complete
+#: would be the failure this module keeps finding in other forms.
+MAX_FINDING_CHARS = 1200
+
+#: Below this, a section's findings are too slight to be trusted as the whole
+#: story, and the analysis's own results reader is consulted as well. Set at the
+#: same order as the near-empty tree threshold and for the same reason: it marks
+#: "this says almost nothing", not "this is short".
+THIN_FINDINGS_CHARS = 200
+
+
+def _clip(text: str, analysis_id: str, check: str) -> str:
+    if len(text) <= MAX_FINDING_CHARS:
+        return text
+    return (
+        text[:MAX_FINDING_CHARS].rstrip()
+        + f"\n  […truncated {len(text) - MAX_FINDING_CHARS} chars — read "
+          f"{analysis_id}/{check} directly for the whole thing]"
+    )
+
+
 def _findings_to_rungs(findings: list[dict], analysis_id: str) -> dict[Rung, str]:
     """Three rungs from stored findings, all free — no summariser involved.
 
@@ -76,7 +102,7 @@ def _findings_to_rungs(findings: list[dict], analysis_id: str) -> dict[Rung, str
     for f in findings:
         check = f.get("check_name") or "?"
         label = f.get("label") or ""
-        text = (f.get("summary") or "").strip()
+        text = _clip((f.get("summary") or "").strip(), analysis_id, check)
         names.append(check)
         summary.append(f"- {check}: {label}" if label else f"- {check}")
         full.append(f"- {check}: {label}\n  {text}" if text else f"- {check}: {label}")
@@ -261,12 +287,24 @@ def compile_context(
         provenance = _provenance(findings, analysis_id)
 
         # The findings table holds results for a MINORITY of analyses. Where it
-        # is empty, ask the analysis's own results reader — the same one the UI
-        # renders from — before concluding there is nothing stored. Without
-        # this, a gap means "not in project_analysis_findings" while claiming
-        # to mean "never run", which is the confident-wrong-answer shape this
-        # whole spec exists to avoid.
-        if not rungs:
+        # is empty OR THIN, ask the analysis's own results reader — the same one
+        # the UI renders from — before concluding there is nothing stored.
+        # Without this, a gap means "not in project_analysis_findings" while
+        # claiming to mean "never run", which is the confident-wrong-answer
+        # shape this whole spec exists to avoid.
+        #
+        # "or thin" is the correction. An earlier version fell back only when
+        # `rungs` was empty, so ANY whole-resource finding — however slight —
+        # suppressed the reader entirely. dwolfson-59 hit it exactly: a single
+        # diagram finding written at whole-resource scope replaced an analysis's
+        # real results with a picture, and the section got worse than before the
+        # finding existed. They fixed the trigger at source; this fixes the
+        # fragility, which would otherwise wait for the next analysis to write
+        # one thin whole-resource row.
+        #
+        # The rule is now about evidence, not precedence: consult both when the
+        # findings are slight, and keep whichever says more.
+        if len(rungs.get(Rung.FULL, "")) < THIN_FINDINGS_CHARS:
             from resource_explorer.surveyors.repo_survey_definition_adapter import (
                 REPO_ANALYSIS_RESULTS_MAP,
             )
@@ -282,8 +320,13 @@ def compile_context(
                                 analysis_id, slug, exc)
                     results = None
                 if results is not None:
-                    rungs = _results_to_rungs(results, analysis_id)
-                    if rungs:
+                    from_reader = _results_to_rungs(results, analysis_id)
+                    # Keep whichever says more. Overwriting unconditionally was
+                    # safe only while this ran solely on empty findings; now
+                    # that a THIN finding also reaches here, a reader with less
+                    # to say must not displace the little that was real.
+                    if len(from_reader.get(Rung.FULL, "")) > len(rungs.get(Rung.FULL, "")):
+                        rungs = from_reader
                         provenance = ({"analysis_id": analysis_id,
                                        "check": None, "surveyed_at": None},)
 

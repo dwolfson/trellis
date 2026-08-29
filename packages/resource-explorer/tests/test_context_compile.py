@@ -339,3 +339,92 @@ class TestGapsAreJudgedNotListed:
         # "partial" in the very code this test guards.
         for state in _GAP_PHRASING:
             assert hasattr(facts, state.upper()), f"{state} is not a Fact state"
+
+
+class TestNoSingleFindingDominates:
+    """Findings are written for whatever consumer the surveyor had in mind, and
+    some are not prose — a rendered diagram, a serialised graph, a file listing.
+    One of them can crowd out every other check in the same analysis.
+    """
+
+    def test_a_huge_finding_is_clipped(self):
+        from resource_explorer.context_compile import MAX_FINDING_CHARS, _findings_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        findings = [
+            {"check_name": "architecture_diagram", "label": "ok", "summary": "M" * 40000},
+            {"check_name": "components", "label": "12 found", "summary": "short and useful"},
+        ]
+        full = _findings_to_rungs(findings, "architecture_recovery")[Rung.FULL]
+        assert len(full) < MAX_FINDING_CHARS * 2
+        assert "short and useful" in full, "the small finding must survive the big one"
+
+    def test_truncation_is_marked_not_silent(self):
+        """An elided finding that looked complete is the failure this module
+        keeps finding in other forms."""
+        from resource_explorer.context_compile import _findings_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        full = _findings_to_rungs(
+            [{"check_name": "diagram", "label": "", "summary": "x" * 5000}], "arch",
+        )[Rung.FULL]
+        assert "truncated" in full and "arch/diagram" in full
+
+    def test_ordinary_findings_are_untouched(self):
+        from resource_explorer.context_compile import _findings_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        body = "a normal finding summary"
+        full = _findings_to_rungs(
+            [{"check_name": "c", "label": "l", "summary": body}], "a")[Rung.FULL]
+        assert body in full and "truncated" not in full
+
+
+class TestThinFindingsDoNotSuppressTheReader:
+    """An earlier version fell back to the results reader only when findings
+    were EMPTY, so any whole-resource finding — however slight — replaced an
+    analysis's real results. The rule is about evidence, not precedence.
+    """
+
+    def _compile(self, findings, reader_results):
+        from unittest.mock import MagicMock, patch
+
+        from resource_explorer.context_compile import compile_context
+
+        registry = MagicMock()
+        registry.query_findings.side_effect = (
+            lambda slug, kind, *a, **k: findings.get(kind, []))
+        reader = MagicMock(return_value=reader_results)
+        with patch("resource_explorer.surveyors.repo_survey_definition_adapter"
+                   ".REPO_ANALYSIS_RESULTS_MAP", {"repo_conventions": (reader, None)}), \
+             patch("resource_explorer.facts.FactLayer"):
+            return compile_context(registry, "x", "q", budget=8000), reader
+
+    def test_a_slight_finding_does_not_hide_richer_results(self):
+        """The exact regression: one whole-resource diagram finding replaced an
+        analysis's results with a picture, making the section worse than before
+        the finding existed."""
+        thin = {"repo_conventions": [
+            {"check_name": "diagram", "label": "", "summary": ""}]}
+        rich = {"detail": "a" * 3000}
+        compiled, reader = self._compile(thin, rich)
+        assert reader.called, "a thin finding must not suppress the reader"
+
+    def test_substantial_findings_do_not_call_the_reader(self):
+        """The reader is a fallback, not a second opinion on good evidence."""
+        fat = {"repo_conventions": [
+            {"check_name": f"c{i}", "label": "ok", "summary": "y" * 200}
+            for i in range(5)]}
+        _, reader = self._compile(fat, {"detail": "z" * 50})
+        assert not reader.called
+
+    def test_the_reader_does_not_displace_more_than_it_offers(self):
+        """Falling back is not the same as preferring. If the reader says less
+        than the thin findings did, the findings stay."""
+        from resource_explorer.context_compile import _findings_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        thin = [{"check_name": "c", "label": "l", "summary": "x" * 150}]
+        compiled, _ = self._compile({"repo_conventions": thin}, {"detail": ""})
+        packed = " ".join(s for s in [compiled.text])
+        assert "repo_conventions" in packed
