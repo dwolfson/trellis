@@ -176,7 +176,7 @@ class TestFeedbackCarriesDerivation:
         }
         mc.record_query(
             query="is this ready to adopt?", intent="assessment",
-            project_slug="amundsen", response="...", derivation=deriv,
+            resource_slug="amundsen", response="...", derivation=deriv,
         )
         with mc._conn() as conn:
             row = conn.execute(
@@ -190,7 +190,7 @@ class TestFeedbackCarriesDerivation:
         from resource_explorer.observability.metrics_collector import MetricsCollector
 
         mc = MetricsCollector(database_url=f"sqlite:///{tmp_path / 'm.db'}")
-        mc.record_query(query="anything", intent="analysis", project_slug=None, response="x")
+        mc.record_query(query="anything", intent="analysis", resource_slug=None, response="x")
         with mc._conn() as conn:
             row = conn.execute(
                 "SELECT derivation FROM query_log ORDER BY id DESC LIMIT 1"

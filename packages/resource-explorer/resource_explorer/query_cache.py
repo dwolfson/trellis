@@ -39,33 +39,33 @@ class QueryCache:
 
     # ── key helpers ───────────────────────────────────────────────────────────
 
-    def _key(self, query: str, project_slug: str | None, intent: str) -> str:
-        payload = json.dumps({"q": query.strip().lower(), "p": project_slug, "i": intent})
+    def _key(self, query: str, resource_slug: str | None, intent: str) -> str:
+        payload = json.dumps({"q": query.strip().lower(), "p": resource_slug, "i": intent})
         return hashlib.sha256(payload.encode()).hexdigest()
 
     # ── public interface ──────────────────────────────────────────────────────
 
-    def get(self, query: str, project_slug: str | None, intent: str) -> str | None:
+    def get(self, query: str, resource_slug: str | None, intent: str) -> str | None:
         if self._redis is not None:
-            return self._redis_get(query, project_slug, intent)
-        return self._mem_get(query, project_slug, intent)
+            return self._redis_get(query, resource_slug, intent)
+        return self._mem_get(query, resource_slug, intent)
 
-    def set(self, query: str, project_slug: str | None, intent: str, response: str) -> None:
+    def set(self, query: str, resource_slug: str | None, intent: str, response: str) -> None:
         if self._redis is not None:
-            self._redis_set(query, project_slug, intent, response)
+            self._redis_set(query, resource_slug, intent, response)
         else:
-            self._mem_set(query, project_slug, intent, response)
+            self._mem_set(query, resource_slug, intent, response)
 
-    def invalidate_project(self, project_slug: str) -> int:
+    def invalidate_project(self, resource_slug: str) -> int:
         """Drop all cached entries for a project (call after re-indexing)."""
         if self._redis is not None:
-            return self._redis_invalidate(project_slug)
-        return self._mem_invalidate(project_slug)
+            return self._redis_invalidate(resource_slug)
+        return self._mem_invalidate(resource_slug)
 
     # ── in-memory backend ─────────────────────────────────────────────────────
 
-    def _mem_get(self, query: str, project_slug: str | None, intent: str) -> str | None:
-        key = self._key(query, project_slug, intent)
+    def _mem_get(self, query: str, resource_slug: str | None, intent: str) -> str | None:
+        key = self._key(query, resource_slug, intent)
         entry = self._store.get(key)
         if entry is None:
             return None
@@ -76,15 +76,15 @@ class QueryCache:
         self._store.move_to_end(key)
         return value
 
-    def _mem_set(self, query: str, project_slug: str | None, intent: str, response: str) -> None:
-        key = self._key(query, project_slug, intent)
-        self._store[key] = (response, time.time() + self._ttl, project_slug)
+    def _mem_set(self, query: str, resource_slug: str | None, intent: str, response: str) -> None:
+        key = self._key(query, resource_slug, intent)
+        self._store[key] = (response, time.time() + self._ttl, resource_slug)
         self._store.move_to_end(key)
         while len(self._store) > self._max_size:
             self._store.popitem(last=False)
 
-    def _mem_invalidate(self, project_slug: str) -> int:
-        to_delete = [k for k, (_v, _t, slug) in self._store.items() if slug == project_slug]
+    def _mem_invalidate(self, resource_slug: str) -> int:
+        to_delete = [k for k, (_v, _t, slug) in self._store.items() if slug == resource_slug]
         for k in to_delete:
             del self._store[k]
         return len(to_delete)
@@ -98,24 +98,24 @@ class QueryCache:
         import redis
         return redis.from_url(url, decode_responses=True)
 
-    def _redis_get(self, query: str, project_slug: str | None, intent: str) -> str | None:
-        key = self._CACHE_PREFIX + self._key(query, project_slug, intent)
+    def _redis_get(self, query: str, resource_slug: str | None, intent: str) -> str | None:
+        key = self._CACHE_PREFIX + self._key(query, resource_slug, intent)
         raw = self._redis.get(key)
         if raw is None:
             return None
         return json.loads(raw)["response"]
 
-    def _redis_set(self, query: str, project_slug: str | None, intent: str, response: str) -> None:
-        key = self._CACHE_PREFIX + self._key(query, project_slug, intent)
-        payload = json.dumps({"response": response, "project_slug": project_slug})
+    def _redis_set(self, query: str, resource_slug: str | None, intent: str, response: str) -> None:
+        key = self._CACHE_PREFIX + self._key(query, resource_slug, intent)
+        payload = json.dumps({"response": response, "project_slug": resource_slug})
         self._redis.setex(key, self._ttl, payload)
-        if project_slug is not None:
-            project_set = f"{self._PROJECT_PREFIX}{project_slug}:keys"
+        if resource_slug is not None:
+            project_set = f"{self._PROJECT_PREFIX}{resource_slug}:keys"
             self._redis.sadd(project_set, key)
             self._redis.expire(project_set, self._ttl * 2)
 
-    def _redis_invalidate(self, project_slug: str) -> int:
-        project_set = f"{self._PROJECT_PREFIX}{project_slug}:keys"
+    def _redis_invalidate(self, resource_slug: str) -> int:
+        project_set = f"{self._PROJECT_PREFIX}{resource_slug}:keys"
         keys = self._redis.smembers(project_set)
         if not keys:
             return 0

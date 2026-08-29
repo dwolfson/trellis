@@ -261,7 +261,7 @@ class TestQueryRouter:
                 "project_slug": "myproj",
             })
         assert resp.status_code == 200
-        rag_mock.query.assert_called_once_with("what is this project?", project_slug="myproj")
+        rag_mock.query.assert_called_once_with("what is this project?", resource_slug="myproj")
 
 
 # ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────

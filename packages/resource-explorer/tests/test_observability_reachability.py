@@ -89,7 +89,7 @@ class TestBackendsAreGated:
             "set_tracking_uri": staticmethod(_boom),
             "set_experiment": staticmethod(_boom),
         })())
-        mlflow_tracking.log_query(query="q", intent="i", project_slug=None,
+        mlflow_tracking.log_query(query="q", intent="i", resource_slug=None,
                                   response="r", latency_ms=1, collections_used=[])
 
     def test_phoenix_skips_when_unreachable(self, monkeypatch):

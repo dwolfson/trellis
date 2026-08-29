@@ -24,7 +24,7 @@ from resource_explorer.registry import ProjectRegistry
 
 # ── shared data helpers ───────────────────────────────────────────────────────
 
-def _load_history(project_slug: str, limit: int = 12) -> list[dict]:
+def _load_history(resource_slug: str, limit: int = 12) -> list[dict]:
     """Return up to `limit` project_stats rows ordered oldest → newest."""
     registry = ProjectRegistry()
     try:
@@ -34,20 +34,20 @@ def _load_history(project_slug: str, limit: int = 12) -> list[dict]:
                    WHERE project_slug = ?
                    ORDER BY fetched_at ASC
                    LIMIT ?""",
-                (project_slug, limit),
+                (resource_slug, limit),
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         return []
 
 
-def _latest_row(project_slug: str) -> dict:
+def _latest_row(resource_slug: str) -> dict:
     registry = ProjectRegistry()
     try:
         with registry._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-                (project_slug,),
+                (resource_slug,),
             ).fetchone()
         return dict(row) if row else {}
     except Exception:
@@ -56,40 +56,40 @@ def _latest_row(project_slug: str) -> dict:
 
 # ── terminal charts (Plotext) ─────────────────────────────────────────────────
 
-def commits_over_time_terminal(project_slug: str) -> None:
+def commits_over_time_terminal(resource_slug: str) -> None:
     """Print a commit-frequency bar chart to the terminal using Plotext."""
     import plotext as plt
 
-    rows = _load_history(project_slug)
+    rows = _load_history(resource_slug)
     if not rows:
-        print(f"No stats data for '{project_slug}'. Run 'project-explorer refresh' first.")
+        print(f"No stats data for '{resource_slug}'. Run 'project-explorer refresh' first.")
         return
 
     dates = [r["fetched_at"][:10] for r in rows]
     counts = [r.get("commits_30d") or 0 for r in rows]
 
     plt.clf()
-    plt.title(f"Commits (30-day window) — {project_slug}")
+    plt.title(f"Commits (30-day window) — {resource_slug}")
     plt.xlabel("Snapshot date")
     plt.ylabel("Commits")
     plt.bar(dates, counts)
     plt.show()
 
 
-def stars_over_time_terminal(project_slug: str) -> None:
+def stars_over_time_terminal(resource_slug: str) -> None:
     """Print a star-growth line chart to the terminal using Plotext."""
     import plotext as plt
 
-    rows = _load_history(project_slug)
+    rows = _load_history(resource_slug)
     if not rows:
-        print(f"No stats data for '{project_slug}'. Run 'project-explorer refresh' first.")
+        print(f"No stats data for '{resource_slug}'. Run 'project-explorer refresh' first.")
         return
 
     dates = [r["fetched_at"][:10] for r in rows]
     stars = [r.get("stars") or 0 for r in rows]
 
     plt.clf()
-    plt.title(f"Star growth — {project_slug}")
+    plt.title(f"Star growth — {resource_slug}")
     plt.xlabel("Snapshot date")
     plt.ylabel("Stars")
     plt.plot(dates, stars, marker="hd")
@@ -98,7 +98,7 @@ def stars_over_time_terminal(project_slug: str) -> None:
 
 # ── web charts (Plotly) ───────────────────────────────────────────────────────
 
-def stars_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+def stars_over_time_plotly(resource_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly figure for star growth over time."""
     import plotly.graph_objects as go
 
@@ -106,13 +106,13 @@ def stars_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
     # measured zero — sqlglot's first row is stars=None, which plotted as a
     # drop to 0 followed by a jump to 9,491, i.e. a growth story that never
     # happened. A missing reading is dropped from the series instead.
-    rows = [r for r in _load_history(project_slug) if r.get("stars") is not None]
+    rows = [r for r in _load_history(resource_slug) if r.get("stars") is not None]
     dates = [r["fetched_at"][:10] for r in rows]
     stars = [r["stars"] for r in rows]
 
     fig = go.Figure(go.Scatter(x=dates, y=stars, mode="lines+markers", name="Stars"))
     fig.update_layout(
-        title=f"Stars over time — {project_slug}",
+        title=f"Stars over time — {resource_slug}",
         xaxis_title="Date",
         yaxis_title="Stars",
         yaxis_rangemode="tozero",
@@ -120,17 +120,17 @@ def stars_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
     return fig
 
 
-def commits_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+def commits_over_time_plotly(resource_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly figure for commit frequency over time (snapshot history)."""
     import plotly.graph_objects as go
 
-    rows = _load_history(project_slug)
+    rows = _load_history(resource_slug)
     dates = [r["fetched_at"][:10] for r in rows]
     counts = [r.get("commits_30d") or 0 for r in rows]
 
     fig = go.Figure(go.Bar(x=dates, y=counts, name="Commits (30d)"))
     fig.update_layout(
-        title=f"Commit activity — {project_slug}",
+        title=f"Commit activity — {resource_slug}",
         xaxis_title="Snapshot date",
         yaxis_title="Commits (30-day window)",
         yaxis_rangemode="tozero",
@@ -138,7 +138,7 @@ def commits_over_time_plotly(project_slug: str) -> "plotly.graph_objects.Figure"
     return fig
 
 
-def weekly_commits_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+def weekly_commits_plotly(resource_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly bar chart of weekly commit counts from project_commits table."""
     import plotly.graph_objects as go
     from collections import defaultdict
@@ -150,7 +150,7 @@ def weekly_commits_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
             rows = conn.execute(
                 "SELECT committed_at FROM project_commits "
                 "WHERE project_slug = ? ORDER BY committed_at DESC",
-                (project_slug,),
+                (resource_slug,),
             ).fetchall()
     except Exception:
         rows = []
@@ -179,7 +179,7 @@ def weekly_commits_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
 
     fig = go.Figure(go.Bar(x=dates, y=counts, name="Commits", marker_color="#06b6d4"))
     fig.update_layout(
-        title=f"Weekly commit activity — {project_slug}",
+        title=f"Weekly commit activity — {resource_slug}",
         xaxis_title="Week starting",
         yaxis_title="Commits",
         yaxis_rangemode="tozero",
@@ -187,11 +187,11 @@ def weekly_commits_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
     return fig
 
 
-def language_breakdown_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+def language_breakdown_plotly(resource_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly pie chart of language breakdown."""
     import plotly.graph_objects as go
 
-    row = _latest_row(project_slug)
+    row = _latest_row(resource_slug)
     labels: list[str] = []
     values: list[int] = []
 
@@ -224,11 +224,11 @@ def language_breakdown_plotly(project_slug: str) -> "plotly.graph_objects.Figure
             pass
 
     fig = go.Figure(go.Pie(labels=labels, values=values))
-    fig.update_layout(title=f"Language breakdown — {project_slug}")
+    fig.update_layout(title=f"Language breakdown — {resource_slug}")
     return fig
 
 
-def top_committers_plotly(project_slug: str, limit: int = 10) -> "plotly.graph_objects.Figure | None":
+def top_committers_plotly(resource_slug: str, limit: int = 10) -> "plotly.graph_objects.Figure | None":
     """Return a Plotly horizontal bar chart of top committers, or None if no data."""
     import plotly.graph_objects as go
     from collections import Counter
@@ -238,7 +238,7 @@ def top_committers_plotly(project_slug: str, limit: int = 10) -> "plotly.graph_o
         with registry._conn() as conn:
             rows = conn.execute(
                 "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
-                (project_slug,),
+                (resource_slug,),
             ).fetchall()
     except Exception:
         rows = []
@@ -265,7 +265,7 @@ def top_committers_plotly(project_slug: str, limit: int = 10) -> "plotly.graph_o
         marker_color="#10b981", text=counts, textposition="outside",
     ))
     fig.update_layout(
-        title=f"Top committers — {project_slug} (last 90 days)",
+        title=f"Top committers — {resource_slug} (last 90 days)",
         xaxis_title="Commits",
         yaxis_title="",
         height=max(220, len(top) * 32 + 80),
@@ -314,7 +314,7 @@ def compare_stats_plotly(project_slugs: list[str]) -> "plotly.graph_objects.Figu
     return fig
 
 
-def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+def file_types_plotly(resource_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly horizontal bar chart of file counts by type.
 
     Prefers surveyor data (Egeria-enriched type labels) stored in
@@ -328,7 +328,7 @@ def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
     subtitle = ""
 
     # ── prefer persisted surveyor data ───────────────────────────────────────
-    surveyor_rows = registry.query_file_type_counts(project_slug)
+    surveyor_rows = registry.query_file_type_counts(resource_slug)
     hover_texts: list[str] = []
     if surveyor_rows:
         labels = [r["type_label"] for r in surveyor_rows]
@@ -360,7 +360,7 @@ def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
             with registry._conn() as conn:
                 rows = conn.execute(
                     "SELECT DISTINCT file_path FROM project_code_symbols WHERE project_slug = ?",
-                    (project_slug,),
+                    (resource_slug,),
                 ).fetchall()
         except Exception:
             rows = []
@@ -379,7 +379,7 @@ def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
 
         if not counter:
             fig = go.Figure()
-            fig.update_layout(title=f"No file data — {project_slug}")
+            fig.update_layout(title=f"No file data — {resource_slug}")
             return fig
 
         top = counter.most_common(25)
@@ -398,7 +398,7 @@ def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
         hovertemplate="%{y}: %{hovertext}<extra></extra>",
     ))
     fig.update_layout(
-        title=f"Files by type — {project_slug}<br><sup>{subtitle}</sup>",
+        title=f"Files by type — {resource_slug}<br><sup>{subtitle}</sup>",
         xaxis_title="File count",
         margin={"l": 10, "r": 40, "t": 50, "b": 10},
         paper_bgcolor="rgba(0,0,0,0)",
@@ -408,14 +408,14 @@ def file_types_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
     return fig
 
 
-def health_radar_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
+def health_radar_plotly(resource_slug: str) -> "plotly.graph_objects.Figure":
     """Return a Plotly radar chart of project health dimensions."""
     import plotly.graph_objects as go
 
-    row = _latest_row(project_slug)
+    row = _latest_row(resource_slug)
     if not row:
         fig = go.Figure()
-        fig.update_layout(title=f"No data — {project_slug}")
+        fig.update_layout(title=f"No data — {resource_slug}")
         return fig
 
     commits_30d = row.get("commits_30d") or 0
@@ -438,10 +438,10 @@ def health_radar_plotly(project_slug: str) -> "plotly.graph_objects.Figure":
         r=scores + [scores[0]],
         theta=dimensions + [dimensions[0]],
         fill="toself",
-        name=project_slug,
+        name=resource_slug,
     ))
     fig.update_layout(
         polar={"radialaxis": {"visible": True, "range": [0, 10]}},
-        title=f"Project health — {project_slug}",
+        title=f"Project health — {resource_slug}",
     )
     return fig

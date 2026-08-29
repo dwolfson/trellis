@@ -103,7 +103,7 @@ class SurveyResult:
       - EgeriaPublisher    (converts to pyegeria API calls)
       - CLI survey command (renders as markdown without Egeria)
     """
-    project_slug: str
+    resource_slug: str
     project_display_name: str
     github_url: str
     surveyed_at: datetime = field(default_factory=datetime.utcnow)

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter()
 
@@ -20,7 +20,7 @@ _SESSION_MAX = 50
 _sessions: dict[str, tuple] = {}
 
 
-def _get_or_create_session(session_id: str, project_slug: str | None):
+def _get_or_create_session(session_id: str, resource_slug: str | None):
     """Return a ConversationAgent for this session, creating one if needed."""
     from resource_explorer.agents.conversation_agent import ConversationAgent
 
@@ -37,7 +37,7 @@ def _get_or_create_session(session_id: str, project_slug: str | None):
         del _sessions[oldest]
 
     if session_id not in _sessions:
-        agent = ConversationAgent(project_slug=project_slug)
+        agent = ConversationAgent(resource_slug=resource_slug)
         # Hydrate memory from persisted history so context survives restarts
         try:
             from resource_explorer.registry import ProjectRegistry
@@ -50,25 +50,32 @@ def _get_or_create_session(session_id: str, project_slug: str | None):
     else:
         agent, _ = _sessions[session_id]
         _sessions[session_id] = (agent, now)
-        if project_slug:
-            agent.project_slug = project_slug
+        if resource_slug:
+            agent.resource_slug = resource_slug
 
     return agent
 
 
-def _persist_turn(session_id: str, query: str, response: str, project_slug: str | None) -> None:
+def _persist_turn(session_id: str, query: str, response: str, resource_slug: str | None) -> None:
     try:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
-        registry.append_turn(session_id, "user", query, project_slug)
-        registry.append_turn(session_id, "assistant", response, project_slug)
+        registry.append_turn(session_id, "user", query, resource_slug)
+        registry.append_turn(session_id, "assistant", response, resource_slug)
     except Exception:
         pass
 
 
 class QueryRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     query: str
-    project_slug: str | None = None
+    # alias keeps the JSON wire key as `project_slug` while the Python
+    # vocabulary moves to `resource_slug`. A Pydantic field name IS the
+    # wire key, so this is the one place the identifier rename and the
+    # API contract are the same edit. index.html still sends the old
+    # key; drop the alias when the wire format moves too.
+    resource_slug: str | None = Field(default=None, alias="project_slug")
     database_slug: str | None = None  # NEW: for database-scoped queries
     #: Active Perspective chips. Empty means no perspective filter, which is a
     #: real state and not a missing value -- the compile still runs.
@@ -89,9 +96,9 @@ class FeedbackRequest(BaseModel):
     vote: int  # +1 or -1
 
 
-def _pick_chart(query: str, intent: str, project_slug: str) -> dict | None:
+def _pick_chart(query: str, intent: str, resource_slug: str) -> dict | None:
     """Return a Plotly figure as a JSON-serialisable dict, or None."""
-    if not project_slug:
+    if not resource_slug:
         return None
     if intent not in ("statistical", "health", "comparison"):
         return None
@@ -109,27 +116,27 @@ def _pick_chart(query: str, intent: str, project_slug: str) -> dict | None:
                 return None
 
         elif intent == "health":
-            fig = graphs.health_radar_plotly(project_slug)
+            fig = graphs.health_radar_plotly(resource_slug)
 
         elif any(w in q for w in ("committer", "contributor", "who commit", "who contribut", "top commit")):
-            fig = graphs.top_committers_plotly(project_slug)
+            fig = graphs.top_committers_plotly(resource_slug)
             if fig is None:
                 return None  # no data — don't show an empty chart
 
         elif any(w in q for w in ("star", "popular", "growth")):
-            fig = graphs.stars_over_time_plotly(project_slug)
+            fig = graphs.stars_over_time_plotly(resource_slug)
 
         elif any(w in q for w in ("language", "breakdown", "written in", "code in")):
-            fig = graphs.language_breakdown_plotly(project_slug)
+            fig = graphs.language_breakdown_plotly(resource_slug)
 
         elif any(w in q for w in ("week", "weekly", "per week", "week-by-week")):
-            fig = graphs.weekly_commits_plotly(project_slug)
+            fig = graphs.weekly_commits_plotly(resource_slug)
 
         elif any(w in q for w in ("file", "files", "file type", "file count", "how many file")):
-            fig = graphs.file_types_plotly(project_slug)
+            fig = graphs.file_types_plotly(resource_slug)
 
         elif any(w in q for w in ("commit", "activity", "history", "how many commit")):
-            fig = graphs.commits_over_time_plotly(project_slug)
+            fig = graphs.commits_over_time_plotly(resource_slug)
 
         else:
             return None
@@ -146,15 +153,15 @@ async def ask(request: QueryRequest) -> QueryResponse:
     query_hash = hashlib.sha256(request.query.encode()).hexdigest()[:16]
 
     if request.session_id:
-        agent = _get_or_create_session(request.session_id, request.project_slug)
-        response = agent.handle(request.query, project_slug=request.project_slug,
+        agent = _get_or_create_session(request.session_id, request.resource_slug)
+        response = agent.handle(request.query, resource_slug=request.resource_slug,
                                 perspectives=request.perspectives)
-        _persist_turn(request.session_id, request.query, response, request.project_slug)
+        _persist_turn(request.session_id, request.query, response, request.resource_slug)
     else:
         from resource_explorer.rag_system import RAGSystem
-        response = RAGSystem().query(request.query, project_slug=request.project_slug)
+        response = RAGSystem().query(request.query, resource_slug=request.resource_slug)
 
-    chart = _pick_chart(request.query, intent.value, request.project_slug or "")
+    chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
     return QueryResponse(
         response=response,
         intent=intent.value,
@@ -187,16 +194,16 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                 if request.session_id:
                     from resource_explorer.query_processor import QueryProcessor
                     intent = QueryProcessor().classify(request.query).value
-                    agent = _get_or_create_session(request.session_id, request.project_slug)
-                    text = agent.handle(request.query, project_slug=request.project_slug,
+                    agent = _get_or_create_session(request.session_id, request.resource_slug)
+                    text = agent.handle(request.query, resource_slug=request.resource_slug,
                                         perspectives=request.perspectives)
-                    _persist_turn(request.session_id, request.query, text, request.project_slug)
+                    _persist_turn(request.session_id, request.query, text, request.resource_slug)
                     loop.call_soon_threadsafe(queue.put_nowait, text)
                     loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False})
                 else:
                     from resource_explorer.rag_system import RAGSystem
                     rag = RAGSystem()
-                    for item in rag.stream(request.query, project_slug=request.project_slug):
+                    for item in rag.stream(request.query, resource_slug=request.resource_slug):
                         loop.call_soon_threadsafe(queue.put_nowait, item)
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
@@ -211,7 +218,7 @@ async def stream(request: QueryRequest) -> StreamingResponse:
             if isinstance(item, dict) and item.get("_done"):
                 # Build the done event, attach chart if relevant
                 chart = _pick_chart(
-                    request.query, item.get("intent", ""), request.project_slug or ""
+                    request.query, item.get("intent", ""), request.resource_slug or ""
                 )
                 intent_val = item.get("intent", "")
                 done: dict = {
@@ -222,13 +229,13 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     "chart": chart,
                 }
                 # Structured symbol table for code_inventory queries
-                if intent_val == "code_inventory" and request.project_slug:
-                    done["symbol_table"] = _code_inventory_table(request.query, request.project_slug)
+                if intent_val == "code_inventory" and request.resource_slug:
+                    done["symbol_table"] = _code_inventory_table(request.query, request.resource_slug)
                 # Side-by-side symbol comparison for comparison queries about API surface
                 if intent_val == "comparison":
                     done["compare_symbols"] = _compare_symbols_table(request.query)
                 # Suggest an alias when no project was resolved but a fuzzy match exists
-                if not request.project_slug:
+                if not request.resource_slug:
                     alias_hint = _fuzzy_alias_suggestion(request.query)
                     if alias_hint:
                         done["alias_suggestion"] = alias_hint
@@ -246,7 +253,7 @@ async def feedback(request: FeedbackRequest) -> dict:
     return {"recorded": True}
 
 
-def _code_inventory_table(query: str, project_slug: str) -> dict | None:
+def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
     """
     Build a structured symbol table payload for code_inventory done events.
     Extracts kind hint from query, returns top 30 matching symbols.
@@ -256,7 +263,7 @@ def _code_inventory_table(query: str, project_slug: str) -> dict | None:
     try:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
-        slug = registry._normalize_slug(project_slug)
+        slug = registry._normalize_slug(resource_slug)
 
         q = query.lower()
         kind = "all"

@@ -125,7 +125,7 @@ class JavaSymbolExtractor:
         from resource_explorer.ingestion.ast_chunker import ASTChunker
         return ASTChunker()._get_parser("java")
 
-    def extract(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def extract(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
         parser = self._get_parser()
         if parser is None:
             return []  # tree-sitter-java unavailable — caller gets no Java symbols, not a crash
@@ -136,35 +136,35 @@ class JavaSymbolExtractor:
             return []
 
         symbols: list[CodeSymbol] = []
-        self._walk_node(tree.root_node, file_path, project_slug, parent_class="", symbols=symbols)
+        self._walk_node(tree.root_node, file_path, resource_slug, parent_class="", symbols=symbols)
         return symbols
 
     # ── tree walking ────────────────────────────────────────────────────────
 
-    def _walk_node(self, node, file_path: str, project_slug: str, parent_class: str, symbols: list[CodeSymbol]) -> None:
+    def _walk_node(self, node, file_path: str, resource_slug: str, parent_class: str, symbols: list[CodeSymbol]) -> None:
         if node.type in _TYPE_NODE_KINDS:
-            sym = self._extract_type(node, file_path, project_slug, parent_class)
+            sym = self._extract_type(node, file_path, resource_slug, parent_class)
             if sym:
                 symbols.append(sym)
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
-                        self._walk_node(child, file_path, project_slug, sym.name, symbols)
+                        self._walk_node(child, file_path, resource_slug, sym.name, symbols)
         elif node.type in _METHOD_NODE_TYPES:
-            sym = self._extract_method(node, file_path, project_slug, parent_class)
+            sym = self._extract_method(node, file_path, resource_slug, parent_class)
             if sym:
                 symbols.append(sym)
         elif node.type == "constructor_declaration":
-            sym = self._extract_constructor(node, file_path, project_slug, parent_class)
+            sym = self._extract_constructor(node, file_path, resource_slug, parent_class)
             if sym:
                 symbols.append(sym)
         else:
             for child in node.children:
-                self._walk_node(child, file_path, project_slug, parent_class, symbols)
+                self._walk_node(child, file_path, resource_slug, parent_class, symbols)
 
     # ── type (class / interface / enum / record / annotation type) ────────
 
-    def _extract_type(self, node, file_path: str, project_slug: str, parent_class: str) -> CodeSymbol | None:
+    def _extract_type(self, node, file_path: str, resource_slug: str, parent_class: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -192,7 +192,7 @@ class JavaSymbolExtractor:
 
             qualified_name = f"{parent_class}.{name}" if parent_class else name
             return CodeSymbol(
-                project_slug=project_slug,
+                resource_slug=resource_slug,
                 file_path=file_path,
                 language="java",
                 kind=kind,
@@ -211,7 +211,7 @@ class JavaSymbolExtractor:
 
     # ── method ──────────────────────────────────────────────────────────────
 
-    def _extract_method(self, node, file_path: str, project_slug: str, parent_class: str) -> CodeSymbol | None:
+    def _extract_method(self, node, file_path: str, resource_slug: str, parent_class: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -229,7 +229,7 @@ class JavaSymbolExtractor:
             qualified_name = f"{parent_class}.{name}" if parent_class else name
 
             return CodeSymbol(
-                project_slug=project_slug,
+                resource_slug=resource_slug,
                 file_path=file_path,
                 language="java",
                 kind="method",
@@ -249,7 +249,7 @@ class JavaSymbolExtractor:
 
     # ── constructor (treated as a method, matching EA's convention) ────────
 
-    def _extract_constructor(self, node, file_path: str, project_slug: str, parent_class: str) -> CodeSymbol | None:
+    def _extract_constructor(self, node, file_path: str, resource_slug: str, parent_class: str) -> CodeSymbol | None:
         try:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -264,7 +264,7 @@ class JavaSymbolExtractor:
             qualified_name = f"{parent_class}.{name}" if parent_class else name
 
             return CodeSymbol(
-                project_slug=project_slug,
+                resource_slug=resource_slug,
                 file_path=file_path,
                 language="java",
                 kind="method",

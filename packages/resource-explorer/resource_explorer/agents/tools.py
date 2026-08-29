@@ -4,7 +4,7 @@ from __future__ import annotations
 from beeai_framework.tools import tool
 
 
-def _absence(project_slug: str, analysis_id: str, subject: str) -> str:
+def _absence(resource_slug: str, analysis_id: str, subject: str) -> str:
     """What to say when a table came back empty.
 
     "No dependencies found" asserts a fact about the repo. That is only true if
@@ -20,20 +20,20 @@ def _absence(project_slug: str, analysis_id: str, subject: str) -> str:
     try:
         from resource_explorer.facts import FactLayer
 
-        fact = FactLayer().fact(project_slug, analysis_id)
+        fact = FactLayer().fact(resource_slug, analysis_id)
     except Exception:  # pragma: no cover - a tool must still answer
-        return (f"No {subject} recorded for '{project_slug}' — and whether the "
+        return (f"No {subject} recorded for '{resource_slug}' — and whether the "
                 f"analysis that produces them has run could not be determined.")
 
     if fact.is_known:
-        return (f"No {subject} for '{project_slug}'. This is a measured result: "
+        return (f"No {subject} for '{resource_slug}'. This is a measured result: "
                 f"the analysis ran and found none.")
     runnable = f" Run: {', '.join(fact.can_run)}." if fact.can_run else ""
     if fact.state == "never_run":
-        return (f"Nothing is known about {subject} for '{project_slug}' — the "
+        return (f"Nothing is known about {subject} for '{resource_slug}' — the "
                 f"analysis that produces them has never run here, so this is NOT "
                 f"a finding that there are none.{runnable}")
-    return (f"Nothing is known about {subject} for '{project_slug}' — "
+    return (f"Nothing is known about {subject} for '{resource_slug}' — "
             f"{fact.note or 'the result cannot be established from what was recorded.'}"
             f"{runnable}")
 
@@ -62,12 +62,12 @@ def vector_search(query: str, collection_names: str) -> str:
     "license, topics, repo size, creation date, last pushed date. "
     "days controls the commit-count window (default 90; use 30 for 30-day counts, 180 for 6-month, etc.)."
 ))
-def query_project_stats(project_slug: str, days: int = 90) -> str:
+def query_project_stats(resource_slug: str, days: int = 90) -> str:
     import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
     try:
         conn = sqlite3.connect(registry.db_path)
         conn.row_factory = sqlite3.Row
@@ -170,12 +170,12 @@ def query_project_stats(project_slug: str, days: int = 90) -> str:
     "Get the top committers to a project by commit count over the last 90 days. "
     "Returns a ranked list with commit counts and email addresses."
 ))
-def query_top_committers(project_slug: str, limit: int = 10) -> str:
+def query_top_committers(resource_slug: str, limit: int = 10) -> str:
     import sqlite3
     from collections import Counter
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
     try:
         conn = sqlite3.connect(registry.db_path)
         rows = conn.execute(
@@ -199,7 +199,7 @@ def query_top_committers(project_slug: str, limit: int = 10) -> str:
 
 
 def _query_code_symbols_raw(
-    project_slug: str,
+    resource_slug: str,
     kind: str = "all",
     pattern: str = "",
     file_path: str = "",
@@ -208,7 +208,7 @@ def _query_code_symbols_raw(
     import sqlite3
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
     try:
         conn = sqlite3.connect(registry.db_path)
         conn.row_factory = sqlite3.Row
@@ -263,13 +263,13 @@ def _query_code_symbols_raw(
     "Returns qualified name, signature, and docstring for each match."
 ))
 def query_code_symbols(
-    project_slug: str,
+    resource_slug: str,
     kind: str = "all",
     pattern: str = "",
     file_path: str = "",
     limit: int = 50,
 ) -> str:
-    return _query_code_symbols_raw(project_slug, kind=kind, pattern=pattern,
+    return _query_code_symbols_raw(resource_slug, kind=kind, pattern=pattern,
                                    file_path=file_path, limit=limit)
 
 
@@ -278,11 +278,11 @@ def query_code_symbols(
     "name can be a simple name ('parse') or qualified name ('CodeParser.parse'). "
     "Returns file location, signature, and a one-sentence summary of its purpose."
 ))
-def get_symbol_detail(project_slug: str, name: str) -> str:
+def get_symbol_detail(resource_slug: str, name: str) -> str:
     import sqlite3
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
     try:
         conn = sqlite3.connect(registry.db_path)
         conn.row_factory = sqlite3.Row
@@ -312,7 +312,7 @@ def get_symbol_detail(project_slug: str, name: str) -> str:
     return "\n".join(lines)
 
 
-def _generate_summary(project_slug: str, symbol: dict, db_path: str) -> str:
+def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
     """Search for the symbol's source in pgvector and ask the LLM for a one-sentence summary."""
     try:
         from resource_explorer.vector_store_pg import MultiCollectionStore
@@ -321,7 +321,7 @@ def _generate_summary(project_slug: str, symbol: dict, db_path: str) -> str:
         import sqlite3
 
         query = symbol["qualified_name"]
-        collections = CollectionRouter().select(query, project_slug)
+        collections = CollectionRouter().select(query, resource_slug)
         code_collections = [c for c in collections if "code" in c]
         if not code_collections:
             return ""
@@ -338,7 +338,7 @@ def _generate_summary(project_slug: str, symbol: dict, db_path: str) -> str:
             conn.execute(
                 "UPDATE project_code_symbols SET summary = ? "
                 "WHERE project_slug = ? AND file_path = ? AND qualified_name = ?",
-                (summary, project_slug, symbol["file_path"], symbol["qualified_name"]),
+                (summary, resource_slug, symbol["file_path"], symbol["qualified_name"]),
             )
         return summary
     except Exception:
@@ -350,13 +350,13 @@ def _generate_summary(project_slug: str, symbol: dict, db_path: str) -> str:
     "weeks controls how many weeks of history to show (default 12). "
     "Shows commit counts per week with a simple bar chart, plus lines added/deleted when available."
 ))
-def query_commit_activity(project_slug: str, weeks: int = 12) -> str:
+def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     import sqlite3
     from collections import defaultdict
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
     weeks = max(1, min(weeks, 52))
     try:
         conn = sqlite3.connect(registry.db_path)
@@ -410,12 +410,12 @@ def query_commit_activity(project_slug: str, weeks: int = 12) -> str:
     "author can be a name or email substring — fuzzy matched against stored commits. "
     "days controls the lookback window (default 90)."
 ))
-def query_contributor_profile(project_slug: str, author: str, days: int = 90) -> str:
+def query_contributor_profile(resource_slug: str, author: str, days: int = 90) -> str:
     import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
     days = max(1, min(days, 365))
     try:
         now = datetime.utcnow()
@@ -511,12 +511,12 @@ def query_contributor_profile(project_slug: str, author: str, days: int = 90) ->
         return f"Error: {exc}"
 
 
-def _build_example_context_raw(project_slug: str, topic: str) -> str:
+def _build_example_context_raw(resource_slug: str, topic: str) -> str:
     from resource_explorer.vector_store_pg import MultiCollectionStore
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    slug = registry._normalize_slug(project_slug)
+    slug = registry._normalize_slug(resource_slug)
 
     collection_types = ["examples", "python_code", "api_reference", "markdown_docs"]
     candidate_collections = [f"{slug}_{ctype}" for ctype in collection_types]
@@ -608,8 +608,8 @@ def _build_example_context_raw(project_slug: str, topic: str) -> str:
     "'create a glossary term', 'authenticate with token'. "
     "Call multiple times with different topics to gather broader context."
 ))
-def build_example_context(project_slug: str, topic: str) -> str:
-    return _build_example_context_raw(project_slug, topic)
+def build_example_context(resource_slug: str, topic: str) -> str:
+    return _build_example_context_raw(resource_slug, topic)
 
 
 @tool(description=(
@@ -617,10 +617,10 @@ def build_example_context(project_slug: str, topic: str) -> str:
     "dep_type can be 'runtime', 'dev', 'optional', 'indirect', 'test', or 'all' (default). "
     "Pass a comma-separated list of project_slugs to find shared dependencies across projects."
 ))
-def query_dependencies(project_slug: str, dep_type: str = "all") -> str:
+def query_dependencies(resource_slug: str, dep_type: str = "all") -> str:
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    slugs = [s.strip() for s in project_slug.split(",") if s.strip()]
+    slugs = [s.strip() for s in resource_slug.split(",") if s.strip()]
     if not slugs:
         return "No project slug provided."
 

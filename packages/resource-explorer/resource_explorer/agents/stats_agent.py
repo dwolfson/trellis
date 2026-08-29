@@ -29,8 +29,8 @@ class StatsAgent(BaseExplorerAgent):
         )
         return [query_project_stats, query_top_committers, query_commit_activity, query_contributor_profile]
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
-        slug = project_slug or self._infer_project_slug(query)
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        slug = resource_slug or self._infer_project_slug(query)
 
         if not slug:
             return self._clarification_response(query)
@@ -53,27 +53,27 @@ class StatsAgent(BaseExplorerAgent):
 
     # ── fallback data formatting ───────────────────────────────────────────────
 
-    def _fetch_stats(self, project_slug: str | None) -> str:
-        if not project_slug:
+    def _fetch_stats(self, resource_slug: str | None) -> str:
+        if not resource_slug:
             return ""
         registry = ProjectRegistry()
-        project_slug = registry._normalize_slug(project_slug)
+        resource_slug = registry._normalize_slug(resource_slug)
         try:
             conn = sqlite3.connect(registry.db_path)
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-                (project_slug,),
+                (resource_slug,),
             ).fetchone()
             history = conn.execute(
                 "SELECT fetched_at, stars, commits_30d, forks FROM project_stats "
                 "WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 4",
-                (project_slug,),
+                (resource_slug,),
             ).fetchall()
             commit_rows = conn.execute(
                 "SELECT author_name, author_email, committed_at FROM project_commits "
                 "WHERE project_slug = ? ORDER BY committed_at DESC",
-                (project_slug,),
+                (resource_slug,),
             ).fetchall()
             conn.close()
         except Exception:
@@ -113,11 +113,11 @@ class StatsAgent(BaseExplorerAgent):
             _conn2 = sqlite3.connect(registry.db_path)
             _c30 = _conn2.execute(
                 "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-                (project_slug, (_now - _td(days=30)).isoformat()),
+                (resource_slug, (_now - _td(days=30)).isoformat()),
             ).fetchone()[0]
             _c90 = _conn2.execute(
                 "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-                (project_slug, (_now - _td(days=90)).isoformat()),
+                (resource_slug, (_now - _td(days=90)).isoformat()),
             ).fetchone()[0]
             _conn2.close()
         except Exception:
@@ -126,7 +126,7 @@ class StatsAgent(BaseExplorerAgent):
         commits_90d = _c90 if (_c30 or _c90) else (d.get("commits_90d") or 0)
 
         lines = [
-            f"Project: {project_slug}",
+            f"Project: {resource_slug}",
             "",
             "── Repository ──────────────────────────",
             f"  License:            {_val('license')}",
@@ -137,7 +137,7 @@ class StatsAgent(BaseExplorerAgent):
             f"  Primary language:   {_val('primary_language')}",
             "",
             "── Code ────────────────────────────────",
-            f"  Files:              {self._indexed_file_count(project_slug, registry)}",
+            f"  Files:              {self._indexed_file_count(resource_slug, registry)}",
             f"  Lines of code:      {_loc_fmt(d.get('ingestion_lines_of_code'), exact=True) if d.get('ingestion_lines_of_code') is not None else _loc_fmt(d.get('lines_of_code'))}",
             f"  Language breakdown: {_val('language_breakdown')}",
             "",

@@ -38,8 +38,8 @@ class ExamplesAgent(BaseExplorerAgent):
         )
         return [build_example_context, query_code_symbols, get_symbol_detail, vector_search]
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
-        slug = project_slug or self._infer_project_slug(query)
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        slug = resource_slug or self._infer_project_slug(query)
 
         if not slug:
             projects = self._list_all_slugs()
@@ -69,7 +69,7 @@ class ExamplesAgent(BaseExplorerAgent):
             from resource_explorer.agents.tools import _build_example_context_raw, _query_code_symbols_raw
             from resource_explorer.llm_client import get_llm
 
-            context = _build_example_context_raw(project_slug=slug, topic=query)
+            context = _build_example_context_raw(resource_slug=slug, topic=query)
             # Cap context to avoid overwhelming small models
             if len(context) > 4000:
                 context = context[:4000] + "\n...[truncated]"
@@ -77,7 +77,7 @@ class ExamplesAgent(BaseExplorerAgent):
             # Extract key terms from query for a targeted symbol search
             topic_words = " ".join(w for w in query.lower().split() if len(w) > 3)
             symbols_raw = _query_code_symbols_raw(
-                project_slug=slug, kind="class", pattern=topic_words, limit=10
+                resource_slug=slug, kind="class", pattern=topic_words, limit=10
             )
 
             system = (

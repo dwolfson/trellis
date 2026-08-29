@@ -36,7 +36,7 @@ class CodeParser:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-    def parse(self, file_path: str, content: str, project_slug: str) -> list[CodeChunk]:
+    def parse(self, file_path: str, content: str, resource_slug: str) -> list[CodeChunk]:
         ext = PurePath(file_path).suffix.lower()
         language = self.LANGUAGE_MAP.get(ext, "text")
 
@@ -47,7 +47,7 @@ class CodeParser:
                 metadata={
                     "file_path": file_path,
                     "language": language,
-                    "project_slug": project_slug,
+                    "project_slug": resource_slug,
                     "chunk_index": i,
                 },
             )

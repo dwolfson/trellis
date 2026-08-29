@@ -120,11 +120,11 @@ class EgeriaPublisher:
         cached_guid = ""
         if self._registry:
             try:
-                cached_guid = self._registry.get_egeria_asset_guid(result.project_slug) or ""
+                cached_guid = self._registry.get_egeria_asset_guid(result.resource_slug) or ""
             except Exception:
                 cached_guid = ""
 
-        with guard_linkage(self._registry, "repo", result.project_slug,
+        with guard_linkage(self._registry, "repo", result.resource_slug,
                            result.project_display_name, cached_guid):
             asset_guid = self._find_or_create_asset(result)
             # Best-effort and deliberately not fatal — see the method's docstring.
@@ -147,7 +147,7 @@ class EgeriaPublisher:
         if self._registry:
             try:
                 self._registry.record_published_annotation_types(
-                    result.project_slug,
+                    result.resource_slug,
                     {a.annotation_type.value for a in result.annotations},
                     report_guid,
                 )
@@ -156,7 +156,7 @@ class EgeriaPublisher:
                 # orchestrator put the step keys on the result; mapping them is
                 # a lookup, not a guess.
                 self._registry.record_published_analyses(
-                    result.project_slug,
+                    result.resource_slug,
                     _analyses_for_steps(result.steps_run),
                     report_guid,
                 )
@@ -165,7 +165,7 @@ class EgeriaPublisher:
                 log.warning("record_published_annotation_types failed (non-fatal): %s", exc)
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
-            result.project_slug,
+            result.resource_slug,
             report_guid,
             len(result.annotations),
         )
@@ -176,7 +176,7 @@ class EgeriaPublisher:
                 log_catalog(
                     self._registry,
                     entity_type="repo",
-                    entity_slug=result.project_slug,
+                    entity_slug=result.resource_slug,
                     entity_name=result.project_display_name,
                     entity_location=result.github_url,
                     status="ok",
@@ -196,7 +196,7 @@ class EgeriaPublisher:
                             "kind": "SurveyReport",
                             "display_name": f"Survey: {result.project_display_name}",
                             "qualified_name": (
-                                f"SurveyReport::GitHubRepo::{result.project_slug}"
+                                f"SurveyReport::GitHubRepo::{result.resource_slug}"
                                 f"::{result.surveyed_at.isoformat()}"
                             ),
                             "guid": report_guid,
@@ -286,7 +286,7 @@ class EgeriaPublisher:
         # If the Egeria database was reset, the cached GUID is stale — clear it
         # and fall through to the search/create path rather than failing later.
         if self._registry:
-            cached = self._registry.get_egeria_asset_guid(result.project_slug)
+            cached = self._registry.get_egeria_asset_guid(result.resource_slug)
             if cached:
                 try:
                     check = self._asset_maker.find_software_capabilities(
@@ -298,14 +298,14 @@ class EgeriaPublisher:
                     if isinstance(check, list) and any(
                         e.get("elementHeader", {}).get("guid") == cached for e in check
                     ):
-                        log.info("Using cached Egeria asset GUID %s for %s", cached, result.project_slug)
+                        log.info("Using cached Egeria asset GUID %s for %s", cached, result.resource_slug)
                         return cached
                     # GUID not found — Egeria DB may have been reset; clear the stale cache
                     log.warning(
                         "Cached GUID %s no longer in Egeria for %s — will re-register",
-                        cached, result.project_slug,
+                        cached, result.resource_slug,
                     )
-                    self._registry.clear_egeria_registration(result.project_slug)
+                    self._registry.clear_egeria_registration(result.resource_slug)
                 except Exception as exc:
                     log.debug("Cache verification failed (will proceed): %s", exc)
                     return cached  # network error — trust the cache rather than re-create
@@ -338,15 +338,15 @@ class EgeriaPublisher:
                 )
                 guid = (match or {}).get("elementHeader", {}).get("guid") if match else None
                 if guid:
-                    log.info("Found existing Egeria asset GUID %s for %s", guid, result.project_slug)
-                    self._cache_asset_guid(result.project_slug, guid)
+                    log.info("Found existing Egeria asset GUID %s for %s", guid, result.resource_slug)
+                    self._cache_asset_guid(result.resource_slug, guid)
                     return guid
                 if existing:
                     # Prefix matches that are not this asset are the normal case
                     # for sibling repos; say so rather than silently creating.
                     log.info(
                         "%d prefix match(es) for %s but none with an exact qualifiedName — creating",
-                        len(existing), result.project_slug,
+                        len(existing), result.resource_slug,
                     )
         except Exception as exc:
             log.debug("Asset search failed (will create): %s", exc)
@@ -356,7 +356,7 @@ class EgeriaPublisher:
         license_name = ""
         topics_csv = ""
         if self._registry:
-            stats = self._registry.get_latest_project_stats(result.project_slug)
+            stats = self._registry.get_latest_project_stats(result.resource_slug)
             if stats:
                 primary_language = stats.get("primary_language") or ""
                 license_name = stats.get("license") or ""
@@ -384,7 +384,7 @@ class EgeriaPublisher:
             "url": result.github_url,
             "additionalProperties": {
                 "github_url": result.github_url,
-                "project_slug": result.project_slug,
+                "project_slug": result.resource_slug,
                 "primary_language": primary_language,
                 "license": license_name,
                 "topics": topics_csv,
@@ -394,8 +394,8 @@ class EgeriaPublisher:
             props["zoneMembership"] = self.zone_names
         body = {"class": "NewElementRequestBody", "properties": props}
         guid = self._asset_maker.create_software_capability(body=body)
-        log.info("Created SourceControlLibrary GUID %s for %s", guid, result.project_slug)
-        self._cache_asset_guid(result.project_slug, guid)
+        log.info("Created SourceControlLibrary GUID %s for %s", guid, result.resource_slug)
+        self._cache_asset_guid(result.resource_slug, guid)
         return guid
 
     def _cache_asset_guid(self, slug: str, guid: str) -> None:
@@ -424,7 +424,7 @@ class EgeriaPublisher:
         if not self._registry:
             return ""
         try:
-            project = self._registry.get(result.project_slug)
+            project = self._registry.get(result.resource_slug)
         except Exception:
             return ""
         homepage = (getattr(project, "homepage_url", "") or "").strip()
@@ -442,7 +442,7 @@ class EgeriaPublisher:
 
         if _same(homepage, result.github_url):
             log.debug("Homepage for %s is the repo itself — not cataloged separately",
-                      result.project_slug)
+                      result.resource_slug)
             return ""
 
         qualified_name = f"ExternalReference::{homepage}"
@@ -470,7 +470,7 @@ class EgeriaPublisher:
                 }
                 ref_guid = self._external_references.create_external_reference(body=body)
                 log.info("Created ExternalReference %s for %s (%s)",
-                         ref_guid, result.project_slug, homepage)
+                         ref_guid, result.resource_slug, homepage)
 
             # Linking is separately guarded: a duplicate link attempt on a
             # re-publish is harmless to report but must not lose the reference.
@@ -482,7 +482,7 @@ class EgeriaPublisher:
             return ref_guid
         except Exception as exc:
             log.warning("Could not publish homepage ExternalReference for %s: %s",
-                        result.project_slug, exc)
+                        result.resource_slug, exc)
             return ""
 
     # ── survey report ─────────────────────────────────────────────────────────
@@ -490,7 +490,7 @@ class EgeriaPublisher:
     def _create_survey_report(self, result: SurveyResult, asset_guid: str) -> str:
         surveyed_at_iso = result.surveyed_at.isoformat()
         qualified_name = (
-            f"SurveyReport::GitHubRepo::{result.project_slug}::{surveyed_at_iso}"
+            f"SurveyReport::GitHubRepo::{result.resource_slug}::{surveyed_at_iso}"
         )
         body = {
             "class": "NewElementRequestBody",
@@ -517,7 +517,7 @@ class EgeriaPublisher:
         if self._registry:
             try:
                 self._registry.record_egeria_survey(
-                    result.project_slug,
+                    result.resource_slug,
                     surveyed_at_iso,
                     report_guid,
                     annotation_count=len(result.annotations),
@@ -532,7 +532,7 @@ class EgeriaPublisher:
     def _create_annotations(self, result: SurveyResult, report_guid: str) -> None:
         for i, ann in enumerate(result.annotations):
             qualified_name = (
-                f"Annotation::{result.project_slug}::{result.surveyed_at.isoformat()}::{i}"
+                f"Annotation::{result.resource_slug}::{result.surveyed_at.isoformat()}::{i}"
             )
             props = self._build_annotation_props(ann, qualified_name)
             body = {

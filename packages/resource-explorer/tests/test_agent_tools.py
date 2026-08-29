@@ -15,7 +15,7 @@ class MockAgent(BaseExplorerAgent):
         return "mock"
     def tools(self) -> list:
         return []
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
         return "mock"
 
 

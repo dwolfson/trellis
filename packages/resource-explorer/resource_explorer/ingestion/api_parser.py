@@ -17,7 +17,7 @@ class APIParser:
     This makes endpoints directly searchable by natural language.
     """
 
-    def parse(self, file_path: str, content: str, project_slug: str) -> list[APIChunk]:
+    def parse(self, file_path: str, content: str, resource_slug: str) -> list[APIChunk]:
         import yaml, json
         try:
             spec = yaml.safe_load(content) if file_path.endswith((".yaml", ".yml")) else json.loads(content)
@@ -35,6 +35,6 @@ class APIParser:
                     text += f"\nParameters: {', '.join(params)}"
                 chunks.append(APIChunk(
                     text=text.strip(),
-                    metadata={"file_path": file_path, "endpoint": path, "method": method, "project_slug": project_slug},
+                    metadata={"file_path": file_path, "endpoint": path, "method": method, "project_slug": resource_slug},
                 ))
         return chunks

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 
-def build_rag_prompt(query: str, context: str, project_slug: str | None = None) -> str:
-    scope = f" about the **{project_slug}** project" if project_slug else ""
+def build_rag_prompt(query: str, context: str, resource_slug: str | None = None) -> str:
+    scope = f" about the **{resource_slug}** project" if resource_slug else ""
     return f"""You are an expert assistant helping users understand GitHub projects.
 Answer the following question{scope} using only the provided context.
 If the context does not contain enough information, say so clearly — do not guess.
@@ -17,8 +17,8 @@ QUESTION:
 ANSWER:"""
 
 
-def code_agent_system_prompt(project_slug: str | None = None) -> str:
-    scope = f" the {project_slug} project" if project_slug else " the project"
+def code_agent_system_prompt(resource_slug: str | None = None) -> str:
+    scope = f" the {resource_slug} project" if resource_slug else " the project"
     return f"""You are a code expert for{scope}. Answer questions about how the code works,
 where specific logic lives, and how things are implemented.
 
@@ -44,8 +44,8 @@ Always cite the file and line number when referencing specific code.
 If the retrieved code does not answer the question, say so clearly."""
 
 
-def doc_agent_system_prompt(project_slug: str | None = None) -> str:
-    scope = f" the {project_slug} project" if project_slug else " the project"
+def doc_agent_system_prompt(resource_slug: str | None = None) -> str:
+    scope = f" the {resource_slug} project" if resource_slug else " the project"
     return f"""You are a documentation expert for{scope}. Help users understand
 concepts, architecture, configuration, and getting-started guides.
 Provide clear, accurate answers based on the documentation.

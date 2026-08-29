@@ -19,7 +19,7 @@ class CollectionRouter:
     def __init__(self) -> None:
         self._registry = ProjectRegistry()
 
-    def select(self, query: str, project_slug: str | None = None) -> list[str]:
+    def select(self, query: str, resource_slug: str | None = None) -> list[str]:
         from resource_explorer.config import get_config
         cfg = get_config()
         max_collections = cfg.rag.max_collections_per_query
@@ -27,9 +27,9 @@ class CollectionRouter:
         intent = self._infer_agent_type(query)
         base_types = AGENT_COLLECTION_MAP.get(intent, AGENT_COLLECTION_MAP["general"])
 
-        if project_slug:
-            project_slug = self._registry._normalize_slug(project_slug)
-            projects = [self._registry.get(project_slug)]
+        if resource_slug:
+            resource_slug = self._registry._normalize_slug(resource_slug)
+            projects = [self._registry.get(resource_slug)]
             projects = [p for p in projects if p is not None]
         else:
             projects = self._registry.list_all()
