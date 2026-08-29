@@ -10,13 +10,49 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Next up — priorities as of 2026-08-26
+
+Marked at the end of the architecture-recovery thread. Findings 96–119 in
+`scripts/arch-spike/README.md` are that thread's record; this is what is left and
+what is deliberately not.
+
+**1. Phase 2 — Egeria projection of recovered architecture.** The stated end goal, and the
+only major piece unbuilt: **nothing from architecture recovery reaches Egeria.** Its one
+remaining prerequisite is **outbox/retry publishing** (design §8.4) — a blueprint writes far
+more elements per run than anything currently published, and the design is blunt that *"a
+half-published blueprint is worse than none."* Its other prerequisite is now done: projection
+has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
+
+**2. `security_features` should report `skipped_by_design`.** GitHub returns
+`security_and_analysis` only to repository admins, so the analysis is **structurally impossible
+for third-party repos** — 2 of 60 populated. That is a fact about the world, not a failed run,
+and it is the strongest case for that state anyone has found. Presentation session's finding.
+
+**3. The silent field-allowlist pattern**, filed under *Corpus, signals & testing*. Three
+instances in one day, one closed with a superset guard (finding 118); the sweep across other
+sites is unowned. The action that matters: check each allowlist against its **current** source
+shape, not the shape it had when written — none of the three was wrong when written.
+
+**Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
+the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
+documentation exists); milvus site ingestion (302-loops for every user agent including a
+browser one); doc-kind chunking selection (0 of 20 collections are API-reference shaped);
+boilerplate stripping and version collapsing (both already work, finding 119); `misgrouped`'s
+emitter and guard-based branching (nothing would behave differently); Java `src` naming and the
+`cmd/X`+`pkg/X` merge (both downgraded by measurement, finding 97).
+
+**Small and real, low value:** Go cohesion without recursive rollup; `find_artifact("readme")`
+preferring a nested README over the root one; rule 17's guard validating a step's *declaration*
+rather than its behaviour.
+
+
 ## Open items
 
 Grouped by area. Within a group, the most actionable entries come first.
 
 ### Architecture recovery
 
-#### HIGH — architecture recovery: coverage is a third of the corpus, and precision is the real blocker
+#### HIGH — architecture recovery: coverage closed on 2026-08-28; precision is now the whole entry
 
 **The first version of this entry said "3 of 46, 6% coverage". That was wrong, and wrong in the
 way this project keeps being wrong: the query was `query_findings(slug, kind)`, which defaults to
@@ -29,6 +65,24 @@ found `docling_parse` (1 component) and missed `milvus` (202).** Corrected with
 repos the gate approves for recovery          46
 repos WITH architecture_recovery results      16   (15 of them gate=run)
 ```
+
+**Superseded 2026-08-28 — coverage is no longer the blocker.** A batch landed after the
+measurement above: the findings histogram runs 1 → 5 → 10 → 31 → 42 resources across
+2026-08-21..26. Re-measured live on 2026-08-28: **46 of 60 registered repos now carry
+architecture_recovery results**, against 16 when this was written. The 14 without are
+largely gate-excluded (a docs site, an awesome-list, an unindexed new repo).
+
+A separate session measured the gate-eligible slice specifically and reports 45 gate=run
+resources fully accounted for — 41 with results, 3 with a *verified* real zero
+(`outcome_known_positive=true`, `no_components_detected`), and 1 (`unitycatalog_rs`)
+genuinely unverified because it is 100% Rust and the marker languages are Go, Java and
+Python. **Those figures are theirs, not reproduced here**: I verified the headline
+independently and got a different denominator (all repos, not gate=run), which is enough
+to retire "a third of the corpus" but not enough to restate their breakdown as mine. See
+`docs/task-list-2026-08-28.md` for that measurement.
+
+So the remaining work in this entry is **precision, not coverage**. The note below about
+the measuring instrument still stands and is why the original number was wrong twice.
 
 Fifth instance of the measuring instrument being the broken part, after findings 73, 79, 90 and
 the `resolve_doc_locations`/`build_report` timing confusion. The standing prior holds: **when a
@@ -263,7 +317,7 @@ Two things worth someone's attention:
   re-run discharges, and the practice is the transferable part: a prediction in the slot where
   a measurement belongs is the substitution this file exists to avoid, and the cost of holding
   the line was one 25-minute run. Full breakdown and the named skips in
-  `docs/arch-recovery-handoff-2026-08-24.md`.
+  `docs/archive/arch-recovery-handoff-2026-08-24.md`.
 - **The 6 repos with no role have no file inventory** — never ingested, so nothing to classify.
   Correct behaviour, and the card now says which kind of nothing it is rather than showing a
   blank.

@@ -2038,8 +2038,61 @@ what, when — but is not the drift mechanism.
 
 ### 8.4 Prerequisite
 
-Reliable writes. RE's publishers are fire-and-forget today (current-state doc §0), and this feature
-writes far more elements per run. **The outbox/retry work is a prerequisite, not a nice-to-have** — a
+Reliable writes. RE's publishers are fire-and-forget today — **re-derived from the code, not
+cited**: an earlier version of this sentence attributed the phrase to the current-state doc §0 and
+it does not appear there at all (checked 2026-08-26, zero occurrences). The characterisation holds;
+the citation did not, and a false citation is worse than none because it stops the next reader
+checking. This feature writes far more elements per run.
+
+**Annotations are not idempotent, and this blocks a naive outbox.** Found 2026-08-26 while
+designing the retry: an annotation's qualifiedName is
+`Annotation::{slug}::{surveyed_at.isoformat()}::{i}` (`egeria_publisher.py:535`), so the **run
+timestamp is part of its identity**. A retry carries a new timestamp, mints a new qualifiedName, and
+therefore *creates a second annotation rather than converging on the first*. An outbox over that
+turns one transient failure into unbounded duplicates — strictly worse than today's silent loss.
+
+**The three failures rank by how visible they are, and that ordering is what makes each step worse
+than the last:** a *missing write* leaves a gap someone eventually notices; a *duplicate* is harder
+to see, because everything expected is present and merely repeated; a *cross-wire* is hardest of
+all, because the right number of results are there, each looks well-formed, and only their content
+is attached to the wrong thing.
+
+The asset path (`_find_or_create_asset`) and `publish_sub_resources` already do lookup-then-create
+and are safe to retry.
+
+**So the prerequisite has a prerequisite, and it is `annotation identity` — NOT "remove the
+timestamp".** That second phrasing is a trap, and it was this document's first wording of it. The
+qualifiedName's other component, `::{i}`, is `enumerate()`'s index over the run's annotation list
+(`egeria_publisher.py:533`) — **pure position, carrying no identity at all.** Drop the timestamp and
+keep the index, and annotation 3 of a later run converges onto annotation 3 of an earlier one, which
+is a *different logical annotation* the moment a check is added, skipped or reordered. A converging
+write then silently overwrites one result with an unrelated one.
+
+**That is strictly worse than the duplication it was meant to fix** — one step further down the
+visibility ordering above, and the step where a reader loses any way of telling.
+
+Nor is a stable identity lying around to substitute. The obvious candidate — `analysis_step` +
+`annotation_type_name`, whose docstring says it names *"WHICH result this is"*
+(`survey_report.py:31`) — collides badly against what has actually been published: measured
+2026-08-26, `egeria_workspaces_git` has 134 annotations across 7 distinct types, `egeria_git` 106
+across 9, roughly **19 annotations per name**. And `project_published_annotation_types` accumulates
+across runs, so that type count *over*-states per-run distinctness — the collision is worse than the
+ratio suggests, not better.
+
+A converging identity therefore has to be content-derived (a digest over `analysis_step` +
+`annotation_type_name` + `scope_locator` + `expression` + `summary`, or similar), or annotations must
+carry a stable key from whatever emits them. **This is a change to the annotation model, not a
+string tweak at the publish site.**
+
+One consequence to decide with it: convergence aligns Egeria with RE's *default* read —
+`query_findings` selects `MAX(surveyed_at)` (`registry.py:3148`), so locally the latest run already
+wins — while giving up the Egeria-side per-run history that exists today. RE's own history is
+untouched either way; `query_findings_history_raw` and `query_findings_all_runs` still read across
+runs.
+
+Design in `docs/outbox-publishing-design.md` (D2, §4 and top of §6's sequencing).
+
+**The outbox/retry work is a prerequisite, not a nice-to-have** — a
 half-published blueprint is worse than none.
 
 ---

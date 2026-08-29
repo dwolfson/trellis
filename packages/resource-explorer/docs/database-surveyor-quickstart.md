@@ -303,7 +303,7 @@ Ensure the user has SELECT permissions on:
 ## Related Documentation
 
 - [Database Surveyor Design](database-surveyor-design.md) - Full architecture
-- [Phase 2 Completion State](PHASE2_COMPLETION_STATE.md) - Implementation details
+- [Phase 2 Completion State](archive/PHASE2_COMPLETION_STATE.md) - Implementation details
 - [Egeria PostgreSQL Exploration](egeria-postgresql-exploration.md) - Egeria capabilities
 
 ## Support

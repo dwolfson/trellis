@@ -25,6 +25,7 @@ from trellis_artifact_tree.adapters_pdf import (
 )
 from trellis_artifact_tree.config import ArtifactTreeConfig
 from trellis_artifact_tree.diagnostics import TreeDiagnosis, diagnose
+from trellis_artifact_tree.profile import SliceProfile, compare_to, profile_trees
 from trellis_artifact_tree.model import (
     ArtifactTree,
     Node,
@@ -52,10 +53,13 @@ __all__ = [
     "PdfAdapter",
     "Node",
     "Provenance",
+    "SliceProfile",
     "Rung",
     "TreeError",
     "create_schema_sql",
+    "compare_to",
     "diagnose",
+    "profile_trees",
     "items_from_docling",
     "tree_from_items",
     "validate",

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging
 from dataclasses import dataclass
 
 from trellis_artifact_tree.model import Rung
@@ -35,6 +36,22 @@ _INSTRUCTIONS = (
     "produced it. If the evidence does not answer the question, say so and name "
     "what is missing — do not infer from absence."
 )
+
+
+logger = logging.getLogger(__name__)
+
+#: What a state means for a section with nothing to pack. The distinction the
+#: compiler could not previously make -- and did not need to invent, because
+#: surveyors/result_status.py already carries it and facts.py already applies
+#: it. "A measured zero and a never-run are the same number and opposite
+#: answers" (facts.py). Inventing a parallel vocabulary here would have been the
+#: mistake that put four retired RE perspectives beside Egeria's twelve.
+_GAP_PHRASING = {
+    "never_run": "has not run",
+    "nothing_found": "ran and found nothing — a real zero, not a missing result",
+    "not_established": "ran, but cannot be credited with this result",
+    "partial": "ran over only part of what it covers",
+}
 
 
 @dataclass(frozen=True)
@@ -159,6 +176,30 @@ def _provenance(findings: list[dict], analysis_id: str) -> tuple[dict, ...]:
     )
 
 
+def _judge_gap(fact_layer, slug: str, analysis_id: str) -> dict:
+    """Why this section has nothing, in the vocabulary that already exists.
+
+    Fail-soft to a bare name: an unjudged gap is still worth reporting, and a
+    fact layer that cannot answer must not cost the whole compile.
+    """
+    gap = {"key": analysis_id, "reason": "no candidate — resolver produced nothing yet"}
+    try:
+        fact = fact_layer.fact(slug, analysis_id)
+    except Exception:
+        logger.debug("no fact for %s/%s", slug, analysis_id, exc_info=True)
+        return gap
+    phrasing = _GAP_PHRASING.get(fact.state)
+    if not phrasing:
+        return gap
+    gap["state"] = fact.state
+    gap["reason"] = phrasing
+    if fact.last_run_at:
+        gap["last_run_at"] = fact.last_run_at
+    if fact.can_run:
+        gap["can_run"] = list(fact.can_run)
+    return gap
+
+
 def compile_context(
     registry,
     slug: str,
@@ -260,12 +301,20 @@ def compile_context(
     )
     packed = pack(spec, candidates, budget)
     m = packed.manifest
+    from resource_explorer.facts import FactLayer
+
+    _facts = FactLayer(registry)
     return CompiledContext(
         text=packed.text(),
         manifest={
             "spec_id": m.spec_id, "budget": m.budget, "used": m.used,
             "headroom": m.headroom, "packed": list(m.packed),
-            "dropped": list(m.dropped), "gaps": list(m.gaps), "notes": list(m.notes),
+            "dropped": list(m.dropped),
+            # Judged, not merely listed. The packer knows only that a section
+            # had no candidate; the fact layer knows whether that is a zero or
+            # an absence, and they are opposite answers to the same question.
+            "gaps": [_judge_gap(_facts, slug, g["key"]) for g in m.gaps],
+            "notes": list(m.notes),
         },
         derivation=derivation,
     )
