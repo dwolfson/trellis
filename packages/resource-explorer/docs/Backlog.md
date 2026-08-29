@@ -10,6 +10,42 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Next up — priorities as of 2026-08-26
+
+Marked at the end of the architecture-recovery thread. Findings 96–119 in
+`scripts/arch-spike/README.md` are that thread's record; this is what is left and
+what is deliberately not.
+
+**1. Phase 2 — Egeria projection of recovered architecture.** The stated end goal, and the
+only major piece unbuilt: **nothing from architecture recovery reaches Egeria.** Its one
+remaining prerequisite is **outbox/retry publishing** (design §8.4) — a blueprint writes far
+more elements per run than anything currently published, and the design is blunt that *"a
+half-published blueprint is worse than none."* Its other prerequisite is now done: projection
+has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
+
+**2. `security_features` should report `skipped_by_design`.** GitHub returns
+`security_and_analysis` only to repository admins, so the analysis is **structurally impossible
+for third-party repos** — 2 of 60 populated. That is a fact about the world, not a failed run,
+and it is the strongest case for that state anyone has found. Presentation session's finding.
+
+**3. The silent field-allowlist pattern**, filed under *Corpus, signals & testing*. Three
+instances in one day, one closed with a superset guard (finding 118); the sweep across other
+sites is unowned. The action that matters: check each allowlist against its **current** source
+shape, not the shape it had when written — none of the three was wrong when written.
+
+**Deliberately closed, with a measurement behind each — do not reopen without re-measuring:**
+the LLM adjudicator (the doc lens reaches Milvus's real components more cheaply where
+documentation exists); milvus site ingestion (302-loops for every user agent including a
+browser one); doc-kind chunking selection (0 of 20 collections are API-reference shaped);
+boilerplate stripping and version collapsing (both already work, finding 119); `misgrouped`'s
+emitter and guard-based branching (nothing would behave differently); Java `src` naming and the
+`cmd/X`+`pkg/X` merge (both downgraded by measurement, finding 97).
+
+**Small and real, low value:** Go cohesion without recursive rollup; `find_artifact("readme")`
+preferring a nested README over the root one; rule 17's guard validating a step's *declaration*
+rather than its behaviour.
+
+
 ## Open items
 
 Grouped by area. Within a group, the most actionable entries come first.
