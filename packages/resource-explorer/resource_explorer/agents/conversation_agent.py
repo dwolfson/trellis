@@ -205,13 +205,19 @@ class ConversationAgent(BaseExplorerAgent):
         if compiled.text.strip():
             out.append("Evidence (compiled from stored analysis results):")
             out.append(compiled.text)
-        gaps = [g["key"] for g in compiled.manifest.get("gaps", [])]
-        if gaps:
+        # Grouped by what the fact layer judged, because these are opposite
+        # answers to the same question and a single sentence cannot carry both.
+        # "ran and found nothing" is a result; "has not run" is an absence.
+        by_state: dict[str, list[str]] = {}
+        for gap in compiled.manifest.get("gaps", []):
+            by_state.setdefault(gap.get("reason", "no stored result"), []).append(gap["key"])
+        for reason, keys in sorted(by_state.items()):
+            out.append(f"Analyses that {reason}: " + ", ".join(sorted(keys)) + ".")
+        if by_state:
             out.append(
-                "Analyses that would answer this question but have no stored "
-                "result: " + ", ".join(sorted(gaps))
-                + ". Say so if the question depends on one of them. Absence of a "
-                  "finding here is absence of evidence, not evidence of absence."
+                "Say so if the question depends on one of them. An analysis that "
+                "ran and found nothing has answered; one that has not run has not. "
+                "Do not read the first as the second."
             )
         return out
 

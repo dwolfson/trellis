@@ -241,13 +241,12 @@ class TestChatRoutesThroughTheCompiler:
             blocks = self._agent()._compiled_evidence("q", "slug", [])
         joined = "\n".join(blocks)
         assert "cve_scan" in joined and "security_scan" in joined
-        assert "not evidence of absence" in joined
-        # "no stored result", never "has not run": two of egeria_git's three
-        # gaps DO run and emit an annotation explaining the empty result, so the
-        # stronger claim is false and would send a reader to re-run something
-        # that cannot help.
-        assert "no stored result" in joined
-        assert "NOT run" not in joined
+        # Judged, not flattened. "ran and found nothing" and "has not run" are
+        # the same number and opposite answers, so the prompt must not merge
+        # them -- and must not claim the stronger one for a gap it cannot
+        # support, which an earlier version did for two of three.
+        assert "opposite" not in joined  # we state the distinction, not the meta
+        assert "has not run has not" in joined
 
     def test_evidence_reaches_the_prompt(self):
         from unittest.mock import patch
@@ -284,3 +283,59 @@ class TestChatRoutesThroughTheCompiler:
              patch("resource_explorer.registry.ProjectRegistry"):
             self._agent()._compiled_evidence("q", "slug", None)
         assert m.call_args.kwargs["perspectives"] == []
+
+
+class TestGapsAreJudgedNotListed:
+    """A measured zero and a never-run are the same number and opposite
+    answers (facts.py). The packer knows only that a section had no candidate;
+    the fact layer knows which of the two it is.
+    """
+
+    def test_a_real_zero_is_not_called_missing(self):
+        from unittest.mock import MagicMock
+
+        from resource_explorer.context_compile import _judge_gap
+
+        fl = MagicMock()
+        fl.fact.return_value = MagicMock(
+            state="nothing_found", last_run_at="2026-08-28", can_run=["repo_cve_scan"])
+        gap = _judge_gap(fl, "x", "cve_scan")
+        assert gap["state"] == "nothing_found"
+        assert "real zero" in gap["reason"]
+        assert gap["can_run"] == ["repo_cve_scan"]
+
+    def test_never_run_says_so(self):
+        from unittest.mock import MagicMock
+
+        from resource_explorer.context_compile import _judge_gap
+
+        fl = MagicMock()
+        fl.fact.return_value = MagicMock(state="never_run", last_run_at="", can_run=["repo_x"])
+        assert _judge_gap(fl, "x", "a")["reason"] == "has not run"
+
+    def test_an_unjudgeable_gap_is_still_reported(self):
+        """Fail-soft: a fact layer that cannot answer must not cost the compile,
+        and an unjudged gap is still worth naming."""
+        from unittest.mock import MagicMock
+
+        from resource_explorer.context_compile import _judge_gap
+
+        fl = MagicMock()
+        fl.fact.side_effect = RuntimeError("no registry")
+        gap = _judge_gap(fl, "x", "a")
+        assert gap["key"] == "a" and "resolver produced nothing" in gap["reason"]
+        assert "state" not in gap
+
+    def test_the_vocabulary_is_borrowed_not_invented(self):
+        """result_status.py already carries these states and facts.py already
+        applies them. A parallel vocabulary here is how four retired RE
+        perspectives ended up beside Egeria's twelve."""
+        from resource_explorer import facts
+        from resource_explorer.context_compile import _GAP_PHRASING
+
+        # facts.py is the source of truth for Fact.state: it imports the
+        # result_status states AND adds PARTIAL of its own. Asserting against
+        # result_status alone was too narrow — and caught me inventing
+        # "partial" in the very code this test guards.
+        for state in _GAP_PHRASING:
+            assert hasattr(facts, state.upper()), f"{state} is not a Fact state"
