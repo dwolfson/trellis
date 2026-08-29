@@ -164,6 +164,30 @@ class ArchDetectSurveyor(BaseSurveyor):
                 log.exception("%s: interface extraction failed", self.project.slug)
                 ports, wires = [], []
 
+            # Spring applications declare their own deployment architecture:
+            # the process, its port, the sub-components it hosts, and the
+            # endpoints it reaches. For Egeria that is the difference between
+            # 235 module-path components with no wires and one platform with
+            # five servers, three internal REST edges and a Postgres
+            # dependency — the same repo read in the deployment-specification
+            # perspective rather than the physical one (design §4.1).
+            try:
+                from resource_explorer.surveyors.arch_recovery import spring_app
+                spring = spring_app.discover(root)
+                sp_components, sp_wires, sp_ev = spring_app.to_ir(spring)
+                if sp_components:
+                    components.extend(sp_components)
+                    evidence.extend(sp_ev)
+                    wires.extend(sp_wires)
+                    notes.extend(spring["notes"])
+            except Exception:
+                # Recorded, not swallowed: a failure here means the deployment
+                # perspective is missing entirely, which looks identical to a
+                # repo that declares no Spring application.
+                log.exception("%s: spring application discovery failed", self.project.slug)
+                notes.append("spring application discovery failed — deployment-perspective "
+                             "components not proposed for this run")
+
             persist_ir(
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="detect",
