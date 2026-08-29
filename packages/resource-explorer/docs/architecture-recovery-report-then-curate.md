@@ -276,6 +276,15 @@ decision to re-survey is.
 
 ## 10. Candidate clusters — the first-pass signals
 
+**Designed 2026-08-29 in `architecture-recovery-clustering.md`**, which supersedes this section's
+"undesigned work" framing. The headline: clustering must key on the **§4.1 architectural
+perspective** (physical/deployment/logical/dev — a property each component already carries, measured
+as populated: logical 1747, deployment 1300, physical 168), *not* on the question-catalog Perspective
+that was measured non-discriminating for dispatch. And splitting by perspective before grouping
+already reaches the ~10-component goal for the **deployment** perspective on most repos using
+machinery that exists (genaiexamples 546 components → 8 groups; genaicomps 289 → 4). The logical
+perspective does not (egeria_git 924 → 279) — which is exactly where §4.1 says a human is needed.
+
 What proposes a candidate blueprint. Three signals, all reading evidence RE already collects, and
 deliberately not a clustering algorithm looking for structure in the abstract:
 

@@ -1641,6 +1641,28 @@ The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-downloa
 
 ---
 
+#### Clustering: propose candidate blueprints, starting with the deployment perspective
+
+Design: `docs/architecture-recovery-clustering.md` (2026-08-29). Promoted from "parallel workstream"
+to **prerequisite for the curator review surface**, because rendering the corpus showed more than a
+quarter of repos produce a proposal no curator could read and depth alone does not fix it.
+
+Measured, and it makes the first step cheap: every component already carries a §4.1 perspective
+(logical 1747 / deployment 1300 / physical 168 across 3,215 components), and `blueprint` is empty on
+**all** of them, so clustering has never run. Applying the existing `scope_hierarchy.derive()`
+grouping *within one perspective* already reaches the ~10-component goal for **deployment** on most
+repos — genaiexamples 546 -> 8, genaicomps 289 -> 4, milvus 31 -> 5. The **logical** perspective does
+not (egeria_git 924 -> 279), and that is precisely the perspective §4.1 says "needs inference or a
+human", so the automation boundary and the design's own prediction agree.
+
+Build order in the doc: deployment-perspective clustering first (cheapest real result, and it makes
+the renderer's blueprint grouping meaningful for the first time); perspective carried in the survey
+definition so a proposal records the context it was clustered for; wire density as the second signal
+against the logical perspective; RFA the cases that will not cluster rather than emitting a
+low-confidence grouping.
+
+---
+
 #### RE has no login at all, and its identity is inconsistent across 26 sites
 
 Dan, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
