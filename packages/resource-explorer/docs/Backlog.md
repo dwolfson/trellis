@@ -52,7 +52,7 @@ Grouped by area. Within a group, the most actionable entries come first.
 
 ### Architecture recovery
 
-#### HIGH — architecture recovery: coverage is a third of the corpus, and precision is the real blocker
+#### HIGH — architecture recovery: coverage closed on 2026-08-28; precision is now the whole entry
 
 **The first version of this entry said "3 of 46, 6% coverage". That was wrong, and wrong in the
 way this project keeps being wrong: the query was `query_findings(slug, kind)`, which defaults to
@@ -65,6 +65,24 @@ found `docling_parse` (1 component) and missed `milvus` (202).** Corrected with
 repos the gate approves for recovery          46
 repos WITH architecture_recovery results      16   (15 of them gate=run)
 ```
+
+**Superseded 2026-08-28 — coverage is no longer the blocker.** A batch landed after the
+measurement above: the findings histogram runs 1 → 5 → 10 → 31 → 42 resources across
+2026-08-21..26. Re-measured live on 2026-08-28: **46 of 60 registered repos now carry
+architecture_recovery results**, against 16 when this was written. The 14 without are
+largely gate-excluded (a docs site, an awesome-list, an unindexed new repo).
+
+A separate session measured the gate-eligible slice specifically and reports 45 gate=run
+resources fully accounted for — 41 with results, 3 with a *verified* real zero
+(`outcome_known_positive=true`, `no_components_detected`), and 1 (`unitycatalog_rs`)
+genuinely unverified because it is 100% Rust and the marker languages are Go, Java and
+Python. **Those figures are theirs, not reproduced here**: I verified the headline
+independently and got a different denominator (all repos, not gate=run), which is enough
+to retire "a third of the corpus" but not enough to restate their breakdown as mine. See
+`docs/task-list-2026-08-28.md` for that measurement.
+
+So the remaining work in this entry is **precision, not coverage**. The note below about
+the measuring instrument still stands and is why the original number was wrong twice.
 
 Fifth instance of the measuring instrument being the broken part, after findings 73, 79, 90 and
 the `resolve_doc_locations`/`build_report` timing confusion. The standing prior holds: **when a
