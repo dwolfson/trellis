@@ -30,7 +30,8 @@ def _platform(tmp_path, name="Test Platform", servers="a,b", port="7443", extra=
 
 class TestPlatformDiscovery:
     def test_a_repo_with_no_properties_declares_nothing(self, tmp_path):
-        assert spring_app.discover(str(tmp_path)) == {"platforms": [], "wires": [], "notes": []}
+        assert spring_app.discover(str(tmp_path)) == {"platforms": [], "wires": [],
+                                                      "ports": [], "notes": []}
 
     def test_the_platform_and_its_port_are_read(self, tmp_path):
         out = spring_app.discover(str(_platform(tmp_path)))
@@ -154,7 +155,7 @@ class TestIRProjection:
         process, a port and a config, and are reached THROUGH it via
         /servers/{serverName}/... — that is affinity, so composition."""
         found = spring_app.discover(str(_platform(tmp_path, name="P", servers="s1,s2")))
-        components, _, _ = spring_app.to_ir(found)
+        components, _, _, _ = spring_app.to_ir(found)
         platform = [c for c in components if c.parent_slug == ""][0]
         servers = [c for c in components if c.parent_slug]
         assert len(servers) == 2
@@ -162,17 +163,17 @@ class TestIRProjection:
 
     def test_components_are_in_the_deployment_perspective(self, tmp_path):
         found = spring_app.discover(str(_platform(tmp_path)))
-        components, _, _ = spring_app.to_ir(found)
+        components, _, _, _ = spring_app.to_ir(found)
         assert {c.perspective for c in components} == {"deployment"}
 
     def test_a_third_party_endpoint_becomes_a_third_party_component(self, tmp_path):
         root = _platform(tmp_path, extra="spring.datasource.url=jdbc:postgresql://db:5432/x")
-        components, _, _ = spring_app.to_ir(spring_app.discover(str(root)))
+        components, _, _, _ = spring_app.to_ir(spring_app.discover(str(root)))
         assert any(c.type == "Third Party Process" and c.name == "PostgreSQL" for c in components)
 
     def test_every_component_carries_evidence(self, tmp_path):
         found = spring_app.discover(str(_platform(tmp_path, servers="a,b")))
-        components, _, evidence = spring_app.to_ir(found)
+        components, _, _, evidence = spring_app.to_ir(found)
         assert {e.subject_slug for e in evidence} == {c.slug for c in components}
 
     def test_the_slug_is_not_prefixed_with_the_discoverer_name(self, tmp_path):
@@ -180,7 +181,7 @@ class TestIRProjection:
         named after the tool — the same failure as `docker_compose::`. The first
         slug segment must be the platform's own name."""
         found = spring_app.discover(str(_platform(tmp_path, name="Alpha", servers="s")))
-        components, _, _ = spring_app.to_ir(found)
+        components, _, _, _ = spring_app.to_ir(found)
         assert all(not c.slug.startswith("spring::") for c in components)
         assert any(c.slug == "Alpha" for c in components)
 
@@ -188,8 +189,99 @@ class TestIRProjection:
         (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
         _platform(tmp_path / "a", name="Alpha", servers="x,y")
         _platform(tmp_path / "b", name="Beta", servers="p,q")
-        components, _, _ = spring_app.to_ir(spring_app.discover(str(tmp_path)))
+        components, _, _, _ = spring_app.to_ir(spring_app.discover(str(tmp_path)))
         rows = [{"slug": c.slug, "scope_locator": c.slug, "perspective": c.perspective,
                  "identity": c.identity} for c in components]
         clusters = clustering.propose(rows, "deployment")
         assert {c.name for c in clusters} == {"Alpha", "Beta"}
+
+
+class TestTopicPorts:
+    """A Kafka topic a server publishes to or consumes from is an exposed
+    surface — a PORT, not a wire to a broker. The broker is infrastructure; the
+    topics are what components offer each other, and SolutionPortDirection
+    already carries publish/consume."""
+
+    def _server_with(self, tmp_path, connections):
+        d = tmp_path / "data" / "servers" / "s" / "config"
+        d.mkdir(parents=True)
+        (d / "s.config").write_text(json.dumps({"localServerName": "s",
+                                                "accessServicesConfig": connections}))
+        return _platform(tmp_path, servers="s")
+
+    def _topic(self, address, provider="o.o.KafkaOpenMetadataTopicProvider", key="accessServiceOutTopic"):
+        return {key: {"endpoint": {"networkAddress": address},
+                      "connectorType": {"connectorProviderClassName": provider}}}
+
+    def test_a_kafka_topic_becomes_a_port(self, tmp_path):
+        root = self._server_with(tmp_path, [self._topic("egeria.omag.server.s.omas.x.outTopic")])
+        ports = spring_app.discover(str(root))["ports"]
+        assert len(ports) == 1
+        assert ports[0]["protocol"] == "Kafka"
+        assert ports[0]["component"] == "s"
+
+    def test_an_out_topic_is_an_output_port(self, tmp_path):
+        root = self._server_with(tmp_path, [self._topic("t.outTopic")])
+        assert spring_app.discover(str(root))["ports"][0]["direction"] == "Output"
+
+    def test_an_in_topic_is_an_input_port(self, tmp_path):
+        root = self._server_with(tmp_path, [self._topic("t.inTopic", key="accessServiceInTopic")])
+        assert spring_app.discover(str(root))["ports"][0]["direction"] == "Input"
+
+    def test_direction_comes_from_the_declaration_not_the_topic_name(self, tmp_path):
+        """The enclosing key is the declaration; the address is a name someone
+        chose and could say anything."""
+        root = self._server_with(tmp_path, [self._topic("nothing-informative", key="accessServiceOutTopic")])
+        assert spring_app.discover(str(root))["ports"][0]["direction"] == "Output"
+
+    def test_a_non_topic_endpoint_is_not_a_port(self, tmp_path):
+        """`endpoint.networkAddress` carries REST URLs, secrets stores and
+        archive files too. Keying on the address swept in 6 non-topics out of
+        14 for egeria; the connector provider is what declares the kind."""
+        root = self._server_with(tmp_path, [
+            self._topic("content-packs/X.omarchive",
+                        provider="o.o.FileBasedOpenMetadataArchiveStoreProvider"),
+            self._topic("https://host/servers/s",
+                        provider="o.o.OMRSRESTRepositoryConnectorProvider"),
+        ])
+        assert spring_app.discover(str(root))["ports"] == []
+
+    def test_any_topic_provider_qualifies_not_just_kafka(self, tmp_path):
+        """Matched on the provider name ending, so a new topic connector is
+        caught by convention rather than by an allow-list that goes stale."""
+        root = self._server_with(tmp_path, [
+            self._topic("mem.topic", provider="o.o.InMemoryOpenMetadataTopicProvider")])
+        assert len(spring_app.discover(str(root))["ports"]) == 1
+
+    def test_a_common_service_topic_is_marked_not_dropped(self, tmp_path):
+        """FFDC is a common service present in every server by default
+        (egeria-project.org/services). Its topic is a true port but an
+        identical one everywhere, so a consumer wanting what DISTINGUISHES
+        servers must be able to tell it apart."""
+        root = self._server_with(tmp_path, [self._topic("egeria.omag.server.default.ffdc.audit-logs")])
+        port = spring_app.discover(str(root))["ports"][0]
+        assert port["additionalProperties"]["commonService"] == "true"
+
+    def test_a_service_specific_topic_is_not_marked_common(self, tmp_path):
+        root = self._server_with(tmp_path, [self._topic("egeria.omag.server.s.omas.x.outTopic")])
+        port = spring_app.discover(str(root))["ports"][0]
+        assert port["additionalProperties"]["commonService"] == "false"
+
+    def test_a_topic_name_is_recorded_exactly_as_declared(self, tmp_path):
+        """`egeria.omag.egeria.omag.server.default.ffdc.audit-logs` is not a
+        doubled root: it reflects the platform, the generic server component and
+        a default service. Reading it as a defect was wrong, and "correcting" a
+        name that carries structure would destroy the structure."""
+        declared = "egeria.omag.egeria.omag.server.default.ffdc.audit-logs"
+        root = self._server_with(tmp_path, [self._topic(declared)])
+        assert spring_app.discover(str(root))["ports"][0]["name"] == declared
+
+    def test_the_same_topic_reached_twice_is_one_port(self, tmp_path):
+        root = self._server_with(tmp_path, [self._topic("t.outTopic"), self._topic("t.outTopic")])
+        assert len(spring_app.discover(str(root))["ports"]) == 1
+
+    def test_ports_are_attributed_to_the_server_slug_in_the_ir(self, tmp_path):
+        root = self._server_with(tmp_path, [self._topic("t.outTopic")])
+        components, ports, _, _ = spring_app.to_ir(spring_app.discover(str(root)))
+        server = [c for c in components if c.parent_slug][0]
+        assert ports[0]["component"] == server.slug

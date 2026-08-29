@@ -258,6 +258,100 @@ _SERVER_KIND_BY_BLOCK = {
 }
 
 
+#: An event topic a server publishes to or consumes from is an **interface** —
+#: an exposed surface — so it is a PORT, not a wire to a broker. The broker is
+#: infrastructure; the topics are what components offer each other.
+#: `SolutionPortDirection` already carries the distinction: publishing is
+#: Output, consuming is Input.
+_TOPIC_DIRECTION_HINTS = (("outtopic", "Output"), ("intopic", "Input"))
+
+#: Egeria's **common services** are present in every server by default
+#: (https://egeria-project.org/services/ — the platform is a chassis with
+#: pluggable OMAS/OMVS/OMES services plus common services). FFDC —
+#: first-failure data capture — is one of them, which is why every server
+#: carries an `...default.ffdc.audit-logs` topic. Marked rather than dropped: it
+#: is a true port, but an identical one on every server, so a consumer that
+#: wants what DISTINGUISHES servers needs to be able to tell it apart from a
+#: service-specific topic.
+_COMMON_SERVICE_MARKERS = ("ffdc", ".default.")
+
+#: What makes an endpoint a TOPIC is its connector provider, not its address.
+#: `endpoint.networkAddress` carries every kind of endpoint a server declares —
+#: REST URLs, secrets stores, archive files — so keying on the address string
+#: would sweep all of them in (measured: 14 "topics" for egeria, of which 5 were
+#: real). The connection declares what it is:
+#:
+#:     KafkaOpenMetadataTopicProvider          -> an event topic
+#:     InMemoryOpenMetadataTopicProvider       -> an event topic, in-process
+#:     FileBasedOpenMetadataArchiveStoreProvider -> a file, not a topic
+#:     OMRSRESTRepositoryConnectorProvider     -> a REST endpoint, not a topic
+#:
+#: Matched on the provider class name ending, so a provider in any package
+#: qualifies and a new topic connector is caught by naming convention rather
+#: than by an allow-list that goes stale.
+_TOPIC_PROVIDER_SUFFIX = "topicprovider"
+
+
+def _topic_ports(cfg: dict, server_name: str, path: str) -> list[dict]:
+    """Event-topic ports declared in a server's configuration.
+
+    Topics live at `endpoint.networkAddress` under whichever connection declares
+    them — `accessServicesConfig[i].accessServiceOutTopic` for an OMAS out-topic,
+    `repositoryServicesConfig.auditLogConnections[i]` for the audit log — so the
+    walk keys on that address and reads DIRECTION from the enclosing key rather
+    than from the topic string. The enclosing key is the declaration; the string
+    is a name someone chose.
+
+    Topic names are recorded exactly as declared. `egeria.omag.egeria.omag.
+    server.default.ffdc.audit-logs` is not a doubled root: the naming reflects
+    the platform (`egeria.omag`), the generic server component
+    (`egeria.omag.server`) and a default service (`default.ffdc.audit-logs`).
+    An earlier reading of this as a defect was wrong, and "correcting" a name
+    that carries structure would destroy the structure.
+    """
+    found: list[dict] = []
+
+    def walk(node, enclosing: str) -> None:
+        if isinstance(node, dict):
+            endpoint = node.get("endpoint")
+            address = endpoint.get("networkAddress") if isinstance(endpoint, dict) else None
+            connector = node.get("connectorType")
+            provider = (connector.get("connectorProviderClassName", "")
+                        if isinstance(connector, dict) else "")
+            is_topic = provider.lower().endswith(_TOPIC_PROVIDER_SUFFIX)
+            if isinstance(address, str) and address.strip() and is_topic:
+                lowered = enclosing.lower()
+                direction = next((d for hint, d in _TOPIC_DIRECTION_HINTS if hint in lowered),
+                                 "Unknown")
+                common = any(m in address.lower() for m in _COMMON_SERVICE_MARKERS)
+                found.append({
+                    "component": server_name,
+                    "name": address.strip(),
+                    "direction": direction,
+                    "protocol": "Kafka",
+                    "evidence": {"path": path, "line": 0},
+                    "provider": provider.rsplit(".", 1)[-1],
+                    "detail": (f"event topic declared in `{enclosing}` "
+                               f"({provider.rsplit('.', 1)[-1]})"
+                               + (" — a common service present in every server by default"
+                                  if common else "")),
+                    "additionalProperties": {"commonService": "true" if common else "false"},
+                })
+            for k, v in node.items():
+                walk(v, k if k != "endpoint" else enclosing)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, enclosing)
+
+    walk(cfg, "")
+    # One port per topic name: the same topic reached through several nested
+    # connections is one interface, not several.
+    unique: dict[str, dict] = {}
+    for port in found:
+        unique.setdefault(port["name"], port)
+    return sorted(unique.values(), key=lambda p: p["name"])
+
+
 def _referenced_servers(node, out: set) -> None:
     """Every `omagserverName` at any depth.
 
@@ -287,11 +381,12 @@ def discover(root: str) -> dict:
     prop_files = _properties_files(root)
     entries = _spring_entry_points(root)
     if not prop_files:
-        return {"platforms": [], "wires": [], "notes": []}
+        return {"platforms": [], "wires": [], "ports": [], "notes": []}
 
     notes: list[str] = []
     platforms: list[dict] = []
     wires: list[dict] = []
+    ports: list[dict] = []
 
     for rel in prop_files:
         props = _read_properties(os.path.join(root, rel))
@@ -319,7 +414,8 @@ def discover(root: str) -> dict:
                 _referenced_servers(cfg, refs)
                 refs.discard(sub)
                 servers.append({"name": sub, "kind": kind, "calls": sorted(refs),
-                                "config_source": source})
+                                "config_source": source,
+                                "topics": _topic_ports(cfg, sub, rel) if cfg else []})
 
         endpoints: list[dict] = []
         for key, value in sorted(props.items()):
@@ -347,6 +443,9 @@ def discover(root: str) -> dict:
             "servers": servers, "endpoints": endpoints,
             "spring_entry_points": entries,
         })
+
+        for server in servers:
+            ports.extend(server.get("topics") or [])
 
         known = {s["name"] for s in servers}
         for s in servers:
@@ -377,7 +476,7 @@ def discover(root: str) -> dict:
                      + ", ".join(p["name"] for p in platforms)
                      + " — an environment may also span platforms declared elsewhere, "
                        "which a repo-scoped analysis cannot see")
-    return {"platforms": platforms, "wires": wires, "notes": notes}
+    return {"platforms": platforms, "wires": wires, "ports": ports, "notes": notes}
 
 
 # ── projection into the IR ───────────────────────────────────────────────────
@@ -416,7 +515,7 @@ def _slug(*parts: str) -> str:
 
 
 def to_ir(found: dict):
-    """`(components, wires, evidence)` for `persist_ir`.
+    """`(components, ports, wires, evidence)` for `persist_ir`.
 
     The platform is a component and its servers are its **sub-components**, not
     a Collection: they share a process, a port and a configuration, and they are
@@ -430,6 +529,10 @@ def to_ir(found: dict):
     components: list = []
     wires: list = list(found.get("wires") or [])
     evidence: list = []
+    # Topic ports are attributed to the SERVER that declares them, so their
+    # `component` must be the server's slug rather than its bare name.
+    ports: list = []
+    slug_by_server: dict = {}
     seen_third_party: set = set()
 
     for platform in found.get("platforms") or []:
@@ -465,6 +568,7 @@ def to_ir(found: dict):
                              + ("its deployment configuration"
                                 if server.get("config_source") == CONFIG_SOURCE_DEPLOYMENT
                                 else "a sample configuration in this repo, not this deployment"))
+            slug_by_server[server["name"]] = sslug
             evidence.append(Evidence(
                 subject_kind="component", subject_slug=sslug,
                 assertion=f"{server['name']} is declared in {platform['path']}'s "
@@ -492,4 +596,9 @@ def to_ir(found: dict):
                 detector="spring:declared-endpoint", confidence=_DECLARED_CONFIDENCE,
                 locations=[Location(path=platform["path"], line=0)],
             ))
-    return components, wires, evidence
+    for port in found.get("ports") or []:
+        owner = slug_by_server.get(port.get("component"))
+        if not owner:
+            continue
+        ports.append({**port, "component": owner})
+    return components, ports, wires, evidence

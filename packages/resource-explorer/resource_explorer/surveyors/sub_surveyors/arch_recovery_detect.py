@@ -174,10 +174,11 @@ class ArchDetectSurveyor(BaseSurveyor):
             try:
                 from resource_explorer.surveyors.arch_recovery import spring_app
                 spring = spring_app.discover(root)
-                sp_components, sp_wires, sp_ev = spring_app.to_ir(spring)
+                sp_components, sp_ports, sp_wires, sp_ev = spring_app.to_ir(spring)
                 if sp_components:
                     components.extend(sp_components)
                     evidence.extend(sp_ev)
+                    ports.extend(sp_ports)
                     wires.extend(sp_wires)
                     notes.extend(spring["notes"])
             except Exception:
