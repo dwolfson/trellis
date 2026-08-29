@@ -221,8 +221,12 @@ def persist_ir(
             # where the parent came from.
             c.depth = _scope_depth(slug_to_scope.get(c.slug, ""))
 
-
-
+    # Candidate blueprints. Runs BEFORE the component rows are written so each
+    # component's persisted detail carries the blueprint it was assigned to —
+    # writing the rows first and clustering after would persist an empty
+    # blueprint on every one of them, which is the state the corpus was in
+    # until today (3,215 components, `blueprint` empty on all of them).
+    cluster_sets = _cluster(components, slug_to_scope)
 
     for c in components:
         loc = slug_to_scope[c.slug]
@@ -383,10 +387,145 @@ def persist_ir(
         _persist_interfaces(registry, slug, surveyed_at, ports or [], wires or [],
                             name_to_scope)
 
+    _persist_blueprints(registry, slug, cluster_sets, surveyed_at, run_scope)
+
     _persist_diagram(registry, slug, components, ports or [], wires or [],
                      surveyed_at, run_scope)
 
     return slug_to_scope
+
+
+def _cluster(components: list[Component], slug_to_scope: dict[str, str]) -> dict:
+    """Propose candidate blueprints per perspective, and assign them.
+
+    One clustering per §4.1 perspective, never one across all of them: the
+    perspectives are different views of the same repo with different sources and
+    vocabularies, and mixing them inside one blueprint repeats the Phase 0
+    scoring error (a deployment detector scored against logical ground truth) at
+    the level of a single proposed solution.
+
+    Returns `{"clusters": {perspective: [top-level Cluster]}, "errors":
+    {perspective: message}}`. Failure here must not lose the run — clustering is
+    a proposal *about* the components, and the components are the finding — but
+    it must not vanish either: a swallowed failure looks exactly like a
+    perspective that had nothing to group.
+    """
+    from . import clustering
+
+    # scope_locator is what clustering groups on, and it lives in the mapping
+    # rather than on the Component, so surface it without mutating the IR.
+    scoped = [
+        {"slug": c.slug, "scope_locator": slug_to_scope.get(c.slug, c.slug),
+         "perspective": c.perspective, "identity": c.identity, "_component": c}
+        for c in components
+    ]
+    out: dict = {}
+    errors: dict = {}
+    for perspective in sorted({c.perspective for c in components if c.perspective}):
+        try:
+            flat = clustering.propose(scoped, perspective)
+            if not flat:
+                continue
+            top = clustering.rollup(flat)
+            clustering.assign(scoped, top)
+            out[perspective] = top
+        except Exception as exc:
+            # Recorded, not just logged. A clustering failure and a perspective
+            # with nothing to cluster both produce zero blueprints, and under
+            # report-then-curate that difference matters to the curator: one
+            # means "no grouping was found", the other means "we did not manage
+            # to look". `_persist_blueprints` writes this as a finding.
+            log.warning("clustering failed for perspective %r: %s", perspective, exc)
+            errors[perspective] = f"{type(exc).__name__}: {exc}"
+
+    # Copy assignments back onto the real Components so the persisted rows and
+    # the rendered diagram both carry them.
+    for row in scoped:
+        if row.get("blueprint"):
+            row["_component"].blueprint = row["blueprint"]
+    return {"clusters": out, "errors": errors}
+
+
+#: Candidate blueprints live under their OWN kind, for the same reason the
+#: diagram does: they are whole-resource, and every `architecture_recovery`
+#: finding is component-scoped, so a whole-resource row under KIND would make
+#: `context_compile.py`'s default-scope `query_findings` return exactly one row
+#: and suppress its fall-through to the results reader.
+BLUEPRINT_KIND = "architecture_blueprints"
+
+
+def _persist_blueprints(registry, slug: str, cluster_sets: dict,
+                        surveyed_at: str, run_scope: str) -> None:
+    """Write candidate blueprints as findings — one row per cluster.
+
+    `check_name` is the constant "candidate_blueprint", with the cluster's name
+    in `label`. Deliberately NOT a dynamic `blueprint:{name}` check_name: ports
+    and wires are written that way and it cost three wrong "zero" measurements
+    in one session, because an exact-match query against a computed check_name
+    silently returns nothing. A stable check_name is queryable; the name belongs
+    in a field.
+    """
+    clusters_by_perspective = cluster_sets.get("clusters") or {}
+    errors = cluster_sets.get("errors") or {}
+    if not clusters_by_perspective and not errors:
+        return
+
+    def rows_for(cluster, perspective: str, parent: str = "") -> list[dict]:
+        rows = [{
+            "check_name": "candidate_blueprint",
+            "label": cluster.name,
+            "summary": (f"{cluster.size} component(s), {perspective} perspective"
+                        + (f", nested under {parent}" if parent else "")
+                        + (" — OVER the ~10 goal and no further declared structure"
+                           if cluster.oversized else "")),
+            # Not a confidence claim about the architecture: a cluster is a
+            # proposal that these components belong together, and its members
+            # carry their own confidence. See the same note on the diagram.
+            "confidence": 0,
+            "detail": {
+                "name": cluster.name,
+                "perspective": perspective,
+                "signal": cluster.signal,
+                "size": cluster.size,
+                "members": sorted(cluster.members),
+                "children": [c.name for c in cluster.children],
+                "parent": parent,
+                "oversized": cluster.oversized,
+                "target_size": clustering_target(),
+                "run_scope": run_scope,
+                "not_a_claim": True,
+            },
+        }]
+        for child in cluster.children:
+            rows.extend(rows_for(child, perspective, cluster.name))
+        return rows
+
+    findings: list[dict] = []
+    for perspective, clusters in sorted(clusters_by_perspective.items()):
+        for cluster in clusters:
+            findings.extend(rows_for(cluster, perspective))
+
+    # A perspective whose clustering raised. Written as its own check_name so a
+    # reader can tell "no blueprints because nothing grouped" from "no
+    # blueprints because the attempt failed" — the distinction the
+    # no-silent-success ratchet exists to preserve.
+    for perspective, message in sorted(errors.items()):
+        findings.append({
+            "check_name": "clustering_failed",
+            "label": perspective,
+            "summary": f"clustering raised for the {perspective} perspective: {message}",
+            "confidence": 0,
+            "detail": {"perspective": perspective, "error": message,
+                       "run_scope": run_scope},
+        })
+    if findings:
+        registry.upsert_finding(slug, BLUEPRINT_KIND, findings,
+                                surveyed_at=surveyed_at, scope_locator="")
+
+
+def clustering_target() -> int:
+    from . import clustering
+    return clustering.TARGET_CLUSTER_SIZE
 
 
 def _persist_diagram(registry, slug: str, components: list[Component],

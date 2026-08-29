@@ -249,16 +249,24 @@ class TestStructuralBlueprintInheritance:
         end_at = out.rindex("end")
         assert bp_at < grouping_at < end_at
 
-    def test_children_spanning_two_blueprints_leave_the_group_unassigned(self):
-        """Disagreement is a fact worth seeing, not one to resolve by majority —
-        so the group claims no blueprint and each child states its own."""
+    def test_children_spanning_two_blueprints_are_separated_into_them(self):
+        """Composition nests components INSIDE a blueprint and does not reach
+        across one — a blueprint is a Collection, and membership of it is
+        independent of the composition parent. Where they disagree the blueprint
+        is the outer container, because a scope-locator grouping node that
+        straddles two blueprints is exactly the misleading grouping clustering
+        exists to replace."""
         ir = _ir([_c("internal/a", parent="internal", depth=1, blueprint="alpha"),
                   _c("internal/b", parent="internal", depth=1, blueprint="beta")])
         out = mermaid.render(ir, max_depth=None)
-        assert "grouping only" in out
-        assert "Blueprint: alpha" not in out       # no blueprint subgraph claimed
-        assert "blueprint: alpha" in out           # stated on the child instead
-        assert "blueprint: beta" in out
+        assert "Blueprint: alpha" in out
+        assert "Blueprint: beta" in out
+
+    def test_a_grouping_node_left_with_no_children_is_not_drawn(self):
+        """It would be a node a reader steps through to reach nothing."""
+        ir = _ir([_c("internal/a", parent="internal", depth=1, blueprint="alpha"),
+                  _c("internal/b", parent="internal", depth=1, blueprint="beta")])
+        assert "grouping only" not in mermaid.render(ir, max_depth=None)
 
     def test_a_component_inside_its_own_blueprint_does_not_restate_it(self):
         """Noise: the enclosing subgraph already says it."""

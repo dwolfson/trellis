@@ -248,7 +248,8 @@ def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) 
     structural_nodes: list[str] = []
 
     def emit(c, indent: str, enclosing_bp: str = "") -> None:
-        children = [k for k in kids.get(c.slug, []) if k.slug in shown_slugs]
+        children = [k for k in kids.get(c.slug, [])
+                    if k.slug in shown_slugs and _parent_in_same_blueprint(k)]
         is_structural = c.slug in structural
         # What the node this one sits inside claims about blueprint membership;
         # a grouping node passes its own (possibly inherited) value down.
@@ -277,7 +278,37 @@ def render(ir: IR, max_depth: int | None = projection.DEFAULT_PROJECTION_DEPTH) 
     # so this groups by the `blueprint` a component was assigned rather than
     # assuming one per repo. Components with no blueprint are drawn ungrouped
     # rather than swept into a default one they were never assigned to.
-    roots = [c for c in shown if (c.parent_slug or "") not in shown_slugs]
+    # Composition nests components INSIDE a blueprint; it does not reach across
+    # one. A blueprint is a Collection (design §3.3a) and a component's
+    # membership of it is independent of its composition parent — so where the
+    # two disagree, the blueprint is the outer container and the composition
+    # link is not drawn.
+    #
+    # This is not a display preference. A scope locator keeps only the last path
+    # segment, so genaicomps' 203 deployment components all carry the parent
+    # `docker_compose` while clustering — reading `identity.deployment_context`,
+    # the path that actually declared them — finds dozens of separate compose
+    # files. Honouring composition there nests every component under one
+    # grouping node that no artifact declares, reproducing the unreadable flat
+    # list clustering exists to fix.
+    def _parent_in_same_blueprint(c) -> bool:
+        parent_slug = getattr(c, "parent_slug", "") or ""
+        if parent_slug not in shown_slugs:
+            return False
+        parent = by_slug[parent_slug]
+        own_bp = getattr(c, "blueprint", "") or ""
+        parent_bp = getattr(parent, "blueprint", "") or ""
+        return own_bp == parent_bp
+
+    roots = [c for c in shown if not _parent_in_same_blueprint(c)]
+    # A grouping node whose children all moved into blueprints groups nothing.
+    # `scope_hierarchy`'s rule — "a parent of one child is not a parent" —
+    # applies with more force at zero: it would be a node a reader steps through
+    # to reach nothing.
+    roots = [c for c in roots
+             if c.slug not in structural
+             or any(k.slug in shown_slugs and _parent_in_same_blueprint(k)
+                    for k in kids.get(c.slug, []))]
     by_blueprint: dict[str, list[Component]] = {}
     for c in roots:
         by_blueprint.setdefault(c.blueprint or "", []).append(c)
