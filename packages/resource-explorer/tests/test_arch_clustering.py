@@ -177,3 +177,74 @@ class TestDeterminism:
         a = [(c.name, tuple(c.members)) for c in clustering.propose(comps, "deployment")]
         b = [(c.name, tuple(c.members)) for c in clustering.propose(list(reversed(comps)), "deployment")]
         assert a == b
+
+
+class TestAffinityPromotesToComposition:
+    """Dan's rule, 2026-08-29: *no affinity leads you to collections.* Where the
+    members cohere there is evidence the containing thing exists, and a
+    component is the honest carrier; where they are merely co-located, a
+    Collection is.
+
+    The bar is `coupling.COHESIVE_BAR`, reused rather than redefined — and
+    measured to be robust: across 1,085 import_cohesion values from milvus,
+    egeria and egeria-workspaces, only 2 fall between 0.3 and 0.7. The metric is
+    bimodal, so the exact bar barely matters.
+    """
+
+    def _comps(self):
+        return [_c("svc/a"), _c("svc/b"), _c("svc/c")]
+
+    def test_without_cohesion_data_a_group_stays_a_collection(self):
+        """The correct default: co-location says where things were declared,
+        not that they belong to one another."""
+        clusters = clustering.propose(self._comps(), "deployment")
+        assert clusters[0].carrier == "collection"
+
+    def test_low_cohesion_stays_a_collection(self):
+        clusters = clustering.propose(self._comps(), "deployment", cohesion={"svc": 0.05})
+        assert clusters[0].carrier == "collection"
+
+    def test_high_cohesion_becomes_a_composition(self):
+        clusters = clustering.propose(self._comps(), "deployment", cohesion={"svc": 0.98})
+        assert clusters[0].carrier == "composition"
+        assert clusters[0].composed_into == "svc"
+        assert "import-cohesion" in clusters[0].signal
+
+    def test_the_bar_is_couplings_own_constant_not_a_new_one(self):
+        from resource_explorer.surveyors.arch_recovery import coupling
+        just_over = clustering.propose(self._comps(), "deployment",
+                                       cohesion={"svc": coupling.COHESIVE_BAR})
+        just_under = clustering.propose(self._comps(), "deployment",
+                                        cohesion={"svc": coupling.COHESIVE_BAR - 0.01})
+        assert just_over[0].carrier == "composition"
+        assert just_under[0].carrier == "collection"
+
+    def test_a_cohesive_group_is_not_split_to_meet_the_presentation_goal(self):
+        """Cohesion is the evidence that this is ONE thing. Splitting it to hit
+        a display target would discard the signal that justified asserting it."""
+        comps = [_c(f"svc/s{i}") for i in range(25)]
+        clusters = clustering.propose(comps, "deployment", cohesion={"svc": 0.9})
+        assert len(clusters) == 1
+        assert clusters[0].oversized is False
+        assert clusters[0].size == 25
+
+    def test_assign_makes_members_sub_components_not_blueprint_members(self):
+        comps = self._comps()
+        clusters = clustering.propose(comps, "deployment", cohesion={"svc": 0.98})
+        clustering.assign(comps, clusters)
+        assert all(not c.get("blueprint") for c in comps)
+        assert {c["parent_slug"] for c in comps} == {"svc"}
+
+    def test_a_component_is_not_made_its_own_parent(self):
+        comps = [_c("svc"), _c("svc/a"), _c("svc/b")]
+        clusters = clustering.propose(comps, "deployment", cohesion={"svc": 0.98})
+        clustering.assign(comps, clusters)
+        me = [c for c in comps if c["slug"] == "svc"][0]
+        assert me.get("parent_slug") != "svc"
+
+    def test_collections_and_compositions_can_coexist_in_one_proposal(self):
+        comps = [_c("tight/a"), _c("tight/b"), _c("loose/a"), _c("loose/b")]
+        clusters = clustering.propose(comps, "deployment", cohesion={"tight": 0.9, "loose": 0.01})
+        carriers = {c.name: c.carrier for c in clusters}
+        assert carriers["tight"] == "composition"
+        assert carriers["loose"] == "collection"

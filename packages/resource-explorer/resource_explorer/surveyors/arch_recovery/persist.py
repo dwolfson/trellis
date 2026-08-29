@@ -226,7 +226,7 @@ def persist_ir(
     # writing the rows first and clustering after would persist an empty
     # blueprint on every one of them, which is the state the corpus was in
     # until today (3,215 components, `blueprint` empty on all of them).
-    cluster_sets = _cluster(components, slug_to_scope)
+    cluster_sets = _cluster(components, slug_to_scope, extra_metrics)
 
     for c in components:
         loc = slug_to_scope[c.slug]
@@ -395,7 +395,8 @@ def persist_ir(
     return slug_to_scope
 
 
-def _cluster(components: list[Component], slug_to_scope: dict[str, str]) -> dict:
+def _cluster(components: list[Component], slug_to_scope: dict[str, str],
+             extra_metrics: dict | None = None) -> dict:
     """Propose candidate blueprints per perspective, and assign them.
 
     One clustering per §4.1 perspective, never one across all of them: the
@@ -419,11 +420,23 @@ def _cluster(components: list[Component], slug_to_scope: dict[str, str]) -> dict
          "perspective": c.perspective, "identity": c.identity, "_component": c}
         for c in components
     ]
+    # Affinity: import cohesion per scope, from the metrics the coupling step
+    # attaches. Where present and at/above the bar, a group is carried as a
+    # composed component rather than a Collection (Dan's rule: no affinity
+    # leads you to collections). Absent — as it is for every run of the detect
+    # step, which computes no cohesion — every group stays a Collection, which
+    # is the correct default rather than a degraded one.
+    cohesion = {
+        scope: metrics["import_cohesion"]
+        for scope, metrics in (extra_metrics or {}).items()
+        if isinstance(metrics, dict) and "import_cohesion" in metrics
+    }
+
     out: dict = {}
     errors: dict = {}
     for perspective in sorted({c.perspective for c in components if c.perspective}):
         try:
-            flat = clustering.propose(scoped, perspective)
+            flat = clustering.propose(scoped, perspective, cohesion=cohesion)
             if not flat:
                 continue
             top = clustering.rollup(flat)
@@ -443,6 +456,8 @@ def _cluster(components: list[Component], slug_to_scope: dict[str, str]) -> dict
     for row in scoped:
         if row.get("blueprint"):
             row["_component"].blueprint = row["blueprint"]
+        if row.get("parent_slug"):
+            row["_component"].parent_slug = row["parent_slug"]
     return {"clusters": out, "errors": errors}
 
 
@@ -486,6 +501,8 @@ def _persist_blueprints(registry, slug: str, cluster_sets: dict,
                 "name": cluster.name,
                 "perspective": perspective,
                 "signal": cluster.signal,
+                "carrier": cluster.carrier,
+                "composed_into": cluster.composed_into,
                 "size": cluster.size,
                 "members": sorted(cluster.members),
                 "children": [c.name for c in cluster.children],

@@ -41,6 +41,31 @@ log = logging.getLogger(__name__)
 #: deployment clusters already sit within it.
 TARGET_CLUSTER_SIZE = 10
 
+#: Affinity is what separates a composed component from a Collection (Dan,
+#: 2026-08-29: *"no affinity leads you to collections"*). The bar is
+#: `coupling.COHESIVE_BAR` — **reused, never redefined here**: it is the
+#: import-cohesion bar the coupling surveyor already classifies `cohesive` at,
+#: and coupling.py carries an explicit task rule against re-tuning it.
+#:
+#: Measured 2026-08-29 across milvus, egeria and egeria-workspaces (1,085
+#: import_cohesion values), the metric is sharply bimodal:
+#:
+#:     exactly 0      1020   94.0%
+#:     0 < x < 0.1      54    5.0%
+#:     0.1 - 0.3         4    0.4%
+#:     0.3 - 0.5         0    0.0%
+#:     0.5 - 0.9         3    0.3%
+#:     0.9 - 1.0         4    0.4%
+#:
+#: Two values in the whole set fall in 0.3-0.7. A component's imports either
+#: almost all stay inside its subtree or almost all leave it, so the exact bar
+#: barely matters — anything in that empty middle classifies all but two
+#: components identically. That is why no per-repo relative rule is needed.
+def _cohesive_bar() -> float:
+    from . import coupling
+    return coupling.COHESIVE_BAR
+
+
 #: A cluster of one is not a cluster: it collapses nothing and adds a level a
 #: reader steps through to reach a single component. Same reasoning as
 #: `scope_hierarchy.MIN_GROUP`, applied to the blueprint rather than the group.
@@ -58,6 +83,14 @@ class Cluster:
     #: curator judging a proposal needs to know what it read, not just what it
     #: concluded — and because two signals disagreeing is information (§6).
     signal: str = "scope-hierarchy"
+    #: "collection" — the members are co-located and the group is not itself a
+    #: thing, so it becomes a blueprint. "composition" — the members cohere,
+    #: which is evidence for a containing component, so they become
+    #: sub-components of it rather than a Collection. Affinity is the test
+    #: (§7 of the clustering design).
+    carrier: str = "collection"
+    #: For carrier="composition": the slug of the component the members compose.
+    composed_into: str = ""
     #: Sub-blueprints, when this cluster is a rollup level (see `rollup`). A
     #: cluster has either members or children, never both.
     children: list["Cluster"] = field(default_factory=list)
@@ -158,6 +191,7 @@ def _subdivide(scopes: list[str]) -> dict[str, list[str]]:
 
 
 def propose(components, perspective: str, *,
+            cohesion: dict[str, float] | None = None,
             target_size: int = TARGET_CLUSTER_SIZE,
             max_depth: int = 3) -> list[Cluster]:
     """Candidate blueprints for one perspective, ordered largest first.
@@ -170,6 +204,14 @@ def propose(components, perspective: str, *,
     cluster" is the same rule as design §5's "no metric, no number": a component
     swept into the nearest blueprint to avoid an empty space is a claim nothing
     measured.
+
+    `cohesion` maps a scope locator to its `import_cohesion`. Where a group's
+    own scope is cohesive at or above `coupling.COHESIVE_BAR`, the group is
+    emitted as a **composition** rather than a Collection: its members cohere,
+    which is evidence that the containing thing exists, and a component is the
+    honest carrier for that. Without cohesion data every group is a Collection,
+    which is the correct default — co-location says where things were declared,
+    not that they belong to one another.
     """
     scoped = [c for c in components if _perspective_of(c) == perspective]
     if not scoped:
@@ -195,6 +237,22 @@ def propose(components, perspective: str, *,
             _build(name, member_scopes, by_scope, by_scope_components,
                    perspective, target_size, max_depth)
         )
+
+    # Affinity promotes a Collection to a composition. Applied after grouping
+    # rather than inside it because it does not change WHICH components group
+    # together — the same members, carried differently. A cohesive group is not
+    # subdivided by the ~10 goal either: cohesion is the evidence that this is
+    # one thing, and splitting it to hit a presentation target would discard the
+    # very signal that justified asserting it.
+    if cohesion:
+        bar = _cohesive_bar()
+        for cluster in clusters:
+            value = cohesion.get(cluster.name)
+            if value is not None and value >= bar:
+                cluster.carrier = "composition"
+                cluster.composed_into = cluster.name
+                cluster.signal = f"import-cohesion {value:.2f}"
+                cluster.oversized = False
 
     kept = [c for c in clusters if c.size >= MIN_CLUSTER_SIZE]
     dropped = len(clusters) - len(kept)
@@ -314,10 +372,20 @@ def assign(components, clusters: list[Cluster]) -> int:
     draws those ungrouped, which is the truthful picture.
     """
     membership: dict[str, str] = {}
+    composed: dict[str, str] = {}
+
     def walk(cluster: Cluster) -> None:
         if cluster.children:
             for child in cluster.children:
                 walk(child)
+            return
+        if cluster.carrier == "composition":
+            # Members become sub-components of the thing they compose; they get
+            # no blueprint, because a Collection is not what the evidence
+            # supports here.
+            for slug in cluster.members:
+                if slug != cluster.composed_into:
+                    composed[slug] = cluster.composed_into
             return
         for slug in cluster.members:
             membership[slug] = cluster.name
@@ -327,7 +395,16 @@ def assign(components, clusters: list[Cluster]) -> int:
 
     assigned = 0
     for component in components:
-        name = membership.get(_slug_of(component))
+        slug = _slug_of(component)
+        parent = composed.get(slug)
+        if parent:
+            if isinstance(component, dict):
+                component["parent_slug"] = parent
+            else:
+                component.parent_slug = parent
+            assigned += 1
+            continue
+        name = membership.get(slug)
         if not name:
             continue
         if isinstance(component, dict):

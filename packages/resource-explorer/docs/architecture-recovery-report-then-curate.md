@@ -441,7 +441,7 @@ Feasibility of §10's three signals against data that exists today:
 | Signal | Available now? |
 |---|---|
 | **1. Deployed together** | **Yes** — 20 of 42 resources carry deployment-derived components (5,851 of 11,965 components) |
-| **2. Components that interact** | **Yes** — 9,118 port/wire findings across 25 resources (`genaicomps` alone: 1,422 ports, 1,305 wires) |
+| **2. Components that interact** | **Yes** — 454 distinct wires across the corpus, 429 of which resolve both endpoints (an earlier figure of 9,118 counted rows across every run, not distinct wires) (`genaicomps` alone: 1,422 ports, 1,305 wires) |
 | **3. Same external interface** | **No** — needs the standing interface-extraction item, as §10 already says |
 
 **Both numbers took three attempts, and the first two failures were the query, not the data** — the

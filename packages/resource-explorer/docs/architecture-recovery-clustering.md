@@ -228,12 +228,79 @@ blueprints — and that is correct rather than a limitation of the first cut. `d
 `comps/animation/deployment` say where a thing was *declared*, not that its members belong to one
 another.
 
-**And the affinity signals already have data.** `import_cohesion` and `cochange_cohesion` are
-computed by `arch_recovery_coupling` and attached per component via `persist_ir`'s `extra_metrics` —
-**1,617 cohesion metric rows in the corpus today**. So the composed-component route is not a future
-capability requiring new analysis; it needs a rule for how much cohesion is enough to assert a
-component, which is a judgement, and under report-then-curate a proposal can put that judgement to a
-curator rather than settling it silently.
+**The affinity signals have data, but less than first stated — corrected 2026-08-29 after measuring
+rather than reading the docstring.**
+
+| Signal | What the corpus actually holds |
+|---|---|
+| `cochange_cohesion` | 1,617 rows across **11** resources, heavily skewed to zero: 703 are exactly 0, median 0.012, p90 0.133, max 0.875 |
+| `import_cohesion` | **zero rows.** Computed only by the throwaway spike script; never wired into the product until 2026-08-29 |
+| wires | **454 distinct** wires, of which **429 (94%)** resolve both endpoints to a known component. Concentrated: genaiexamples 222, genaicomps 51 |
+
+Two corrections to earlier claims in this document and in the report-then-curate note:
+
+* *"import_cohesion and cochange_cohesion are computed by `arch_recovery_coupling`"* — **only
+  co-change was.** `persist_ir`'s docstring has claimed both since August; the import half was never
+  connected to storage, the same shape as spike finding 89 (ports and wires computed by the spike
+  harness and stored nowhere in the product). Wired 2026-08-29: the import graph was already built in
+  that surveyor and `cohesion_table` is generic over edge shape, so it was three lines.
+* *"9,118 port/wire findings across 25 resources"* — that counted **rows across every run**, not
+  distinct wires. The distinct figure is 454. Same row-versus-entity confusion that has produced
+  wrong numbers in this project before; the honest statement is that wires are the **best-resolving**
+  signal (94% of endpoints resolve), not the largest.
+
+### The threshold question, settled by measurement — and it needed no judgement after all
+
+`import_cohesion` was wired on 2026-08-29 and the coupling step re-run on **milvus**, **egeria** and
+**egeria-workspaces** to produce data. 1,085 values:
+
+```
+exactly 0     1020   94.0%   ########################################################
+0 < x < 0.1     54    5.0%   ##
+0.1 - 0.3        4    0.4%
+0.3 - 0.5        0    0.0%
+0.5 - 0.9        3    0.3%
+0.9 - 1.0        4    0.4%
+```
+
+**Two values in the entire set fall between 0.3 and 0.7 (0.2%).** A component's imports either almost
+all stay inside its subtree or almost all leave it — the metric is close to a boolean stored as a
+float. So the exact bar barely matters: anything in that empty middle classifies all but two
+components identically.
+
+**And the bar already exists.** `coupling.COHESIVE_BAR = 0.35` is what the coupling surveyor already
+classifies a subtree `cohesive` at, and `coupling.py` carries an explicit task rule against
+re-tuning it. It sits inside the empty band, so two independent routes — an existing protected
+constant and a fresh distribution — arrive at the same number. Clustering **reuses** it rather than
+defining its own, with a test asserting they stay the same value.
+
+Two earlier conclusions in this document are superseded:
+
+* *"the distribution argues against a fixed global threshold"* — that was measured on
+  `cochange_cohesion` (median 0.012, p90 0.133), which genuinely is a continuum and genuinely would
+  need an arbitrary cutoff. `import_cohesion` is not, and it is the signal that ended up carrying
+  this. Measuring the wrong one of the two metrics produced the wrong conclusion about both.
+* *"a relative, per-repo rule is likely needed"* — not needed. Bimodality makes an absolute bar
+  behave identically everywhere; what differs between repos is only **how many** components clear
+  it, which is a fact about the repos rather than a defect in the bar.
+
+What the bar actually selects, run against the three repos:
+
+```
+egeria_git              670 scopes with import_cohesion,  0 at/above 0.35
+egeria_workspaces_git     2 scopes,                       2   (0.977, 0.975 — two deployments of PyegeriaWebHandler)
+milvus                  413 scopes,                       5   (1.000 internal/core/build-support, ...)
+```
+
+Seven promotions out of 1,085. Rare, decisive, and silent on egeria — a large multi-module Java repo
+whose subtrees cross-reference heavily, so no component is cohesive by this measure. That silence is
+the correct answer, not a gap: it says co-location is all the evidence egeria offers, so egeria gets
+Collections.
+
+The **wire** signal remains available and unused for now: 454 distinct wires, 429 (94%) resolving
+both endpoints, concentrated in genaiexamples (222) and genaicomps (51). It is the best-*resolving*
+signal rather than the largest, and it is the obvious next one for the cases import cohesion cannot
+reach.
 
 This also explains the shape the corpus is in. The logical perspective — the one that will not
 cluster by co-location (`egeria_git` 924 → 279) — is precisely where the affinity signals live, since
