@@ -196,6 +196,10 @@ class TestStepCostTiers:
         assert STEP_REGISTRY["repo_git_statistics"].compute_cost == "low"
 
 
+#: Catalog `action` values that are not analyses producing findings.
+_NON_SURVEY_ACTIONS = frozenset({"publish", "ingest", "profile"})
+
+
 class TestStageCostConsistency:
     """The stage-assignment connection (docs/step-cost-tiers-plan.md) —
     a question tagged Scouting/Discovery (the two zero/near-zero-fetch
@@ -248,26 +252,53 @@ class TestStageCostConsistency:
                 continue
             for analysis_id in question["answering"].get("analysis_ids") or []:
                 analysis = analyses.get(analysis_id)
-                if analysis is None or analysis.get("action") != "survey":
+                # Skip only genuine non-survey ACTIONS. The test previously
+                # skipped anything whose action was not literally "survey",
+                # which also skipped the six catalog entries that carry no
+                # `action` key at all — ordinary analyses, and the majority of
+                # what fast stages actually reference (foss_scorecard,
+                # chaoss_metrics, community_support). A slow action-less
+                # analysis in a fast stage would have passed unnoticed.
+                if analysis is None:
+                    continue
+                if analysis.get("action") in _NON_SURVEY_ACTIONS:
                     continue
                 if analysis.get("run_time") != "fast":
                     violations.append((question["question"], stage, analysis_id, analysis.get("run_time")))
         assert violations == []
 
-    def test_egeria_publish_is_the_one_hit_the_action_exclusion_clears(self):
-        """Confirms the action != "survey" exclusion is actually doing
-        something, not vacuously passing because the data changed: without
-        it, egeria_publish (linked from the "Analysis/Enrichment" governance
-        question, run_time=minutes, action=publish) would be a real
-        candidate hit if Analysis/Enrichment were ever added to
-        _FAST_ONLY_STAGES — the plan's one known case from 2026-08-20."""
+    def test_the_action_exclusion_still_has_something_to_exclude(self):
+        """Guards the exclusion above against becoming decorative.
+
+        This used to assert that `egeria_publish` was its one live hit, reached
+        from the "Analysis/Enrichment" governance question. That is no longer
+        reachable: the question named it in PROSE — "plus Curate zone/catalog
+        membership (egeria_publish)" — and the generator matched any known id
+        anywhere in the note, so an aside became a dispatch target. The
+        generator now excludes `action: publish` ids at source, and
+        test_catalog_invariants asserts no question can name one again.
+
+        So the assertion is now about the exclusion's own premise rather than a
+        specific victim: non-survey actions still exist in the catalog, and no
+        question in a fast-only stage reaches one. If either stops being true
+        the exclusion is either pointless or hiding a real violation.
+        """
         analyses = self._analyses_by_id()
-        assert analyses["egeria_publish"]["run_time"] == "minutes"
-        assert analyses["egeria_publish"]["action"] == "publish"
-        governance_question = next(
-            q for q in self._questions() if "egeria_publish" in (q["answering"].get("analysis_ids") or [])
+        actions = {a["id"] for a in analyses.values()
+                   if a.get("action") in _NON_SURVEY_ACTIONS}
+        assert actions, (
+            "no non-survey actions left in the catalog — the exclusion in "
+            "test_no_fast_stage_question_is_answered_by_a_non_fast_survey_analysis "
+            "now excludes nothing and should be removed"
         )
-        assert governance_question["stage"] == "Analysis/Enrichment"
+        assert "egeria_publish" in actions
+
+        reached = {a for q in self._questions() if q["stage"] in self._FAST_ONLY_STAGES
+                   for a in (q["answering"].get("analysis_ids") or []) if a in actions}
+        assert not reached, (
+            f"a fast-stage question now reaches non-survey action(s) {reached}; "
+            f"the exclusion is silently skipping them rather than judging them"
+        )
 
 
 class TestRunBatch:

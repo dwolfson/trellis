@@ -196,3 +196,88 @@ class TestFeedbackCarriesDerivation:
                 "SELECT derivation FROM query_log ORDER BY id DESC LIMIT 1"
             ).fetchone()
         assert row["derivation"] == "{}"
+
+
+class TestEveryAnsweringAnalysisCanProduceAFinding:
+    """A question may only name an analysis capable of answering it.
+
+    Two instances made this worth checking rather than fixing case by case.
+    `egeria_publish` — an action that writes to Egeria and produces no findings
+    — was named by "Does it fit into our governance frameworks?" and reached
+    the context compiler, where it could only ever appear as a permanent gap
+    asserting a result that will never exist. It got there from PROSE: the note
+    says "plus Curate zone/catalog membership (egeria_publish)", and the
+    generator matched any known id anywhere in the note, so an explanatory
+    aside became a dispatch target.
+
+    The generator now excludes `action: publish` ids, which fixes that class at
+    source. This test is the ratchet: it fails on a hand-edited YAML, on a new
+    write-only action nobody thought to exclude, and on an id that outlives the
+    analysis it names — the same stale-reference shape as the GAP note that
+    cited OSV.dev as a candidate tool beside a cve_scan already using it.
+
+    The criterion is a results reader rather than mere catalog presence,
+    because that is what the compiler actually needs to turn a section into
+    evidence. An id in the catalog with no reader yields a gap indistinguishable
+    from an analysis that has never run.
+    """
+
+    def _referenced(self) -> dict[str, list[str]]:
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        refs: dict[str, list[str]] = {}
+        for entry in get_questions("repo"):
+            for analysis_id in (entry.get("derivation") or {}).get("analysis_ids") or []:
+                refs.setdefault(analysis_id, []).append(entry["question"])
+        return refs
+
+    def test_every_referenced_analysis_exists_in_the_catalog(self):
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        known = {a["id"] for a in get_analyses("repo", include_egeria_live=False)}
+        unknown = {a: qs for a, qs in self._referenced().items() if a not in known}
+        assert not unknown, (
+            f"question(s) name analyses that are not in the catalog: {unknown}. "
+            f"Either the analysis was removed and the question still cites it, "
+            f"or the id is a typo — both leave a question that can never be "
+            f"answered while appearing to have an answer."
+        )
+
+    def test_no_question_names_a_write_only_action(self):
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        write_only = {a["id"] for a in get_analyses("repo", include_egeria_live=False)
+                      if a.get("action") == "publish"}
+        named = {a: qs for a, qs in self._referenced().items() if a in write_only}
+        assert not named, (
+            f"question(s) name a write-only action as their answer: {named}. "
+            f"A publish writes to Egeria and produces no finding, so it can "
+            f"only ever surface as a permanent gap. Reword the CSV note so the "
+            f"id appears as prose rather than as a dispatch target, or drop it."
+        )
+
+    def test_every_referenced_analysis_has_a_results_reader(self):
+        """Without one the compiler cannot turn the section into evidence, so
+        the question is answerable on paper and not in fact."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_RESULTS_MAP,
+        )
+
+        missing = {a: qs for a, qs in self._referenced().items()
+                   if a not in REPO_ANALYSIS_RESULTS_MAP}
+        assert not missing, (
+            f"question(s) name analyses with no results reader: {missing}. "
+            f"REPO_ANALYSIS_RESULTS_MAP is what the context compiler reads; an "
+            f"id absent from it yields a gap indistinguishable from an analysis "
+            f"that never ran."
+        )
+
+    def test_the_check_has_something_to_check(self):
+        """Guards the three assertions above against passing vacuously — an
+        empty reference set would satisfy all of them."""
+        refs = self._referenced()
+        assert len(refs) >= 20, (
+            f"only {len(refs)} analyses referenced by questions; the invariants "
+            f"above pass trivially on an empty set, so this asserts the join "
+            f"still produces something"
+        )
