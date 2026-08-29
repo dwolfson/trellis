@@ -94,3 +94,188 @@ class TestProvenance:
         prov = _provenance([_finding("a")], "repo_conventions")
         assert prov[0]["surveyed_at"] == "2026-08-28T00:00:00"
         assert prov[0]["analysis_id"] == "repo_conventions"
+
+
+# ── The findings table is not where most results live ────────────────────────
+class TestResolvingBeyondTheFindingsTable:
+    """A gap meant "not in project_analysis_findings" while claiming to mean
+    "never run".
+
+    Measured on egeria_git 2026-08-29: eleven analyses reported as gaps, seven
+    of which had real stored data — repository_health scoring 85.8,
+    api_structure holding 3,232 Java classes. Each keeps results in its own
+    table, and only the generic findings table was consulted.
+    docs/granularity-pass.md §1.2 had already measured that 12 analyses have no
+    finding `kind` at all, so this was knowable without running anything.
+    """
+
+    def test_a_reader_only_analysis_is_packed_not_gapped(self, monkeypatch):
+        from resource_explorer import context_compile as cc
+
+        seen = {}
+
+        def fake_reader(registry, slug):
+            seen["called"] = slug
+            return {"overall": 85.8, "activity": 100.0}
+
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
+                            "repository_health", (fake_reader, None))
+
+        c = cc.compile_context(_registry({}), "egeria_git", "is this ready to adopt?",
+                               budget=8000)
+        gaps = {g["key"] for g in c.manifest["gaps"]}
+        assert "repository_health" not in gaps, "packed data still reported missing"
+        assert seen.get("called") == "egeria_git"
+        assert "repository_health" in {e["key"] for e in c.manifest["packed"]}
+
+    def test_a_genuinely_empty_result_stays_a_gap(self, monkeypatch):
+        """The fix must not swap a wrong gap for a wrong section. cve_scan
+        answers {"findings": []} — a dict, therefore truthy, and meaning
+        nothing was found."""
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
+                            "cve_scan", (lambda reg, slug: {"findings": []}, None))
+        c = cc.compile_context(_registry({}), "x", "is this ready to adopt?", budget=8000)
+        assert "cve_scan" in {g["key"] for g in c.manifest["gaps"]}
+
+    def test_a_reader_that_raises_is_not_evidence_of_absence(self, monkeypatch):
+        """It still ends as a gap — there is nothing to pack — but it must not
+        take the whole compile down with it."""
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+
+        def boom(reg, slug):
+            raise RuntimeError("table missing")
+
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP, "cve_scan", (boom, None))
+        c = cc.compile_context(_registry({}), "x", "is this ready to adopt?", budget=8000)
+        assert "cve_scan" in {g["key"] for g in c.manifest["gaps"]}
+
+    def test_findings_win_when_both_exist(self, monkeypatch):
+        """The findings table is consulted first and its richer per-check rungs
+        are kept; the reader is a fallback, not an override."""
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
+                            "license_classification",
+                            (lambda reg, slug: {"from": "reader"}, None))
+        c = cc.compile_context(
+            _registry({"license_classification": [_finding("license_risk_tier")]}),
+            "x", "q", purposes=["Certify"], budget=8000)
+        assert "license_risk_tier" in c.text, "findings rungs were not used"
+        assert '"from": "reader"' not in c.text, "the fallback overrode real findings"
+
+
+class TestHasContent:
+    """The zero case, which a first version got wrong.
+
+    `_has_content` put the numeric test in an `elif ... and value` and followed
+    it with a catch-all `elif value is not None`, so a zero failed the numeric
+    branch and was caught by the fallback. `{"by_ecosystem": {}, "total": 0}`
+    read as content and packed dependency_analysis as an empty section
+    asserting it had something to say.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        ({"by_ecosystem": {}, "total": 0}, False),
+        ({"findings": []}, False),
+        ({}, False),
+        ({"x": None}, False),
+        ({"s": ""}, False),
+        ({"n": 0.0}, False),
+        ({"ok": False}, False),
+        ({"total": 3}, True),
+        ({"overall": 85.8}, True),
+        ({"ok": True}, True),
+        ({"s": "a"}, True),
+        ({"items": [1]}, True),
+    ])
+    def test_truth_table(self, value, expected):
+        from resource_explorer.context_compile import _has_content
+        assert _has_content(value) is expected
+
+
+class TestPublishActionsAreNotAnalyses:
+    def test_egeria_publish_is_never_a_gap(self):
+        """It writes to Egeria and has no results, so it could only ever be a
+        permanent gap asserting a result that will never exist. The scheduler
+        excludes action == "publish" for the same reason. A catalog question
+        references it, which is how it reaches the compile at all."""
+        c = compile_context(_registry({}), "x", "is this ready to adopt?", budget=8000)
+        assert "egeria_publish" not in {g["key"] for g in c.manifest["gaps"]}
+        assert "egeria_publish" not in str(c.derivation)
+
+
+class TestChatRoutesThroughTheCompiler:
+    """The answer path, not just the Evidence pane.
+
+    Previously the agent was told which collections exist and left to search
+    them. Now the analyses the question catalog says answer this question are
+    resolved from stored results and put in the prompt directly.
+    """
+
+    def _agent(self):
+        from resource_explorer.agents.conversation_agent import ConversationAgent
+
+        return ConversationAgent()
+
+    def test_gaps_are_named_in_the_prompt(self):
+        """From inside a prompt, an analysis that never ran looks exactly like
+        one that ran and found nothing. Naming the gaps is what stops the model
+        answering 'no CVEs' when no CVE scan has ever run."""
+        from unittest.mock import patch
+
+        from resource_explorer.context_compile import CompiledContext
+
+        compiled = CompiledContext(
+            text="## repo_conventions\n- a: ok",
+            manifest={"gaps": [{"key": "cve_scan"}, {"key": "security_scan"}]},
+            derivation=[],
+        )
+        with patch("resource_explorer.context_compile.compile_context", return_value=compiled), \
+             patch("resource_explorer.registry.ProjectRegistry"):
+            blocks = self._agent()._compiled_evidence("q", "slug", [])
+        joined = "\n".join(blocks)
+        assert "cve_scan" in joined and "security_scan" in joined
+        assert "have NOT run" in joined
+        assert "not evidence of absence" in joined
+
+    def test_evidence_reaches_the_prompt(self):
+        from unittest.mock import patch
+
+        from resource_explorer.context_compile import CompiledContext
+
+        compiled = CompiledContext(text="## license_classification\n- apache-2.0",
+                                   manifest={"gaps": []}, derivation=[])
+        with patch("resource_explorer.context_compile.compile_context", return_value=compiled), \
+             patch("resource_explorer.registry.ProjectRegistry"):
+            joined = "\n".join(self._agent()._compiled_evidence("q", "slug", []))
+        assert "license_classification" in joined
+        assert "compiled from stored analysis results" in joined
+
+    def test_a_failed_compile_costs_nothing(self):
+        """Fail-soft. A compiler that cannot compile must not cost the answer —
+        the agent still has its tools and proceeds as it did before."""
+        from unittest.mock import patch
+
+        with patch("resource_explorer.context_compile.compile_context",
+                   side_effect=RuntimeError("no db")), \
+             patch("resource_explorer.registry.ProjectRegistry"):
+            assert self._agent()._compiled_evidence("q", "slug", []) == []
+
+    def test_no_perspectives_is_a_real_state_not_a_missing_value(self):
+        """Empty chips means no perspective filter, and the compile still runs.
+        Treating it as missing would silently skip the whole path."""
+        from unittest.mock import patch
+
+        from resource_explorer.context_compile import CompiledContext
+
+        with patch("resource_explorer.context_compile.compile_context",
+                   return_value=CompiledContext("x", {"gaps": []}, [])) as m, \
+             patch("resource_explorer.registry.ProjectRegistry"):
+            self._agent()._compiled_evidence("q", "slug", None)
+        assert m.call_args.kwargs["perspectives"] == []
