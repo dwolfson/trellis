@@ -45,9 +45,7 @@ class TestTTLExpiry:
         cache.set("q", None, "general", "answer")
         assert cache.get("q", None, "general") == "answer"
         # Manually expire by backdating the entry
-        key = cache._key("q", None, "general")
-        value, _, slug = cache._store[key]
-        cache._store[key] = (value, time.time() - 1, slug)
+        cache._store[cache._key("q", None, "general")].expires_at = time.time() - 1
         assert cache.get("q", None, "general") is None
 
 

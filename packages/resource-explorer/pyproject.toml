@@ -21,6 +21,17 @@ dependencies = [
     # Containment trees over ingested artifacts, OFF by default
     # (ARTIFACT_TREE_ENABLED) — packages/trellis-artifact-tree
     "trellis-artifact-tree",
+    # ContextSpec and the deterministic packer, imported by
+    # resource_explorer/context_compile.py — packages/trellis-context.
+    # Was missing from this list when the context compiler landed: it resolved
+    # anyway because the root pyproject lists it under [tool.uv.sources], which
+    # makes it available in a workspace-wide sync but does NOT make it a
+    # requirement. Any install that resolves resource-explorer alone — CI, a
+    # clean per-package install — would have failed on the import.
+    "trellis-context",
+    # Shared TTL/LRU query cache, extracted alongside Egeria Advisor's
+    # equivalent — packages/trellis-querycache
+    "trellis-querycache",
     # Embeddings & LLM
     "sentence-transformers>=3.3.0",
     "ollama>=0.4.0",
