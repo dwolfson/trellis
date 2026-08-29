@@ -160,11 +160,27 @@ class ConversationAgent(BaseExplorerAgent):
         in the prompt directly -- deterministic, and carrying which analysis
         produced each part.
 
-        **Naming the gaps is the point, not a footnote.** An analysis that has
-        not run looks, from inside a prompt, exactly like one that ran and found
-        nothing. Saying which analyses are missing is what stops the model
-        answering "no CVEs" when the truth is that no CVE scan has ever run --
-        the failure this codebase keeps finding in other forms.
+        **Naming the gaps is the point, not a footnote.** An analysis with no
+        stored result looks, from inside a prompt, exactly like one that ran and
+        found nothing. Saying which analyses are missing is what stops the model
+        answering "no CVEs" when the truth is that nothing was checked.
+
+        **"No stored result", NOT "has not run".** An earlier version said the
+        latter and was false for two of egeria_git's three gaps: repo_dependency
+        and repo_cve_scan both RUN, cleanly, and each emits an annotation saying
+        why it found nothing -- "1 manifest(s) are present" and "no dependencies
+        are recorded, so nothing could be checked". project_dependencies is
+        written only by IngestionPipeline and by no survey step, so re-running
+        cannot change either. The old wording would have sent a reader to run
+        something that had already run and could not help.
+
+        The distinction that WOULD be actionable -- could-not-run versus
+        ran-and-found-nothing -- already exists as step_outcome.py's UNVERIFIED,
+        and DependencySurveyor already computes it correctly. It is embedded in
+        an annotation and never persisted, so query time cannot see it. Surface
+        that rather than inventing a second vocabulary for the same idea; a
+        second vocabulary is how four RE perspectives ended up beside Egeria's
+        twelve. Until it is retrievable, this sentence claims nothing about why.
 
         Fail-soft: any problem here returns nothing and the agent proceeds as it
         did before, searching collections itself. A compiler that cannot compile
@@ -192,8 +208,8 @@ class ConversationAgent(BaseExplorerAgent):
         gaps = [g["key"] for g in compiled.manifest.get("gaps", [])]
         if gaps:
             out.append(
-                "Analyses that would answer this question but have NOT run: "
-                + ", ".join(sorted(gaps))
+                "Analyses that would answer this question but have no stored "
+                "result: " + ", ".join(sorted(gaps))
                 + ". Say so if the question depends on one of them. Absence of a "
                   "finding here is absence of evidence, not evidence of absence."
             )

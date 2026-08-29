@@ -241,8 +241,13 @@ class TestChatRoutesThroughTheCompiler:
             blocks = self._agent()._compiled_evidence("q", "slug", [])
         joined = "\n".join(blocks)
         assert "cve_scan" in joined and "security_scan" in joined
-        assert "have NOT run" in joined
         assert "not evidence of absence" in joined
+        # "no stored result", never "has not run": two of egeria_git's three
+        # gaps DO run and emit an annotation explaining the empty result, so the
+        # stronger claim is false and would send a reader to re-run something
+        # that cannot help.
+        assert "no stored result" in joined
+        assert "NOT run" not in joined
 
     def test_evidence_reaches_the_prompt(self):
         from unittest.mock import patch
