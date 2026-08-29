@@ -544,8 +544,7 @@ repo_questions:
   - Share
   answering:
     kind: human
-    analysis_ids:
-    - egeria_publish
+    analysis_ids: []
     checks: []
     note: N/A — human-supplied via Enrichment Context form, plus Curate zone/catalog membership (egeria_publish),
       plus Egeria queries.

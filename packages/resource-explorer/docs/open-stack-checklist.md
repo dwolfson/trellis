@@ -311,7 +311,13 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       `catalog` operation exists in the activity log.
 - [x] `unitycatalog` published 2026-08-28 — asset
       `8a9b783a-4871-4100-86df-9c705a13849e`, report
-      `3c1aa491-8ea4-4110-a6d8-a6c3ca71aec0`. Six left.
+      `3c1aa491-8ea4-4110-a6d8-a6c3ca71aec0`.
+- [x] **The three never-catalogued repos published 2026-08-28** — `docs`
+      (`8e479ad8`), `enterprise_rag` (`92d9db93`), `genaicomps` (`5ab31495`),
+      each a distinct asset. The finding is down to three, all of them the
+      "lost an asset" kind and all blocked on a Project decision — so the
+      remaining count is now exactly the blocked set, which is what the
+      publish_ready field was added to make visible.
 - [ ] **The remaining three "lost" repos cannot use that call.** Measured
       2026-08-28: `docling_eval`, `openlineage` and `openmetadata` all carry
       an Egeria Project context of `unset`, and the publish route's Part 5
@@ -341,6 +347,25 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       similar-repo search. Three carry authorial uncertainty in the CSV
       ("repo_conventions - RAG read?") and want a decision, not a surveyor.
       This is the concrete shape of §5's agent-based post-ingestion work.
+- [x] **Automate can schedule a whole survey** — 2026-08-28 (`fd63eed`). Third
+      sub-tab, `GET /api/survey-definitions/definitions` (read from the
+      authored documents, so it survives Egeria being down), `target_kind`
+      exposed on the schedules route. §4a is done except moving
+      `RepoFullSurvey` out of the four stage tabs.
+- [ ] **`repo_profile_refresh` is schedulable but invisible to the step map.**
+      `REPO_ANALYSIS_STEP_MAP.get("repo_profile_refresh")` is None, so a reader
+      checking the map concludes it cannot be scheduled. It can: `scheduler.
+      _run_repo_survey` intercepts it earlier on `action == "profile"` and
+      chains `language_file_classification` afterwards. Same shape as
+      `rag_ingestion`, which is intercepted on its id. Nothing is broken; the
+      map simply is not the whole dispatch story and reads as though it were.
+      Either the map carries these entries or its name stops implying
+      completeness.
+- [x] **The schedules route now checks the resource exists** — `a11ddc4`.
+      404 per resource kind on POST; DELETE deliberately unguarded, since
+      clearing a schedule that points at a deleted resource is what it is for.
+      Two existing tests were passing on slugs that had never existed and now
+      register their resources.
 - [ ] Egeria-side: `_parse_graph` now reads branching definitions, but no
       definition uses a guard yet. Authoring one would exercise the whole chain
       end to end on real data.

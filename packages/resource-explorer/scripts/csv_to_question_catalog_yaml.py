@@ -61,7 +61,18 @@ def _load_known_analysis_ids() -> list[str]:
             f"question catalog cannot be generated without it."
         )
     cat = yaml.safe_load(_ANALYSIS_CATALOG_PATH.read_text()) or {}
-    return [a["id"] for a in (cat.get("repo_analyses") or []) if a.get("id")]
+    # `action: publish` entries are excluded. They write to Egeria and produce
+    # no findings, so naming one as answering a question can only ever yield a
+    # permanent gap asserting a result that will never exist. `egeria_publish`
+    # reached the compile exactly this way: "Does it fit into our governance
+    # frameworks?" mentions it in PROSE — "plus Curate zone/catalog membership
+    # (egeria_publish)" — and this extraction matches any known id anywhere in
+    # the note, so an explanatory aside became a dispatch target.
+    #
+    # `profile` and `ingest` actions stay: they refresh real stored results.
+    # Only `publish` is write-only.
+    return [a["id"] for a in (cat.get("repo_analyses") or [])
+            if a.get("id") and a.get("action") != "publish"]
 
 
 KNOWN_ANALYSIS_IDS = _load_known_analysis_ids()

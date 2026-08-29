@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -81,6 +81,7 @@ app.include_router(activity.router, prefix="/api/activity", tags=["activity"])
 app.include_router(bootstrap_routes.router, prefix="/api/bootstrap", tags=["bootstrap"])
 app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
 app.include_router(context.router, prefix="/api/context", tags=["context"])
+app.include_router(compile_context_routes.router, prefix="/api/context", tags=["context-compile"])
 app.include_router(project_context.router, prefix="/api/project-context", tags=["project-context"])
 app.include_router(automate.router, prefix="/api/automate", tags=["automate"])
 app.include_router(curate.router, prefix="/api/curate", tags=["curate"])

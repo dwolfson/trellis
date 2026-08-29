@@ -385,25 +385,46 @@ class EgeriaResync:
                     "AND operation = 'catalog' AND status = 'ok' LIMIT 1",
                     (r["slug"],),
                 ).fetchone() is not None
+                # Whether the publish route will actually accept the call
+                # this finding recommends. Its Part 5 gate rejects an `unset`
+                # context with 428, so for those repos the advice is refused
+                # by the very endpoint it names. Measured 2026-08-28: the
+                # three repos that could NOT publish were the three "lost"
+                # ones, while the never-catalogued ones could — the inverse of
+                # what the wording implies, which is exactly why this is a
+                # field rather than a sentence.
+                publish_ready = r["status"] != "unset"
                 items.append({
                     "slug": r["slug"],
                     "context": r["status"],
                     "was_published": published_before,
+                    "publish_ready": publish_ready,
                     "cause": ("asset lost — it was catalogued before"
                               if published_before else
                               "never catalogued — a context was set but no publish ran"),
+                    "blocked_reason": ("" if publish_ready else
+                                       "no Egeria Project decided yet — publishing is "
+                                       "refused (428) until one is set"),
                 })
         lost = sum(1 for i in items if i["was_published"])
+        blocked = sum(1 for i in items if not i["publish_ready"])
         return Finding(
             key="needs_republish",
             title=(f"Repos with an Egeria Project context but no asset "
-                   f"({lost} lost an asset, {len(items) - lost} never had one)"),
-            detail="Publishing is a write and can be slow, so it is never done for you. "
-                   "Scope it to one cheap step to register the asset: "
-                   "POST /api/egeria/{slug}/publish with steps ['repo_health']. "
-                   "The call is the same either way, but the situations are not: "
-                   "one restores something Egeria lost, the other catalogues a "
-                   "repo for the first time.",
+                   f"({lost} lost an asset, {len(items) - lost} never had one; "
+                   f"{blocked} awaiting a Project before publishing is possible)"),
+            detail=("Assigning an Egeria Project does NOT clear this — it is what "
+                    "puts a repo here. Having a Project and having an asset are "
+                    "different things, and only publishing produces the asset.\n\n"
+                    "Publishing is a write and can be slow, so it is never done for "
+                    "you. Scope it to one cheap step to register the asset: "
+                    "POST /api/egeria/{slug}/publish with steps ['repo_health']. "
+                    "The call is the same either way, but the situations are not: "
+                    "one restores something Egeria lost, the other catalogues a "
+                    "repo for the first time.\n\n"
+                    "A repo whose context is still `unset` cannot use that call at "
+                    "all — the route rejects it with 428 until a Project is chosen. "
+                    "Those carry a blocked_reason."),
             items=items, repair_step="", needs_decision=True,
         )
 
