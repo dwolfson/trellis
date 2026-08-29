@@ -384,9 +384,24 @@ class TestSchedulesRouter:
         resp = client.post("/api/schedules/repo/myproj", json={"analysis_id": "security_scan", "schedule": "hourly"})
         assert resp.status_code == 422
 
-    def test_list_all_schedules_global(self, client):
-        client.post("/api/schedules/repo/proj-a", json={"analysis_id": "security_scan", "schedule": "daily"})
-        client.post("/api/schedules/database/db-a", json={"analysis_id": "schema_inventory", "schedule": "weekly"})
+    def test_list_all_schedules_global(self, client, registry):
+        """Both resources are registered first. They were not until 2026-08-28,
+        when the route started checking — so this passed on two slugs that had
+        never existed, and would have kept passing if the global listing had
+        broken for real resources."""
+        from resource_explorer.registry import DatabaseEntity, Project
+
+        registry.add(Project(slug="proj-a", display_name="Proj A",
+                             github_url="https://github.com/test/proj-a"))
+        registry.register_database(DatabaseEntity(
+            slug="db-a", display_name="DB A", database_name="db_a",
+            db_type="postgres", host="localhost", port=5432))
+
+        r1 = client.post("/api/schedules/repo/proj-a",
+                         json={"analysis_id": "security_scan", "schedule": "daily"})
+        r2 = client.post("/api/schedules/database/db-a",
+                         json={"analysis_id": "schema_inventory", "schedule": "weekly"})
+        assert (r1.status_code, r2.status_code) == (200, 200), (r1.text, r2.text)
         resp = client.get("/api/schedules/")
         assert resp.status_code == 200
         slugs = {r["entity_slug"] for r in resp.json()}

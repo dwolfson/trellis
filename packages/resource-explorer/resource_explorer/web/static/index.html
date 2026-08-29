@@ -669,6 +669,15 @@
             class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-colors self-end">
             Send
           </button>
+          <!-- Deliberately NOT rendered under the assistant's reply. That reply
+               comes from /api/query (RAG); this compiles what the adoption gate
+               WOULD assemble. Presenting it as the answer's provenance would be
+               a lie about where the answer came from -- so it is its own
+               action, with its own label. -->
+          <button id="compile-btn" onclick="compileContext()" title="What evidence would answer this, and what is missing?"
+            class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-sm transition-colors self-end">
+            Evidence
+          </button>
         </div>
         <div class="mt-1 flex items-center justify-between">
           <span id="intent-badge" class="text-xs text-slate-500"></span>
@@ -1319,7 +1328,15 @@ let selectedDatabase = null;
 let selectedFilesystem = null;
 let currentNavIntent  = 'scouting';  // 'scouting'|'discovery'|'assessment'|'analysis'|'enrichment'|'understanding'|'curate' — the new primary nav axis
 let resourceTypeFacet = 'repo';      // 'repo'|'db'|'filesystem' — resource-type facet within the active intent
-let activePerspectives = new Set();  // 'dba'|'data_scientist'|'steward'|'security' — concurrent, not exclusive (unlike intent/facet); empty set = no filter ("all")
+let activePerspectives = new Set();  // Egeria's own 12 — 'Admin'|'App/AI Builder'|'Architecture'|'Community'|
+                                     // 'Consumer'|'Data Expert'|'Data Owner'|'Financial'|'Governance'|'Privacy'|
+                                     // 'Security'|'Steward'. Populated from /api/analyses/perspectives, so the
+                                     // API is the vocabulary, not this list. Concurrent, not exclusive (unlike
+                                     // intent/facet); empty set = no filter ("all").
+                                     // Was 'dba'|'data_scientist'|'steward'|'security' until 2026-08-26, when
+                                     // RE's own four were retired (CLAUDE.md, Perspective row). The comment
+                                     // outlived them by two days — anything reading it to build a request would
+                                     // have sent a vocabulary the backend no longer knows.
 let compareSet       = new Set();
 let lastQueryHash    = null;
 let lastAssistantEl  = null;
@@ -10586,6 +10603,112 @@ async function submitPublishDb() {
 }
 
 // ── chat ───────────────────────────────────────────────────────────────────────
+// ── compiled-context preview ────────────────────────────────────────────────
+// Shows what the adoption gate would assemble for the question in the box:
+// which analyses answer it, at what fidelity they would fit, and -- the part
+// that matters -- which ones SHOULD answer it and have no stored result.
+//
+// Gaps lead. Sections packed and their rungs are interesting once; six analyses
+// named as answering the question with nothing behind them is the thing that
+// changes what someone does next, and it is something the chat cannot say at
+// all today. Dropped-for-budget is the more finished-looking number and is
+// deliberately not the headline.
+async function compileContext() {
+  const input = document.getElementById('query-input');
+  const question = (input.value || '').trim();
+  if (!question) { showToast('info', 'Type a question first.', 3000); return; }
+  const slug = _currentSelectedSlug ? _currentSelectedSlug() : selectedProject;
+  if (!slug) { showToast('error', 'Select a resource first.', 3000); return; }
+
+  appendMessage('you', question);
+  setThinking(true);
+  try {
+    const res = await fetch('/api/context/compile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resource_slug: slug,
+        question,
+        // A Set does not serialise -- JSON.stringify(new Set()) is {}, silently,
+        // which would look exactly like "no perspectives selected".
+        perspectives: [...activePerspectives],
+        budget: 8000,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    }
+    _renderCompiledContext(await res.json());
+  } catch (e) {
+    showToast('error', `Could not compile context: ${e.message}`, 6000);
+  } finally {
+    setThinking(false);
+  }
+}
+
+function _renderCompiledContext(data) {
+  const m = data.manifest || {};
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+
+  const gaps = m.gaps || [], packed = m.packed || [], dropped = m.dropped || [];
+  const pct = m.budget ? Math.round((m.used / m.budget) * 100) : 0;
+
+  const gapHtml = gaps.length
+    ? `<div class="mt-2 border border-amber-700/60 rounded p-2 bg-amber-950/20">
+         <div class="text-[11px] font-semibold text-amber-400 mb-1">
+           Missing — ${gaps.length} analysis/analyses that would answer this have not run
+         </div>
+         <div class="text-[10px] text-amber-200/80 leading-relaxed">
+           ${gaps.map(g => _esc(g.key)).join(' · ')}
+         </div>
+       </div>`
+    : `<div class="mt-2 text-[11px] text-emerald-400">
+         Nothing missing — every analysis that answers this has a stored result.
+       </div>`;
+
+  const packedHtml = packed.length
+    ? packed.map(p => `<div class="flex justify-between gap-2">
+          <span class="text-slate-300">${_esc(p.key)}</span>
+          <span class="text-slate-500">${_esc(p.rung)} · ${p.size}</span>
+        </div>`).join('')
+    : '<div class="text-slate-500">nothing packed</div>';
+
+  const droppedHtml = dropped.length
+    ? `<div class="mt-2 text-[10px] text-slate-500">
+         Dropped for budget: ${dropped.map(d => _esc(d.key)).join(', ')}
+       </div>` : '';
+
+  const derivHtml = (data.derivation || []).slice(0, 6).map(d => `
+      <div class="mb-1">
+        <div class="text-slate-300">${_esc(d.question)}</div>
+        <div class="text-slate-500">
+          ${(d.matched_purposes || []).length ? 'purpose: ' + (d.matched_purposes || []).map(_esc).join(', ') + ' · ' : ''}
+          answered by ${(d.analysis_ids || []).map(_esc).join(', ')}
+        </div>
+      </div>`).join('') || '<div class="text-slate-500">no questions matched</div>';
+
+  wrap.innerHTML = `
+    <div class="text-xs font-semibold mb-1 text-cyan-400">Evidence for this question</div>
+    <div class="text-[10px] text-slate-500 mb-1">
+      What the adoption gate would assemble. Not the source of any answer above.
+    </div>
+    ${gapHtml}
+    <div class="mt-2 text-[10px]">
+      <div class="text-slate-400 mb-1">Would pack ${packed.length} section(s) — ${m.used}/${m.budget} chars (${pct}%)</div>
+      <div class="space-y-0.5">${packedHtml}</div>
+      ${droppedHtml}
+    </div>
+    <button onclick="this.nextElementSibling.classList.toggle('hidden')"
+            class="text-[10px] text-slate-600 hover:text-cyan-400 mt-2 transition-colors">why these?</button>
+    <div class="hidden mt-1 pl-2 border-l border-slate-700 text-[10px]">${derivHtml}</div>`;
+
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+}
+
 async function sendQuery() {
   const input = document.getElementById('query-input');
   const query = input.value.trim();
@@ -10627,7 +10750,11 @@ async function runQuery(query, projectSlug, databaseSlug) {
 
   let accumulated = '';
   try {
-    const payload = { query, project_slug: projectSlug, session_id: sessionId };
+    // Spread, not the Set itself: JSON.stringify(new Set(['Security'])) is "{}",
+    // silently — indistinguishable from no chips selected, which is a real state
+    // the compile accepts. A plausible answer rather than an error.
+    const payload = { query, project_slug: projectSlug, session_id: sessionId,
+                      perspectives: [...activePerspectives] };
     if (databaseSlug) payload.database_slug = databaseSlug;
     const res = await fetch('/api/query/stream', {
       method: 'POST',

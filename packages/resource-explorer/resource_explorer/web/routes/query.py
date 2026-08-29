@@ -77,6 +77,9 @@ class QueryRequest(BaseModel):
     # key; drop the alias when the wire format moves too.
     resource_slug: str | None = Field(default=None, alias="project_slug")
     database_slug: str | None = None  # NEW: for database-scoped queries
+    #: Active Perspective chips. Empty means no perspective filter, which is a
+    #: real state and not a missing value -- the compile still runs.
+    perspectives: list[str] = []
     session_id: str | None = None  # browser-generated UUID for cross-turn memory
 
 
@@ -151,7 +154,8 @@ async def ask(request: QueryRequest) -> QueryResponse:
 
     if request.session_id:
         agent = _get_or_create_session(request.session_id, request.resource_slug)
-        response = agent.handle(request.query, resource_slug=request.resource_slug)
+        response = agent.handle(request.query, resource_slug=request.resource_slug,
+                                perspectives=request.perspectives)
         _persist_turn(request.session_id, request.query, response, request.resource_slug)
     else:
         from resource_explorer.rag_system import RAGSystem
@@ -191,7 +195,8 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     from resource_explorer.query_processor import QueryProcessor
                     intent = QueryProcessor().classify(request.query).value
                     agent = _get_or_create_session(request.session_id, request.resource_slug)
-                    text = agent.handle(request.query, resource_slug=request.resource_slug)
+                    text = agent.handle(request.query, resource_slug=request.resource_slug,
+                                        perspectives=request.perspectives)
                     _persist_turn(request.session_id, request.query, text, request.resource_slug)
                     loop.call_soon_threadsafe(queue.put_nowait, text)
                     loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False})

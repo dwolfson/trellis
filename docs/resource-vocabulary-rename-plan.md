@@ -52,16 +52,67 @@ Sequence: export the resource inventory (slugs, URLs, collections, org membershi
 membership) → rename the code → wipe pgvector → re-ingest from the export. The export is worth
 building regardless; nothing today can reproduce the inventory if the store is lost.
 
+## 4a. Decision (2026-08-28): all three layers land together, with the wipe
+
+Layer 1 — Python identifiers — has been **done and proven**, on branch
+`re/vocabulary-rename` (`ad1e1ee`, off `4ad6133`): 526 NAME tokens across 54 files, full suite
+green at 2739, app builds, registry reads all 60 live resources. It is **not merged and should
+not be**, per this decision.
+
+**The durable artifact is the procedure, not the branch.** The rename is a script plus three
+hand-judgements; re-running it against whatever the code looks like at wipe time is cheaper and
+safer than nursing a branch that drifts every time someone writes `project_slug`. Expect
+`ad1e1ee` to be stale by then and treat it as a worked reference, not a merge candidate.
+
+### The procedure, so it can be re-run rather than reconstructed
+
+**1. Use a tokenizer, not a regex.** Rename `NAME` tokens only, never `STRING` tokens:
+
+```python
+for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+    if tok.type == tokenize.NAME and tok.string == 'project_slug':
+        ...record tok.start, edit by position, in reverse
+```
+
+A line-based pass was tried first and failed instructively: it classified lines as SQL by
+keyword, which cannot see a continuation line inside a multi-line `CREATE TABLE` — that line has
+no keyword to find. `project_slug TEXT NOT NULL,` was renamed as an identifier, schema columns
+diverged from the queries reading them, and the suite produced 105 failures and 1,013 errors.
+The fault was asking the wrong question, not writing a leaky regex.
+
+**2. Named SQL bind placeholders are decided PER SITE.** `:project_slug` contracts with the key
+of the dict feeding it, not with the schema, and the two are indistinguishable at the
+placeholder — you have to read the caller.
+
+| site | dict built as | placeholder |
+|---|---|---|
+| `registry.py`, `github/stats_fetcher.py` | quoted `"project_slug": ...` | **unchanged** |
+| `tests/test_agents.py` | `dict(resource_slug=...)` kwargs | **renamed** |
+
+Renaming them uniformly broke 150 tests. Uniform is the wrong instinct here.
+
+**3. Pydantic fields are the wire key.** `QueryRequest.project_slug` and
+`AliasRequest.project_slug` are the one place layers 1 and 2 are the same edit. Layer 1 handled
+them with `alias="project_slug"` plus `populate_by_name`, so the code reads the new vocabulary
+and `index.html` keeps working. **When all three layers land together the alias is unnecessary**
+— rename the field and the frontend in the same pass, and delete the alias rather than shipping
+it.
+
+**4. Expect assertions keyed on a name rather than on the property the name had.** A rename
+surfaces them the way closing a gap surfaced a test that had hard-coded a question as its
+example of an unanswered gap.
+
 ## 5. Sequencing
 
 1. **Admin repair operations land first.** They are in flight and touch `registry.py`,
    `cli/main.py` and the web routes — exactly the rename's surface. Renaming underneath them would
    guarantee conflicts in a checkout several sessions share.
 2. **Build the inventory export.** Independently useful, and §4 depends on it.
-3. **Rename**, in one pass rather than incrementally. A half-migrated vocabulary is worse than
-   either end state: `resource_slug` and `project_slug` coexisting means every reader has to know
-   which is which.
-4. **Wipe and re-ingest** from the export.
+3. **Wipe and re-ingest** from the export, and **rename in the same pass** — all three layers at
+   once (identifiers, wire keys and route paths, SQL columns). Decided 2026-08-28: the wipe is
+   what makes the SQL-column layer free, since there is no data to migrate when the data is being
+   rebuilt, and one vocabulary change reviews better than three. A half-migrated vocabulary is
+   worse than either end state.
 
 ## 6. Guardrails
 
