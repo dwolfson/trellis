@@ -9,17 +9,35 @@ Several Claude Code sessions routinely work in this repo simultaneously, sometim
 worktree on the same branch. Two rules follow, and the first matters most because it holds even
 when you do not know what other sessions are doing.
 
-**1. Never `git add -A`, `git add .`, or `git commit -a`. Stage explicit paths.**
+**1. No whole-tree git operations in a shared checkout. Name the paths — every command that
+takes a pathspec accepts one.**
 
-A blanket stage sweeps up whatever any other session happens to have written — including files it
-is still writing. This has already happened once: `97ad95a` ("Checklist: record the 12-repo
-backfill slice and its verification") also committed `docs/context-compilation-design.md`, an
-unrelated design doc authored by a concurrent session and untracked at that moment. See `6756408`
-for the record. Nothing was lost, but the doc's history now points at a commit about something
-else, and rewriting to fix it was not safe with another session live on the branch.
+This covers `git add -A` / `git add .` / `git commit -a`, and equally `git stash`, `git checkout`,
+`git reset` and `git clean`. They all operate on *the tree*, which in this repo means everyone's
+work, not yours.
 
-Stage the paths you actually changed. If that is tedious, it is because the change is large, not
-because the rule is wrong.
+Both halves have now happened. A blanket stage: `97ad95a` ("Checklist: record the 12-repo backfill
+slice and its verification") also committed `docs/context-compilation-design.md`, an unrelated
+design doc authored by a concurrent session and untracked at that moment — see `6756408` for the
+record. And a blanket stash on 2026-08-28: a session ran `git stash` to answer "is this failing
+test mine?", which reverted three files another session had in flight. Both were recoverable and
+neither lost work, but only because the session that did it said so immediately.
+
+The prohibition alone is not enough, because the need is real — you *will* legitimately want to
+set your changes aside to check whether a failure is yours. Use the pathspec form:
+
+```
+git add path/one path/two
+git stash push -- path/one path/two
+git checkout -- path/one
+```
+
+`git stash push -- <paths>` is the safe door into the same room as `git stash`. Reach for it
+rather than working around the rule.
+
+Before committing, read `git status` and confirm every staged path is yours. An unexpected file is
+a signal that another session is mid-write, not something to sweep in. If naming paths is tedious,
+it is because the change is large, not because the rule is wrong.
 
 **2. Worktrees are not currently a usable isolation mechanism here — know why before relying on
 one.**
