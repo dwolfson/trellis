@@ -343,6 +343,68 @@ artifact rather than a detected thing, so the blueprint had to win the display (
 nested **blueprints** rather than nested components for the same reason — a repo-level grouping of
 sub-groupings asserts membership, which is all the evidence supports.
 
+## 7a. Wire cohesion does NOT work as an affinity signal — a negative result
+
+Tried 2026-08-29, and recorded because the failure is informative and someone
+will otherwise try it again.
+
+Computing a cluster's wire cohesion the same way import cohesion is computed —
+internal edges over internal-plus-boundary — gives:
+
+```
+157 clusters touching a wire:  median 0.750   p90 1.000   at/above 0.35: 106 (68%)
+```
+
+Reusing `COHESIVE_BAR` there would promote **two thirds of all clusters** to
+composed components — the opposite of the rare-and-decisive behaviour the rule
+wants. The cause is visible in the raw rows: `internal=1 boundary=0` scores a
+perfect 1.0. **84 of 157 clusters had one or two wires in total**, and a ratio
+over one observation carries no information.
+
+A minimum-observation guard (the pattern `COCHANGE_SEAM_MIN_WEIGHT` already
+uses) thins it honestly but does not rescue it: requiring 10 wires leaves six
+clusters corpus-wide.
+
+**Improving discovery did not fix it either**, which is the part worth knowing.
+Adding compose environment references as a wire source (below) produced 2.6x
+more wires — 24 to 63 across three repos, milvus alone 12 to 44 — and the
+distribution barely moved: no cluster exceeded five wires. Better discovery
+improved the graph's *fidelity* without concentrating it, because a service's
+configuration typically names things outside its own group.
+
+**Conclusion: import cohesion is an affinity signal; wires are an evidence
+signal.** Imports are dense enough per component to support a ratio (413 scopes
+on milvus alone); wires are declarations of individual connections and there are
+only ever a handful per group. Wires remain valuable for what they are — the
+best-*resolving* signal at 94% endpoint resolution, and what makes a diagram
+answer "what talks to what".
+
+## 7b. Discovery, not tuning — what the wire investigation actually found
+
+Asked why wire volume was so low, the answer was not thresholds:
+
+**Ports had six discoverers; wires had one.** Ports came from compose `expose:`
+and `ports:`, OpenAPI, `.proto`, GraphQL and Thrift. Wires came from compose
+`depends_on` — and only that. `depends_on` is the weakest declaration available;
+the code's own comment says it *"states startup ordering … but says nothing
+about whether traffic returns"*.
+
+Two sources were added:
+
+* **Compose environment references.** `KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181`
+  names a service, a port and a direction — strictly more than `depends_on`
+  says. Merged one-edge-per-pair, preferring the environment reference, since
+  counting a pair twice inflates every measure computed over these wires.
+* **Spring application declarations** (`spring_app.py`). Egeria has **no compose
+  files at all**, so no amount of compose work could ever have found its wires:
+  its architecture is declared in `application.properties` and server config
+  documents. Reading those took egeria from 0 wires to 8, and from no deployment
+  perspective to one.
+
+The general lesson, four measurements deep: **when a signal looks too sparse to
+use, check what discovers it before tuning what consumes it.** Three of the four
+measurements said the signal was not the problem.
+
 ## 8. Build order
 
 1. **Cluster within the deployment perspective**, using `scope_hierarchy` grouping that already
