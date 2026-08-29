@@ -105,6 +105,8 @@ class TestSchedulesRouteAcceptsASurveyTarget:
         from resource_explorer.web.routes import schedules as mod
         monkeypatch.setattr(mod.ProjectRegistry, "save_schedule",
                             lambda self, **kw: fake_save(**kw))
+        # The repo has to exist now — the route checks before saving.
+        monkeypatch.setattr(mod.ProjectRegistry, "get", lambda self, slug: object())
         resp = self._client().post(
             "/api/schedules/repo/myproj",
             json={"analysis_id": "GovActionProcess::RepoAssessmentSurvey",
@@ -121,6 +123,7 @@ class TestSchedulesRouteAcceptsASurveyTarget:
         from resource_explorer.web.routes import schedules as mod
         monkeypatch.setattr(mod.ProjectRegistry, "save_schedule",
                             lambda self, **kw: saved.update(kw))
+        monkeypatch.setattr(mod.ProjectRegistry, "get", lambda self, slug: object())
         resp = self._client().post(
             "/api/schedules/repo/myproj",
             json={"analysis_id": "repository_health", "schedule": "daily"},
@@ -164,3 +167,75 @@ class TestDefinitionsListRoute:
         for d in list_definitions():
             assert d["qualified_name"] == f"GovActionProcess::{d['name']}"
             assert d["step_count"] > 0
+
+
+class TestAScheduleMustNameAResourceThatExists:
+    """POST /api/schedules/repo/egeria was accepted and stored on 2026-08-28,
+    though no repo has that slug — the real one is `egeria_git`.
+
+    Nothing was broken by it; the scheduler reports a stale schedule correctly
+    when it fires. The cost was entirely in WHEN it was reported. A typo that
+    a caller could fix in the second they made it instead became a weekly
+    cadence that looked healthy and never ran, discovered a week later in a
+    row nobody was watching — coverage the user believed they had.
+    """
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from resource_explorer.web.app import app
+        return TestClient(app)
+
+    def test_an_unknown_repo_is_refused(self, monkeypatch):
+        from resource_explorer.web.routes import schedules as mod
+        monkeypatch.setattr(mod.ProjectRegistry, "get", lambda self, slug: None)
+        saved = []
+        monkeypatch.setattr(mod.ProjectRegistry, "save_schedule",
+                            lambda self, **kw: saved.append(kw))
+        resp = self._client().post(
+            "/api/schedules/repo/egeria",
+            json={"analysis_id": "rag_ingestion", "schedule": "weekly"},
+        )
+        assert resp.status_code == 404
+        assert "egeria" in resp.text
+        assert saved == [], "refused, but stored anyway"
+
+    def test_an_unknown_database_is_refused(self, monkeypatch):
+        from resource_explorer.web.routes import schedules as mod
+        monkeypatch.setattr(mod.ProjectRegistry, "get_database", lambda self, slug: None)
+        resp = self._client().post(
+            "/api/schedules/database/nope",
+            json={"analysis_id": "index_health", "schedule": "daily"},
+        )
+        assert resp.status_code == 404
+
+    def test_an_unrecognised_entity_type_is_not_reported_as_a_missing_resource(self):
+        """The route has never constrained the entity_type vocabulary, and a
+        kind added elsewhere must not be rejected here just because this dict
+        has not caught up. What it must not do is say the resource is missing
+        when it never looked."""
+        from resource_explorer.web.routes.schedules import _require_resource
+        _require_resource(object(), "something_new", "x")   # must not raise
+
+    def test_validation_runs_before_the_lookup(self, monkeypatch):
+        """A bad schedule value is refused as 422 whatever the slug — the
+        caller gets the error that is actually theirs to fix, not a 404 about
+        a resource that was never the problem."""
+        from resource_explorer.web.routes import schedules as mod
+        monkeypatch.setattr(mod.ProjectRegistry, "get", lambda self, slug: None)
+        resp = self._client().post(
+            "/api/schedules/repo/whatever",
+            json={"analysis_id": "rag_ingestion", "schedule": "hourly"},
+        )
+        assert resp.status_code == 422
+        assert "hourly" in resp.text
+
+    def test_deleting_a_stale_schedule_is_still_possible(self, monkeypatch):
+        """The guard must not reach DELETE. Removing a schedule that points at
+        a resource which no longer exists is exactly what that route is for —
+        guarding it would strand the rows it exists to clean up."""
+        from resource_explorer.web.routes import schedules as mod
+        monkeypatch.setattr(mod.ProjectRegistry, "get", lambda self, slug: None)
+        monkeypatch.setattr(mod.ProjectRegistry, "delete_schedule",
+                            lambda self, *a, **kw: True)
+        resp = self._client().delete("/api/schedules/repo/long_gone/rag_ingestion")
+        assert resp.status_code == 200
