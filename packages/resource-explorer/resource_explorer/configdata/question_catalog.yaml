@@ -777,11 +777,21 @@ repo_questions:
   answering:
     kind: analysis
     analysis_ids:
-    - architecture_recovery
     - architecture_doc_lens
     - architecture_summary
     checks: []
-    note: architecture_recovery + architecture_summary + architecture_doc_lens
+    # architecture_recovery removed 2026-08-30, alongside its re-tiering out
+    # of discovery to analysis (Dan's ruling — it belongs there, and the
+    # ~110s profiled wait was never "cheap enough to gate the expensive
+    # tiers" to begin with). This Discovery-stage question is still answered
+    # without it: architecture_summary reads recovery's already-stored
+    # findings and fetches nothing, which is exactly the reasoning-over-
+    # what's-collected shape this stage is for; a fast, direct answer here
+    # does not require re-running recovery itself. A repo with no recovery
+    # data yet answers this question as "not analysed", not by triggering a
+    # slow survey from a Discovery-stage question — see the raw recovery
+    # step from Analysis instead when a fresh run is actually wanted.
+    note: "architecture_summary + architecture_doc_lens (architecture_recovery answers from Analysis now, not here)"
   answering_mechanism: Code Analysis
 - question: What languages and file types make up this repository?
   stage: Scouting
