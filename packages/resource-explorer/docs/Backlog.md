@@ -201,6 +201,23 @@ the other.
 roots; give co-change what it actually needs). S1 is coordinating with S2 before claiming either —
 see cross-session note, same date.
 
+**"Give co-change what it actually needs" — SOLVED, same day, by dwolfson-59** (reported via S2,
+not yet merged into `ui/architecture-focus`): the answer was `git log --name-only`'s **default
+inexact rename detection**, which scores blob-content similarity and is exactly what defeats
+`--filter=blob:none` — 86 lazy fetches, confirmed by a packet trace. Fix is `--find-renames=100%`:
+an exact rename compares blob OIDs already present in the tree, so it costs nothing extra, while
+inexact detection has to fetch and diff content. Commit `63e7ec6` on `re/deferred-cleanup-followups`
+(`cochange.py` only), merged into `re/survey-flows` at `d9e619f`.
+
+Reported new measurement (dwolfson-59, via S2 — not independently re-run by S1): acquisition now
+dominates the route's remaining cost rather than the reverse — 86% of `egeria_python_git`'s total for
+`repo_arch_coupling`, 61% for `docling_parse`. **This dissolves the tiering question further than
+this entry's own "the two converge and the question disappears" anticipated** — the cache-the-roots
+fix above is now the more clearly load-bearing of the two remaining candidates, since the per-run
+network chattiness this fix closed was the bigger of the two costs the earlier profiling found.
+
+**Cache the acquired roots — still open and unclaimed as of this writing.**
+
 #### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
 
 *(Opened 2026-08-30, live-reported: "pressing the architecture survey button does seem to start the
