@@ -2221,6 +2221,30 @@ definition so a proposal records the context it was clustered for; wire density 
 against the logical perspective; RFA the cases that will not cluster rather than emitting a
 low-confidence grouping.
 
+**Deployment-perspective clustering (signal 1) — DONE, since before this entry was last read.**
+`arch_recovery/clustering.py` (`propose`/`_build`/`rollup`/`assign`), wired into `persist.py`'s
+`_cluster()` and running on every survey. Affinity promotion (Collection -> composed component via
+import-cohesion) landed alongside it. Tested: `test_arch_clustering.py`, 29 cases. This paragraph was
+stale — recorded here so the next reader doesn't re-derive "has clustering run yet" from scratch.
+
+**Wire density (signal 2) — CLAIMED 2026-08-30 by S1, starting now.** The other two signals: signal 1
+is done above; signal 3 (same external interface) stays blocked on the standing interface-extraction
+item. Wires already exist (`interfaces.propose`, persisted under `architecture_interfaces`, and
+`persist_ir` already threads `wires` through as a parameter `_cluster()` was never given) — this is
+wiring an input that exists into a signal that doesn't, not new detection work.
+
+**Found while reading the code to wire this in — a live, untested bug in `_build`'s recursive
+`_subdivide` branch:** the call `_build(sub_name, sub_scopes, by_scope, perspective, target_size,
+depth_left - 1)` passes 6 positional args to a 7-parameter function (missing `by_scope_components`),
+so every value after it lands in the wrong slot and `depth_left` gets none at all — a `TypeError` on
+any call. Unreached by all 29 existing tests: the oversized-cluster tests use flat scope locators
+(`flat::s{i}`) specifically so `scope_hierarchy.derive` finds nothing to subdivide, which is exactly
+what keeps this branch from ever running. Real corpus runs likely never hit it either — an oversized
+group needs a deployment-context split to be genuinely unavailable (not just single-valued) AND a
+further scope hierarchy to exist below it, which most oversized groups apparently don't reach before
+bottoming out one of the earlier checks. Fixing alongside the wire-density change since it's the same
+function, with a regression test that would have caught it.
+
 ---
 
 #### RE has no login at all, and its identity is inconsistent across 26 sites
