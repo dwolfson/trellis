@@ -193,7 +193,7 @@ class ArchDetectSurveyor(BaseSurveyor):
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="detect",
                 run_scope=self._scope_locator, outcome=detect_outcome,
-                ports=ports, wires=wires,
+                ports=ports, wires=wires, notes=notes,
             )
 
             by_type: dict[str, int] = {}
@@ -241,6 +241,9 @@ class ArchDetectSurveyor(BaseSurveyor):
                     confidence=60,
                 ))
 
+            # Logged AND persisted. The log line is for someone watching a run;
+            # the stored row is for someone asking six months later why a
+            # component is named what it is (persist.py's DECISIONS_KIND).
             for note in notes:
                 log.info("ArchDetectSurveyor(%s): %s", self.project.slug, note)
 

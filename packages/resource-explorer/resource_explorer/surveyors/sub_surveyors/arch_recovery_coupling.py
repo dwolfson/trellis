@@ -209,7 +209,7 @@ class ArchCouplingSurveyor(BaseSurveyor):
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="coupling",
                 run_scope=self._scope_locator, extra_metrics=extra_metrics,
-                outcome=coupling_outcome,
+                outcome=coupling_outcome, notes=notes,
             )
 
             shape_counts: dict[str, int] = {}

@@ -126,6 +126,68 @@ def _scope_depth(scope: str) -> int:
     return len([p for p in scope.split("/") if p]) - 1
 
 
+#: Decision notes — WHY this run concluded what it concluded.
+#:
+#: Its own kind, for `DIAGRAM_KIND`'s reason: a whole-resource finding under
+#: `KIND` makes `context_compile`'s `query_findings(slug, analysis_id)` return
+#: exactly one row and suppress the results-reader fallback, replacing an
+#: analysis's evidence with whatever that row happens to be.
+#:
+#: **Why persist prose at all.** Every note the discoverers produce — "2
+#: declarations describe one platform … identical server sets", "qualified by
+#: build module, since a shared name becomes a shared slug", "6 profile overlays
+#: have no base config beside them" — went to `log.info` and nowhere else. That
+#: is the *why* behind a component's name or absence, and it evaporated unless
+#: someone was tailing logs at INFO when the survey ran. Evidence records say
+#: what was concluded; these say what was decided and rejected, which is what a
+#: reader needs when the answer looks wrong.
+DECISIONS_KIND = "architecture_decisions"
+
+
+def _persist_decisions(registry, slug: str, notes: list, surveyed_at: str,
+                       run_label: str, run_scope: str) -> None:
+    """One whole-resource row per RUN LABEL, carrying that step's notes.
+
+    Keyed by `run_label` in the `check_name` for the reason `persist_ir` already
+    prefixes its summary metric: `repo_arch_detect` and `repo_arch_coupling` are
+    independent steps that need not share a `surveyed_at`, and `query_findings`
+    returns only the rows at `MAX(surveyed_at)` per (slug, kind, scope). A
+    shared check_name at the same scope would let whichever step ran last hide
+    the other's reasoning entirely.
+
+    Read them with `query_findings_all_runs(slug, DECISIONS_KIND, "")` and keep
+    the newest row per `check_name`; a plain `query_findings` returns only the
+    step that ran most recently, which is a valid but partial view.
+    """
+    if not notes:
+        return
+    kept = [str(n) for n in notes][:_MAX_DECISION_NOTES]
+    try:
+        registry.upsert_finding(
+            slug, DECISIONS_KIND,
+            [{
+                "check_name": f"decisions:{run_label}",
+                "label": run_label,
+                "summary": f"{len(notes)} decision note(s) from {run_label}",
+                "confidence": 100,
+                "detail": {"notes": kept, "run_label": run_label,
+                           "run_scope": run_scope,
+                           "truncated": max(0, len(notes) - len(kept))},
+            }],
+            surveyed_at=surveyed_at, scope_locator="",
+        )
+    except Exception:
+        # A decision trace must never be able to fail a survey that otherwise
+        # succeeded — but it must say so rather than vanish, which is the exact
+        # failure this whole change exists to fix.
+        log.exception("%s: could not persist %s decision notes", slug, run_label)
+
+
+#: Cap. A note list is prose for a human; an unbounded one is a log file in a
+#: findings row. Measured: egeria 2, dataflow 5, atlas 20.
+_MAX_DECISION_NOTES = 200
+
+
 #: `check_name` for a withdrawal. Its LABEL is what the registry keys on
 #: (`WITHDRAWN_LABEL`); the check_name is for humans reading the table.
 WITHDRAWN_CHECK = "component_withdrawn"
@@ -208,6 +270,7 @@ def persist_ir(
     *,
     run_label: str = "run",
     run_scope: str = "",
+    notes: list[str] | None = None,
     ports: list[dict] | None = None,
     wires: list[dict] | None = None,
     extra_metrics: dict[str, dict[str, float]] | None = None,
@@ -501,6 +564,8 @@ def persist_ir(
 
     _persist_diagram(registry, slug, components, ports or [], wires or [],
                      surveyed_at, run_scope)
+
+    _persist_decisions(registry, slug, notes or [], surveyed_at, run_label, run_scope)
 
     return slug_to_scope
 
