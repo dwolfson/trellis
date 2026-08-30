@@ -308,6 +308,50 @@ class TestArchitectureComponentVerdicts:
         assert db.list_component_verdict_history("repo", "myproj", "src/never-ruled") == []
 
 
+class TestArchitectureMaterializedComponents:
+    """Unlike verdicts, this table has one current row per scope, not an
+    append-only history — get_materialized_component's docstring explains
+    why: "does this exist in Egeria" is a fact with one current answer."""
+
+    def test_nothing_materialized_reports_none(self, db):
+        assert db.get_materialized_component("repo", "myproj", "src/foo") is None
+
+    def test_record_and_read_back(self, db):
+        entry = db.record_materialized_component(
+            "repo", "myproj", "src/foo",
+            "SolutionComponent::repo::myproj::src/foo", "guid-1",
+        )
+        assert entry["guid"] == "guid-1"
+        row = db.get_materialized_component("repo", "myproj", "src/foo")
+        assert row["guid"] == "guid-1"
+        assert row["qualified_name"] == "SolutionComponent::repo::myproj::src/foo"
+
+    def test_a_second_call_replaces_rather_than_appends(self, db):
+        """Re-materializing (a stale GUID, or a corrected qualifiedName)
+        must not leave two rows for the same scope — there is only ever one
+        current answer to "does this exist"."""
+        db.record_materialized_component("repo", "myproj", "src/foo", "qn-1", "guid-1")
+        db.record_materialized_component("repo", "myproj", "src/foo", "qn-1", "guid-2")
+        row = db.get_materialized_component("repo", "myproj", "src/foo")
+        assert row["guid"] == "guid-2"
+
+    def test_scoped_per_component(self, db):
+        db.record_materialized_component("repo", "myproj", "src/foo", "qn-1", "guid-1")
+        assert db.get_materialized_component("repo", "myproj", "src/bar") is None
+
+    def test_scoped_per_resource(self, db):
+        db.record_materialized_component("repo", "proj-a", "src/foo", "qn-1", "guid-1")
+        assert db.get_materialized_component("repo", "proj-b", "src/foo") is None
+
+    def test_bulk_read_returns_everything_for_the_resource(self, db):
+        db.record_materialized_component("repo", "myproj", "src/foo", "qn-foo", "guid-foo")
+        db.record_materialized_component("repo", "myproj", "src/bar", "qn-bar", "guid-bar")
+        db.record_materialized_component("repo", "other", "src/foo", "qn-x", "guid-x")
+        result = db.get_materialized_components("repo", "myproj")
+        assert set(result) == {"src/foo", "src/bar"}
+        assert result["src/foo"]["guid"] == "guid-foo"
+
+
 class TestSchedules:
     def test_save_and_get_schedule(self, db):
         db.save_schedule("repo", "myproj", "security_scan", "weekly", True)

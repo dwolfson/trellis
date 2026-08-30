@@ -1884,6 +1884,20 @@ def _verdict_view(row: dict | None) -> dict | None:
     }
 
 
+def _materialized_view(row: dict | None) -> dict | None:
+    """The subset of an architecture_materialized_components row a component
+    card needs — None when nothing has been materialized yet. Kept as its
+    own function alongside _verdict_view rather than folded in: a component
+    can carry a verdict with no materialization (e.g. 'rejected', or an
+    'accepted' whose materialize call failed — see curate.py's
+    _materialize_if_accepted) and the UI needs to tell those apart on a
+    page reload, not just in the transient POST response."""
+    if not row:
+        return None
+    return {"guid": row["guid"], "qualified_name": row["qualified_name"],
+            "materialized_at": row.get("materialized_at", "")}
+
+
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
 ) -> dict:
@@ -1920,6 +1934,7 @@ def _architecture_recovery_results(
     # what the detectors said." One query for the whole resource, same
     # reasoning as everything else here that avoids a per-scope round trip.
     verdicts = registry.get_component_verdicts("repo", slug)
+    materialized = registry.get_materialized_components("repo", slug)
     for scope in scopes:
         rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
         comp_rows = [r for r in rows if r["check_name"] == "component"]
@@ -1962,6 +1977,7 @@ def _architecture_recovery_results(
             "depth": detail.get("depth", 0),
             "parent_slug": detail.get("parent_slug", ""),
             "verdict": _verdict_view(verdicts.get(scope)),
+            "materialized": _materialized_view(materialized.get(scope)),
             "evidence": [
                 {
                     "assertion": r["check_name"], "approach": r["label"],
@@ -2080,6 +2096,12 @@ def _architecture_recovery_results(
         default="",
     )
     return {
+        # Carried so the renderer can call the curator-verdict endpoints
+        # (/api/curate/component-verdicts/repo/{slug}) without a second
+        # parameter threaded through _renderCustomAnalysisResults' generic
+        # `(data) => html` registry contract — every other entry there stays
+        # untouched.
+        "slug": slug,
         "components": displayed,
         # Ports and wires live under the same analysis because they are the same
         # recovery run's output, but in their own key rather than folded into
