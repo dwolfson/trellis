@@ -42,6 +42,7 @@ from typing import Callable
 
 from trellis_microflow import ResourceProvider
 
+from resource_explorer.registry import WITHDRAWN_LABEL
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
 from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.result_status import attach as attach_status
@@ -1908,7 +1909,13 @@ def _architecture_recovery_results(
         # the SAME component, unlike evidence, which accumulates.
         latest = max(comp_rows, key=lambda r: r["surveyed_at"])
         detail = _json_or_empty(latest.get("detail_json"))
-        approaches = sorted({r["label"] for r in evidence_rows if r["label"]})
+        # A WITHDRAWAL is not an approach. Its rows are `check_name !=
+        # "component"`, so they land in `evidence_rows` and their label
+        # ("withdrawn") was being rendered as though a detector by that name had
+        # proposed the component: measured in the browser, egeria's withdrawn
+        # rows showed `spring, withdrawn` on their provenance line.
+        approaches = sorted({r["label"] for r in evidence_rows
+                             if r["label"] and r["label"] != WITHDRAWN_LABEL})
         metrics = registry.query_metrics(slug, "architecture_recovery", scope)
         if detail.get("slug"):
             slug_to_path[detail["slug"]] = scope

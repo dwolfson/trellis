@@ -3556,6 +3556,103 @@ function _renderWebsiteIngestionResults(data) {
 // This is the same fix findings_list and metrics already had (2026-08-24) —
 // the custom branches were simply missed, and kept asserting "not run" about
 // measured absence.
+
+// ─── Architecture perspectives ──────────────────────────────────────────────
+// Design §4.1: the four perspectives are NOT interchangeable, and a component
+// is only comparable to another within its own. The payload has carried
+// `perspective` all along and this card rendered all of them in one flat list
+// sorted by path — so egeria's clean 8-component DEPLOYMENT reading sat
+// invisible behind 341 logical rows, and the cap showed whichever 20 sorted
+// first alphabetically.
+const _ARCH_PERSPECTIVE_LABEL = {
+  deployment: 'Deployment', logical: 'Logical', physical: 'Physical', dev: 'Dev/DevOps',
+};
+// Deployment first when it exists (Dan, 2026-08-30). Not "smallest non-empty",
+// which was the earlier proposal and picks `physical` (1 component) for
+// egeria-workspaces — smallest is a proxy for readable and stops being one the
+// moment a perspective is small because it is nearly empty. Deployment is the
+// perspective a curator wants when there is one.
+function _archDefaultPerspective(groups) {
+  if (groups.deployment && groups.deployment.length) return 'deployment';
+  let best = '', n = -1;
+  for (const [k, v] of Object.entries(groups)) {
+    if (v.length > n) { best = k; n = v.length; }
+  }
+  return best;
+}
+let _archUidSeq = 0;
+function _archShowPerspective(uid, persp) {
+  document.querySelectorAll('[data-arch-pane="' + uid + '"]').forEach(el => {
+    el.classList.toggle('hidden', el.dataset.archPersp !== persp);
+  });
+  document.querySelectorAll('[data-arch-tab="' + uid + '"]').forEach(el => {
+    const on = el.dataset.archPersp === persp;
+    el.classList.toggle('bg-slate-700', on);
+    el.classList.toggle('text-cyan-300', on);
+    el.classList.toggle('text-slate-400', !on);
+  });
+}
+function _archToggleStructural(uid, btn) {
+  const box = document.querySelector('[data-arch-structural="' + uid + '"]');
+  if (!box) return;
+  const nowHidden = box.classList.toggle('hidden');
+  btn.textContent = (nowHidden ? 'Show ' : 'Hide ') + btn.dataset.archCount + ' grouping node(s)';
+}
+function _archTabsHtml(uid, groups, active) {
+  return Object.keys(groups)
+    .sort((a, b) => groups[b].length - groups[a].length)
+    .map(p => `<button data-arch-tab="${uid}" data-arch-persp="${_esc(p)}"
+         onclick="_archShowPerspective('${uid}', '${_esc(p)}')"
+         class="text-[11px] px-2 py-0.5 rounded ${p === active ? 'bg-slate-700 text-cyan-300' : 'text-slate-400'} hover:text-cyan-300">
+         ${_esc(_ARCH_PERSPECTIVE_LABEL[p] || p)} <span class="text-slate-500">${groups[p].length}</span>
+       </button>`).join('');
+}
+// Counts stay honest about BOTH coarsenings — the server-side depth projection
+// and this list's own cap — but per perspective now, since a whole-payload
+// count says nothing about the tab being looked at.
+function _archPaneCountLine(rows, raw, projected, surveyedAt) {
+  return Math.min(rows.length, _ARCH_ROW_CAP) + ' shown'
+    + (rows.length > _ARCH_ROW_CAP ? ' of ' + rows.length + ' at this depth' : '')
+    + (projected ? ' · ' + raw + ' recovered in full, all perspectives' : '')
+    + (surveyedAt ? ' · last run ' + _relTime(surveyedAt) : '');
+}
+function _archPanesHtml(uid, groups, active, raw, projected, surveyedAt) {
+  return Object.entries(groups).map(([p, rows]) => `
+      <div data-arch-pane="${uid}" data-arch-persp="${_esc(p)}" class="${p === active ? '' : 'hidden'}">
+        <div class="text-xs text-slate-400 mb-1">${_archPaneCountLine(rows, raw, projected, surveyedAt)}</div>
+        ${rows.length > _ARCH_ROW_CAP ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : ''}
+        ${rows.slice(0, _ARCH_ROW_CAP).map(_archRow).join('')}
+      </div>`).join('');
+}
+function _archStructuralHtml(uid, structural) {
+  if (!structural.length) return '';
+  return `
+    <div class="mt-2 pt-2 border-t border-slate-700/50">
+      <button data-arch-count="${structural.length}"
+        onclick="_archToggleStructural('${uid}', this)"
+        class="text-[11px] text-slate-500 hover:text-cyan-300">Show ${structural.length} grouping node(s)</button>
+      <div data-arch-structural="${uid}" class="hidden mt-1">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+          Grouping only — directories that hold components, not components themselves
+        </div>
+        ${structural.slice(0, _ARCH_ROW_CAP).map(c => `
+          <div class="text-xs text-slate-500 mb-1 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>`).join('')}
+        ${structural.length > _ARCH_ROW_CAP ? `<div class="text-[11px] text-slate-600">… and ${structural.length - _ARCH_ROW_CAP} more</div>` : ''}
+      </div>
+    </div>`;
+}
+function _archRow(c) {
+  return `
+        <div class="text-xs text-slate-300 mb-1">
+          <div class="flex justify-between gap-2">
+            <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
+            <span class="text-slate-500 shrink-0">${c.type ? _esc(c.type) : 'untyped'} · ${c.confidence}%</span>
+          </div>
+          <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
+          <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
+        </div>`;
+}
+
 function _renderCustomAnalysisResults(analysisId, data) {
   if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
   if (analysisId === 'website_ingestion') return _renderWebsiteIngestionResults(data);
@@ -3642,27 +3739,31 @@ function _renderCustomAnalysisResults(analysisId, data) {
     // total)" rather than let a projected view look like the whole answer —
     // and nothing read it, while the header printed the projected count as if
     // it were everything.
-    const _shown = Math.min(data.components.length, _ARCH_ROW_CAP);
     const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
     const _projected = (_raw !== null && _raw > data.component_count);
-    const _capped = data.components.length > _ARCH_ROW_CAP;
-    const _countLine = _shown + ' shown'
-      + (_capped ? ' of ' + data.components.length + ' at this depth' : '')
-      + (_projected ? ' · ' + _raw + ' recovered in full' : '')
-      + (data.surveyed_at ? ' · last run ' + _relTime(data.surveyed_at) : '');
+
+    // Grouping nodes are not components. The reader marks them `structural`
+    // precisely so a consumer can render them as grouping rather than as a
+    // recovered component — and nothing read it, so 75 of egeria's 451 rows
+    // showed as `untyped · 0%`; and since rows sort by path, the TOP LINE of
+    // the architecture was a placeholder for the repository root.
+    const _structural = data.components.filter(c => c.structural);
+    const _real = data.components.filter(c => !c.structural);
+
+    const _groups = {};
+    for (const c of _real) (_groups[c.perspective || 'physical'] ||= []).push(c);
+    const _active = _archDefaultPerspective(_groups);
+    const _uid = 'arch' + (++_archUidSeq);
+
+    const _tabs = _archTabsHtml(_uid, _groups, _active);
+    const _panes = _archPanesHtml(_uid, _groups, _active, _raw, _projected, data.surveyed_at);
+    const _structuralBlock = _archStructuralHtml(_uid, _structural);
 
     return completeness
-      + `<div class="text-xs text-slate-400 mb-1">${_countLine}</div>`
-      + (_capped ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : '')
-      + data.components.slice(0, _ARCH_ROW_CAP).map(c => `
-        <div class="text-xs text-slate-300 mb-1">
-          <div class="flex justify-between gap-2">
-            <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
-            <span class="text-slate-500 shrink-0">${c.type ? _esc(c.type) : 'untyped'} · ${c.confidence}%</span>
-          </div>
-          <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
-          <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
-        </div>`).join('')
+      + (Object.keys(_groups).length > 1
+          ? `<div class="flex flex-wrap gap-1 mb-1">${_tabs}</div>` : '')
+      + _panes
+      + _structuralBlock
       + _renderDocIngestionState(data.documentation)
       + _renderDeploymentInterfaces(data.interfaces);
   }

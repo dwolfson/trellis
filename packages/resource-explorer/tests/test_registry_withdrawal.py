@@ -116,3 +116,44 @@ class TestWithdrawal:
         rows = registry.query_findings_all_runs(project.slug, KIND, "pkg/a")
         assert len(rows) == 2
         assert registry.query_findings(project.slug, KIND, "pkg/a")
+
+
+class TestWithdrawalIsNotEvidence:
+    """A withdrawal row has `check_name != "component"`, so every reader that
+    splits rows that way treats it as evidence unless told otherwise.
+
+    Found by looking at the rendered page rather than the JSON: egeria's
+    withdrawn components displayed `spring, withdrawn` on their provenance
+    line, as though a detector called "withdrawn" had proposed them.
+
+    (Seen on a server predating the withdrawal filter, but it is not a
+    stale-server artifact — a REVIVED scope is live and carries a withdrawal in
+    its history, so the pollution is reachable in current code.)
+    """
+
+    def test_a_withdrawal_is_not_listed_as_an_approach(self, registry, project):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        registry.upsert_finding(project.slug, KIND, [{
+            "check_name": "component", "label": "Software Service",
+            "detail": {"name": "svc", "slug": "svc", "perspective": "deployment"},
+        }], surveyed_at="2026-08-30T00:00:00", scope_locator="pkg/a")
+        registry.upsert_finding(project.slug, KIND, [{
+            "check_name": "manifest:python", "label": "manifest",
+        }], surveyed_at="2026-08-30T00:00:00", scope_locator="pkg/a")
+        # REVIVAL is the reachable case: once withdrawn, a scope stops being
+        # enumerated, so the pollution can only be seen on a scope that came
+        # back — which is exactly what happens when the other step still
+        # proposes it, or the next run re-detects it.
+        _withdraw(registry, project.slug, "pkg/a", "2026-08-30T00:01:00")
+        registry.upsert_finding(project.slug, KIND, [{
+            "check_name": "component", "label": "Software Service",
+            "detail": {"name": "svc", "slug": "svc", "perspective": "deployment"},
+        }], surveyed_at="2026-08-30T00:02:00", scope_locator="pkg/a")
+
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        rows = [c for c in result["components"] if c["path"] == "pkg/a"]
+        assert rows, "fixture produced no component — the test would pass vacuously"
+        assert WITHDRAWN_LABEL not in rows[0]["proposed_by"]
+        assert "manifest" in rows[0]["proposed_by"]
