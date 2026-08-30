@@ -988,6 +988,24 @@ Three consequences for this design:
    the interpretation. Recording "docs lag code by N days" is defensible; ranking projects by it is
    not.
 
+**(d) The outward hop was built, and it measured near-zero on the case that motivated it.**
+Added 2026-08-29. `doc_locations.py` resolves sibling repos and doc sites as (a) asks, and it works
+— 13 of 46 gate-approved repos get a document located. But the lens built on top of it named **1 of
+Egeria's 999 logical components**, from `odpi/egeria-docs`, and that one match is a directory called
+`egeria` matching the term `egeria`. The document names `Common Services`, `OMAS`, `OMVS`; the
+pipeline proposed Java package paths. Nothing joins, and better matching cannot make it join.
+
+The diagnosis is a §4.1 violation this document did not anticipate: `coupling.propose()` asserts
+`perspective="logical"` beside `identity.method="module-path"`, so a directory path and `OMAS` are
+filed under the same word and the lens joins on it. The only genuinely logical source in the
+pipeline is the one input forbidden from proposing anything.
+
+Decision (Dan, 2026-08-29): **a documentation-derived component may exist without a
+`scope_locator`** — docs become a source, bridged to code by `ImplementedBy` (§3.6, §4.1). The
+consequences, the gate this needs (the existing `undetected_is_meaningful` licenses *reading*, not
+*proposing*, and its denominator is circular), and why §5.5a(b)'s dating becomes a precondition
+rather than an enhancement are in **`architecture-recovery-docs-as-source.md`**.
+
 ### 5.5b What the repo *is* — classification before analysis
 
 **Maintainer direction, 2026-08-22.** Before asking *what is the architecture of this repo*, ask
