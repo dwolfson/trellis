@@ -59,9 +59,58 @@ from . import exclusion
 MERGE_COMMIT_MARKER = "\x00MERGE\x00"
 
 
+#: Exact renames only — the flag that decides whether this step costs
+#: milliseconds or a minute and a half.
+#:
+#: `--name-only` implies a diff, and git's DEFAULT rename detection is
+#: *inexact*: it scores file similarity, which requires reading blob content.
+#: The history root this runs against is a `--filter=blob:none --no-checkout`
+#: partial clone (`_acquire_git_clone_root`), where no blob is local — so every
+#: similarity comparison is a lazy fetch from the remote.
+#:
+#: Measured 2026-08-30 on a cold treeless clone of `odpi/egeria-python`, running
+#: exactly the command below:
+#:
+#:     default (inexact renames)   41.09s   12045 file lines   86 upload-pack round trips
+#:     --find-renames=100%          0.03s   12181 file lines
+#:     --no-renames                 0.03s   12536 file lines
+#:
+#: **Exact rename detection compares blob OIDs, which live in the tree** and are
+#: therefore already present in a treeless clone. So this keeps rename detection
+#: for pure renames and pays nothing; only rename-WITH-modification is lost,
+#: where the old path now reads as a delete and the new one as an add.
+#:
+#: For co-change that is arguably the truer reading — both paths did change in
+#: that commit — and it is the smaller drift of the two fast options (+1.1% file
+#: entries against `--no-renames`' +4%). Commit set and order are identical
+#: under all three.
+#:
+#: **One second-order effect, measured rather than assumed.** The extra
+#: delete-entries can push a borderline commit past `max_files`, which is a
+#: size filter, not a rename filter. On `egeria` (12 months, max_files=50):
+#:
+#:     commits_total      230  ->  230   identical
+#:     commits_considered 119  ->  117
+#:     commits_skipped_large 63 -> 65    two large refactors now excluded
+#:     pair_count       21614  -> 20211  those two carried 1403 pairs
+#:
+#: Net across three repos: **one component of 872** differs
+#: (`coupling::open-metadata-implementation::view-services::privacy-officer`).
+#: The excluded commits are near-50-file refactors, which the cap exists to
+#: treat as noise, so this is not obviously a loss — but it is a real change in
+#: what the filter admits and not only in how renames are reported.
+#:
+#: Deliberately NOT compensated by raising `max_files`: that would be tuning a
+#: threshold to preserve a number.
+#:
+#: This is NOT a tuning knob. Removing it restores a 1,370x cost on the
+#: acquisition path and nothing else.
+_EXACT_RENAMES_ONLY = "--find-renames=100%"
+
+
 def _run_git_log(root: str, months: int, no_merges: bool) -> str:
     args = ["git", "-C", root, "log", f"--since={months} months ago",
-            "--name-only", "--pretty=format:COMMIT\x1f%H"]
+            "--name-only", _EXACT_RENAMES_ONLY, "--pretty=format:COMMIT\x1f%H"]
     if no_merges:
         args.append("--no-merges")
     proc = subprocess.run(args, capture_output=True, timeout=600)
