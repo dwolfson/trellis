@@ -242,3 +242,142 @@ class TestCloneGitRoot:
             pass
 
         assert not Path(captured["dest"]).parent.exists()
+
+
+class TestGitCloneRootCaching:
+    """The cache path: a resolvable SHA (and no shallow_since bound) routes
+    through SourceCache instead of clone_git_root directly. Mirrors
+    test_github_client_zipball_root.py's TestZipballRootCaching — same gap
+    (referenced in the module docstring's "must keep behaving exactly as
+    before" framing, never actually written), same fix shape.
+
+    clone_git_root() and local_clone() are each tested for real elsewhere
+    (this file's TestCloneGitRoot; test_source_cache.py's TestLocalClone) —
+    these tests are about the ORCHESTRATION in git_clone_root() itself: does
+    it consult the cache, fill it on a miss, skip clone_git_root on a hit,
+    and correctly bypass caching altogether when shallow_since is given
+    (a bounded clone must never share a key with an unbounded one — see
+    git_clone_root()'s own comment on this).
+    """
+
+    @staticmethod
+    def _patch_cache_dir(monkeypatch, tmp_path):
+        import resource_explorer.github.source_cache as cache_mod
+
+        real_cls = cache_mod.SourceCache
+        monkeypatch.setattr(cache_mod, "SourceCache",
+                             lambda: real_cls(cache_dir=tmp_path / "cache"))
+        return real_cls(cache_dir=tmp_path / "cache")  # a handle for pre-population
+
+    def test_cache_miss_clones_once_then_local_clones(self, tmp_path, monkeypatch):
+        import resource_explorer.github.source_cache as cache_mod
+
+        self._patch_cache_dir(monkeypatch, tmp_path)
+        clone_calls, local_calls = [], []
+
+        def _fake_clone_git_root(repo_arg, dest_dir, shallow_since=None):
+            clone_calls.append((repo_arg, shallow_since))
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / "HEAD").write_text("cached clone")
+            return dest_dir
+
+        def _fake_local_clone(source, dest):
+            local_calls.append((source, dest))
+            dest.mkdir(parents=True, exist_ok=True)
+            return dest
+
+        monkeypatch.setattr(cache_mod, "local_clone", _fake_local_clone)
+
+        client = _client(sha="deadbeef")
+        client.clone_git_root = _fake_clone_git_root
+        repo = _fake_repo()
+
+        with client.git_clone_root(repo) as root:
+            assert root is not None
+
+        assert len(clone_calls) == 1, "clone_git_root must run exactly once on a miss"
+        assert clone_calls[0][1] is None, "the cache-filling clone must be unbounded (shallow_since=None)"
+        assert len(local_calls) == 1
+
+    def test_cache_hit_never_calls_clone_git_root(self, tmp_path, monkeypatch):
+        import resource_explorer.github.source_cache as cache_mod
+
+        cache = self._patch_cache_dir(monkeypatch, tmp_path)
+
+        def _produce(target):
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "HEAD").write_text("cached clone")
+        cache.put("gitclone", "test/myproj", "deadbeef", _produce)
+
+        local_calls = []
+
+        def _fake_local_clone(source, dest):
+            local_calls.append((source, dest))
+            dest.mkdir(parents=True, exist_ok=True)
+            return dest
+
+        monkeypatch.setattr(cache_mod, "local_clone", _fake_local_clone)
+
+        client = _client(sha="deadbeef")
+
+        def _fail_if_called(*a, **k):
+            raise AssertionError("clone_git_root must not run on a cache hit")
+        client.clone_git_root = _fail_if_called
+
+        repo = _fake_repo(full_name="test/myproj")
+
+        with client.git_clone_root(repo):
+            pass
+
+        assert len(local_calls) == 1
+        assert (local_calls[0][0] / "HEAD").exists(), "local_clone must run against the cached entry"
+
+    def test_two_calls_share_one_clone(self, tmp_path, monkeypatch):
+        import resource_explorer.github.source_cache as cache_mod
+
+        self._patch_cache_dir(monkeypatch, tmp_path)
+        clone_calls = []
+
+        def _fake_clone_git_root(repo_arg, dest_dir, shallow_since=None):
+            clone_calls.append(1)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            return dest_dir
+
+        monkeypatch.setattr(cache_mod, "local_clone",
+                             lambda source, dest: dest.mkdir(parents=True, exist_ok=True) or dest)
+
+        client = _client(sha="deadbeef")
+        client.clone_git_root = _fake_clone_git_root
+        repo = _fake_repo(full_name="test/myproj")
+
+        with client.git_clone_root(repo):
+            pass
+        with client.git_clone_root(repo):
+            pass
+
+        assert len(clone_calls) == 1
+
+    def test_shallow_since_bypasses_the_cache_even_with_a_resolvable_sha(self, tmp_path, monkeypatch):
+        """A bounded clone must never share a key with an unbounded one — the
+        cache is skipped entirely rather than risk that collision, even
+        though a SHA is available."""
+        import resource_explorer.github.source_cache as cache_mod
+
+        def _cache_must_not_be_constructed():
+            raise AssertionError("SourceCache must not be touched when shallow_since is set")
+        monkeypatch.setattr(cache_mod, "SourceCache", _cache_must_not_be_constructed)
+
+        clone_calls = []
+
+        def _fake_clone_git_root(repo_arg, dest_dir, shallow_since=None):
+            clone_calls.append(shallow_since)
+            return dest_dir
+
+        client = _client(sha="deadbeef")
+        client.clone_git_root = _fake_clone_git_root
+        repo = _fake_repo()
+
+        with client.git_clone_root(repo, shallow_since="3 months ago"):
+            pass
+
+        assert clone_calls == ["3 months ago"]
