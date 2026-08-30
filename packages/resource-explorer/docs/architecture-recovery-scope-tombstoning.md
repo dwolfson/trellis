@@ -302,9 +302,20 @@ launder an assertion into an observation.
    ("which scopes did THIS step write?") plus a guard on the two call sites,
    because identical labels would silently defeat R2 while every other test
    still passed.
-2. **Add the reserved label and teach `query_finding_scopes`.** Five callers,
-   all architecture readers. Measure the enumerated-scope count for
-   `egeria_git` before and after, which should not move at all until step 4.
+2. ~~**Add the reserved label and teach `query_finding_scopes`.**~~ **DONE
+   2026-08-30.** `WITHDRAWN_LABEL = "withdrawn"` lives on the registry, not on
+   any analysis kind, so the method stays kind-agnostic. Success criterion met
+   as written: enumerated scopes for `egeria_git` stayed at **1035** and
+   `egeria_workspaces_git` at **175**, verified against the real Postgres store
+   — nothing writes a withdrawal yet, so nothing moves.
+
+   `tests/test_registry_withdrawal.py` defines the contract the writer must
+   satisfy, including the two cases the rule gets for free: a later proposal
+   **revives** a withdrawn scope, and a live row at the **same instant** as a
+   withdrawal keeps the scope claimed (which is what stops detect and coupling
+   erasing each other). Also pinned: withdrawal does not leak across scopes or
+   kinds, a `check_name`-filtered call still honours it (that is how the results
+   reader queries), and `query_findings_all_runs` still returns every row.
 3. **Withdraw on complete runs only** (R1 + R3's `unclaimed` default). At this
    point egeria's next survey stops adding new orphans.
 4. **Backfill whatever orphans remain**, labelled as a backfill (§6). Note the

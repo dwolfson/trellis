@@ -332,6 +332,22 @@ TARGET_ANALYSIS = "analysis"
 TARGET_SURVEY = "survey"
 
 
+#: A finding row carrying this `label` WITHDRAWS its `scope_locator`: it states
+#: that as of that `surveyed_at`, whatever used to propose this scope no longer
+#: does. See `docs/architecture-recovery-scope-tombstoning.md` in
+#: resource-explorer for the full design.
+#:
+#: A reserved LABEL rather than a check_name, so the registry stays
+#: kind-agnostic — any analysis kind withdraws a scope the same way, and
+#: `query_finding_scopes` needs one generic rule rather than a vocabulary of
+#: per-kind exceptions.
+#:
+#: **Withdrawal is not deletion.** The rows stay, `query_findings` still returns
+#: them, and `query_findings_all_runs` is untouched — the provenance view must
+#: keep answering "who proposed what, ever" after the current answer changes.
+WITHDRAWN_LABEL = "withdrawn"
+
+
 class ProjectRegistry:
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
@@ -3288,7 +3304,8 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def query_finding_scopes(self, slug: str, kind: str, check_name: str = "") -> list[str]:
+    def query_finding_scopes(self, slug: str, kind: str, check_name: str = "",
+                             include_withdrawn: bool = False) -> list[str]:
         """Distinct `scope_locator`s that currently have at least one
         finding row for (slug, kind) — optionally narrowed to one
         check_name. This is the "list every component" query for a
@@ -3296,6 +3313,27 @@ class ProjectRegistry:
         (design doc §6.0: a component IS a scope_locator/path prefix),
         where query_findings' single-scope_locator contract has nothing to
         enumerate against. Ordered for stable UI rendering, not by recency.
+
+        **Withdrawn scopes are excluded** unless `include_withdrawn=True`
+        (step 2 of docs/architecture-recovery-scope-tombstoning.md). This
+        query previously had NO notion of currency — no timestamp, no
+        recency, no filter — so a scope, once written, was enumerable
+        forever. Measured 2026-08-30: 165 of `egeria_git`'s 1035 component
+        scopes were written by no current run, and 27 of its 35
+        deployment-perspective components were dead, every one rendered at
+        its original confidence.
+
+        A withdrawal is a row carrying `label = WITHDRAWN_LABEL`, written on
+        the vacated scope. The mechanism is a reserved LABEL rather than an
+        architecture-specific check_name so this method stays kind-agnostic:
+        any analysis kind may withdraw a scope the same way.
+
+        **A scope counts as withdrawn only when the newest information about
+        it says so and nothing at that instant says otherwise** — i.e. at its
+        latest `surveyed_at` there is a withdrawal and no ordinary row. That
+        gives revival for free: `repo_arch_detect` and `repo_arch_coupling`
+        write the same kind, so a scope one step still proposes stays live
+        even after the other withdraws it, with no special case.
         """
         slug = self._normalize_slug(slug)
         sql = "SELECT DISTINCT scope_locator FROM project_analysis_findings WHERE project_slug = ? AND kind = ?"
@@ -3306,7 +3344,27 @@ class ProjectRegistry:
         sql += " ORDER BY scope_locator"
         with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [r["scope_locator"] for r in rows]
+            scopes = [r["scope_locator"] for r in rows]
+            if include_withdrawn or not scopes:
+                return scopes
+            # One query for every scope's newest instant, then which of those
+            # instants are withdrawal-only. Deliberately NOT narrowed by
+            # check_name: a withdrawal is about the SCOPE, so it must be
+            # visible to a caller enumerating any check_name within it.
+            withdrawn = conn.execute(
+                "SELECT f.scope_locator FROM project_analysis_findings f "
+                "JOIN (SELECT scope_locator, MAX(surveyed_at) AS ts "
+                "      FROM project_analysis_findings "
+                "      WHERE project_slug = ? AND kind = ? GROUP BY scope_locator) latest "
+                "  ON f.scope_locator = latest.scope_locator AND f.surveyed_at = latest.ts "
+                "WHERE f.project_slug = ? AND f.kind = ? "
+                "GROUP BY f.scope_locator "
+                "HAVING SUM(CASE WHEN f.label = ? THEN 1 ELSE 0 END) > 0 "
+                "   AND SUM(CASE WHEN f.label = ? THEN 0 ELSE 1 END) = 0",
+                (slug, kind, slug, kind, WITHDRAWN_LABEL, WITHDRAWN_LABEL),
+            ).fetchall()
+        dead = {r["scope_locator"] for r in withdrawn}
+        return [s for s in scopes if s not in dead]
 
     def query_findings_all_runs(self, slug: str, kind: str, scope_locator: str) -> list[dict]:
         """Every finding row ever written for one (kind, scope_locator) —
