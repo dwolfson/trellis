@@ -239,7 +239,21 @@ class GitHubClient:
                 with zipfile.ZipFile(zip_path) as z:
                     z.extractall(extract_to)
                 root = next((d for d in extract_to.iterdir() if d.is_dir()), extract_to)
-                yield root / subproject_path if subproject_path else root
+                if subproject_path:
+                    sub = root / subproject_path
+                    if not sub.is_dir():
+                        # Same validation download_zipball() does on the
+                        # uncached path — lost here originally, and silently:
+                        # the cache path would have handed a caller a
+                        # non-existent directory instead of this message.
+                        raise ValueError(
+                            f"Subproject path '{subproject_path}' does not exist in this repository. "
+                            f"Available top-level directories: "
+                            f"{[d.name for d in root.iterdir() if d.is_dir()]}"
+                        )
+                    yield sub
+                else:
+                    yield root
 
         return _cm()
 
