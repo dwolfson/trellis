@@ -405,6 +405,148 @@ The general lesson, four measurements deep: **when a signal looks too sparse to
 use, check what discovers it before tuning what consumes it.** Three of the four
 measurements said the signal was not the problem.
 
+## 7c. Deployment style is an attribute, not a component — one platform, three ways
+
+Dan, 2026-08-29: *"I think Development and Containerized isn't the right framing
+— its Native Java vs Containerized vs Choreographed containers (e.g. quickstart
+and freshstart) which are choreographed with compose or kubernetes."*
+
+He was right, and the overcount it names was measurable. Egeria carried **14
+deployment components** — two platforms of five servers each, plus PostgreSQL
+and a phantom called `test` — for **one platform with five servers**.
+
+### Where the duplication came from
+
+`spring_app.discover()` emitted one platform per `*application.properties` file,
+and egeria has three:
+
+| file | `platform.name` | servers |
+|---|---|---|
+| `application.properties` | Development OMAG Server Platform | 5 |
+| `container.application.properties` | Containerized OMAG Server Platform | **the same 5** |
+| `test.application.properties` | *(none)* | **none** |
+
+The first two are not two platforms. The release workflow
+(`.github/workflows/merge-v6.yml:75`) does:
+
+```
+cp -f container.application.properties \
+      .../assembly/platform/application.properties
+```
+
+and the Dockerfile then `COPY`s that directory. **The container image's
+`application.properties` IS `container.application.properties`** — the same file
+at two points in one build. `platform.name` differs because the author labelled
+each for its runtime, which is a *style*, not an identity.
+
+The third declares nothing at all: an empty `startup.server.list` and no
+`platform.name`, so the name fell through to the filename and produced a
+component called `test`.
+
+### The rule, and the case that stops it going too far
+
+**Declarations that share a directory AND declare the same server set are one
+platform deployed several ways.** A comparison, not a threshold — the same
+discipline as §7's affinity bar and `undetected_is_meaningful`'s
+`terms <= components`. Nothing here can be tuned to make a number look better.
+
+The contrast case is what makes it safe, and it is in the corpus already:
+
+```
+egeria              application.properties            5 servers  ] same dir,
+                    container.application.properties  same 5     ] same set -> ONE
+
+egeria-workspaces   runtime-volumes/freshstart-.../    fs-metadata-store, ... ] different dirs,
+                    runtime-volumes/quickstart-.../    qs-metadata-store, ... ] disjoint  -> TWO
+```
+
+Workspaces' two platforms are genuine peers — Dan's *choreographed* case,
+started by compose — and must not merge. They do not, on either half of the key.
+
+**The directory half was added because a test caught the rule being too loose.**
+Server-set equality alone merged two platforms named Alpha and Beta sitting in
+separate directories, and the pre-existing
+`test_the_notes_say_an_environment_may_span_repos` failed. Two deployments can
+legitimately run the same server names; the directory is what
+`Identity.deployment_context` already means, so the second half of the key was
+free.
+
+### Style comes from what REFERENCES the file, not from its name
+
+| style | evidence |
+|---|---|
+| `choreographed` | referenced from a path containing `compose` / `k8s` / `kubernetes` / `helm` / `kustomiz` |
+| `containerized` | referenced from a Dockerfile or an image-building CI workflow |
+| `native-java` | the bare `application.properties` — what a plain `java -jar` reads |
+| *(none)* | an unrecognised profile token: no style rather than a guessed one |
+
+Filename is the fallback, never the first test. Measured, the reference test is
+what gets workspaces right: it choreographs from
+`compose-configs/egeria-freshstart/egeria-freshstart.yaml`, which no
+`docker-compose.yml` filename test reaches.
+
+One subtlety worth stating because getting it wrong is silent: the *destination*
+of a substitution — the literal `application.properties` a workflow writes — is
+skipped. Styling it would style the platform's own canonical file according to
+whichever workflow happened to be read first, which is order-dependent.
+
+**A note on where this evidence lives.** Deployment style is decided by CI
+workflows, Dockerfiles and compose files — all **Dev/DevOps-perspective**
+artifacts, the perspective §4.1 rates *"weakest of the four"* and for which
+pipelines have *"no good type"*. The signal that disambiguates the deployment
+perspective comes from the perspective we model worst. Worth knowing before
+anyone trusts it further than the evidence table above.
+
+### Result
+
+| | before | after |
+|---|---|---|
+| egeria deployment components | 14 | **6** (platform + 5 servers) |
+| egeria clusters | — | **1**, of 6 — inside §7's target of ~10 |
+| egeria ports | 16 rows, 8 distinct | **8** |
+| egeria wires | 8 rows | **5** |
+| workspaces platforms | 2 | **2** — unchanged, as required |
+
+### Two things the merge broke, and both were silent
+
+Wires and ports are built **per declaration**, so merging left one copy per
+profile. Ports arrived as 16 rows for 8 distinct topics, each exactly doubled,
+and `to_ir` lands them all on the same server slug. Wires carried a `platform`
+name that no longer named any component, which `to_ir` attributes by — an edge
+pointing at nothing, raising nothing.
+
+Both are deduplicated **keyed on the owning platform**, not on the port or wire
+alone. Two platforms that were never merged may legitimately declare a same-named
+server with the same topic, and collapsing those would delete a real distinction
+to fix a bookkeeping one — §4.1a's discipline applied to interfaces.
+
+### Two tests passed vacuously, and that is the finding worth keeping
+
+The port and wire dedup tests both passed the moment they were written. They
+asserted `len(keys) == len(set(keys))` and `all(...)` over lists that were
+**empty**, because the fixtures used `endpoint.address` where the code reads
+`endpoint.networkAddress`, and an endpoint key outside `_ENDPOINT_KEY_HINTS`.
+An empty list is unique and satisfies `all()`.
+
+This is the session's recurring pattern in its smallest form — *check what
+discovers a signal before trusting what consumes it* — and it now has a guard
+rather than a lesson: both tests assert the fixture produced something before
+asserting anything about it.
+
+### Known consequence, not yet addressed
+
+**Renaming a component's slug orphans its rows rather than superseding them.**
+`query_findings` returns rows at `MAX(surveyed_at)` *per `scope_locator`*, so a
+scope nothing writes any more keeps its last value forever. Dropping the
+`spring::` prefix left **14 orphaned scopes on `egeria_git`**, still readable and
+still wrong, and this consolidation will orphan a further 12 when egeria is
+re-surveyed (`Development-OMAG-Server-Platform::*` and
+`Containerized-OMAG-Server-Platform::*`).
+
+Deliberately not fixed here, and deliberately not deleted — nothing in this
+pipeline should quietly remove evidence. It needs a decision about whether
+identity changes should tombstone the scope they vacate.
+
 ## 8. Build order
 
 1. **Cluster within the deployment perspective**, using `scope_hierarchy` grouping that already

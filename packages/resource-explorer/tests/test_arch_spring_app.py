@@ -285,3 +285,172 @@ class TestTopicPorts:
         components, ports, _, _ = spring_app.to_ir(spring_app.discover(str(root)))
         server = [c for c in components if c.parent_slug][0]
         assert ports[0]["component"] == server.slug
+
+
+def _profile(tmp_path, profile, name, servers="a,b", port="7443"):
+    """A named profile beside the canonical `application.properties` — egeria's
+    `container.application.properties` shape."""
+    (tmp_path / f"{profile}.application.properties").write_text(textwrap.dedent(f"""\
+        server.port={port}
+        platform.name={name}
+        startup.server.list={servers}
+        platform.configstore.endpoint=data/servers/{{0}}/config/{{0}}.config
+    """))
+    return tmp_path
+
+
+class TestDeploymentStyleConsolidation:
+    """One platform deployed several ways is ONE component (Dan, 2026-08-29:
+    *"its Native Java vs Containerized vs Choreographed containers"*).
+
+    Measured on the real repos: egeria went from 14 deployment components to 6
+    — one platform, five servers — while egeria-workspaces correctly stayed at
+    two platforms, because its freshstart and quickstart declare disjoint
+    server sets in separate configuration directories.
+    """
+
+    def test_two_profiles_with_the_same_servers_are_one_platform(self, tmp_path):
+        _platform(tmp_path, name="Development OMAG Server Platform", servers="x,y")
+        _profile(tmp_path, "container", "Containerized OMAG Server Platform", servers="x,y")
+        out = spring_app.discover(str(tmp_path))
+        assert len(out["platforms"]) == 1
+        assert len(out["platforms"][0]["servers"]) == 2
+
+    def test_the_merged_name_drops_the_style_adjective(self, tmp_path):
+        """The tokens the declarations AGREE on are the platform; the ones they
+        do not are the style adjective the merge just made redundant."""
+        _platform(tmp_path, name="Development OMAG Server Platform", servers="x,y")
+        _profile(tmp_path, "container", "Containerized OMAG Server Platform", servers="x,y")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["name"] == "OMAG Server Platform"
+
+    def test_both_declarations_survive_as_paths(self, tmp_path):
+        """A merge must not lose the file a reader would open."""
+        _platform(tmp_path, name="Development OMAG Server Platform", servers="x,y")
+        _profile(tmp_path, "container", "Containerized OMAG Server Platform", servers="x,y")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["paths"] == [
+            "application.properties", "container.application.properties"]
+
+    def test_different_server_sets_are_different_platforms(self, tmp_path):
+        """egeria-workspaces: freshstart declares fs-*, quickstart declares qs-*."""
+        (tmp_path / "fs").mkdir(); (tmp_path / "qs").mkdir()
+        _profile(tmp_path / "fs", "freshstart", "Freshstart Platform", servers="fs-store,fs-view")
+        _profile(tmp_path / "qs", "quickstart", "Quickstart Platform", servers="qs-store,qs-view")
+        assert len(spring_app.discover(str(tmp_path))["platforms"]) == 2
+
+    def test_same_servers_in_different_directories_do_not_merge(self, tmp_path):
+        """The rule is (directory, server set), not server set alone. Two
+        deployments can legitimately run the same server names."""
+        (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+        _platform(tmp_path / "a", name="Alpha", servers="x,y")
+        _platform(tmp_path / "b", name="Beta", servers="x,y")
+        assert len(spring_app.discover(str(tmp_path))["platforms"]) == 2
+
+    def test_a_declaration_with_no_servers_and_no_name_is_not_a_platform(self, tmp_path):
+        """egeria's `test.application.properties` has an empty
+        `startup.server.list` and no `platform.name`, and became a component
+        called `test` off its own filename."""
+        _platform(tmp_path, name="Real Platform", servers="x")
+        (tmp_path / "test.application.properties").write_text("startup.server.list=\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [p["name"] for p in out["platforms"]] == ["Real Platform"]
+        assert any("declares no servers and no platform.name" in n for n in out["notes"])
+
+    def test_a_named_platform_with_no_servers_is_still_a_platform(self, tmp_path):
+        """Only the BOTH case is dropped. Someone who wrote a platform.name
+        declared a platform, even if its startup list is empty."""
+        (tmp_path / "application.properties").write_text(
+            "platform.name=Empty But Named\nstartup.server.list=\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
+            "Empty But Named"]
+
+    def test_the_merge_note_names_what_it_merged(self, tmp_path):
+        _platform(tmp_path, name="Development OMAG Server Platform", servers="x,y")
+        _profile(tmp_path, "container", "Containerized OMAG Server Platform", servers="x,y")
+        note = " ".join(spring_app.discover(str(tmp_path))["notes"])
+        assert "Development OMAG Server Platform" in note
+        assert "Containerized OMAG Server Platform" in note
+        assert "identical server sets" in note
+
+
+class TestDeploymentStyle:
+    def test_the_bare_properties_file_is_native_java(self, tmp_path):
+        assert spring_app.discover(str(_platform(tmp_path)))["platforms"][0]["styles"] == [
+            spring_app.STYLE_NATIVE]
+
+    def test_a_ci_workflow_substitution_makes_a_profile_containerized(self, tmp_path):
+        """egeria's release workflow does `cp -f container.application.properties
+        .../assembly/platform/application.properties` before `docker build`, so
+        the image's application.properties IS container.application.properties."""
+        _platform(tmp_path, name="Development Platform", servers="x")
+        _profile(tmp_path, "container", "Containerized Platform", servers="x")
+        wf = tmp_path / ".github" / "workflows"; wf.mkdir(parents=True)
+        (wf / "release.yml").write_text(
+            "run: cp -f container.application.properties ./assembly/platform/application.properties\n")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["styles"] == [
+            spring_app.STYLE_CONTAINERIZED, spring_app.STYLE_NATIVE]
+
+    def test_a_compose_reference_makes_a_profile_choreographed(self, tmp_path):
+        """Matched on a path SUBSTRING: egeria-workspaces choreographs from
+        `compose-configs/egeria-freshstart/egeria-freshstart.yaml`, which no
+        `docker-compose.yml` filename test reaches."""
+        (tmp_path / "rt").mkdir()
+        _profile(tmp_path / "rt", "quickstart", "Quickstart Platform", servers="x")
+        cc = tmp_path / "compose-configs"; cc.mkdir()
+        (cc / "egeria-quickstart.yaml").write_text(
+            "volumes:\n  - ./quickstart.application.properties:/app/application.properties\n")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["styles"] == [
+            spring_app.STYLE_CHOREOGRAPHED]
+
+    def test_the_substitution_destination_is_not_styled(self, tmp_path):
+        """`application.properties` is what every build WRITES. Styling it would
+        style the platform's canonical file after whichever workflow was read
+        first, which is order-dependent and wrong."""
+        _platform(tmp_path, name="Development Platform", servers="x")
+        wf = tmp_path / ".github" / "workflows"; wf.mkdir(parents=True)
+        (wf / "release.yml").write_text(
+            "run: cp -f container.application.properties ./assembly/application.properties\n")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["styles"] == [
+            spring_app.STYLE_NATIVE]
+
+    def test_an_unrecognised_profile_has_no_style_rather_than_a_guessed_one(self, tmp_path):
+        _profile(tmp_path, "weird", "Weird Platform", servers="x")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["styles"] == []
+
+
+class TestMergeDoesNotDuplicateInterfaces:
+    """Wires and ports are built per DECLARATION, so a merge leaves one copy per
+    profile — measured on egeria, 8 distinct ports arrived as 16 rows, each
+    exactly doubled, and `to_ir` lands them all on the same server slug."""
+
+    def test_ports_are_deduplicated_across_merged_profiles(self, tmp_path):
+        cfg = {"omagserverConfig": {"repositoryServicesConfig": {"auditLogConnections": [
+            {"embeddedConnections": [{"embeddedConnection": {"connection": {
+                "connectorType": {"connectorProviderClassName": "x.KafkaOpenMetadataTopicProvider"},
+                "endpoint": {"networkAddress": "egeria.audit-logs"}}}}]}]}}}
+        for profile, name in ((None, "Development Platform"), ("container", "Containerized Platform")):
+            store = tmp_path / "data" / "servers" / "x" / "config"
+            store.mkdir(parents=True, exist_ok=True)
+            (store / "x.config").write_text(json.dumps(cfg))
+            if profile is None:
+                _platform(tmp_path, name=name, servers="x")
+            else:
+                _profile(tmp_path, profile, name, servers="x")
+        out = spring_app.discover(str(tmp_path))
+        assert len(out["platforms"]) == 1
+        keys = [(p["component"], p["name"]) for p in out["ports"]]
+        # Guard the guard: an empty list satisfies a uniqueness assertion, so
+        # this test passed vacuously until the fixture used `networkAddress`.
+        assert keys, "fixture produced no ports — the test would pass vacuously"
+        assert len(keys) == len(set(keys)), f"duplicated ports: {keys}"
+
+    def test_wires_point_at_the_surviving_platform(self, tmp_path):
+        """`to_ir` attributes a wire by its platform name, so a stale name from
+        a merged-away declaration produces an edge attached to nothing."""
+        _platform(tmp_path, name="Development OMAG Server Platform", servers="x",
+                  extra="platform.databaseURL=jdbc:postgresql://db:5432/egeria")
+        _profile(tmp_path, "container", "Containerized OMAG Server Platform", servers="x")
+        out = spring_app.discover(str(tmp_path))
+        live = {p["name"] for p in out["platforms"]}
+        assert live == {"OMAG Server Platform"}
+        assert out["wires"], "fixture produced no wires — the test would pass vacuously"
+        assert all(w["platform"] in live for w in out["wires"]), out["wires"]
