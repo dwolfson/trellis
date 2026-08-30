@@ -268,6 +268,46 @@ class TestCuratorNotes:
         assert db.list_curator_notes("repo", "proj-b") == []
 
 
+class TestArchitectureComponentVerdicts:
+    def test_record_and_get_latest_verdict(self, db):
+        entry = db.record_component_verdict("repo", "myproj", "src/foo", "accepted")
+        assert entry["verdict"] == "accepted"
+        latest = db.get_component_verdicts("repo", "myproj")
+        assert latest["src/foo"]["verdict"] == "accepted"
+
+    def test_retyped_carries_retyped_to(self, db):
+        db.record_component_verdict("repo", "myproj", "src/foo", "retyped", retyped_to="library")
+        latest = db.get_component_verdicts("repo", "myproj")
+        assert latest["src/foo"]["retyped_to"] == "library"
+
+    def test_invalid_verdict_raises(self, db):
+        with pytest.raises(ValueError):
+            db.record_component_verdict("repo", "myproj", "src/foo", "maybe")
+
+    def test_a_new_verdict_is_appended_not_overwritten(self, db):
+        """Append-only, per record_component_verdict's own docstring — a
+        curator's later verdict is history, not a correction, same as every
+        other findings-shaped table here."""
+        db.record_component_verdict("repo", "myproj", "src/foo", "accepted")
+        db.record_component_verdict("repo", "myproj", "src/foo", "rejected", note="changed my mind")
+        latest = db.get_component_verdicts("repo", "myproj")
+        assert latest["src/foo"]["verdict"] == "rejected"
+        history = db.list_component_verdict_history("repo", "myproj", "src/foo")
+        assert [h["verdict"] for h in history] == ["rejected", "accepted"]  # newest first
+
+    def test_verdicts_scoped_per_component(self, db):
+        db.record_component_verdict("repo", "myproj", "src/foo", "accepted")
+        latest = db.get_component_verdicts("repo", "myproj")
+        assert "src/bar" not in latest
+
+    def test_verdicts_scoped_per_resource(self, db):
+        db.record_component_verdict("repo", "proj-a", "src/foo", "accepted")
+        assert db.get_component_verdicts("repo", "proj-b") == {}
+
+    def test_history_empty_for_a_never_ruled_on_component(self, db):
+        assert db.list_component_verdict_history("repo", "myproj", "src/never-ruled") == []
+
+
 class TestSchedules:
     def test_save_and_get_schedule(self, db):
         db.save_schedule("repo", "myproj", "security_scan", "weekly", True)

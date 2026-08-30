@@ -1869,6 +1869,21 @@ def _doc_ingestion_state(registry, slug: str) -> dict:
         return {"state": "", "detail": ""}
 
 
+def _verdict_view(row: dict | None) -> dict | None:
+    """The subset of an architecture_component_verdicts row a component card
+    needs — None when no curator has ruled on this component yet, so a
+    reader can tell "no verdict" from "verdict happens to be falsy" without
+    inspecting field values."""
+    if not row:
+        return None
+    return {
+        "verdict": row["verdict"],
+        "retyped_to": row.get("retyped_to", ""),
+        "note": row.get("note", ""),
+        "decided_at": row.get("created_at", ""),
+    }
+
+
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
 ) -> dict:
@@ -1898,6 +1913,13 @@ def _architecture_recovery_results(
     scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
     components = []
     slug_to_path: dict[str, str] = {}
+    # A curator's accept/reject/retype call (docs/Backlog.md "take
+    # architecture results into Curate") — kept in its own table, not folded
+    # into this kind's findings, per that entry's own constraint: "a
+    # curator's verdict is evidence of a different kind, not a rewrite of
+    # what the detectors said." One query for the whole resource, same
+    # reasoning as everything else here that avoids a per-scope round trip.
+    verdicts = registry.get_component_verdicts("repo", slug)
     for scope in scopes:
         rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
         comp_rows = [r for r in rows if r["check_name"] == "component"]
@@ -1939,6 +1961,7 @@ def _architecture_recovery_results(
             # available reading, same as a root-attached node.
             "depth": detail.get("depth", 0),
             "parent_slug": detail.get("parent_slug", ""),
+            "verdict": _verdict_view(verdicts.get(scope)),
             "evidence": [
                 {
                     "assertion": r["check_name"], "approach": r["label"],
