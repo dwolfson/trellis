@@ -533,6 +533,71 @@ discovers a signal before trusting what consumes it* — and it now has a guard
 rather than a lesson: both tests assert the fixture produced something before
 asserting anything about it.
 
+### Validated against two projects nobody designed it for — and it broke
+
+Everything above was measured on exactly two repos, both Egeria. On 2026-08-29
+`open-metadata/OpenMetadata` and `apache/polaris` were pulled to test it, chosen
+because they are JVM metadata systems of comparable scale and neither is
+Egeria-shaped.
+
+**`polaris` found a real defect in the day-old rule.** It is Quarkus, not
+Spring — and Quarkus uses `application.properties` too. It declares two
+applications:
+
+```
+runtime/defaults/src/main/resources/application.properties
+    quarkus.application.name=Apache Polaris Server
+runtime/admin/src/main/resources/application.properties
+    quarkus.application.name=Apache Polaris Admin Tool
+```
+
+Neither has a `startup.server.list` (an Egeria concept with no Quarkus
+equivalent) and neither sets `platform.name` or `spring.application.name`. So
+**the no-servers-and-no-name rule dropped both** — the rule that correctly killed
+egeria's phantom `test` component also killed every Quarkus application it would
+ever meet. Two real components read as zero.
+
+Worth being precise about what changed, because the previous behaviour was not
+good either: before the rule, both files produced a component called `platform`,
+from the filename fallback. So the score went **2 junk components → 0 components
+→ 2 correct components**, and only the last of those is right.
+
+The fix is one table row. `_NAME_KEYS` now holds the three spellings of one
+concept — `platform.name`, `spring.application.name`, `quarkus.application.name`
+— in precedence order, because an Egeria platform hosting servers is a different
+thing from the framework's name for the process and, where both exist, the
+platform name is what a curator wants.
+
+**Zero servers is a legitimate shape, not a failed read.** Egeria's
+several-servers-in-one-process has no Quarkus analogue; a Quarkus application is
+simply a platform with no sub-components.
+
+**The directory half of the merge key earned its place a second time.** Polaris'
+two applications both declare *zero* servers, so the server-set half of the key
+makes them identical. Only the directory keeps them apart. That half was added
+the same day because a test caught the rule being too loose, and this is an
+independent case that would have failed without it.
+
+**`openmetadata` found a coverage boundary, and is correctly silent.** It is
+Dropwizard: configuration lives in `conf/openmetadata.yaml`, and the repo
+contains **no `*application.properties` at all**. Zero platforms is the right
+answer, and it is worth recording as a *measured* boundary rather than an
+assumed one — this module reads properties files, not every JVM configuration
+format.
+
+| repo | framework | before | after |
+|---|---|---|---|
+| egeria | Spring Boot | 14 components | 6 |
+| egeria-workspaces | Spring Boot | 2 platforms | 2 |
+| **polaris** | **Quarkus** | **0** | **2** |
+| **openmetadata** | **Dropwizard (YAML)** | **0** | **0** — correct |
+
+**The lesson is about the sample size, not the bug.** A rule measured on two
+repos from one project family met its third project and was wrong within
+minutes. It was cheaply wrong — a table entry, caught by running rather than
+reasoning — which is an argument for widening the corpus early and often, not
+for trusting the next two-example rule more.
+
 ### Known consequence, not yet addressed
 
 **Renaming a component's slug orphans its rows rather than superseding them.**

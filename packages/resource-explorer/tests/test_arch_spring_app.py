@@ -454,3 +454,60 @@ class TestMergeDoesNotDuplicateInterfaces:
         assert live == {"OMAG Server Platform"}
         assert out["wires"], "fixture produced no wires — the test would pass vacuously"
         assert all(w["platform"] in live for w in out["wires"]), out["wires"]
+
+
+class TestNonEgeriaFrameworks:
+    """Validation against JVM projects nobody designed these rules around.
+
+    Pulled 2026-08-29 because every rule here had been measured on exactly two
+    repos, both Egeria. `apache/polaris` (Quarkus) found a real defect in the
+    day-old no-servers-and-no-name rule; `open-metadata/OpenMetadata`
+    (Dropwizard) found a coverage boundary and is correctly silent.
+    """
+
+    def test_a_quarkus_application_is_a_platform_with_no_servers(self, tmp_path):
+        """`quarkus.application.name` names the process exactly as
+        `spring.application.name` does. Polaris declares two applications and
+        no `startup.server.list`, and the no-servers-and-no-name rule dropped
+        BOTH until `_NAME_KEYS` grew a row — 2 real components read as 0.
+
+        No servers is a legitimate shape, not a failed read: Egeria's
+        several-servers-in-one-process has no Quarkus equivalent.
+        """
+        (tmp_path / "application.properties").write_text(
+            "quarkus.application.name=Apache Polaris Server\n"
+            "quarkus.container-image.name=polaris\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [p["name"] for p in out["platforms"]] == ["Apache Polaris Server"]
+        assert out["platforms"][0]["servers"] == []
+
+    def test_two_quarkus_modules_stay_two_applications(self, tmp_path):
+        """Polaris' server and admin tool are peers in separate `runtime/`
+        modules. The directory half of the merge key is what keeps them apart —
+        both declare zero servers, so server-set equality alone would have made
+        them one."""
+        for module, name in (("defaults", "Apache Polaris Server"),
+                             ("admin", "Apache Polaris Admin Tool")):
+            d = tmp_path / "runtime" / module / "src" / "main" / "resources"
+            d.mkdir(parents=True)
+            (d / "application.properties").write_text(f"quarkus.application.name={name}\n")
+        assert sorted(p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]) == [
+            "Apache Polaris Admin Tool", "Apache Polaris Server"]
+
+    def test_platform_name_outranks_the_framework_name(self, tmp_path):
+        """Where both exist, an Egeria platform hosting servers is a different
+        thing from the framework's name for the process."""
+        (tmp_path / "application.properties").write_text(
+            "platform.name=OMAG Server Platform\n"
+            "spring.application.name=omag-server-platform\n"
+            "startup.server.list=x\n")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["name"] == "OMAG Server Platform"
+
+    def test_a_repo_configured_in_yaml_declares_nothing(self, tmp_path):
+        """OpenMetadata is Dropwizard: `conf/openmetadata.yaml`, no
+        `*application.properties` anywhere. Silence is the correct answer and
+        the coverage boundary is worth stating — this reads properties files,
+        not every JVM configuration format."""
+        (tmp_path / "conf").mkdir()
+        (tmp_path / "conf" / "openmetadata.yaml").write_text("server:\n  port: 8585\n")
+        assert spring_app.discover(str(tmp_path))["platforms"] == []

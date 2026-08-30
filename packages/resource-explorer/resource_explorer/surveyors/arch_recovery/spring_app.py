@@ -33,6 +33,15 @@ not Egeria's:
 Only the last row needs app-specific knowledge, and it is isolated in
 `_SUBCOMPONENT_KEYS` so adding another framework's convention is a table entry.
 
+**Not only Spring, despite the module name.** `application.properties` is also
+Quarkus's configuration file, and the shape it describes — a JVM process that
+declares its own name, port and external endpoints — is the same. Measured on
+`apache/polaris` (Quarkus): two applications, `Apache Polaris Server` and
+`Apache Polaris Admin Tool`, in separate `runtime/` modules. What is app-specific
+is the *sub-component* concept: Egeria's several-servers-in-one-process has no
+Quarkus equivalent, so a Quarkus application is simply a platform with no
+servers, which is a legitimate shape rather than a failed read.
+
 **A platform is a component, not a Collection.** Its servers share a process, a
 port and a config, and they are reached *through* it — every server-scoped route
 is `/servers/{serverName}/...`, so the platform is the entry point and the
@@ -54,6 +63,18 @@ log = logging.getLogger(__name__)
 #: rather than a heuristic, and an app not in it simply proposes no
 #: sub-components rather than having some guessed for it.
 _SUBCOMPONENT_KEYS = ("startup.server.list",)
+
+#: The property a framework uses for "what is this application called". One
+#: concept, three spellings — and the third was found by measurement, not by
+#: reading a framework's docs: `apache/polaris` is Quarkus, declares
+#: `quarkus.application.name=Apache Polaris Server`, and was dropped entirely by
+#: the no-servers-and-no-name rule until this table grew a row.
+#:
+#: Order is precedence. `platform.name` first because it is the most specific —
+#: an Egeria platform hosting several servers is a different thing from the
+#: framework's name for the process, and where both exist the platform name is
+#: the one a curator wants.
+_NAME_KEYS = ("platform.name", "spring.application.name", "quarkus.application.name")
 
 #: Standard Spring keys for external dependencies, plus the Egeria-specific
 #: names that mean the same thing. Both are *declared endpoints*; the framework
@@ -668,8 +689,7 @@ def discover(root: str) -> dict:
         # `declared_name` distinguishes a name a person WROTE from one derived
         # from the filename. A file with neither a name nor any server declares
         # no platform — see `_consolidate`.
-        declared_name = (props.get("platform.name")
-                         or props.get("spring.application.name") or "")
+        declared_name = next((props[k] for k in _NAME_KEYS if props.get(k)), "")
         name = (declared_name
                 or os.path.basename(rel)[: -len("application.properties")].strip(".") or "platform")
 
