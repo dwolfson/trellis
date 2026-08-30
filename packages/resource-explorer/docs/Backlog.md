@@ -123,56 +123,73 @@ what the detectors said. §4.2's "map, never merge" and the doc-lens rule ("a do
 with the code is a finding, not a correction") both point the same way — the disagreement is the
 valuable artifact and must stay legible.
 
-#### HIGH — `architecture_recovery` is tagged `run_time: fast` and measures 100s+ — needs a ruling
+#### HIGH — `architecture_recovery` costs 110s to fetch and 5.9s to run — fix the acquisition
 
-*(Opened 2026-08-30. Measured, then deliberately left unchanged: fixing it re-opens a maintainer
-ruling rather than being a data fix.)*
+*(Opened 2026-08-30 as a tier question; **reframed the same day by profiling**, which killed three of
+the four options it originally listed. Dan's steer: the work likely goes into the analysis
+implementation, not the catalog.)*
 
-Measured via `POST /analyses/architecture_recovery/run`:
+**The analysis was never slow.** Profiled on `egeria_python_git`:
 
-| repo | time |
+| | |
 |---|---|
-| `egeria_git` | 89s |
-| `egeria_python_git` | 100s |
-| `docling_parse` (**one** component) | 321s cold / **111s warm** |
+| compute, against a local checkout | **5.9s** — detect 3.1s, coupling 2.8s |
+| `zipball_root` + `git_clone_root` acquisition | 15.7s |
+| **the same two steps via `SurveyOrchestrator`** | **110.5s** |
 
-CLAUDE.md rule 17 justifies this analysis sitting in the Discovery tier on
-`architecture-recovery-phase1-findings.md` §3's **"5.3s per repo"**. That figure was the *spike
-toolchain*; this step additionally downloads a zipball and does a treeless clone per run. The warm
-re-run isolates it: ~200s is fetch, and **111s of work remains** on the smallest repo in the corpus.
+`architecture-recovery-phase1-findings.md` §3's **"5.3s per repo"** — the figure CLAUDE.md rule 17
+cites to justify Discovery placement — is **correct and still holds**. Nothing regressed. The cost
+is entirely in *how the route acquires the repo*.
 
-**Two consequences of the current `fast` value**, both live:
+**Where it goes.** cProfile over exactly what the route calls:
 
-1. The card badges it *fast* and `_runAnalysisCatalogCard` neither prompts nor backgrounds, so 100s+
-   of blocking work is announced only by a toast — the entry below.
-2. `AnalysisCatalogEntry.availability` **derives** from `run_time` (`fast` → `inline`), so a context
-   compile is told it may run this **on the hot path** — inside a packer whose §20 says in bold
-   *"the packer must never trigger a survey."* Latent only because the compiler is unwired
-   (task-list item 10), and it becomes real the moment it is not.
+```
+738 calls    95.1s   {method 'poll' of 'select.poll' objects}    <- waiting on git subprocesses
+36569 calls  12.2s   {method 'read' of '_ssl._SSLSocket'}        <- network, inside the profile
+```
 
-**Why it was not simply corrected.** Setting `run_time: minutes` is right on the measurement and
-immediately fails
-`test_no_fast_stage_question_is_answered_by_a_non_fast_survey_analysis`, because Discovery is a
-fast-only stage and a Discovery question ("What is its internal architecture?") dispatches to it.
-That test is correct and the failure is informative: it says the analysis no longer fits the tier it
-was placed in on 2026-08-22 by maintainer ruling. The options are a maintainer's, not an
-implementer's:
+Same step, same repo: **2.8s against a local checkout, 92.1s through the orchestrator.** The
+difference is `_acquire_git_clone_root`'s `--filter=blob:none --no-checkout`. Co-change analysis then
+runs `git` history commands against a **treeless** clone, and git lazily fetches from the remote for
+anything absent — so each operation pays network round-trips. Our `select.poll` time is git's
+network time.
 
-- **re-tier** the analysis out of Discovery (contradicts the 2026-08-22 ruling, and rule 17's
-  "cheap enough to gate the expensive tiers" test now genuinely fails on measurement);
-- **re-map** the Discovery question to something cheaper and let architecture recovery answer a
-  slower-stage question;
-- **make it actually fast** — the 111s warm figure has never been profiled, and a one-component repo
-  taking that long suggests something pathological rather than inherent;
-- **decouple `availability` from `run_time`**, which §20 explicitly argued against ("a second
-  hand-maintained column would be one more thing to keep consistent with the first") but which the
-  above shows is now carrying two loads that have come apart.
+**Two candidate fixes, neither decided:**
 
-The measurement is annotated in `analysis_catalog.yaml` beside the value, so nobody reads `fast`
-without seeing that it is known-questionable.
+- **Cache the acquired roots.** Both providers clone into a *fresh tempdir every run*
+  (`_acquire_zipball_root`, `_acquire_git_clone_root`), so a repo is downloaded twice per run, every
+  run, forever. A cache keyed on commit SHA would make the second run of anything nearly free — and
+  it would benefit every step declaring these resources, not just this one.
+- **Give co-change what it actually needs.** It wants commit metadata and pathnames, which a
+  treeless clone *has*. Something is reaching for blob content and triggering the lazy fetch;
+  finding what would be a smaller, more surgical fix than caching.
 
-**Profile first.** 111s on a repo with one component is the number that would change the whole
-entry, and nobody has looked at where it goes.
+Worth doing the second first: it is diagnostic, and its answer determines whether the first is a
+performance nicety or the only option.
+
+**The instrumentation that flagged this is misattributing, and that is its own small bug.** The run
+emitted:
+
+> `repo_arch_coupling — declares compute_cost='medium' (ceiling 60s) but took 92.1s with no
+> connections, so that is compute`
+
+It is 92.1s of *network*, in a child process, invisible to whatever counts connections. So the guard
+built to catch exactly this case reported the opposite and nobody was reading the line anyway.
+
+**What this does NOT need.** The entry originally offered four options; the measurement leaves one:
+
+- ~~re-tier out of Discovery~~ — the analysis *is* Discovery-cost at 5.9s
+- ~~re-map the Discovery question to something cheaper~~ — same reason
+- ~~decouple `availability` from `run_time`~~ — `run_time` was never wrong about compute
+- **fix the acquisition** ✅
+
+`run_time: fast` therefore stays, and is now *defensible* rather than merely unchanged — with the
+caveat that it describes compute while a user experiences compute **plus** acquisition. If the
+acquisition fix lands, the two converge and the question disappears. If it does not, the honest tag
+is about the whole experience and the tier question comes back.
+
+Open, unresolved: whether `architecture_recovery` belongs in the **Analysis** intent rather than
+Discovery on other grounds — that is a separate judgement from cost, and cost no longer forces it.
 
 #### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
 
