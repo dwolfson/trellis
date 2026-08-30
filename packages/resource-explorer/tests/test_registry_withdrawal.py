@@ -157,3 +157,58 @@ class TestWithdrawalIsNotEvidence:
         assert rows, "fixture produced no component — the test would pass vacuously"
         assert WITHDRAWN_LABEL not in rows[0]["proposed_by"]
         assert "manifest" in rows[0]["proposed_by"]
+
+
+class TestCuratorVerdictMergedIntoResults:
+    """docs/Backlog.md "take architecture results into Curate" — a curator's
+    verdict lives in its own table (architecture_component_verdicts), not
+    mixed into this kind's findings (see that entry's "evidence of a
+    different kind, not a rewrite" constraint), so the results reader has to
+    merge it in by scope_locator rather than get it for free."""
+
+    def _propose(self, registry, slug, scope, ts="2026-08-30T00:00:00"):
+        registry.upsert_finding(slug, KIND, [{
+            "check_name": "component", "label": "Software Service",
+            "detail": {"name": "svc", "slug": "svc", "perspective": "deployment"},
+        }], surveyed_at=ts, scope_locator=scope)
+
+    def test_a_component_with_no_verdict_reports_none(self, registry, project):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        row = next(c for c in result["components"] if c["path"] == "pkg/a")
+        assert row["verdict"] is None
+
+    def test_a_recorded_verdict_is_attached_by_scope_locator(self, registry, project):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        registry.record_component_verdict("repo", project.slug, "pkg/a", "accepted")
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        row = next(c for c in result["components"] if c["path"] == "pkg/a")
+        assert row["verdict"]["verdict"] == "accepted"
+
+    def test_only_the_latest_verdict_is_attached(self, registry, project):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        registry.record_component_verdict("repo", project.slug, "pkg/a", "accepted")
+        registry.record_component_verdict("repo", project.slug, "pkg/a", "rejected")
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        row = next(c for c in result["components"] if c["path"] == "pkg/a")
+        assert row["verdict"]["verdict"] == "rejected"
+
+    def test_a_verdict_on_one_component_does_not_leak_onto_another(self, registry, project):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        self._propose(registry, project.slug, "pkg/b")
+        registry.record_component_verdict("repo", project.slug, "pkg/a", "accepted")
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        row_b = next(c for c in result["components"] if c["path"] == "pkg/b")
+        assert row_b["verdict"] is None

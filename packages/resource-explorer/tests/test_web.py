@@ -370,6 +370,56 @@ class TestCurateNotesRouter:
         assert resp.status_code == 404
 
 
+class TestCurateComponentVerdictsRouter:
+    def test_add_and_list_verdict(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "accepted",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["verdict"] == "accepted"
+
+        listed = client.get("/api/curate/component-verdicts/repo/myproj").json()
+        assert listed["src/foo"]["verdict"] == "accepted"
+
+    def test_rejects_empty_scope_locator(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "  ", "verdict": "accepted",
+        })
+        assert resp.status_code == 400
+
+    def test_rejects_unknown_verdict(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "maybe",
+        })
+        assert resp.status_code == 400
+
+    def test_retyped_without_retyped_to_is_rejected(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "retyped",
+        })
+        assert resp.status_code == 400
+
+    def test_retyped_with_retyped_to_succeeds(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "retyped", "retyped_to": "library",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["retyped_to"] == "library"
+
+    def test_history_reflects_every_call_newest_first(self, client):
+        client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "accepted",
+        })
+        client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "rejected",
+        })
+        history = client.get(
+            "/api/curate/component-verdicts/repo/myproj/history",
+            params={"scope_locator": "src/foo"},
+        ).json()
+        assert [h["verdict"] for h in history] == ["rejected", "accepted"]
+
+
 # ── /api/schedules — per-resource + global overview ─────────────────────────────
 
 class TestSchedulesRouter:

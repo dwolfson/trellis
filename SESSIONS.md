@@ -54,6 +54,27 @@ blocked:        S2 (stage half)  — needs profiling, then a maintainer ruling
                 S3 (pointer sections) — needs S4
 ```
 
+## Backlog-item claims
+
+*(Added 2026-08-30 after three sessions crossed on one `docs/Backlog.md` item within about ten
+minutes: S2 told dwolfson-59 to take the cross-run acquisition cache, Dan separately assigned the
+same item to S1, and S1/dwolfson-59 then messaged each other about it simultaneously. Nothing was
+lost — dwolfson-59 had already built it before either flag landed — but it cost real time, and it
+is the one failure mode the worktree split above does not address: the table partitions **files**,
+and this was a collision in **assignment**, which lives in whoever last heard about it rather than
+anywhere written down.)*
+
+Before starting non-trivial work on a `docs/Backlog.md` item that is not already one worktree's
+named territory in the table above, claim it here first — check this list before claiming, not
+just before starting to code.
+
+| item | claimed by | date |
+|---|---|---|
+| cross-run acquisition cache (`zipball_root`/`git_clone_root`) | dwolfson-59 (reviewed by S1) | 2026-08-30 |
+
+Remove a row (or strike it) once its work lands or is abandoned — a table of stale claims that
+still look active is worse than no table.
+
 ## Ports
 
 One dev server at a time on 8810 (`.claude/launch.json`). A second session needs its own port, or
