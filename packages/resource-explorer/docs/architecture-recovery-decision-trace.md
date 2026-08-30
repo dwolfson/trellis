@@ -113,8 +113,17 @@ different question, and nothing about it needs the notes.
 Concretely, against what RE has today:
 
 - **Phoenix** is wired through `BeeAIInstrumentor` — it instruments the
-  **agent/LLM** path. Surveying is deterministic Python with no model in it, so
-  there are no LLM spans to hang these on.
+  **agent/LLM** path. The architecture-recovery steps are deterministic Python
+  with no model in them, so there are no LLM spans to hang these on.
+
+  **Correction (Dan, 2026-08-30): that is true of these steps, not of surveys.**
+  An earlier draft of this section said "surveying is deterministic Python",
+  which overgeneralises from the two steps in front of me — a survey step can
+  perform LLM-based analysis, and where it does, Phoenix instrumentation is
+  directly relevant to *that* step. It does not change where the decision trace
+  belongs (§5's first two paragraphs stand), but it does mean the reasoning
+  above is an argument about these steps rather than a property of surveying.
+  Revisiting it is a backlog item.
 - **MLflow's** `log_query(query, intent, project_slug, response, latency_ms,
   collections_used)` is experiment tracking for **query quality**. A survey is
   not an experiment, and forcing one MLflow run per survey conflates two
@@ -124,6 +133,16 @@ Concretely, against what RE has today:
   when there is a performance question to answer; there isn't one yet, and
   `_withdraw_vacated`'s 93ms was measured with `time.perf_counter()` rather than
   needing a collector.
+
+**A further consequence of that correction.** For an LLM-based survey step there
+are genuinely two traces to keep apart: the *model interaction* (prompt,
+tokens, latency — Phoenix/OTEL's job, and non-deterministic) and the *decision*
+it produced (durable, per-resource — this). §16 of
+`context-compilation-design.md` already makes the matching argument for the
+compiler: agent output must be **written down, versioned and
+provenance-stamped before it is packable**, precisely because agents are
+non-deterministic. A survey step that calls a model needs the same discipline,
+and the decision trace is the natural place for the written-down half.
 
 **Dual-writing was considered and rejected for now.** Emitting notes as span
 events *and* findings means two stores that can disagree, and the span copy is

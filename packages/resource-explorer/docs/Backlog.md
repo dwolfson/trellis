@@ -52,6 +52,116 @@ Grouped by area. Within a group, the most actionable entries come first.
 
 ### Architecture recovery
 
+#### MEDIUM — telemetry for surveys, and the LLM-based survey step
+
+*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery-decision-trace.md` §5.)*
+
+The decision trace is now persisted as findings, and that doc argues it should **not** go to
+MLflow, Phoenix or OTEL: decision provenance is read months later by resource and must be durable
+and queryable, while telemetry is sampled, retention-limited and keyed by trace id. **That part
+stands.** Two things around it do not, and want revisiting.
+
+**1. "Surveying is deterministic Python" is false as a general claim** (Dan, 2026-08-30). It is
+true of `repo_arch_detect` and `repo_arch_coupling`, which is all the original reasoning had in
+front of it. **A survey step can perform LLM-based analysis**, and where it does:
+
+- Phoenix/`BeeAIInstrumentor` instrumentation *is* directly relevant to that step — there is a real
+  model interaction to trace, with prompt, tokens and latency;
+- the step is **non-deterministic**, so the reproducibility argument that holds for the two
+  deterministic steps does not transfer;
+- there are then **two traces to keep apart**, not one: the model interaction (Phoenix/OTEL) and
+  the decision it produced (durable, per-resource, `architecture_decisions`).
+
+§16 of `context-compilation-design.md` already makes the matching argument one layer up — agent
+output must be *written down, versioned and provenance-stamped before it is packable*, precisely
+because agents are non-deterministic. A survey step that calls a model needs the same discipline,
+and the decision trace is the natural home for the written-down half. Worth checking whether any
+step already does this and is currently unprovenanced.
+
+**2. Execution telemetry for surveys has no home and no owner.** Per-step and per-detector timings,
+failure points, hot paths. OTEL is the right shape and nothing emits it. Not urgent — there is no
+open performance question, and the one measurement that mattered
+(`_withdraw_vacated` at 93ms over 10,135 rows) was answered with `time.perf_counter()`. Open it
+when there is a question to answer, and note the scaling item below is the likeliest trigger.
+
+**If tracing is added, the shape to use** is a span per survey step carrying the *finding id* — a
+pointer to the durable record, not a second copy of it. Dual-writing means two stores that can
+disagree, and the span copy is the one that expires.
+
+#### MEDIUM — presenting architecture recovery: a curator sees 20 of 1035 components
+
+*(Opened 2026-08-30. Evidence and three costed options in
+`architecture-recovery-presentation-findings.md` — findings only, no design chosen.)*
+
+`egeria_git`: 1035 components recovered, 451 after depth projection, **20 rendered**, chosen
+alphabetically by `path`. Four findings, in the order they are worth fixing:
+
+1. **The `structural` flag is computed and ignored.** `_architecture_recovery_results` marks
+   grouping nodes explicitly *so a consumer can render them as grouping rather than as a recovered
+   component* — and no consumer reads it. They render as `untyped · 0%`, identical to a component
+   we know nothing about, and because rows sort by `path` the **top line of Egeria's architecture is
+   a placeholder for the repo root**. 75 of 451 rows. Two-line fix that still needs a visual
+   decision, which is why it was not made in passing.
+2. **Ordering is alphabetical**, so the clean 8-component deployment reading is in the payload and
+   invisible behind 341 logical rows.
+3. **Perspective is neither shown nor filtered on**, though §4.1 is emphatic the four are not
+   interchangeable. Recommendation in the doc: perspective tabs defaulting to the smallest non-empty
+   perspective — a comparison, not a threshold.
+4. **Stale rows render identically to live ones** — resolved by tombstoning steps 1–3 for future
+   runs, but the UI still has to choose between hiding a withdrawn component and showing it marked,
+   and those are different answers for auditing history versus reading current state.
+
+Deliberately measured and not designed: presentation is a product decision, and raising the row cap
+treats a symptom when the problem is that they are the wrong 20.
+
+#### MEDIUM — tombstoning step 4: backfill the orphans no run can ever withdraw
+
+*(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery-scope-tombstoning.md`.)*
+
+R2 forbids withdrawing rows that no step is recorded as having written, and **every existing orphan
+predates `run_label`** — measured, `_scopes_last_written_by` returns 0 scopes for `egeria_git`
+today. So ordinary runs can never clear them:
+
+```
+egeria_git, all perspectives    870 live   165 orphaned  (15%)
+egeria_git, deployment only       8 live    27 orphaned  (77%)
+egeria_workspaces_git, deployment 69 live    2 orphaned  ( 3%)
+```
+
+A curator opening Egeria's deployment architecture still sees 35 components where 8 are real.
+
+The backfill is **weaker evidence than a withdrawal from a real run** — it is a human asserting a
+scope is vacated, not a step observing it — and must say so: `cause: unclaimed`, plus a detail
+recording that it came from a dated backfill rather than a survey. A backfill writing rows
+indistinguishable from earned ones would launder an assertion into an observation.
+
+Last of the four steps deliberately, because it is the only one that touches already-published data
+and cannot be undone by re-running a survey.
+
+#### LOW — coupling's decision trace is 250 copies of one line
+
+*(Opened 2026-08-30, surfaced by persisting the trace — invisible while it was `log.info`-only.)*
+
+First real measurement of `architecture_decisions` on `egeria_git`:
+
+| step | notes | shape |
+|---|---|---|
+| `detect` | 4 | all high-signal — distillation arithmetic, platform consolidation, the variant drop |
+| `coupling` | **263** (200 kept, 63 truncated) | **250+ are one templated line**: `.: adopted unproposed subtree X (nothing else claims it)` |
+
+A trace dominated by one repeated message crowds out the notes a reader wants. Whether those should
+collapse into one summary note (`adopted 250 unproposed subtrees`) or are genuinely per-decision is
+a judgement about coupling's own semantics — hence LOW and not fixed in passing. The cap already
+reports the overflow rather than hiding it, so nothing is silently lost meanwhile.
+
+#### LOW — the decision-trace lookup is linear in run count
+
+*(Opened 2026-08-30.)* `_withdraw_vacated` reads the kind's whole finding history on every persist —
+**10,135 rows / 93ms for `egeria_git`**. Fine inside a survey that takes seconds, but history is
+append-only and never pruned, so this grows with every run. Measured and recorded rather than
+pre-optimised; the narrower two-query form (find the step's latest `surveyed_at`, then select only
+those rows) is available if it ever matters. Likeliest trigger for the telemetry item above.
+
 #### HIGH — architecture recovery: coverage closed on 2026-08-28; precision is now the whole entry
 
 **The first version of this entry said "3 of 46, 6% coverage". That was wrong, and wrong in the
