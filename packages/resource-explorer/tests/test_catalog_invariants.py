@@ -119,28 +119,55 @@ class TestDerivationTrace:
 
 
 class TestAnalysisAvailability:
-    """availability is DERIVED from run_time, not hand-tagged -- see
-    AnalysisCatalogEntry.availability and context-compilation-design.md §20."""
+    """availability is DECLARED as of 2026-08-30 (Dan's ruling), not derived
+    from run_time — see AnalysisCatalogEntry.availability.
 
-    def test_only_fast_is_inline(self):
+    This class asserted the derivation until then, as a two-way implication:
+    fast <-> inline. Half of that is now false by design. `run_time` describes
+    COMPUTE; `availability` answers "may a compiler run this on its hot path",
+    and `architecture_recovery` separated them — 5.9s of compute, but a compile
+    running it inline would pay 14.4s of acquisition too.
+
+    What survives is the half with a safety requirement, tested in the
+    direction that matters."""
+
+    def test_nothing_slow_is_inline(self):
+        """The surviving implication: inline -> fast. The converse (fast ->
+        inline) is what stopped holding, because being cheap to compute does
+        not make something safe to run on a packer's hot path."""
         from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
-        for resource_type in ("repo", "database", "filesystem"):
-            for a in get_analyses(resource_type):
-                expected = "inline" if a["run_time"] == "fast" else "queued"
-                assert a["availability"] == expected, (
-                    f"{a['id']}: run_time={a['run_time']} -> {a['availability']}"
-                )
+        offenders = [(a["id"], a["run_time"])
+                     for rt in ("repo", "database", "filesystem")
+                     for a in get_analyses(rt)
+                     if a["availability"] == "inline" and a["run_time"] != "fast"]
+        assert offenders == [], f"inline but not fast: {offenders}"
 
-    def test_unknown_run_time_is_queued_not_inline(self):
-        """Guessing cheap is the dangerous direction: an unrecognised run_time
-        must not let a packer block on a minutes-long analysis."""
+    def test_availability_is_only_ever_one_of_two_values(self):
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        seen = {a["availability"] for rt in ("repo", "database", "filesystem")
+                for a in get_analyses(rt)}
+        assert seen <= {"inline", "queued"}, f"unexpected availability values: {seen}"
+
+    def test_a_fast_analysis_may_legitimately_be_queued(self):
+        """Pins the case this change exists for, so nobody 'fixes' it back into
+        a derivation: architecture_recovery is honestly fast to compute and must
+        still never run inline, because it downloads two artifacts first."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        entry = next(a for a in get_analyses("repo") if a["id"] == "architecture_recovery")
+        assert (entry["run_time"], entry["availability"]) == ("fast", "queued")
+
+    def test_an_entry_that_declares_nothing_is_queued_not_inline(self):
+        """Guessing cheap is the dangerous direction: an entry nobody has
+        considered must not license itself onto a hot path by staying silent."""
         from resource_explorer.surveyors.analysis_catalog_reader import AnalysisCatalogEntry
 
         entry = AnalysisCatalogEntry(
             id="x", name="x", description="", resource_types=["repo"],
             intent="analysis", perspectives=[], annotation_types=[],
-            source="local", run_time="something-new", action="survey",
+            source="local", run_time="fast", action="survey",
             recommended=False,
         )
         assert entry.availability == "queued"

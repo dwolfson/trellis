@@ -42,14 +42,16 @@ _last_merge_status: dict[str, str] = {}
 
 
 def _derive_availability(run_time: str) -> str:
-    """"inline" | "queued" -- shared by AnalysisCatalogEntry.availability
-    below and _egeria_merge_entries's hand-built live-Egeria dicts, which are
-    never AnalysisCatalogEntry instances (no to_dict() available) and would
-    otherwise need their own hardcoded copy of this rule -- exactly the "one
-    more thing to keep consistent" the property's own docstring warns against
-    (docs/context-compilation-design.md section 19). Only "fast" is inline;
-    "minutes"/"async"/anything unrecognized is queued, because guessing cheap
-    is the dangerous direction."""
+    """"inline" | "queued" from `run_time` — a FALLBACK only, since 2026-08-30.
+
+    `availability` is now a declared field on `AnalysisCatalogEntry`. This
+    survives for entries that cannot declare one: `_egeria_merge_entries`'
+    hand-built live-Egeria dicts are never `AnalysisCatalogEntry` instances and
+    have no catalog row to carry the value.
+
+    It stays conservative for the reason the declared default is conservative —
+    only "fast" is inline; everything else, including anything unrecognised, is
+    queued, because guessing cheap is the dangerous direction."""
     return "inline" if run_time == "fast" else "queued"
 
 
@@ -74,22 +76,32 @@ class AnalysisCatalogEntry:
     # shape isn't known) — never assume scopability without confirming it.
     target_shape: str = "whole_resource_only"
 
-    @property
-    def availability(self) -> str:
-        """"inline" | "queued" -- may a context compile run this on the hot
-        path if no stored result exists, or must it emit a gap and queue?
-
-        DERIVED from run_time rather than hand-tagged. run_time already
-        carries the cost signal ("fast" / "minutes" / "async") and a second
-        hand-maintained column would be one more thing to keep consistent
-        with it -- see docs/context-compilation-design.md section 19 on
-        protecting the curated vocabulary by not multiplying it.
-
-        Only "fast" is inline. "minutes" and "async" are queued: no packer
-        can synchronously await them (section 20), and an unknown value is
-        treated as queued because guessing cheap is the dangerous direction.
-        """
-        return _derive_availability(self.run_time)
+    #: "inline" | "queued" — may a context compile run this on the hot path if
+    #: no stored result exists, or must it emit a gap and queue?
+    #:
+    #: DECLARED as of 2026-08-30 (Dan's ruling), no longer derived from
+    #: `run_time`.
+    #:
+    #: §20 of context-compilation-design.md argued for deriving it, and was
+    #: right at the time: `run_time` already carried a cost signal, and a
+    #: second hand-maintained column is one more thing to keep consistent with
+    #: the first. That holds only while the two always agree.
+    #:
+    #: `architecture_recovery` is the counterexample §20 did not have. Its
+    #: COMPUTE is 5.9s, so `run_time: fast` is honest, and `intent: analysis`
+    #: is a separate ruling on separate grounds — yet a compile that ran it
+    #: inline would also pay ACQUISITION: 14.4s warm, ~30s cold, inside a
+    #: packer whose §20 says in bold that it "must never trigger a survey".
+    #:
+    #: So `run_time` was carrying two loads that came apart — *how expensive is
+    #: the compute* and *may a compiler run this inline* — and only the second
+    #: has a hard safety requirement. It is now its own answer.
+    #:
+    #: Unset means **queued**, deliberately. Guessing cheap is the dangerous
+    #: direction, and an entry nobody has considered should not license itself
+    #: onto a hot path by its own silence — the same conservative default
+    #: `target_shape` takes above, for the same reason.
+    availability: str = "queued"
 
     def to_dict(self) -> dict:
         return {
@@ -147,6 +159,10 @@ def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
         recommended=bool(raw.get("recommended", False)),
         egeria_registration=dict(raw.get("egeria_registration") or {}),
         target_shape=raw.get("target_shape", "whole_resource_only"),
+        # Unset means "queued" — see the field's own comment. An entry that
+        # nobody has considered must not license itself onto a compiler's hot
+        # path by staying silent.
+        availability=raw.get("availability", "queued"),
     )
 
 
