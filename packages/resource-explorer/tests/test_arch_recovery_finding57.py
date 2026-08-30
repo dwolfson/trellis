@@ -259,3 +259,56 @@ class TestResultsReaderSurfacesUnverified:
         assert len(history) == 1
         detail = json.loads(history[0]["detail_json"])
         assert detail["outcome"] == UNVERIFIED
+
+
+class TestCochangeRenameFlag:
+    """`--find-renames=100%` on cochange's `git log` — the flag that decides
+    whether the step costs milliseconds or a minute and a half.
+
+    `--name-only` implies a diff, and git's DEFAULT rename detection is
+    *inexact*: it scores file similarity, which reads blob content. The history
+    root is a `--filter=blob:none --no-checkout` partial clone, so every
+    comparison is a lazy fetch — measured at 86 upload-pack round trips and
+    41s in a single `git log`, against 0.03s with exact renames only.
+
+    Exact rename detection compares blob OIDs, which live in the tree and are
+    present in a treeless clone. This is a correctness-relevant performance
+    flag, not a tuning knob, so it is pinned rather than left to a comment.
+    """
+
+    def test_the_git_log_asks_for_exact_renames_only(self):
+        import inspect
+
+        from resource_explorer.surveyors.arch_recovery import cochange
+        src = inspect.getsource(cochange._run_git_log)
+        assert "--find-renames=100%" in src or "_EXACT_RENAMES_ONLY" in src, (
+            "cochange's git log must pin exact-rename detection; without it, a "
+            "treeless clone lazily fetches blobs for similarity scoring"
+        )
+
+    def test_the_flag_is_a_named_constant_with_its_measurement(self):
+        """The number is the argument. A bare flag invites removal by anyone
+        who reads it as a stylistic choice."""
+        from resource_explorer.surveyors.arch_recovery import cochange
+        assert cochange._EXACT_RENAMES_ONLY == "--find-renames=100%"
+
+    def test_it_reaches_the_command_line(self, tmp_path):
+        """Guards the wiring, not just the constant — a constant defined and
+        not passed is the failure mode this module has hit before."""
+        import subprocess
+
+        from resource_explorer.surveyors.arch_recovery import cochange
+
+        captured = {}
+        real = subprocess.run
+
+        def _spy(args, **kw):
+            captured["args"] = args
+            return real(["true"], capture_output=True)
+
+        subprocess.run = _spy
+        try:
+            cochange._run_git_log(str(tmp_path), 12, True)
+        finally:
+            subprocess.run = real
+        assert cochange._EXACT_RENAMES_ONLY in captured["args"]
