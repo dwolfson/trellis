@@ -88,6 +88,38 @@ when there is a question to answer, and note the scaling item below is the likel
 pointer to the durable record, not a second copy of it. Dual-writing means two stores that can
 disagree, and the span copy is the one that expires.
 
+#### MEDIUM — a compiled answer should be able to POINT at a view, not only describe it
+
+*(Opened 2026-08-30. Dan: "there is no reason why, in some cases, it can't provide a link to an
+architecture view elsewhere as well as providing a textual description.")*
+
+Not a UI affordance — a change to **what a `Section` can resolve to**. Today every section resolves
+to text that gets packed against a character budget (`trellis_context`'s `Candidate` carries
+`{Rung: str}`), so the only way for an architecture question to reach the architecture view is for
+the compiler to *describe* it in prose and hope the reader goes looking.
+
+A section that resolves to a **pointer** — resource, analysis, perspective, and the scope to focus —
+is different in three ways worth designing rather than bolting on:
+
+- **It costs almost no budget.** A link is tens of characters where the prose summary of egeria's
+  deployment architecture is hundreds. §9's packer currently trades detail against budget; a pointer
+  section changes that trade, since the expensive thing lives at the other end of the link.
+- **It stays correct as the data changes.** Packed prose is a snapshot; a pointer resolves against
+  whatever the view shows now. That cuts both ways — it breaks the §10/§14 replayability guarantee
+  (`same spec + same as_of + same materialized state -> same context`) unless the pointer carries
+  `as_of` too, which is the interesting design question here.
+- **It needs the target to exist and be addressable.** The architecture card now has perspective
+  tabs, so "the deployment view of egeria_git" is a real thing to point at — it was not before
+  today. Deep-linking to a perspective/scope is the prerequisite work.
+
+Both halves are wanted: prose for the model to reason over, link for the human to go and look.
+Likely shape is one section carrying both rungs — a short description at FULL, and the pointer as a
+sibling field rather than a competing candidate — but that is a guess and the packer's contract
+should decide it.
+
+Related: `context-compilation-design.md` §23 (what this looks like in RE and EA) and §20 (resolvers
+are mostly not RAG — a pointer resolver is about as far from RAG as a resolver gets).
+
 #### MEDIUM — presenting architecture recovery: a curator sees 20 of 1035 components
 
 *(Opened 2026-08-30. Evidence and three costed options in
