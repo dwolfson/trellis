@@ -249,6 +249,21 @@ established the tiering precedent.
   (whether detail specs inherit `content_filters` / `shape_defaults` or carry their own
   three-category model). It interacts directly with nested Investigations via
   `ProjectHierarchy`, and the two should be resolved together rather than twice.
+- **Is the replayability guarantee (`same spec + same as_of + same materialized state → same
+  context`) actually true, or only true of some resolvers? (added 2026-08-30, from a literature
+  check.)** "On the Reproducibility Limitations of RAG Systems" (arXiv:2509.18869) names retrieval-
+  side nondeterminism as a real, distinct problem from sampling randomness — good evidence this
+  guarantee targets something real. RAGdeterm (ScienceDirect, 2026) gets determinism the same way
+  this design does: grounding retrieval in an explicit structured representation instead of
+  similarity search. But "structured" does not imply deterministic — an unordered query, a
+  paginated cursor, or a resolver that calls an LLM mid-resolution are all "structured" and still
+  non-replayable (§9's own item above and the survey-side telemetry entry in `Backlog.md` both
+  flag LLM-based steps specifically). **The guarantee is a property of the resolver, not the
+  compiler as a whole**, and should be checkable per-resolver — a `deterministic: bool` tag in the
+  resolver registry, mirroring the cost-tier tags CLAUDE.md rule 17 already requires — rather than
+  an assumption that holds because the underlying store is Egeria and not a vector index. Neither
+  source states the guarantee in this doc's exact terms; I could not find this replayability
+  contract formulated anywhere in the public literature. See `Backlog.md`.
 
 ---
 

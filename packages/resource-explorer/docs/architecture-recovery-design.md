@@ -219,6 +219,17 @@ The second non-redundant case is `Obsolete` versus `ContentStatus.Deprecated`: *
 decision ("stop using this"), *Obsolete* is a fact about the source ("this no longer reflects
 reality"). A stale overlay entry pointing at deleted code is Obsolete, not Deprecated.
 
+**A fourth axis is missing, and none of the three above can stand in for it (added 2026-08-30).**
+Provenance, Degree and Workflow all answer some version of "is this claim correct, and has a human
+signed off." None answer "is this claim worth a curator's attention *right now*" — the goal is not
+architecture recovery for its own sake but recovery of *useful* artifacts, and usefulness is not
+static: at one extreme everything recovered is worth surfacing, at the other almost nothing is.
+Folding that into `Degree`/confidence conflates two different questions — a component can be
+detected with high confidence and still be uninteresting (a leaf utility module), and a low-
+confidence guess can be exactly what a curator needs to see. Needs its own field, not a reuse of
+`confidence`. See `Backlog.md`'s "separate correct from useful" entry — not designed here, flagged
+here because §7 is where it would eventually attach.
+
 ### 3.4 `ContentStatus` is the derived/validated axis — confirmed
 
 From `.../enums/ContentStatus.java`:
@@ -386,6 +397,16 @@ The same effect shows up in the type vocabularies. Asked to classify RE's front 
 picked `Application` — which is not one of the 13 `SolutionComponentType` values but *is* a
 `SoftwareCapability` subtype. That is not a mistake; it is classifying in the deployment perspective
 when the logical one was asked for. Four perspectives, three vocabularies, and no signposting.
+
+**Related work (added 2026-08-30, from a literature check against this design):** Murphy, Notkin &
+Sullivan's software reflexion models (IEEE TSE 2001, building on their 1995 SIGSOFT paper) establish
+the general technique this section is an instance of — an extracted model and a hypothesized
+high-level model are kept as two artifacts related by a computed correspondence, never collapsed
+into one. But reflexion, as published, is computed against **one** hypothesized model at a time; the
+literature does not address running it once per perspective and reconciling the results. **Open
+question this design inherits and does not answer:** can a component converge under Deployment while
+diverging under Logical, and if so, is that one finding or two? See `Backlog.md`'s "borrow reflexion
+models' three-way vocabulary" entry.
 
 ### 4.1a Specification, not deployment — the correction that renames a perspective
 
@@ -617,6 +638,17 @@ is cheap and therefore dangerous. Extend only for a case that survives the mappi
 
 **What is needed instead:** every recorded type states *which vocabulary it came from*, and the
 projection maps between them.
+
+**This is "map, never merge," and the name has a quarter-century of prior art.** Murphy, Notkin &
+Sullivan's software reflexion models (IEEE TSE 2001) apply exactly this discipline to the narrower
+case of one extracted model against one human model: disagreement is computed and displayed, never
+resolved by rewriting either side. On the data-curation side, CleanGraph (arXiv:2405.03932) attaches
+confidence/source/extractor metadata per edge in a knowledge graph and routes low-confidence matches
+to a human queue rather than auto-merging — the same shape applied to entity resolution instead of
+architecture. Neither source gives a name to the curator's verdict itself; reflexion's own vocabulary
+for how two models relate — **convergence** (they agree), **divergence** (they disagree),
+**absence** (one names something the other doesn't) — is a candidate for §7.1's curator-action
+vocabulary. See `Backlog.md`.
 
 ### 4.3 Successive refinement — perspectives map onto the funnel
 
