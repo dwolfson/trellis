@@ -91,13 +91,46 @@ class TestDeclaredEndpoints:
         eps = spring_app.discover(str(_platform(tmp_path, extra=extra)))["platforms"][0]["endpoints"]
         assert any(e["target"] == "PostgreSQL" for e in eps)
 
-    def test_a_bare_host_port_names_no_component(self, tmp_path):
-        """`host:9092` has no scheme. Inferring "that's Kafka" from the property
-        NAME would be the similarity guessing this module exists to avoid."""
+    def test_a_bare_host_port_IS_typed_by_a_technology_naming_key(self, tmp_path):
+        """**This reverses a deliberate earlier decision**, which read:
+
+            `host:9092` has no scheme. Inferring "that's Kafka" from the
+            property NAME would be the similarity guessing this module exists
+            to avoid.
+
+        The caution was right and the conclusion was too strong. Measured
+        consequence: **Egeria's own Kafka dependency was never recovered** —
+        `kafkaEndpoint=localhost:9092` produced no component — while its
+        PostgreSQL always was, and the maintainer had stated both as defaults on
+        day one. Found via `datahub-project/datahub`, whose
+        `kafka.bootstrapServers` has the same shape.
+
+        The distinction that makes this a declaration rather than a guess is the
+        **conjunction**: the key names a technology AND the value is already a
+        resolvable address. `spring.kafka.bootstrap-servers` is a documented
+        Spring property meaning "the Kafka brokers"; reading it is reading what
+        a person wrote. A key merely containing "kafka" whose value is a topic
+        name still names nothing — see
+        `TestEndpointTypingFromKeys.test_a_kafka_key_whose_value_is_not_an_address_names_nothing`.
+
+        It is priced accordingly: key-typed targets carry
+        `_KEY_TYPED_CONFIDENCE` (70) against a scheme's 85, and their evidence
+        says which it was.
+        """
         root = _platform(tmp_path, extra="spring.kafka.bootstrap-servers=broker:9092")
         eps = spring_app.discover(str(root))["platforms"][0]["endpoints"]
-        assert [e["target"] for e in eps] == [""]
+        assert [e["target"] for e in eps] == ["Apache Kafka"]
         assert eps[0]["protocol"] == "TCP"
+
+    def test_a_key_typed_target_is_weaker_evidence_than_a_scheme_typed_one(self, tmp_path):
+        root = _platform(tmp_path, extra=(
+            "spring.kafka.bootstrap-servers=broker:9092\n"
+            "spring.datasource.url=jdbc:postgresql://db:5432/x"))
+        comps, _, _, _ = spring_app.to_ir(spring_app.discover(str(root)))
+        by_name = {c.name: c for c in comps}
+        assert by_name["Apache Kafka"].confidence == spring_app._KEY_TYPED_CONFIDENCE
+        assert by_name["PostgreSQL"].confidence == spring_app._DECLARED_CONFIDENCE
+        assert by_name["Apache Kafka"].confidence < by_name["PostgreSQL"].confidence
 
 
 class TestServerConfigAndProvenance:
@@ -789,3 +822,73 @@ class TestYamlConfig:
         (tmp_path / "application.yml").write_text("spring:\n  application:\n    name: Base\n")
         (tmp_path / "test.application.properties").write_text("startup.server.list=\n")
         assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == ["Base"]
+
+
+class TestEndpointTypingFromKeys:
+    """Found via `datahub-project/datahub` on 2026-08-29 — but the defect it
+    exposed was **Egeria's**.
+
+    `_KIND_BY_SCHEME` reads `jdbc:postgresql://...` and names PostgreSQL.
+    Nothing read `kafkaEndpoint=localhost:9092`, because a bare `host:port`
+    carries no scheme, so it fell to the generic TCP branch which names no
+    component. Egeria's Kafka dependency was therefore never recovered, in the
+    repo this module was built for, while its PostgreSQL always was — and both
+    were stated as defaults on day one.
+    """
+
+    def test_a_bare_host_port_is_typed_by_its_key(self, tmp_path):
+        (tmp_path / "application.properties").write_text(
+            "platform.name=P\nstartup.server.list=x\nkafkaEndpoint=localhost:9092\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [w["target"] for w in out["wires"] if w["target"]] == ["Apache Kafka"]
+
+    def test_a_scheme_still_wins_over_the_key(self, tmp_path):
+        """Scheme first, key second — the key only types a value that is already
+        a recognised address with no technology of its own."""
+        (tmp_path / "application.properties").write_text(
+            "platform.name=P\nkafka.datasource.url=jdbc:postgresql://db:5432/x\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [w["target"] for w in out["wires"] if w["target"]] == ["PostgreSQL"]
+
+    def test_a_kafka_key_whose_value_is_not_an_address_names_nothing(self, tmp_path):
+        """A key merely *containing* "kafka" is not evidence of a broker."""
+        (tmp_path / "application.properties").write_text(
+            "platform.name=P\nkafka.topic.url=my.topic.name\n")
+        assert [w["target"] for w in spring_app.discover(str(tmp_path))["wires"]
+                if w["target"]] == []
+
+    def test_a_generic_url_key_is_read_without_being_named_in_advance(self, tmp_path):
+        """datahub declares every dependency under a key the fixed hint list
+        never anticipated — `ebean.url`, `datahub.gms.uri`."""
+        (tmp_path / "application.properties").write_text(
+            "spring.application.name=S\nebean.url=jdbc:mysql://db:3306/datahub\n")
+        assert [w["target"] for w in spring_app.discover(str(tmp_path))["wires"]
+                if w["target"]] == ["MySQL"]
+
+    def test_a_file_path_under_an_endpoint_key_names_nothing(self, tmp_path):
+        """Widening the key test is only safe because `_endpoint_target` is the
+        real gate. egeria's `platform.configstore.endpoint` is a FILE PATH."""
+        (tmp_path / "application.properties").write_text(
+            "platform.name=P\nplatform.configstore.endpoint=data/servers/{0}/config/{0}.config\n")
+        assert [w["target"] for w in spring_app.discover(str(tmp_path))["wires"]
+                if w["target"]] == []
+
+    def test_a_maven_artifact_template_under_a_url_key_names_nothing(self, tmp_path):
+        """dataflow's `...dependencies.shell.url = {repository}/org/...jar`."""
+        (tmp_path / "application.properties").write_text(
+            "spring.application.name=S\n"
+            "spring.cloud.deps.shell.url={repository}/org/springframework/x.jar\n")
+        assert [w["target"] for w in spring_app.discover(str(tmp_path))["wires"]
+                if w["target"]] == []
+
+    def test_the_two_placeholder_resolvers_are_chained_not_alternated(self, tmp_path):
+        """`_resolve` returns a value containing a Spring `${...}` UNCHANGED — it
+        only knows Egeria's `~{}~` form — so an `or` between them never reached
+        the second resolver, and datahub's
+        `ebean.url=${EBEAN_DATASOURCE_URL:jdbc:mysql://...}` stayed a raw
+        placeholder and named nothing."""
+        (tmp_path / "application.properties").write_text(
+            "spring.application.name=S\n"
+            "ebean.url=${EBEAN_DATASOURCE_URL:jdbc:mysql://db:3306/datahub}\n")
+        assert [w["target"] for w in spring_app.discover(str(tmp_path))["wires"]
+                if w["target"]] == ["MySQL"]

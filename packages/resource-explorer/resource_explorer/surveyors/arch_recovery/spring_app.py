@@ -84,6 +84,57 @@ _NAME_KEYS = ("platform.name", "spring.application.name", "quarkus.application.n
 _ENDPOINT_KEY_HINTS = ("datasource.url", "bootstrap-servers", "kafkaendpoint",
                        "databaseurl", "repositorydatabaseurl", "topicurlroot")
 
+#: A key SHAPE that declares an endpoint, for the keys the fixed list above does
+#: not name. Measured 2026-08-29 across eight repos: **zero** new endpoints on
+#: seven of them and **seven** on `datahub-project/datahub`, which declares every
+#: one of its dependencies under a key the fixed list never anticipated
+#: (`ebean.url`, `kafka.bootstrapServers`, `datahub.gms.uri`, ...).
+#:
+#: Safe to widen because `_endpoint_target` is the real gate: it emits a
+#: component only for a recognised scheme, so a key matching this shape whose
+#: value is a file path (egeria's `platform.configstore.endpoint`) or a Maven
+#: artifact template (dataflow's `...dependencies.*.url`) still yields nothing.
+#: The fixed list was doing that filtering a second time, and doing it worse.
+_ENDPOINT_KEY_SHAPE = re.compile(
+    r"(^|\.)(url|uri|endpoint|bootstrap-?servers)$", re.IGNORECASE)
+
+#: Technology named by the KEY rather than by a URL scheme.
+#:
+#: `_KIND_BY_SCHEME` reads `jdbc:postgresql://...` and names PostgreSQL. Nothing
+#: read `kafkaEndpoint=localhost:9092`, because a bare `host:port` carries no
+#: scheme — so it fell to the generic TCP branch, which names no component.
+#:
+#: **Measured consequence: Egeria's own Kafka dependency was never recovered**,
+#: in the repository this module was built for, while its PostgreSQL was. Dan
+#: stated both on 2026-08-28 — *"There is a default dependency on postgres and
+#: kafka"* — and only one of them was readable. Found via `datahub`, whose
+#: `kafka.bootstrapServers` has the same shape.
+#:
+#: Matched against the key, and applied ONLY when `_endpoint_target` has already
+#: recognised the value as an address. A key containing "kafka" whose value is a
+#: topic name still names no component.
+_KIND_BY_KEY = (
+    ("kafka", "Apache Kafka"),
+    ("elasticsearch", "Elasticsearch"),
+    ("opensearch", "OpenSearch"),
+    ("zookeeper", "Apache ZooKeeper"),
+    ("neo4j", "Neo4j"),
+    ("cassandra", "Apache Cassandra"),
+)
+
+
+#: Marks an endpoint whose technology came from the KEY, not the URL scheme.
+_KEY_TYPED_MARK = "(technology named by the property key)"
+
+#: Key-typed is a real declaration but a weaker one than a scheme — see the
+#: reversal note on `_KIND_BY_KEY`.
+_KEY_TYPED_CONFIDENCE = 70
+
+
+def _kind_by_key(key: str) -> str:
+    low = key.lower()
+    return next((name for token, name in _KIND_BY_KEY if token in low), "")
+
 _PORT_KEY = "server.port"
 
 #: `~{name}~` — Egeria's placeholder syntax. The values are declared in the same
@@ -276,6 +327,31 @@ def _endpoint_target(value: str) -> tuple[str, str, str]:
     if re.fullmatch(r"[A-Za-z0-9_.-]+:\d{2,5}", v):
         return "", "TCP", v
     return "", "", ""
+
+
+def _declares_endpoint(key: str) -> bool:
+    low = key.lower()
+    return (any(h in low for h in _ENDPOINT_KEY_HINTS)
+            or bool(_ENDPOINT_KEY_SHAPE.search(key)))
+
+
+def _endpoint_record(key: str, resolved: str) -> dict:
+    """One declared endpoint, typed by scheme first and by KEY second.
+
+    The key is consulted only when the value is already a recognised address
+    with no technology of its own — a bare `host:port`, or a URL whose scheme
+    says nothing about what is listening. That is what makes
+    `kafkaEndpoint=localhost:9092` name Apache Kafka while a key merely
+    *containing* "kafka" whose value is a topic name still names nothing.
+    """
+    target, proto, detail = _endpoint_target(resolved)
+    if not target and proto:
+        named = _kind_by_key(key)
+        if named:
+            target = named
+            detail = f"{detail} {_KEY_TYPED_MARK} `{key}`"
+    return {"key": key, "value": resolved, "target": target,
+            "protocol": proto, "detail": detail}
 
 
 def _spring_entry_points(root: str) -> list[str]:
@@ -1111,24 +1187,28 @@ def discover(root: str) -> dict:
 
         endpoints: list[dict] = []
         for key, value in sorted(props.items()):
-            if not any(h in key.lower() for h in _ENDPOINT_KEY_HINTS):
+            if not _declares_endpoint(key):
                 continue
-            resolved = _resolve(value, holders)
+            # CHAINED, not alternated. `_resolve` returns a value containing a
+            # Spring `${...}` unchanged (it only knows Egeria's `~{}~` form), so
+            # an `or` here never reached the second resolver — datahub's
+            # `ebean.url=${EBEAN_DATASOURCE_URL:jdbc:mysql://...}` stayed a raw
+            # placeholder and named nothing.
+            resolved = _resolve_spring(_resolve(value, holders), props)
             if not resolved:
                 notes.append(f"{name}: {key} is an unresolved placeholder — not recorded")
                 continue
-            target, proto, detail = _endpoint_target(resolved)
-            endpoints.append({"key": key, "value": resolved, "target": target,
-                              "protocol": proto, "detail": detail})
+            record = _endpoint_record(key, resolved)
+            if record["target"] or record["protocol"]:
+                endpoints.append(record)
         # Egeria declares its external endpoints inside the placeholder block
         # rather than as top-level properties, so read those too.
         for key, value in sorted(holders.items()):
-            if not any(h in key.lower() for h in _ENDPOINT_KEY_HINTS):
+            if not _declares_endpoint(key):
                 continue
-            target, proto, detail = _endpoint_target(value)
-            if target or proto:
-                endpoints.append({"key": key, "value": value, "target": target,
-                                  "protocol": proto, "detail": detail})
+            record = _endpoint_record(key, value)
+            if record["target"] or record["protocol"]:
+                endpoints.append(record)
 
         platforms.append({
             "name": name, "declared_name": declared_name, "path": rel,
@@ -1300,17 +1380,26 @@ def to_ir(found: dict):
                 continue
             seen_third_party.add(target)
             tslug = _slug(target)
+            # A technology named by a URL SCHEME is a stronger claim than one
+            # named by the property KEY: the scheme is part of the address, the
+            # key is a name a person chose. Both are declarations and neither is
+            # inference, but they are not equally strong and the catalog should
+            # not pretend they are.
+            by_key = _KEY_TYPED_MARK in (endpoint.get("detail") or "")
+            confidence = _KEY_TYPED_CONFIDENCE if by_key else _DECLARED_CONFIDENCE
             components.append(Component(
                 slug=tslug, name=target, type=_THIRD_PARTY_TYPE,
                 identity=Identity(method="deployment-unit", value=target),
-                confidence=_DECLARED_CONFIDENCE, confidence_level="Derived",
+                confidence=confidence, confidence_level="Derived",
                 perspective="deployment", proposed_by=["spring:declared-endpoint"],
             ))
             evidence.append(Evidence(
                 subject_kind="component", subject_slug=tslug,
                 assertion=f"{target} is reached from {platform['name']} via "
-                          f"{endpoint['key']} = {endpoint['value']}",
-                detector="spring:declared-endpoint", confidence=_DECLARED_CONFIDENCE,
+                          f"{endpoint['key']} = {endpoint['value']}"
+                          + (f"; technology named by the property key rather than "
+                             f"a URL scheme" if by_key else ""),
+                detector="spring:declared-endpoint", confidence=confidence,
                 locations=[Location(path=platform["path"], line=0)],
             ))
     for port in found.get("ports") or []:

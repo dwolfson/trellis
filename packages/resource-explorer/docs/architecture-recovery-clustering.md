@@ -838,6 +838,88 @@ profile-specific configuration into the base silently, and it is guarded by a
 test rather than by a measurement. Recorded here so nobody later mistakes it for
 something that was observed.
 
+### DataHub found an Egeria bug: the missing Kafka
+
+`datahub-project/datahub` was run 2026-08-29 as an eighth repo. Platform
+discovery was clean first time — 4 platforms, correctly named, no duplicates:
+`datahub-gms`, `datahub-upgrade`, `mae-consumer-job`, `mce-consumer-job`, which
+is DataHub's actual service decomposition.
+
+**And zero wires, for a system that is fundamentally Kafka-based.** Chasing that
+found a defect that was never DataHub's:
+
+```
+egeria   kafkaEndpoint = 'localhost:9092'   ->   ('', 'TCP', ...)   no component
+```
+
+`_KIND_BY_SCHEME` reads `jdbc:postgresql://…` and names PostgreSQL. Nothing read
+a bare `host:port`, because it carries no scheme — so it fell to the generic TCP
+branch, which names no component. **Egeria's Kafka dependency had never been
+recovered, in the repository this module was built for**, while its PostgreSQL
+always was. Dan stated both as defaults on 2026-08-28: *"There is a default
+dependency on postgres and kafka."* One of them was readable.
+
+### A deliberate earlier decision, reversed — and priced
+
+A test asserted the old behaviour on purpose, with a reason:
+
+> `host:9092` has no scheme. Inferring "that's Kafka" from the property NAME
+> would be the similarity guessing this module exists to avoid.
+
+**The caution was right and the conclusion was too strong.** What makes this a
+declaration rather than a guess is the **conjunction**: the key names a
+technology AND the value is already a resolvable address.
+`spring.kafka.bootstrap-servers` is a documented Spring property meaning "the
+Kafka brokers"; reading it is reading what a person wrote, not inferring from
+resemblance. A key merely *containing* "kafka" whose value is a topic name still
+names nothing, and there is a test for that.
+
+It is **priced rather than equated**: a scheme is part of the address, a key is
+a name someone chose, so key-typed targets carry confidence **70** against a
+scheme's 85, and their evidence records which it was. The reversal is written
+into the test that asserted the old rule, so the reasoning is not lost.
+
+### The endpoint hint list was a fixed vocabulary
+
+The second half of the same investigation. `_ENDPOINT_KEY_HINTS` held six
+literal key names derived from Egeria plus Spring's two standard ones. DataHub
+declares every dependency under keys it never anticipated — `ebean.url`,
+`kafka.bootstrapServers`, `datahub.gms.uri`.
+
+Replaced by a key *shape* (`*.url`, `*.uri`, `*.endpoint`, `*bootstrap-servers`).
+**Measured before building it: zero new endpoints on seven repos, seven on
+DataHub.** Safe to widen because `_endpoint_target` is the real gate — a key of
+that shape whose value is a file path (egeria's
+`platform.configstore.endpoint`) or a Maven artifact template (dataflow's
+`…dependencies.*.url`) still yields nothing. The fixed list was doing that
+filtering a second time, and worse.
+
+One bug fixed along the way: the two placeholder resolvers were **alternated
+rather than chained**. `_resolve` knows only Egeria's `~{}~` and returns a
+Spring `${…}` value unchanged — which is truthy — so `_resolve(…) or
+_resolve_spring(…)` never reached the second resolver, and datahub's
+`ebean.url=${EBEAN_DATASOURCE_URL:jdbc:mysql://…}` stayed a raw placeholder.
+
+### Result
+
+| repo | third-party recovered | wires |
+|---|---|---|
+| **egeria** | **Apache Kafka**, PostgreSQL | 5 → **6** |
+| **egeria-workspaces** | **Apache Kafka**, PostgreSQL | 2 → **4** |
+| **datahub** | **Apache Kafka, Elasticsearch, MySQL** | 0 → **6** |
+| others | unchanged | unchanged |
+
+Egeria still clusters to one group of six, so the added third-party components
+did not disturb the deployment reading.
+
+**Deferred, and measured:** DataHub declares two dependencies as split
+`host` + `port` pairs (`elasticsearch.*`, `datahub.gms.*`) rather than as one
+address. Neither half names a target alone, and synthesising them is a new
+endpoint shape rather than a table entry. Polaris likewise declares
+`quarkus.datasource.db-kind=postgresql` — a technology with **no address at
+all**, which is a third shape again. Both are recorded here rather than guessed
+at.
+
 ### Known consequence, not yet addressed
 
 **Renaming a component's slug orphans its rows rather than superseding them.**
