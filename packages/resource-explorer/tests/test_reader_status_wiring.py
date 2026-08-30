@@ -30,23 +30,14 @@ class TestEveryCustomModeHasARenderer:
     checks and 5 convention signals. Declaring a mode is not implementing it."""
 
     def test_no_custom_kind_falls_through(self, html):
-        # _renderCustomAnalysisResults used to be one if/else chain, each
-        # branch its own `analysisId === '...'` check — 2026-08-30's
-        # kind-plugin extraction replaced that with a lookup into
-        # _CUSTOM_RESULT_RENDERERS (kind -> renderer function), so a
-        # declared-but-unimplemented kind now shows up as a key with no
-        # matching function reference rather than a missing branch. Same
-        # invariant, different shape: a 'custom' mode with nothing wired to
-        # it still falls through to "No results view for this analysis"
-        # however much data it holds.
         modes = re.search(r"_REPO_RESULTS_RENDER_MODE = \{(.*?)\n\};", html, re.S).group(1)
         custom = set(re.findall(r"^\s*([a-z_]+):\s*'custom'", modes, re.M))
-        registry = re.search(r"const _CUSTOM_RESULT_RENDERERS = \{(.*?)\n\};",
-                              html, re.S).group(1)
-        handled = set(re.findall(r"^\s*([a-z_]+):\s*_render\w+,?\s*$", registry, re.M))
+        body = re.search(r"function _renderCustomAnalysisResults\(analysisId, data\) \{.*?\n\}",
+                         html, re.S).group(0)
+        handled = set(re.findall(r"analysisId === '([a-z_]+)'", body))
         missing = custom - handled
         assert not missing, (
-            f"declared 'custom' with no entry in _CUSTOM_RESULT_RENDERERS, so these render "
+            f"declared 'custom' with no branch, so these render "
             f"'No results view for this analysis' however much data they hold: {sorted(missing)}"
         )
 
@@ -74,12 +65,7 @@ class TestArchitectureCardReadsWhatItsReaderWrites:
 
     @pytest.mark.parametrize("field", ["partial", "unverified", "completeness_note"])
     def test_completeness_signals_reach_the_card(self, html, field):
-        # Was `if (analysisId === 'architecture_recovery') { ... }` inside
-        # _renderCustomAnalysisResults — pulled into its own top-level
-        # function, _renderArchitectureRecoveryResults, by 2026-08-30's
-        # kind-plugin extraction. Same function body, one indent level
-        # shallower and closed at column 0 rather than column 2.
-        branch = re.search(r"function _renderArchitectureRecoveryResults\(data\) \{.*?\n\}",
+        branch = re.search(r"if \(analysisId === 'architecture_recovery'\) \{.*?\n  \}",
                            html, re.S).group(0)
         assert field in branch, (
             f"the reader computes {field} so a scoped or unverified run cannot be "
@@ -90,12 +76,7 @@ class TestArchitectureCardReadsWhatItsReaderWrites:
     def test_both_return_paths_carry_it(self, html):
         """A partial run with zero components is still partial — the banner
         cannot live on only the populated path."""
-        # Was `if (analysisId === 'architecture_recovery') { ... }` inside
-        # _renderCustomAnalysisResults — pulled into its own top-level
-        # function, _renderArchitectureRecoveryResults, by 2026-08-30's
-        # kind-plugin extraction. Same function body, one indent level
-        # shallower and closed at column 0 rather than column 2.
-        branch = re.search(r"function _renderArchitectureRecoveryResults\(data\) \{.*?\n\}",
+        branch = re.search(r"if \(analysisId === 'architecture_recovery'\) \{.*?\n  \}",
                            html, re.S).group(0)
         real_returns = [l for l in branch.split("\n")
                         if l.strip().startswith("return ") and "bits" not in l and "''" not in l]

@@ -77,7 +77,7 @@ starting rather than after. That alone would have caught the collision above.
 | architecture-focus UI (`index.html` arch block) | trellis-arch-ui-65 | in progress |
 | analysis-card run/background UX | trellis-survey-flows-59 | **landed** `a505d6e` |
 | take architecture results into Curate | trellis-survey-flows-59 | in progress |
-| `architecture_recovery` tier / `run_time` | — | **needs a maintainer ruling**, not a claim |
+| ~~`architecture_recovery` tier / `run_time`~~ | trellis-arch-ui-65 | **ruled: analysis** (Dan), landed `26c18f1`, on integration |
 | `_COCHANGE_MAX_FILES = 50` is unvalidated | — | open, wants evidence before anyone decides |
 | compiler item 10 — wire the Chat panel | — | open (S3) |
 | docs-as-source | — | open, designed and unbuilt |
