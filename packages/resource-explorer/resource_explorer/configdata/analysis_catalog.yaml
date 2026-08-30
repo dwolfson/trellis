@@ -353,6 +353,11 @@ repo_analyses:
     annotation_types: ["SchemaAnalysisAnnotation", "DataClassAnnotation"]
     source: local
     run_time: minutes
+    # Queued STRUCTURALLY, not by omission: this acquires zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: corpus
     recommended: true
@@ -407,6 +412,11 @@ repo_analyses:
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
+    # Queued STRUCTURALLY, not by omission: this acquires zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -423,6 +433,11 @@ repo_analyses:
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
+    # Queued STRUCTURALLY, not by omission: this acquires zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -504,6 +519,11 @@ repo_analyses:
     #      anyway (86 lazy fetches, confirmed by packet trace) —
     #      --find-renames=100% stops that. Not yet merged into this branch.
     run_time: fast
+    # Queued STRUCTURALLY, not by omission: this acquires git_clone_root + zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: corpus
     recommended: false
