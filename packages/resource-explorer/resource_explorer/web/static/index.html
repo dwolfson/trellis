@@ -3653,130 +3653,204 @@ function _archRow(c) {
         </div>`;
 }
 
+// _renderArchitectureRecoveryResults — kind-plugin for `architecture_recovery`.
+//
+// Pulled out of `_renderCustomAnalysisResults`'s if/else chain on its own,
+// ahead of the other branches there, because this is the one analysis kind
+// with a real curation lifecycle in front of it (see
+// docs/architecture-recovery-report-then-curate.md §4 and §8): a proposal
+// derived by analysis, reviewed by a curator, materialised on accept. That
+// design is explicit that curation "generalises — do not build it
+// repo-shaped": other resource kinds (a database's data-class candidates, a
+// filesystem's own proposals) will need the same review lifecycle with a
+// different renderer and a different materialiser, dispatched the same way
+// `technology_type_processes.yaml` and the analysis catalog already dispatch
+// per-kind elsewhere in this codebase.
+//
+// This function is that renderer half, taking exactly the shape a future
+// `kind -> {renderer, materializer}` registry would want: `(data) => html`,
+// nothing about dispatch or the surrounding card baked in. It is still called
+// from the same if/else chain below — the registry itself, the `proposals`
+// table, and the accept/reject materialiser are a separate, larger change,
+// not implied by this extraction. Keeping the extraction and the
+// registry as two different changes so this one stays reviewable on its own.
+function _renderArchitectureRecoveryResults(data) {
+  // The reader computes run_scope/outcome/completeness_note precisely so a
+  // SCOPED or UNVERIFIED run cannot be mistaken for a complete one, and its
+  // own docstring says "writing a field nobody reads is the same failure as
+  // not writing it". This renderer then read none of them — the same failure
+  // one layer further along, which is exactly how the signal died the first
+  // time. A partial run that presents as complete is the most expensive
+  // wrong answer this card can give: it invites conclusions about an
+  // architecture from a component set that is incomplete by construction.
+  const completeness = (() => {
+    const bits = [];
+    if (data.partial) bits.push('this run covered only part of the repository');
+    if ((data.unverified || []).length) bits.push(`${data.unverified.join(', ')} could not verify this repo`);
+    if (data.completeness_note) bits.push(data.completeness_note);
+    if (!bits.length) return '';
+    return `<div class="text-[11px] text-amber-400/80 mb-1 leading-snug">⚠ ${_esc(bits.join(' — '))}</div>`;
+  })();
+  // Interfaces can exist with no components recovered — a compose file
+  // declares a topology whether or not component detection resolved it — so
+  // the topology renders on its own rather than being gated behind them.
+  if (!data.components || !data.components.length) {
+    return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
+           + _renderDocIngestionState(data.documentation)
+           + _renderDeploymentInterfaces(data.interfaces);
+  }
+  // Counts must be honest about BOTH coarsenings: the server-side depth
+  // projection AND this list's own cap. The payload has carried
+  // raw_component_count all along, added so a UI could say "13 shown (of 42
+  // total)" rather than let a projected view look like the whole answer —
+  // and nothing read it, while the header printed the projected count as if
+  // it were everything.
+  const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
+  const _projected = (_raw !== null && _raw > data.component_count);
+
+  // Grouping nodes are not components. The reader marks them `structural`
+  // precisely so a consumer can render them as grouping rather than as a
+  // recovered component — and nothing read it, so 75 of egeria's 451 rows
+  // showed as `untyped · 0%`; and since rows sort by path, the TOP LINE of
+  // the architecture was a placeholder for the repository root.
+  const _structural = data.components.filter(c => c.structural);
+  const _real = data.components.filter(c => !c.structural);
+
+  const _groups = {};
+  for (const c of _real) (_groups[c.perspective || 'physical'] ||= []).push(c);
+  // The backend sorts `components` by `path` (repo_survey_definition_adapter.py)
+  // so `depth`/projection stays deterministic — but that leaves the row CAP
+  // choosing whichever 20 paths sort first, which is an arbitrary slice, not
+  // a considered one (2026-08-30 findings: egeria's clean 8-component
+  // deployment reading sat behind 341 logical rows outranking nothing but the
+  // alphabet). Re-order for display only, per perspective: typed components
+  // before untyped (a component we could name beats one we only detected),
+  // then higher confidence first, then path as the final tie-break so the
+  // order is still stable across renders of the same payload.
+  for (const rows of Object.values(_groups)) {
+    rows.sort((a, b) =>
+      (b.type ? 1 : 0) - (a.type ? 1 : 0)
+      || b.confidence - a.confidence
+      || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  }
+  const _active = _archDefaultPerspective(_groups);
+  const _uid = 'arch' + (++_archUidSeq);
+
+  const _tabs = _archTabsHtml(_uid, _groups, _active);
+  const _panes = _archPanesHtml(_uid, _groups, _active, _raw, _projected, data.surveyed_at);
+  const _structuralBlock = _archStructuralHtml(_uid, _structural);
+
+  return completeness
+    + (Object.keys(_groups).length > 1
+        ? `<div class="flex flex-wrap gap-1 mb-1">${_tabs}</div>` : '')
+    + _panes
+    + _structuralBlock
+    + _renderDocIngestionState(data.documentation)
+    + _renderDeploymentInterfaces(data.interfaces);
+}
+
+function _renderDependencyAnalysisResults(data) {
+  const ecosystems = Object.entries(data.by_ecosystem || {});
+  if (!ecosystems.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.total} dependenc${data.total === 1 ? 'y' : 'ies'} across ${ecosystems.length} ecosystem(s)</div>` +
+    ecosystems.map(([eco, deps]) => `
+      <div class="text-xs">
+        <span class="text-cyan-400 font-medium">${_esc(eco)}</span>
+        <span class="text-slate-500">(${deps.length})</span>
+        <div class="text-slate-400 truncate" title="${_esc(deps.map(d => d.dep_name).join(', '))}">
+          ${_esc(deps.slice(0, 10).map(d => d.dep_name).join(', '))}${deps.length > 10 ? ' …' : ''}
+        </div>
+      </div>`).join('');
+}
+
+function _renderDataFileProfilingResults(data) {
+  if (!data.profiles || !data.profiles.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.total} data file(s) profiled</div>` +
+    data.profiles.slice(0, 8).map(p => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span class="truncate" title="${_esc(p.file_path)}">${_esc(p.file_path)}</span>
+        <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
+      </div>`).join('');
+}
+
+function _renderLanguageFileClassificationResults(data) {
+  if (!data.by_type || !data.by_type.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
+    data.by_type.map(t => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span>${_esc(t.type_label)}</span>
+        <span class="text-slate-500">${t.file_count}</span>
+      </div>`).join('');
+}
+
+function _renderApiStructureResults(data) {
+  const langs = Object.entries(data.by_language || {});
+  if (!langs.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.relationship_count} inheritance relationship(s)</div>` +
+    langs.map(([lang, kinds]) => `
+      <div class="text-xs text-slate-300">
+        <span class="text-cyan-400 font-medium">${_esc(lang)}</span>:
+        ${Object.entries(kinds).map(([k, c]) => `${c} ${_esc(k)}${c === 1 ? '' : 's'}`).join(', ')}
+      </div>`).join('');
+}
+
+function _renderCodeSymbolExtractionResults(data) {
+  const langs = Object.entries(data.by_language || {});
+  if (!data.symbol_count) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.symbol_count} symbol(s)${data.surveyed_at ? ` · extracted ${_relTime(data.surveyed_at)}` : ''}, ${data.relationship_count} inheritance relationship(s)</div>` +
+    langs.map(([lang, count]) => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
+        <span class="text-slate-500">${count}</span>
+      </div>`).join('');
+}
+
+function _renderSubResourceSurveyResults(data) {
+  if (!data.findings || !data.findings.length) return _renderEmptyResultState(data);
+  const worthy = data.findings.filter(f => f.label === 'worthy');
+  return `<div class="text-xs text-slate-400 mb-1">${worthy.length} of ${data.findings.length} sub-resource(s) worth cataloging</div>` +
+    worthy.slice(0, 8).map(f => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span class="truncate" title="${_esc(f.path)}">${_esc(f.path || f.check_name)}</span>
+        <span class="text-slate-500 shrink-0">${_esc(f.kind || '')}</span>
+      </div>`).join('');
+}
+
+// _CUSTOM_RESULT_RENDERERS — kind -> renderer, `(data) => html`.
+//
+// This is the dispatch half of the "kind-plugin" shape started with
+// `_renderArchitectureRecoveryResults`: every analysis kind with a bespoke
+// results view is one entry here rather than a branch in an if/else chain,
+// so adding a kind means adding an entry, not editing a chain everyone else's
+// branch also lives in. Same pattern as `_ARCH_PERSPECTIVE_LABEL` and the
+// per-kind tables elsewhere in this file (`technology_type_processes.yaml`'s
+// server-side equivalent), applied to rendering.
+//
+// This is still ONLY the renderer half. `architecture_recovery` is the one
+// entry with a curation lifecycle in front of it today (report, then
+// curate — docs/architecture-recovery-report-then-curate.md §4); the others
+// are plain results views with no accept/reject step. Generalising Curate
+// across resource kinds (a database's data-class candidates, a filesystem's
+// own proposals) needs a `kind -> {renderer, materializer}` registry keyed
+// the same way, plus the `proposals` table backing it — neither exists yet.
+// This object is deliberately shaped so that registry can wrap it later
+// (`renderer: _CUSTOM_RESULT_RENDERERS[kind]`) rather than needing a rewrite.
+const _CUSTOM_RESULT_RENDERERS = {
+  repo_classification: _renderRepoClassificationResults,
+  website_ingestion: _renderWebsiteIngestionResults,
+  manifest_parse: _renderManifestParseResults,
+  architecture_recovery: _renderArchitectureRecoveryResults,
+  dependency_analysis: _renderDependencyAnalysisResults,
+  data_file_profiling: _renderDataFileProfilingResults,
+  language_file_classification: _renderLanguageFileClassificationResults,
+  api_structure: _renderApiStructureResults,
+  code_symbol_extraction: _renderCodeSymbolExtractionResults,
+  sub_resource_survey: _renderSubResourceSurveyResults,
+};
+
 function _renderCustomAnalysisResults(analysisId, data) {
-  if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
-  if (analysisId === 'website_ingestion') return _renderWebsiteIngestionResults(data);
-  if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
-  if (analysisId === 'dependency_analysis') {
-    const ecosystems = Object.entries(data.by_ecosystem || {});
-    if (!ecosystems.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.total} dependenc${data.total === 1 ? 'y' : 'ies'} across ${ecosystems.length} ecosystem(s)</div>` +
-      ecosystems.map(([eco, deps]) => `
-        <div class="text-xs">
-          <span class="text-cyan-400 font-medium">${_esc(eco)}</span>
-          <span class="text-slate-500">(${deps.length})</span>
-          <div class="text-slate-400 truncate" title="${_esc(deps.map(d => d.dep_name).join(', '))}">
-            ${_esc(deps.slice(0, 10).map(d => d.dep_name).join(', '))}${deps.length > 10 ? ' …' : ''}
-          </div>
-        </div>`).join('');
-  }
-  if (analysisId === 'data_file_profiling') {
-    if (!data.profiles || !data.profiles.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.total} data file(s) profiled</div>` +
-      data.profiles.slice(0, 8).map(p => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span class="truncate" title="${_esc(p.file_path)}">${_esc(p.file_path)}</span>
-          <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
-        </div>`).join('');
-  }
-  if (analysisId === 'language_file_classification') {
-    if (!data.by_type || !data.by_type.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
-      data.by_type.map(t => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span>${_esc(t.type_label)}</span>
-          <span class="text-slate-500">${t.file_count}</span>
-        </div>`).join('');
-  }
-  if (analysisId === 'api_structure') {
-    const langs = Object.entries(data.by_language || {});
-    if (!langs.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.relationship_count} inheritance relationship(s)</div>` +
-      langs.map(([lang, kinds]) => `
-        <div class="text-xs text-slate-300">
-          <span class="text-cyan-400 font-medium">${_esc(lang)}</span>:
-          ${Object.entries(kinds).map(([k, c]) => `${c} ${_esc(k)}${c === 1 ? '' : 's'}`).join(', ')}
-        </div>`).join('');
-  }
-  if (analysisId === 'code_symbol_extraction') {
-    const langs = Object.entries(data.by_language || {});
-    if (!data.symbol_count) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.symbol_count} symbol(s)${data.surveyed_at ? ` · extracted ${_relTime(data.surveyed_at)}` : ''}, ${data.relationship_count} inheritance relationship(s)</div>` +
-      langs.map(([lang, count]) => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
-          <span class="text-slate-500">${count}</span>
-        </div>`).join('');
-  }
-  if (analysisId === 'architecture_recovery') {
-    // The reader computes run_scope/outcome/completeness_note precisely so a
-    // SCOPED or UNVERIFIED run cannot be mistaken for a complete one, and its
-    // own docstring says "writing a field nobody reads is the same failure as
-    // not writing it". This renderer then read none of them — the same failure
-    // one layer further along, which is exactly how the signal died the first
-    // time. A partial run that presents as complete is the most expensive
-    // wrong answer this card can give: it invites conclusions about an
-    // architecture from a component set that is incomplete by construction.
-    const completeness = (() => {
-      const bits = [];
-      if (data.partial) bits.push('this run covered only part of the repository');
-      if ((data.unverified || []).length) bits.push(`${data.unverified.join(', ')} could not verify this repo`);
-      if (data.completeness_note) bits.push(data.completeness_note);
-      if (!bits.length) return '';
-      return `<div class="text-[11px] text-amber-400/80 mb-1 leading-snug">⚠ ${_esc(bits.join(' — '))}</div>`;
-    })();
-    // Interfaces can exist with no components recovered — a compose file
-    // declares a topology whether or not component detection resolved it — so
-    // the topology renders on its own rather than being gated behind them.
-    if (!data.components || !data.components.length) {
-      return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
-             + _renderDocIngestionState(data.documentation)
-             + _renderDeploymentInterfaces(data.interfaces);
-    }
-    // Counts must be honest about BOTH coarsenings: the server-side depth
-    // projection AND this list's own cap. The payload has carried
-    // raw_component_count all along, added so a UI could say "13 shown (of 42
-    // total)" rather than let a projected view look like the whole answer —
-    // and nothing read it, while the header printed the projected count as if
-    // it were everything.
-    const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
-    const _projected = (_raw !== null && _raw > data.component_count);
-
-    // Grouping nodes are not components. The reader marks them `structural`
-    // precisely so a consumer can render them as grouping rather than as a
-    // recovered component — and nothing read it, so 75 of egeria's 451 rows
-    // showed as `untyped · 0%`; and since rows sort by path, the TOP LINE of
-    // the architecture was a placeholder for the repository root.
-    const _structural = data.components.filter(c => c.structural);
-    const _real = data.components.filter(c => !c.structural);
-
-    const _groups = {};
-    for (const c of _real) (_groups[c.perspective || 'physical'] ||= []).push(c);
-    const _active = _archDefaultPerspective(_groups);
-    const _uid = 'arch' + (++_archUidSeq);
-
-    const _tabs = _archTabsHtml(_uid, _groups, _active);
-    const _panes = _archPanesHtml(_uid, _groups, _active, _raw, _projected, data.surveyed_at);
-    const _structuralBlock = _archStructuralHtml(_uid, _structural);
-
-    return completeness
-      + (Object.keys(_groups).length > 1
-          ? `<div class="flex flex-wrap gap-1 mb-1">${_tabs}</div>` : '')
-      + _panes
-      + _structuralBlock
-      + _renderDocIngestionState(data.documentation)
-      + _renderDeploymentInterfaces(data.interfaces);
-  }
-  if (analysisId === 'sub_resource_survey') {
-    if (!data.findings || !data.findings.length) return _renderEmptyResultState(data);
-    const worthy = data.findings.filter(f => f.label === 'worthy');
-    return `<div class="text-xs text-slate-400 mb-1">${worthy.length} of ${data.findings.length} sub-resource(s) worth cataloging</div>` +
-      worthy.slice(0, 8).map(f => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span class="truncate" title="${_esc(f.path)}">${_esc(f.path || f.check_name)}</span>
-          <span class="text-slate-500 shrink-0">${_esc(f.kind || '')}</span>
-        </div>`).join('');
-  }
+  const renderer = _CUSTOM_RESULT_RENDERERS[analysisId];
+  if (renderer) return renderer(data);
   return '<div class="text-xs text-slate-500">No results view for this analysis.</div>';
 }
 
