@@ -487,37 +487,31 @@ repo_analyses:
     # neither fix lands, the honest tag is about the whole experience and this
     # question comes back — the entry says so explicitly.
     #
-    # Two candidate fixes, per that entry. #2 is SOLVED (dwolfson-59, same
-    # day, re/deferred-cleanup-followups commit 63e7ec6, not yet merged into
-    # this branch): `git log --name-only`'s default INEXACT rename detection
-    # scores blob-content similarity, which is exactly what defeats
-    # --filter=blob:none — fixed with --find-renames=100% (an exact rename
-    # compares blob OIDs already in the tree, so it's free). Post-fix,
-    # acquisition now dominates the remaining cost (reported 86%/61% of two
-    # repos' totals) rather than the reverse, which makes #1 below the more
-    # clearly load-bearing of the two now, not less relevant. #1 is still
-    # OPEN and UNCLAIMED as of this writing:
-    #   1. Cache the acquired roots. zipball_root/git_clone_root
-    #      (github/client.py) download into a FRESH tempdir every call and
-    #      discard it on exit — no cache keyed on (repo, commit sha) shared
-    #      ACROSS SurveyOrchestrator.run() calls, only WITHIN one (D6's
-    #      trellis_microflow.resolve_resources). At least six other catalog
-    #      entries independently declare requires_resources={"zipball_root":
-    #      ...} (dependency_analysis/data_file_profiling/
-    #      language_file_classification/api_structure/
-    #      code_symbol_extraction/manifest_parse) and none of them share a
-    #      cache with each other or with this one.
-    #      GitHubClient.get_latest_commit_sha() — one API call — already
-    #      exists as the cheap staleness check that would gate such a cache,
-    #      and has zero callers today; repo_rag_ingestion does an equivalent
-    #      ad hoc check for its own purpose (IncrementalIndexer, "no-op when
-    #      the last-indexed commit is unchanged") but not as reusable
-    #      infrastructure.
-    #   2. SOLVED — give co-change what it actually needs. It wanted commit
-    #      metadata and pathnames, which a treeless clone already has;
-    #      default inexact rename detection was reaching for blob content
-    #      anyway (86 lazy fetches, confirmed by packet trace) —
-    #      --find-renames=100% stops that. Not yet merged into this branch.
+    # BOTH candidate fixes from that entry are now DONE (2026-08-30):
+    #   1. Give co-change what it actually needs — `git log --name-only`'s
+    #      default INEXACT rename detection scores blob-content similarity,
+    #      which is exactly what defeats --filter=blob:none (86 lazy
+    #      fetches, confirmed by packet trace). Fixed with
+    #      --find-renames=100% (dwolfson-59, re/deferred-cleanup-followups
+    #      commit 63e7ec6).
+    #   2. Cache the acquired roots — `SourceCache` (github/source_cache.py)
+    #      keys zipball_root/git_clone_root's downloads on (repo, commit
+    #      sha), shared ACROSS SurveyOrchestrator.run() calls rather than
+    #      only within one. `_default_branch_sha` now delegates to
+    #      `get_latest_commit_sha` (one API call) rather than reimplementing
+    #      it — no longer an unused method; it also backs IncrementalIndexer
+    #      and the CLI wizard. Built by dwolfson-59, reviewed by S1
+    #      (fbc19d7: fixed a lost subproject_path validation on the cached
+    #      path, added integration test coverage; 79eaf5b: closed an
+    #      eviction race with a grace window after review pushback).
+    #
+    # Measured result: acquisition 22.64s cold -> 1.28s warm; full route for
+    # egeria_python_git 110.5s originally -> 14.4s now. `run_time: fast`
+    # stays right about compute, same reasoning as above — what changed is
+    # that `availability` no longer derives from it (Dan's separate ruling,
+    # same day): this entry is fast AND queued, since a compile running it
+    # inline would still pay acquisition. See docs/Backlog.md's entry for
+    # the full history across all three sessions that touched this.
     run_time: fast
     # Queued STRUCTURALLY, not by omission: this acquires git_clone_root + zipball_root, so a
     # context compile running it inline would download on its hot path.
