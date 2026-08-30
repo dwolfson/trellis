@@ -23,7 +23,12 @@ from resource_explorer.github.source_cache import SourceCache, local_clone
 
 
 def _cache(tmp_path, max_bytes=10 * 1024 * 1024):
-    return SourceCache(cache_dir=tmp_path / "cache", max_bytes=max_bytes)
+    """`eviction_grace_seconds=0` — most tests here write and evict within
+    the same call, milliseconds apart, so a real grace window would protect
+    everything and nothing would ever evict. TestEvictionGrace below tests
+    the grace window itself with an explicit non-zero value."""
+    return SourceCache(cache_dir=tmp_path / "cache", max_bytes=max_bytes,
+                        eviction_grace_seconds=0)
 
 
 def _write(size=1024):
@@ -136,6 +141,45 @@ class TestEviction:
         c = _cache(tmp_path, max_bytes=100)
         c.put("zipball", "o/r", "abc123", _write(5000))
         assert c.total_bytes() >= 0          # terminated at all, which is the assertion
+
+
+class TestEvictionGrace:
+    """Reviewed 2026-08-30 (dwolfson-59): a directory entry (a cached
+    treeless clone) can be `shutil.rmtree`'d mid-walk while a concurrent
+    `local_clone()` is still hardlink-copying from it — and over-budget is
+    the STEADY STATE at real corpus scale (~3 GB of zipballs against a
+    4 GiB default), not a rare edge case, so this isn't as narrow as it
+    first looked. `eviction_grace_seconds` closes the window cheaply:
+    anything touched too recently is never an eviction candidate, even if
+    it is the oldest remaining and the cache stays over budget as a result.
+    """
+
+    def test_a_freshly_touched_entry_survives_even_when_over_budget(self, tmp_path):
+        c = SourceCache(cache_dir=tmp_path / "cache", max_bytes=100,
+                         eviction_grace_seconds=60)
+        path = c.put("zipball", "o/r", "abc123", _write(5000))
+        # put() calls _evict() internally; the entry it just installed has
+        # an effectively-now mtime, so the grace window must protect it.
+        assert path.exists()
+        assert c.get("zipball", "o/r", "abc123") is not None
+
+    def test_an_entry_older_than_the_grace_window_is_still_evictable(self, tmp_path):
+        c = SourceCache(cache_dir=tmp_path / "cache", max_bytes=1500,
+                         eviction_grace_seconds=60)
+        old = c.put("zipball", "o/r", "old000000000", _write(1000))
+        os.utime(old, (1, 1))                       # well outside any grace window
+        c.put("zipball", "o/r", "new000000000", _write(1000))
+        assert c.get("zipball", "o/r", "old000000000") is None, \
+            "an entry past the grace window must not be permanently protected"
+
+    def test_total_bytes_still_counts_protected_entries(self, tmp_path):
+        """The grace window changes what CAN be dropped, not what counts
+        against budget — a cache that stopped counting protected entries
+        would silently let itself grow past max_bytes forever."""
+        c = SourceCache(cache_dir=tmp_path / "cache", max_bytes=100,
+                         eviction_grace_seconds=60)
+        c.put("zipball", "o/r", "abc123", _write(5000))
+        assert c.total_bytes() == 5000
 
 
 class TestLocalClone:
