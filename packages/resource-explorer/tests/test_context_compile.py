@@ -96,6 +96,36 @@ class TestProvenance:
         assert prov[0]["analysis_id"] == "repo_conventions"
 
 
+class TestPointerSections:
+    """Backlog: "a compiled answer should be able to POINT at a view, not only
+    describe it." Only analyses with a real addressable view get one."""
+
+    def test_a_pointable_analysis_gets_a_link_alongside_its_prose(self):
+        from resource_explorer.context_compile import _pointer_for
+
+        prov = ({"analysis_id": "architecture_recovery", "check": "detect",
+                 "surveyed_at": "2026-08-28T00:00:00"},)
+        ptr = _pointer_for("architecture_recovery", "egeria_git", prov)
+        assert ptr is not None
+        assert ptr.resource_slug == "egeria_git"
+        assert ptr.view == "architecture"
+        assert ptr.as_of == "2026-08-28T00:00:00"
+
+    def test_an_analysis_with_no_view_gets_none(self):
+        from resource_explorer.context_compile import _pointer_for
+
+        assert _pointer_for("license_classification", "egeria_git", ()) is None
+
+    def test_the_pointer_reaches_the_manifest(self):
+        c = compile_context(
+            _registry({"architecture_recovery": [_finding("detect")]}),
+            "egeria_git", "q", budget=4000,
+        )
+        packed = {p["key"]: p for p in c.manifest["packed"]}
+        assert "pointer" in packed["architecture_recovery"]
+        assert packed["architecture_recovery"]["pointer"]["view"] == "architecture"
+
+
 # ── The findings table is not where most results live ────────────────────────
 class TestResolvingBeyondTheFindingsTable:
     """A gap meant "not in project_analysis_findings" while claiming to mean

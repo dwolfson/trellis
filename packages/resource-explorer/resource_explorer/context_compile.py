@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass
 
 from trellis_artifact_tree.model import Rung
-from trellis_context import Candidate, ContextSpec, Section, pack
+from trellis_context import Candidate, ContextSpec, Pointer, Section, pack
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +189,31 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
     }
 
 
+#: Which analyses have a real, addressable view to point at. Deliberately
+#: narrow: Backlog "a compiled answer should be able to POINT at a view" notes
+#: deep-linking to a perspective/scope is the *prerequisite* work, and today
+#: only the architecture card has perspective tabs (`_archTabsHtml` in
+#: index.html) worth linking into. Add an entry here once a view exists to
+#: point at — the compiler side needs no other change, since `Pointer` is
+#: already resource/analysis-agnostic.
+_POINTABLE_VIEWS = {"architecture_recovery": "architecture"}
+
+
+def _pointer_for(analysis_id: str, slug: str, provenance: tuple[dict, ...]) -> Pointer | None:
+    """A link to where this analysis's own view lives, alongside its prose.
+
+    `as_of` comes from the analysis's own `surveyed_at`, not compile time —
+    the same fact-vs-read distinction `_provenance` already draws (§10):
+    the pointer should say when the view's *data* is from, not when this
+    context happened to be compiled.
+    """
+    view = _POINTABLE_VIEWS.get(analysis_id)
+    if view is None:
+        return None
+    surveyed_at = next((p.get("surveyed_at") for p in provenance if p.get("surveyed_at")), "")
+    return Pointer(resource_slug=slug, view=view, as_of=surveyed_at or "")
+
+
 def _provenance(findings: list[dict], analysis_id: str) -> tuple[dict, ...]:
     """When the fact was true, and where it came from.
 
@@ -333,6 +358,7 @@ def compile_context(
         if rungs:
             candidates[analysis_id] = Candidate(
                 analysis_id, rungs, provenance=provenance,
+                pointer=_pointer_for(analysis_id, slug, provenance),
             )
         # No rungs => no candidate => the packer records a gap. Deliberately not
         # skipped here: a section the derivation says should exist, with nothing

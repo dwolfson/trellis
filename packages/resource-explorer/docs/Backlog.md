@@ -245,6 +245,23 @@ should decide it.
 Related: `context-compilation-design.md` §23 (what this looks like in RE and EA) and §20 (resolvers
 are mostly not RAG — a pointer resolver is about as far from RAG as a resolver gets).
 
+**Status, 2026-08-30: the compiler half is built** (`trellis_context.packer.Pointer`,
+`tests/test_packer.py::TestPointer`). Resolved as guessed above — pointer as a sibling field on
+`Candidate`/`PackedSection`, never a competing candidate, and it does reach both halves: its
+rendered form (`resource=… view=… as_of=…`) is appended to the packed text for the model, and the
+structured `Pointer` travels on `PackedSection.pointer` / the manifest's `packed[].pointer` for a
+UI to render as a real link. Sized at a small constant cost per candidate (added at every rung, so
+it counts against the ceiling but never changes which rung is chosen — `_size()` in `packer.py`).
+`as_of` is set from the pointing analysis's own `surveyed_at`, not compile time — same fact-vs-read
+split `_provenance` already draws.
+
+Wired for exactly one analysis so far (`context_compile.py`'s `_POINTABLE_VIEWS = {
+"architecture_recovery": "architecture"}`), because it is the only one with a real view to point
+at today. **What's still open, and it's the harder half:** RE's UI has no deep-linking at all — no
+hash routing, no way to open the architecture card at a given perspective/scope from a URL. The
+compiler now emits `{resource_slug, view, perspective, scope, as_of}` in a stable shape; turning
+that into a clickable link is UI work in `index.html`, not `trellis_context`.
+
 #### MEDIUM — presenting architecture recovery: a curator sees 20 of 1035 components
 
 *(Opened 2026-08-30. Evidence and three costed options in
