@@ -78,7 +78,7 @@ starting rather than after. That alone would have caught the collision above.
 | analysis-card run/background UX | trellis-survey-flows-59 | **landed** `a505d6e` |
 | take architecture results into Curate | trellis-survey-flows-59 | in progress |
 | ~~`architecture_recovery` tier / `run_time`~~ | trellis-arch-ui-65 | **ruled: analysis** (Dan), landed `26c18f1`, on integration |
-| `_COCHANGE_MAX_FILES = 50` is unvalidated | — | open, wants evidence before anyone decides |
+| ~~`_COCHANGE_MAX_FILES = 50`~~ | dwolfson-59 | **measured, keep 50** — it is a cost control, not a quality control |
 | compiler item 10 — wire the Chat panel | — | open (S3) |
 | docs-as-source | — | open, designed and unbuilt |
 
@@ -89,6 +89,37 @@ still look active is worse than no table.
 not tasks: both were opened by measurement and both want either a maintainer's call or evidence
 nobody has gathered. Claiming them would turn a judgement into an implementation, which is how the
 `run_time: fast` value survived unexamined for as long as it did.
+
+## Pushing: every session pushes its own branch
+
+**Each session pushes its own branch to origin. Integration merges; it does not publish other
+people's branches.** Asked by S3 on 2026-08-30 after noticing that two session branches were on
+origin and three were not — that was accident, not policy, and one of the unpushed branches had a
+commit existing nowhere but one worktree.
+
+- **Push whenever you have local commits.** Origin is the backup, not a publication step. A branch
+  ref sitting behind its local is unbacked-up work, and pushing your own branch is a fast-forward
+  nothing else reads as authoritative.
+- **Do not try to keep your branch level with the shared tip.** That is integration's job and it is
+  a moving target — sync-to-match and you are behind again by the time you finish. Merge from
+  `re/deferred-cleanup-followups` when you *want* what is in it, not to stay aligned.
+- **You do not need to pull integration in before pushing.** Push your work; integration will merge
+  it.
+
+## Merging: two ways to lose content quietly
+
+Both bit on 2026-08-30 and both were integration's fault, so they are written down rather than
+remembered.
+
+- **Do not cherry-pick from a branch you will later merge.** Cherry-picking two of
+  `ui/architecture-focus`'s commits before it was pushed, then merging that branch, produced six
+  same-content-different-history conflicts. One resolved wrong and silently reverted
+  `question_catalog.yaml`, breaking a test on another session's branch. It merges clean and fails
+  quietly.
+- **Do not resolve a prose-file conflict with `--theirs`.** It drops your own side wholesale. Used
+  on `docs/Backlog.md` during that same merge, it lost two entries written the same morning —
+  found hours later only by going to look for one of them. On docs, merge both sides by hand even
+  when the other side looks like a superset.
 
 ## Ports
 
