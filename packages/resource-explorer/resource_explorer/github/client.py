@@ -188,7 +188,11 @@ class GitHubClient:
         than the cost it saves.
         """
         try:
-            return repo.get_branch(repo.default_branch).commit.sha
+            # Delegates rather than reimplementing: `get_latest_commit_sha` was
+            # already here (used by IncrementalIndexer and the CLI wizard) and
+            # this method is only its error-handling wrapper. Two ways to ask
+            # the same question is how they drift.
+            return self.get_latest_commit_sha(repo)
         except Exception as exc:
             log.warning("could not resolve default-branch SHA for %s (%s) — "
                         "downloading uncached", getattr(repo, "full_name", "?"), exc)
