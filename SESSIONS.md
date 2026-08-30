@@ -68,12 +68,27 @@ Before starting non-trivial work on a `docs/Backlog.md` item that is not already
 named territory in the table above, claim it here first — check this list before claiming, not
 just before starting to code.
 
-| item | claimed by | date |
+A claim is not a lock. It says *someone is already on this*, so the next session asks before
+starting rather than after. That alone would have caught the collision above.
+
+| item | claimed by | status |
 |---|---|---|
-| cross-run acquisition cache (`zipball_root`/`git_clone_root`) | dwolfson-59 (reviewed by S1) | 2026-08-30 |
+| ~~cross-run acquisition cache (`zipball_root`/`git_clone_root`)~~ | dwolfson-59 | **landed** `f8710ef`, S1 reviewing |
+| architecture-focus UI (`index.html` arch block) | trellis-arch-ui-65 | in progress |
+| analysis-card run/background UX | trellis-survey-flows-59 | **landed** `a505d6e` |
+| take architecture results into Curate | trellis-survey-flows-59 | in progress |
+| `architecture_recovery` tier / `run_time` | — | **needs a maintainer ruling**, not a claim |
+| `_COCHANGE_MAX_FILES = 50` is unvalidated | — | open, wants evidence before anyone decides |
+| compiler item 10 — wire the Chat panel | — | open (S3) |
+| docs-as-source | — | open, designed and unbuilt |
 
 Remove a row (or strike it) once its work lands or is abandoned — a table of stale claims that
 still look active is worse than no table.
+
+**Two rows deliberately have no owner.** The tier question and the `max_files` cap are decisions,
+not tasks: both were opened by measurement and both want either a maintainer's call or evidence
+nobody has gathered. Claiming them would turn a judgement into an implementation, which is how the
+`run_time: fast` value survived unexamined for as long as it did.
 
 ## Ports
 
