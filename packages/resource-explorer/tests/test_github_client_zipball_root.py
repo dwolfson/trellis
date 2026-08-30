@@ -11,8 +11,18 @@ from unittest.mock import MagicMock
 from resource_explorer.github.client import GitHubClient
 
 
-def _client():
-    return GitHubClient.__new__(GitHubClient)
+def _client(sha=None):
+    """A client with no __init__ (no network, no config), and with the cache
+    key resolution stubbed.
+
+    `sha=None` is the UNCACHEABLE path — the SHA could not be resolved, so
+    `zipball_root` falls back to `download_zipball`, which is the behaviour
+    these tests were originally written against and which must survive.
+    A real SHA takes the cache path; see TestZipballRootCaching.
+    """
+    c = GitHubClient.__new__(GitHubClient)
+    c._default_branch_sha = lambda repo: sha
+    return c
 
 
 class TestZipballRoot:
