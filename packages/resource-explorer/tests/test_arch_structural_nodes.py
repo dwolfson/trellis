@@ -70,10 +70,21 @@ class _StubRegistry:
 
     def upsert_finding(self, slug, kind, rows, surveyed_at="", scope_locator=""):
         for r in rows:
-            self.findings.append({**r, "scope_locator": scope_locator})
+            self.findings.append({**r, "scope_locator": scope_locator, "_ts": surveyed_at})
 
     def upsert_metric(self, *a, **k):
         pass
+
+    def query_findings_history_raw(self, slug, kind):
+        """Every row this stub has captured, in `persist_ir`'s read shape.
+
+        Real, not a no-op returning []: `_withdraw_vacated` reads history to
+        decide what to withdraw, and a stub that always answers "no history"
+        would make these tests pass while withdrawal was broken.
+        """
+        return [{**f, "check_name": f.get("check_name", ""),
+                 "detail_json": f.get("detail"), "surveyed_at": f.get("_ts", "")}
+                for f in self.findings]
 
 
 def _component(slug, path, parent_slug=""):

@@ -23,9 +23,12 @@ oversight — see the port's write-up for the trade.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from resource_explorer.step_outcome import PARTIAL, RECOVERED, StepOutcome
+
+from resource_explorer.registry import WITHDRAWN_LABEL
 
 from .ir import IR, Component, Evidence
 
@@ -121,6 +124,79 @@ def _scope_depth(scope: str) -> int:
     if "::" in scope:
         return 1
     return len([p for p in scope.split("/") if p]) - 1
+
+
+#: `check_name` for a withdrawal. Its LABEL is what the registry keys on
+#: (`WITHDRAWN_LABEL`); the check_name is for humans reading the table.
+WITHDRAWN_CHECK = "component_withdrawn"
+
+
+def _scopes_last_written_by(registry, slug: str, run_label: str, before: str) -> set[str]:
+    """Scopes this step wrote at its most recent run STRICTLY BEFORE `before`.
+
+    Its most recent run, not every run it ever did. Comparing against the union
+    of all history would re-withdraw the same scope on every subsequent run
+    forever; comparing against the previous run answers exactly R2's question —
+    *scopes I used to write and did not write this time*.
+
+    One query, not one per scope: `egeria` has ~1000 component scopes and this
+    runs inside `persist_ir`.
+    """
+    by_run: dict[str, set[str]] = {}
+    for row in registry.query_findings_history_raw(slug, KIND):
+        if row.get("check_name") != "component":
+            continue
+        surveyed = row.get("surveyed_at") or ""
+        if not surveyed or surveyed >= before:
+            continue
+        detail = row.get("detail_json") or {}
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail or "{}")
+            except ValueError:
+                continue
+        # R2: unattributed rows belong to no step, so no step may withdraw them.
+        # Everything written before `run_label` existed falls here, which is why
+        # the pre-existing orphan population needs the step-4 backfill and can
+        # never be cleared by an ordinary run.
+        if detail.get("run_label") != run_label:
+            continue
+        by_run.setdefault(surveyed, set()).add(row.get("scope_locator") or "")
+    return by_run[max(by_run)] if by_run else set()
+
+
+def _withdraw_vacated(registry, slug: str, run_label: str, written: set[str],
+                      surveyed_at: str, run_scope: str, outcome) -> list[str]:
+    """Withdraw the scopes this step used to write and no longer does.
+
+    **R1 — only a COMPLETE run may withdraw.** A withdrawal is inferred from
+    absence, and absence means nothing if the run could not see everything. A
+    scoped or partial run withdrawing the architecture outside its own scope is
+    the worst failure mode in this design, and §4.1c already writes both fields
+    this guards on.
+
+    **R3 — the cause is `unclaimed`, never `removed`.** "We renamed it" and "it
+    is gone from the repo" look identical from inside the pipeline and mean
+    opposite things to a reader; reporting absence as removal would destroy the
+    drift signal the catalog exists to carry.
+    """
+    if run_scope or (outcome is not None and getattr(outcome, "outcome", "") == PARTIAL):
+        return []
+    vacated = sorted(_scopes_last_written_by(registry, slug, run_label, surveyed_at) - written)
+    for scope in vacated:
+        registry.upsert_finding(
+            slug, KIND,
+            [{
+                "check_name": WITHDRAWN_CHECK,
+                "label": WITHDRAWN_LABEL,
+                "summary": f"no longer proposed by {run_label}",
+                "confidence": 100,
+                "detail": {"cause": "unclaimed", "run_label": run_label,
+                           "withdrawn_at": surveyed_at},
+            }],
+            surveyed_at=surveyed_at, scope_locator=scope,
+        )
+    return vacated
 
 
 def persist_ir(
@@ -399,6 +475,22 @@ def persist_ir(
         detail={"run_scope": run_scope, **outcome_row},
         surveyed_at=surveyed_at, scope_locator="",
     )
+
+    # R1/R2/R3 — withdraw the scopes this step used to write and no longer does,
+    # AFTER every component row for this run is in place so `written` is the
+    # complete set. Returns [] for a scoped or partial run.
+    withdrawn = _withdraw_vacated(registry, slug, run_label, set(slug_to_scope.values()),
+                                  surveyed_at, run_scope, outcome)
+    if withdrawn:
+        # Never silent: a cleanup that leaves no trace is indistinguishable from
+        # data loss to whoever comes looking in six months.
+        log.info("%s: %s withdrew %d vacated scope(s)", slug, run_label, len(withdrawn))
+        registry.upsert_metric(
+            slug, KIND, {f"{run_label}_withdrawn_count": float(len(withdrawn))},
+            detail={"cause": "unclaimed", "scopes": withdrawn[:50],
+                    "truncated": max(0, len(withdrawn) - 50)},
+            surveyed_at=surveyed_at, scope_locator="",
+        )
 
     if ports or wires:
         name_to_scope = {c.name: slug_to_scope.get(c.slug, "") for c in components}

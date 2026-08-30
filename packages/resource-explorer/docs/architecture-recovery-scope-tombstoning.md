@@ -316,8 +316,39 @@ launder an assertion into an observation.
    erasing each other). Also pinned: withdrawal does not leak across scopes or
    kinds, a `check_name`-filtered call still honours it (that is how the results
    reader queries), and `query_findings_all_runs` still returns every row.
-3. **Withdraw on complete runs only** (R1 + R3's `unclaimed` default). At this
-   point egeria's next survey stops adding new orphans.
+3. ~~**Withdraw on complete runs only** (R1 + R3's `unclaimed` default).~~
+   **DONE 2026-08-30.** `persist_ir` compares the scopes this step wrote against
+   the scopes it wrote at its **most recent previous run** — not against all
+   history, which would re-withdraw the same scope on every run forever — and
+   writes a withdrawal on the difference.
+
+   Three properties worth knowing before trusting it:
+
+   * **It is effective one run late.** `_scopes_last_written_by` finds nothing
+     to compare against until two `run_label`-carrying runs exist, and the
+     current store predates step 1 — measured, it returns **0 scopes** for
+     `egeria_git` today. So the next survey withdraws nothing and the one after
+     it starts working. Not a bug; a consequence of R2 being honest about
+     attribution.
+   * **It can never clear the existing orphans.** R2 forbids withdrawing rows no
+     step is recorded as having written, and every one of the 165 predates
+     `run_label`. That population is step 4's, permanently.
+   * **Cost is measured, and it grows.** The lookup reads the kind's whole
+     finding history — 10,135 rows for `egeria_git`, **93ms**. Acceptable inside
+     a survey that takes seconds, but history is append-only and never pruned,
+     so this is linear in run count. Recorded rather than pre-optimised; the
+     narrower two-query form is available if it ever matters.
+
+   Also: withdrawal is **never silent** — the count lands in a
+   `{run_label}_withdrawn_count` metric with the scopes in its detail, because a
+   cleanup that leaves no trace is indistinguishable from data loss to whoever
+   comes looking later.
+
+   One API consequence: `persist_ir` now requires `query_findings_history_raw`
+   on its registry. Both production callers pass a real `ProjectRegistry`, but
+   two test stubs did not have it and failed loudly — they were given a real
+   implementation rather than a no-op returning `[]`, which would have let the
+   tests pass while withdrawal was broken.
 4. **Backfill whatever orphans remain**, labelled as a backfill (§6). Note the
    count is a moving target — 14 today, 26 after the next egeria survey — and
    step 3 stops it growing, which is why the backfill goes last.

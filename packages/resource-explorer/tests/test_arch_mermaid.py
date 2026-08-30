@@ -287,10 +287,19 @@ class TestPersistedAtPublishTime:
 
         def upsert_finding(self, slug, kind, rows, surveyed_at="", scope_locator=""):
             for r in rows:
-                self.findings.append({**r, "kind": kind, "scope_locator": scope_locator})
+                self.findings.append({**r, "kind": kind, "scope_locator": scope_locator,
+                                      "_ts": surveyed_at})
 
         def upsert_metric(self, *a, **k):
             pass
+
+        def query_findings_history_raw(self, slug, kind):
+            """Real, not a no-op returning []. `persist_ir` reads history to
+            decide what to withdraw, and a stub that always answers "no history"
+            would let these tests pass while withdrawal was broken."""
+            return [{**f, "check_name": f.get("check_name", ""),
+                     "detail_json": f.get("detail"), "surveyed_at": f.get("_ts", "")}
+                    for f in self.findings if f.get("kind") == kind]
 
     def _run(self, components, ports=(), wires=()):
         from resource_explorer.surveyors.arch_recovery.persist import persist_ir

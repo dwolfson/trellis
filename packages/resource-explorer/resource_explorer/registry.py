@@ -3189,11 +3189,18 @@ class ProjectRegistry:
         means differs per kind (a gap-count for security, a quality-rank for
         documentation) — that aggregation belongs in each kind's own
         trend_reader (repo_survey_definition_adapter.py), not as per-kind
-        SQL branches in this otherwise-generic function."""
+        SQL branches in this otherwise-generic function.
+
+        `scope_locator` is included (added 2026-08-30) so a scope-keyed kind can
+        answer "which scopes did this step write, and when" in ONE query rather
+        than one per scope — architecture recovery has ~1000 scopes on `egeria`,
+        so the per-scope form is not usable at persist time. Additive: existing
+        callers read named keys."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at, "
+                "       scope_locator "
                 "FROM project_analysis_findings WHERE project_slug = ? AND kind = ? "
                 "ORDER BY surveyed_at ASC",
                 (slug, kind),

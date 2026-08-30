@@ -99,3 +99,101 @@ class TestRunLabelOnComponentRows:
         )
         assert 'run_label="detect"' in inspect.getsource(arch_recovery_detect)
         assert 'run_label="coupling"' in inspect.getsource(arch_recovery_coupling)
+
+
+class TestWithdrawalOnCompleteRuns:
+    """Step 3 of `docs/architecture-recovery-scope-tombstoning.md` — a complete
+    run withdraws the scopes it used to write and no longer does."""
+
+    def _scopes(self, registry, slug):
+        return registry.query_finding_scopes(slug, KIND, check_name="component")
+
+    def test_a_vacated_scope_is_withdrawn_and_stops_enumerating(self, registry, project):
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:00:00", run_label="detect")
+        assert sorted(self._scopes(registry, project.slug)) == ["pkg/a", "pkg/b"]
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:01:00", run_label="detect")
+        assert self._scopes(registry, project.slug) == ["pkg/a"]
+
+    def test_a_scoped_run_withdraws_nothing(self, registry, project):
+        """R1 — a run narrowed to a subtree saw only part of the repo, so its
+        absences mean nothing. This is the worst failure mode in the design."""
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:00:00", run_label="detect")
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:01:00", run_label="detect", run_scope="pkg/a")
+        assert sorted(self._scopes(registry, project.slug)) == ["pkg/a", "pkg/b"]
+
+    def test_a_partial_outcome_withdraws_nothing(self, registry, project):
+        """The other half of R1: a caller-supplied PARTIAL is as disqualifying
+        as a run_scope, and a caller's outcome always wins over the computed one."""
+        from resource_explorer.step_outcome import PARTIAL, StepOutcome
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:00:00", run_label="detect")
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:01:00", run_label="detect",
+                   outcome=StepOutcome(PARTIAL, cause="interrupted"))
+        assert sorted(self._scopes(registry, project.slug)) == ["pkg/a", "pkg/b"]
+
+    def test_one_step_never_withdraws_anothers_scopes(self, registry, project):
+        """R2, and the reason step 1 existed. detect and coupling write the SAME
+        kind; without attribution they erase each other alternately, forever."""
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:00:00", run_label="coupling")
+        persist_ir(registry, project.slug, [_component("b", "pkg/b")], [],
+                   "2026-08-30T00:01:00", run_label="detect")
+        # detect's run wrote only pkg/b and must not touch coupling's pkg/a.
+        assert sorted(self._scopes(registry, project.slug)) == ["pkg/a", "pkg/b"]
+
+    def test_unattributed_history_is_never_withdrawn(self, registry, project):
+        """Rows written before `run_label` existed belong to no step, so no step
+        may withdraw them — which is exactly why the pre-existing orphan
+        population needs the step-4 backfill and can never be cleared by an
+        ordinary run."""
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:00:00")           # no run_label -> "run"
+        persist_ir(registry, project.slug, [_component("b", "pkg/b")], [],
+                   "2026-08-30T00:01:00", run_label="detect")
+        assert sorted(self._scopes(registry, project.slug)) == ["pkg/a", "pkg/b"]
+
+    def test_the_withdrawal_records_an_unclaimed_cause_not_a_removal(self, registry, project):
+        """R3 — "we renamed it" and "it is gone from the repo" look identical
+        from inside the pipeline and mean opposite things."""
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:00:00", run_label="detect")
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:01:00", run_label="detect")
+        rows = registry.query_findings(project.slug, KIND, "pkg/b")
+        detail = json.loads(rows[0]["detail_json"])
+        assert detail["cause"] == "unclaimed"
+        assert detail["run_label"] == "detect"
+
+    def test_withdrawing_is_reported_not_silent(self, registry, project):
+        """A cleanup that leaves no trace is indistinguishable from data loss to
+        whoever comes looking in six months."""
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:00:00", run_label="detect")
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:01:00", run_label="detect")
+        metrics = registry.query_metrics(project.slug, KIND, "")
+        assert metrics.get("detect_withdrawn_count") == 1.0
+
+    def test_a_steady_run_withdraws_nothing_and_stays_quiet(self, registry, project):
+        """Idempotence: comparing against the PREVIOUS run rather than all
+        history is what stops a withdrawn scope being re-withdrawn forever."""
+        for ts in ("2026-08-30T00:00:00", "2026-08-30T00:01:00", "2026-08-30T00:02:00"):
+            persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                       ts, run_label="detect")
+        assert self._scopes(registry, project.slug) == ["pkg/a"]
+        assert not registry.query_metrics(project.slug, KIND, "").get("detect_withdrawn_count")
+
+    def test_a_revived_scope_comes_back(self, registry, project):
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:00:00", run_label="detect")
+        persist_ir(registry, project.slug, [_component("a", "pkg/a")], [],
+                   "2026-08-30T00:01:00", run_label="detect")
+        assert self._scopes(registry, project.slug) == ["pkg/a"]
+        persist_ir(registry, project.slug, [_component("a", "pkg/a"), _component("b", "pkg/b")],
+                   [], "2026-08-30T00:02:00", run_label="detect")
+        assert sorted(self._scopes(registry, project.slug)) == ["pkg/a", "pkg/b"]
