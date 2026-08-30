@@ -50,6 +50,21 @@ DEFAULT_MAX_BYTES = 4 * 1024 * 1024 * 1024
 #: safe reset.
 DEFAULT_CACHE_DIR = Path("data/source-cache")
 
+#: Grace window before an entry becomes eligible for eviction at all,
+#: regardless of budget. Reviewed 2026-08-30 (dwolfson-59): `_evict()`'s LRU
+#: sweep can `shutil.rmtree` a directory entry (a cached treeless clone)
+#: while a concurrent `local_clone()` is still hardlink-copying from it — a
+#: file entry (a cached zipball) is safe from this via POSIX unlink-of-
+#: open-file semantics, but a directory walk mid-delete against a reader
+#: mid-copy is not. The premise that made this "narrow" undersold it: at
+#: ~50 MB/repo the 60-repo corpus is ~3 GB against a 4 GiB budget, so once
+#: the cache fills, EVERY put evicts — over-budget is the steady state, not
+#: an edge case. `get()`'s touch happens instantly; the actual use
+#: (extraction, `clone --local`) measured at 0.28-0.39s, so a generous grace
+#: window costs nothing in the case that matters and removes the race in
+#: the case that doesn't.
+EVICTION_GRACE_SECONDS = 60
+
 
 def _safe_key(full_name: str, sha: str) -> str:
     """`owner/repo` + sha -> one filesystem-safe path segment."""
@@ -66,9 +81,11 @@ class SourceCache:
     """
 
     def __init__(self, cache_dir: Path | str | None = None,
-                 max_bytes: int = DEFAULT_MAX_BYTES) -> None:
+                 max_bytes: int = DEFAULT_MAX_BYTES,
+                 eviction_grace_seconds: float = EVICTION_GRACE_SECONDS) -> None:
         self.root = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
         self.max_bytes = max_bytes
+        self.eviction_grace_seconds = eviction_grace_seconds
         self.hits = 0
         self.misses = 0
 
@@ -140,12 +157,21 @@ class SourceCache:
         Reports what it dropped rather than doing it silently — a cache that
         quietly discards the thing you were about to reuse looks like a
         performance regression with no cause.
+
+        Entries touched within `eviction_grace_seconds` are never candidates,
+        even if they are the oldest remaining and the cache stays over
+        budget as a result — see that constant's docstring for the race this
+        protects against. `total` still counts every entry, protected or
+        not, so budget accounting stays honest; only the pop candidates are
+        filtered.
         """
+        now = time.time()
         entries = sorted(self._entries())          # oldest mtime first
         total = sum(size for _, size, _ in entries)
+        evictable = [e for e in entries if now - e[0] >= self.eviction_grace_seconds]
         dropped = 0
-        while total > self.max_bytes and entries:
-            mtime, size, path = entries.pop(0)
+        while total > self.max_bytes and evictable:
+            mtime, size, path = evictable.pop(0)
             try:
                 shutil.rmtree(path) if path.is_dir() else path.unlink()
             except OSError:
