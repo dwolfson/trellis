@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from trellis_artifact_tree.model import Rung
 
-from trellis_context.packer import BudgetError, Candidate, pack
+from trellis_context.packer import BudgetError, Candidate, Pointer, pack
 from trellis_context.spec import ContextSpec, Section
 
 
@@ -157,6 +157,58 @@ class TestSpecIdentity:
         a = spec(Section("x"), metadata={"note": "one"})
         b = spec(Section("x"), metadata={"note": "two"})
         assert a.identity() == b.identity()
+
+
+class TestPointer:
+    """A pointer rides alongside its section's prose -- a sibling field, not a
+    competing candidate (docs Backlog "a compiled answer should be able to
+    point at a view")."""
+
+    def test_a_pointer_reaches_the_packed_section_and_the_manifest(self):
+        s = spec(Section("arch"))
+        ptr = Pointer("egeria_git", "architecture", perspective="deployment")
+        c = Candidate("arch", {Rung.FULL: "F" * 100}, pointer=ptr)
+        out = pack(s, {"arch": c}, 1000)
+        assert out.sections[0].pointer == ptr
+        assert out.manifest.packed[0]["pointer"] == ptr.as_dict()
+
+    def test_the_pointer_text_reaches_the_model_too(self):
+        s = spec(Section("arch"))
+        ptr = Pointer("egeria_git", "architecture")
+        c = Candidate("arch", {Rung.FULL: "hello"}, pointer=ptr)
+        out = pack(s, {"arch": c}, 1000)
+        assert ptr.render() in out.sections[0].text
+
+    def test_pointer_overhead_counts_against_the_ceiling(self):
+        """A pointer is cheap, not free -- it must not let a section sneak
+        past the hard ceiling."""
+        s = spec(Section("arch"))
+        ptr = Pointer("egeria_git", "architecture")
+        c = Candidate("arch", {Rung.FULL: "F" * 100}, pointer=ptr)
+        budget = 100 + len(ptr.render()) - 1     # one char short with the pointer
+        out = pack(s, {"arch": c}, budget)
+        assert not out.sections
+        assert out.manifest.dropped
+
+    def test_pointer_overhead_is_the_same_at_every_rung(self):
+        """The overhead a pointer adds is constant across rungs, so it shifts
+        which budgets afford a rung but never favours one rung over another
+        the way, say, a per-rung fee would."""
+        s = spec(Section("arch"))
+        ptr = Pointer("egeria_git", "architecture")
+        with_ptr = Candidate("arch", {Rung.FULL: "F" * 50, Rung.SUMMARY: "S" * 10},
+                              pointer=ptr)
+        without_ptr = Candidate("arch", {Rung.FULL: "F" * 50, Rung.SUMMARY: "S" * 10})
+        overhead = len(ptr.render())
+        budget = 60
+        assert (pack(s, {"arch": with_ptr}, budget + overhead).sections[0].rung ==
+                pack(s, {"arch": without_ptr}, budget).sections[0].rung)
+
+    def test_a_section_with_no_pointer_carries_none(self):
+        s = spec(Section("a"))
+        out = pack(s, {"a": cand("a", 50)}, 1000)
+        assert out.sections[0].pointer is None
+        assert "pointer" not in out.manifest.packed[0]
 
 
 class TestUpgradePolicy:
