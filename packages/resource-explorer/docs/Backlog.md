@@ -216,7 +216,8 @@ this entry's own "the two converge and the question disappears" anticipated** �
 fix above is now the more clearly load-bearing of the two remaining candidates, since the per-run
 network chattiness this fix closed was the bigger of the two costs the earlier profiling found.
 
-**Cache the acquired roots — still open and unclaimed as of this writing.**
+**Cache the acquired roots — CLAIMED 2026-08-30 by S1 (`ui/architecture-focus`).** Coordinated with
+S2 first (cross-session, same date) — unclaimed on their side. Starting now.
 
 #### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
 
