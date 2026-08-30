@@ -267,6 +267,77 @@ Measured (dwolfson-59, `odpi/egeria-python`): acquisition 22.64s cold → 1.28s 
 Suite: 3033 passed + 9 new, 10 skipped (dwolfson-59's count plus S1's additions; not independently
 re-run against the full corpus).
 
+#### ~~MEDIUM — acquisition is now the whole cost~~ — SOLVED 2026-08-30
+
+*(Restored: this entry and the one below were lost when a `--theirs` conflict resolution on this
+file during the `ui/architecture-focus` merge dropped both. Second casualty of the same
+cherry-pick-then-merge; found only by going looking for one of them.)*
+
+After `63e7ec6` removed the blob-fetch cost, the download was essentially the entire wall-clock —
+86% of the route for `egeria_python_git`, 61% for `docling_parse` — because both providers cloned
+into a fresh tempdir every run. **Solved by `f8710ef`'s `SourceCache`**: acquisition 22.64s → 1.28s
+warm, full route 110.5s → 14.4s. See the entry above for the design.
+
+#### ~~LOW — `_COCHANGE_MAX_FILES = 50` is unvalidated~~ — MEASURED 2026-08-30, keep it
+
+*(Opened by S2's review of `63e7ec6`; closed the same day by measuring it. The cap is defensible —
+but it does not do what its name suggests, and that is the part worth keeping.)*
+
+**Distribution**, four repos with real history. The six `--depth 1` clones pulled today were
+excluded: a shallow checkout has one synthetic commit holding the entire repo, and DataHub's
+19,009-file entry alone produced about half the uncapped pair total on the first pass.
+
+```
+p50   6 files      p90   55      max 2796
+p75  16            p95  126
+                   p99  308
+```
+
+**50 lands almost exactly on p90** — it keeps 89.8% of pair-bearing commits. Not arbitrary,
+whatever its provenance.
+
+**The quadratic case for *a* cap is overwhelming** — the last 10% of commits carry **98.8% of all
+pairs**:
+
+| cap | commits kept | pairs | % of pairs |
+|---|---|---|---|
+| 25 | 81.9% | 28,175 | 0.4% |
+| **50** | **89.8%** | **85,835** | **1.2%** |
+| 100 | 93.4% | 188,436 | 2.6% |
+| 500 | 99.6% | 1,810,139 | 25.1% |
+| none | 100% | 7,201,804 | 100% |
+
+### The finding that matters: it is a cost control, not a quality control
+
+Pairs are not the output — components are. Varying the cap and re-running `coupling.propose`:
+
+| cap | egeria | egeria-python | egeria-workspaces |
+|---|---|---|---|
+| 25 | 703 | 52 | 72 |
+| **50** | **728** | **61** | **82** |
+| 100 | 743 (+15, −0) | 64 (+3, −0) | 96 (+14, −0) |
+| 500 | 820 (+92, −0) | 82 (+21, −0) | 121 (+39, −0) |
+
+**Raising the cap is purely additive — `−0` at every level.** Nothing proposed at 50 disappears at
+500. So it is not separating signal from noise, as "skip the huge refactor commits" implies; it is
+a volume limit. Across a **20× range** of cap, egeria's components move 703 → 820 (±13%) while
+pairs move 4,151 → 597,225 (**144×**).
+
+- **Raising it makes readability worse, not better.** egeria is already at 728 components against a
+  clustering target of ~10 per blueprint.
+- **The cost argument is weaker than it looks** at these sizes — even cap 500 on egeria runs in
+  1.2s. What the cap buys is bounded *pair* growth for the quadratic tail, not wall-clock.
+
+**Verdict: keep 50.** It sits on p90, it is monotone-subtractive so it cannot hide a boundary a
+higher cap would reveal *differently* (only *additionally*), and component count is nearly
+insensitive to it. What was genuinely unvalidated was the *reason* — the comment implies it filters
+noisy commits, and it bounds volume instead.
+
+**Honest limit:** four repos, all Egeria-family, and per-repo variance is large — at cap 50 egeria
+drops 32% of its commits while egeria-workspaces drops 2%. A single global cap treats those very
+differently. If anyone revisits this, a per-repo cap (that repo's own p90) is the shape to test, on
+a corpus that is not four repos from one family.
+
 #### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
 
 *(Opened 2026-08-30, live-reported: "pressing the architecture survey button does seem to start the
