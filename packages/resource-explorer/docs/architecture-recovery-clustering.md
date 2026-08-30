@@ -544,8 +544,13 @@ re-surveyed (`Development-OMAG-Server-Platform::*` and
 `Containerized-OMAG-Server-Platform::*`).
 
 Deliberately not fixed here, and deliberately not deleted — nothing in this
-pipeline should quietly remove evidence. It needs a decision about whether
-identity changes should tombstone the scope they vacate.
+pipeline should quietly remove evidence. Designed separately in
+**`architecture-recovery-scope-tombstoning.md`**, which finds that the actual
+leak is `query_finding_scopes` (no recency filter at all — a scope, once
+written, is enumerable forever), that a withdrawal row alone therefore changes
+nothing, and that withdrawal must be attributed to the writing step or
+`repo_arch_detect` and `repo_arch_coupling` will erase each other's components
+alternately and forever.
 
 ## 8. Build order
 
