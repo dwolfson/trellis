@@ -183,12 +183,29 @@ def _spring_entry_points(root: str) -> list[str]:
     return sorted(hits)
 
 
-def _properties_files(root: str) -> list[str]:
-    """Every `*application.properties`.
+#: Spring's OWN profile convention — `application-{profile}.properties`, merged
+#: onto the base at runtime when `spring.profiles.active` names the profile.
+#:
+#: It does not end with "application.properties", so the original suffix test was
+#: blind to it: this module read Egeria's non-standard PREFIX form
+#: (`container.application.properties`) and missed the framework's documented
+#: one. Measured, `apache/polaris` carries two we never saw.
+_PROFILE_OVERLAY_RE = re.compile(r"^application-([A-Za-z0-9_.-]+)\.properties$")
 
-    Plural deliberately: one repo can declare several platforms — measured on
-    egeria-workspaces, which carries `freshstart.application.properties` and
-    `quickstart.application.properties`, each with its own name and server list.
+
+def _properties_files(root: str) -> list[str]:
+    """Every properties file that declares or varies an application.
+
+    Two conventions, and they are **not the same relationship** — see
+    `_consolidate` for why the difference is load-bearing:
+
+    * `*application.properties` — the base, plus the prefix form Egeria uses
+      (`container.application.properties`), where one file REPLACES the other at
+      build time. egeria-workspaces' `freshstart.` / `quickstart.` are the same
+      form and are genuine peer platforms.
+    * `application-{profile}.properties` — Spring's profile OVERLAY, merged onto
+      the base rather than replacing it.
+
     An environment can also span platforms this repo does not contain, which no
     repo-scoped analysis can see and which is stated in `notes` rather than
     guessed at.
@@ -198,9 +215,15 @@ def _properties_files(root: str) -> list[str]:
         dirnames[:] = [d for d in dirnames
                        if d not in (".git", "node_modules", ".venv", "build", "target")]
         for fn in filenames:
-            if fn.endswith("application.properties"):
+            if fn.endswith("application.properties") or _PROFILE_OVERLAY_RE.match(fn):
                 found.append(os.path.relpath(os.path.join(dirpath, fn), root))
     return sorted(found)
+
+
+def _overlay_profile(rel: str) -> str:
+    """The profile name if `rel` is a Spring profile overlay, else ""."""
+    m = _PROFILE_OVERLAY_RE.match(os.path.basename(rel))
+    return m.group(1) if m else ""
 
 
 #: Where a server's configuration was read from, in increasing authority. Egeria
@@ -607,6 +630,68 @@ def _consolidate(platforms: list, root: str, notes: list) -> list:
     return sorted(merged, key=lambda p: p["name"])
 
 
+def _attach_overlays(platforms: list, overlays: dict, root: str, notes: list) -> list:
+    """A Spring profile overlay is an ENVIRONMENT of a platform, not a platform.
+
+    **The two conventions are different relationships, and treating them alike
+    is how this gets quietly wrong:**
+
+    | form | relationship | decided by |
+    |---|---|---|
+    | `container.application.properties` | REPLACES the base at build time | `_consolidate`'s directory + server-set test |
+    | `application-prod.properties` | MERGED onto the base at runtime | always the same platform — no test needed |
+
+    An overlay is unconditionally a variant of the base in its own directory, so
+    it needs no merge test at all. Running one would get the right answer for
+    the wrong reason and break the first time an overlay declared a different
+    server list.
+
+    **Environment is not deployment style.** `dev`/`prod`/`test` name *where*
+    something runs; Native Java / Containerized / Choreographed name *how* it is
+    packaged (Dan, 2026-08-29). They are orthogonal axes, and folding the
+    profile name into `styles` would repeat exactly the mistake that made
+    "Development OMAG Server Platform" look like a platform — an environment
+    adjective mistaken for an identity.
+    """
+    by_dir: dict = {}
+    for plat in platforms:
+        by_dir.setdefault(os.path.dirname(plat["path"]), []).append(plat)
+
+    for directory, entries in sorted(overlays.items()):
+        targets = by_dir.get(directory) or []
+        if not targets:
+            notes.append(
+                f"{len(entries)} profile overlay(s) in {directory or '.'} "
+                f"({', '.join(sorted(p for p, _ in entries))}) have no "
+                f"`application.properties` beside them — not attached to any platform")
+            continue
+        # A directory can hold several bases (Egeria's prefix form). Spring
+        # merges an overlay onto whichever base is active, which a static read
+        # cannot know, so the overlay is recorded on each rather than assigned
+        # to one by guess.
+        for profile, rel in sorted(entries):
+            props = _read_properties(os.path.join(root, rel))
+            for plat in targets:
+                plat.setdefault("environments", []).append(profile)
+                plat.setdefault("overlay_paths", []).append(rel)
+            # An overlay that renames the application or changes its server list
+            # is declaring something the model has no place for yet. Say so
+            # rather than silently keeping the base's reading.
+            if next((props[k] for k in _NAME_KEYS if props.get(k)), ""):
+                notes.append(f"{rel} sets an application name in a profile overlay — "
+                             f"recorded as environment {profile!r} of the base, and the "
+                             f"overlay's own name is not proposed as a platform")
+            for key in _SUBCOMPONENT_KEYS:
+                if props.get(key, "").strip():
+                    notes.append(f"{rel} overrides {key} for profile {profile!r} — "
+                                 f"per-environment server lists are not modelled, so the "
+                                 f"base's list is what was proposed")
+    for plat in platforms:
+        if plat.get("environments"):
+            plat["environments"] = sorted(set(plat["environments"]))
+    return platforms
+
+
 def _dedup_ports(ports: list, platforms: list) -> list:
     """Drop the copies of a port that a merge made redundant.
 
@@ -682,7 +767,19 @@ def discover(root: str) -> dict:
     wires: list[dict] = []
     ports: list[dict] = []
 
+    # Overlays are set aside BEFORE anything is proposed. A Spring profile file
+    # is a variant of the base in its own directory, never a platform of its
+    # own, so it must not reach the platform loop at all — see `_consolidate`.
+    overlays: dict = {}
+    candidates: list = []
     for rel in prop_files:
+        profile = _overlay_profile(rel)
+        if profile:
+            overlays.setdefault(os.path.dirname(rel), []).append((profile, rel))
+        else:
+            candidates.append(rel)
+
+    for rel in candidates:
         props = _read_properties(os.path.join(root, rel))
         props["__rel__"] = rel          # so the config store resolves beside its properties file
         holders = _placeholders(props)
@@ -770,6 +867,7 @@ def discover(root: str) -> dict:
                               "label": f"{name} is configured to reach {ep['target']} "
                                        f"({ep['key']})"})
 
+    platforms = _attach_overlays(platforms, overlays, root, notes)
     platforms = _consolidate(platforms, root, notes)
     wires = _remap_wires(wires, platforms)
     ports = _dedup_ports(ports, platforms)
@@ -854,6 +952,10 @@ def to_ir(found: dict):
         # merge happened, every declaration that fed it is a location, so the
         # evidence still points at each file a reader would want to open.
         style_note = (f"; deployed {', '.join(styles)}" if styles else "")
+        # Environments are a SEPARATE axis from styles (see `_attach_overlays`):
+        # where it runs, not how it is packaged.
+        envs = platform.get("environments") or []
+        env_note = (f"; profile overlay(s) for {', '.join(envs)}" if envs else "")
         merged_note = ("; one platform declared "
                        f"{len(paths)} ways as {', '.join(platform['declared_names'])}"
                        if platform.get("declared_names") else "")
@@ -862,9 +964,10 @@ def to_ir(found: dict):
             assertion=f"{platform['name']} is a Spring application declared in "
                       + ", ".join(paths)
                       + (f", serving port {platform['port']}" if platform["port"] else "")
-                      + style_note + merged_note,
+                      + style_note + env_note + merged_note,
             detector="spring:application-properties", confidence=_DECLARED_CONFIDENCE,
-            locations=[Location(path=pth, line=0) for pth in paths],
+            locations=[Location(path=pth, line=0)
+                       for pth in paths + (platform.get("overlay_paths") or [])],
         ))
 
         for server in platform.get("servers") or []:

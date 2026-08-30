@@ -511,3 +511,84 @@ class TestNonEgeriaFrameworks:
         (tmp_path / "conf").mkdir()
         (tmp_path / "conf" / "openmetadata.yaml").write_text("server:\n  port: 8585\n")
         assert spring_app.discover(str(tmp_path))["platforms"] == []
+
+
+class TestProfileOverlays:
+    """Spring's OWN convention, `application-{profile}.properties`, which the
+    original `endswith("application.properties")` test could not see — this
+    module read Egeria's non-standard PREFIX form and was blind to the
+    framework's documented one. `apache/polaris` carries two we never saw.
+
+    An overlay is a different RELATIONSHIP from a prefix file, not just a
+    different spelling: Spring merges it onto the base at runtime, where
+    egeria's CI copies `container.application.properties` OVER the base at
+    build time. Merged means always the same platform; replaced needs the
+    directory + server-set test.
+    """
+
+    def test_a_profile_overlay_is_discovered_at_all(self, tmp_path):
+        _platform(tmp_path, name="App", servers="x")
+        (tmp_path / "application-prod.properties").write_text("server.port=9090\n")
+        assert "application-prod.properties" in spring_app._properties_files(str(tmp_path))
+
+    def test_an_overlay_is_not_a_platform(self, tmp_path):
+        _platform(tmp_path, name="App", servers="x")
+        (tmp_path / "application-prod.properties").write_text("server.port=9090\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [p["name"] for p in out["platforms"]] == ["App"]
+
+    def test_an_overlay_becomes_an_environment_of_its_base(self, tmp_path):
+        _platform(tmp_path, name="App", servers="x")
+        for profile in ("dev", "prod"):
+            (tmp_path / f"application-{profile}.properties").write_text("server.port=9090\n")
+        assert spring_app.discover(str(tmp_path))["platforms"][0]["environments"] == ["dev", "prod"]
+
+    def test_environment_is_not_folded_into_deployment_style(self, tmp_path):
+        """`dev`/`prod` name WHERE something runs; Native Java / Containerized /
+        Choreographed name HOW it is packaged. Folding one into the other is the
+        mistake that made 'Development OMAG Server Platform' look like a
+        platform — an environment adjective mistaken for an identity."""
+        _platform(tmp_path, name="App", servers="x")
+        (tmp_path / "application-prod.properties").write_text("server.port=9090\n")
+        plat = spring_app.discover(str(tmp_path))["platforms"][0]
+        assert plat["styles"] == [spring_app.STYLE_NATIVE]
+        assert "prod" not in plat["styles"]
+
+    def test_an_overlay_never_triggers_the_merge_test(self, tmp_path):
+        """Merged means unconditionally the same platform. An overlay declaring
+        a DIFFERENT server list must still not become a second platform — it
+        would under the directory + server-set rule, which is why overlays are
+        set aside before that rule ever sees them."""
+        _platform(tmp_path, name="App", servers="x")
+        (tmp_path / "application-prod.properties").write_text(
+            "startup.server.list=totally,different\n")
+        out = spring_app.discover(str(tmp_path))
+        assert len(out["platforms"]) == 1
+        assert [s["name"] for s in out["platforms"][0]["servers"]] == ["x"]
+
+    def test_an_overlay_overriding_servers_is_reported_not_swallowed(self, tmp_path):
+        """Per-environment server lists are a real thing the model has no place
+        for. Saying so beats silently keeping the base's reading."""
+        _platform(tmp_path, name="App", servers="x")
+        (tmp_path / "application-prod.properties").write_text(
+            "startup.server.list=totally,different\n")
+        assert any("per-environment server lists are not modelled" in n
+                   for n in spring_app.discover(str(tmp_path))["notes"])
+
+    def test_an_orphan_overlay_is_reported(self, tmp_path):
+        """An overlay with no base beside it has nothing to vary."""
+        (tmp_path / "application-prod.properties").write_text("server.port=9090\n")
+        out = spring_app.discover(str(tmp_path))
+        assert out["platforms"] == []
+        assert any("have no `application.properties` beside them" in n for n in out["notes"])
+
+    def test_the_prefix_form_is_still_a_replacement_not_an_overlay(self, tmp_path):
+        """`container.application.properties` must keep going through the merge
+        test — it is copied OVER the base, not merged onto it."""
+        _platform(tmp_path, name="Development Platform", servers="x,y")
+        _profile(tmp_path, "container", "Containerized Platform", servers="x,y")
+        out = spring_app.discover(str(tmp_path))
+        assert len(out["platforms"]) == 1
+        assert out["platforms"][0].get("environments") is None
+        assert out["platforms"][0]["paths"] == [
+            "application.properties", "container.application.properties"]

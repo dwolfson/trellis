@@ -598,6 +598,65 @@ minutes. It was cheaply wrong — a table entry, caught by running rather than
 reasoning — which is an argument for widening the corpus early and often, not
 for trusting the next two-example rule more.
 
+### The blind spot the validation exposed: two conventions, two relationships
+
+Pulling polaris did more than find the Quarkus bug. It exposed that
+`_properties_files` matched `*application.properties` — which does **not** match
+Spring's own documented profile convention:
+
+```
+application.properties              seen
+container.application.properties    seen      <- Egeria's non-standard PREFIX form
+application-dev.properties          INVISIBLE <- Spring's actual convention
+```
+
+So the module read the unusual convention and was blind to the standard one.
+Polaris carries two we never saw (`application-test`, `application-it`); in that
+case being blind was harmless luck, since neither declares a name and both would
+have been dropped anyway.
+
+**Why this had to be fixed BEFORE downloading more repos.** A Spring app using
+the standard convention would have shown exactly one clean platform, we would
+have concluded the consolidation rule works, and we would have learned nothing —
+the blind spot suppresses precisely the shape that stresses the rule. It would
+have looked like validation and been the opposite. Same pattern as §7b: *check
+what discovers a signal before trusting what consumes it.*
+
+**The two forms are different relationships, and that is the load-bearing part:**
+
+| form | relationship | decided by |
+|---|---|---|
+| `container.application.properties` | **replaces** the base at build time (CI `cp -f`, then `docker build`) | the directory + server-set test |
+| `application-prod.properties` | **merged** onto the base at runtime via `spring.profiles.active` | nothing — always the same platform |
+
+An overlay is unconditionally a variant of the base in its directory, so it
+needs no merge test. Running one anyway would give the right answer for the
+wrong reason and break the first time an overlay declared a different server
+list — which is why overlays are set aside *before* `_consolidate` sees them,
+and why there is a test for exactly that case.
+
+**Environment is not deployment style.** `dev`/`prod`/`test` name *where*
+something runs; Native Java / Containerized / Choreographed name *how* it is
+packaged. Orthogonal axes. Folding the profile name into `styles` would repeat
+precisely the mistake that made "Development OMAG Server Platform" look like a
+platform — an environment adjective mistaken for an identity. Overlays therefore
+populate a separate `environments` list, and a test asserts the profile name
+never reaches `styles`.
+
+Measured after the fix — polaris' server picks up the two overlay files as
+environments, and nothing else moves:
+
+```
+Apache Polaris Server   styles=['native-java']  environments=['it', 'test']
+Apache Polaris Admin Tool styles=['native-java'] environments=none
+OMAG Server Platform    styles=['containerized', 'native-java']  environments=none
+```
+
+Two things an overlay can declare that the model has no place for — its own
+application name, and its own `startup.server.list` — are **reported as notes**
+rather than silently resolved to the base's reading. Per-environment server
+lists are a real thing; pretending they are not is worse than saying so.
+
 ### Known consequence, not yet addressed
 
 **Renaming a component's slug orphans its rows rather than superseding them.**
