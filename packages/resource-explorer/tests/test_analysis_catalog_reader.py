@@ -455,3 +455,30 @@ class TestAvailabilityIsDeclaredButGuarded:
         inline = [a["id"] for a in get_analyses("repo", include_egeria_live=False)
                   if a["availability"] == "inline"]
         assert len(inline) > 10, f"only {len(inline)} inline — did the field stop loading?"
+
+    def test_a_fetching_analysis_declares_queued_rather_than_defaulting_to_it(self):
+        """"Deliberately queued because it fetches" and "nobody has considered
+        this yet" must not look identical in the catalog.
+
+        The default protects the second case. An analysis that acquires a
+        resource is queued for a STRUCTURAL reason, and saying so is what stops
+        a later reader assuming it was simply overlooked — the same distinction
+        `run_scope`/`partial` exist to make elsewhere in this codebase.
+
+        Raised by trellis-chat-panel-1f while verifying the merge, who noticed
+        architecture_recovery reached `queued` by falling through.
+        """
+        import re
+
+        from resource_explorer.surveyors.analysis_catalog_reader import _DEFAULT_CONFIG_PATH
+
+        raw = _DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+        for analysis_id in ("architecture_recovery", "code_symbol_extraction",
+                            "manifest_parse", "data_file_profiling"):
+            block = re.search(rf"^  - id: {analysis_id}$(.*?)(?=^  - id: |\Z)",
+                              raw, re.M | re.S)
+            assert block, f"{analysis_id} not found in the catalog"
+            assert "availability: queued" in block.group(1), (
+                f"{analysis_id} acquires a resource, so it must DECLARE "
+                "availability: queued rather than reach it by default"
+            )
