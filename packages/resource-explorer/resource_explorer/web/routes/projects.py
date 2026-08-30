@@ -713,7 +713,16 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
-            EgeriaPublisher(registry=registry).publish(result)
+
+            # In a thread, like the `_run` above it. pyegeria's synchronous
+            # methods drive their own event loop internally, so calling them
+            # from inside FastAPI's running loop raises "this event loop is
+            # already running" — the same trap investigations.py documents,
+            # and the reason auto-publish had been failing on EVERY
+            # Egeria-bound project reached through this route. It failed
+            # softly, into `summary`, so the run still reported ok and the
+            # only symptom was a warning nobody was reading.
+            await asyncio.to_thread(EgeriaPublisher(registry=registry).publish, result)
             published = True
         except Exception as exc:
             published = False
