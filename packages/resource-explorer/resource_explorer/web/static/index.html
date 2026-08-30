@@ -10909,6 +10909,87 @@ async function compileContext() {
   }
 }
 
+// ── pointer sections ─────────────────────────────────────────────────────────
+// PackedSection.pointer (trellis_context) is a link to where a section's own
+// view lives NOW, packed alongside its prose rather than instead of it --
+// "prose for the model to reason over, link for the human to go and look"
+// (Backlog "a compiled answer should be able to point at a view"). It has
+// existed in the manifest since the pointer-sections work landed; nothing
+// here read it until now.
+//
+// Deliberately as narrow as the backend's own _POINTABLE_VIEWS
+// (context_compile.py): one entry per view RE actually has somewhere to
+// point today. RE has no routing at all, so "go to a view" means driving
+// the same client-side nav a person would click through by hand -- select
+// the resource, switch intent, open the analysis card's Results, and, if
+// the pointer named one, its perspective tab. Add an entry here only once
+// the backend map grows to match; the two are meant to stay in step.
+const _POINTER_VIEW_TARGET = {
+  architecture: { intent: 'analysis', analysisId: 'architecture_recovery' },
+};
+
+function _pointerLinkHtml(pointer) {
+  if (!pointer) return '';
+  const label = _POINTER_VIEW_TARGET[pointer.view] ? pointer.view : `${pointer.view} (no view registered yet)`;
+  const asOf = pointer.as_of ? ` · as of ${_esc(_relTime(pointer.as_of))}` : '';
+  return `<div class="text-[10px]">
+      <button onclick='_openPointer(${JSON.stringify(pointer)})'
+              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
+        📍 open ${_esc(label)} view for ${_esc(pointer.resource_slug)}
+      </button>${asOf}
+    </div>`;
+}
+
+// Short poll for an element an async panel render will produce -- setNavIntent()
+// and its showXPane() callees fetch before they render, so the target element
+// (a results-<id> div) does not exist synchronously the way the rest of this
+// file's onclick handlers assume. Bounded, not indefinite: a pointer whose
+// target never materialises (backend map and this one drifted, or the fetch
+// failed) should say so rather than hang.
+function _waitForEl(id, timeoutMs) {
+  return new Promise(resolve => {
+    const start = performance.now();
+    (function tick() {
+      const el = document.getElementById(id);
+      if (el) return resolve(el);
+      if (performance.now() - start > timeoutMs) return resolve(null);
+      setTimeout(tick, 50);
+    })();
+  });
+}
+
+async function _openPointer(pointer) {
+  const target = _POINTER_VIEW_TARGET[pointer.view];
+  if (!target) {
+    showToast('info', `No view registered for "${pointer.view}" yet.`, 4000);
+    return;
+  }
+  selectProject(pointer.resource_slug);
+  setNavIntent(target.intent);
+  const safeId = String(target.analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const resultsEl = await _waitForEl(`results-${safeId}`, 3000);
+  if (!resultsEl) {
+    showToast('error',
+      `Couldn't find the ${pointer.view} view for ${pointer.resource_slug} — ` +
+      `select it manually under Analysis.`, 6000);
+    return;
+  }
+  // Opens closed, closes open — same as clicking the card's own Results
+  // button. Fine for the common case (pointer opens a card the user hadn't);
+  // re-clicking a pointer into an already-open card closes it instead of a
+  // no-op, which is the one place this shortcuts the real toggle affordance.
+  await toggleAnalysisResults(target.analysisId, pointer.resource_slug, null);
+  resultsEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (pointer.perspective) {
+    // Best-effort: _archTabsHtml's buttons carry a uid generated at render
+    // time that isn't known in advance, so select by perspective value
+    // instead once the card has had a tick to render.
+    setTimeout(() => {
+      resultsEl.querySelector(`[data-arch-tab][data-arch-persp="${pointer.perspective}"]`)?.click();
+    }, 150);
+  }
+}
+
 function _renderCompiledContext(data) {
   const m = data.manifest || {};
   const messages = document.getElementById('messages');
@@ -10935,7 +11016,7 @@ function _renderCompiledContext(data) {
     ? packed.map(p => `<div class="flex justify-between gap-2">
           <span class="text-slate-300">${_esc(p.key)}</span>
           <span class="text-slate-500">${_esc(p.rung)} · ${p.size}</span>
-        </div>`).join('')
+        </div>${_pointerLinkHtml(p.pointer)}`).join('')
     : '<div class="text-slate-500">nothing packed</div>';
 
   const droppedHtml = dropped.length
