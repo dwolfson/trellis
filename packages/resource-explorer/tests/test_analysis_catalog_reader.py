@@ -108,10 +108,14 @@ class TestFilterByIntent:
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the
     # maintainer's explicit ruling, not this test's) even though both of its
     # steps fetch (repo_arch_detect needs a zipball, repo_arch_coupling also
-    # a git clone) — the one named exception to CLAUDE.md rule 17's zero-
-    # fetch signature. Recorded here rather than silently weakening the
-    # check for everything else: a NEW discovery entry that also fetches
-    # should still fail this test unless it is deliberately added here too.
+    # a git clone) — a named exception to CLAUDE.md rule 17's zero-fetch
+    # signature. RE-RETIERED to analysis 2026-08-30 (Dan: "architecture
+    # recovery is an analysis step and belongs there"), so it is gone from
+    # this set — not because the earlier ruling was wrong to record, but
+    # because the ruling itself changed. See analysis_catalog.yaml's entry
+    # for the fuller reasoning (profiled ~110s wait, not "cheap enough to
+    # gate the expensive tiers" by any measurement).
+    #
     # repo_classification added 2026-08-22. It declares requires_resources={},
     # so it would pass the check below WITHOUT being named here — and that is
     # exactly why it is named here. It reaches GitHub directly (repo tree,
@@ -121,15 +125,13 @@ class TestFilterByIntent:
     # handful of API calls passes; the honest way to record that is an explicit
     # exception, not silence. Design §5.5b.
     #
-    # `architecture_doc_lens` is the THIRD entry here (2026-08-25). It reads the
-    # project's architecture document, which is up to MAX_DOC_FILES GitHub calls
-    # and frequently against a DIFFERENT repository than the one being surveyed.
-    # Three exceptions is the point at which "discovery is the zero-fetch
-    # derivation tier" stops describing the tier and starts describing an
-    # intention — flagged here rather than absorbed, because the next addition
-    # should be a decision about the rule, not another entry in this set.
-    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification",
-                                "architecture_doc_lens"}
+    # `architecture_doc_lens` is the SECOND entry here (2026-08-25, was third
+    # until architecture_recovery left). It reads the project's architecture
+    # document, which is up to MAX_DOC_FILES GitHub calls and frequently
+    # against a DIFFERENT repository than the one being surveyed. Recorded
+    # rather than absorbed, because the next addition should be a decision
+    # about the rule, not another entry in this set.
+    DISCOVERY_FETCHES_ANYWAY = {"repo_classification", "architecture_doc_lens"}
 
     def test_discovery_is_the_zero_fetch_derivation_tier(self):
         """Discovery reasons over what Scouting collected rather than fetching:
@@ -142,10 +144,12 @@ class TestFilterByIntent:
         analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
         # `architecture_summary` is in the ZERO-fetch set deliberately, unlike
-        # `architecture_recovery` beside it: its input is another step's output
-        # rather than an external resource, which is the shape rule 17's
-        # discovery tier describes. It is the first analysis here that consumes
-        # findings instead of collecting anything.
+        # `architecture_recovery` (retiered out of discovery entirely
+        # 2026-08-30, so it no longer appears in this set at all): its input
+        # is another step's output rather than an external resource, which is
+        # the shape rule 17's discovery tier describes. It is the first
+        # analysis here that consumes findings instead of collecting
+        # anything.
         assert ids == {"license_classification", "maturity", "repo_conventions",
                        "repo_classification", "architecture_summary",
                        # community_support was here from 2026-08-26 until
