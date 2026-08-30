@@ -388,6 +388,135 @@ indistinguishable from earned ones would launder an assertion into an observatio
 Last of the four steps deliberately, because it is the only one that touches already-published data
 and cannot be undone by re-running a survey.
 
+#### MEDIUM — borrow reflexion models' three-way vocabulary for curator verdicts
+
+*(Opened 2026-08-30, from a literature pass cross-reading this file against the academic/commercial
+record — feeds the "take architecture results into Curate" item above.)*
+
+Murphy, Notkin & Sullivan's reflexion models (IEEE TSE 2001, building on the 1995 SIGSOFT paper)
+name three outcomes when an extracted model meets a hypothesized high-level one: **convergence**,
+**divergence**, **absence**. That is a ready-made vocabulary for the undesigned axis in the item
+above (accept/reject/retype a proposed component) — a curator note *converges* with a detector's
+finding, *diverges* from it, or names something the detector found nothing for (absence). Cheaper
+to adopt their names than invent new ones, and their process is worth the same treatment: reflexion
+is explicitly iterative, recomputed each time the human's model changes, not a one-shot verdict.
+
+**Open question the paper does not answer.** Reflexion models are computed against *one*
+hypothesized model at a time — the technique is silent on whether "architecture" is absolute or
+perspective-specific. Architecture recovery already has four perspectives (Logical/Deployment/etc.,
+design doc §4.1) where the same component can read differently depending which view is asked.
+Nothing in the 2001 paper or its 1997 case-study followup addresses running reflexion per-
+perspective and reconciling the results — a component might converge under Deployment and diverge
+under Logical simultaneously. That reconciliation is genuinely new design work, not something to
+borrow.
+
+#### MEDIUM — separate "correct" from "useful right now": confidence and utility are different axes
+
+*(Opened 2026-08-30. Dan: "the goal isn't just architecture recovery — its recovery and
+understanding of useful artifacts... the threshold for useful isn't static — so at one end of the
+scale it might be everything, at the other it might be that we don't publish any of the artifacts
+we discover.")*
+
+CleanGraph's pattern (arXiv:2405.03932 — confidence/source/extractor metadata per edge, low-
+confidence routed to a human queue) is the wrong borrow if read as confidence routing alone.
+**Confidence** — is this component real? — and **usefulness** — is it worth a curator's attention
+*right now*, out of everything else competing for it? — are orthogonal. A component can be detected
+with high confidence and still not be interesting at the current threshold (a leaf utility module);
+a low-confidence guess can be exactly what a curator needs to see because it's the one thing
+standing between them and understanding a subsystem that matters.
+
+The 1035→451→20 collapse (`architecture-recovery-presentation-findings.md`) is already implicitly
+answering this question by discarding most of the graph — but as a fixed row cap, which is the
+wrong shape for a threshold that needs to slide from "show everything" to "publish nothing found."
+Worth designing as an explicit, adjustable utility score — a field separate from Confidence, not
+folded into it and not a hard-coded cap. Related: the presentation-findings item above already
+names the row-cap symptom; this names what the missing control actually is.
+
+#### MEDIUM — the replayability guarantee is only as strong as the resolver behind it
+
+*(Opened 2026-08-30. Dan, re: RAGdeterm's structured-retrieval determinism: "isn't it also
+dependent on mechanism too?")*
+
+Yes — and this sharpens `context-compilation-design.md` §9's untested claim rather than settling
+it. RAGdeterm (ScienceDirect, 2026) gets determinism by grounding retrieval in an explicit
+structured representation instead of similarity search — the same move the packer makes (resolvers
+over Egeria's materialized state, not a vector search). But "structured query" does not imply
+deterministic: an unordered `SELECT`, a paginated cursor, or a resolver that calls an LLM
+mid-resolution are all "structured" and still non-replayable. This file's own telemetry item
+(top of this section) already flags that a survey step can be LLM-based and non-deterministic —
+this is the same fact one layer up: **the replayability contract needs to be a property the
+compiler can check per-resolver**, not an assumption that holds because the store is structured.
+Worth a `deterministic: bool` tag on the resolver registry, mirroring the `run_time`/cost tags
+CLAUDE.md rule 17 already requires.
+
+#### LOW — Collibra's status lifecycle, checked
+
+*(Opened 2026-08-30, the promised follow-up on the item below.)*
+
+Collibra's Business Term lifecycle is **Candidate → Under Review → Accepted**, with **Rejected** a
+terminal state reachable from Candidate (an Onboarding Workflow moves a term out of Candidate;
+ineligible terms go to Rejected instead). Close to a 1:1 match for the ContentStatus ladder nothing
+here walks yet.
+
+The more useful thing to borrow isn't the four names — it's that Collibra implements statuses and
+the transitions between them as **configuration, not code**: a "Workflow Definition" declares which
+status transitions are legal, separate from the status values themselves. Worth copying regardless
+of what the final state names are, since it means a fifth ContentStatus later doesn't mean finding
+every place a transition is hard-coded. Could not verify Collibra's edge-case handling (what
+happens to relationships when a term is rejected; whether Rejected can re-enter Candidate) from
+public docs — that needs a live instance or their admin guide, not marketplace/product-resource
+pages.
+
+#### HIGH — Egeria already has this: `Memento` is architecture recovery's tombstone, native
+
+*(Opened 2026-08-30. Dan: "Egeria itself also implements tombstones (called mementos) in order to
+preserve lineage graphs over time. But sounds like there is more to learn here.")*
+
+Confirmed against the local Egeria checkout
+(`open-metadata-types/.../OpenMetadataTypesArchive2_6.java`, `addMementoClassification`) and
+egeria-project.org: `Memento` is a classification attachable to any `OpenMetadataRoot` entity,
+carrying `archiveDate`/`archiveUser`/`archiveProcess`/`archiveService`/`archiveMethod`/
+`archiveProperties`. Its stated purpose: *"indicates that an element is logically deleted because
+it is no longer describing all or part of a real-world digital resource... retained to support
+lineage graph queries."* **Memento elements are excluded from normal queries and only returned when
+the caller passes `forLineage`.**
+
+That is this project's tombstoning design, already built, natively, in the platform it is
+Egeria-first about. `WITHDRAWN_LABEL` (steps 1–3, `architecture-recovery-scope-tombstoning.md`)
+reimplements the same shape locally: mark-not-delete, retained for history, hidden from normal
+reads. Two things worth checking before step 4 (the backfill, above) goes further:
+
+- Does the local tombstone need to keep existing once a component is actually projected to Egeria
+  (Phase 2, still unbuilt — the item at the top of this file), or should local withdrawal just set
+  `Memento` on the published element and let Egeria's own `forLineage` filtering do the hiding?
+- If both are going to exist for a while (local proposals aren't published, so have nothing to put
+  `Memento` on), the *fields* are worth matching now rather than reconciling later —
+  `archiveProcess`/`archiveMethod` map onto exactly the "which step withdrew this, and how"
+  provenance `cause: unclaimed` (the backfill item above) is already trying to express by hand.
+
+Not "redone from scratch was wasted work" — the local version had to exist before anything reached
+Egeria, and still does for proposals that never get published. But it's now clear there's a real
+convergence point once Phase 2 lands, and designing step 4's backfill without checking `Memento`'s
+shape risks diverging further from a mechanism that already solves the identical problem one layer
+up.
+
+#### Note — is the eight-intent/curation model more complex than anything proven to need it?
+
+*(Opened 2026-08-30. Dan: "I wonder if our model is too complex and unnatural — something to keep
+in mind.")*
+
+Not a task — a caution worth keeping attached to future design work rather than resolving. Two data
+points from this session's research feed the worry directly: **no commercial catalog surveyed**
+(Amundsen, DataHub, Atlas, Collibra, Alation, Purview, Dataplex) **implements more than a two-tier
+automated/human split** — nothing resembling eight named intents exists in production elsewhere.
+And Egeria itself shipped `Memento` — a working tombstone — years before this project built its own
+(the entry above). Neither is proof the model is over-built: eight intents may be doing real work
+seven vendors happen not to need, the same way architecture recovery's multi-perspective view does
+work Reflexion Models never had to (the vocabulary entry above). But "nobody else needed this many
+moving parts" and "we rebuilt something that already existed one layer down" are both the kind of
+signal that's easy to miss from inside the project, and worth someone periodically asking from
+outside it rather than only from the momentum of the backlog that's accumulated.
+
 #### LOW — coupling's decision trace is 250 copies of one line
 
 *(Opened 2026-08-30, surfaced by persisting the trace — invisible while it was `log.info`-only.)*
