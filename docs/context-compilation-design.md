@@ -641,14 +641,29 @@ does not silently omit. This preserves the existing scheduler/outbox architectur
 competing with it, and it is consistent with the standing decision that shared analytics are
 **materialized, not live-called**.
 
-**Implementation finding (2026-08-27).** Two corrections from building this:
+**Implementation finding (2026-08-27), reversed (2026-08-30).** Two corrections from building this,
+one of which held only until a counterexample this section didn't have:
 
-- **`availability` is derived, not tagged.** The analysis catalog already carries `run_time`
-  (`fast` / `minutes` / `async`), which is the same cost signal. `AnalysisCatalogEntry.availability`
-  maps `fast` → `inline` and everything else → `queued`, with unknown values treated as `queued`
-  because guessing cheap is the dangerous direction. A second hand-maintained column would be one
-  more thing to keep consistent with the first — §19's argument against multiplying the vocabulary
-  applies to the catalog's own columns, not only to new axes.
+- ~~**`availability` is derived, not tagged.**~~ **REVERSED, Dan's ruling, 2026-08-30.** The
+  argument above was right while `run_time` and "may a compiler run this inline" always agreed —
+  `architecture_recovery` is the case where they came apart. Its *compute* is 5.9s, so
+  `run_time: fast` is honest; but a compile running it inline also pays *acquisition* (14.4s warm,
+  ~30s cold — `docs/Backlog.md` "costs 110s to fetch and 5.9s to run"), inside a packer this
+  section requires to **never trigger a survey**. `run_time` was carrying two loads — how
+  expensive the compute is, and whether a compiler may run this inline — and only the second
+  carries a hard safety requirement, so it is now its own field: `AnalysisCatalogEntry.availability`
+  is **declared**, defaulting to `queued` (unset means queued deliberately — guessing cheap is
+  still the dangerous direction, that half of the original reasoning stands). 20 entries declare
+  `inline` (fetch-free *and* fast, read off `STEP_REGISTRY.requires_resources`, not by eye); 9
+  declare `queued` (4 acquire a zipball/clone, 5 are minutes-scale or actions).
+  `architecture_recovery` is pinned `run_time: fast` **and** `availability: queued` — a
+  combination that was structurally impossible under the derived rule, which is the whole point of
+  no longer deriving it. `_derive_availability()` survives only as a fallback for
+  `_egeria_merge_entries`'s hand-built live-Egeria dicts, which have no catalog row to declare
+  from. Reopening the "two columns drift" risk this section originally argued against is answered
+  the same way §19 answers it elsewhere: guarded by tests (nothing `inline` acquires a resource or
+  runs slow, something *is* `inline`, `architecture_recovery` is pinned so the divergence can't be
+  quietly re-derived away) rather than hoped.
 - **`temporal` does not belong on the analysis catalog at all.** The compiler reads *stored,
   timestamped* analysis results, never a live run — so every analysis is as-of-able over its own
   results, and tagging 34 entries `as_of` would be a column with one value. `current_only` is a
@@ -815,23 +830,25 @@ Needs no spec, no packer, no tree. These are §18's measurement instruments in t
 
 ### Phase 1 — authoring, not code
 
-*(Status, 2026-08-30: item 4 is superseded — see below. Items 5 and 6 are unbuilt: no
-`fetched_at`/`as_of`/source-GUID envelope is captured at ingest, and `feedback` carries no
-`manifest_id`.)*
+*(Status, 2026-08-30: item 4 is half-built, half-superseded, and reversed once already — see
+below. Items 5 and 6 are unbuilt: no `fetched_at`/`as_of`/source-GUID envelope is captured at
+ingest for an Egeria-sourced artifact, and `feedback` carries no `manifest_id`.)*
 
 4. ~~**Two columns on the analysis catalog**: `availability: materialized | schedulable` and
-   `temporal: as_of | current_only`.~~ **SUPERSEDED by §20's implementation findings (2026-08-27);
-   do not build this.** Verified 2026-08-30 against the code:
-
-   * `availability` is **derived, not tagged** — `AnalysisCatalogEntry.availability`
-     (`analysis_catalog_reader.py:66`) maps `run_time` `fast` → `inline` and everything else →
-     `queued`. A second hand-maintained column would be one more thing to keep consistent with the
-     first. Note the vocabulary also moved: the pair is `inline | queued`, not
-     `materialized | schedulable`.
-   * `temporal` **does not belong on the analysis catalog at all** — the compiler reads stored,
+   `temporal: as_of | current_only`.~~ **Partially built, on a different history than either
+   earlier note here predicted.** The vocabulary moved twice: this item's own
+   `materialized | schedulable` was never built; a 2026-08-27 finding then said `availability`
+   should be *derived* from `run_time` rather than tagged at all (superseding this item); and
+   Dan's 2026-08-30 ruling reversed that (§20) once `architecture_recovery` showed `run_time` and
+   "safe to run inline" coming apart. **Current state:** `availability: inline | queued` **is now
+   a declared field** on `AnalysisCatalogEntry`, defaulting to `queued`, with 20 entries declaring
+   `inline` and 9 declaring `queued` — see §20 for why the derived version stopped being safe. So
+   this half of the item is built, just not the way it was proposed, and not the way the
+   2026-08-27 note said it never would be.
+   * `temporal` **still does not belong on the analysis catalog** — the compiler reads stored,
      timestamped results, so every analysis is as-of-able over its own output and the column would
      have one value. `current_only` is a property of **resolver kind**, and no resolver-kind
-     registry exists yet — so this remains open, in a different place than this list said.
+     registry exists yet — this half remains open, in a different place than this list said.
 
    *Left struck through rather than deleted because the reasoning is the useful part: a reader
    following the task list would rebuild exactly what §20 argued against, which is how this was
