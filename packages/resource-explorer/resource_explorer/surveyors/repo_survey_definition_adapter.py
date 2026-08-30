@@ -2080,6 +2080,12 @@ def _architecture_recovery_results(
         default="",
     )
     return {
+        # Carried so the renderer can call the curator-verdict endpoints
+        # (/api/curate/component-verdicts/repo/{slug}) without a second
+        # parameter threaded through _renderCustomAnalysisResults' generic
+        # `(data) => html` registry contract — every other entry there stays
+        # untouched.
+        "slug": slug,
         "components": displayed,
         # Ports and wires live under the same analysis because they are the same
         # recovery run's output, but in their own key rather than folded into

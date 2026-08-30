@@ -212,3 +212,16 @@ class TestCuratorVerdictMergedIntoResults:
         result = _architecture_recovery_results(registry, project.slug, max_depth=None)
         row_b = next(c for c in result["components"] if c["path"] == "pkg/b")
         assert row_b["verdict"] is None
+
+    def test_result_carries_its_own_slug(self, registry, project):
+        """The verdict UI (index.html's _archRow/_archSubmitVerdict) needs the
+        slug to build /api/curate/component-verdicts/repo/{slug} without a
+        second parameter threaded through _renderCustomAnalysisResults'
+        generic (data) => html registry contract — so it rides on the
+        payload itself instead."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        assert result["slug"] == project.slug
