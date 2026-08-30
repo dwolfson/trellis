@@ -41,6 +41,44 @@ an identity rule renames some components, and every rename orphans the scopes it
 left behind. The catalog accumulates a permanent sediment of every identity
 scheme the pipeline has ever had, all of it indistinguishable from current.
 
+### Measured, 2026-08-30 — the design's missing evidence
+
+This note was written with **zero examples**, reasoned entirely from the store's
+read semantics. Re-running `repo_arch_detect` and `repo_arch_coupling` against
+the current code supplied them, and the numbers are worse than the argument was:
+
+| resource | scopes written by the latest run | orphaned | |
+|---|---|---|---|
+| `egeria_git` — all perspectives | 870 | **165** | 15% stale |
+| `egeria_git` — **deployment only** | **8** | **27** | **77% stale** |
+| `egeria_workspaces_git` — all | 152 | 23 | 13% stale |
+| `egeria_workspaces_git` — deployment | 69 | 2 | 3% stale |
+
+A curator opening Egeria's deployment architecture today sees **35 components
+where 8 are real**. The dead 27 are every identity scheme the discoverer has
+had: `spring::Development-OMAG-Server-Platform::view-server`,
+`Development-OMAG-Server-Platform::view-server` and
+`Containerized-OMAG-Server-Platform::view-server` all sit beside the live
+`OMAG-Server-Platform::view-server`, each at full confidence, none marked.
+
+Three things this measurement settles that the argument could not:
+
+* **The problem concentrates exactly where the work happens.** 15% stale
+  overall, 77% in the one perspective whose identity rules were improved most.
+  Orphaning is proportional to *how much a detector got better*, which is the
+  opposite of the incentive anyone wants.
+* **`egeria_workspaces_git` is the control.** Its deployment components come
+  from compose services whose identity never changed — 2 orphans against 69
+  live. Same store, same queries, same steps; the difference is entirely
+  whether the naming rule moved.
+* **The count is not converging.** It was 14 when this note was written and is
+  27 a day later, from one afternoon of fixes.
+
+*(Method: a scope is counted orphaned when the latest run of neither step wrote
+it. Both steps ran at one shared `surveyed_at` here, so this is exactly R2's
+"scopes I used to write and did not write this time" — measured across both
+writers at once rather than per-step.)*
+
 ## 2. Why writing a better row does not fix it
 
 Three facts about the store combine, and only the third is obvious.
@@ -243,7 +281,7 @@ launder an assertion into an observation.
 
 ## 8. Honest limits
 
-- **The revive rule is untested at scale.** "Most recent row wins" is right for
+- **The orphan population is now measured (see §1's table); the revive rule is not.** "Most recent row wins" is right for
   detect/coupling, the only two-writer kind today. A third writer with a
   different cadence could produce withdrawal/revival churn, and nothing here
   measures that.
