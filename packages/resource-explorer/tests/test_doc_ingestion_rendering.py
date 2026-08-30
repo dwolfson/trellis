@@ -27,6 +27,18 @@ from resource_explorer.surveyors.repo_survey_definition_adapter import (
 )
 
 
+#: Asserts over whatever the LIVE shared registry HOLDS, not over fixtures.
+#: That is the point — "58 of 60 real repos render an empty security-features
+#: card" is a fact no fixture would have produced — and it is also why these are
+#: opt-in: five sessions share one Postgres, and a peer running a survey can turn
+#: them red in a file nobody touched (measured 2026-08-30, when a concurrent
+#: survey of egeria_workspaces_git caught it mid-run).
+#:
+#: Run with `pytest --corpus` when the corpus is quiet, which is the only time
+#: their answer means anything.
+pytestmark = pytest.mark.corpus
+
+
 class _Boom:
     """A registry whose metrics read explodes."""
 

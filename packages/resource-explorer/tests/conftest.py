@@ -112,6 +112,15 @@ def _egeria_reachable() -> bool:
 _EGERIA_AVAILABLE = _egeria_reachable()
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--corpus", action="store_true", default=False,
+        help="run tests that assert over the live shared registry's actual "
+             "contents (skipped by default — a concurrent survey in another "
+             "session can turn them red in files nobody touched)",
+    )
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -122,6 +131,11 @@ def pytest_configure(config):
         "markers",
         "requires_egeria: needs a live reachable Egeria platform "
         "(auto-skipped when one isn't available)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "corpus: asserts over whatever the LIVE shared registry happens to "
+        "contain (skipped by default; --corpus to run)",
     )
 
 
@@ -147,6 +161,27 @@ def pytest_collection_modifyitems(config, items):
             returncode=1,
         )
 
+    #: Corpus tests assert over whatever the live shared registry HOLDS, not
+    #: over fixtures. That is their value — `security_features` rendering as a
+    #: bare empty card on 58 of 60 real repos is a fact no fixture would have
+    #: produced — and it is also why they cannot run by default now that five
+    #: sessions share one Postgres.
+    #:
+    #: Measured 2026-08-30: a peer session surveying `egeria_workspaces_git`
+    #: caught it mid-run, in a state the security-features reader classifies
+    #: into none of its three causes, and turned this suite red in a file that
+    #: session had never touched. The worktree split partitions FILES; the
+    #: registry is still shared, so data contention is untouched by it.
+    #:
+    #: Skipped rather than deleted, and opt-in rather than removed: run them
+    #: with `--corpus` when the corpus is quiet, which is exactly when their
+    #: answer means anything.
+    skip_corpus = pytest.mark.skip(
+        reason="asserts over the live shared registry — run with --corpus when "
+               "no other session is surveying"
+    )
+    run_corpus = config.getoption("--corpus")
+
     skip_pgvector = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
     skip_egeria = pytest.mark.skip(reason="Egeria platform not reachable at the configured platform_url")
     for item in items:
@@ -154,6 +189,8 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_pgvector)
         if not _EGERIA_AVAILABLE and "requires_egeria" in item.keywords:
             item.add_marker(skip_egeria)
+        if not run_corpus and "corpus" in item.keywords:
+            item.add_marker(skip_corpus)
 
 
 @pytest.fixture(scope="session")
