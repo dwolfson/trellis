@@ -41,6 +41,18 @@ _RESOURCE_TYPE_TO_TECH_TYPE: dict[str, str] = {
 _last_merge_status: dict[str, str] = {}
 
 
+def _derive_availability(run_time: str) -> str:
+    """"inline" | "queued" -- shared by AnalysisCatalogEntry.availability
+    below and _egeria_merge_entries's hand-built live-Egeria dicts, which are
+    never AnalysisCatalogEntry instances (no to_dict() available) and would
+    otherwise need their own hardcoded copy of this rule -- exactly the "one
+    more thing to keep consistent" the property's own docstring warns against
+    (docs/context-compilation-design.md section 19). Only "fast" is inline;
+    "minutes"/"async"/anything unrecognized is queued, because guessing cheap
+    is the dangerous direction."""
+    return "inline" if run_time == "fast" else "queued"
+
+
 @dataclass(frozen=True)
 class AnalysisCatalogEntry:
     id: str
@@ -77,7 +89,7 @@ class AnalysisCatalogEntry:
         can synchronously await them (section 20), and an unknown value is
         treated as queued because guessing cheap is the dangerous direction.
         """
-        return "inline" if self.run_time == "fast" else "queued"
+        return _derive_availability(self.run_time)
 
     def to_dict(self) -> dict:
         return {
@@ -256,6 +268,13 @@ def _egeria_merge_entries(resource_type: str) -> list[dict]:
             "annotation_types": [annotation_type] if annotation_type else [],
             "source": "egeria",
             "run_time": "async",
+            # Was missing entirely on this hand-built dict path (unlike
+            # AnalysisCatalogEntry.to_dict()'s local entries), which meant any
+            # caller indexing a["availability"] -- e.g.
+            # test_only_fast_is_inline, or a context-compile packer deciding
+            # inline-vs-queued -- hit a bare KeyError the moment Egeria was
+            # actually reachable and this merge produced real entries.
+            "availability": _derive_availability("async"),
             "action": "survey",
             "recommended": False,
             "egeria_registration": {"candidate": True, "native_process_ref": [resource_type, tech_type]},
