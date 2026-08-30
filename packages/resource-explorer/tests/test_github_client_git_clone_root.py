@@ -16,8 +16,13 @@ import pytest
 from resource_explorer.github.client import GitHubClient
 
 
-def _client():
-    return GitHubClient.__new__(GitHubClient)
+def _client(sha=None):
+    """See test_github_client_zipball_root._client — `sha=None` is the
+    uncacheable path, which must keep behaving exactly as before the
+    SourceCache existed."""
+    c = GitHubClient.__new__(GitHubClient)
+    c._default_branch_sha = lambda repo: sha
+    return c
 
 
 def _fake_repo(full_name="test/myproj", clone_url="https://github.com/test/myproj.git"):
