@@ -244,6 +244,24 @@ def persist_ir(
                         "deployment_context": c.identity.deployment_context,
                     },
                     "run_scope": run_scope, **outcome_row,
+                    # WHICH STEP wrote this row. Step 1 of
+                    # `architecture-recovery-scope-tombstoning.md` and additive
+                    # by design: nothing reads it yet.
+                    #
+                    # It is the enabler for that note's R2 — a step may only
+                    # withdraw scopes IT wrote. `repo_arch_detect` and
+                    # `repo_arch_coupling` write the SAME kind, so an
+                    # unattributed withdrawal makes them erase each other's
+                    # components alternately and forever. `persist_ir` already
+                    # solved this collision once for metrics by prefixing
+                    # `run_label` into the metric name (see the run-summary row
+                    # below); this puts the same key where the component rows
+                    # can be grouped by it.
+                    #
+                    # NOT `proposed_by`, which is the tempting proxy and the
+                    # wrong one: it names the DETECTOR, and a detector can move
+                    # between steps without any component changing.
+                    "run_label": run_label,
                     "files": c.files, "blueprint": c.blueprint,
                     "proposed_by": c.proposed_by, "perspective": c.perspective,
                     "confidence_level": c.confidence_level,

@@ -294,8 +294,14 @@ launder an assertion into an observation.
 
 ## 9. Staging
 
-1. **Add `run_label` to component rows** (R2's enabler). Additive, no reader
-   changes, no behaviour change — and it is a precondition for everything else.
+1. ~~**Add `run_label` to component rows** (R2's enabler).~~ **DONE 2026-08-30.**
+   `persist.py` writes `run_label` into every component row's detail; both real
+   steps already passed distinct values (`detect` / `coupling`), so only the
+   write site changed. Additive and unread — nothing consumes it yet.
+   `tests/test_arch_run_label.py` covers the grouping query R2 actually needs
+   ("which scopes did THIS step write?") plus a guard on the two call sites,
+   because identical labels would silently defeat R2 while every other test
+   still passed.
 2. **Add the reserved label and teach `query_finding_scopes`.** Five callers,
    all architecture readers. Measure the enumerated-scope count for
    `egeria_git` before and after, which should not move at all until step 4.
