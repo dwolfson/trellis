@@ -1104,6 +1104,32 @@
   </div>
 </div>
 
+<!-- Run Analysis (catalog card) modal — gives the analysis-card "Run" action
+     the same backgrounded shape as the Run Survey Definition modal below:
+     activity-log progress instead of a single blocking toast (2026-08-30,
+     docs/Backlog.md "the analysis-card Run gives no prompt and no progress
+     for slow work"). No credentials/submit step — a card's Run already
+     means "run it now", so this opens straight into "Starting…". -->
+<div id="analysis-run-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="flex items-center justify-between mb-4">
+      <span class="font-semibold text-slate-100">Running — <span id="analysis-run-name" class="text-emerald-400"></span></span>
+      <button onclick="hideAnalysisRunModal()" class="text-slate-500 hover:text-slate-200 text-lg leading-none">×</button>
+    </div>
+    <div class="space-y-3">
+      <div id="analysis-run-error" class="text-red-400 text-xs hidden"></div>
+      <div id="analysis-run-progress" class="text-slate-400 text-xs hidden">Starting…</div>
+      <div id="analysis-run-result" class="hidden text-xs bg-slate-800/60 rounded p-2 space-y-1"></div>
+      <div class="flex gap-2 pt-1">
+        <button id="analysis-run-close-btn" onclick="hideAnalysisRunModal()"
+          class="flex-1 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition-colors">
+          Close — keeps running in background →
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Run Survey Definition modal -->
 <div id="survey-def-run-modal" class="modal-overlay hidden">
   <div class="modal-box">
@@ -3830,23 +3856,7 @@ function _renderAnalysisTrendChart(elId, runs, analysisId) {
 function _runAnalysisCatalogCard(_analysisId) {
   if (resourceTypeFacet === 'repo') {
     if (!selectedProject) { showToast('info', 'Select a repo first.', 4000); return; }
-    const slug = selectedProject;
-    fetch(`/api/projects/${slug}/analyses/${_analysisId}/run`, { method: 'POST' })
-      .then(r => r.json())
-      .then(data => {
-        if (data.status === 'ok') {
-          showToast('success', `'${_esc(_analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(data.message)}`, 6000);
-          if (_analysisId in _REPO_RESULTS_RENDER_MODE) {
-            const safeId = String(_analysisId).replace(/[^a-zA-Z0-9]/g, '_');
-            document.getElementById(`results-${safeId}`)?.classList.remove('hidden');
-            loadAnalysisResults(_analysisId, slug);
-          }
-        } else {
-          showToast('error', `'${_esc(_analysisId)}' failed: ${_esc(data.error || 'unknown error')}`, 8000);
-        }
-      })
-      .catch(e => showToast('error', `Request failed: ${_esc(e.message)}`, 8000));
-    showToast('running', `Running <strong>${_esc(_analysisId)}</strong> on <strong>${_esc(slug)}</strong>…`, 0);
+    runAnalysisCatalogCard(_analysisId, selectedProject);
   } else if (resourceTypeFacet === 'db') {
     if (!selectedDatabase) { showToast('info', 'Select a database first.', 4000); return; }
     showSurveyDbModal(selectedDatabase);
@@ -3854,6 +3864,83 @@ function _runAnalysisCatalogCard(_analysisId) {
     if (!selectedFilesystem) { showToast('info', 'Select a filesystem first.', 4000); return; }
     showSurveyFsModal(selectedFilesystem);
   }
+}
+
+function hideAnalysisRunModal() {
+  document.getElementById('analysis-run-modal').classList.add('hidden');
+}
+
+// Gives the analysis-card path the Run Survey Definition modal's shape
+// (2026-08-30, docs/Backlog.md "the analysis-card Run gives no prompt and no
+// progress for slow work") — POST /run now returns an activity_id
+// immediately (see projects.py's run_single_analysis) instead of blocking
+// for the whole run, so this backgrounds and polls exactly like
+// submitSurveyDefinitionRun() does, reusing its _pollActivityUntilDone.
+// Unlike that modal there's no credentials/submit step: a card's Run already
+// means "run it now" — this opens the modal straight into "Starting…".
+async function runAnalysisCatalogCard(analysisId, slug) {
+  document.getElementById('analysis-run-name').textContent = analysisId;
+  const errEl    = document.getElementById('analysis-run-error');
+  const progress = document.getElementById('analysis-run-progress');
+  const resultEl = document.getElementById('analysis-run-result');
+  const closeBtn = document.getElementById('analysis-run-close-btn');
+
+  errEl.classList.add('hidden'); errEl.textContent = '';
+  resultEl.classList.add('hidden'); resultEl.innerHTML = '';
+  progress.classList.remove('hidden'); progress.textContent = 'Starting…';
+  closeBtn.textContent = 'Close — keeps running in background →';
+  document.getElementById('analysis-run-modal').classList.remove('hidden');
+
+  const opId = logOp({ type:'analysis', slug, status:'running',
+    summary:`Running '${analysisId}' on ${slug}…` });
+
+  let started;
+  try {
+    const startRes = await fetch(`/api/projects/${slug}/analyses/${analysisId}/run`, { method: 'POST' });
+    started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+  } catch(e) {
+    progress.classList.add('hidden');
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+    updateOp(opId, 'error', `Failed to start '${analysisId}'`, e.message);
+    showToast('error', `Failed to start '${_esc(analysisId)}': ${_esc(e.message)}`, 8000);
+    return;
+  }
+
+  showToast('running', `Running <strong>${_esc(analysisId)}</strong> on <strong>${_esc(slug)}</strong>… (can take a while — check 📋 Activity if you navigate away)`, 0);
+  const runningToastId = `toast-${_toastSeq}`;
+
+  const final = await _pollActivityUntilDone(started.activity_id, {
+    onTick: (elapsedSec) => { progress.textContent = `Running… (${elapsedSec}s elapsed — this may take a while)`; },
+  });
+  document.getElementById(runningToastId)?.remove();
+  progress.classList.add('hidden');
+
+  // The run's outcome is JSON-encoded into the completed activity entry's
+  // own `detail` field — see projects.py's _run_single_analysis_background.
+  let data = {};
+  try { data = final.detail ? JSON.parse(final.detail) : {}; } catch { data = {}; }
+
+  if (final.status === 'error') {
+    const msg = data.error || final.summary || 'Run failed';
+    updateOp(opId, 'error', `'${analysisId}' failed`, msg);
+    showToast('error', `'${_esc(analysisId)}' failed: ${_esc(msg)}`, 8000);
+    resultEl.innerHTML = `<div class="text-red-400">${_esc(msg)}</div>`;
+    resultEl.classList.remove('hidden');
+  } else {
+    const msg = data.message || final.summary || 'Complete';
+    updateOp(opId, 'ok', `'${analysisId}' complete`, msg);
+    showToast('success', `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(msg)}`, 6000);
+    resultEl.innerHTML = `<div class="text-emerald-400">${_esc(msg)}</div>`;
+    resultEl.classList.remove('hidden');
+    if (analysisId in _REPO_RESULTS_RENDER_MODE) {
+      const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+      document.getElementById(`results-${safeId}`)?.classList.remove('hidden');
+      loadAnalysisResults(analysisId, slug);
+    }
+  }
+  closeBtn.textContent = 'Done';
 }
 
 // ── persistent chat panel + RFA drawer toggles ──────────────────────────────────
@@ -5971,8 +6058,8 @@ function renderActivityLog() {
     list.innerHTML = '<div class="text-slate-600 text-xs text-center py-12">No operations yet. Run a survey or publish to Egeria to see activity here.</div>';
     return;
   }
-  const typeLabel = { survey:'Survey', catalog:'Catalog → Egeria', publish:'Publish → Egeria', scout:'Scout', discover:'Discover DBs', refresh:'Refresh', rfa:'RFA' };
-  const typeIcon  = { survey:'📊', catalog:'☁', publish:'☁', scout:'🔍', discover:'🔍', refresh:'🔄', rfa:'📝' };
+  const typeLabel = { survey:'Survey', catalog:'Catalog → Egeria', publish:'Publish → Egeria', scout:'Scout', discover:'Discover DBs', refresh:'Refresh', rfa:'RFA', analysis:'Analysis' };
+  const typeIcon  = { survey:'📊', catalog:'☁', publish:'☁', scout:'🔍', discover:'🔍', refresh:'🔄', rfa:'📝', analysis:'⚙' };
   const intentColor = { scouting:'text-cyan-500', assessment:'text-violet-400', discovery:'text-emerald-400', enrichment:'text-amber-400' };
   const entityIcon  = { repo:'📁', database:'🗄', server:'🖥', filesystem:'📂', file:'📄' };
   const guidRx = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;

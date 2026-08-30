@@ -356,6 +356,17 @@ class TestScoutingScanBackground:
 
 
 class TestRunSingleAnalysis:
+    """The route itself only validates and starts a background thread now
+    (2026-08-30 — see docs/Backlog.md "the analysis-card Run gives no prompt
+    and no progress for slow work"), mirroring run_scouting_scan/
+    _run_scouting_scan_background exactly. Validation (404/400) stays
+    synchronous and is tested through the route; the actual dispatch logic
+    is tested by calling _run_single_analysis_background directly —
+    through the live route it would race a `with patch(...)` block's exit
+    against a real daemon thread, same reason TestScoutingScanBackground
+    below tests its background function directly rather than through
+    run_scouting_scan."""
+
     def test_unknown_repo_returns_404(self, client):
         resp = client.post("/api/projects/not-a-real-repo/analyses/security_scan/run")
         assert resp.status_code == 404
@@ -369,42 +380,83 @@ class TestRunSingleAnalysis:
         resp = client.post("/api/projects/myproj/analyses/egeria_publish/run")
         assert resp.status_code == 400
 
-    def test_dispatches_with_only_the_mapped_steps(self, client):
-        fake_result = MagicMock(errors=[], annotations=["a", "b"])
-        with patch(
-            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
-        ) as MockOrch:
-            MockOrch.return_value.run.return_value = fake_result
+    def test_starts_a_background_run_and_returns_its_activity_id(self, client, registry):
+        with patch("resource_explorer.web.routes.projects._run_single_analysis_background"):
             resp = client.post("/api/projects/myproj/analyses/security_scan/run")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "ok"
-        MockOrch.return_value.run.assert_called_once_with("myproj", steps=["repo_security"])
+        assert data["status"] == "started"
+        assert data["activity_id"]
 
-    def test_ingest_action_id_dispatches_to_incremental_indexer_not_survey_orchestrator(self, client):
+        # The route's own synchronous half: a 'running' row exists before the
+        # (here, patched-away) background thread would ever touch it.
+        entry = registry.get_activity(data["activity_id"])
+        assert entry["status"] == "running"
+        assert entry["operation"] == "analysis_run"
+
+
+class TestRunSingleAnalysisBackground:
+    """_run_single_analysis_background/_run_single_analysis_sync: the
+    dispatch and terminal-status logic run_single_analysis's route hands off
+    to a daemon thread."""
+
+    def test_dispatches_with_only_the_mapped_steps(self, registry):
+        from resource_explorer.activity_logger import log_analysis_run
+        from resource_explorer.web.routes.projects import _run_single_analysis_background
+
+        activity_id = log_analysis_run(
+            registry, "repo", "myproj", "My Project", "running",
+            "Running 'security_scan' on myproj…", "security_scan",
+        )
+        fake_result = MagicMock(errors=[], annotations=["a", "b"])
+        with patch(
+            "resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator"
+        ) as MockOrch, patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            MockOrch.return_value.run.return_value = fake_result
+            _run_single_analysis_background("myproj", "security_scan", activity_id)
+
+        MockOrch.return_value.run.assert_called_once_with("myproj", steps=["repo_security"])
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "ok"
+
+    def test_ingest_action_id_dispatches_to_incremental_indexer_not_survey_orchestrator(self, registry):
         # rag_ingestion (action:"ingest") isn't a SurveyOrchestrator step —
         # it re-embeds content into pgvector via IncrementalIndexer.
+        from resource_explorer.activity_logger import log_analysis_run
+        from resource_explorer.web.routes.projects import _run_single_analysis_background
+
+        activity_id = log_analysis_run(
+            registry, "repo", "myproj", "My Project", "running",
+            "Running 'rag_ingestion' on myproj…", "rag_ingestion",
+        )
         with patch("resource_explorer.ingestion.incremental.IncrementalIndexer") as MockIndexer, \
              patch("resource_explorer.query_cache.QueryCache"), \
-             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
-            resp = client.post("/api/projects/myproj/analyses/rag_ingestion/run")
+             patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
+             patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            _run_single_analysis_background("myproj", "rag_ingestion", activity_id)
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-        assert data["analysis_id"] == "rag_ingestion"
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "ok"
+        import json
+        assert json.loads(entry["detail"])["analysis_id"] == "rag_ingestion"
         MockIndexer.return_value.refresh.assert_called_once()
         MockOrch.assert_not_called()
 
-    def test_ingest_failure_is_surfaced_as_error_not_a_500(self, client):
+    def test_ingest_failure_is_surfaced_as_error_not_a_crash(self, registry):
+        from resource_explorer.activity_logger import log_analysis_run
+        from resource_explorer.web.routes.projects import _run_single_analysis_background
+
+        activity_id = log_analysis_run(
+            registry, "repo", "myproj", "My Project", "running",
+            "Running 'rag_ingestion' on myproj…", "rag_ingestion",
+        )
         with patch(
             "resource_explorer.ingestion.incremental.IncrementalIndexer.refresh",
             side_effect=RuntimeError("clone missing"),
-        ):
-            resp = client.post("/api/projects/myproj/analyses/rag_ingestion/run")
+        ), patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+            _run_single_analysis_background("myproj", "rag_ingestion", activity_id)
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "error"
-        assert "clone missing" in data["error"]
+        entry = registry.get_activity(activity_id)
+        assert entry["status"] == "error"
+        assert "clone missing" in entry["summary"]
