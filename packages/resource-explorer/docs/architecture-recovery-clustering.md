@@ -657,6 +657,113 @@ application name, and its own `startup.server.list` — are **reported as notes*
 rather than silently resolved to the base's reading. Per-environment server
 lists are a real thing; pretending they are not is worse than saying so.
 
+### Three more Spring projects, three more defects — and the rule that had to be revised
+
+Chosen 2026-08-29 for **convention diversity, not domain**: `spring-petclinic`
+(canonical Spring, profile overlays), `apache/atlas` (prefix form, metadata
+domain directly comparable to Egeria), `spring-cloud-dataflow` (Spring Cloud,
+Kubernetes choreography). All three failed, in three different ways.
+
+| repo | before | after |
+|---|---|---|
+| spring-petclinic | **0** platforms | 1 — `petclinic`, environments `mysql`, `postgres` |
+| apache/atlas | **0** platforms, from 20 files | 9 |
+| spring-cloud-dataflow | 3, **two identically named** | 5, all distinct |
+
+**(1) The no-name-and-no-servers drop was far too aggressive, and it is the rule
+this document introduced the same morning.**
+
+Petclinic is the canonical Spring Boot application and produced nothing: it never
+sets `spring.application.name`, because **most Spring Boot apps have no reason
+to** — that property exists for Spring Cloud. Atlas produced nothing from twenty
+files. The rule was derived from exactly one example, egeria's
+`test.application.properties`, and generalised badly.
+
+The discriminator that fixes it needs no vocabulary of known prefixes, which
+matters because `container` / `freshstart` / `atlas` share nothing a list could
+capture. **A prefix-form file with a sibling `application.properties` is a
+variant of it; one without is the application's own config:**
+
+```
+egeria/container.application.properties       sibling base   -> variant
+egeria/test.application.properties            sibling base   -> variant, dropped
+workspaces/freshstart.application.properties  no sibling     -> platform
+atlas/distro/src/conf/atlas-application.properties  no sibling -> platform
+```
+
+That confines the drop to variants, which is where it was actually earned.
+
+**(2) Test fixtures were deployment candidates.** Atlas carries **11 of its 20**
+properties files under `src/test/resources`; dataflow 3 of 8. This module had
+already learned this lesson for a different file type — `_server_config` reads
+the *declared* config-store path rather than walking for `*.config`, because an
+earlier version picked up eleven deliberately-malformed configs from
+`configuration-file-store-connector/src/test/resources`. The precedent was in
+the file; the properties walk did not use it.
+
+**(3) Unresolved Spring placeholders became component names.** Dataflow proposed
+two platforms both literally named:
+
+```
+${vcap.application.name:spring-cloud-dataflow-tasklauncher-sink}
+```
+
+A raw placeholder, with its own default sitting unread inside the string, used
+verbatim — twice. `_resolve` handles Egeria's `~{}~` form and correctly refuses
+what it cannot expand; Spring's `${key:default}` never reached that guard
+because nothing parsed it.
+
+### The serious one: a shared name is a shared slug
+
+Fixing (1) and (3) surfaced something worse than any of them. `_slug` derives a
+component's identity from its name, so **two platforms sharing a name collapse
+onto one `scope_locator`** — the components accumulate on top of each other and
+every reader sees one. Silent, and it yields a catalog that is confidently wrong
+rather than visibly broken.
+
+Both new repos produced it, by different routes:
+
+* **atlas** — six modules each carry `atlas-application.properties`, so the
+  prefix token named all six `atlas`;
+* **dataflow** — `tasklauncher-sink-kafka` and `tasklauncher-sink-rabbit` both
+  *declare* `${vcap.application.name:spring-cloud-dataflow-tasklauncher-sink}`,
+  so the resolved default is identical. A collision between two **declared**
+  names, which no amount of better fallback naming would have prevented.
+
+The build module is what actually distinguishes them, and it is a better name
+besides — `couchbase-bridge` says more than a sixth thing called `atlas`:
+
+```
+atlas    -> couchbase-bridge, sample-app, hbase, postgres, distro, notification-analyzer
+sink     -> spring-cloud-dataflow-tasklauncher-sink-kafka, ...-sink-rabbit
+```
+
+**Honest limit:** qualification applies to every member of a colliding group,
+including the one for which the shared token was the better name. Atlas's main
+distribution config is now `distro` rather than `atlas`. That is unique and
+truthful — it is the module it lives in — but it is not the name a curator would
+have chosen, and no rule here knows which member of a collision "deserves" the
+shared name.
+
+### The scoreboard, and what it says about method
+
+Five projects outside the Egeria family have now been run. **Every one found a
+defect**, and none of the defects needed more than a small fix:
+
+| repo | framework | what it found |
+|---|---|---|
+| openmetadata | Dropwizard | a coverage boundary — correctly silent |
+| polaris | Quarkus | `quarkus.application.name` unknown; 2 apps read as 0 |
+| petclinic | Spring Boot | most Spring apps declare no name at all |
+| atlas | Spring/custom | test fixtures counted; six components named alike |
+| dataflow | Spring Cloud | `${...}` placeholders used verbatim as names |
+
+The pattern is not that the rules were careless. It is that **a rule measured on
+two repos from one project family encodes that family's conventions as though
+they were universal**, and the only reliable way to find out is to run it
+somewhere else. Each fix cost minutes; each defect would have been invisible
+indefinitely without the example.
+
 ### Known consequence, not yet addressed
 
 **Renaming a component's slug orphans its rows rather than superseding them.**

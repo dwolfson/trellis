@@ -353,7 +353,8 @@ class TestDeploymentStyleConsolidation:
         (tmp_path / "test.application.properties").write_text("startup.server.list=\n")
         out = spring_app.discover(str(tmp_path))
         assert [p["name"] for p in out["platforms"]] == ["Real Platform"]
-        assert any("declares no servers and no platform.name" in n for n in out["notes"])
+        assert any("is a variant of the `application.properties` beside it" in n
+                   for n in out["notes"])
 
     def test_a_named_platform_with_no_servers_is_still_a_platform(self, tmp_path):
         """Only the BOTH case is dropped. Someone who wrote a platform.name
@@ -592,3 +593,96 @@ class TestProfileOverlays:
         assert out["platforms"][0].get("environments") is None
         assert out["platforms"][0]["paths"] == [
             "application.properties", "container.application.properties"]
+
+
+class TestValidationAgainstThreeSpringProjects:
+    """Three defects found by running spring-petclinic, apache/atlas and
+    spring-cloud-dataflow on 2026-08-29. Each was invisible on the Egeria
+    family, and each is a rule that generalised from too few examples.
+    """
+
+    def test_an_app_that_names_itself_nothing_is_still_an_app(self, tmp_path):
+        """spring-petclinic is the canonical Spring Boot application and yielded
+        ZERO platforms: it never sets `spring.application.name`, because most
+        Spring Boot apps have no reason to. The no-name-and-no-servers drop was
+        derived from one example (egeria's `test.application.properties`)."""
+        d = tmp_path / "src" / "main" / "resources"; d.mkdir(parents=True)
+        (d / "application.properties").write_text("spring.jpa.open-in-view=false\n")
+        assert len(spring_app.discover(str(tmp_path))["platforms"]) == 1
+
+    def test_a_prefix_file_with_no_sibling_base_is_its_own_app(self, tmp_path):
+        """`atlas-application.properties` is Atlas's OWN config, not a variant of
+        anything — there is no `application.properties` beside it. Same form as
+        egeria's `container.` prefix, opposite meaning, and the sibling is what
+        tells them apart without a vocabulary of known prefixes."""
+        d = tmp_path / "distro" / "src" / "conf"; d.mkdir(parents=True)
+        (d / "atlas-application.properties").write_text("atlas.graph.storage.backend=hbase\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == ["atlas"]
+
+    def test_a_prefix_file_WITH_a_sibling_base_is_still_dropped(self, tmp_path):
+        """The drop has to keep working where it was earned — egeria's
+        `test.application.properties` sits beside a real base."""
+        _platform(tmp_path, name="Real", servers="x")
+        (tmp_path / "test.application.properties").write_text("startup.server.list=\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [p["name"] for p in out["platforms"]] == ["Real"]
+        assert any("is a variant of the `application.properties` beside it" in n
+                   for n in out["notes"])
+
+    def test_test_resources_are_fixtures_not_deployments(self, tmp_path):
+        """apache/atlas carries 11 of its 20 properties files under a test path;
+        spring-cloud-dataflow 3 of 8. This module already learned this for
+        `.config` files and did not apply it here."""
+        d = tmp_path / "src" / "test" / "resources"; d.mkdir(parents=True)
+        (d / "atlas-application.properties").write_text("atlas.x=1\n")
+        assert spring_app.discover(str(tmp_path))["platforms"] == []
+
+    def test_a_spring_placeholder_resolves_to_its_default(self, tmp_path):
+        """spring-cloud-dataflow proposed two platforms literally named
+        `${vcap.application.name:spring-cloud-dataflow-tasklauncher-sink}` — a
+        raw placeholder with its own default sitting unread inside it."""
+        (tmp_path / "application.properties").write_text(
+            "spring.application.name=${vcap.application.name:tasklauncher-sink}\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
+            "tasklauncher-sink"]
+
+    def test_a_placeholder_resolves_against_its_own_file_first(self, tmp_path):
+        (tmp_path / "application.properties").write_text(
+            "app.id=real-name\nspring.application.name=${app.id:fallback}\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
+            "real-name"]
+
+    def test_an_unresolvable_placeholder_is_not_used_as_a_name(self, tmp_path):
+        """No default, no local value — so it is not a name, and the module
+        fallback is used instead of putting a literal `${...}` in the catalog."""
+        (tmp_path / "application.properties").write_text(
+            "spring.application.name=${vcap.application.name}\n")
+        names = [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]]
+        assert names and "${" not in names[0]
+
+    def test_two_platforms_may_not_share_a_name(self, tmp_path):
+        """A name becomes a SLUG, so duplicates collapse distinct components onto
+        one scope_locator — silently, producing a catalog that is confidently
+        wrong. Atlas had six modules all named `atlas`; dataflow had two modules
+        whose DECLARED names resolved to the same default."""
+        for module in ("couchbase-bridge", "falcon-bridge"):
+            d = tmp_path / "addons" / module / "src" / "main" / "resources"
+            d.mkdir(parents=True)
+            (d / "atlas-application.properties").write_text("atlas.x=1\n")
+        names = [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]]
+        assert sorted(names) == ["couchbase-bridge", "falcon-bridge"]
+        assert len(names) == len(set(names))
+
+    def test_the_disambiguation_is_reported(self, tmp_path):
+        for module in ("a-bridge", "b-bridge"):
+            d = tmp_path / module / "src" / "main" / "resources"; d.mkdir(parents=True)
+            (d / "atlas-application.properties").write_text("atlas.x=1\n")
+        assert any("qualified by build module" in n
+                   for n in spring_app.discover(str(tmp_path))["notes"])
+
+    def test_a_module_name_comes_from_the_build_module_not_the_resources_dir(self, tmp_path):
+        d = tmp_path / "composed-task-runner" / "src" / "main" / "resources"
+        d.mkdir(parents=True)
+        (d / "application.properties").write_text("server.port=8080\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
+            "composed-task-runner"]

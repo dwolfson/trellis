@@ -192,6 +192,47 @@ def _spring_entry_points(root: str) -> list[str]:
 #: one. Measured, `apache/polaris` carries two we never saw.
 _PROFILE_OVERLAY_RE = re.compile(r"^application-([A-Za-z0-9_.-]+)\.properties$")
 
+#: Path segments marking a file as a TEST FIXTURE rather than a deployment.
+#:
+#: This module already learned this once, for a different file type:
+#: `_server_config` reads the declared config-store path rather than walking for
+#: `*.config` because an earlier version "picked up eleven deliberately-malformed
+#: `.config` files from `configuration-file-store-connector/src/test/resources`".
+#: The properties walk did not use that precedent. Measured 2026-08-29:
+#: `apache/atlas` carries 11 of its 20 properties files under a test path, and
+#: `spring-cloud-dataflow` 3 of 8 — each proposed as a deployment candidate.
+_TEST_PATH_SEGMENTS = ("/src/test/", "/test/resources/", "/tests/resources/")
+
+#: Spring's own placeholder form, `${key}` or `${key:default}` — distinct from
+#: Egeria's `~{name}~` which `_PLACEHOLDER_RE` handles.
+#:
+#: Without this, `spring-cloud-dataflow` proposed two platforms both literally
+#: named `${vcap.application.name:spring-cloud-dataflow-tasklauncher-sink}` — a
+#: raw placeholder used as a component name, with its own default value sitting
+#: unread inside the string.
+_SPRING_PLACEHOLDER_RE = re.compile(r"\$\{([^:{}]+)(?::([^{}]*))?\}")
+
+
+def _is_test_fixture(rel: str) -> bool:
+    norm = "/" + rel.replace(os.sep, "/").strip("/") + "/"
+    return any(seg in norm for seg in _TEST_PATH_SEGMENTS)
+
+
+def _resolve_spring(value: str, props: dict) -> str:
+    """Resolve `${key}` / `${key:default}` against the same file, then defaults.
+
+    Returns "" if anything is left unresolved: a placeholder nobody can expand
+    is not a name, and recording it as one puts a literal `${...}` in the
+    catalog — which is what happened before this existed.
+    """
+    def sub(m):
+        key, default = m.group(1), m.group(2)
+        if key in props:
+            return props[key]
+        return default if default is not None else "\x00"
+    out = _SPRING_PLACEHOLDER_RE.sub(sub, value or "")
+    return "" if "\x00" in out or "${" in out else out
+
 
 def _properties_files(root: str) -> list[str]:
     """Every properties file that declares or varies an application.
@@ -215,8 +256,12 @@ def _properties_files(root: str) -> list[str]:
         dirnames[:] = [d for d in dirnames
                        if d not in (".git", "node_modules", ".venv", "build", "target")]
         for fn in filenames:
-            if fn.endswith("application.properties") or _PROFILE_OVERLAY_RE.match(fn):
-                found.append(os.path.relpath(os.path.join(dirpath, fn), root))
+            if not (fn.endswith("application.properties") or _PROFILE_OVERLAY_RE.match(fn)):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, fn), root)
+            if _is_test_fixture(rel):
+                continue
+            found.append(rel)
     return sorted(found)
 
 
@@ -577,9 +622,13 @@ def _consolidate(platforms: list, root: str, notes: list) -> list:
 
     kept: list = []
     for p in platforms:
-        if not p["servers"] and not p.get("declared_name"):
-            notes.append(f"{p['path']} declares no servers and no platform.name — "
-                         f"not proposed as a platform")
+        # The drop applies ONLY to a prefix-form VARIANT of a base beside it —
+        # see `_is_variant_of_base`. Applied to every file, it removed
+        # spring-petclinic entirely and all 20 of apache/atlas', because most
+        # Spring Boot apps never set `spring.application.name`.
+        if p.get("is_variant") and not p["servers"] and not p.get("declared_name"):
+            notes.append(f"{p['path']} is a variant of the `application.properties` "
+                         f"beside it and adds no name or servers — not a separate platform")
             continue
         kept.append(p)
 
@@ -628,6 +677,122 @@ def _consolidate(platforms: list, root: str, notes: list) -> list:
             f"{head['name']!r}, not separate platforms")
 
     return sorted(merged, key=lambda p: p["name"])
+
+
+def _is_variant_of_base(rel: str, all_files: set) -> bool:
+    """Is `rel` a PREFIX-form variant of a base beside it, or an app's own config?
+
+    The prefix form is ambiguous and both readings are real:
+
+    | file | sibling `application.properties`? | reading |
+    |---|---|---|
+    | `container.application.properties` (egeria) | yes | a variant of that base |
+    | `test.application.properties` (egeria) | yes | a variant of that base |
+    | `freshstart.application.properties` (workspaces) | no | the app's OWN config |
+    | `atlas-application.properties` (apache/atlas) | no | the app's OWN config |
+
+    The sibling is the discriminator, and it needs no vocabulary of known
+    prefixes — which matters, because `container`/`freshstart`/`atlas` share
+    nothing a list could capture.
+
+    This exists because the no-name-and-no-servers drop was derived from ONE
+    example (egeria's `test.application.properties`) and generalised badly:
+    measured, it produced **zero platforms for `spring-petclinic`** — the
+    canonical Spring Boot application, which never sets
+    `spring.application.name` because most Spring Boot apps have no reason to —
+    and **zero for `apache/atlas`** across 20 files. Confining the drop to
+    variants puts it back where it was earned.
+    """
+    base = os.path.basename(rel)
+    if base == "application.properties" or not base.endswith("application.properties"):
+        return False
+    sibling = os.path.join(os.path.dirname(rel), "application.properties")
+    return sibling in all_files
+
+
+def _fallback_name(rel: str, root: str) -> str:
+    """A name for an application that declares none — most Spring Boot apps.
+
+    Prefix token first (`atlas-application.properties` -> `atlas`), then the
+    MODULE directory, which is what a bare `src/main/resources/application.properties`
+    actually belongs to: `spring-cloud-dataflow-composed-task-runner/src/main/resources/`
+    -> `spring-cloud-dataflow-composed-task-runner`. Falling through to the
+    literal string "platform" — the previous behaviour — gave every unnamed app
+    in a repo the same name.
+    """
+    base = os.path.basename(rel)
+    token = base[: -len("application.properties")].strip(".-")
+    if token:
+        return token
+    return _module_dir(rel, root) or "platform"
+
+
+def _module_dir(rel: str, root: str) -> str:
+    """The build module a properties file belongs to.
+
+    `spring-cloud-dataflow-composed-task-runner/src/main/resources/application.properties`
+    -> `spring-cloud-dataflow-composed-task-runner`. Falls back to the repo's own
+    directory name for a file at the root.
+    """
+    directory = os.path.dirname(rel)
+    for marker in ("src/main/resources", "src/main/conf", "src/conf", "src/resources"):
+        if directory.replace(os.sep, "/").endswith(marker):
+            directory = directory[: -len(marker)].rstrip("/\\")
+            break
+    return os.path.basename(directory) or os.path.basename(os.path.abspath(root))
+
+
+def _disambiguate_names(platforms: list, root: str, notes: list) -> list:
+    """Two platforms may not share a name, because a name becomes a SLUG.
+
+    `_slug` derives a component's identity from its name, so duplicates collapse
+    distinct components onto one `scope_locator` — the components accumulate on
+    top of each other and every reader sees one. Silent, and it produces a
+    catalog that is confidently wrong rather than visibly broken.
+
+    Measured 2026-08-29, both from real repos:
+
+    * `apache/atlas` — six modules each carry `atlas-application.properties`, so
+      the prefix token names all six `atlas`.
+    * `spring-cloud-dataflow` — `tasklauncher-sink-kafka` and
+      `tasklauncher-sink-rabbit` both declare
+      `${vcap.application.name:spring-cloud-dataflow-tasklauncher-sink}`, so the
+      resolved DEFAULT is identical in both.
+
+    The module directory is what actually distinguishes them, and it is a better
+    name besides: `couchbase-bridge` says more than a sixth thing called `atlas`.
+    Applies to declared names as well as fallbacks — dataflow's collision is
+    between two declared ones.
+    """
+    def group(items):
+        out: dict = {}
+        for p in items:
+            out.setdefault(p["name"], []).append(p)
+        return out
+
+    for name, dupes in sorted(group(platforms).items()):
+        if len(dupes) < 2:
+            continue
+        for plat in dupes:
+            module = _module_dir(plat["path"], root)
+            if module and module != name:
+                plat["renamed_from"] = plat["name"]
+                plat["name"] = module
+        notes.append(f"{len(dupes)} declarations named {name!r} — qualified by build "
+                     f"module, since a shared name becomes a shared slug and would "
+                     f"collapse them onto one component")
+
+    # Still colliding means two modules share a basename. Fall back to the full
+    # directory, which is unique by construction, rather than leaving a collision.
+    for name, dupes in sorted(group(platforms).items()):
+        if len(dupes) < 2:
+            continue
+        for plat in dupes:
+            plat.setdefault("renamed_from", plat["name"])
+            plat["name"] = os.path.dirname(plat["path"]) or plat["name"]
+        notes.append(f"{len(dupes)} declarations still named {name!r} after module "
+                     f"qualification — using the full path instead")
+    return platforms
 
 
 def _attach_overlays(platforms: list, overlays: dict, root: str, notes: list) -> list:
@@ -735,6 +900,10 @@ def _remap_wires(wires: list, platforms: list) -> list:
     for p in platforms:
         for declared in p.get("declared_names") or []:
             rename[declared] = p["name"]
+        # `_disambiguate_names` can rename a platform after consolidation, so a
+        # wire built during discovery still carries the pre-qualified name.
+        if p.get("renamed_from"):
+            rename[p["renamed_from"]] = p["name"]
     if not rename:
         return wires
     out: list = []
@@ -786,9 +955,9 @@ def discover(root: str) -> dict:
         # `declared_name` distinguishes a name a person WROTE from one derived
         # from the filename. A file with neither a name nor any server declares
         # no platform — see `_consolidate`.
-        declared_name = next((props[k] for k in _NAME_KEYS if props.get(k)), "")
-        name = (declared_name
-                or os.path.basename(rel)[: -len("application.properties")].strip(".") or "platform")
+        declared_name = _resolve_spring(
+            next((props[k] for k in _NAME_KEYS if props.get(k)), ""), props)
+        name = declared_name or _fallback_name(rel, root)
 
         servers: list[dict] = []
         for key in _SUBCOMPONENT_KEYS:
@@ -835,6 +1004,7 @@ def discover(root: str) -> dict:
 
         platforms.append({
             "name": name, "declared_name": declared_name, "path": rel,
+            "is_variant": _is_variant_of_base(rel, set(prop_files)),
             "port": props.get(_PORT_KEY, ""),
             "servers": servers, "endpoints": endpoints,
             "spring_entry_points": entries,
@@ -869,6 +1039,7 @@ def discover(root: str) -> dict:
 
     platforms = _attach_overlays(platforms, overlays, root, notes)
     platforms = _consolidate(platforms, root, notes)
+    platforms = _disambiguate_names(platforms, root, notes)
     wires = _remap_wires(wires, platforms)
     ports = _dedup_ports(ports, platforms)
 
