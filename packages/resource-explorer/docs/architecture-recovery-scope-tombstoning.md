@@ -349,9 +349,49 @@ launder an assertion into an observation.
    two test stubs did not have it and failed loudly — they were given a real
    implementation rather than a no-op returning `[]`, which would have let the
    tests pass while withdrawal was broken.
-4. **Backfill whatever orphans remain**, labelled as a backfill (§6). Note the
-   count is a moving target — 14 today, 26 after the next egeria survey — and
-   step 3 stops it growing, which is why the backfill goes last.
+4. ~~**Backfill whatever orphans remain**, labelled as a backfill (§6).~~
+   **DONE 2026-08-30** — `scripts/backfill_withdraw_orphans.py`, dry-run by
+   default, `--write` required.
+
+   **Applied: 165 withdrawals on `egeria_git`, 23 on `egeria_workspaces_git`.**
+
+   | | before | after |
+   |---|---|---|
+   | `egeria_git` enumerated scopes | 1035 | **870** |
+   | `egeria_git` **deployment components** | **35** | **8** |
+   | `egeria_workspaces_git` enumerated | 175 | **152** |
+
+   Egeria's deployment perspective is now exactly the platform, its five
+   servers, Kafka and PostgreSQL — the reading the consolidation work produced,
+   finally visible in the store rather than buried under four generations of
+   naming.
+
+   **The live-set rule, and its crux.** Component rows are grouped by
+   `run_label`; each group's most recent run contributes its scopes. If any
+   *labelled* group exists, unlabelled rows are treated as history — they are
+   the same two steps before attribution existed, and counting their last run as
+   live would have held **870 superseded scopes open forever**. If no labelled
+   group exists, the latest unlabelled run *is* the current picture (which is
+   `egeria_workspaces_git`'s case). A label that simply ran less recently still
+   counts, or a lagging step would be erased.
+
+   That rule decides what gets withdrawn from already-published data, so it is
+   pinned in `tests/test_backfill_withdraw_orphans.py` rather than left in a
+   script nobody re-reads — including that an unparseable `detail_json` is
+   treated as unlabelled rather than dropped, since dropping would quietly
+   shrink the live set and withdraw *more* than intended.
+
+   **Every backfilled row says it was asserted, not observed:**
+
+   ```json
+   {"cause": "unclaimed", "source": "backfill",
+    "backfilled_at": "2026-08-30T12:23:13Z",
+    "note": "asserted by a one-off sweep, not observed by a run"}
+   ```
+
+   A run *observes* that it no longer proposes a scope; this *asserts* it. Rows
+   indistinguishable from earned ones would launder an assertion into an
+   observation.
 
 Steps 1 and 2 are safe and independently useful; 3 is the behaviour change worth
 reviewing carefully; 4 is the one that touches data already published, and it
