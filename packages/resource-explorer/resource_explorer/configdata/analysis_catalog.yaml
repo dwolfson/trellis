@@ -417,63 +417,68 @@ repo_analyses:
     description: "Recover candidate architecture components from package manifests, deployment units (Dockerfile/compose), ast-grep code markers, and import/co-change coupling — a component partition proposal with confidence and evidence, not a published blueprint (docs/architecture-recovery-phase1-plan.md)."
     resource_types: ["repo"]
     # Retagged to discovery 2026-08-22 (maintainer's ruling), then RE-RETAGGED
-    # to analysis 2026-08-30 (Dan: "architecture recovery is an analysis step
-    # and belongs there") — reversing the earlier call rather than layering a
-    # second exception on top of it. Discovery's signature is "cheap enough to
-    # gate the expensive tiers reasoning over what Scouting already collected,
-    # zero new fetch"; both repo_arch_detect (zipball_root) and
-    # repo_arch_coupling (zipball_root + git_clone_root) fetch fresh data, and
-    # the PROFILED note below shows that fetch is not even cheap. Recovery was
-    # the exception the zero-fetch tier kept absorbing rather than the rule it
-    # actually followed — see CLAUDE.md rule 17, corrected the same day.
+    # to analysis 2026-08-30 (Dan, directly: "architecture recovery is an
+    # analysis step and belongs there") — reversing the earlier call rather
+    # than layering a second exception on top of it. This closes the "Open,
+    # unresolved" question the PROFILED note below's Backlog entry named —
+    # intent on OTHER grounds than cost — separately from the cost question,
+    # which that same entry had already settled the other way (see below:
+    # `run_time: fast` stays). Both rulings reached the catalog the same day
+    # from two different sessions; recorded together here so neither reads as
+    # having overridden the other.
     intent: analysis
     perspectives: ["Architecture", "App/AI Builder"]
     annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
-    # PROFILED 2026-08-30 — `fast` is right about COMPUTE, and the whole
-    # question turned out to be acquisition rather than tiering:
+    # PROFILED 2026-08-30 (docs/Backlog.md, "architecture_recovery costs 110s
+    # to fetch and 5.9s to run — fix the acquisition") — `fast` is right about
+    # COMPUTE, and the whole question turned out to be acquisition rather than
+    # tiering:
     #   analysis compute, local checkout   5.9s  (detect 3.1 + coupling 2.8)
     #   zipball + treeless clone          15.7s
     #   the same two steps via the route 110.5s
     #
     # phase1-findings §3's "5.3s per repo" is correct and still holds for
-    # compute — it was never the tiering question. The gap is
-    # `git_clone_root`'s --filter=blob:none clone: co-change runs git history
-    # commands against a treeless clone, which lazily fetches from the
-    # remote, so ~92s of a run is git's network time. See docs/Backlog.md
-    # "costs 110s to fetch and 5.9s to run" and the caching note below.
+    # compute. cProfile pinned the gap to `git_clone_root`'s
+    # --filter=blob:none clone: co-change's git history commands lazily fetch
+    # from the remote against a treeless clone, so ~92s of a run is git's
+    # network time in a child process — invisible to whatever counts
+    # connections, which is a separate small bug the Backlog entry also
+    # records (a compute_cost guard misattributed 92s of network as compute).
     #
-    # `run_time: minutes` (was `fast`) follows directly from that 110.5s
-    # figure — `fast` was never honest about the wait, only about the
-    # compute, and now that the intent tier no longer forces `fast`
-    # (Discovery is fast-only; Analysis is not), nothing requires the two to
-    # stay conflated. `availability` derives to `queued` from this, which is
-    # correct — see the analysis-card-has-no-progress-modal Backlog entry for
-    # the UI work that still needs to catch up to it.
+    # `run_time: fast` STAYS (Dan's steer, per that entry: "the work likely
+    # goes into the analysis implementation, not the catalog") — it was never
+    # wrong about compute, only silent about acquisition, and the two
+    # candidate fixes below are aimed at making the acquisition converge
+    # toward the compute figure rather than at re-tagging around it. If
+    # neither fix lands, the honest tag is about the whole experience and this
+    # question comes back — the entry says so explicitly.
     #
-    # What this does NOT fix: whether the ~92s of lazy remote fetch is being
-    # paid redundantly across separate runs. `zipball_root`/`git_clone_root`
-    # (github/client.py) always download into a fresh tempdir and discard it
-    # on exit — there is no cache keyed by (repo, commit sha) shared ACROSS
-    # SurveyOrchestrator.run() calls, only WITHIN one (D6's
-    # trellis_microflow.resolve_resources — see StepInfo.requires_resources's
-    # docstring). At least six other catalog entries besides this one declare
-    # requires_resources={"zipball_root": ...}
-    # (dependency_analysis/data_file_profiling/language_file_classification/
-    # api_structure/code_symbol_extraction/manifest_parse), and every one of
-    # them re-downloads from scratch even when another of them fetched the
-    # identical commit moments earlier. `GitHubClient.get_latest_commit_sha()`
-    # — one API call — already exists as the cheap staleness check that would
-    # gate a shared cache, and has zero callers today; `repo_rag_ingestion`
-    # does an equivalent ad hoc check for its own purpose (IncrementalIndexer,
-    # "no-op when the last-indexed commit is unchanged") but not as reusable
-    # infrastructure. Real, unclaimed value — but a SEPARATE fix from the
-    # tiering/run_time correction above, since it is cross-cutting (every
-    # zipball/clone consumer, not just this one) and does not touch this
-    # analysis's own ~92s lazy-fetch cost, which is chattiness against the
-    # remote within a single run, not duplication across runs. Not yet filed
-    # as its own Backlog item — do that before building it.
-    run_time: minutes
+    # Two candidate fixes, per that entry, NEITHER DECIDED and NEITHER
+    # CLAIMED as of this writing:
+    #   1. Cache the acquired roots. zipball_root/git_clone_root
+    #      (github/client.py) download into a FRESH tempdir every call and
+    #      discard it on exit — no cache keyed on (repo, commit sha) shared
+    #      ACROSS SurveyOrchestrator.run() calls, only WITHIN one (D6's
+    #      trellis_microflow.resolve_resources). At least six other catalog
+    #      entries independently declare requires_resources={"zipball_root":
+    #      ...} (dependency_analysis/data_file_profiling/
+    #      language_file_classification/api_structure/
+    #      code_symbol_extraction/manifest_parse) and none of them share a
+    #      cache with each other or with this one.
+    #      GitHubClient.get_latest_commit_sha() — one API call — already
+    #      exists as the cheap staleness check that would gate such a cache,
+    #      and has zero callers today; repo_rag_ingestion does an equivalent
+    #      ad hoc check for its own purpose (IncrementalIndexer, "no-op when
+    #      the last-indexed commit is unchanged") but not as reusable
+    #      infrastructure.
+    #   2. Give co-change what it actually needs. It wants commit metadata
+    #      and pathnames, which a treeless clone already has — something is
+    #      reaching for blob content and triggering the lazy fetch. The
+    #      Backlog entry recommends doing this one FIRST: it's diagnostic,
+    #      and its answer decides whether (1) is a performance nicety or the
+    #      only option.
+    run_time: fast
     action: survey
     target_shape: corpus
     recommended: false

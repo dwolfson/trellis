@@ -191,6 +191,16 @@ is about the whole experience and the tier question comes back.
 Open, unresolved: whether `architecture_recovery` belongs in the **Analysis** intent rather than
 Discovery on other grounds — that is a separate judgement from cost, and cost no longer forces it.
 
+**Resolved the same day, separately, by S1 in a different session:** Dan ruled directly —
+"architecture recovery is an analysis step and belongs there." `intent: analysis` now, `run_time:
+fast` unchanged (this entry's reasoning above stands; the ruling was on tiering grounds, not cost).
+Recorded together in `analysis_catalog.yaml`'s entry so neither change reads as having overridden
+the other.
+
+**Still open and unclaimed as of 2026-08-30 (S1):** both candidate fixes above (cache the acquired
+roots; give co-change what it actually needs). S1 is coordinating with S2 before claiming either —
+see cross-session note, same date.
+
 #### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
 
 *(Opened 2026-08-30, live-reported: "pressing the architecture survey button does seem to start the
