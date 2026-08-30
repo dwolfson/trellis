@@ -430,6 +430,31 @@ repo_analyses:
     perspectives: ["Architecture", "App/AI Builder"]
     annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
+    # ⚠ KNOWN-QUESTIONABLE, deliberately left as `fast` pending a maintainer
+    # ruling — see docs/Backlog.md "architecture_recovery is tagged fast and
+    # measures 100s+".
+    #
+    # MEASURED 2026-08-30 via POST /analyses/architecture_recovery/run:
+    #   egeria_git        89s
+    #   egeria_python_git 100s
+    #   docling_parse     321s cold / 111s warm  (a ONE-component repo)
+    # against the ">= 5.3s per repo" in architecture-recovery-phase1-findings
+    # §3 that CLAUDE.md rule 17 cites to justify Discovery placement. That
+    # figure was the spike toolchain, not this step, which also downloads a
+    # zipball and does a treeless clone per run.
+    #
+    # Changing this to `minutes` is correct on the measurement and breaks
+    # test_no_fast_stage_question_is_answered_by_a_non_fast_survey_analysis,
+    # because Discovery is a fast-only stage — i.e. it re-opens the
+    # 2026-08-22 stage ruling rather than being a data fix. Two consequences
+    # of leaving it `fast` meanwhile, both recorded in the backlog:
+    #   1. the card badges it fast and the Run button neither prompts nor
+    #      backgrounds, so 100s+ of blocking work is announced only by a
+    #      toast that is easy to miss;
+    #   2. `AnalysisCatalogEntry.availability` DERIVES from this field
+    #      (fast -> inline), so a context compile believes it may run this on
+    #      the hot path — inside a packer whose design says in bold "the
+    #      packer must never trigger a survey".
     run_time: fast
     action: survey
     target_shape: corpus

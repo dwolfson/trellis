@@ -88,6 +88,114 @@ when there is a question to answer, and note the scaling item below is the likel
 pointer to the durable record, not a second copy of it. Dual-writing means two stores that can
 disagree, and the span copy is the one that expires.
 
+#### HIGH — take architecture results into Curate and actually work with them
+
+*(Opened 2026-08-30. Dan: "we're going to want to take these results and into Curate to start to
+work with the information".)*
+
+Everything so far **produces** an architecture reading and **displays** it. Nothing lets a person
+*act* on it. Curate is where sustained human attention lives (tags, feedback, curator notes), and
+the architecture card is now good enough to be worth curating rather than only reading:
+`egeria_git` presents 8 deployment components instead of 451 mixed rows.
+
+What "working with the information" plausibly means here, in rough order of value — **none of this
+is designed yet, and the first task is deciding which of these is actually wanted:**
+
+- **Accept / reject / retype a proposed component.** The whole pipeline is explicitly a *proposal*
+  (§4.1a, `report-then-curate`), and a curator's verdict is the missing half. Note this is the
+  Confidence/ContentStatus axis (§3.3b/§3.4), not a new vocabulary.
+- **Correct a name.** Live example worth keeping: the disambiguator renamed Atlas' main
+  distribution config to `distro` because six modules shared the token `atlas` — unique and
+  truthful, but not what a curator would choose, and no rule can know which member of a collision
+  deserves the shared name.
+- **Curator notes against a component scope**, not just the whole resource. `resource_curator_notes`
+  is whole-resource today; architecture recovery is scope-keyed throughout.
+- **Promote a reviewed set toward publication** — the ContentStatus ladder that
+  `report-then-curate` describes and nothing yet walks.
+
+**Two things already in place that this should reuse rather than reinvent:** withdrawal
+(`WITHDRAWN_LABEL`) already expresses "this is no longer proposed" durably and reversibly, and the
+decision trace (`architecture_decisions`) already records why a component looks the way it does —
+which is exactly the context a curator needs before overriding it.
+
+**The constraint to hold:** a curator's verdict is *evidence of a different kind*, not a rewrite of
+what the detectors said. §4.2's "map, never merge" and the doc-lens rule ("a document that disagrees
+with the code is a finding, not a correction") both point the same way — the disagreement is the
+valuable artifact and must stay legible.
+
+#### HIGH — `architecture_recovery` is tagged `run_time: fast` and measures 100s+ — needs a ruling
+
+*(Opened 2026-08-30. Measured, then deliberately left unchanged: fixing it re-opens a maintainer
+ruling rather than being a data fix.)*
+
+Measured via `POST /analyses/architecture_recovery/run`:
+
+| repo | time |
+|---|---|
+| `egeria_git` | 89s |
+| `egeria_python_git` | 100s |
+| `docling_parse` (**one** component) | 321s cold / **111s warm** |
+
+CLAUDE.md rule 17 justifies this analysis sitting in the Discovery tier on
+`architecture-recovery-phase1-findings.md` §3's **"5.3s per repo"**. That figure was the *spike
+toolchain*; this step additionally downloads a zipball and does a treeless clone per run. The warm
+re-run isolates it: ~200s is fetch, and **111s of work remains** on the smallest repo in the corpus.
+
+**Two consequences of the current `fast` value**, both live:
+
+1. The card badges it *fast* and `_runAnalysisCatalogCard` neither prompts nor backgrounds, so 100s+
+   of blocking work is announced only by a toast — the entry below.
+2. `AnalysisCatalogEntry.availability` **derives** from `run_time` (`fast` → `inline`), so a context
+   compile is told it may run this **on the hot path** — inside a packer whose §20 says in bold
+   *"the packer must never trigger a survey."* Latent only because the compiler is unwired
+   (task-list item 10), and it becomes real the moment it is not.
+
+**Why it was not simply corrected.** Setting `run_time: minutes` is right on the measurement and
+immediately fails
+`test_no_fast_stage_question_is_answered_by_a_non_fast_survey_analysis`, because Discovery is a
+fast-only stage and a Discovery question ("What is its internal architecture?") dispatches to it.
+That test is correct and the failure is informative: it says the analysis no longer fits the tier it
+was placed in on 2026-08-22 by maintainer ruling. The options are a maintainer's, not an
+implementer's:
+
+- **re-tier** the analysis out of Discovery (contradicts the 2026-08-22 ruling, and rule 17's
+  "cheap enough to gate the expensive tiers" test now genuinely fails on measurement);
+- **re-map** the Discovery question to something cheaper and let architecture recovery answer a
+  slower-stage question;
+- **make it actually fast** — the 111s warm figure has never been profiled, and a one-component repo
+  taking that long suggests something pathological rather than inherent;
+- **decouple `availability` from `run_time`**, which §20 explicitly argued against ("a second
+  hand-maintained column would be one more thing to keep consistent with the first") but which the
+  above shows is now carrying two loads that have come apart.
+
+The measurement is annotated in `analysis_catalog.yaml` beside the value, so nobody reads `fast`
+without seeing that it is known-questionable.
+
+**Profile first.** 111s on a repo with one component is the number that would change the whole
+entry, and nobody has looked at where it goes.
+
+#### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
+
+*(Opened 2026-08-30, live-reported: "pressing the architecture survey button does seem to start the
+task but it doesn't bring up the pop-up that asks if we should run this in the background so it's
+easy to miss the toast".)*
+
+Two different run paths exist and the analysis card has the weaker one:
+
+| path | behaviour |
+|---|---|
+| **Survey Definition** (`showSurveyDefRunModal`) | modal with elapsed-time progress, backgrounds the run, polls the activity entry, relabels its button `Close — keeps running in background →`, and toasts *"can take a while — check 📋 Activity if you navigate away"* |
+| **Analysis card** (`_runAnalysisCatalogCard`) | fires the POST, shows one `running` toast, and **blocks for the whole run** — no modal, no progress, no activity handle |
+
+A contributing cause is a catalog value that is measurably wrong and **deliberately not changed** —
+see the entry below.
+
+That fix does not close this entry. The analysis-card path still has no backgrounding for anything
+tagged `minutes`/`async`, and `POST /analyses/{id}/run` blocks rather than returning an
+`activity_id` the way `/survey-definitions/{type}/{slug}/run` does. The work is to give the
+analysis-card path the survey-definition path's shape — which is a route change plus a modal, not a
+toast tweak.
+
 #### MEDIUM — a compiled answer should be able to POINT at a view, not only describe it
 
 *(Opened 2026-08-30. Dan: "there is no reason why, in some cases, it can't provide a link to an
