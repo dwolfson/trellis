@@ -121,6 +121,38 @@ remembered.
   found hours later only by going to look for one of them. On docs, merge both sides by hand even
   when the other side looks like a superset.
 
+## The registry is shared, and the suite reads it
+
+The worktrees partition **files**. All five sessions still share one Postgres, so **data**
+contention is untouched by the split — and the test suite reads that shared registry.
+
+Measured 2026-08-30: a peer surveying `egeria_workspaces_git` caught it mid-run, in a state the
+security-features reader classifies into none of its three causes, and turned integration's suite
+red **in a file that session had never touched**. It looks exactly like a regression, and cost real
+time to rule out as one.
+
+**Corpus-reading tests are now marked and skipped by default.** Four files assert over whatever the
+live registry happens to hold rather than over fixtures:
+
+```
+test_security_features_visibility.py    test_persisted_detail_contracts.py
+test_headline_readers.py                test_doc_ingestion_rendering.py
+```
+
+```
+pytest tests/            # 68 corpus tests skipped
+pytest tests/ --corpus   # runs them
+```
+
+**They were not deleted, and that is deliberate.** Asserting over real corpus contents is exactly
+how "58 of 60 repos render an empty security-features card" was found — no fixture would have
+produced that. Run them with `--corpus` when the corpus is quiet, which is the only time their
+answer means anything.
+
+**Still open, not addressed here:** `test_investigation_routes.py` *writes* to the shared registry
+(creating investigations and cleaning up after). That is a stronger form of the same hazard, since
+it mutates rather than reads. It has not bitten yet.
+
 ## Ports
 
 One dev server at a time on 8810 (`.claude/launch.json`). A second session needs its own port, or
