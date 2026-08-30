@@ -1384,6 +1384,21 @@ class ProjectRegistry:
                 "ON architecture_component_verdicts(entity_type, entity_slug, scope_locator)"
             )
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS architecture_materialized_components (
+                    id             TEXT PRIMARY KEY,
+                    entity_type    TEXT NOT NULL,
+                    entity_slug    TEXT NOT NULL,
+                    scope_locator  TEXT NOT NULL,
+                    qualified_name TEXT NOT NULL,
+                    guid           TEXT NOT NULL,
+                    materialized_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_components_scope "
+                "ON architecture_materialized_components(entity_type, entity_slug, scope_locator)"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
                     entity_type  TEXT NOT NULL,
                     entity_slug  TEXT NOT NULL,
@@ -2167,6 +2182,74 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_materialized_component(
+        self, entity_type: str, entity_slug: str, scope_locator: str,
+    ) -> dict | None:
+        """Whether a real Egeria SolutionComponent already exists for this
+        scope, or None. The idempotency check ComponentMaterializer runs
+        before ever calling Egeria — a re-materialize (e.g. a curator
+        re-accepting after re-running the underlying survey) must find the
+        existing element, not create a duplicate. One row per scope: unlike
+        verdicts, there is nothing append-only about "does this exist in
+        Egeria" — it is a fact with one current answer, kept current by
+        `record_materialized_component`'s INSERT OR REPLACE."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_components
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=?""",
+                (entity_type, entity_slug, scope_locator),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_materialized_components(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{scope_locator: row} for every component this resource has ever
+        materialized — the bulk read the results reader merges onto each
+        component alongside its verdict, one query for the whole resource
+        rather than a per-component round trip. Mirrors
+        get_component_verdicts' shape exactly; the only difference is that
+        this table has no history to collapse (see
+        get_materialized_component's docstring)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_materialized_components
+                   WHERE entity_type=? AND entity_slug=?""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return {r["scope_locator"]: dict(r) for r in rows}
+
+    def record_materialized_component(
+        self, entity_type: str, entity_slug: str, scope_locator: str,
+        qualified_name: str, guid: str,
+    ) -> dict:
+        """Record that `scope_locator` now has a real Egeria SolutionComponent.
+        Keyed by (entity_type, entity_slug, scope_locator) as a natural key
+        via INSERT OR REPLACE, not appended — see get_materialized_component's
+        docstring for why this table's shape differs from the verdicts
+        table it sits beside."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "scope_locator": scope_locator,
+            "qualified_name": qualified_name,
+            "guid": guid,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM architecture_materialized_components
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=?""",
+                (entity_type, entity_slug, scope_locator),
+            )
+            conn.execute(
+                """INSERT INTO architecture_materialized_components
+                   (id, entity_type, entity_slug, scope_locator, qualified_name, guid, materialized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
     _SCHEDULE_DAYS: dict[str, int] = {"daily": 1, "weekly": 7, "monthly": 30}
 
     def _next_run_iso(self, schedule: str, enabled: bool) -> str:
@@ -2670,7 +2753,7 @@ class ProjectRegistry:
         "survey_definition_cache", "egeria_linkage_status",
         "resource_working_set", "entity_egeria_project_context",
         "working_set_members", "notification_subscriptions",
-        "architecture_component_verdicts",
+        "architecture_component_verdicts", "architecture_materialized_components",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,

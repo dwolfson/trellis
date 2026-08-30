@@ -213,6 +213,32 @@ class TestCuratorVerdictMergedIntoResults:
         row_b = next(c for c in result["components"] if c["path"] == "pkg/b")
         assert row_b["verdict"] is None
 
+    def test_materialized_state_is_none_before_any_materialization(self, registry, project):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        row = next(c for c in result["components"] if c["path"] == "pkg/a")
+        assert row["materialized"] is None
+
+    def test_materialized_state_reads_back_after_a_reload(self, registry, project):
+        """Not just the transient POST response — a page reload must still
+        show a component as materialized, since the record lives in its own
+        table read independently of the verdict that triggered it."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            _architecture_recovery_results,
+        )
+        self._propose(registry, project.slug, "pkg/a")
+        registry.record_component_verdict("repo", project.slug, "pkg/a", "accepted")
+        registry.record_materialized_component(
+            "repo", project.slug, "pkg/a",
+            "SolutionComponent::repo::" + project.slug + "::pkg/a", "guid-1",
+        )
+        result = _architecture_recovery_results(registry, project.slug, max_depth=None)
+        row = next(c for c in result["components"] if c["path"] == "pkg/a")
+        assert row["materialized"]["guid"] == "guid-1"
+
     def test_result_carries_its_own_slug(self, registry, project):
         """The verdict UI (index.html's _archRow/_archSubmitVerdict) needs the
         slug to build /api/curate/component-verdicts/repo/{slug} without a

@@ -3676,7 +3676,7 @@ function _archRow(c, slug, rowUid) {
   // without it (a test fixture, or a future caller that doesn't carry it)
   // renders no verdict UI rather than wiring buttons to a broken URL.
   const verdictArea = !slug ? '' : (c.verdict
-    ? _archVerdictBadgeHtml(rowUid, slug, c.path, c.verdict)
+    ? _archVerdictBadgeHtml(rowUid, slug, c.path, c.verdict, c.materialized)
     : _archVerdictControlsHtml(rowUid, slug, c.path));
   return `
         <div class="text-xs text-slate-300 mb-1">
@@ -3722,15 +3722,27 @@ function _archVerdictControlsHtml(rowUid, slug, path) {
   </div>`;
 }
 
-function _archVerdictBadgeHtml(rowUid, slug, path, v) {
+// `materialized` is the persisted read-back (repo_survey_definition_adapter.py's
+// _materialized_view) on a page load, or the just-POSTed materialization
+// result on a fresh accept — either way {guid, qualified_name} on success.
+// A failed materialization is NEVER persisted (see materializer.py: nothing
+// is recorded to architecture_materialized_components unless Egeria
+// actually returned a usable GUID), so it can only ever appear as the
+// transient POST-response shape {status:"error", error}, never on reload —
+// the badge doesn't need to remember it past that one toast.
+function _archVerdictBadgeHtml(rowUid, slug, path, v, materialized) {
   const label = v.verdict === 'accepted' ? '✓ Accepted'
     : v.verdict === 'rejected' ? '✗ Rejected'
     : `✎ Retyped → ${_esc(v.retyped_to || '?')}`;
   const color = v.verdict === 'accepted' ? 'text-emerald-400'
     : v.verdict === 'rejected' ? 'text-red-400' : 'text-cyan-400';
-  return `<div class="flex gap-2 items-center mt-1" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+  const egeriaBadge = (materialized && materialized.guid)
+    ? `<span class="text-[10px] text-cyan-500" title="${_esc(materialized.qualified_name || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`
+    : '';
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
     <span class="text-[10px] ${color}">${label}</span>
     <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
+    ${egeriaBadge}
     <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertVerdictUi('${rowUid}')">change</button>
   </div>`;
 }
@@ -3774,11 +3786,25 @@ async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
     // record_component_verdict's own row shape (registry.py) — `created_at`,
     // not `decided_at`; that rename only happens in _verdict_view's
     // read-back merge, which this direct POST response doesn't go through.
+    // `materialization` is only ever present on an 'accepted' call
+    // (curate.py's _materialize_if_accepted) — {status, guid, qualified_name}
+    // on success, {status:"error", error} if Egeria couldn't be reached or
+    // rejected the write. Either way the verdict above is already saved;
+    // materialization failing is reported, not treated as the call failing.
     const saved = await resp.json();
+    const m = saved.materialization;
     el.outerHTML = _archVerdictBadgeHtml(rowUid, slug, path, {
       verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at,
-    });
-    showToast('success', `Marked ${verdict}${retypedTo ? ` (${retypedTo})` : ''}`);
+    }, m && m.status !== 'error' ? m : null);
+    if (m && m.status === 'error') {
+      showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
+    } else if (m && m.status === 'materialized') {
+      showToast('success', `Accepted — created as a real SolutionComponent in Egeria`);
+    } else if (m && m.status === 'already_materialized') {
+      showToast('success', `Accepted — already exists in Egeria`);
+    } else {
+      showToast('success', `Marked ${verdict}${retypedTo ? ` (${retypedTo})` : ''}`);
+    }
   } catch (e) {
     showToast('error', `Could not save verdict: ${_esc(e.message)}`);
   }
