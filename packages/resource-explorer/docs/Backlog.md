@@ -123,6 +123,45 @@ what the detectors said. §4.2's "map, never merge" and the doc-lens rule ("a do
 with the code is a finding, not a correction") both point the same way — the disagreement is the
 valuable artifact and must stay legible.
 
+#### MEDIUM — acquisition is now the whole cost: every run downloads the repo twice
+
+*(Opened 2026-08-30, after the exact-rename fix removed the blob-fetch cost. Measured post-fix.)*
+
+`63e7ec6` took cochange from 41s to 0.03s on a cold treeless clone. What remains is the download,
+and it is now essentially the entire wall-clock:
+
+| repo | route, post-fix | acquisition alone | share |
+|---|---|---|---|
+| `egeria_python_git` | 30.0s (was 110.5s) | zipball 24.3 + clone 1.6 = **25.9s** | **86%** |
+| `docling_parse` | 71.1s (was 111s) | zipball 42.7 + clone 1.0 = **43.7s** | **61%** |
+
+`_acquire_zipball_root` and `_acquire_git_clone_root` each clone into a **fresh tempdir every run**,
+so a repo is downloaded twice per run, every run, forever — and nothing about a repo's content
+changed between the two runs above.
+
+A cache keyed on the commit SHA would make a re-run of anything nearly free, and it would benefit
+every step declaring these resources, not only architecture recovery. The obvious hazards to design
+against: a stale cache serving an old SHA silently (the failure this codebase keeps re-learning), and
+unbounded growth — `data/repos/` is already ~1 GB for eight checkouts.
+
+#### LOW — `_COCHANGE_MAX_FILES = 50` is an inherited spike constant nobody has validated
+
+*(Opened 2026-08-30 by S2's review of `63e7ec6`, and it is the right shape of finding.)*
+
+The exact-rename fix shifted two `egeria` commits past the 50-file cap (`commits_skipped_large`
+63 → 65), which is what made pair counts drop. The cap's own comment reads:
+
+> arch-spike cochange.py defaults (findings 25) — read as-is, not tuned.
+
+So 50 was never validated against real corpus behaviour, **before or after** the fix. S2's reading is
+the honest one: the fix does not make the cap wrong, it makes visible that nobody has looked at it —
+the same shape as the `run_time: fast` finding earlier the same day, a value nobody re-examined
+until something forced a look.
+
+Deliberately **not** adjusted to preserve the old pair count; that would be tuning a threshold to
+protect a number. What it wants is evidence: what does the distribution of commit sizes actually look
+like across the corpus, and does a 50-file commit really say nothing about coupling?
+
 #### HIGH — `architecture_recovery` costs 110s to fetch and 5.9s to run — fix the acquisition
 
 *(Opened 2026-08-30 as a tier question; **reframed the same day by profiling**, which killed three of
