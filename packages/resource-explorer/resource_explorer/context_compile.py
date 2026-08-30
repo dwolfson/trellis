@@ -180,9 +180,16 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
         return str(value)
 
     keys = sorted(results)
+    # Fenced, not bare -- this text reaches two readers: the model, for which a
+    # ```json block is exactly as parseable as a bare dump, and now the Chat
+    # panel's own "show packed text" toggle, which renders it through
+    # marked.parse(). Unfenced, a raw JSON dump reads as a run-on paragraph of
+    # braces; fenced, marked.js gives it a monospace block. Same bytes reach
+    # the model either way -- this is a display fix, not a content change.
     return {
-        Rung.FULL: f"## {analysis_id}\n"
-                   + json.dumps(results, indent=2, default=str, sort_keys=True),
+        Rung.FULL: f"## {analysis_id}\n```json\n"
+                   + json.dumps(results, indent=2, default=str, sort_keys=True)
+                   + "\n```",
         Rung.SUMMARY: f"## {analysis_id}\n"
                       + "\n".join(f"- {k}: {_extent(results[k])}" for k in keys),
         Rung.IDENTIFIERS: f"## {analysis_id}\nreports: " + ", ".join(keys),

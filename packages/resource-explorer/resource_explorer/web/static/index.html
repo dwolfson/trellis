@@ -11000,10 +11000,59 @@ function _pointerLinkHtml(pointer) {
     </div>`;
 }
 
-function _resultsLinkHtml(analysisId, slug) {
+// Inline, not "results ↗" plus a navigate-away: the same tables, charts and
+// per-kind renderers the Analysis card's own "📊 Results" already draws from
+// (_renderAnalysisResultsContent, _renderFileTypePieChart,
+// _renderAnalysisTrendChart -- unmodified, this is a second place calling
+// them, not a second implementation), loaded on demand into a container that
+// lives in the chat message itself. A raw JSON dump behind "show packed
+// text" is what the model reads; this is what a person reads.
+let _chatResultsSeq = 0;
+
+function _inlineResultsToggleHtml(analysisId, slug) {
   if (!(analysisId in _REPO_RESULTS_RENDER_MODE)) return '';
-  return `<button onclick='_openAnalysisResults(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)})'
-            class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700 ml-2">results ↗</button>`;
+  const uid = `chat-res-${++_chatResultsSeq}`;
+  return `<div class="text-[10px] mt-0.5">
+      <button onclick='_toggleInlineResults(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)}, ${JSON.stringify(uid)})'
+              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
+        📊 view results
+      </button>
+      <div id="${uid}" class="hidden mt-1"></div>
+    </div>`;
+}
+
+async function _toggleInlineResults(analysisId, slug, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  if (el.dataset.loaded === '1') {
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    return;
+  }
+  el.innerHTML = '<div class="text-slate-500 text-xs py-1">Loading…</div>';
+  try {
+    const [resultsRes, trendRes] = await Promise.all([
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/results`),
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend`),
+    ]);
+    if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
+    const data = await resultsRes.json();
+    const trend = trendRes.ok ? (await trendRes.json()).runs || [] : [];
+    const hasPie = analysisId === 'language_file_classification' && data.by_type && data.by_type.length > 1;
+    const pieId = `${containerId}-pie`, trendId = `${containerId}-trend`;
+    el.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-2 space-y-2">
+      ${_renderAnalysisResultsContent(analysisId, data)}
+      ${hasPie ? `<div id="${pieId}" style="height:150px"></div>` : ''}
+      ${trend.length > 1 ? `<div id="${trendId}" style="height:100px"></div>` : ''}
+    </div>`;
+    if (hasPie) _renderFileTypePieChart(pieId, data.by_type);
+    if (trend.length > 1) _renderAnalysisTrendChart(trendId, trend, analysisId);
+    el.dataset.loaded = '1';
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  } catch (e) {
+    el.innerHTML = `<div class="text-red-400 text-xs py-1">Failed to load results: ${_esc(e.message)}</div>`;
+  }
 }
 
 async function _openPointer(pointer) {
@@ -11067,7 +11116,7 @@ async function _runGapAnalysis(analysisId, slug, btn) {
 
   updateOp(opId, 'ok', `'${analysisId}' complete`, data.message || final.summary || 'Complete');
   showToast('success', `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong>`, 5000);
-  btn.outerHTML = `<span class="text-emerald-400">✓ ran</span>` + _resultsLinkHtml(analysisId, slug);
+  btn.outerHTML = `<span class="text-emerald-400">✓ ran</span>` + _inlineResultsToggleHtml(analysisId, slug);
 }
 
 function _renderCompiledContext(data, slug, question) {
@@ -11104,8 +11153,8 @@ function _renderCompiledContext(data, slug, question) {
   const packedHtml = packed.length
     ? packed.map(p => `<div class="flex justify-between gap-2">
           <span class="text-slate-300">${_esc(p.key)}</span>
-          <span class="text-slate-500">${_esc(p.rung)} · ${p.size}${!p.pointer ? _resultsLinkHtml(p.key, slug) : ''}</span>
-        </div>${_pointerLinkHtml(p.pointer)}`).join('')
+          <span class="text-slate-500">${_esc(p.rung)} · ${p.size}</span>
+        </div>${!p.pointer ? _inlineResultsToggleHtml(p.key, slug) : ''}${_pointerLinkHtml(p.pointer)}`).join('')
     : '<div class="text-slate-500">nothing packed</div>';
 
   const droppedHtml = dropped.length
