@@ -37,26 +37,78 @@ class BudgetError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Pointer:
+    """A deep link to a live view, packed alongside prose rather than instead
+    of it (docs/context-compilation-design.md, backlog "a compiled answer
+    should be able to point at a view").
+
+    Resolves against whatever the view shows NOW -- the opposite of packed
+    prose, which is a snapshot. That is the point (a link stays correct as the
+    data changes) and also the risk: without `as_of`, two compiles of the same
+    spec can end up pointing at a view that has since changed underneath them,
+    breaking the replayability guarantee prose gets for free (§10/§14). Set
+    `as_of` from the compile's own `as_of` whenever the resolver has one.
+    """
+
+    resource_slug: str
+    view: str
+    perspective: str = ""
+    scope: str = ""
+    as_of: str = ""
+
+    def render(self) -> str:
+        """The tens-of-characters textual form actually counted against
+        budget -- see the module docstring's "sibling field, not a competing
+        candidate": a pointer never displaces its section's prose, it rides
+        alongside it."""
+        parts = [f"view={self.view}", f"resource={self.resource_slug}"]
+        if self.perspective:
+            parts.append(f"perspective={self.perspective}")
+        if self.scope:
+            parts.append(f"scope={self.scope}")
+        if self.as_of:
+            parts.append(f"as_of={self.as_of}")
+        return "[" + " ".join(parts) + "]"
+
+    def as_dict(self) -> dict:
+        return {"resource_slug": self.resource_slug, "view": self.view,
+                "perspective": self.perspective, "scope": self.scope,
+                "as_of": self.as_of}
+
+
+@dataclass(frozen=True)
 class Candidate:
     """What a resolver produced for one section, at each rung it can offer.
 
     `rungs` maps a Rung to rendered text. A section offering only FULL simply
     cannot be compressed, and the packer will drop it rather than pretend.
+
+    `pointer` is optional and orthogonal to rung selection: a resolver that can
+    describe something AND link to where it lives now (an architecture view, a
+    dashboard) sets both. The rung is chosen on prose size alone; the pointer's
+    own (small, constant) size is added on top wherever a rung's size is
+    measured, so it still counts against the hard ceiling without skewing which
+    rung gets picked.
     """
 
     key: str
     rungs: dict[Rung, str]
     provenance: tuple[dict, ...] = ()
+    pointer: Pointer | None = None
+
+    def pointer_cost(self, measure: Callable[[str], int]) -> int:
+        return measure(self.pointer.render()) if self.pointer is not None else 0
 
     def best_within(self, limit: int, floor: Rung, measure: Callable[[str], int]):
         """Richest rung that fits `limit`, or None. Never returns something
         coarser than `floor` -- past that point the section is dropped instead
         of reduced to noise."""
+        overhead = self.pointer_cost(measure)
         for rung in sorted(self.rungs):
             if rung > floor:
                 break
             text = self.rungs[rung]
-            if measure(text) <= limit:
+            if measure(text) + overhead <= limit:
                 return rung, text
         return None
 
@@ -69,6 +121,7 @@ class PackedSection:
     text: str
     size: int
     provenance: tuple[dict, ...] = ()
+    pointer: Pointer | None = None
 
 
 @dataclass(frozen=True)
@@ -154,12 +207,20 @@ def pack(
     chosen: dict[str, Rung] = {}
     remaining = budget
 
+    def _size(key: str, rung: Rung) -> int:
+        """Text at `rung` plus that candidate's pointer overhead (§ Pointer
+        docstring) -- a pointer rides alongside every rung at the same small
+        constant cost, so it counts against the ceiling without ever
+        influencing which rung gets picked."""
+        cand = candidates[key]
+        return measure(cand.rungs[rung]) + cand.pointer_cost(measure)
+
     def _cheapest(section: Section, limit: int):
         cand = candidates[section.key]
         for rung in sorted(cand.rungs, reverse=True):      # coarsest first
             if rung > section.floor:
                 continue
-            if measure(cand.rungs[rung]) <= limit:
+            if _size(section.key, rung) <= limit:
                 return rung
         return None
 
@@ -170,7 +231,7 @@ def pack(
         for rung in sorted(common, reverse=True):
             if rung > floor:
                 continue
-            if sum(measure(candidates[m.key].rungs[rung]) for m in members) <= limit:
+            if sum(_size(m.key, rung) for m in members) <= limit:
                 return rung
         return None
 
@@ -196,7 +257,7 @@ def pack(
             for m in members:
                 chosen[m.key] = rung
                 handled.add(m.key)
-                remaining -= measure(candidates[m.key].rungs[rung])
+                remaining -= _size(m.key, rung)
             notes.append(f"group {section.group!r} packed symmetrically at {rung.name}")
             continue
 
@@ -213,7 +274,7 @@ def pack(
                             f"the remaining {remaining}"})
             continue
         chosen[section.key] = rung
-        remaining -= measure(candidates[section.key].rungs[rung])
+        remaining -= _size(section.key, rung)
 
     # UPGRADE: ONE RUNG PER ROUND, heaviest weight first, key as a deterministic
     # tiebreak. Groups upgrade together or not at all.
@@ -246,20 +307,34 @@ def pack(
             if not better:
                 continue
             target = better[-1]          # one step up, not straight to the best
-            delta = sum(measure(candidates[m.key].rungs[target]) for m in members) - \
-                    sum(measure(candidates[m.key].rungs[current]) for m in members)
+            # Pointer overhead is constant per candidate across rungs, so it
+            # cancels out of this delta -- included in _size for consistency,
+            # not because it changes the arithmetic here.
+            delta = sum(_size(m.key, target) for m in members) - \
+                    sum(_size(m.key, current) for m in members)
             if delta <= remaining:
                 for m in members:
                     chosen[m.key] = target
                 remaining -= delta
                 improved = True
 
+    def _text(key: str, rung: Rung) -> str:
+        """Prose plus its pointer, if any -- both halves reach the model
+        (docs Backlog "a compiled answer should be able to point at a view":
+        "prose for the model to reason over, link for the human to go and
+        look"). The pointer is also exposed structurally via `PackedSection.
+        pointer` for a UI to render as a real link rather than inline text."""
+        text = candidates[key].rungs[rung]
+        pointer = candidates[key].pointer
+        return f"{text}\n{pointer.render()}" if pointer is not None else text
+
     packed = [
         PackedSection(
             key=s.key, role=s.role, rung=chosen[s.key],
-            text=candidates[s.key].rungs[chosen[s.key]],
-            size=measure(candidates[s.key].rungs[chosen[s.key]]),
+            text=_text(s.key, chosen[s.key]),
+            size=_size(s.key, chosen[s.key]),
             provenance=candidates[s.key].provenance,
+            pointer=candidates[s.key].pointer,
         )
         for s in order if s.key in chosen
     ]
@@ -271,10 +346,15 @@ def pack(
             "other guarantee"
         )
 
+    def _packed_entry(p: PackedSection) -> dict:
+        entry = {"key": p.key, "role": p.role, "rung": p.rung.name, "size": p.size}
+        if p.pointer is not None:
+            entry["pointer"] = p.pointer.as_dict()
+        return entry
+
     manifest = Manifest(
         spec_id=spec.spec_id, spec_version=spec.version, budget=budget, used=used,
-        packed=tuple({"key": p.key, "role": p.role, "rung": p.rung.name, "size": p.size}
-                     for p in packed),
+        packed=tuple(_packed_entry(p) for p in packed),
         dropped=tuple(dropped), gaps=tuple(gaps), notes=tuple(notes),
     )
     return PackedContext(sections=tuple(packed), manifest=manifest)
