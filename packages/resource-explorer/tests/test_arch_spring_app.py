@@ -581,7 +581,7 @@ class TestProfileOverlays:
         (tmp_path / "application-prod.properties").write_text("server.port=9090\n")
         out = spring_app.discover(str(tmp_path))
         assert out["platforms"] == []
-        assert any("have no `application.properties` beside them" in n for n in out["notes"])
+        assert any("have no base application config beside them" in n for n in out["notes"])
 
     def test_the_prefix_form_is_still_a_replacement_not_an_overlay(self, tmp_path):
         """`container.application.properties` must keep going through the merge
@@ -686,3 +686,106 @@ class TestValidationAgainstThreeSpringProjects:
         (d / "application.properties").write_text("server.port=8080\n")
         assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
             "composed-task-runner"]
+
+
+class TestYamlConfig:
+    """`application.yml`/`.yaml`, closed 2026-08-29.
+
+    Measured before it existed: `spring-cloud-dataflow` carried **15 YAML config
+    files against 5 properties files**, so about a third of its configuration
+    was read. Closing it took dataflow from 5 platforms to 9 and found a Spring
+    Boot k8s operator inside `open-metadata/OpenMetadata`, which had reported
+    zero because its main server is Dropwizard.
+
+    The design is a flattener, not a parallel code path: nested YAML becomes the
+    same dotted-key dict `_read_properties` returns, so `_NAME_KEYS`,
+    `_ENDPOINT_KEY_HINTS`, `_PORT_KEY` and `_SUBCOMPONENT_KEYS` all work
+    unchanged.
+    """
+
+    def test_nested_yaml_flattens_to_the_dotted_keys_everything_else_reads(self, tmp_path):
+        (tmp_path / "application.yml").write_text(
+            "spring:\n  application:\n    name: My Service\nserver:\n  port: 8080\n")
+        plat = spring_app.discover(str(tmp_path))["platforms"][0]
+        assert plat["name"] == "My Service"
+        assert plat["port"] == "8080"
+
+    def test_yaml_and_yml_are_both_read(self, tmp_path):
+        (tmp_path / "svc").mkdir()
+        (tmp_path / "svc" / "application.yaml").write_text(
+            "spring:\n  application:\n    name: Yaml Service\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
+            "Yaml Service"]
+
+    def test_a_scalar_list_joins_the_way_its_consumer_splits_it(self, tmp_path):
+        """`startup.server.list` is read with `.split(",")`, so a YAML sequence
+        has to arrive comma-joined to reach it."""
+        (tmp_path / "application.yml").write_text(
+            "platform:\n  name: P\nstartup:\n  server:\n    list:\n      - one\n      - two\n")
+        servers = spring_app.discover(str(tmp_path))["platforms"][0]["servers"]
+        assert [s["name"] for s in servers] == ["one", "two"]
+
+    def test_a_yaml_endpoint_is_still_an_endpoint(self, tmp_path):
+        (tmp_path / "application.yml").write_text(
+            "spring:\n  application:\n    name: S\n  datasource:\n"
+            "    url: jdbc:postgresql://db:5432/app\n")
+        out = spring_app.discover(str(tmp_path))
+        assert [w["target"] for w in out["wires"]] == ["PostgreSQL"]
+
+    def test_a_yaml_profile_overlay_is_an_environment(self, tmp_path):
+        (tmp_path / "application.yml").write_text("spring:\n  application:\n    name: S\n")
+        (tmp_path / "application-prod.yml").write_text("server:\n  port: 9090\n")
+        plat = spring_app.discover(str(tmp_path))["platforms"][0]
+        assert plat["environments"] == ["prod"]
+        assert plat["name"] == "S"
+
+    def test_an_in_file_profile_section_does_not_pollute_the_base(self, tmp_path):
+        """A `---` document activating a profile is the in-file equivalent of an
+        overlay file. Merging it into the base would apply prod-only config to
+        the default reading, silently.
+
+        Precautionary: no file in the corpus uses this, so it is guarded by a
+        test rather than by a measurement.
+        """
+        (tmp_path / "application.yml").write_text(
+            "spring:\n  application:\n    name: Base Name\n"
+            "---\n"
+            "spring:\n  config:\n    activate:\n      on-profile: prod\n"
+            "  application:\n    name: Prod Name\n")
+        plat = spring_app.discover(str(tmp_path))["platforms"][0]
+        assert plat["name"] == "Base Name"
+        assert plat["environments"] == ["prod"]
+
+    def test_a_maven_filter_token_is_not_a_name(self, tmp_path):
+        """spring-cloud-dataflow's `application.yml` carries
+        `name: "@project.artifactId@"` — substituted from the POM at build time,
+        so a checkout holds the token verbatim. A token is not a name, for the
+        same reason an unresolved `${...}` is not."""
+        d = tmp_path / "my-module" / "src" / "main" / "resources"; d.mkdir(parents=True)
+        (d / "application.yml").write_text(
+            'spring:\n  application:\n    name: "@project.artifactId@"\n')
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == [
+            "my-module"]
+
+    def test_malformed_yaml_declares_nothing_and_says_so(self, tmp_path):
+        """UNREADABLE is not EMPTY. Returning `{}` for both made a malformed file
+        propose a platform named after its own directory — a component invented
+        from a parse failure."""
+        (tmp_path / "application.yml").write_text("spring: [unclosed\n")
+        out = spring_app.discover(str(tmp_path))
+        assert out["platforms"] == []
+        assert any("could not be parsed" in n for n in out["notes"])
+
+    def test_an_empty_config_still_marks_its_module_as_an_application(self, tmp_path):
+        """The other half of the same distinction: a Spring app may legitimately
+        ship a near-empty `application.properties`."""
+        d = tmp_path / "svc" / "src" / "main" / "resources"; d.mkdir(parents=True)
+        (d / "application.properties").write_text("")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == ["svc"]
+
+    def test_a_yaml_base_counts_as_the_sibling_for_a_variant(self, tmp_path):
+        """`_is_variant_of_base` has to accept any of the three base names, or a
+        prefix variant beside a YAML base reads as its own application."""
+        (tmp_path / "application.yml").write_text("spring:\n  application:\n    name: Base\n")
+        (tmp_path / "test.application.properties").write_text("startup.server.list=\n")
+        assert [p["name"] for p in spring_app.discover(str(tmp_path))["platforms"]] == ["Base"]

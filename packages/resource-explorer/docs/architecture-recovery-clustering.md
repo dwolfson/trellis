@@ -764,6 +764,80 @@ they were universal**, and the only reliable way to find out is to run it
 somewhere else. Each fix cost minutes; each defect would have been invisible
 indefinitely without the example.
 
+### Closing the YAML gap — a flattener, not a second code path
+
+The five-repo run stopped when the *next* defect became predictable without
+running anything. Measured across the seven checkouts:
+
+| repo | `.properties` | `.yml`/`.yaml` |
+|---|---|---|
+| spring-cloud-dataflow | 5 | **15** |
+| openmetadata | 0 | **1** |
+| everything else | 2–9 | 0 |
+
+**A third of dataflow's configuration was being read.** `application.yml` is at
+least as common as `.properties` in modern Spring, so a sixth Spring repo would
+have found this and a seventh would have found it again — confirmation rather
+than validation, which is why the corpus stopped growing here and the gap got
+closed instead.
+
+**The design decision that keeps this small.** Nested YAML is *flattened to the
+same dotted-key dict* `_read_properties` already returns — Spring's own relaxed
+binding, in the direction we need it:
+
+```
+spring:                      ->  spring.application.name = foo
+  application:
+    name: foo
+```
+
+So `_NAME_KEYS`, `_ENDPOINT_KEY_HINTS`, `_PORT_KEY`, `_SUBCOMPONENT_KEYS` and
+placeholder resolution all work **unchanged**. A scalar sequence is joined with
+commas because that is exactly how `startup.server.list` is already consumed
+(`.split(",")`); a sequence of structures keeps Spring's indexed form so nothing
+is silently merged. Everything else routes through one small vocabulary
+(`_is_config_file` / `_is_base_config` / `_config_token`) rather than the eight
+places that had `"application.properties"` written into them.
+
+### Results
+
+| repo | before | after |
+|---|---|---|
+| spring-cloud-dataflow | 5 | **9** — the server, shell, skipper-server-core and skipper-shell were all invisible |
+| **openmetadata** | **0** | **1** — `omjob-operator` |
+| everything else | — | unchanged |
+
+OpenMetadata is the interesting one. It was recorded above as a *correct* zero
+because its main server is Dropwizard, and that reading was right about the
+server and wrong about the repo: it also contains a Spring Boot Kubernetes
+operator, in `openmetadata-k8s-operator/src/main/resources/application.yaml`.
+A measured boundary turned out to be a measured boundary **of one format**, not
+of the project.
+
+### Two distinctions this forced, both found by tests rather than repos
+
+**Unreadable is not empty.** The first version returned `{}` for a YAML parse
+failure, which made a malformed file propose a platform named after its own
+directory — a component invented from a parse error. `_read_config` now returns
+`None` for unreadable and reports it; an *empty* config still marks its module
+as an application, because a Spring app may legitimately ship a near-empty one.
+
+**A Maven filter token is not a name.** dataflow's `application.yml` carries
+`name: "@project.artifactId@"`, substituted from the POM at build time, so a
+checkout holds the token verbatim. Rejected for the same reason an unresolved
+`${...}` is — and it is the third distinct placeholder syntax this module now
+refuses to treat as a name (`~{}~`, `${}`, `@@`).
+
+### One thing here is precautionary, not measured
+
+Multi-document YAML with `spring.config.activate.on-profile` is the in-file
+equivalent of an `application-{profile}.yml` overlay. **No file in the corpus
+uses it** — no `---` sections, no `on-profile` keys, checked across all seven
+repos. It is implemented anyway, because the alternative is merging
+profile-specific configuration into the base silently, and it is guarded by a
+test rather than by a measurement. Recorded here so nobody later mistakes it for
+something that was observed.
+
 ### Known consequence, not yet addressed
 
 **Renaming a component's slug orphans its rows rather than superseding them.**

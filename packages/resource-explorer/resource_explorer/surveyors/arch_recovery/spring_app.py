@@ -56,6 +56,8 @@ import logging
 import os
 import re
 
+import yaml
+
 log = logging.getLogger(__name__)
 
 #: Properties whose *value* names a sub-component list. App-specific by nature —
@@ -126,6 +128,117 @@ def _read_properties(path: str) -> dict[str, str]:
     return out
 
 
+#: The three files that carry a JVM application's own configuration. Spring and
+#: Quarkus both read `application.properties`; Spring also reads
+#: `application.yml`/`.yaml`, and in modern apps the YAML form is at least as
+#: common. Measured 2026-08-29 before this existed: `spring-cloud-dataflow`
+#: carried **15 YAML config files against 5 properties files**, so roughly a
+#: third of its configuration was being read.
+_CONFIG_EXTS = (".properties", ".yml", ".yaml")
+_BASE_CONFIG_NAMES = tuple("application" + ext for ext in _CONFIG_EXTS)
+
+
+def _is_config_file(fn: str) -> bool:
+    return fn.endswith(_BASE_CONFIG_NAMES) or bool(_PROFILE_OVERLAY_RE.match(fn))
+
+
+def _is_base_config(fn: str) -> bool:
+    """The unprefixed file a plain `java -jar` reads."""
+    return os.path.basename(fn) in _BASE_CONFIG_NAMES
+
+
+def _config_token(fn: str) -> str:
+    """The prefix a variant carries: `container.application.properties` ->
+    `container`, `atlas-application.properties` -> `atlas`, and "" for a base."""
+    base = os.path.basename(fn)
+    for name in _BASE_CONFIG_NAMES:
+        if base.endswith(name):
+            return base[: -len(name)].strip(".-")
+    return ""
+
+
+def _flatten_yaml(node, prefix: str, out: dict) -> None:
+    """Spring's relaxed binding, in the direction we need it.
+
+    `spring: {application: {name: foo}}` becomes `spring.application.name=foo`,
+    which is the SAME flat shape `_read_properties` returns — so every consumer
+    downstream (`_NAME_KEYS`, `_ENDPOINT_KEY_HINTS`, `_PORT_KEY`,
+    `_SUBCOMPONENT_KEYS`, placeholder resolution) works unchanged. That is the
+    whole design: flatten once rather than grow a parallel YAML code path.
+
+    A list of scalars is joined with commas because that is exactly how
+    `startup.server.list` is already consumed (`.split(",")`); a list of
+    structures keeps Spring's indexed form so nothing is silently merged.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _flatten_yaml(value, f"{prefix}.{key}" if prefix else str(key), out)
+    elif isinstance(node, list):
+        scalars = [x for x in node if isinstance(x, (str, int, float, bool))]
+        if len(scalars) == len(node):
+            out[prefix] = ",".join(str(x) for x in scalars)
+        else:
+            for i, item in enumerate(node):
+                _flatten_yaml(item, f"{prefix}[{i}]", out)
+    elif node is not None:
+        out[prefix] = str(node)
+
+
+#: Spring's in-file profile section marker. A multi-document YAML file can carry
+#: profile-specific documents separated by `---`, which is the in-file
+#: equivalent of an `application-{profile}.yml` overlay.
+_ON_PROFILE_KEYS = ("spring.config.activate.on-profile", "spring.profiles")
+
+
+def _read_yaml_config(path: str) -> tuple[dict, dict] | None:
+    """`(base props, {profile: props})`, or None if the file could not be parsed.
+
+    Documents that activate a profile are kept OUT of the base rather than
+    merged into it: merging them would apply prod-only configuration to the
+    default reading, silently.
+
+    **Precautionary, not measured.** No file in the current corpus uses either
+    `---` sections or `spring.config.activate.on-profile`, so this path has
+    never fired on real data. It is here because the alternative — merging
+    blindly — is wrong in a way nothing would report.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            documents = list(yaml.safe_load_all(fh))
+    except (OSError, yaml.YAMLError):
+        # UNREADABLE is not the same as EMPTY, and the caller must be able to
+        # tell them apart: an empty config still marks its module as an
+        # application, while a file we could not parse tells us nothing at all.
+        # Returning `{}` for both made a malformed YAML file propose a platform
+        # named after its own directory.
+        return None
+    base: dict = {}
+    profiles: dict = {}
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        flat: dict = {}
+        _flatten_yaml(document, "", flat)
+        profile = next((flat[k] for k in _ON_PROFILE_KEYS if flat.get(k)), "")
+        if profile:
+            for one in (p.strip() for p in profile.split(",")):
+                if one:
+                    profiles.setdefault(one, {}).update(flat)
+        else:
+            base.update(flat)
+    return base, profiles
+
+
+def _read_config(path: str) -> tuple[dict, dict] | None:
+    """`(props, {profile: props})` for any of the three config formats, or None
+    if the file could not be read at all."""
+    if path.endswith((".yml", ".yaml")):
+        return _read_yaml_config(path)
+    if not os.path.isfile(path):
+        return None
+    return _read_properties(path), {}
+
+
 def _placeholders(props: dict[str, str]) -> dict[str, str]:
     blob = props.get("platform.placeholder.variables", "")
     if not blob:
@@ -190,7 +303,7 @@ def _spring_entry_points(root: str) -> list[str]:
 #: blind to it: this module read Egeria's non-standard PREFIX form
 #: (`container.application.properties`) and missed the framework's documented
 #: one. Measured, `apache/polaris` carries two we never saw.
-_PROFILE_OVERLAY_RE = re.compile(r"^application-([A-Za-z0-9_.-]+)\.properties$")
+_PROFILE_OVERLAY_RE = re.compile(r"^application-([A-Za-z0-9_.-]+?)\.(?:properties|ya?ml)$")
 
 #: Path segments marking a file as a TEST FIXTURE rather than a deployment.
 #:
@@ -212,6 +325,9 @@ _TEST_PATH_SEGMENTS = ("/src/test/", "/test/resources/", "/tests/resources/")
 #: unread inside the string.
 _SPRING_PLACEHOLDER_RE = re.compile(r"\$\{([^:{}]+)(?::([^{}]*))?\}")
 
+#: Maven resource-filtering token, substituted from the POM at build time.
+_MAVEN_FILTER_RE = re.compile(r"@[A-Za-z0-9_.\-]+@")
+
 
 def _is_test_fixture(rel: str) -> bool:
     norm = "/" + rel.replace(os.sep, "/").strip("/") + "/"
@@ -231,7 +347,13 @@ def _resolve_spring(value: str, props: dict) -> str:
             return props[key]
         return default if default is not None else "\x00"
     out = _SPRING_PLACEHOLDER_RE.sub(sub, value or "")
-    return "" if "\x00" in out or "${" in out else out
+    if "\x00" in out or "${" in out:
+        return ""
+    # Maven resource filtering, e.g. `@project.artifactId@` in
+    # spring-cloud-dataflow's `application.yml`. Substituted at BUILD time from
+    # the POM, so a checkout carries the token verbatim — and a token is not a
+    # name, for the same reason an unresolved `${...}` is not.
+    return "" if _MAVEN_FILTER_RE.search(out) else out
 
 
 def _properties_files(root: str) -> list[str]:
@@ -256,7 +378,7 @@ def _properties_files(root: str) -> list[str]:
         dirnames[:] = [d for d in dirnames
                        if d not in (".git", "node_modules", ".venv", "build", "target")]
         for fn in filenames:
-            if not (fn.endswith("application.properties") or _PROFILE_OVERLAY_RE.match(fn)):
+            if not _is_config_file(fn):
                 continue
             rel = os.path.relpath(os.path.join(dirpath, fn), root)
             if _is_test_fixture(rel):
@@ -522,14 +644,14 @@ def _style_references(root: str) -> dict:
                     text = fh.read(_MAX_STYLE_BYTES)
             except OSError:
                 continue
-            if "application.properties" not in text:
+            if not any(n in text for n in _BASE_CONFIG_NAMES):
                 continue
             rel = os.path.relpath(os.path.join(dirpath, fn), root)
             choreo = any(t in rel.lower() for t in _CHOREO_REF_TOKENS)
             style = STYLE_CHOREOGRAPHED if choreo else STYLE_CONTAINERIZED
             for match in _PROPS_REF_RE.finditer(text):
                 named = os.path.basename(match.group(0))
-                if named == "application.properties":
+                if _is_base_config(named):
                     # The DESTINATION of a substitution, not a profile. It is
                     # what every build writes, so styling it would style the
                     # platform's own canonical file after whichever workflow
@@ -546,7 +668,7 @@ def _style_references(root: str) -> dict:
 #: unbounded walk of a monorepo's CI is not what rule 17 licenses.
 _MAX_STYLE_FILES = 400
 _MAX_STYLE_BYTES = 200_000
-_PROPS_REF_RE = re.compile(r"[\w.\-/]*application\.properties")
+_PROPS_REF_RE = re.compile(r"[\w.\-/]*application\.(?:properties|ya?ml)")
 
 
 def _style_for(rel: str, ref_styles: dict) -> str:
@@ -555,7 +677,7 @@ def _style_for(rel: str, ref_styles: dict) -> str:
     base = os.path.basename(rel)
     if base in ref_styles:
         return ref_styles[base]
-    profile = base[: -len("application.properties")].strip(".").lower()
+    profile = _config_token(base).lower()
     if not profile:
         return STYLE_NATIVE
     if profile in _CONTAINER_PROFILE_TOKENS:
@@ -662,8 +784,7 @@ def _consolidate(platforms: list, root: str, notes: list) -> list:
         names = [g["name"] for g in group]
         # The canonical declaration is the bare `application.properties` where
         # one exists — it is what a plain `java -jar` reads.
-        canonical = next((g for g in group
-                          if os.path.basename(g["path"]) == "application.properties"), group[0])
+        canonical = next((g for g in group if _is_base_config(g["path"])), group[0])
         head = dict(canonical)
         head["name"] = _common_name(names) or canonical["name"]
         head["styles"] = sorted({g["style"] for g in group if g["style"]})
@@ -703,11 +824,11 @@ def _is_variant_of_base(rel: str, all_files: set) -> bool:
     and **zero for `apache/atlas`** across 20 files. Confining the drop to
     variants puts it back where it was earned.
     """
-    base = os.path.basename(rel)
-    if base == "application.properties" or not base.endswith("application.properties"):
+    if _is_base_config(rel) or not _config_token(rel):
         return False
-    sibling = os.path.join(os.path.dirname(rel), "application.properties")
-    return sibling in all_files
+    directory = os.path.dirname(rel)
+    return any(os.path.join(directory, name) in all_files
+               for name in _BASE_CONFIG_NAMES)
 
 
 def _fallback_name(rel: str, root: str) -> str:
@@ -720,8 +841,7 @@ def _fallback_name(rel: str, root: str) -> str:
     literal string "platform" — the previous behaviour — gave every unnamed app
     in a repo the same name.
     """
-    base = os.path.basename(rel)
-    token = base[: -len("application.properties")].strip(".-")
+    token = _config_token(rel)
     if token:
         return token
     return _module_dir(rel, root) or "platform"
@@ -827,15 +947,15 @@ def _attach_overlays(platforms: list, overlays: dict, root: str, notes: list) ->
         if not targets:
             notes.append(
                 f"{len(entries)} profile overlay(s) in {directory or '.'} "
-                f"({', '.join(sorted(p for p, _ in entries))}) have no "
-                f"`application.properties` beside them — not attached to any platform")
+                f"({', '.join(sorted(p for p, _ in entries))}) have no base "
+                f"application config beside them — not attached to any platform")
             continue
         # A directory can hold several bases (Egeria's prefix form). Spring
         # merges an overlay onto whichever base is active, which a static read
         # cannot know, so the overlay is recorded on each rather than assigned
         # to one by guess.
         for profile, rel in sorted(entries):
-            props = _read_properties(os.path.join(root, rel))
+            props = (_read_config(os.path.join(root, rel)) or ({}, {}))[0]
             for plat in targets:
                 plat.setdefault("environments", []).append(profile)
                 plat.setdefault("overlay_paths", []).append(rel)
@@ -949,7 +1069,15 @@ def discover(root: str) -> dict:
             candidates.append(rel)
 
     for rel in candidates:
-        props = _read_properties(os.path.join(root, rel))
+        parsed = _read_config(os.path.join(root, rel))
+        if parsed is None:
+            notes.append(f"{rel} could not be parsed — no platform proposed from it")
+            continue
+        props, inline_profiles = parsed
+        for profile in sorted(inline_profiles):
+            # An in-file `---` section activating a profile is the same
+            # relationship as an `application-{profile}.yml` file beside it.
+            overlays.setdefault(os.path.dirname(rel), []).append((profile, rel))
         props["__rel__"] = rel          # so the config store resolves beside its properties file
         holders = _placeholders(props)
         # `declared_name` distinguishes a name a person WROTE from one derived
