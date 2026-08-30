@@ -1879,6 +1879,34 @@ guessed at further:
 - Out of scope for `docs/ingestion-pipeline-audit.md` itself, since it's a codebase-wide pattern
   rather than an RE-vs-EA ingestion-pipeline-duplication finding — that doc points here.
 
+#### `security_features` results reader has a fourth state its own test doesn't know about
+
+*(Found 2026-08-30, from a live-corpus test failure during routine integration —
+`test_security_features_visibility.py::test_no_repo_in_the_corpus_renders_a_bare_empty_card`.)*
+
+`_security_features_results` (`repo_survey_definition_adapter.py`) documents exactly three
+states — `measured` (findings exist), `skipped_by_design` (stats exist, GitHub hid the data),
+`never_run` (no stats at all) — and the test asserts every repo in the corpus lands in one of
+them, never a bare `{"findings": []}` with no stated cause.
+
+`egeria_workspaces_git` hits a fourth, undocumented case: it has **real, visible**
+`security_and_analysis` data (`dependabot_security_updates: enabled`, several others disabled —
+confirmed admin-visible, not GitHub's third-party redaction), yet **zero rows** in
+`project_analysis_findings` for `security_features`. The reader's last branch ("visible and
+genuinely nothing enabled — a real, final answer") is written for a repo where the data was
+checked and truly nothing is on; it cannot distinguish that from what this repo actually is —
+data that says something *is* enabled, but the `security_features` survey step itself has
+apparently never run to turn that into a finding row. The reader currently can't tell "ran,
+concluded nothing's on" from "never ran, but some other fetch happened to populate the stats
+JSON anyway."
+
+**Not yet fixed; not yet root-caused past this point.** Likely fix shape: the reader needs a way
+to know whether the `security_features` step itself has ever executed for this repo (a
+`last_run` marker, same shape `get_analysis_last_run` already tracks elsewhere) rather than
+inferring "ran" from "stats happen to be visible" — but confirm that's actually the gap before
+building it; the survey step's own write path hasn't been checked yet for whether it should have
+produced a finding for `dependabot_security_updates: enabled` and silently didn't.
+
 ---
 
 ### Platform & orchestration
