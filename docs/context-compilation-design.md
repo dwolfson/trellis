@@ -800,9 +800,27 @@ Needs no spec, no packer, no tree. These are §18's measurement instruments in t
 
 ### Phase 1 — authoring, not code
 
-4. **Two columns on the analysis catalog**: `availability: materialized | schedulable` and
-   `temporal: as_of | current_only`. Vocabulary work in the CSV plus a regeneration. §20 depends
-   entirely on these and they are the cheapest items in the design.
+*(Status, 2026-08-30: item 4 is superseded — see below. Items 5 and 6 are unbuilt: no
+`fetched_at`/`as_of`/source-GUID envelope is captured at ingest, and `feedback` carries no
+`manifest_id`.)*
+
+4. ~~**Two columns on the analysis catalog**: `availability: materialized | schedulable` and
+   `temporal: as_of | current_only`.~~ **SUPERSEDED by §20's implementation findings (2026-08-27);
+   do not build this.** Verified 2026-08-30 against the code:
+
+   * `availability` is **derived, not tagged** — `AnalysisCatalogEntry.availability`
+     (`analysis_catalog_reader.py:66`) maps `run_time` `fast` → `inline` and everything else →
+     `queued`. A second hand-maintained column would be one more thing to keep consistent with the
+     first. Note the vocabulary also moved: the pair is `inline | queued`, not
+     `materialized | schedulable`.
+   * `temporal` **does not belong on the analysis catalog at all** — the compiler reads stored,
+     timestamped results, so every analysis is as-of-able over its own output and the column would
+     have one value. `current_only` is a property of **resolver kind**, and no resolver-kind
+     registry exists yet — so this remains open, in a different place than this list said.
+
+   *Left struck through rather than deleted because the reasoning is the useful part: a reader
+   following the task list would rebuild exactly what §20 argued against, which is how this was
+   found.*
 5. **Envelope fields captured at ingest** — `source guid`, Egeria version, Egeria timestamp,
    `fetched_at` (§10). Additive schema; needs re-ingestion, which is cheap now.
 6. **Manifest id on feedback records** (§13). One column. Without it the signal cannot distinguish
@@ -820,6 +838,11 @@ Needs no spec, no packer, no tree. These are §18's measurement instruments in t
 10. Wire the **adoption gate** (§23) into RE's Chat panel with a manifest pane.
 
 **This is the first point at which the compiler impacts RE.** Everything before it is invisible.
+
+*(Status, 2026-08-30: 8 and 9 are built and green — `trellis_context.spec`, a 338-line packer, and
+`context_compile.py` with 40 passing tests. **10 is not started**, and it shows: the only caller of
+`compile_context` anywhere in the repo is `tests/test_context_compile.py`. On this list's own terms
+the compiler currently has no impact on RE.)*
 
 ### Phase 4 — EA
 
