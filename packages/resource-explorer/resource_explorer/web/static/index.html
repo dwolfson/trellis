@@ -10883,6 +10883,13 @@ async function compileContext() {
   if (!slug) { showToast('error', 'Select a resource first.', 3000); return; }
 
   appendMessage('you', question);
+  await _recompile(slug, question);
+}
+
+// Shared by the Evidence button and by anything that wants to re-run the same
+// compile silently -- a gap's "run" completing, or the message's own "refresh"
+// button -- without appending a second "you" bubble for the same question.
+async function _recompile(slug, question) {
   setThinking(true);
   try {
     const res = await fetch('/api/context/compile', {
@@ -10901,7 +10908,7 @@ async function compileContext() {
       const detail = await res.text();
       throw new Error(`HTTP ${res.status}: ${detail.slice(0, 200)}`);
     }
-    _renderCompiledContext(await res.json());
+    _renderCompiledContext(await res.json(), slug, question);
   } catch (e) {
     showToast('error', `Could not compile context: ${e.message}`, 6000);
   } finally {
@@ -10909,43 +10916,24 @@ async function compileContext() {
   }
 }
 
-// ── pointer sections ─────────────────────────────────────────────────────────
-// PackedSection.pointer (trellis_context) is a link to where a section's own
-// view lives NOW, packed alongside its prose rather than instead of it --
-// "prose for the model to reason over, link for the human to go and look"
-// (Backlog "a compiled answer should be able to point at a view"). It has
-// existed in the manifest since the pointer-sections work landed; nothing
-// here read it until now.
-//
-// Deliberately as narrow as the backend's own _POINTABLE_VIEWS
-// (context_compile.py): one entry per view RE actually has somewhere to
-// point today. RE has no routing at all, so "go to a view" means driving
-// the same client-side nav a person would click through by hand -- select
-// the resource, switch intent, open the analysis card's Results, and, if
-// the pointer named one, its perspective tab. Add an entry here only once
-// the backend map grows to match; the two are meant to stay in step.
-const _POINTER_VIEW_TARGET = {
-  architecture: { intent: 'analysis', analysisId: 'architecture_recovery' },
-};
-
-function _pointerLinkHtml(pointer) {
-  if (!pointer) return '';
-  const label = _POINTER_VIEW_TARGET[pointer.view] ? pointer.view : `${pointer.view} (no view registered yet)`;
-  const asOf = pointer.as_of ? ` · as of ${_esc(_relTime(pointer.as_of))}` : '';
-  return `<div class="text-[10px]">
-      <button onclick='_openPointer(${JSON.stringify(pointer)})'
-              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
-        📍 open ${_esc(label)} view for ${_esc(pointer.resource_slug)}
-      </button>${asOf}
-    </div>`;
-}
+// ── viewing results from chat ────────────────────────────────────────────────
+// Two entry points end up at the same place: a pointer section (a compiled
+// answer linking to where its own view lives NOW, alongside its packed prose
+// -- "prose for the model to reason over, link for the human to go and look",
+// Backlog "a compiled answer should be able to point at a view") and a plain
+// "results ↗" link on ANY packed section that has a results view at all, not
+// only the one analysis a pointer names. RE has no routing, so "go to a view"
+// means driving the same client-side nav a person would click through by
+// hand -- select the resource, switch to whichever intent the analysis'
+// catalog entry actually lives under, open its Results, and, for a pointer,
+// its named perspective tab.
 
 // Short poll for an element an async panel render will produce -- setNavIntent()
 // and its showXPane() callees fetch before they render, so the target element
 // (a results-<id> div) does not exist synchronously the way the rest of this
-// file's onclick handlers assume. Bounded, not indefinite: a pointer whose
-// target never materialises (backend map and this one drifted, or the fetch
-// failed) should say so rather than hang.
+// file's onclick handlers assume. Bounded, not indefinite: a target that never
+// materialises (a stale analysis id, or the fetch failed) should say so rather
+// than hang.
 function _waitForEl(id, timeoutMs) {
   return new Promise(resolve => {
     const start = performance.now();
@@ -10958,28 +10946,123 @@ function _waitForEl(id, timeoutMs) {
   });
 }
 
+// Which intent-nav tab an analysis id's catalog entry lives under, fetched
+// once and cached. Looked up rather than hardcoded on purpose: today's own
+// session history is the reason -- architecture_recovery's intent moved
+// between discovery and analysis twice in one day, and a hardcoded map here
+// would have gone stale exactly when the catalog changed under it.
+let _analysisIntentCache = null;
+async function _analysisIntent(analysisId) {
+  if (!_analysisIntentCache) {
+    _analysisIntentCache = {};
+    try {
+      const res = await fetch('/api/analyses/repo');
+      if (res.ok) for (const a of await res.json()) _analysisIntentCache[a.id] = a.intent;
+    } catch { /* fall through to the caller's default */ }
+  }
+  return _analysisIntentCache[analysisId];
+}
+
+async function _openAnalysisResults(analysisId, slug) {
+  selectProject(slug);
+  setNavIntent((await _analysisIntent(analysisId)) || 'analysis');
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const resultsEl = await _waitForEl(`results-${safeId}`, 3000);
+  if (!resultsEl) {
+    showToast('error', `Couldn't find the results view for ${_esc(analysisId)} on ${_esc(slug)} — select it manually.`, 6000);
+    return null;
+  }
+  // Opens closed, closes open — same as clicking the card's own Results
+  // button. Fine for the common case (this opens a card the user hadn't);
+  // re-opening an already-open card closes it instead of a no-op, which is
+  // the one place this shortcuts the real toggle affordance.
+  await toggleAnalysisResults(analysisId, slug, null);
+  resultsEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  return resultsEl;
+}
+
+// Deliberately as narrow as the backend's own _POINTABLE_VIEWS
+// (context_compile.py): one entry per view RE actually has somewhere to
+// point today. Add an entry here only once the backend map grows to match;
+// the two are meant to stay in step.
+const _POINTER_VIEW_ANALYSIS = { architecture: 'architecture_recovery' };
+
+function _pointerLinkHtml(pointer) {
+  if (!pointer) return '';
+  const known = _POINTER_VIEW_ANALYSIS[pointer.view];
+  const label = known ? pointer.view : `${pointer.view} (no view registered yet)`;
+  const asOf = pointer.as_of ? ` · as of ${_esc(_relTime(pointer.as_of))}` : '';
+  return `<div class="text-[10px]">
+      <button onclick='_openPointer(${JSON.stringify(pointer)})'
+              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
+        📍 open ${_esc(label)} view for ${_esc(pointer.resource_slug)}
+      </button>${asOf}
+    </div>`;
+}
+
+// Inline, not "results ↗" plus a navigate-away: the same tables, charts and
+// per-kind renderers the Analysis card's own "📊 Results" already draws from
+// (_renderAnalysisResultsContent, _renderFileTypePieChart,
+// _renderAnalysisTrendChart -- unmodified, this is a second place calling
+// them, not a second implementation), loaded on demand into a container that
+// lives in the chat message itself. A raw JSON dump behind "show packed
+// text" is what the model reads; this is what a person reads.
+let _chatResultsSeq = 0;
+
+function _inlineResultsToggleHtml(analysisId, slug) {
+  if (!(analysisId in _REPO_RESULTS_RENDER_MODE)) return '';
+  const uid = `chat-res-${++_chatResultsSeq}`;
+  return `<div class="text-[10px] mt-0.5">
+      <button onclick='_toggleInlineResults(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)}, ${JSON.stringify(uid)})'
+              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
+        📊 view results
+      </button>
+      <div id="${uid}" class="hidden mt-1"></div>
+    </div>`;
+}
+
+async function _toggleInlineResults(analysisId, slug, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  if (el.dataset.loaded === '1') {
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    return;
+  }
+  el.innerHTML = '<div class="text-slate-500 text-xs py-1">Loading…</div>';
+  try {
+    const [resultsRes, trendRes] = await Promise.all([
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/results`),
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend`),
+    ]);
+    if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
+    const data = await resultsRes.json();
+    const trend = trendRes.ok ? (await trendRes.json()).runs || [] : [];
+    const hasPie = analysisId === 'language_file_classification' && data.by_type && data.by_type.length > 1;
+    const pieId = `${containerId}-pie`, trendId = `${containerId}-trend`;
+    el.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-2 space-y-2">
+      ${_renderAnalysisResultsContent(analysisId, data)}
+      ${hasPie ? `<div id="${pieId}" style="height:150px"></div>` : ''}
+      ${trend.length > 1 ? `<div id="${trendId}" style="height:100px"></div>` : ''}
+    </div>`;
+    if (hasPie) _renderFileTypePieChart(pieId, data.by_type);
+    if (trend.length > 1) _renderAnalysisTrendChart(trendId, trend, analysisId);
+    el.dataset.loaded = '1';
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  } catch (e) {
+    el.innerHTML = `<div class="text-red-400 text-xs py-1">Failed to load results: ${_esc(e.message)}</div>`;
+  }
+}
+
 async function _openPointer(pointer) {
-  const target = _POINTER_VIEW_TARGET[pointer.view];
-  if (!target) {
+  const analysisId = _POINTER_VIEW_ANALYSIS[pointer.view];
+  if (!analysisId) {
     showToast('info', `No view registered for "${pointer.view}" yet.`, 4000);
     return;
   }
-  selectProject(pointer.resource_slug);
-  setNavIntent(target.intent);
-  const safeId = String(target.analysisId).replace(/[^a-zA-Z0-9]/g, '_');
-  const resultsEl = await _waitForEl(`results-${safeId}`, 3000);
-  if (!resultsEl) {
-    showToast('error',
-      `Couldn't find the ${pointer.view} view for ${pointer.resource_slug} — ` +
-      `select it manually under Analysis.`, 6000);
-    return;
-  }
-  // Opens closed, closes open — same as clicking the card's own Results
-  // button. Fine for the common case (pointer opens a card the user hadn't);
-  // re-clicking a pointer into an already-open card closes it instead of a
-  // no-op, which is the one place this shortcuts the real toggle affordance.
-  await toggleAnalysisResults(target.analysisId, pointer.resource_slug, null);
-  resultsEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const resultsEl = await _openAnalysisResults(analysisId, pointer.resource_slug);
+  if (!resultsEl) return;
   if (pointer.perspective) {
     // Best-effort: _archTabsHtml's buttons carry a uid generated at render
     // time that isn't known in advance, so select by perspective value
@@ -10990,22 +11073,79 @@ async function _openPointer(pointer) {
   }
 }
 
-function _renderCompiledContext(data) {
-  const m = data.manifest || {};
-  const messages = document.getElementById('messages');
-  const wrap = document.createElement('div');
-  wrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+// ── running a survey from chat ───────────────────────────────────────────────
+// The same background-run endpoint and poll the Analysis card's own Run
+// button uses (runAnalysisCatalogCard) -- no new backend, just a second place
+// to trigger it. This is a person clicking "run" on a gap the Evidence
+// preview named, not the compiler triggering a survey itself: §20's rule
+// ("the packer must never trigger a survey") is about the compile path, not
+// about whether a human can ask for one from here instead of the card grid.
+async function _runGapAnalysis(analysisId, slug, btn) {
+  btn.disabled = true;
+  btn.textContent = 'starting…';
+  const opId = logOp({ type: 'analysis', slug, status: 'running',
+    summary: `Running '${analysisId}' on ${slug} (from chat)…` });
 
+  let started;
+  try {
+    const startRes = await fetch(`/api/projects/${slug}/analyses/${analysisId}/run`, { method: 'POST' });
+    started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+  } catch (e) {
+    btn.textContent = '▶ run';
+    btn.disabled = false;
+    updateOp(opId, 'error', `Failed to start '${analysisId}'`, e.message);
+    showToast('error', `Failed to start '${_esc(analysisId)}': ${_esc(e.message)}`, 8000);
+    return;
+  }
+
+  const final = await _pollActivityUntilDone(started.activity_id, {
+    onTick: (s) => { btn.textContent = `running… (${s}s)`; },
+  });
+  let data = {};
+  try { data = final.detail ? JSON.parse(final.detail) : {}; } catch { data = {}; }
+
+  if (final.status === 'error') {
+    const msg = data.error || final.summary || 'Run failed';
+    btn.textContent = '▶ retry';
+    btn.disabled = false;
+    updateOp(opId, 'error', `'${analysisId}' failed`, msg);
+    showToast('error', `'${_esc(analysisId)}' failed: ${_esc(msg)}`, 8000);
+    return;
+  }
+
+  updateOp(opId, 'ok', `'${analysisId}' complete`, data.message || final.summary || 'Complete');
+  showToast('success', `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong>`, 5000);
+  btn.outerHTML = `<span class="text-emerald-400">✓ ran</span>` + _inlineResultsToggleHtml(analysisId, slug);
+}
+
+// Body shared by two call sites: the standalone "Evidence" button
+// (_renderCompiledContext, its own message bubble) and the real answer's
+// own "📎 evidence used" toggle (_evidenceSummaryHtml, ConversationAgent
+// already compiled this to shape the answer -- same data, no second
+// compile call). One builder so the gap/run/results/pointer machinery
+// exists in exactly one place.
+function _compiledEvidenceHtml(data, slug, question) {
+  const m = data.manifest || {};
   const gaps = m.gaps || [], packed = m.packed || [], dropped = m.dropped || [];
   const pct = m.budget ? Math.round((m.used / m.budget) * 100) : 0;
 
+  // Each gap gets its own "▶ run" — the same background run the Analysis
+  // card's Run button starts, just triggered from here. A person asking a
+  // question that resolves to a not-yet-run analysis is exactly the moment
+  // "well, run it then" is the useful next action, and until now that meant
+  // leaving the chat to find the right card.
   const gapHtml = gaps.length
     ? `<div class="mt-2 border border-amber-700/60 rounded p-2 bg-amber-950/20">
          <div class="text-[11px] font-semibold text-amber-400 mb-1">
            Missing — ${gaps.length} analysis/analyses that would answer this have not run
          </div>
-         <div class="text-[10px] text-amber-200/80 leading-relaxed">
-           ${gaps.map(g => _esc(g.key)).join(' · ')}
+         <div class="space-y-1">
+           ${gaps.map(g => `<div class="flex items-center justify-between gap-2 text-[10px] text-amber-200/80">
+               <span>${_esc(g.key)}${g.reason ? ` <span class="text-amber-400/60">— ${_esc(g.reason)}</span>` : ''}</span>
+               <button onclick='_runGapAnalysis(${JSON.stringify(g.key)}, ${JSON.stringify(slug)}, this)'
+                       class="shrink-0 px-1.5 py-0.5 rounded bg-amber-800/40 hover:bg-amber-700/50 text-amber-200 transition-colors">▶ run</button>
+             </div>`).join('')}
          </div>
        </div>`
     : `<div class="mt-2 text-[11px] text-emerald-400">
@@ -11016,7 +11156,7 @@ function _renderCompiledContext(data) {
     ? packed.map(p => `<div class="flex justify-between gap-2">
           <span class="text-slate-300">${_esc(p.key)}</span>
           <span class="text-slate-500">${_esc(p.rung)} · ${p.size}</span>
-        </div>${_pointerLinkHtml(p.pointer)}`).join('')
+        </div>${!p.pointer ? _inlineResultsToggleHtml(p.key, slug) : ''}${_pointerLinkHtml(p.pointer)}`).join('')
     : '<div class="text-slate-500">nothing packed</div>';
 
   const droppedHtml = dropped.length
@@ -11033,10 +11173,21 @@ function _renderCompiledContext(data) {
         </div>
       </div>`).join('') || '<div class="text-slate-500">no questions matched</div>';
 
-  wrap.innerHTML = `
-    <div class="text-xs font-semibold mb-1 text-cyan-400">Evidence for this question</div>
-    <div class="text-[10px] text-slate-500 mb-1">
-      What the adoption gate would assemble. Not the source of any answer above.
+  // The packed evidence prose itself -- what actually reaches the model when
+  // this compile feeds a real answer (ConversationAgent._compiled_evidence).
+  // Everything above describes the compile; this is the compile. Rendered
+  // with marked() because _findings_to_rungs/_results_to_rungs already write
+  // "## analysis_id" markdown headers into it.
+  const textHtml = (data.text || '').trim()
+    ? marked.parse(data.text)
+    : '<div class="text-slate-500">nothing packed</div>';
+
+  return `
+    <div class="flex items-center justify-between gap-2 mb-1">
+      <div class="text-xs font-semibold text-cyan-400">Evidence for this question</div>
+      <button onclick='_recompile(${JSON.stringify(slug)}, ${JSON.stringify(question)})'
+              title="Re-check — useful after running a gap above"
+              class="text-[10px] text-slate-500 hover:text-cyan-400 transition-colors">🔄 refresh</button>
     </div>
     ${gapHtml}
     <div class="mt-2 text-[10px]">
@@ -11044,12 +11195,49 @@ function _renderCompiledContext(data) {
       <div class="space-y-0.5">${packedHtml}</div>
       ${droppedHtml}
     </div>
-    <button onclick="this.nextElementSibling.classList.toggle('hidden')"
-            class="text-[10px] text-slate-600 hover:text-cyan-400 mt-2 transition-colors">why these?</button>
-    <div class="hidden mt-1 pl-2 border-l border-slate-700 text-[10px]">${derivHtml}</div>`;
+    <div class="flex gap-3 mt-2">
+      <button onclick="this.parentElement.nextElementSibling.classList.toggle('hidden')"
+              class="text-[10px] text-slate-600 hover:text-cyan-400 transition-colors">why these?</button>
+      <button onclick="this.parentElement.nextElementSibling.nextElementSibling.classList.toggle('hidden')"
+              class="text-[10px] text-slate-600 hover:text-cyan-400 transition-colors">show packed text</button>
+    </div>
+    <div class="hidden mt-1 pl-2 border-l border-slate-700 text-[10px]">${derivHtml}</div>
+    <div class="hidden mt-1 prose prose-invert max-w-none text-[11px] bg-slate-950/60 rounded p-2 border border-slate-800">${textHtml}</div>`;
+}
 
+// Standalone "Evidence" button — its own message bubble, always expanded.
+// What the adoption gate WOULD assemble for the question in the box, on
+// demand, without waiting on or paying for a full model turn.
+function _renderCompiledContext(data, slug, question) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+  wrap.innerHTML = `
+    <div class="text-[10px] text-slate-500 mb-1">
+      What the adoption gate would assemble. Not the source of any answer above.
+    </div>
+    ${_compiledEvidenceHtml(data, slug, question)}`;
   messages.appendChild(wrap);
   messages.scrollTop = messages.scrollHeight;
+}
+
+// Attached under a REAL answer (runQuery's "done" event) — the same compile
+// ConversationAgent._compiled_evidence already ran to shape that answer,
+// not a second one. Collapsed by default, one toggle, so an ordinary reply
+// stays short and the gaps/tables/charts/packed-text that back it are one
+// click away in the SAME message rather than a second chat action.
+function _evidenceSummaryHtml(data, slug, question) {
+  const m = (data || {}).manifest || {};
+  const packedCount = (m.packed || []).length, gapCount = (m.gaps || []).length;
+  if (!packedCount && !gapCount) return '';  // nothing compiled -- no resource in scope, or empty
+  const uid = `ev-${++_chatResultsSeq}`;
+  return `<div class="mt-2 pt-2 border-t border-slate-700/50">
+      <button onclick="document.getElementById('${uid}').classList.toggle('hidden')"
+              class="text-[10px] text-slate-500 hover:text-cyan-400 transition-colors">
+        📎 evidence used — ${packedCount} section(s)${gapCount ? `, ${gapCount} missing` : ''}
+      </button>
+      <div id="${uid}" class="hidden mt-1">${_compiledEvidenceHtml(data, slug, question)}</div>
+    </div>`;
 }
 
 async function sendQuery() {
@@ -11229,6 +11417,16 @@ async function runQuery(query, projectSlug, databaseSlug) {
               <button class="px-2 py-0.5 rounded text-amber-500 hover:text-amber-300 transition-colors"
                 onclick="this.parentElement.remove()">No</button>`;
             wrap.appendChild(banner);
+          }
+
+          // Same compile ConversationAgent._compiled_evidence already ran to
+          // shape the answer above -- not a second Evidence-button call.
+          // See _evidenceSummaryHtml: empty string (nothing appended) when
+          // there was no resource in scope or nothing compiled.
+          if (event.compiled) {
+            const evDiv = document.createElement('div');
+            evDiv.innerHTML = _evidenceSummaryHtml(event.compiled, projectSlug, query);
+            if (evDiv.innerHTML) wrap.appendChild(evDiv.firstElementChild);
           }
 
           if (event.hash) {
