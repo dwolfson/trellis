@@ -461,16 +461,31 @@ Two traps, both already visible in the code:
   The parse/profile/embed work still repeats in full. (Not clearing `SourceCache` on refresh remains
   correct: a stale hit is impossible.)
 
-### The ~30s stage load — diagnosed, not fixed
+### The ~30s stage load — fixed 2026-08-31
 
-`/api/survey-definitions/{type}/{slug}/candidates` measured **24.2s cold, 0.12s warm**, and
-`index.html` calls it **twice sequentially** (once for the stage, once for `automate_full`).
-The other two stage calls are 0.37s and 0.50s.
+Two independent causes, neither of which was work — both were waiting.
 
-- [ ] Fix. The two calls are independent, so concurrency halves it immediately; the real fix is one
-      round trip or a warm cache. It is a live Egeria call.
-- Caution: an earlier measurement of 14.7s was taken under load 65 caused by two orphaned `gh`
-  processes. Re-measure before and after, not against that number.
+- [x] **Server: one Egeria round trip per question, in series.**
+      `find_candidate_process_guids_by_questions` resolved each question's GUID one after another.
+      Ten questions for a stage, **49** for the unscoped `automate_full` lookup (no `phase` means
+      every cataloged question), so the two calls together made ~59 serial round trips. Now resolved
+      through a small thread pool, order-preserving. Measured on a deterministic harness — 49
+      lookups at a fixed 0.2s: **9.8s → 1.4s, 6.8×**.
+- [x] **Client: the two fetches were awaited one after the other.** Now `Promise.allSettled`, not
+      `all` — the cross-stage fetch was already non-fatal and `all` would let its failure take the
+      stage's own surveys down.
+
+`test_candidate_lookup_concurrency.py` pins the properties rather than the timings: input order
+preserved, unresolvable questions dropped rather than paired with `None`, the client warmed on the
+calling thread, no `await` between the two fetches, and both filters still sent.
+
+**Two things worth keeping from doing it.** The `no_silent_success` ratchet caught a `try/except:
+pass` I added to pre-warm the client, and the fix was better than the code it rejected: warm by
+resolving the first question on the calling thread, through `resolve_question_guid`'s existing
+error handling, so no new silent-failure site exists at all. And the live before/after measurement
+had to be abandoned — Egeria became far slower mid-session than when the 24s was measured, so the
+deterministic harness is the honest number and the 24s is not comparable to anything measured after
+it.
 
 ### Catalog honesty — one instance fixed, the class open
 

@@ -2621,14 +2621,29 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
         // Cross-stage definitions (survey_kind=automate_full — "Full Survey (all
         // steps)") belong to no single stage and would otherwise vanish from the
         // UI entirely, so they are fetched separately and appended.
+        // Issued CONCURRENTLY (2026-08-31). These two requests are independent —
+        // the second exists only to append cross-stage definitions the first
+        // cannot return — and awaiting the first before starting the second
+        // made a stage load pay both round trips end to end. Each is a live
+        // Egeria lookup, so on a cold cache that was the difference between
+        // ~12s and ~24s before the server-side fix, and it is free to remove.
+        //
+        // allSettled, not all: the cross-stage fetch was already non-fatal
+        // (its failure must not take the stage's own surveys down with it), and
+        // `all` would reject the pair as soon as either failed.
         const _candParams = { phase: intent, survey_kind: intent };
-        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(_candParams)}`);
-        if (candRes.ok) candidates = (await candRes.json()).candidates || [];
+        const _candUrl = p => `/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(p)}`;
+        const [_stageRes, _fullRes] = await Promise.allSettled([
+          fetch(_candUrl(_candParams)),
+          fetch(_candUrl({ survey_kind: 'automate_full' })),
+        ]);
+        if (_stageRes.status === 'fulfilled' && _stageRes.value.ok) {
+          candidates = (await _stageRes.value.json()).candidates || [];
+        }
         try {
-          const fullRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ survey_kind: 'automate_full' })}`);
-          if (fullRes.ok) {
+          if (_fullRes.status === 'fulfilled' && _fullRes.value.ok) {
             const seen = new Set(candidates.map(c => c.qualified_name));
-            for (const c of (await fullRes.json()).candidates || []) {
+            for (const c of (await _fullRes.value.json()).candidates || []) {
               if (!seen.has(c.qualified_name)) candidates.push(c);
             }
           }

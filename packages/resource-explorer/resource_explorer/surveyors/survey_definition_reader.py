@@ -459,6 +459,46 @@ class SurveyDefinitionReader:
         _question_guid_cache[question_display_name] = (now, guid)
         return guid
 
+    #: Concurrency for question-GUID resolution. Small on purpose: these are
+    #: reads against one Egeria server, and the goal is to stop waiting in
+    #: series, not to load-test someone else's platform.
+    _GUID_RESOLVE_WORKERS = 8
+
+    def _resolve_question_guids(self, questions: list[str]) -> list:
+        """[(question, guid)] for those that resolve, in the input's order.
+
+        Concurrent, but order-preserving: `find_candidate_process_guids_by_questions`
+        builds a cache key from these, and a set built from an unordered result
+        would still be stable, while any future consumer reading them positionally
+        would not be. Cheap to keep, expensive to debug if it is ever lost.
+        """
+        if not questions:
+            return []
+        if len(questions) == 1:
+            g = self.resolve_question_guid(questions[0])
+            return [(questions[0], g)] if g else []
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Resolve the FIRST question on this thread, then pool the rest.
+        #
+        # This is the pre-warm, done through the existing error-handled path
+        # rather than a new try/except around _connect_classification_explorer.
+        # That method memoises the client on the instance and fetches a bearer
+        # token as a side effect, so letting N workers race to be first means N
+        # clients built and N token requests, all but one discarded. Resolving
+        # one question first constructs it exactly once — and
+        # resolve_question_guid already handles its own failures by returning
+        # None, so an unreachable Egeria still degrades to "contributes no
+        # scoping" without this function growing a silent except of its own.
+        first, rest = questions[0], questions[1:]
+        guids = [self.resolve_question_guid(first)]
+
+        with ThreadPoolExecutor(max_workers=min(self._GUID_RESOLVE_WORKERS,
+                                                len(rest))) as pool:
+            guids.extend(pool.map(self.resolve_question_guid, rest))
+        return [(q, g) for q, g in zip(questions, guids) if g]
+
     def find_candidate_process_guids_by_questions(
         self, questions: list[str], technology_type: str, survey_kind: str | None = None,
     ) -> list:
@@ -479,7 +519,19 @@ class SurveyDefinitionReader:
         the caller decides whether to fall back to the full scan."""
         # Paired with their text, so a matched candidate can name the Questions
         # that scoped it rather than just how many there were.
-        question_guids = [(q, g) for q, g in ((q, self.resolve_question_guid(q)) for q in questions) if g]
+        #
+        # Resolved concurrently (2026-08-31). Each resolve_question_guid() is an
+        # independent Egeria round trip, and doing them in a generator ran them
+        # strictly one after another: measured ~0.2-1.4s each, against 10
+        # questions for a stage and **49** for the unscoped `automate_full`
+        # lookup the UI also issues. That serial chain was the bulk of a ~24s
+        # cold stage load, and none of it was work — it was waiting.
+        #
+        # Order is restored afterwards so the result is deterministic; the
+        # cache_key below is built from it. Failures inside resolve_question_guid
+        # are already swallowed there and yield None, so a slow or missing
+        # question degrades to "contributes no scoping" exactly as before.
+        question_guids = self._resolve_question_guids(questions)
         if not question_guids:
             return []
 
