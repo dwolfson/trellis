@@ -1689,6 +1689,72 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and op
 
 ### Analysis & surveyors
 
+#### MEDIUM — Survey Results dashboards cover 14 of 29 analyses; 11 real ones have no dashboard at all
+
+*(Opened 2026-08-31, from a results audit against `docs/dr-egeria/resource_questions.csv` — see
+the companion entry below on stage/intent mismatches, found in the same pass.)*
+
+`SURVEY_RESULT_DASHBOARDS` (`repo_survey_definition_adapter.py`) is 6 hand-authored dashboards,
+unchanged since `docs/survey-results-dashboard-plan.md` introduced it — which says so itself:
+*"Framework is the point of this pass — six real dashboards prove it end-to-end; more are a
+one-entry addition afterward, not a new mechanism."* That follow-through never happened. The
+catalog it was written against had 15 analyses; it now has 29, and the dashboard count never
+moved.
+
+**Measured:** 15 of 29 analyses have no dashboard. 4 are legitimate non-candidates — actions
+without findings, not surveys (`egeria_publish`, `rag_ingestion`, `website_ingestion`,
+`repo_profile_refresh`). **11 are real, findings-producing analyses with nowhere to show up in
+any Results tab:**
+
+- Assessment: `chaoss_metrics`, `cii_badge`, `community_support`, `cve_scan`, `foss_scorecard`
+- Discovery/Analysis: `architecture_doc_lens`, `architecture_recovery`, `architecture_summary`,
+  `interface_surface`, `repo_classification`, `manifest_parse`
+
+Confirmed this is *not* a stage-tagging bug: `get_dashboard_stages()` correctly derives a
+dashboard's stage(s) from `analysis_catalog.yaml`'s `intent` field (matching what the Survey tab
+routes by), not from the questions CSV — so Survey and Results already agree with each other on
+placement. The gap is purely dashboard **membership**: these 11 ids were never added to a
+dashboard, one-entry-at-a-time, the way the plan doc said they would be.
+
+This is very likely the concrete shape of "the Results tab doesn't show results from all the
+surveys" (live-reported 2026-08-31) — the mental model of "card = summary, Results tab =
+in-depth" is the intended design, just an unfinished rollout rather than a different design.
+
+**Next step, undecided:** either extend `SURVEY_RESULT_DASHBOARDS` with the 11 missing ids
+(cheap — the plan doc already calls this "a one-entry addition," no new mechanism), fold some
+into existing dashboards (e.g. `cve_scan`/`foss_scorecard`/`cii_badge`/`community_support`/
+`chaoss_metrics` plausibly belong in or beside `security_overview`/`health_maturity`), or add new
+dashboards for the architecture-recovery family (which already has its own bespoke presentation
+outside this mechanism — see the Architecture recovery section above — so a dashboard entry here
+may be redundant rather than missing).
+
+#### MEDIUM — 27 stage/intent mismatches between the questions CSV and the analysis catalog; one question is unreachable
+
+*(Opened 2026-08-31, from the same results audit.)*
+
+`docs/dr-egeria/resource_questions.csv`'s "Funnel Stage" column and `analysis_catalog.yaml`'s
+`intent` field are two different axes **by deliberate design** — stage is "when a user would
+naturally ask this," intent is "which cost tier the analysis belongs to" (CLAUDE.md rule 17).
+Measured cross-check (`question_catalog_reader.get_questions()` against
+`analysis_catalog_reader.get_analyses()`, no dangling references found — that invariant holds):
+
+**27 of ~49 questions are filed under one stage while the analysis answering them carries a
+different `intent`.** Concentrated (20 of 27) in "Analysis"-stage questions answered by
+Discovery- or Assessment-tagged analyses — e.g. "Is there a current, published, security
+analysis?" is filed under Analysis but answered by `security_scan`/`cve_scan`/`foss_scorecard`/
+`cii_badge`/`security_features`, all `intent: assessment`. The split is intentional and the
+Results dashboards correctly key off `intent`, not stage (see `get_dashboard_stages()`'s own
+docstring) — but nothing in the UI tells a user standing in one stage's Questions tab that the
+evidence for a question actually lives under a different stage's Survey/Results tabs. Worth a UI
+affordance (a link from a Questions-tab answer to the stage that actually holds its evidence)
+more than a re-tagging pass — re-tagging would fight the Discovery-tier cost-tier logic rule 17
+already argues for.
+
+**One question is orphaned entirely:** a CSV row tagged stage=`Automate` ("How much has changed
+since the last time this was surveyed — is it worth re-running now?"), but `automate` is not in
+`index.html`'s `_QUESTION_PHASES` list and Automate's own subnav never offers a Questions tab —
+so this authored question has no reachable home in the UI today.
+
 #### `DependencyParser` covers 4 ecosystems; `_MANIFESTS` claims 12
 
 Found 2026-08-23 while checking whether the repos reporting zero dependencies genuinely had
