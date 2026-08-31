@@ -179,6 +179,24 @@ class TestSurveyResultsRoute:
         sec_scan = next(a for a in security["analyses"] if a["analysis_id"] == "security_scan")
         assert sec_scan["results"]["gap_count"] == 1
 
+    def test_each_analysis_carries_its_headline(self, client, registry):
+        """2026-08-31: security_overview's scorecard gained dedicated tiles for
+        cve_scan/foss_scorecard/cii_badge, sourced from `headline` (added to
+        the Tier-2 payload alongside `results`) rather than re-deriving a
+        summary from raw findings in JS — the same {label, tone} shape the
+        Tier-1 stat tiles already use."""
+        registry.upsert_finding("myproj", "cve_scan", [
+            {"check_name": "advisory", "label": "found", "summary": "CVE-2024-1234"},
+        ])
+        registry.upsert_metric("myproj", "cve_scan", {"advisories": 1, "packages_affected": 1,
+                                                       "checked": 3},
+                                detail={"scanned": True, "recorded": 3})
+        resp = client.get("/api/projects/myproj/survey-results")
+        security = next(d for d in resp.json()["dashboards"] if d["id"] == "security_overview")
+        cve = next(a for a in security["analyses"] if a["analysis_id"] == "cve_scan")
+        assert cve["headline"]["tone"] == "bad"
+        assert "1 advisor" in cve["headline"]["label"]
+
     def test_each_dashboard_carries_a_perspectives_list(self, client):
         resp = client.get("/api/projects/myproj/survey-results")
         data = resp.json()

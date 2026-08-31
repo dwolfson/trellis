@@ -7437,7 +7437,8 @@ function _renderGroupedCardsDashboard(dashboard) {
 // is lost relative to viewing each card individually.
 function renderSecurityOverviewDashboard(dashboard) {
   const byId = {};
-  (dashboard.analyses || []).forEach(a => { byId[a.analysis_id] = a.results; });
+  const headlineById = {};
+  (dashboard.analyses || []).forEach(a => { byId[a.analysis_id] = a.results; headlineById[a.analysis_id] = a.headline; });
 
   const countLabels = (results, labels) => (results?.findings || []).filter(f => labels.includes(f.label)).length;
   const totalFindings = (results) => (results?.findings || []).length;
@@ -7450,10 +7451,22 @@ function renderSecurityOverviewDashboard(dashboard) {
   const ciTotal = totalFindings(byId.ci_quality);
   const licenseFinding = (byId.license_classification?.findings || [])[0];
   const policyFinding = (byId.repo_conventions?.findings || []).find(f => f.check_name === 'security_policy_content');
+  // cve_scan/foss_scorecard/cii_badge added 2026-08-31 (docs/Backlog.md
+  // "Survey Results dashboards cover 14 of 29 analyses") — same "is this
+  // trustworthy" question as the five above, sourced externally instead of
+  // from the repo itself. Read via `headline` (added to the Tier-2 payload
+  // alongside `results` for exactly this) rather than re-deriving a summary
+  // from raw findings here: each analysis's own headline_reader already
+  // computes it, and duplicating that logic in JS is how the two summaries
+  // would eventually disagree.
+  const cveHeadline = headlineById.cve_scan;
+  const scorecardHeadline = headlineById.foss_scorecard;
+  const ciiHeadline = headlineById.cii_badge;
 
-  const anyData = securityTotal || featuresTotal || ciTotal || licenseFinding || policyFinding;
+  const anyData = securityTotal || featuresTotal || ciTotal || licenseFinding || policyFinding
+    || cveHeadline || scorecardHeadline || ciiHeadline;
   if (!anyData) {
-    return '<div class="text-xs text-slate-500">No security-related surveys run yet — run Security/Security Features/CI Quality/License Classification/Repo Conventions to populate this scorecard.</div>';
+    return '<div class="text-xs text-slate-500">No security-related surveys run yet — run Security/Security Features/CI Quality/License Classification/Repo Conventions/CVE Scan/FOSS Scorecard/OpenSSF Badge to populate this scorecard.</div>';
   }
 
   const tile = (label, value, status) => {
@@ -7464,12 +7477,22 @@ function renderSecurityOverviewDashboard(dashboard) {
     </div>`;
   };
 
+  // headline_reader's tone vocabulary ("good"/"bad"/"neutral") differs from
+  // tile()'s ("ok"/"warn"/"gap"/anything-else-is-neutral) — both exist
+  // independently elsewhere in this codebase, so map rather than unify them.
+  const _TONE_TO_STATUS = { good: 'ok', ok: 'ok', warn: 'warn', bad: 'gap', neutral: 'info' };
+  const headlineTile = (label, headline) =>
+    headline ? tile(label, headline.label, _TONE_TO_STATUS[headline.tone] || 'info') : '';
+
   const scorecard = `<div class="grid grid-cols-2 gap-1.5 mb-2">
     ${securityTotal ? tile('Security hygiene', `${securityTotal - securityGaps}/${securityTotal} passing`, securityGaps ? 'warn' : 'ok') : ''}
     ${featuresTotal ? tile('Security features', `${featuresOn}/${featuresTotal} enabled`, featuresOn < featuresTotal ? 'warn' : 'ok') : ''}
     ${ciTotal ? tile('CI quality', `${ciPassing}/${ciTotal} passing`, ciPassing < ciTotal ? 'warn' : 'ok') : ''}
     ${licenseFinding ? tile('License', licenseFinding.summary || licenseFinding.check_name, 'info') : ''}
     ${policyFinding ? tile('Disclosure policy', policyFinding.label === 'pass' || policyFinding.label === 'present' ? 'Present' : 'Missing', policyFinding.label === 'pass' || policyFinding.label === 'present' ? 'ok' : 'warn') : ''}
+    ${headlineTile('CVE advisories', cveHeadline)}
+    ${headlineTile('FOSS Scorecard', scorecardHeadline)}
+    ${headlineTile('OpenSSF badge', ciiHeadline)}
   </div>`;
 
   return scorecard + _renderGroupedCardsDashboard(dashboard);
