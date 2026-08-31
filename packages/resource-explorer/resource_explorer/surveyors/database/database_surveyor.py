@@ -204,15 +204,37 @@ class DatabaseSurveyor:
         if db_size:
             size_bytes = db_size.get("size_bytes", 0)
             size_pretty = db_size.get("size_pretty", "unknown")
+            # A size the engine did not report is not a size of zero.
+            #
+            # This published "Database size: unknown" at confidence 100 with
+            # size_bytes defaulting to 0 — so a consumer reading the NUMBER got
+            # a zero, which reads as an empty database, while the explanation
+            # asserted the value had been "queried directly from the database
+            # engine's own size functions". Both halves claimed provenance the
+            # run did not have. Found 2026-08-31 by a sweep for placeholder
+            # values published at high confidence; it was the only instance in
+            # the package, and the same shape as language.py's 95%-confident
+            # "Primary language: Unknown".
+            measured = bool(size_bytes) and size_pretty not in ("", "unknown")
             annotations.append(
                 ResourceMeasureAnnotation(
-                    summary=f"Database size: {size_pretty}",
+                    summary=(f"Database size: {size_pretty}" if measured
+                             else "Database size not reported by the engine"),
                     analysis_step="DatabaseStatistics",
-                    confidence=100,
-                    resource_properties={"size_bytes": size_bytes, "size_pretty": size_pretty},
+                    confidence=100 if measured else 0,
+                    resource_properties=(
+                        {"size_bytes": size_bytes, "size_pretty": size_pretty} if measured
+                        # No size_bytes key at all rather than a 0 that reads as
+                        # a measurement — absence a reader can see is better
+                        # than a number a reader cannot doubt.
+                        else {"size_measured": False}),
                     explanation=(
                         "Point-in-time on-disk size of the whole database, queried directly "
                         "from the database engine's own size functions."
+                        if measured else
+                        "The engine returned no usable size for this database. Reported as "
+                        "absent rather than as zero: a missing measurement and an empty "
+                        "database are different facts."
                     ),
                 )
             )
