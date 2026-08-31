@@ -58,7 +58,26 @@ class ConversationAgent(BaseExplorerAgent):
             "Maintain context from the conversation — refer back to earlier questions "
             "and answers when relevant. "
             "When a question names a resource (project, database, or filesystem) explicitly, pass that slug/name to the tools. "
-            "When it doesn't, infer it from context or ask the user."
+            "When it doesn't, infer it from context or ask the user. "
+            "\n\n"
+            # Added 2026-08-31 after a measured failure: asked about this
+            # repository's documentation survey results, the model instead
+            # called vector_search and answered from Egeria's OWN
+            # documentation about its unrelated Survey Framework feature — a
+            # keyword match ("survey"), not an answer about this resource.
+            # An "Evidence" block was present and DID address the question by
+            # the time this was diagnosed; nothing told the model to prefer
+            # it over a general-corpus tool call it was equally free to make.
+            "When a message includes an 'Evidence (compiled from stored analysis results)' "
+            "block, that block is the authoritative material for THIS resource — prefer it "
+            "over vector_search, whose corpus is general documentation and can return content "
+            "that matches a keyword in the question while being about something else entirely "
+            "(a different feature, a different project) rather than about this resource. If the "
+            "evidence does not cover what was asked, say so plainly and either ask a clarifying "
+            "question or name what analysis would need to run — do not fall back to a broader "
+            "search and present its results as though they answered the question. A confident "
+            "answer built from the wrong source is a worse outcome than admitting the evidence "
+            "doesn't cover it."
         )
 
     def tools(self) -> list:

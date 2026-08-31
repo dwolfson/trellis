@@ -55,3 +55,25 @@ class TestCompiledEvidenceSeam:
             agent.handle("a question naming no project", project_slug=None)
 
         assert agent._last_compiled is None
+
+
+class TestSystemPromptPrefersEvidenceOverSearch:
+    """Measured 2026-08-31: asked about this repository's documentation
+    survey results, the model called vector_search and answered from
+    Egeria's OWN documentation about its unrelated Survey Framework feature
+    -- a keyword match on "survey", not an answer about the resource. An
+    Evidence block was present; nothing told the model to prefer it over a
+    general-corpus tool call it was equally free to make. Locking in the
+    prompt guidance added for this so a future rewrite doesn't drop it
+    silently -- the failure mode is exactly the kind that "looks fine" in
+    review (fluent prose, a real citation) and needs a live report to catch."""
+
+    def test_prompt_names_the_evidence_block_and_tells_the_model_to_prefer_it(self):
+        prompt = ConversationAgent().system_prompt()
+        assert "Evidence (compiled from stored analysis results)" in prompt
+        assert "prefer it over vector_search" in prompt
+
+    def test_prompt_asks_for_clarification_rather_than_substitution(self):
+        prompt = ConversationAgent().system_prompt()
+        assert "clarifying question" in prompt
+        assert "do not fall back to a broader search" in prompt
