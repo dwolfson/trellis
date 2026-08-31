@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, QualityScoreAnnotation
 
 log = logging.getLogger(__name__)
@@ -85,7 +86,24 @@ class HealthSurveyor(BaseSurveyor):
                 ).fetchone()
 
             if not s:
+                # This step was never silent — _warn already raises a
+                # RequestForAction, which is the right surface for "a human
+                # should fix this". What it lacked was the step-outcome label,
+                # so the run contributed nothing to which-tools-suit-which-repos.
+                #
+                # Labelled in place rather than by appending a second
+                # annotation: the RFA already says the thing, and a parallel
+                # annotation saying it again would be two records of one event
+                # — the duplication this codebase keeps removing elsewhere.
+                #
+                # `unverified`, never `no_signal`: a missing stats row is a gap
+                # in what we hold, not a finding that the project is inactive.
                 self._warn(results, "No stats row found — run 'refresh' to populate stats.")
+                if results:
+                    results[-1].json_properties = {
+                        **(results[-1].json_properties or {}),
+                        **StepOutcome("unverified", cause="no project_stats row").as_row(),
+                    }
                 return results
             stars = s.get("stars") or 0
             forks = s.get("forks") or 0
@@ -159,6 +177,7 @@ class HealthSurveyor(BaseSurveyor):
                     quality_scores=quality_scores,
                     confidence=80,
                     json_properties={
+                        **StepOutcome("recovered", detail={"scored": True}).as_row(),
                         "stars": stars,
                         "forks": forks,
                         "contributors": contributors,

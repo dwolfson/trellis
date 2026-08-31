@@ -264,9 +264,28 @@ class TestSecurityFeaturesSurveyorPersistence:
                 (slug, "2026-01-01T00:00:00", features_json),
             )
 
-    def test_no_stats_row_yields_no_findings(self, registry, project):
+    def test_invisible_settings_are_stated_not_silent(self, registry, project):
+        """Changed 2026-08-31; this asserted `annotations == []`.
+
+        GitHub returns security_and_analysis only to repository admins, so this
+        path is the COMMON case — measured across the catalogue, 54 of 60 repos
+        hit it. Emitting nothing meant the survey report and the catalog were
+        silent about security for 90% of the corpus, and silence about security
+        reads as "nothing to report" rather than "we were not allowed to look".
+
+        The annotation says which it is. No FINDINGS are written — that part of
+        the original assertion is unchanged and still checked below, because a
+        feature we cannot see is not a gap and must not be recorded as one.
+        """
         annotations = SecurityFeaturesSurveyor(project, registry).run()
-        assert annotations == []
+        assert len(annotations) == 1
+        assert annotations[0].confidence == 0
+        assert "Not a finding that they are disabled" in annotations[0].summary
+        # Both vocabularies, deliberately: the RUN could establish nothing, and
+        # the READER should be told this is by design. See repo_classification's
+        # docstring for why these are not the same question.
+        assert annotations[0].json_properties["outcome"] == "unverified"
+        assert annotations[0].json_properties["result_status"]["state"] == "skipped_by_design"
         assert registry.query_findings("myproj", "security_features") == []
 
     def test_none_status_features_are_skipped_not_gaps(self, registry, project):
