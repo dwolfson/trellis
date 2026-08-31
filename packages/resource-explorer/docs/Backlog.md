@@ -88,40 +88,41 @@ when there is a question to answer, and note the scaling item below is the likel
 pointer to the durable record, not a second copy of it. Dual-writing means two stores that can
 disagree, and the span copy is the one that expires.
 
-#### HIGH — take architecture results into Curate and actually work with them
+#### ~~HIGH — take architecture results into Curate~~ — DECIDED AND BUILT 2026-08-30
 
-*(Opened 2026-08-30. Dan: "we're going to want to take these results and into Curate to start to
-work with the information".)*
+*(Opened 2026-08-30 listing four candidate shapes and saying "none of this is designed yet".
+Dan chose the first and S1 built it the same day. This entry was left stale for several hours and
+was still being reported as an open design question when it was neither — corrected on Dan
+noticing.)*
 
-Everything so far **produces** an architecture reading and **displays** it. Nothing lets a person
-*act* on it. Curate is where sustained human attention lives (tags, feedback, curator notes), and
-the architecture card is now good enough to be worth curating rather than only reading:
-`egeria_git` presents 8 deployment components instead of 451 mixed rows.
+**The shape: accept / reject / retype a proposed component.** The pipeline is explicitly a
+*proposal* (§4.1a, `report-then-curate`) and a curator's verdict was the missing half. It rides the
+Confidence/ContentStatus axis (§3.3b/§3.4) rather than introducing a vocabulary.
 
-What "working with the information" plausibly means here, in rough order of value — **none of this
-is designed yet, and the first task is deciding which of these is actually wanted:**
+Landed in three slices:
 
-- **Accept / reject / retype a proposed component.** The whole pipeline is explicitly a *proposal*
-  (§4.1a, `report-then-curate`), and a curator's verdict is the missing half. Note this is the
-  Confidence/ContentStatus axis (§3.3b/§3.4), not a new vocabulary.
-- **Correct a name.** Live example worth keeping: the disambiguator renamed Atlas' main
-  distribution config to `distro` because six modules shared the token `atlas` — unique and
-  truthful, but not what a curator would choose, and no rule can know which member of a collision
+| | |
+|---|---|
+| `6f3afeb` | accept/reject/retype on a proposed component — the backend (`web/routes/curate.py`) |
+| `2a22c99` | verdicts wired into the architecture card |
+| `f34d3c5` | **accepted proposals materialized as real Egeria `SolutionComponent`s** |
+
+That third one is the one that closes the loop `report-then-curate` opened: a proposal a human
+accepted stops being a local finding and becomes a catalog element.
+
+**Still open from the original four**, and genuinely undesigned rather than merely unclaimed:
+
+- **Correct a name.** The live case is still the best argument: the disambiguator renamed Atlas'
+  main distribution config to `distro` because six modules shared the token `atlas` — unique and
+  truthful, and not what a curator would choose. No rule can know which member of a collision
   deserves the shared name.
-- **Curator notes against a component scope**, not just the whole resource. `resource_curator_notes`
-  is whole-resource today; architecture recovery is scope-keyed throughout.
-- **Promote a reviewed set toward publication** — the ContentStatus ladder that
-  `report-then-curate` describes and nothing yet walks.
+- **Curator notes at component scope.** `resource_curator_notes` is whole-resource; architecture
+  recovery is scope-keyed throughout.
+- **Promote a reviewed set toward publication** — the ContentStatus ladder `report-then-curate`
+  describes and nothing yet walks end to end.
 
-**Two things already in place that this should reuse rather than reinvent:** withdrawal
-(`WITHDRAWN_LABEL`) already expresses "this is no longer proposed" durably and reversibly, and the
-decision trace (`architecture_decisions`) already records why a component looks the way it does —
-which is exactly the context a curator needs before overriding it.
-
-**The constraint to hold:** a curator's verdict is *evidence of a different kind*, not a rewrite of
-what the detectors said. §4.2's "map, never merge" and the doc-lens rule ("a document that disagrees
-with the code is a finding, not a correction") both point the same way — the disagreement is the
-valuable artifact and must stay legible.
+See also the reflexion-vocabulary entry below: convergence/divergence/absence is a ready-made naming
+for the verdict axis, and worth reading before the next slice invents its own.
 
 #### HIGH — `architecture_recovery` costs 110s to fetch and 5.9s to run — fix the acquisition
 
