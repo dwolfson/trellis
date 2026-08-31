@@ -575,14 +575,16 @@ class EgeriaPublisher:
             )
             return
 
-        from resource_explorer.egeria_outbox import drain_outbox, enqueue_annotations
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, drain_outbox, enqueue_annotations,
+        )
 
         enqueue_annotations(
             self._registry, "repo", result.resource_slug, result.annotations,
             report_guid, qualified_name_prefix, run_id=qualified_name_prefix,
         )
         drain_outbox(
-            self._registry, self._discovery, self._find_element_guid,
+            self._registry, OutboxClients(discovery=self._discovery), self._find_element_guid,
             limit=max(len(result.annotations), 1), run_id=qualified_name_prefix,
         )
 

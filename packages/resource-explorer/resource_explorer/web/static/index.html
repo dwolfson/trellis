@@ -624,6 +624,7 @@
            membership repoint/drop. See resource_explorer/repair.py and
            docs/repair-operations-design.md. -->
       <div id="admin-repair-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <div id="admin-outbox-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -6295,8 +6296,25 @@ function renderActivityLog() {
       ? op.detail.split('\n').map(line => `<div>${hiGuid(_esc(line))}</div>`).join('')
       : '';
 
-    // Structured cataloged-items table
-    const itemsHtml = (op.items && op.items.length)
+    // An entry may point at a fuller record elsewhere. The activity log is an
+    // audit trail — one line per operation — so detail that would swamp it
+    // lives in its own surface and is linked, not inlined. Today the only
+    // such pointer is the publish queue; the shape is general so the next one
+    // does not need a second mechanism.
+    const linkItems = (op.items || []).filter(it => it.link);
+    const linksHtml = linkItems.length
+      ? `<div class="mt-1 flex flex-wrap gap-1.5">${linkItems.map(it => {
+          const runArg = it.run_id ? `'${_esc(it.run_id).replace(/'/g, "\\'")}'` : "''";
+          return `<button onclick="showMainView('${_esc(it.link)}'); loadAdminOutboxPanel('', ${runArg});"
+            class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300">
+            View publish log →</button>`;
+        }).join('')}</div>`
+      : '';
+
+    // Structured cataloged-items table (link-only pointers are rendered above,
+    // not as empty rows in a Type/Name/GUID table they have no values for).
+    const tableItems = (op.items || []).filter(it => !it.link);
+    const itemsHtml = (tableItems.length)
       ? `<table class="w-full text-xs mt-2 border-collapse">
           <thead><tr class="text-slate-600">
             <th class="text-left font-normal pb-0.5 w-28">Type</th>
@@ -6304,7 +6322,7 @@ function renderActivityLog() {
             <th class="text-left font-normal pb-0.5 w-36">GUID</th>
           </tr></thead>
           <tbody class="divide-y divide-slate-800">
-          ${op.items.map(it => `<tr>
+          ${tableItems.map(it => `<tr>
             <td class="py-0.5 text-slate-500 pr-2">${_esc(it.kind || '')}</td>
             <td class="py-0.5 text-slate-300 pr-2 font-mono truncate max-w-[12rem]" title="${_esc(it.name || '')}">${_esc(it.name || '—')}</td>
             <td class="py-0.5">${it.guid
@@ -6338,6 +6356,7 @@ function renderActivityLog() {
         ${hasDetail ? `<span class="op-row-toggle" onclick="toggleOpRow('${detailId}',this)" title="Show detail">▶</span>` : ''}
       </div>
       <div class="text-slate-400 mt-0.5">${_esc(op.summary)}</div>
+      ${linksHtml}
       <div class="text-slate-700 text-xs mt-0.5">${ts}</div>
       ${hasDetail ? `<div class="op-row-detail" id="${detailId}">
         ${annHtml}
@@ -9003,11 +9022,12 @@ function showMainView(tab) {
   const adminQuestionCatalogView = document.getElementById('admin-question-catalog-view');
   const adminPrefectView = document.getElementById('admin-prefect-view');
   const adminRepairView = document.getElementById('admin-repair-view');
+  const adminOutboxView = document.getElementById('admin-outbox-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The header Perspective row used to be hidden on the Questions tab, which
   // had its own filter over a different vocabulary. Both vocabularies are
   // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
@@ -9125,6 +9145,10 @@ function showMainView(tab) {
     adminRepairView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminRepairPanel();
+  } else if (tab === 'admin-outbox') {
+    document.getElementById('admin-outbox-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminOutboxPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -12346,6 +12370,7 @@ function _adminSubnavHtml(active) {
     { tab: 'admin-prefect',           label: '⚡ Prefect' },
     { tab: 'admin-resync',            label: '🔄 Egeria Alignment' },
     { tab: 'admin-repair',            label: '🔧 Repair' },
+    { tab: 'admin-outbox',            label: '📤 Publish Queue' },
   ];
   return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
     ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
@@ -13387,6 +13412,121 @@ async function deleteAdminGroup(slug) {
 // slug-embeds-collection-name problem rename exists for. ───────────────────
 let _repairRepos = [];          // [{slug, display_name}] from GET /api/projects/
 let _repairInvestigations = []; // [{slug, display_name}] from GET /api/investigations/
+// ── Admin → Publish Queue (📤) ─────────────────────────────────────────────
+// The detailed record behind an activity-log summary. The activity entry says
+// "3 elements dead-lettered"; this says WHICH three, their qualifiedNames,
+// how many attempts each took and what Egeria actually said. Reached from the
+// Admin subnav, or by the "View publish log" link on an activity entry.
+let _outboxRows = [];
+let _outboxCounts = {};
+let _outboxMaxAttempts = 8;
+let _outboxFilter = { status: '', run_id: '' };
+
+async function loadAdminOutboxPanel(status, runId) {
+  if (status !== undefined) _outboxFilter.status = status || '';
+  if (runId !== undefined) _outboxFilter.run_id = runId || '';
+  const view = document.getElementById('admin-outbox-view');
+  view.innerHTML = _adminSubnavHtml('admin-outbox') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading publish queue…</div>';
+  try {
+    const qs = new URLSearchParams();
+    if (_outboxFilter.status) qs.set('status', _outboxFilter.status);
+    if (_outboxFilter.run_id) qs.set('run_id', _outboxFilter.run_id);
+    const res = await fetch('/api/outbox/?' + qs.toString());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    _outboxRows = body.rows || [];
+    _outboxCounts = body.counts || {};
+    _outboxMaxAttempts = body.max_attempts || 8;
+    renderAdminOutboxPanel();
+  } catch (e) {
+    view.innerHTML = _adminSubnavHtml('admin-outbox') +
+      `<div class="text-red-400 text-xs p-4">Failed to load publish queue: ${_esc(e.message)}</div>`;
+  }
+}
+
+async function retryOutboxElement(id) {
+  try {
+    const res = await fetch(`/api/outbox/${id}/retry`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(body.detail || `HTTP ${res.status}`, 'error'); return; }
+    showToast(`Element ${id} re-queued — it will be retried on the next drain.`, 'success');
+    loadAdminOutboxPanel();
+  } catch (e) { showToast(`Retry failed: ${e.message}`, 'error'); }
+}
+
+function renderAdminOutboxPanel() {
+  const view = document.getElementById('admin-outbox-view');
+  // Counts are over the whole table, never the filtered page — a panel showing
+  // "2 dead" while filtered to pending must still say 2 dead, or the filter
+  // silently becomes a claim about the system.
+  const order = ['dead', 'failed', 'pending', 'done'];
+  const tone = { dead: 'text-red-400', failed: 'text-amber-400', pending: 'text-slate-300', done: 'text-emerald-400' };
+  const chips = order.map(st => {
+    const n = _outboxCounts[st] || 0;
+    const on = _outboxFilter.status === st;
+    return `<button onclick="loadAdminOutboxPanel('${on ? '' : st}', '')"
+      class="text-xs px-2.5 py-1 rounded border ${on ? 'border-cyan-500 bg-cyan-900/40' : 'border-slate-700 bg-slate-800 hover:bg-slate-700'}">
+      <span class="${tone[st]} font-medium">${n}</span> <span class="text-slate-400">${st}</span></button>`;
+  }).join('');
+
+  const empty = _outboxRows.length === 0;
+  const rows = _outboxRows.map(r => {
+    const stale = r.status === 'dead';
+    const err = r.last_error || '';
+    return `<tr class="align-top">
+      <td class="py-1 pr-2"><span class="${tone[r.status] || 'text-slate-400'} text-xs">${_esc(r.status)}</span></td>
+      <td class="py-1 pr-2 text-slate-400 text-xs">${_esc(r.entity_slug || '')}</td>
+      <td class="py-1 pr-2 text-slate-500 text-xs">${_esc(r.element_kind || '')}</td>
+      <td class="py-1 pr-2 font-mono text-xs text-slate-300 break-all max-w-[24rem]">${_esc(r.qualified_name || '')}</td>
+      <td class="py-1 pr-2 text-xs ${r.attempts >= _outboxMaxAttempts ? 'text-red-400' : 'text-slate-400'}">${r.attempts}/${_outboxMaxAttempts}</td>
+      <td class="py-1 pr-2 text-xs text-slate-500">${_esc((r.next_attempt_at || '').replace('T', ' ').substring(0, 19)) || '—'}</td>
+      <td class="py-1 pr-2 text-xs text-red-300 break-all max-w-[20rem]">${_esc(err) || '<span class="text-slate-700">—</span>'}</td>
+      <td class="py-1">${stale
+        ? `<button onclick="retryOutboxElement(${r.id})" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Re-queue</button>`
+        : '<span class="text-slate-700 text-xs">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-outbox') + `
+    <div class="p-4 space-y-3">
+      <div>
+        <h2 class="text-slate-200 font-medium">📤 Publish Queue</h2>
+        <p class="text-slate-500 text-xs mt-1 max-w-3xl">
+          Every element write bound for Egeria — one row per asset, report or annotation.
+          A failed write is retried with exponential backoff; after ${_outboxMaxAttempts} attempts it is
+          <span class="text-red-400">dead-lettered</span> and left for a human rather than retried
+          silently forever. This is the detailed record that the Activity tab's summary links to.
+        </p>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        ${chips}
+        ${_outboxFilter.run_id ? `<span class="text-xs text-slate-500">run <span class="font-mono text-slate-400">${_esc(_outboxFilter.run_id)}</span></span>
+          <button onclick="loadAdminOutboxPanel('', '')" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Clear filter</button>` : ''}
+        <button onclick="loadAdminOutboxPanel()" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 ml-auto">Refresh</button>
+      </div>
+      ${empty
+        ? `<div class="text-slate-600 text-xs py-10 text-center">${
+            (_outboxFilter.status || _outboxFilter.run_id)
+              ? 'No elements match this filter.'
+              : 'Nothing queued. Elements appear here while a publish is in flight, and stay only if a write fails.'
+          }</div>`
+        : `<div class="overflow-x-auto"><table class="w-full text-left border-collapse">
+            <thead><tr class="text-slate-600 text-xs border-b border-slate-800">
+              <th class="font-normal pb-1 pr-2">Status</th>
+              <th class="font-normal pb-1 pr-2">Resource</th>
+              <th class="font-normal pb-1 pr-2">Kind</th>
+              <th class="font-normal pb-1 pr-2">Qualified name</th>
+              <th class="font-normal pb-1 pr-2">Attempts</th>
+              <th class="font-normal pb-1 pr-2">Next attempt</th>
+              <th class="font-normal pb-1 pr-2">Last error</th>
+              <th class="font-normal pb-1"></th>
+            </tr></thead>
+            <tbody class="divide-y divide-slate-800">${rows}</tbody>
+          </table></div>`}
+    </div>`;
+}
+
 let _repairSelectedSlug = '';
 let _repairDrift = [];
 let _repairMemberships = [];

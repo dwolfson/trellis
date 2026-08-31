@@ -28,9 +28,38 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Callable
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class OutboxClients:
+    """The Egeria clients an apply step may need.
+
+    A bundle rather than a single `discovery` argument because element kinds
+    reach different managers: annotations go through `DataDiscovery`, while an
+    investigation's collection memberships and ResourceList go through
+    `CollectionManager`. Passing one client and hoping it has the right method
+    would fail at the worst moment — inside a retry, on a row that had already
+    been recorded as pending work.
+
+    Fields are optional so a caller wires only what its kinds need; a creator
+    asking for a client that is None raises, which the drain treats as any
+    other failed attempt.
+    """
+
+    discovery: object | None = None
+    collection_manager: object | None = None
+
+    def require(self, name: str):
+        client = getattr(self, name, None)
+        if client is None:
+            raise OutboxApplyError(
+                f"This element needs the {name!r} client, which the drain was not given"
+            )
+        return client
 
 #: Rows attempted per drain pass. A blueprint publish is ~14,000 rows
 #: (measured 2026-08-31), so a pass is deliberately bounded — the scheduler
@@ -45,7 +74,7 @@ class OutboxApplyError(RuntimeError):
     attempt or a dead letter."""
 
 
-def apply_element(row: dict, discovery, find_element_guid: Callable[[str], str]) -> str:
+def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callable[[str], str]) -> str:
     """Write one outbox row to Egeria and return the element's GUID.
 
     Lookup-then-create, in that order, always:
@@ -93,12 +122,42 @@ def apply_element(row: dict, discovery, find_element_guid: Callable[[str], str])
             f"No creator registered for element_kind {kind!r}. "
             f"Known kinds: {sorted(_CREATORS)}"
         )
-    return creator(discovery, payload) or ""
+    return creator(clients, payload) or ""
 
 
-def _create_annotation(discovery, payload: dict) -> str:
-    result = discovery.create_annotation(body=payload)
-    return _guid_of(result)
+def _create_annotation(clients: "OutboxClients", payload: dict) -> str:
+    return _guid_of(clients.require("discovery").create_annotation(body=payload))
+
+
+def _create_collection_membership(clients: "OutboxClients", payload: dict) -> str:
+    """Attach one element to a Collection.
+
+    Idempotency here is NOT lookup-then-create: a CollectionMembership has no
+    qualifiedName of its own to search for. It comes from the operation being
+    an upsert — `CollectionMembership` was measured live (2026-08-25) as
+    uni-link, so `add_to_collection` returns None and adding the same element
+    twice leaves one member. Replay is therefore safe by the relationship's
+    own semantics.
+
+    That measurement is load-bearing, and the return value IS the test: a
+    multi-link relationship would silently accumulate one duplicate per retry
+    with no error anywhere. Re-measure if pyegeria changes these signatures.
+    """
+    cm = clients.require("collection_manager")
+    cm.add_to_collection(payload["collection_guid"], payload["member_guid"])
+    return ""
+
+
+def _create_resource_list(clients: "OutboxClients", payload: dict) -> str:
+    """Attach a Collection to its parent Project (ResourceList).
+
+    Same basis as membership above: `ResourceList` via `attach_collection` was
+    measured uni-link on the same date — returns None, and attaching the same
+    Collection twice leaves one attachment.
+    """
+    cm = clients.require("collection_manager")
+    cm.attach_collection(payload["parent_guid"], payload["collection_guid"])
+    return ""
 
 
 def _guid_of(result) -> str:
@@ -112,18 +171,22 @@ def _guid_of(result) -> str:
     return ""
 
 
-#: element_kind -> creator. Only `annotation` is wired today, because the repo
-#: publisher is the only path Phase 2 needs (design §6 step 4) and enqueueing
-#: from the publishers is that step, not this one. An unregistered kind raises
-#: rather than silently succeeding — a row that reports 'done' without writing
-#: anything is precisely the confident-wrong-answer failure this whole
-#: subsystem exists to remove.
-_CREATORS: dict[str, Callable[[object, dict], str]] = {
+#: element_kind -> creator. An unregistered kind raises rather than silently
+#: succeeding — a row that reports 'done' without writing anything is precisely
+#: the confident-wrong-answer failure this whole subsystem exists to remove.
+#:
+#: `asset` and `report` are deliberately absent: the repo publisher creates
+#: both synchronously because `publish()` returns the report GUID and callers
+#: record it, and the investigation publisher does the same with the Project
+#: and Collection GUIDs. Only the plural, per-element writes are queued.
+_CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "annotation": _create_annotation,
+    "collection_membership": _create_collection_membership,
+    "resource_list": _create_resource_list,
 }
 
 
-def drain_outbox(registry, discovery=None, find_element_guid=None, *,
+def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
                  limit: int = DRAIN_BATCH, run_id: str | None = None) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
@@ -148,9 +211,9 @@ def drain_outbox(registry, discovery=None, find_element_guid=None, *,
         return summary
     summary["claimed"] = len(rows)
 
-    if discovery is None or find_element_guid is None:
+    if clients is None or find_element_guid is None:
         try:
-            discovery, find_element_guid = _default_clients()
+            clients, find_element_guid = _default_clients()
         except Exception:
             # No platform reachable. Leave every row exactly as it is —
             # pending work is not failed work, and burning an attempt on
@@ -161,12 +224,14 @@ def drain_outbox(registry, discovery=None, find_element_guid=None, *,
             summary["skipped"] = len(rows)
             return summary
 
+    troubled_runs: dict[str, str] = {}
     for row in rows:
         try:
-            guid = apply_element(row, discovery, find_element_guid)
+            guid = apply_element(row, clients, find_element_guid)
         except Exception as exc:
             status = registry.mark_outbox_failed(row["id"], f"{type(exc).__name__}: {exc}")
             summary["dead" if status == "dead" else "failed"] += 1
+            troubled_runs[row.get("run_id") or ""] = row.get("entity_slug") or ""
             log_at = log.error if status == "dead" else log.warning
             log_at("Outbox row %s (%s %s) -> %s: %s",
                    row["id"], row["element_kind"], row["qualified_name"], status, exc)
@@ -178,7 +243,7 @@ def drain_outbox(registry, discovery=None, find_element_guid=None, *,
         log.error("Outbox drain: %d row(s) dead-lettered and need a human — "
                   "see registry.list_dead_outbox_elements()", summary["dead"])
     # Logging is not a surface here — see record_drain_outcome's docstring.
-    record_drain_outcome(registry, summary)
+    record_drain_outcome(registry, summary, troubled_runs=troubled_runs)
     return summary
 
 
@@ -188,7 +253,7 @@ def _default_clients():
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
     publisher = EgeriaPublisher()
-    return publisher._discovery, publisher._find_element_guid
+    return OutboxClients(discovery=publisher._discovery), publisher._find_element_guid
 
 
 def enqueue_annotations(
@@ -226,7 +291,41 @@ def enqueue_annotations(
     return row_ids
 
 
-def record_drain_outcome(registry, summary: dict, entity_type: str = "", entity_slug: str = "") -> None:
+def enqueue_collection_members(
+    registry, entity_slug: str, collection_guid: str,
+    members: list[dict], *, run_id: str = "",
+) -> list[int]:
+    """Record one row per investigation member to attach. Returns row ids.
+
+    `members` are dicts with `member_guid` and, for the record, the member's
+    own `entity_type`/`entity_slug`. Members with no asset GUID must be
+    filtered out BEFORE calling this — a member whose repo was never published
+    has nothing to attach, which is a reportable fact about the investigation,
+    not a failed write to retry.
+
+    The qualifiedName is synthetic. A CollectionMembership has no qualifiedName
+    of its own, so this string exists purely as the outbox's identity key —
+    stable across retries of the same run, and never searched for in Egeria.
+    Replay safety comes from the relationship being uni-link instead (see
+    `_create_collection_membership`).
+    """
+    row_ids: list[int] = []
+    for m in members:
+        member_slug = m.get("entity_slug", "")
+        qualified_name = f"CollectionMembership::{collection_guid}::{m['member_guid']}"
+        row_ids.append(registry.enqueue_outbox_element(
+            "investigation", entity_slug, "collection_membership", qualified_name,
+            {"collection_guid": collection_guid, "member_guid": m["member_guid"],
+             "member_entity_type": m.get("entity_type", ""), "member_entity_slug": member_slug},
+            run_id=run_id,
+        ))
+    return row_ids
+
+
+def record_drain_outcome(
+    registry, summary: dict, entity_type: str = "", entity_slug: str = "",
+    troubled_runs: dict[str, str] | None = None,
+) -> None:
     """Put a drain's failures where a person will actually see them.
 
     Logging alone does not surface anything here: nothing in this package
@@ -252,6 +351,20 @@ def record_drain_outcome(registry, summary: dict, entity_type: str = "", entity_
         parts.append(f"{dead} element(s) dead-lettered after exhausting retries")
     if failed:
         parts.append(f"{failed} element(s) failed and will retry")
+    # The entry is a SUMMARY and says so; the record itself is the outbox rows.
+    # `items` carries the pointer the Activity tab turns into a link into
+    # Admin → Publish Queue, filtered to the affected run — so "3 elements
+    # dead-lettered" is one click from *which* three, their qualifiedNames,
+    # their attempt counts and what Egeria actually said. Putting that detail
+    # in the entry text instead would make the activity log the log, which it
+    # is not: it is an audit trail of operations, one line each.
+    runs = troubled_runs or {}
+    items = [
+        {"kind": "publish_queue", "name": run_id or "(unattributed)",
+         "link": "admin-outbox", "run_id": run_id, "entity_slug": slug}
+        for run_id, slug in sorted(runs.items())
+    ] or [{"kind": "publish_queue", "name": "all pending elements",
+           "link": "admin-outbox", "run_id": "", "entity_slug": ""}]
     try:
         log_catalog(
             registry, entity_type or "repo", entity_slug or "", "", "",
@@ -259,9 +372,11 @@ def record_drain_outcome(registry, summary: dict, entity_type: str = "", entity_
             summary="Egeria publish incomplete — " + "; ".join(parts),
             detail=(
                 f"Outbox drain: {summary}. "
-                "Dead-lettered rows are listed by registry.list_dead_outbox_elements() "
-                "and will not be retried without intervention."
+                "Full per-element record — qualifiedName, attempts, and Egeria's own "
+                "error for each — is in Admin → Publish Queue. Dead-lettered rows will "
+                "not be retried without intervention; they can be re-queued there."
             ),
+            items=items,
         )
     except Exception:
         # The activity write is the visibility mechanism, not the work. If it

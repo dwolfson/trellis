@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, outbox, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
 app.include_router(prefect_status.router, prefix="/api/prefect", tags=["prefect"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
+app.include_router(outbox.router, prefix="/api/outbox", tags=["outbox"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"])
 app.include_router(diagrams.router, prefix="/api/diagrams", tags=["diagrams"])

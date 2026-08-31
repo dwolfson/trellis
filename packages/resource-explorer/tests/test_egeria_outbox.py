@@ -11,7 +11,12 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from resource_explorer.egeria_outbox import OutboxApplyError, apply_element, drain_outbox
+from resource_explorer.egeria_outbox import (
+    OutboxApplyError,
+    OutboxClients,
+    apply_element,
+    drain_outbox,
+)
 from resource_explorer.registry import Project, ProjectRegistry
 
 
@@ -122,7 +127,7 @@ class TestApplyIsIdempotent:
         row = {"id": 1, "egeria_guid": "already-there", "qualified_name": "Q",
                "element_kind": "annotation", "payload_json": "{}"}
 
-        assert apply_element(row, discovery, lambda qn: "") == "already-there"
+        assert apply_element(row, OutboxClients(discovery=discovery), lambda qn: "") == "already-there"
         assert calls == [], "a row with a GUID must not write again"
 
     def test_it_adopts_an_existing_element_instead_of_duplicating_it(self, db, project):
@@ -133,7 +138,7 @@ class TestApplyIsIdempotent:
         row = {"id": 1, "egeria_guid": "", "qualified_name": "Annotation::p::1::0",
                "element_kind": "annotation", "payload_json": "{}"}
 
-        assert apply_element(row, discovery, lambda qn: "found-guid") == "found-guid"
+        assert apply_element(row, OutboxClients(discovery=discovery), lambda qn: "found-guid") == "found-guid"
         assert calls == [], "a qualifiedName hit must adopt, not create"
 
     def test_it_creates_when_nothing_exists(self, db, project):
@@ -141,7 +146,7 @@ class TestApplyIsIdempotent:
         row = {"id": 1, "egeria_guid": "", "qualified_name": "Annotation::p::1::0",
                "element_kind": "annotation", "payload_json": '{"class": "X"}'}
 
-        assert apply_element(row, discovery, lambda qn: "") == "new"
+        assert apply_element(row, OutboxClients(discovery=discovery), lambda qn: "") == "new"
 
     def test_a_lookup_that_raises_falls_through_to_create(self, db, project):
         discovery = type("D", (), {"create_annotation": lambda self, body: "new"})()
@@ -151,7 +156,7 @@ class TestApplyIsIdempotent:
         def boom(qn):
             raise RuntimeError("lookup down")
 
-        assert apply_element(row, discovery, boom) == "new"
+        assert apply_element(row, OutboxClients(discovery=discovery), boom) == "new"
 
     def test_an_unknown_element_kind_raises_rather_than_reporting_success(self, db, project):
         # A row that reports 'done' without writing anything is the exact
@@ -159,7 +164,7 @@ class TestApplyIsIdempotent:
         row = {"id": 1, "egeria_guid": "", "qualified_name": "Q",
                "element_kind": "wormhole", "payload_json": "{}"}
         with pytest.raises(OutboxApplyError, match="wormhole"):
-            apply_element(row, object(), lambda qn: "")
+            apply_element(row, OutboxClients(discovery=object()), lambda qn: "")
 
 
 class TestDrain:
@@ -167,7 +172,7 @@ class TestDrain:
         row_id = _enqueue(db, project)
         discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g1"}})()
 
-        summary = drain_outbox(db, discovery, lambda qn: "")
+        summary = drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "")
         assert summary["done"] == 1 and summary["failed"] == 0
         assert db.outbox_counts() == {"done": 1}
 
@@ -182,7 +187,7 @@ class TestDrain:
                 return {"guid": "ok"}
 
         db.enqueue_outbox_element("repo", project, "annotation", "Q3", {"fail": True})
-        summary = drain_outbox(db, D(), lambda qn: "")
+        summary = drain_outbox(db, OutboxClients(discovery=D()), lambda qn: "")
         assert summary["done"] == 2 and summary["failed"] == 1
 
     def test_no_client_leaves_rows_pending_rather_than_burning_an_attempt(self, db, project, monkeypatch):
@@ -199,7 +204,7 @@ class TestDrain:
         assert len(still_due) == 1 and still_due[0]["attempts"] == 0
 
     def test_an_empty_outbox_is_a_no_op(self, db):
-        assert drain_outbox(db, object(), lambda qn: "")["claimed"] == 0
+        assert drain_outbox(db, OutboxClients(discovery=object()), lambda qn: "")["claimed"] == 0
 
 
 class TestRetention:
@@ -240,7 +245,7 @@ class TestRunScoping:
         assert [r["id"] for r in claimed] == [mine], "the older row must not be claimed"
 
         discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g"}})()
-        drain_outbox(db, discovery, lambda qn: "", run_id="run-mine")
+        drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "", run_id="run-mine")
 
         counts = db.outbox_counts()
         assert counts == {"done": 1, "pending": 1}
@@ -298,7 +303,7 @@ class TestDrainOutcomeIsVisible:
             def create_annotation(self, body):
                 raise RuntimeError("egeria said no")
 
-        drain_outbox(db, D(), lambda qn: "")
+        drain_outbox(db, OutboxClients(discovery=D()), lambda qn: "")
         entries = db.list_activity(limit=10)
         assert any("Egeria publish incomplete" in e["summary"] for e in entries), (
             "a failed drain must be visible in the Activity tab, not only on stderr"
@@ -309,5 +314,171 @@ class TestDrainOutcomeIsVisible:
         # stops being read.
         _enqueue(db, project)
         discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g"}})()
-        drain_outbox(db, discovery, lambda qn: "")
+        drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "")
         assert db.list_activity(limit=10) == []
+
+
+class TestCollectionMemberships:
+    """Investigation membership writes (design §6 step 5).
+
+    Idempotency here is NOT lookup-then-create — a CollectionMembership has no
+    qualifiedName to search for. It rests on the relationship being uni-link,
+    measured live 2026-08-25: add_to_collection returns None and adding the
+    same element twice leaves one member.
+    """
+
+    def test_it_attaches_the_member_to_the_collection(self, db, project):
+        from resource_explorer.egeria_outbox import OutboxClients, enqueue_collection_members
+
+        calls = []
+
+        class CM:
+            def add_to_collection(self, coll, member):
+                calls.append((coll, member))
+
+        enqueue_collection_members(
+            db, "inv-1", "coll-guid",
+            [{"entity_type": "repo", "entity_slug": "p", "member_guid": "asset-1"}],
+            run_id="r1",
+        )
+        summary = drain_outbox(db, OutboxClients(collection_manager=CM()), lambda qn: "", run_id="r1")
+
+        assert summary["done"] == 1
+        assert calls == [("coll-guid", "asset-1")]
+
+    def test_replaying_a_membership_calls_the_upsert_again_rather_than_skipping(self, db, project):
+        # Deliberate: there is no element to find by qualifiedName, so the
+        # apply step cannot short-circuit. Safety comes from the operation.
+        from resource_explorer.egeria_outbox import apply_element
+
+        calls = []
+
+        class CM:
+            def add_to_collection(self, coll, member):
+                calls.append((coll, member))
+
+        row = {"id": 1, "egeria_guid": "", "qualified_name": "CollectionMembership::c::m",
+               "element_kind": "collection_membership",
+               "payload_json": json.dumps({"collection_guid": "c", "member_guid": "m"})}
+        apply_element(row, OutboxClients(collection_manager=CM()), lambda qn: "")
+        apply_element(row, OutboxClients(collection_manager=CM()), lambda qn: "")
+        assert len(calls) == 2
+
+    def test_a_missing_client_is_a_failure_not_a_silent_success(self, db, project):
+        # The drain was given a discovery client but this row needs the
+        # collection manager. Reporting 'done' here would record a write that
+        # never happened.
+        from resource_explorer.egeria_outbox import apply_element
+
+        row = {"id": 1, "egeria_guid": "", "qualified_name": "CollectionMembership::c::m",
+               "element_kind": "collection_membership",
+               "payload_json": json.dumps({"collection_guid": "c", "member_guid": "m"})}
+        with pytest.raises(OutboxApplyError, match="collection_manager"):
+            apply_element(row, OutboxClients(discovery=object()), lambda qn: "")
+
+    def test_resource_list_attaches_collection_to_its_parent(self, db, project):
+        from resource_explorer.egeria_outbox import apply_element
+
+        calls = []
+
+        class CM:
+            def attach_collection(self, parent, coll):
+                calls.append((parent, coll))
+
+        row = {"id": 1, "egeria_guid": "", "qualified_name": "ResourceList::p::c",
+               "element_kind": "resource_list",
+               "payload_json": json.dumps({"parent_guid": "proj", "collection_guid": "coll"})}
+        apply_element(row, OutboxClients(collection_manager=CM()), lambda qn: "")
+        assert calls == [("proj", "coll")]
+
+    def test_enqueue_records_the_member_for_the_publish_queue(self, db, project):
+        from resource_explorer.egeria_outbox import enqueue_collection_members
+
+        ids = enqueue_collection_members(
+            db, "inv-1", "coll",
+            [{"entity_type": "repo", "entity_slug": "p", "member_guid": "a1"},
+             {"entity_type": "repo", "entity_slug": "q", "member_guid": "a2"}],
+            run_id="r1",
+        )
+        assert len(ids) == 2
+        rows = db.list_outbox_elements(run_id="r1")
+        assert {r["entity_type"] for r in rows} == {"investigation"}
+        assert {json.loads(r["payload_json"])["member_entity_slug"] for r in rows} == {"p", "q"}
+
+
+class TestNothingWrittenIsNotOneState:
+    """Three different outcomes all look like "no elements were written".
+
+    The shape to avoid is the cii_badge bug of 2026-08-31: "matched nothing"
+    and "not registered" were both (None, ""), so a real gap read as a
+    non-answer. The same collapse is available here — an empty queue, an
+    unreachable platform, and every write failing are indistinguishable from
+    the outside if all you observe is "nothing landed in Egeria".
+
+    They must stay distinguishable in the summary AND in what reaches a person,
+    because the right response to each is different: nothing to do, wait and
+    retry, and go look at the errors.
+    """
+
+    def _fail_client(self):
+        class D:
+            def create_annotation(self, body):
+                raise RuntimeError("egeria said no")
+        return OutboxClients(discovery=D())
+
+    def test_the_three_outcomes_have_different_summaries(self, db, project):
+        empty = drain_outbox(db, OutboxClients(discovery=object()), lambda qn: "")
+
+        _enqueue(db, project, qn="Q::fail")
+        failed = drain_outbox(db, self._fail_client(), lambda qn: "")
+
+        db.mark_outbox_done(_enqueue(db, project, qn="Q::done2"))
+        _enqueue(db, project, qn="Q::skip")
+        import resource_explorer.egeria_outbox as mod
+        original = mod._default_clients
+        mod._default_clients = lambda: (_ for _ in ()).throw(RuntimeError("no platform"))
+        try:
+            skipped = drain_outbox(db)
+        finally:
+            mod._default_clients = original
+
+        assert (empty["claimed"], empty["failed"], empty["skipped"]) == (0, 0, 0)
+        assert (failed["claimed"], failed["failed"], failed["skipped"]) == (1, 1, 0)
+        assert (skipped["claimed"], skipped["failed"], skipped["skipped"]) == (1, 0, 1)
+
+    def test_only_a_failure_reaches_a_person(self, db, project):
+        # An empty queue and an unreachable platform are not incidents. A
+        # failure is. If all three wrote an activity entry, the entry would
+        # stop meaning anything; if none did, the failure would be invisible.
+        drain_outbox(db, OutboxClients(discovery=object()), lambda qn: "")
+        assert db.list_activity(limit=10) == [], "an empty queue is not an incident"
+
+        _enqueue(db, project, qn="Q::skip")
+        import resource_explorer.egeria_outbox as mod
+        original = mod._default_clients
+        mod._default_clients = lambda: (_ for _ in ()).throw(RuntimeError("no platform"))
+        try:
+            drain_outbox(db)
+        finally:
+            mod._default_clients = original
+        assert db.list_activity(limit=10) == [], "an outage is not a failed write"
+
+        drain_outbox(db, self._fail_client(), lambda qn: "")
+        entries = db.list_activity(limit=10)
+        assert len(entries) == 1 and "incomplete" in entries[0]["summary"]
+
+    def test_an_outage_leaves_the_retry_budget_untouched(self, db, project):
+        # The consequence of confusing outage with failure: rows would burn
+        # attempts and dead-letter for a reason that had nothing to do with them.
+        row_id = _enqueue(db, project, qn="Q::skip")
+        import resource_explorer.egeria_outbox as mod
+        original = mod._default_clients
+        mod._default_clients = lambda: (_ for _ in ()).throw(RuntimeError("no platform"))
+        try:
+            for _ in range(20):
+                drain_outbox(db)
+        finally:
+            mod._default_clients = original
+        rows = db.claim_due_outbox_elements()
+        assert len(rows) == 1 and rows[0]["attempts"] == 0
+        assert db.list_dead_outbox_elements() == []

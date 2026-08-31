@@ -3565,6 +3565,56 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_outbox_elements(
+        self, status: str | None = None, run_id: str | None = None,
+        entity_slug: str | None = None, limit: int = 200,
+    ) -> list[dict]:
+        """The detailed publish record behind an activity-log summary.
+
+        The activity entry says "3 elements dead-lettered"; this is the list of
+        which three, their qualifiedNames, how many attempts each took and what
+        Egeria actually said. Newest first, because a stuck publish is read
+        from the most recent failure backwards.
+        """
+        sql = "SELECT * FROM egeria_outbox"
+        filters: list[str] = []
+        params: list = []
+        if status:
+            filters.append("status = ?")
+            params.append(status)
+        if run_id:
+            filters.append("run_id = ?")
+            params.append(run_id)
+        if entity_slug:
+            filters.append("entity_slug = ?")
+            params.append(entity_slug)
+        if filters:
+            sql += " WHERE " + " AND ".join(filters)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def retry_outbox_element(self, row_id: int) -> bool:
+        """Return a dead row to the queue, attempts reset. Returns whether it
+        was actually revived.
+
+        Dead-lettering is deliberately terminal — the drain will never pick the
+        row up again on its own — so there has to be a way back for the common
+        case where the cause was fixed outside RE (a permission granted, a
+        server restarted). Restricted to 'dead': re-queueing a row that is
+        merely backing off would discard the backoff, and re-queueing a 'done'
+        row would re-apply a completed write.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status='pending', attempts=0, "
+                "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
+                (datetime.utcnow().isoformat(), row_id),
+            )
+        return (cur.rowcount or 0) > 0
+
     def outbox_counts(self) -> dict[str, int]:
         """Row count per status — what a health endpoint or the drain's own
         log line reports."""

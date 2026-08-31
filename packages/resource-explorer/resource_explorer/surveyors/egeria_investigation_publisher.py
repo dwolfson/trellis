@@ -210,16 +210,47 @@ class EgeriaInvestigationPublisher:
         # 4. CollectionMembership per member, where the resource actually exists
         #    in Egeria. A member whose repo was never published has no asset to
         #    link — reported, never invented.
-        self._link_members(cm, res, members)
+        self._link_members(cm, res, members, investigation_slug)
         return res
 
-    def _link_members(self, cm, res: "PromotionResult", members: list) -> None:
-        """Attach every member that HAS an asset to the working set.
+    def _link_members(self, cm, res: "PromotionResult", members: list,
+                      investigation_slug: str) -> None:
+        """Attach every member that HAS an asset to the working set, via the outbox.
 
         CollectionMembership is uni-link, so add_to_collection is an upsert:
         calling it for an already-attached member is safe and does not
-        duplicate. That is what lets this be re-run.
+        duplicate. That is what lets this be re-run — and, now, what makes a
+        queued retry safe by the relationship's own semantics rather than by a
+        qualifiedName lookup, since a membership has no qualifiedName to search
+        for. Measured live 2026-08-25; the return value is the test.
+
+        **Why this is the part that goes through the outbox** (design §6 step 5).
+        The Project and the Collection are created synchronously above: their
+        GUIDs are needed by the steps that follow and are returned in the
+        PromotionResult, so they cannot become deferred work. Members are the
+        plural part, and — exactly as with the repo publisher's annotations —
+        the part that swallowed failures one at a time. A member whose
+        add_to_collection failed was reported as unlinkable and then forgotten;
+        nothing ever tried again.
+
+        Two outcomes stay firmly distinct, because conflating them is how a
+        real gap in an investigation reads as a transient glitch:
+
+        - **No asset GUID** is not a failed write. The member's repo was never
+          published, so there is nothing to attach. It is reported as
+          unlinkable and NOT queued — retrying it forever would be retrying a
+          fact about the catalog, not an error.
+        - **A failed attach** is a failed write, and is now a durable row the
+          scheduler retries with backoff.
+
+        The happy path is unchanged: rows are enqueued and drained inline, so a
+        successful promotion still links everything before returning.
         """
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, drain_outbox, enqueue_collection_members,
+        )
+
+        linkable: list[dict] = []
         for m in members:
             asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
             if not asset_guid:
@@ -227,13 +258,47 @@ class EgeriaInvestigationPublisher:
                     **m, "reason": "not published to Egeria yet — no asset GUID",
                 })
                 continue
-            try:
-                cm.add_to_collection(res.collection_guid, asset_guid)
+            linkable.append({**m, "member_guid": asset_guid})
+
+        if not linkable:
+            return
+
+        run_id = f"Investigation::{investigation_slug}::{res.collection_guid}"
+        enqueue_collection_members(
+            self._registry, investigation_slug, res.collection_guid, linkable,
+            run_id=run_id,
+        )
+        summary = drain_outbox(
+            self._registry, OutboxClients(collection_manager=cm), lambda qn: "",
+            limit=max(len(linkable), 1), run_id=run_id,
+        )
+
+        # Report per member from what the drain actually did, not from what was
+        # enqueued — an enqueued row is a promise, not a result.
+        by_qn = {
+            f"CollectionMembership::{res.collection_guid}::{m['member_guid']}": m
+            for m in linkable
+        }
+        outstanding = {
+            r["qualified_name"]: r
+            for r in self._registry.list_outbox_elements(run_id=run_id, limit=len(linkable) * 2)
+            if r["status"] != "done"
+        }
+        for qn, m in by_qn.items():
+            row = outstanding.get(qn)
+            if row is None:
                 res.members_linked.append(m["entity_slug"])
-            except Exception as exc:
+            else:
                 res.members_unlinkable.append({
-                    **m, "reason": f"add_to_collection failed: {type(exc).__name__}: {exc}",
+                    **{k: v for k, v in m.items() if k != "member_guid"},
+                    "reason": (
+                        f"attach failed ({row['last_error'] or 'unknown error'}) — "
+                        f"queued for retry, see Admin → Publish Queue"
+                    ),
                 })
+        if summary.get("failed") or summary.get("dead"):
+            log.warning("Investigation %s: %d membership(s) queued for retry",
+                        investigation_slug, summary.get("failed", 0) + summary.get("dead", 0))
 
     def relink_members(self, investigation_slug: str) -> "PromotionResult":
         """Re-attach an already-promoted investigation's members.
@@ -276,7 +341,9 @@ class EgeriaInvestigationPublisher:
             res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
             return res
 
-        self._link_members(cm, res, self._registry.list_investigation_members(investigation_slug))
+        self._link_members(cm, res,
+                           self._registry.list_investigation_members(investigation_slug),
+                           investigation_slug)
         return res
 
     def ensure_working_set(self, investigation_slug: str) -> PromotionResult:

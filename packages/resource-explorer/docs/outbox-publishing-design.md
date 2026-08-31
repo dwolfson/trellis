@@ -263,8 +263,20 @@ and there the stored payload replays an identical qualifiedName.
    dead-letters to the **activity log**, which the Activity tab already reads. A clean pass writes
    nothing: an entry every quarter-hour saying nothing was wrong is how a log stops being read.
 
+   **The detail surface: Admin → Publish Queue** (`web/routes/outbox.py`, 2026-08-31). The
+   activity log is an audit trail — one line per operation — so it carries the *summary* ("3
+   elements dead-lettered") and a link, while the per-element record lives with the rows that
+   own it: qualifiedName, attempt count against the ceiling, next attempt, and Egeria's own
+   error, with a **Re-queue** action for dead rows. Status counts there are always over the whole
+   table, never the filtered page, so a panel filtered to `pending` still reports the dead rows —
+   otherwise the filter silently becomes a claim that nothing is stuck.
+
+   Re-queueing is restricted to `dead`: on a merely-backing-off row it would discard the backoff,
+   and on a completed row it would re-apply a write that already succeeded. Both return 409
+   rather than being absorbed.
+
    **Not done, and deliberately:** a dead row is surfaced through `list_dead_outbox_elements()`,
-   an error log and now an activity entry, but not yet as an RFA. `rfa_actions` rows hang off an `activity_log` entry
+   an error log, an activity entry and the Publish Queue panel, but not yet as an RFA. `rfa_actions` rows hang off an `activity_log` entry
    (`entry_id`, `annotation_index`), so raising one from a dead outbox row is its own small
    integration rather than a line of code.
 4. **Repo publisher migrated — DONE.** `EgeriaPublisher._create_annotations` now enqueues one
@@ -297,7 +309,59 @@ and there the stored payload replays an identical qualifiedName.
    `element_kind` creators registered (`asset`, `report`, `relationship`) and is where
    `depends_on_id` starts earning its place — those paths queue the report itself, so ordering
    stops being trivially satisfied.
-5. Only then Phase 2 (§10 of the recovery design).
+5. **Investigation publisher — DONE 2026-08-31.** `_link_members` enqueues one
+   `collection_membership` row per linkable member and drains inline, so `promote()` and
+   `relink_members()` both go through the outbox. `collection_membership` and `resource_list`
+   creators are registered; `_CREATORS` now takes an `OutboxClients` bundle rather than a lone
+   `DataDiscovery`, because these kinds reach `CollectionManager` instead. A row whose required
+   client was not supplied raises — reporting `done` for a write that never happened is the
+   failure this subsystem exists to remove.
+
+   **Idempotency here is not lookup-then-create.** A CollectionMembership has no qualifiedName to
+   search for, so the stored `qualified_name` is purely the outbox's own identity key. Replay
+   safety rests instead on the relationship being **uni-link**, measured live 2026-08-25:
+   `add_to_collection` and `attach_collection` both return `None`, and repeating either leaves
+   one attachment. That measurement is load-bearing — a multi-link relationship would accumulate
+   one silent duplicate per retry, with no error anywhere. **The return value is the test;
+   re-measure if pyegeria changes those signatures.**
+
+   **Two outcomes stay distinct, and this is the point.** A member with no asset GUID is not a
+   failed write — its repo was never published, so there is nothing to attach. It is reported as
+   unlinkable and never queued, because retrying it would be retrying a fact about the catalog.
+   A member whose attach *failed* is now a durable row rather than a note in `members_unlinkable`
+   that nothing ever acted on.
+
+   Per-member results are read back from what the drain actually did, not from what was enqueued
+   — an enqueued row is a promise, not a result.
+
+   The Project and the Collection stay synchronous for the same reason the repo path's asset and
+   report do: their GUIDs are needed by the steps that follow and are returned in the
+   `PromotionResult`.
+
+**5b. Filesystem and database — scoped 2026-08-31, deliberately not built.**
+
+   **These are NOT the same problem as the repo and investigation paths, and this is the part to
+   get right before building either** (Dan, 2026-08-31). Both adapters declare
+   `other_engine_handlers={"egeria": _trigger_egeria_native_survey}`, so a step tagged
+   `executes_at: egeria` is not executed by RE at all — RE asks Egeria's own native survey engine
+   to run it, and **Egeria writes the results itself**. An outbox under RE's publishers cannot
+   cover those writes, because RE never makes them. Three consequences:
+
+   - The outbox covers only the *locally-executed* portion of a filesystem or database survey —
+     `HybridDatabaseSurveyor`'s immediate local scan, and any `executes_at: resource-explorer`
+     step. That is a real subset, not the whole survey, and the UI must not imply otherwise.
+   - "Did the Egeria-executed half succeed?" is a different question with a different answer
+     shape: it is a poll of Egeria's own engine-action status, not a row in our queue. Modelling
+     it as a queue row would be a claim we cannot substantiate — exactly the confident-wrong-
+     answer this subsystem exists to remove.
+   - Whether the trigger *itself* belongs in the outbox is a genuine open question. Triggering is
+     an RE write and can fail like any other, so a retryable row is defensible — but a retried
+     trigger may start a second native survey rather than converging, and no qualifiedName
+     identifies "the request", only its eventual result. Settle that before building, not during.
+
+   The engine-host work is separately blocked on ISSUE-79 anyway, so there is no rush to guess.
+
+6. Only then Phase 2 (§10 of the recovery design).
 
 **Note for step 4:** the two survey-launch paths still diverge on five axes (current-state doc
 §1.2, confirmed still true), so a retry layer must sit under *both* — putting it under the
