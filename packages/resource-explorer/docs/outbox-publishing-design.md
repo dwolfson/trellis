@@ -1,6 +1,8 @@
 # Outbox / retry publishing — design
 
-**Status:** design, not built. Written 2026-08-28 to unblock `architecture-recovery-design.md`
+**Status:** steps 1 and 2 of §6 are BUILT (`c7e99f6`, 2026-08-29 — one day after this doc was
+written); step 3 onward is not. D1 below is the one open decision. Written 2026-08-28 to unblock
+`architecture-recovery-design.md`
 §8.4, which names this as the sole remaining prerequisite for Phase 2 (Egeria projection of
 recovered architecture) and is blunt about why: *"a half-published blueprint is worse than none."*
 
@@ -110,9 +112,19 @@ about elements, not calls. Given `_create_annotations` currently swallows failur
 failure granularity that already exists is per-element.
 
 **Recommendation: per element.** It is the granularity the failure mode already has, and it is the
-only one that makes "half-published" observable rather than inferred. Cost is row volume — a
-blueprint publish on `egeria_git` (945 recovery finding scopes) could be tens of thousands of rows
-per run, so the table needs a retention policy from day one, not later.
+only one that makes "half-published" observable rather than inferred.
+
+**Volume, measured 2026-08-31 rather than estimated.** Two very different regimes:
+
+| | rows |
+|---|---|
+| All 68 publishes ever performed, per-element (627 annotations + ~3 structural each) | **831 total** |
+| One future blueprint publish on `egeria_git` (13,813 scoped findings — the earlier "945" was wrong and far too low) | **~14,000 per run** |
+
+So per-element is free for everything publishing today and expensive only for the blueprint case
+that does not exist yet. Retention policy is therefore not needed on day one for correctness, but
+is needed before Phase 2 turns on — and the second column is the number that decides it, not the
+first.
 
 ### D2. Annotation identity — CORRECTED 2026-08-29, and it is much smaller than this section first said
 
@@ -210,11 +222,18 @@ and there the stored payload replays an identical qualifiedName.
 
 ## 6. Sequencing
 
-1. **Generalise lookup-then-create to annotations** (D2, settled) — search by qualifiedName before
-   creating, mirroring `_find_or_create_asset`. Fold in the deduplication of the three publishers'
-   near-identical `_create_annotations` while there.
-2. Generalise `_find_or_create_asset`'s lookup-then-create into one helper the three publishers
-   share, collapsing the duplicated `_create_annotations` at the same time.
+1. ~~**Generalise lookup-then-create to annotations** (D2, settled)~~ — **DONE**, `c7e99f6`.
+   `surveyors/annotation_props.py`'s `publish_annotations()` looks up `find_element_guid(qn)`
+   before creating and skips on a hit.
+2. ~~Generalise into one helper the three publishers share, collapsing the duplicated
+   `_create_annotations`~~ — **DONE**, same commit. All three publishers' `_create_annotations`
+   are now thin wrappers that build their own qualifiedName prefix and delegate; each is kept as
+   a method only because tests reach for it by name.
+
+   **Still open from §2, deliberately:** `publish_annotations` retains the per-element swallow —
+   a failed annotation is logged and the loop continues. That is the hole the outbox closes, and
+   it was left alone rather than changed to raise, because raising without a retry layer would
+   turn a partial publish into a failed survey.
 3. `egeria_outbox` table + drain on the existing scheduler loop, with backoff and dead-lettering.
 4. Migrate publishers to enqueue rather than call directly — repo first, since Phase 2 needs only
    that path; database/filesystem/investigation follow.
