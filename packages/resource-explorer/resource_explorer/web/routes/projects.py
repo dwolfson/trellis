@@ -1008,6 +1008,26 @@ def _results_have_data(results) -> bool:
     if not results:
         return False
     if isinstance(results, dict):
+        # Caught 2026-08-31 wiring architecture_recovery/architecture_summary/
+        # architecture_doc_lens into a dashboard for the first time (docs/
+        # Backlog.md "Survey Results dashboards cover 14 of 29 analyses") —
+        # the exact "shaped but empty" bug this function exists for, just
+        # never triggered before because none of the three had ever reached
+        # this code path. A never-run result here isn't an empty collection,
+        # it's `{"state": "never_run", "message": "..."}` — result_status.py's
+        # vocabulary, and the explanatory `message` is non-empty text, so the
+        # general envelope exclusion below didn't catch it.
+        #
+        # `state` alone can't be blanket-excluded: result_status.py's ladder
+        # gives `nothing_found` the SAME shape and it is "a real, final
+        # answer" (a genuine negative result), not an absence — excluding it
+        # here would hide real content the same way this function exists to
+        # stop pretending emptiness is content. Only the never-run state
+        # itself means nothing was produced.
+        from resource_explorer.surveyors import result_status
+        if results.get("state") == result_status.NEVER_RUN:
+            return False
+
         # `_status` is an ENVELOPE, not content — it describes why a payload is
         # empty, so counting it as data makes every explained emptiness claim to
         # hold something. That is the opposite of what this function exists for:
@@ -1019,7 +1039,13 @@ def _results_have_data(results) -> bool:
         # a reader that returns only a timestamp has nothing to show.
         # (_renderMetricsResults in index.html already filters exactly these
         # three for the same reason; this is the server-side half of it.)
-        envelope = {"_status", "surveyed_at", "detail"}
+        #
+        # `documentation` is architecture_recovery's own decorative field —
+        # the documentation-SITE ingestion status, carried on this card for
+        # unrelated presentation reasons (_doc_ingestion_state) — never the
+        # recovery analysis's own findings. Confirmed no other reader uses
+        # "documentation" as a real top-level content key.
+        envelope = {"_status", "surveyed_at", "detail", "documentation"}
         return any(_results_have_data(v) for k, v in results.items() if k not in envelope)
     if isinstance(results, (list, tuple, set)):
         return len(results) > 0
