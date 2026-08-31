@@ -401,10 +401,35 @@ Everything below came out of one session. Design reasoning lives in
 - [ ] **No logs viewer, and logging is not wired.** Root logger has no handlers and `uvicorn.run()`
       takes no `log_config` (`cli/main.py:327`), so INFO is discarded and WARNING/ERROR arrive bare.
       **Wire logging before building a viewer** or it will show nothing and read as broken.
-- [ ] **No UI for explicit refresh.** `POST /api/projects/{slug}/refresh` exists and does delta RAG
-      ingestion (SHA-gated) + query-cache invalidation. Nothing calls it — the `/refresh` hits in
-      `index.html` are Discovery Sources. Does not clear `SourceCache`, which is correct: it is
-      keyed on (repo, SHA), so a stale hit is impossible.
+### Refresh as a survey, not a button
+
+Reframed 2026-08-31: refresh wants to be a **schedulable survey in Automate** that decides whether
+a refresh is needed and whether delta or full is cheaper — not a button. Design in
+`survey-composition-and-topic-summary-design.md` §2b (planner step).
+
+Already built, and this is mostly assembly:
+- Four refresh steps, all `queued` and independently schedulable: `repo_profile_refresh`
+  (scouting), `manifest_parse`, `rag_ingestion`, `website_ingestion` (analysis).
+- The Automate surface to hang it off — survey list beside Subscriptions and Schedules
+  (`fd63eed`, 2026-08-30). This was §4a's blocker; it is gone.
+- `POST /api/projects/{slug}/refresh` — delta RAG ingestion + query-cache invalidation. Nothing in
+  the UI calls it (the `/refresh` hits in `index.html` are Discovery Sources).
+
+Missing:
+- [ ] A **Refresh Survey Definition** bundling the four.
+- [ ] The **planner step** at the front of it: last SHA vs live head, which tables are populated,
+      how stale each is → decide per-step what runs.
+- [ ] A **per-step "still current?" check.** Only `IncrementalIndexer.refresh` SHA-gates today; the
+      other three redo their work regardless.
+
+Two traps, both already visible in the code:
+- **The gate cannot be survey-wide.** `IncrementalIndexer.refresh`'s no-change path still profiles
+  data files if that was never run. Unchanged ≠ complete; a survey-level skip would skip work never
+  done.
+- **Cheap acquisition ≠ cheap compute.** `SourceCache` is keyed on (repo, SHA), so an ungated step
+  costs 1.28s warm rather than 22.6s cold — which *hides* a missing gate instead of replacing it.
+  The parse/profile/embed work still repeats in full. (Not clearing `SourceCache` on refresh remains
+  correct: a stale hit is impossible.)
 
 ### The ~30s stage load — diagnosed, not fixed
 

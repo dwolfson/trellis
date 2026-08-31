@@ -140,6 +140,43 @@ So the mechanism works today and is in production. What it lacks is a name, a de
 
 A reducer is an ordinary step: it produces annotations like any other, it is registered like any other, and it happens to take the whole resource as its scope. Nothing new is required in the step model — which is also why having none, or three, costs nothing structurally.
 
+### 2b. The same mechanism at the front: a planner step
+
+Everything above assumes a reducer comes *last*. It does not have to. A step whose inputs are other
+steps' stored state can equally sit at the **front** of a survey and decide what the rest of the
+graph should do.
+
+The worked example is refresh. Four steps already do refresh work and are already independently
+schedulable — `repo_profile_refresh` (scouting), `manifest_parse`, `rag_ingestion`,
+`website_ingestion` (analysis, all `queued`). What does not exist is a survey that runs them
+together under one decision: *is a refresh needed at all, and if so is a delta cheaper than a full
+rebuild?*
+
+That decision is a step. It reads `project.last_commit_sha` against the live head, reads which
+tables are populated and how stale each is, and sets the shape of the run.
+
+**Two things this must not do, both visible in existing code.**
+
+First, **the gate cannot live at survey level.** `IncrementalIndexer.refresh` is the only one of the
+four that checks the SHA today — and on its no-change path it *still* profiles data files if that
+was never run. "Unchanged" and "complete" are different questions: a survey-wide "nothing changed,
+skip everything" would skip work that was never done in the first place. The planner decides
+per-step, and each step keeps its own "still current?" answer.
+
+Second, **cheap acquisition is not the same as cheap compute.** `SourceCache` is keyed on
+(repo, SHA), so re-running an ungated step costs 1.28s warm instead of 22.6s cold — which hides the
+absence of a gate rather than substituting for one. The parse, profile and embed work repeats in
+full.
+
+A planner step and a summary step are the same mechanism pointed in opposite directions: one reads
+stored state to decide what to do, the other reads stored findings to say what was concluded. Both
+are ordinary steps. Neither is privileged by the model, and a survey may have either, both, or
+neither.
+
+Where it belongs: Automate, which since 2026-08-30 has a survey list beside 🔔 Subscriptions and
+⏱ Schedules (`fd63eed`) — the surface that was previously missing. A refresh survey is sustained
+*machine* attention by definition, which is what Automate is for.
+
 ### 3. Raw annotations are still written, always
 
 Any summary is **in addition to**, never instead of, each step's own annotations.
