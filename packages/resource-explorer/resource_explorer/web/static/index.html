@@ -11404,7 +11404,12 @@ async function runQuery(query, projectSlug, databaseSlug) {
   header.textContent = 'Assistant';
   wrap.appendChild(header);
   const body = document.createElement('div');
-  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  // prose-sm, not bare prose: prose's default spacing/heading scale assumes
+  // a 1rem reading column. Bare prose (no plugin registered at all, until
+  // 2026-08-31 — frontend-build/tailwind.config.js) rendered as nothing;
+  // once registered, its default (non -sm) margins read as oversized next
+  // to this panel's text-sm body copy. prose-sm's ~14px baseline matches.
+  body.className = 'prose prose-sm prose-invert text-sm text-slate-200 max-w-none';
   wrap.appendChild(body);
   messages.appendChild(wrap);
   messages.scrollTop = messages.scrollHeight;
@@ -11588,7 +11593,12 @@ function appendMessage(role, text, opts = {}) {
   header.textContent = role === 'you' ? 'You' : opts.clarify ? 'Assistant · clarification needed' : 'Assistant';
   wrap.appendChild(header);
   const body = document.createElement('div');
-  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  // prose-sm, not bare prose: prose's default spacing/heading scale assumes
+  // a 1rem reading column. Bare prose (no plugin registered at all, until
+  // 2026-08-31 — frontend-build/tailwind.config.js) rendered as nothing;
+  // once registered, its default (non -sm) margins read as oversized next
+  // to this panel's text-sm body copy. prose-sm's ~14px baseline matches.
+  body.className = 'prose prose-sm prose-invert text-sm text-slate-200 max-w-none';
   body.innerHTML = marked.parse(text);
   wrap.appendChild(body);
   messages.appendChild(wrap);
