@@ -93,7 +93,10 @@ disagree, and the span copy is the one that expires.
 *(Opened 2026-08-30 listing four candidate shapes and saying "none of this is designed yet".
 Dan chose the first and S1 built it the same day. This entry was left stale for several hours and
 was still being reported as an open design question when it was neither — corrected on Dan
-noticing.)*
+noticing. Then corrected AGAIN by S2, who had built the backend and pointed at the differing
+`Claude-Session` trailers on `6f3afeb` and `2a22c99` to prove it. Verified before accepting. Two
+attribution errors on one row, both from reading a summary instead of the commits — which is exactly
+what `re-multi-session-attribution` says not to do.)*
 
 **The shape: accept / reject / retype a proposed component.** The pipeline is explicitly a
 *proposal* (§4.1a, `report-then-curate`) and a curator's verdict was the missing half. It rides the
@@ -103,9 +106,9 @@ Landed in three slices:
 
 | | |
 |---|---|
-| `6f3afeb` | accept/reject/retype on a proposed component — the backend (`web/routes/curate.py`) |
-| `2a22c99` | verdicts wired into the architecture card |
-| `f34d3c5` | **accepted proposals materialized as real Egeria `SolutionComponent`s** |
+| `6f3afeb` | accept/reject/retype on a proposed component — the backend (`web/routes/curate.py`, the `architecture_component_verdicts` table, `registry.py` methods) — **S2** |
+| `2a22c99` | verdicts wired into the architecture card — **S1** |
+| `f34d3c5` | **accepted proposals materialized as real Egeria `SolutionComponent`s** — **S1** |
 
 That third one is the one that closes the loop `report-then-curate` opened: a proposal a human
 accepted stops being a local finding and becomes a catalog element.
