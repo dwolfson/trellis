@@ -105,11 +105,23 @@ want a decision, not a surveyor. That is a fifteen-minute job.
 - **The vocabulary rename's layers two and three** — SQL columns and wire keys. The recorded plan
   is that both land with the wipe-and-reingest, since that makes the column migration free.
   Layer one (526 Python identifiers) is merged.
-- **`UNVERIFIED` persistence.** `step_outcome.py` computes it correctly — `DependencySurveyor`
-  reaches it on `egeria_git` using the manifest as a known-positive — and it is spread into an
-  annotation and never stored, so query time cannot reach it. The compiler works around this by
-  reading the fact layer. Storing the outcome per run would make the compile's gap sentence
-  actionable again.
+- **~~`UNVERIFIED` persistence.~~ CORRECTED 2026-08-31 — outcomes ARE stored and ARE queryable.**
+  This entry claimed the outcome "is spread into an annotation and never stored, so query time
+  cannot reach it". That is wrong. `step_cost_observer.describe_work()` harvests outcome labels
+  from the annotations the orchestrator already holds — so no sub-surveyor has to cooperate — and
+  `record()` persists them as `observed_outcomes` in **`project_analysis_metrics` under
+  `kind='step_cost'`**. Measured: `repo_file_structure` carries `["unverified"]` on 11 runs,
+  `repo_manifest_parse` `["no_signal", "recovered", "unverified"]` on 7.
+
+  The error was measuring the wrong table — `project_analysis_findings.detail_json`, where the
+  outcome genuinely is nearly absent (3 of 23 kinds) — and reading that as "not stored anywhere".
+  A correct count of the wrong population, and the one instance of that shape today which would
+  have cost real work: a table was about to be built for a problem that does not exist.
+
+  What IS missing is smaller and named in `repo-context-and-tool-routing.md` §7: coverage (11 of
+  ~33 sub-surveyors emit an outcome at all), aggregation (a step reporting
+  `["no_signal", "recovered", "unverified"]` has no rule for what the STEP achieved), and
+  discoverability (nobody hunting tool-fit would think to query the cost table).
 
 ---
 

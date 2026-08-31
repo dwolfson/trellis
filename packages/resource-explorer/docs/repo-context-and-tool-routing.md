@@ -175,19 +175,43 @@ different hat.
 ## 7. How the portfolio actually refines over time
 
 The hardest part of Dan's framing is *"over time will help us refine which tools are appropriate
-for which repos"*. That requires knowing which tools produced something worth having — and nothing
-records that.
+for which repos"*. That requires knowing which tools produced something worth having.
 
-What would make it measurable, in order of cost:
+**The first draft of this section said nothing records that. It was wrong, and the correction is
+the useful part.** Outcomes are already harvested and persisted:
+`step_cost_observer.describe_work()` reads the outcome label off the annotations the orchestrator
+already holds — so a step that has not adopted the vocabulary still contributes its count — and
+`record()` writes them as `observed_outcomes` into `project_analysis_metrics` under
+`kind='step_cost'`.
 
-1. **Record each tool's outcome against the repo's context**, not just its result. `step_outcome.py`
-   already has the vocabulary (`recovered` / `partial` / `no_signal` / `unverified` / `regression`);
-   what is missing is storing it per run — noted as an open item in the 31 Aug morning brief, where
-   `UNVERIFIED` is computed correctly and then dropped.
-2. **Then the question is answerable by query**: for repos with `repo_role=samples` and no
-   deployment units, which analyses ever returned `recovered`? That is a real portfolio signal and
-   it needs no new judgement, only durable outcomes.
-3. **Only then tune the routing table.** Anything earlier is guessing about which tools work, and
+So the portfolio question is answerable **today**, by query, with no new storage. Run
+2026-08-31:
+
+| repo role | step | runs | of which reported `unverified` |
+|---|---|---|---|
+| application | `repo_manifest_parse` | 17 | 7 |
+| application | `repo_dependency` | 3 | 3 |
+| samples | `repo_file_structure` | 7 | 6 |
+| samples | `repo_manifest_parse` | 24 | 2 |
+| documentation | `repo_manifest_parse` | 13 | 0 |
+
+`repo_file_structure` returning `unverified` on six of seven `samples` repos is exactly the
+tool-fit signal this section was arguing had to be built first. It was already there.
+
+**What is actually missing, in order of cost:**
+
+1. **Coverage.** Only 11 of ~33 sub-surveyors emit an outcome at all. The rest record `[]`, which
+   is honest — a step that has not adopted the vocabulary is not claiming anything — but
+   contributes nothing to tool-fit. This is the cheapest real improvement and the one with the
+   largest effect on the table above.
+2. **Aggregation.** `["no_signal", "recovered", "unverified"]` on one `repo_manifest_parse` run is
+   three annotations disagreeing, with no rule for what the *step* achieved. A stated precedence
+   is needed — the defensible one is least-conclusive-wins, since a step with an unverified part
+   cannot claim its whole answer is complete.
+3. **Discoverability.** The data lives under `kind='step_cost'`, which is where you look for
+   timing, not for tool-fit. A correctness non-issue and a findability real one — this section's
+   own error is the evidence.
+4. **Only then tune the routing table.** Anything earlier is guessing about which tools work, and
    the docs-as-source measurement (§9 step 2, 2026-08-31) is a standing warning about what happens
    when plausible tests are built before being measured: all three failed, and one inverted.
 
