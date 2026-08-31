@@ -1689,7 +1689,7 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and op
 
 ### Analysis & surveyors
 
-#### MEDIUM — Survey Results dashboards cover 14 of 29 analyses; 11 real ones have no dashboard at all
+#### DONE 2026-08-31 — Survey Results dashboards covered only 14 of 29 analyses; now covers all 25 findings-producing ones
 
 *(Opened 2026-08-31, from a results audit against `docs/dr-egeria/resource_questions.csv` — see
 the companion entry below on stage/intent mismatches, found in the same pass.)*
@@ -1733,11 +1733,27 @@ findings) did the same. Both fixed and pinned with regression tests
 adopted, just never triggered because none of the three analyses had reached a dashboard's
 `has_results` check before.
 
-**Remaining 8, still undecided** (`chaoss_metrics`, `cii_badge`, `community_support`, `cve_scan`,
-`foss_scorecard`, `interface_surface`, `repo_classification`, `manifest_parse`): extend
-`SURVEY_RESULT_DASHBOARDS` with them one at a time, or fold some into existing dashboards —
-`cve_scan`/`foss_scorecard`/`cii_badge`/`community_support`/`chaoss_metrics` plausibly belong in
-or beside `security_overview`/`health_maturity` rather than each needing their own card.
+**Remaining 8 closed 2026-08-31.** Folded rather than each given its own card, per the plan doc's
+own precedent that a dashboard can be a single item (`dependencies` already was one):
+
+- `cve_scan`, `foss_scorecard`, `cii_badge` → into `security_overview` (same "is this
+  trustworthy" question, asked from outside the repo instead of inside it)
+- `community_support`, `chaoss_metrics` → into `health_maturity` (community/activity signal,
+  same topic `repository_health` already reports a cruder version of)
+- `interface_surface` → into `code_structure` (same "what does this expose" surface
+  `api_structure` already reports, from declared dependencies rather than parsed source)
+- `repo_classification`, `manifest_parse` → each a new single-item dashboard — neither fit an
+  existing theme (classification is its own question; `manifest_parse` is a refresh operation,
+  not a topic), so forcing them into one would have been worse than a dashboard of one.
+
+`security_overview`'s custom scorecard renderer (`renderSecurityOverviewDashboard` in
+`index.html`) was not updated with dedicated tiles for the three new ids — they still render via
+the generic `_renderGroupedCardsDashboard` fallback the custom renderer already appends its
+scorecard to, just without a polished tile yet. Noted rather than left for someone to discover.
+
+Locked in with a new ratchet test (`test_every_findings_producing_analysis_has_a_dashboard`,
+`test_survey_results_routes.py`) — a future analysis added to the catalog with no dashboard now
+fails loudly instead of sitting invisible until the next hand audit.
 
 #### MEDIUM — 27 stage/intent mismatches between the questions CSV and the analysis catalog; one question is unreachable
 
