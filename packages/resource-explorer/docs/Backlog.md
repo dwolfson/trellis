@@ -2120,6 +2120,48 @@ produced a finding for `dependabot_security_updates: enabled` and silently didn'
 
 ### Platform & orchestration
 
+#### No Gradle support in the dependency parser — Egeria itself has zero dependency data, so CVE scanning cannot run on it
+
+Found 2026-08-31 while trying to take `egeria_git`'s security summary from 7 of 8 inputs to 8.
+
+`ingestion/dependency_parser.py` globs for six manifest kinds: `pyproject.toml`,
+`requirements*.txt`, `setup.py`, `package.json`, `go.mod`, `pom.xml`. **Gradle is not among them** —
+no `build.gradle`, no `build.gradle.kts`.
+
+Measured on the live registry:
+
+    egeria_git manifests in project_file_inventory:  build.gradle x239, and nothing else
+    egeria_git rows in project_dependencies:         0
+
+So `manifest_parse` runs, completes, publishes 4 annotations and 0 errors, and produces no
+dependency rows — because there is nothing it can read. Everything downstream of dependency data
+is then unreachable for the project this tool is built around:
+
+- `dependency_analysis` has nothing to report.
+- **`cve_scan` can never run**, because it scans dependencies already parsed.
+- `security_summary` is permanently capped at 7 of 8 inputs for any Gradle repo.
+
+**The vocabulary behaved correctly and that is the point.** `cve_scan` did not claim "no CVEs" — it
+declined to report, exactly as its own comment intends ("No dependencies RECORDED is not no
+dependencies"). The step is right. The gap is coverage, and the risk is one layer up: for a Java
+project the answer is *always* "not assessed", and any surface that renders that beside a genuine
+"assessed, nothing found" turns a whole ecosystem's blind spot into an apparent clean bill of
+health. `security_summary` names `cve_scan` in its missing list specifically so this cannot happen
+silently there.
+
+Scope worth checking before estimating: Gradle is Java/Kotlin/Android's dominant build tool, so this
+is not one project's quirk. `repo_conventions_parser` already recognises `build.gradle` and
+`build.gradle.kts` for its `automated_build` check, so the *filenames* are known to the codebase —
+only dependency extraction is missing.
+
+Harder than the other five parsers, and the estimate should say so: `build.gradle` is Groovy (or
+Kotlin) **code**, not a data format, so `dependencies { implementation 'g:a:v' }` can be built from
+variables, version catalogs (`libs.versions.toml`), `ext` properties or plugins. Options range from
+a regex over literal coordinate strings (cheap, partial, and honest if it reports what it skipped)
+to invoking `gradle dependencies` (complete, needs a JVM and a working build). A partial parser is
+defensible **only** if what it could not resolve is reported rather than dropped — a dependency list
+silently missing its version-catalog entries is worse than none, because it looks complete.
+
 #### `--reload` and the source cache cannot both be right — a survey of any large repo cannot finish
 
 Found 2026-08-31 while trying to get `cve_scan` onto `egeria_git`.

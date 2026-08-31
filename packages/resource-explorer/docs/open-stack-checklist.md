@@ -624,10 +624,17 @@ scans dependencies already parsed. It correctly declined to report rather than c
 that is the intended behaviour, not a failure. The chain to close it is
 `manifest_parse` → `cve_scan` → `security_summary`.
 
-**Blocked on the `--reload` bug below it in `Backlog.md`** ("`--reload` and the source cache cannot
-both be right"): `manifest_parse` on a repo the size of Egeria cannot complete on a server started
-with `--reload`, because the zipball extracts inside the watched tree and restarts the server. Run
-the app **without `--reload`** to close this out.
+**It cannot be closed out on Egeria at all, and the reason is not the one first assumed.** The
+`--reload` bug was real and blocked `manifest_parse` from finishing — fixed by running without it,
+after which the parse completed, published 4 annotations, and still produced **0 dependency rows**.
+
+The actual cause is coverage: `dependency_parser.py` reads `pyproject.toml`, `requirements*.txt`,
+`setup.py`, `package.json`, `go.mod` and `pom.xml`. **Egeria ships 239 `build.gradle` files and none
+of those.** See `Backlog.md`, "No Gradle support in the dependency parser". Until Gradle is parsed,
+`cve_scan` cannot run on any Gradle project and `security_summary` is capped at 7 of 8 there.
+
+To see 8 of 8 after the redeploy, pick a repo with a supported manifest — `egeria_python_git`
+(pyproject.toml) is the obvious one — rather than Egeria itself.
 
 
 ## Done 2026-08-26/27 — do not redo
