@@ -111,8 +111,26 @@ class TestAuthoredDefinitionsMatchTheirSource:
             extra = [s for s in actual if s not in expected]
 
         assert not missing and not extra, (
-            f"'{group}' in Egeria does not match the CSV — missing {missing}, extra {extra}. "
-            "Re-author its document and run scripts/reconcile_survey_definition_links.py.")
+            f"'{group}' in Egeria does not match the CSV — missing {missing}, extra {extra}.\n"
+            "\n"
+            "REMEDY, and it is a sequence with a trap in it, not a two-step chore:\n"
+            "  1. Re-author the document via Dr.Egeria.\n"
+            "  2. Run scripts/reconcile_survey_definition_links.py — ALWAYS, not only if step 1\n"
+            "     looks wrong.\n"
+            "\n"
+            "Why 2 is not optional: the survey-definitions batch is NOT IDEMPOTENT. Dr.Egeria's\n"
+            "'Link First/Next Process Step' commands do not dedupe, so re-authoring against an\n"
+            "already-linked process creates a SECOND edge per step. SurveyDefinitionReader then\n"
+            "sees two outgoing next-steps, correctly refuses to guess which chain is intended,\n"
+            "and raises — taking the whole definition out of service as an errored card with\n"
+            "zero steps. That has happened twice on this platform: 2026-08-13, and 2026-08-19\n"
+            "with 22 duplicate edges at once. Doing step 1 without step 2 IS the 08-19 incident.\n"
+            "\n"
+            "And check the reconciler can actually delete: it needs pyegeria >= 6.0.18.4. On\n"
+            "older versions its deletes silently no-op and it reports removals that did not\n"
+            "happen (PYEGERIA_ISSUES.md ISSUE-63) — so a clean-looking run is not evidence.\n"
+            "\n"
+            "See docs/dr-egeria/survey-definitions/_batch.json for the full record.")
 
     @pytest.mark.parametrize("group", sorted(_expected_steps()))
     def test_step_order_is_preserved(self, reader, group):
