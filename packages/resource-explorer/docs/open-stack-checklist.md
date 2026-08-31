@@ -450,9 +450,30 @@ The other two stage calls are 0.37s and 0.50s.
 - [ ] **Is "Documentation *Coverage*" still an overclaim?** "Coverage" implies a measured ratio and
       nothing computes one. Weaker than `security_scan`'s case, so not renamed unilaterally; decide
       deliberately rather than leaving it unexamined.
-- [ ] **~12 terse descriptions unaudited.** 15 of 29 repo entries are under 200 chars; the
-      discursive ones state their limits and are the ones that turned out honest. Length is a
-      fingerprint of having been reconciled against the code, not a virtue.
+- [x] **Terse descriptions audited** 2026-08-31 — all 15 of the under-200-char repo entries, against
+      their implementations. Result: **3 overclaims in 15**, all now fixed (`security_scan`,
+      `documentation_coverage`, `api_structure`). The discursive half was not re-audited; every
+      entry sampled there states its own limits.
+
+      `api_structure` was the worst of the three: it claimed to *extract* from "Python, JavaScript,
+      and OpenAPI". It extracts nothing (it reads `project_code_symbols`, populated during
+      ingestion), the language list omitted Java and Go, and **no OpenAPI handling exists anywhere**.
+
+      Judged honest, no change: `license_classification` (tiers match the code exactly),
+      `rag_ingestion`, `repo_profile_refresh`, `repository_health`, `language_file_classification`,
+      `repo_classification`, `sub_resource_survey`, `egeria_publish`, `ci_quality`,
+      `security_features`, `repo_conventions`.
+
+- [ ] **`data_file_profiling` — a nuance, not an overclaim.** Says it profiles for "schema, row
+      counts, and null statistics". True for CSV/Excel; `_SCHEMA_ONLY = {parquet, feather, arrow}`
+      means those get schema only, and a size cap skips large CSV/Excel entirely. So the absent
+      row counts are three different things (not applicable, too big, never ran) presented alike.
+      Worth a wording pass with the absence vocabulary rather than a rewrite.
+
+- [ ] **Pattern worth acting on: "reads what something else produced" is the recurring lie.**
+      Two of the three (`documentation_coverage`, `api_structure`) describe work done during
+      ingestion as if this step did it, which also makes an un-ingested repo look like a deficient
+      one. That is the same fact-about-us/fact-about-them distinction `cii_badge` keeps explicit.
 - [ ] **Consider a ratchet** — an allowlist of audited entries that fails when a new one appears,
       in the shape of the orphaned-slug fix. Claim-verb detection is probably too fuzzy.
 

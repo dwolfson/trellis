@@ -410,7 +410,17 @@ repo_analyses:
 
   - id: api_structure
     name: "API & Symbol Extraction"
-    description: "Extract public functions, classes, and API endpoints from Python, JavaScript, and OpenAPI source."
+    # Description rewritten 2026-08-31, wrong on three counts. It said "extract
+    # ... from Python, JavaScript, and OpenAPI source":
+    #   - it extracts nothing. Symbols are extracted earlier, inline during
+    #     ingestion (IngestionPipeline._ingest_code); this step READS
+    #     project_code_symbols and project_code_relationships. So on a repo that
+    #     was never ingested it reports nothing, and that is a fact about us.
+    #   - the languages were wrong in both directions: Java and Go were missing
+    #     (java_symbol_extractor.py, go_symbol_extractor.py, both tree-sitter).
+    #   - OpenAPI was never handled at all. No match for it anywhere in
+    #     ingestion/ or api_structure.py.
+    description: "Summarise the public API surface already extracted for this repo — module tree, public symbol counts, complexity and inheritance depth per language, plus total symbol and relationship counts. Reads the symbols captured during ingestion (Python, Java, JavaScript/TypeScript, Go) rather than parsing source itself, so it reports nothing for a repo that has not been ingested."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural extraction, not evaluative
     perspectives: ["Data Expert", "all"]
