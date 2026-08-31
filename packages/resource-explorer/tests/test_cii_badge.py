@@ -25,6 +25,43 @@ def test_url_variants_strip_the_git_suffix_that_hides_a_real_badge():
     assert B.url_variants("") == []
 
 
+def test_ssh_remotes_are_translated_not_asked_and_missed():
+    """An SSH remote names the same project; sending it verbatim invents a false negative.
+
+    Before 2026-08-31 `git@github.com:odpi/egeria.git` went to the API as-is,
+    matched nothing, and — because "matched nothing" and "not registered" are
+    the same `(None, "")` — was reported as `not_registered` for a project
+    holding a silver badge. The URL form alone produced a confident, wrong
+    claim about someone else's project.
+    """
+    for ssh in ("git@github.com:odpi/egeria.git",
+                "git@github.com:odpi/egeria",
+                "ssh://git@github.com/odpi/egeria.git"):
+        assert B.url_variants(ssh)[0] == "https://github.com/odpi/egeria", ssh
+
+    # And nothing un-askable survives into the query list.
+    for v in B.url_variants("git@github.com:odpi/egeria.git"):
+        assert v.startswith("https://"), v
+
+
+def test_an_unusable_url_is_reported_as_our_failure_not_the_project_s(monkeypatch):
+    """`assess` must never turn "we could not ask" into "they have no badge"."""
+    called = []
+    monkeypatch.setattr(B, "_query_one", lambda *a, **k: called.append(a) or (None, ""))
+
+    record, error = B.fetch_badge("not-a-url-at-all")
+    assert record is None
+    assert error, "an un-askable URL must produce an error, not a silent miss"
+    assert not called, "nothing should have been sent to the API"
+
+    findings = B.assess(record, error)
+    level = next(f for f in findings if f["check_name"] == "badge_level")
+    assert level["detail"]["known"] is False
+    assert level["label"] != "not_registered"
+    assert "could not be looked up" in B.headline(findings)
+
+
+
 def test_fetch_stops_at_the_first_variant_that_hits():
     calls = []
 

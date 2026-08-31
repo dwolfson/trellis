@@ -254,7 +254,7 @@ repo_analyses:
 
   - id: cii_badge
     name: "OpenSSF Best Practices Badge"
-    description: "The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level together with the age of the self-assessment behind it — odpi/egeria holds a silver badge whose record was last updated in 2022, and the level alone would carry the badge's authority with none of its staleness. Keeps three outcomes apart: badged, not registered (a fact about the project), and could not be looked up (a fact about us)."
+    description: "The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level together with the age of the self-assessment behind it: a badge level is a dated claim, and the level alone would carry the badge's authority with none of its age. Keeps three outcomes apart: badged, not registered (a fact about the project), and could not be looked up (a fact about us)."
     resource_types: ["repo"]
     intent: assessment
     perspectives: ["Security", "Governance", "Steward", "Consumer"]
