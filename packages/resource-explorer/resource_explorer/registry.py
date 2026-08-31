@@ -908,82 +908,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_data_profiles_slug "
                 "ON project_data_profiles(project_slug)"
             )
-            # Phase B: per-analysis-type history tables, all copying
-            # project_file_type_counts's proven append pattern (no UNIQUE
-            # constraint, one index on project_slug — every run just adds
-            # new rows tagged with a shared surveyed_at).
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_data_profile_snapshots (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug        TEXT NOT NULL,
-                    surveyed_at         TEXT NOT NULL,
-                    total_files         INTEGER NOT NULL,
-                    total_size_bytes    INTEGER NOT NULL,
-                    format_breakdown_json TEXT DEFAULT NULL,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_data_profile_snapshots_slug "
-                "ON project_data_profile_snapshots(project_slug)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_security_findings (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug  TEXT NOT NULL,
-                    surveyed_at   TEXT NOT NULL,
-                    check_name    TEXT NOT NULL,
-                    status        TEXT NOT NULL,
-                    summary       TEXT NOT NULL,
-                    detail_json   TEXT DEFAULT NULL,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_security_findings_slug "
-                "ON project_security_findings(project_slug)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_documentation_findings (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug  TEXT NOT NULL,
-                    surveyed_at   TEXT NOT NULL,
-                    finding_type  TEXT NOT NULL,
-                    label         TEXT NOT NULL,
-                    confidence    INTEGER DEFAULT 100,
-                    detail_json   TEXT DEFAULT NULL,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documentation_findings_slug "
-                "ON project_documentation_findings(project_slug)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_api_structure_snapshots (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug        TEXT NOT NULL,
-                    surveyed_at         TEXT NOT NULL,
-                    symbol_count        INTEGER NOT NULL,
-                    by_language_json    TEXT DEFAULT NULL,
-                    relationship_count  INTEGER DEFAULT 0,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_api_structure_snapshots_slug "
-                "ON project_api_structure_snapshots(project_slug)"
-            )
-            # Analysis-kind extensibility redesign: the four tables above
-            # (project_security_findings, project_documentation_findings,
-            # project_data_profile_snapshots, project_api_structure_snapshots)
-            # reduce to exactly two real shapes — "list of typed findings"
-            # and "aggregate snapshot metric(s)" — so new analysis kinds
-            # (more security-family checks, etc.) register into ONE of these
-            # two generic tables via a `kind` discriminator instead of
-            # getting their own bespoke table each time. The four old
-            # tables/functions above are kept, DEPRECATED (not dropped) —
-            # see the one-time migration below — for a soak period.
+            # Analysis results reduce to exactly two real shapes — "list of
+            # typed findings" and "aggregate snapshot metric(s)" — so every
+            # analysis kind registers into ONE of these two generic tables
+            # via a `kind` discriminator instead of getting its own bespoke
+            # table. Four per-kind tables (project_security_findings,
+            # project_documentation_findings, project_data_profile_snapshots,
+            # project_api_structure_snapshots) preceded them; their rows were
+            # migrated forward on 2026-08-08 and the tables were dropped on
+            # 2026-08-31 after a soak period.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_analysis_findings (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1042,74 +975,6 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_scope "
                 "ON project_analysis_metrics(project_slug, kind, metric_name, scope_locator)"
             )
-            # One-time forward migration, guarded on "the new table is still
-            # empty" rather than a per-row check — correct because after the
-            # first successful migration, any real analysis run writes
-            # directly into the new tables via upsert_finding()/
-            # upsert_metric(), so they're never empty again afterward. Old
-            # tables are left untouched either way (soak period, not deleted).
-            findings_empty = conn.execute(
-                "SELECT COUNT(*) FROM project_analysis_findings"
-            ).fetchone()[0] == 0
-            if findings_empty:
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, check_name, status, summary, detail_json "
-                    "FROM project_security_findings"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_findings "
-                        "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
-                        "VALUES (?, 'security_hygiene', ?, ?, ?, ?, 100, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["check_name"],
-                         row["status"], row["summary"], row["detail_json"]),
-                    )
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, finding_type, label, confidence, detail_json "
-                    "FROM project_documentation_findings"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_findings "
-                        "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
-                        "VALUES (?, 'documentation', ?, ?, ?, '', ?, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["finding_type"],
-                         row["label"], row["confidence"], row["detail_json"]),
-                    )
-            metrics_empty = conn.execute(
-                "SELECT COUNT(*) FROM project_analysis_metrics"
-            ).fetchone()[0] == 0
-            if metrics_empty:
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, total_files, total_size_bytes, format_breakdown_json "
-                    "FROM project_data_profile_snapshots"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'data_profile', ?, 'total_files', ?, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["total_files"], row["format_breakdown_json"]),
-                    )
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'data_profile', ?, 'total_size_bytes', ?, NULL)",
-                        (row["project_slug"], row["surveyed_at"], row["total_size_bytes"]),
-                    )
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, symbol_count, by_language_json, relationship_count "
-                    "FROM project_api_structure_snapshots"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'api_structure', ?, 'symbol_count', ?, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["symbol_count"], row["by_language_json"]),
-                    )
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'api_structure', ?, 'relationship_count', ?, NULL)",
-                        (row["project_slug"], row["surveyed_at"], row["relationship_count"]),
-                    )
             # One-time repair for project_dependencies rows written before
             # this Phase B change: upsert_dependencies() used to compute
             # datetime.utcnow() inside its per-row list comprehension, so
@@ -2711,10 +2576,6 @@ class ProjectRegistry:
             # hold data (measured 2026-08-23: 6 security-finding rows, 4
             # documentation-finding rows, 2 api-structure snapshots). Deprecated
             # is not gone: while the table exists, remove() has to clear it.
-            conn.execute("DELETE FROM project_security_findings WHERE project_slug = ?", (normalized,))
-            conn.execute("DELETE FROM project_documentation_findings WHERE project_slug = ?", (normalized,))
-            conn.execute("DELETE FROM project_data_profile_snapshots WHERE project_slug = ?", (normalized,))
-            conn.execute("DELETE FROM project_api_structure_snapshots WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
 
     # Every table with a project_slug column, in the order the FK-declared
@@ -2736,9 +2597,7 @@ class ProjectRegistry:
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",
-        "project_data_profiles", "project_data_profile_snapshots",
-        "project_security_findings", "project_documentation_findings",
-        "project_api_structure_snapshots", "project_analysis_findings",
+        "project_data_profiles", "project_analysis_findings",
         "project_analysis_metrics",
     )
 
@@ -3088,196 +2947,6 @@ class ProjectRegistry:
                           schema_json, null_summary, file_size_bytes, profiled_at
                    FROM project_data_profiles WHERE project_slug = ?
                    ORDER BY file_size_bytes DESC""",
-                (slug,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    # ── DEPRECATED (Phase B): per-analysis-type snapshot/finding tables ────
-    # Superseded by the generic project_analysis_findings/
-    # project_analysis_metrics tables + upsert_finding()/query_findings()/
-    # query_findings_history_raw() and upsert_metric()/query_metrics()/
-    # query_metrics_history() below (analysis-kind extensibility redesign) —
-    # new analysis kinds should use those, not these. Kept, unused by new
-    # code, for a soak period (matches the AST-ownership-transfer plan's D8
-    # precedent) — not removed, and their data was already migrated forward
-    # by _init_schema()'s one-time migration.
-
-    def store_data_profile_snapshot(
-        self, slug: str, total_files: int, total_size_bytes: int,
-        format_breakdown: dict | None = None, surveyed_at: str | None = None,
-    ) -> None:
-        """One aggregate row per DataProfilerSurveyor run, for trending —
-        separate from project_data_profiles (per-file latest detail,
-        unchanged) since converting that table to history would require
-        dropping its UNIQUE(project_slug, file_path) constraint."""
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO project_data_profile_snapshots "
-                "(project_slug, surveyed_at, total_files, total_size_bytes, format_breakdown_json) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (slug, surveyed_at, total_files, total_size_bytes,
-                 json.dumps(format_breakdown) if format_breakdown else None),
-            )
-
-    def query_data_profile_history(self, slug: str) -> list[dict]:
-        """One row per DataProfilerSurveyor run, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, total_files, total_size_bytes "
-                "FROM project_data_profile_snapshots WHERE project_slug = ? "
-                "ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def upsert_security_findings(self, slug: str, findings: list[dict], surveyed_at: str | None = None) -> None:
-        """Append one SecuritySurveyor run's findings. findings: list of
-        {check_name, status, summary, detail: dict|None}."""
-        if not findings:
-            return
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.executemany(
-                "INSERT INTO project_security_findings "
-                "(project_slug, surveyed_at, check_name, status, summary, detail_json) "
-                "VALUES (:project_slug, :surveyed_at, :check_name, :status, :summary, :detail_json)",
-                [
-                    {
-                        "project_slug": slug, "surveyed_at": surveyed_at,
-                        "check_name": f["check_name"], "status": f["status"], "summary": f["summary"],
-                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
-                    }
-                    for f in findings
-                ],
-            )
-
-    def query_security_findings(self, slug: str) -> list[dict]:
-        """Return the most recent SecuritySurveyor run's findings."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_security_findings WHERE project_slug = ?",
-                (slug,),
-            ).fetchone()[0]
-            if not latest_ts:
-                return []
-            rows = conn.execute(
-                "SELECT check_name, status, summary, detail_json, surveyed_at "
-                "FROM project_security_findings WHERE project_slug = ? AND surveyed_at = ? "
-                "ORDER BY check_name",
-                (slug, latest_ts),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def query_security_findings_history(self, slug: str) -> list[dict]:
-        """One row per SecuritySurveyor run: count of 'gap' findings, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, "
-                "SUM(CASE WHEN status = 'gap' THEN 1 ELSE 0 END) as gap_count, "
-                "COUNT(*) as total_checks "
-                "FROM project_security_findings WHERE project_slug = ? "
-                "GROUP BY surveyed_at ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def upsert_documentation_findings(self, slug: str, findings: list[dict], surveyed_at: str | None = None) -> None:
-        """Append one DocumentationSurveyor run's findings. findings: list of
-        {finding_type, label, confidence, detail: dict|None}."""
-        if not findings:
-            return
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.executemany(
-                "INSERT INTO project_documentation_findings "
-                "(project_slug, surveyed_at, finding_type, label, confidence, detail_json) "
-                "VALUES (:project_slug, :surveyed_at, :finding_type, :label, :confidence, :detail_json)",
-                [
-                    {
-                        "project_slug": slug, "surveyed_at": surveyed_at,
-                        "finding_type": f["finding_type"], "label": f["label"],
-                        "confidence": f.get("confidence", 100),
-                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
-                    }
-                    for f in findings
-                ],
-            )
-
-    def query_documentation_findings(self, slug: str) -> list[dict]:
-        """Return the most recent DocumentationSurveyor run's findings."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_documentation_findings WHERE project_slug = ?",
-                (slug,),
-            ).fetchone()[0]
-            if not latest_ts:
-                return []
-            rows = conn.execute(
-                "SELECT finding_type, label, confidence, detail_json, surveyed_at "
-                "FROM project_documentation_findings WHERE project_slug = ? AND surveyed_at = ? "
-                "ORDER BY finding_type, label",
-                (slug, latest_ts),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    # Ranks documentation quality labels for trending — DocumentationSurveyor's
-    # own vocabulary (surveyors/sub_surveyors/documentation.py); kept here
-    # rather than imported to avoid a registry->surveyors import (registry is
-    # the lower layer).
-    _DOC_QUALITY_RANK = {"Minimal": 1, "Partial": 2, "Comprehensive": 3}
-
-    def query_documentation_findings_history(self, slug: str) -> list[dict]:
-        """One row per DocumentationSurveyor run: the overall quality label
-        and its numeric rank, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, label FROM project_documentation_findings "
-                "WHERE project_slug = ? AND finding_type = 'quality_score' "
-                "ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [
-            {"surveyed_at": r["surveyed_at"], "quality": r["label"],
-             "quality_rank": self._DOC_QUALITY_RANK.get(r["label"], 0)}
-            for r in rows
-        ]
-
-    def store_api_structure_snapshot(
-        self, slug: str, symbol_count: int, by_language: dict | None = None,
-        relationship_count: int = 0, surveyed_at: str | None = None,
-    ) -> None:
-        """One aggregate row per ApiStructureSurveyor run, for trending —
-        the "latest results" view reads live from project_code_symbols/
-        project_code_relationships instead (always current, no snapshot
-        needed for that)."""
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO project_api_structure_snapshots "
-                "(project_slug, surveyed_at, symbol_count, by_language_json, relationship_count) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (slug, surveyed_at, symbol_count,
-                 json.dumps(by_language) if by_language else None, relationship_count),
-            )
-
-    def query_api_structure_history(self, slug: str) -> list[dict]:
-        """One row per ApiStructureSurveyor run, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, symbol_count, relationship_count "
-                "FROM project_api_structure_snapshots WHERE project_slug = ? "
-                "ORDER BY surveyed_at ASC",
                 (slug,),
             ).fetchall()
         return [dict(r) for r in rows]
