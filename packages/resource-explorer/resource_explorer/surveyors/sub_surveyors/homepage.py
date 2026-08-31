@@ -58,6 +58,7 @@ from urllib.parse import urlparse
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -314,6 +315,16 @@ class HomepageSurveyor(BaseSurveyor):
                         "back on. A real answer, not a failure."
                     ),
                     candidate_classifications=[],
+                    # This step's explanation already ends "A real answer, not
+                    # a failure", and it has earned that: GitHub's declared
+                    # homepage, pyproject, package.json, the README and the
+                    # repo URL were all checked. Those sources ARE the
+                    # known-positive, which is what makes this the rare zero
+                    # that can be claimed as provable rather than merely
+                    # observed.
+                    json_properties=no_signal(
+                        "no homepage in any declared source, and no repo URL to fall back on",
+                        known_positive=True).as_row(),
                 )
             ]
 
@@ -328,6 +339,16 @@ class HomepageSurveyor(BaseSurveyor):
                 summary=f"{label}: {homepage}",
                 analysis_step=STEP,
                 confidence=confidence,
+                json_properties=(
+                    # Falling back to the repo URL is not the same as finding a
+                    # site — the step already says so with confidence 30, and
+                    # `partial` is the matching label: something produced,
+                    # knowingly not the thing asked for.
+                    StepOutcome("partial", cause="fell back to the repo URL",
+                                detail={"source": source})
+                    if fell_back_to_repo else
+                    StepOutcome("recovered", detail={"source": source})
+                ).as_row(),
                 explanation=(
                     f"Derived from {source}. Tier 1 is GitHub's declared homepage; the "
                     f"pyproject/package.json/README tiers run only when that is empty; the "

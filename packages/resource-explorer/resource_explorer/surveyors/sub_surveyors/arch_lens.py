@@ -32,6 +32,7 @@ import logging
 
 from resource_explorer.github import architecture_doc as ad
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.result_status import dependency_not_satisfied
 from resource_explorer.surveyors.survey_report import (
     Annotation,
@@ -240,6 +241,16 @@ class ArchLensSurveyor(BaseSurveyor):
                     "overview rather than a corpus of design documents"),
                 "notes": lens.notes,
                 "produced_guard": GUARD_CONSULTED,
+                # `documented` is the known-positive: a document was read AND
+                # components existed to match against, so naming none of them
+                # is a real disagreement between doc and code — which §7 of the
+                # lens design calls one of the more useful things this system
+                # can say, and which a bare zero hid.
+                **(StepOutcome("recovered", detail={"documented": len(lens.documented)})
+                   if lens.documented else
+                   no_signal("the document named none of the proposed components",
+                             known_positive=bool(components),
+                             terms=len(lens.terms or []))).as_row(),
             },
         )]
 
@@ -440,6 +451,11 @@ class ArchLensSurveyor(BaseSurveyor):
                 "produced_guard": guard,
                 "result_status": dependency_not_satisfied(reason,
                                                           depends_on=SOURCE_KIND),
+                # The lens is structurally downstream of detect and coupling —
+                # its own guard says "no components to label: the lens ran, the
+                # step it annotates has not". So its zero is upstream absence,
+                # never a finding about the documentation.
+                **StepOutcome("unverified", cause=reason).as_row(),
             },
         )
 

@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -273,7 +274,23 @@ class SecuritySummarySurveyor(BaseSurveyor):
                 analysis_step=STEP,
                 candidate_classifications=[summary["label"]] if summary["label"] else [],
                 confidence=100 if summary["known"] else 0,
-                json_properties={f["check_name"]: f["label"] for f in findings},
+                json_properties={
+                    **{f["check_name"]: f["label"] for f in findings},
+                    # A reducer over other steps' output, so its zero is always
+                    # about what those steps left rather than about the repo:
+                    # `known` is False when the inputs were not there, and no
+                    # known-positive can exist for a summary of nothing.
+                    # `missing` is the step's own record of a partial reduction
+                    # and it already labels itself "partial" in findings_for().
+                    **(StepOutcome("unverified",
+                                   cause="no security inputs available to summarise")
+                       if not summary["known"] else
+                       StepOutcome("partial",
+                                   cause="some contributing checks were missing",
+                                   detail={"missing": summary["missing"]})
+                       if summary.get("missing") else
+                       StepOutcome("recovered")).as_row(),
+                },
             ))
         except Exception as exc:
             log.exception("SecuritySummarySurveyor failed for %s", self.project.slug)
