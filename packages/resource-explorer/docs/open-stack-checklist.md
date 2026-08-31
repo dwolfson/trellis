@@ -248,7 +248,7 @@ fetches Survey Definition candidates. So the change hides Full Survey
 everywhere and gives it nowhere to appear, which is what the original
 "appended to every stage" comment was avoiding.
 
-- [ ] Give Automate a survey list (a third sub-tab beside 🔔 Subscriptions and
+- [x] **Automate has a survey list** — built 2026-08-30 (`fd63eed`). Third sub-tab beside 🔔 Subscriptions and
       ⏱ Schedules), then restrict the append to that intent. Both halves, or
       neither — the filter alone loses the feature.
 
@@ -318,7 +318,11 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       "lost an asset" kind and all blocked on a Project decision — so the
       remaining count is now exactly the blocked set, which is what the
       publish_ready field was added to make visible.
-- [ ] **The remaining three "lost" repos cannot use that call.** Measured
+- [x] **Resolved 2026-08-30.** All three were assigned to the RE Test Project (contexts
+      materialised from the investigation they already belonged to) and published:
+      `docling_eval` `5eb02266`, `openlineage` `88a2a70e`, `openmetadata` `940abe1f`.
+      `needs_republish` is now EMPTY — the whole finding went 7 → 0 on 2026-08-30.
+      Originally measured
       2026-08-28: `docling_eval`, `openlineage` and `openmetadata` all carry
       an Egeria Project context of `unset`, and the publish route's Part 5
       gate returns 428 for `unset` unless an investigation supplies one by
@@ -329,7 +333,7 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       `enterprise_rag`, `genaicomps`), which are `linked` — the inverse of
       what the wording implies. Either the finding names the gate, or the
       gate's 428 body carries the remedy; deciding which is the work.
-- [ ] The decision the gate actually wants is which Egeria Project each of
+- [x] Answered 2026-08-30 — RE Test Project, for all three. Originally: which Egeria Project each of
       the three belongs to. That names a real catalog object and stays a
       human call.
 - [x] **Question catalog wired to the analyses that answer it** — 2026-08-28

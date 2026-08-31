@@ -16,12 +16,17 @@ Marked at the end of the architecture-recovery thread. Findings 96–119 in
 `scripts/arch-spike/README.md` are that thread's record; this is what is left and
 what is deliberately not.
 
-**1. Phase 2 — Egeria projection of recovered architecture.** The stated end goal, and the
-only major piece unbuilt: **nothing from architecture recovery reaches Egeria.** Its one
-remaining prerequisite is **outbox/retry publishing** (design §8.4) — a blueprint writes far
-more elements per run than anything currently published, and the design is blunt that *"a
-half-published blueprint is worse than none."* Its other prerequisite is now done: projection
-has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
+**1. Phase 2 — Egeria projection of recovered architecture.** Still the largest unbuilt piece,
+but **"nothing from architecture recovery reaches Egeria" stopped being true on 2026-08-30** —
+`arch_recovery/materializer.py`'s `ComponentMaterializer` writes a real `SolutionComponent` when
+a curator accepts a proposed component. That path is deliberately narrow: accepted verdicts
+only, a bare component with no blueprint or relationships, and no retraction if a verdict is
+later reversed. So the *blueprint* projection is unbuilt; a single-component projection is not.
+
+Its one remaining prerequisite is **outbox/retry publishing** (design §8.4, still design-only) —
+a blueprint writes far more elements per run than anything currently published, and the design
+is blunt that *"a half-published blueprint is worse than none."* Its other prerequisite is done:
+projection has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
 
 **2. `security_features` should report `skipped_by_design`.** GitHub returns
 `security_and_analysis` only to repository admins, so the analysis is **structurally impossible
