@@ -202,6 +202,17 @@ def python_manifests(root: str, files: list[str]) -> list[dict]:
             "rel": rel, "dir": os.path.dirname(rel) or ".", "name": name,
             "scripts": scripts + gui, "workspace_members": members,
             "installable": has_build, "text": text, "ecosystem": "python",
+            # Backlog.md "interface extraction" entry, item B (language
+            # bindings) — a package's OWN declared description, read verbatim
+            # and never classified into "is/isn't a binding" here (Dan,
+            # 2026-08-30: "not sure about language bindings unless they are
+            # exported as a specific library"). The self-description IS the
+            # evidence — pyegeria's own says "A python client for the Egeria
+            # metadata management system", which needs no inference to read
+            # as a binding — so this surfaces the fact for a curator or later
+            # stage to judge, the same restraint `protocol` already exercises
+            # by staying empty rather than guessed from a port number.
+            "description": (project.get("description") or "").strip(),
         })
     return found
 
@@ -220,10 +231,12 @@ def node_manifests(root: str, files: list[str]) -> list[dict]:
             continue
         binv = data.get("bin")
         bins = list(binv) if isinstance(binv, dict) else ([name] if binv else [])
+        description = data.get("description")
         found.append({
             "rel": rel, "dir": os.path.dirname(rel) or ".", "name": name,
             "scripts": bins, "workspace_members": data.get("workspaces") or [],
             "installable": True, "text": text, "ecosystem": "node",
+            "description": description.strip() if isinstance(description, str) else "",
         })
     return found
 
@@ -513,6 +526,22 @@ def build_components(root: str, files: list[str],
             locations=[Location(m["rel"], line, excerpt)],
             confidence=conf, confidence_level="Derived",
         ))
+        # Backlog.md "interface extraction" entry, item B — a published,
+        # installable package with no entry point (ctype == "Software
+        # Library") is exactly pyegeria's shape, and its own declared
+        # description is the evidence Dan's example asks for. Verbatim, not
+        # classified: this records the fact a package with this name and
+        # description is published, and leaves "is it actually a binding for
+        # something" to whoever reads it — same restraint as everywhere else
+        # ports/evidence stop short of inference.
+        if ctype == "Software Library" and m.get("description"):
+            evidence.append(Evidence(
+                subject_kind="component", subject_slug=slug,
+                assertion=f"publishes a {m['ecosystem']} package — possible language binding",
+                detector=f"manifest:{m['ecosystem']}",
+                locations=[Location(m["rel"], 0, m["description"][:200])],
+                confidence=conf, confidence_level="Derived",
+            ))
 
     # A deployment unit carrying a Dockerfile but NO manifest is still a
     # component — and it is identity precedence rung 1 (§8.2), the strongest

@@ -2536,12 +2536,49 @@ intent from a name) argues the same way here.
 What Dan's example asks for instead: recognise a **named, published package that IS a client
 library for this project** — `pyegeria` is a real PyPI package, with its own name and description,
 that exists specifically to bind to Egeria. That is verifiable evidence a directory name is not.
-`manifest_parse.py`/`DependencyParser` already reads `pyproject.toml`/`package.json`/`pom.xml` for a
-project's *dependencies*; the same parsing surface could read a project's own declared package
-metadata (name, description, and for a monorepo, each published sub-package) to check whether the
-repo publishes something that presents as a binding for itself. Not designed further than that —
-this is a real, different mechanism from the original proposal, not an implementation detail of it,
-and should be scoped as its own small design pass before building.
+
+**DONE, first cut, 2026-08-30, same session — Python and Node only.** Not `manifest_parse.py`/
+`DependencyParser` in the end (that pipeline belongs to a different survey step, `ManifestParseSurveyor`
+via `IngestionPipeline`, which `architecture_recovery` doesn't depend on and shouldn't couple to) but
+the *same kind* of parsing the entry anticipated, on the surface that was already free:
+`detectors.python_manifests()`/`node_manifests()` already read `pyproject.toml`'s `[project]` table
+and `package.json` wholesale for `classify()`'s "installable, no entry point ⇒ Software Library"
+signal — `description` was sitting in the already-parsed structure, unread. One field added to
+each, no new file walk, no new parse.
+
+**Deliberately NOT a classifier.** `build_components()` now attaches a second Evidence entry to any
+component `classify()` already calls `"Software Library"` (installable, no entry point — exactly
+pyegeria's shape) that has a non-empty `description`: the description, verbatim, up to 200 chars,
+assertion `"publishes a {ecosystem} package — possible language binding"`. Nothing here decides
+*whether* it's a binding — pyegeria's own description ("A python client for the Egeria metadata
+management system") needs no inference to read as one, and that restraint is the same one `protocol`
+already exercises by staying empty rather than guessed from a port number. A package with no
+description, or with an entry point (a CLI, not installable-as-a-library), gets no binding evidence
+at all — nothing invented to fill the gap.
+
+**Directory-convention detection (`clients/<lang>`, `sdk/<lang>`, `bindings/`) was NOT built**, per
+Dan's steer ruling it out rather than deferring it.
+
+**Real scope limits, stated rather than discovered later:**
+- **Java (Maven/Gradle) and Go are not covered.** `python_manifests`/`node_manifests` are the two
+  existing readers with a clean `name`/`description` shape to extend; `pom.xml` isn't parsed into a
+  dict at all today and Gradle's `settings.gradle` module list has no description field to read.
+  Real follow-on work, not attempted here.
+- **Single-repo only, and this is the sharper limit.** `pyegeria` is Egeria's binding but lives in a
+  *different* repository (`egeria-python`) from Egeria's own server code. Analysing the Egeria server
+  repo alone will never surface pyegeria as evidence — this only finds a binding a repo publishes
+  *of itself*, e.g. running this against `egeria-python` would find pyegeria's own self-description.
+  Cross-repo binding discovery (recognising that some OTHER analysed repo is a stated dependency of
+  and/or names the analysed one) is a different, larger question, not scoped here.
+- **Not yet surfaced in the curator-facing card.** The evidence is persisted and readable
+  (`_architecture_recovery_results`'s per-component `evidence` list already carries it, same generic
+  path every other Evidence record takes through `persist.py`), but `_archRow`'s summary line shows
+  only `proposed_by` (detector labels), not evidence text — a curator has to look past the summary to
+  see the description. A presentation follow-up, not a detection gap.
+
+Suite: `test_arch_recovery_detectors.py` +4 (an installable package with a description gets binding
+evidence; a console-command package does not; a bare name with no description does not; Node
+packages are covered too). 207 passed across the directly affected files.
 
 **Do NOT** extend either A or B into reading request/response schemas or binding call signatures.
 That is stage two, a different cost tier, and the driving question explicitly excludes it.

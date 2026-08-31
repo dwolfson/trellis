@@ -759,3 +759,72 @@ class TestOperationCountsFromRouteDecorators:
         _git_init(root)
         _, _, _, operation_counts = detectors.build_components(root, _tracked(root))
         assert operation_counts == {}
+
+
+class TestLanguageBindingEvidence:
+    """Backlog.md "interface extraction" entry, item B, per Dan 2026-08-30:
+    "not sure about language bindings unless they are exported as a specific
+    library — eg. pyegeria." Not a classifier — a package's own declared
+    description is recorded verbatim as evidence on the component it names,
+    and nothing here decides whether it "is" a binding. Directory-name
+    conventions (`clients/<lang>`, `sdk/<lang>`) are deliberately NOT
+    consulted at all, per the same steer."""
+
+    def test_an_installable_package_with_a_description_gets_binding_evidence(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "pyproject.toml", (
+            "[project]\n"
+            'name = "pyegeria"\n'
+            'description = "A python client for the Egeria metadata management system"\n'
+            "[build-system]\n"
+            'requires = ["setuptools"]\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        binding_ev = [e for e in evidence
+                     if e.assertion == "publishes a python package — possible language binding"]
+        assert len(binding_ev) == 1
+        assert "Egeria metadata management" in binding_ev[0].locations[0].excerpt
+
+    def test_a_console_command_gets_no_binding_evidence(self, tmp_path):
+        """A CLI entry point is not the "installable, no entry point" shape
+        classify() reserves for Software Library — recording binding
+        evidence for it would claim more than the manifest states."""
+        root = str(tmp_path)
+        _write(root, "pyproject.toml", (
+            "[project]\n"
+            'name = "mytool"\n'
+            'description = "does something"\n'
+            "[project.scripts]\n"
+            'mytool = "mytool.cli:main"\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        assert not any("possible language binding" in e.assertion for e in evidence)
+
+    def test_no_description_yields_no_binding_evidence(self, tmp_path):
+        """A bare name with no description is not evidence of anything beyond
+        'this is installable' — classify() already records that; adding an
+        empty-description binding claim would invent detail the manifest
+        never stated."""
+        root = str(tmp_path)
+        _write(root, "pyproject.toml", (
+            '[project]\nname = "mylib"\n[build-system]\nrequires = ["setuptools"]\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        assert not any("possible language binding" in e.assertion for e in evidence)
+
+    def test_node_packages_are_covered_too(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "package.json", (
+            '{"name": "egeria-js", "version": "1.0.0", '
+            '"description": "A JavaScript client for Egeria", '
+            '"main": "index.js"}\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        binding_ev = [e for e in evidence
+                     if e.assertion == "publishes a node package — possible language binding"]
+        assert len(binding_ev) == 1
+        assert "JavaScript client for Egeria" in binding_ev[0].locations[0].excerpt
