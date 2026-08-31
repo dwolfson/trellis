@@ -1951,6 +1951,34 @@ guessed at further:
 - Out of scope for `docs/ingestion-pipeline-audit.md` itself, since it's a codebase-wide pattern
   rather than an RE-vs-EA ingestion-pipeline-duplication finding — that doc points here.
 
+#### `security_features` results reader has a fourth state its own test doesn't know about
+
+*(Found 2026-08-30, from a live-corpus test failure during routine integration —
+`test_security_features_visibility.py::test_no_repo_in_the_corpus_renders_a_bare_empty_card`.)*
+
+`_security_features_results` (`repo_survey_definition_adapter.py`) documents exactly three
+states — `measured` (findings exist), `skipped_by_design` (stats exist, GitHub hid the data),
+`never_run` (no stats at all) — and the test asserts every repo in the corpus lands in one of
+them, never a bare `{"findings": []}` with no stated cause.
+
+`egeria_workspaces_git` hits a fourth, undocumented case: it has **real, visible**
+`security_and_analysis` data (`dependabot_security_updates: enabled`, several others disabled —
+confirmed admin-visible, not GitHub's third-party redaction), yet **zero rows** in
+`project_analysis_findings` for `security_features`. The reader's last branch ("visible and
+genuinely nothing enabled — a real, final answer") is written for a repo where the data was
+checked and truly nothing is on; it cannot distinguish that from what this repo actually is —
+data that says something *is* enabled, but the `security_features` survey step itself has
+apparently never run to turn that into a finding row. The reader currently can't tell "ran,
+concluded nothing's on" from "never ran, but some other fetch happened to populate the stats
+JSON anyway."
+
+**Not yet fixed; not yet root-caused past this point.** Likely fix shape: the reader needs a way
+to know whether the `security_features` step itself has ever executed for this repo (a
+`last_run` marker, same shape `get_analysis_last_run` already tracks elsewhere) rather than
+inferring "ran" from "stats happen to be visible" — but confirm that's actually the gap before
+building it; the survey step's own write path hasn't been checked yet for whether it should have
+produced a finding for `dependabot_security_updates: enabled` and silently didn't.
+
 ---
 
 ### Platform & orchestration
@@ -2178,6 +2206,49 @@ Neither the old buttons nor the Survey Definitions panel is quite right as the l
 Related, not yet built: polling Egeria for survey results so completed native (`executes_at: egeria`) runs surface somewhere unified instead of only showing an engine-action GUID with "check Egeria's Asset Catalog" (see `resource_explorer/web/routes/survey_definitions.py` run endpoint and its frontend handling in index.html around line 2881). Today there is no unified "survey results dashboard" — results are scattered across the Survey Definitions run modal, the database/filesystem detail panels' own survey history, and Egeria's own catalog for anything async. A poller (or the A2A rendezvous from the item below) is the likely fix, feeding one dashboard view regardless of which launcher/engine started the run.
 
 Full context for the Survey Definitions side: `docs/egeria-collaboration-and-survey-model.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
+
+**RE-VERIFIED 2026-08-30 against this tree — the picture above is stale, and better than it says.**
+Significant unification already shipped without this entry being updated:
+- **Repo's legacy run path is gone.** `runSurveyFromSidebar`, `runScoutingScan`,
+  `publishScoutingRegistration`, `runProfileScan`, `publishProfileFindings` are all deleted
+  (confirmed by grep — zero hits). The Survey Definitions candidate panel is the only way to
+  launch a repo survey now (`docs/survey-tab-unification-plan.md` D1–D5, landed since the
+  2026-08-19 doc was written, despite that doc calling itself "not yet committed").
+- **Publish is unified for repo** — one route (`POST /api/egeria/{slug}/publish`), used by both
+  the Survey Definitions panel's generic `☁ Publish` (D4) and the repo detail page's own
+  "Publish survey →" button.
+- **The scheduler already dispatches Survey-Definition-typed schedules** for both repo and
+  database (`_run_scheduled_survey()` → `run_survey_definition()`).
+
+**What's still genuinely open:** filesystem has none of this — `showSurveyFsModal`/
+`submitSurveyFs` is the only way to survey one, and `scheduler.py`'s `_execute()` has no
+filesystem branch at all (repo/database only), so a filesystem schedule can never fire even if
+one were somehow created. Database's legacy `showSurveyDbModal`/`showPublishDbModal` also still
+exist alongside the Survey Definitions panel — not yet confirmed whether they're now a safe
+duplicate (like repo's were) or still do something the panel can't.
+
+**Direction from Dan (2026-08-30): database and filesystem should route through Egeria's own
+EXISTING native surveys, not through newly-authored RE-side Dr.Egeria Survey Definitions.**
+This changes what "closing this item" means for those two resource types — it is not "author a
+`database-survey-definition-*.md` / `filesystem-survey-definition-*.md` the way repo's eight
+were authored." Both adapters already carry the mechanism this points at:
+`other_engine_handlers={"egeria": _trigger_egeria_native_survey}` in both
+`database/survey_definition_adapter.py` and `filesystem/survey_definition_adapter.py` — a step
+tagged `executes_at="egeria"` actively triggers Egeria's own native survey rather than being
+skipped. The gap is not "build the trigger," it's "prove the trigger, end to end, and get its
+results back."
+
+**Testing gap, explicitly called out as open work (2026-08-30, Dan) — keep on the backlog:**
+`filesystem/survey_definition_adapter.py`'s own module docstring already says the native-trigger
+path is "not yet exercised end-to-end, since this environment has no cataloged filesystem to
+test against." Database's equivalent (`_trigger_egeria_native_survey` in
+`database/survey_definition_adapter.py`) has more surrounding coverage but its own live,
+end-to-end exercise (cataloged resource → triggered native survey → result actually lands
+somewhere RE reads it back from) has not been separately confirmed either. Both need a real
+pass: a cataloged filesystem and database resource, a live Egeria trigger, and confirmation of
+where the native survey's results actually surface (ties into the "results dashboard" gap two
+paragraphs up — an `executes_at: egeria` step today only returns an engine-action GUID with
+"check Egeria's Asset Catalog," which is not itself a tested read-back path).
 
 ---
 
