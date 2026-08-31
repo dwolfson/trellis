@@ -1,8 +1,24 @@
 """Pydantic settings — loaded from config/explorer.yaml + .env overrides."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The package's own .env, resolved absolutely. env_file used to be the bare
+# relative string ".env", which pydantic-settings resolves against the
+# *process working directory* — so it only loaded when a command happened to
+# be run from packages/resource-explorer. `make re-web` launches from the
+# workspace root, so the web app silently ran with NO GITHUB_TOKEN: 60
+# anonymous API requests an hour instead of 5000, and admin-only response
+# fields (security_and_analysis) absent, which the security_features analysis
+# then reported as "invisible for a repo you do not own" — about repos the
+# user does own. Found 2026-08-31. The cwd-relative ".env" is kept as the
+# second entry so a deployment can still override per-directory; later files
+# win in pydantic-settings.
+_PACKAGE_ENV = Path(__file__).resolve().parents[1] / ".env"
+_ENV_FILES = (_PACKAGE_ENV, ".env")
 
 # Every nested *Config class below is instantiated independently via
 # Field(default_factory=...) on ExplorerConfig — pydantic-settings does
@@ -17,7 +33,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # extra="ignore" is required alongside it since each class will now see
 # the *whole* .env file, including keys meant for its sibling configs.
 _ENV_FILE_CONFIG = SettingsConfigDict(
-    populate_by_name=True, env_file=".env", env_file_encoding="utf-8", extra="ignore",
+    populate_by_name=True, env_file=_ENV_FILES, env_file_encoding="utf-8", extra="ignore",
 )
 
 
@@ -339,7 +355,7 @@ class ExplorerConfig(BaseSettings):
     artifact_tree: ArtifactTreeSettings = Field(default_factory=ArtifactTreeSettings)
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",
