@@ -133,8 +133,19 @@ repo_analyses:
       native_process_ref: null
 
   - id: security_scan
-    name: "Security Scan"
-    description: "Detect hardcoded secrets, insecure patterns, and missing security artifacts (SECURITY.md, signed commits)."
+    name: "Security Hygiene"
+    # Renamed from "Security Scan" 2026-08-31, and the description rewritten,
+    # because both claimed work this step has never done. It checked -- and
+    # still checks -- exactly three file-presence facts. It does NOT detect
+    # hardcoded secrets, insecure patterns, signed commits, CVEs or anything
+    # requiring SAST. The Python class was renamed SecuritySurveyor ->
+    # SecurityHygieneSurveyor for precisely this reason; that honesty stopped
+    # at the class and never reached the two fields a user actually reads, so
+    # "Security Scan: passing" on a published repo meant "has three files".
+    # The id stays `security_scan` deliberately: it keys existing schedules
+    # and stored findings. Real scanning belongs in new entries under the
+    # same `family="security"`, not by widening this one's claims again.
+    description: "Presence of three security-hygiene artifacts: a security policy (SECURITY.md), a CI configuration, and a licence. File presence only -- this does not scan code, detect secrets, or check CVEs. For GitHub's actual security toggles see Security Features."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — unchanged
     perspectives: ["Security", "Steward"]
