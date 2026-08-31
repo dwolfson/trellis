@@ -10299,7 +10299,7 @@ function renderSurveyReport(data) {
           return `<span class="inline-flex items-center gap-1 text-xs bg-slate-800 rounded px-1.5 py-0.5">
             <span class="text-slate-200">${_esc(c.name)}</span>
             <span class="${nullBadge}">${_esc(c.dtype)}</span>
-            ${c.null_pct > 0 ? `<span class="text-slate-600">${c.null_pct}%∅</span>` : ''}
+            ${c.null_pct == null ? `<span class="text-slate-700" title="Null rate not measured">—</span>` : c.null_pct > 0 ? `<span class="text-slate-600">${c.null_pct}%∅</span>` : ''}
           </span>`;
         }).join('');
         html += `<div class="rounded bg-slate-800 px-3 py-2 space-y-1">
@@ -12257,7 +12257,12 @@ function renderFilesystemSurveyReport(fs, surveys) {
                       <tr>
                         <td class="px-2 py-1 text-slate-200 font-mono font-medium">${_esc(c.name)}</td>
                         <td class="px-2 py-1 text-slate-400 font-mono">${_esc(c.dtype)}</td>
-                        <td class="px-2 py-1 ${c.null_pct > 0 ? 'text-amber-400' : 'text-slate-500'} font-mono">${(c.null_pct ?? 0).toFixed(1)}%</td>
+                        <!-- null_pct == null means "not measured" (columnar formats are
+                             profiled from file metadata, which carries no null rates). It must
+                             not render as 0.0% — that is an unmeasured value shown as a
+                             measurement. `?? 0` did exactly that until 2026-08-31. -->
+                        <td class="px-2 py-1 ${c.null_pct == null ? 'text-slate-600' : c.null_pct > 0 ? 'text-amber-400' : 'text-slate-500'} font-mono"
+                            ${c.null_pct == null ? 'title="Not measured — read from file metadata, which does not carry null rates"' : ''}>${c.null_pct == null ? '—' : c.null_pct.toFixed(1) + '%'}</td>
                       </tr>
                     `).join('')}
                   </tbody>

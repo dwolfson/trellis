@@ -464,11 +464,16 @@ The other two stage calls are 0.37s and 0.50s.
       `repo_classification`, `sub_resource_survey`, `egeria_publish`, `ci_quality`,
       `security_features`, `repo_conventions`.
 
-- [ ] **`data_file_profiling` — a nuance, not an overclaim.** Says it profiles for "schema, row
-      counts, and null statistics". True for CSV/Excel; `_SCHEMA_ONLY = {parquet, feather, arrow}`
-      means those get schema only, and a size cap skips large CSV/Excel entirely. So the absent
-      row counts are three different things (not applicable, too big, never ran) presented alike.
-      Worth a wording pass with the absence vocabulary rather than a rewrite.
+- [x] **`data_file_profiling` — was a real defect, not the nuance it was logged as.** Fixed
+      2026-08-31. The columnar paths emitted `null_pct: 0.0` for every column of every
+      Parquet/Feather/Arrow file — an unmeasured value rendered as a confident measurement, since
+      file metadata carries no null rates. Both UI consumers showed it as a real zero, and one
+      (`c.null_pct ?? 0`) would have kept doing so after the profiler was fixed. Now `None`, with
+      a `null_summary` saying why, `—` in both UI surfaces, an honest description, and
+      `test_data_profiler_absence.py` pinning it in both directions.
+
+      Correcting the earlier entry: row counts are NOT missing for columnar formats — pyarrow reads
+      them from metadata. Only null rates were, and the earlier note had that wrong.
 
 - [ ] **Pattern worth acting on: "reads what something else produced" is the recurring lie.**
       Two of the three (`documentation_coverage`, `api_structure`) describe work done during

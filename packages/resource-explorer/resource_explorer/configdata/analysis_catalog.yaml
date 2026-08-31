@@ -368,7 +368,12 @@ repo_analyses:
 
   - id: data_file_profiling
     name: "Data File Profiling"
-    description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."
+    # Reworded 2026-08-31 alongside a real fix. The old text promised "schema,
+    # row counts, and null statistics" flatly, and the columnar path was
+    # emitting null_pct: 0.0 without measuring anything -- an unmeasured value
+    # rendered as a confident measurement. Now null_pct is None there and the
+    # description says which formats get which.
+    description: "Profile tabular data files found in the file inventory. CSV, TSV and Excel are read to give schema, row counts and null rates. Parquet, Feather and Arrow are read from file metadata instead: schema and row count, but no null rates, which metadata does not carry. Files over 50 MB in the text formats are reported as too large rather than profiled — so a missing null rate means not applicable, too large, or never run, and these are kept apart rather than shown as zero."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural profiling, baseline for change-detection
     perspectives: ["Data Expert", "Steward"]
