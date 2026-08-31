@@ -392,8 +392,15 @@ Everything below came out of one session. Design reasoning lives in
 - [ ] **Results → Dashboard rename.** 5 label strings in `index.html`; the 24 internal ids
       (`'results'`, `stage-results`, `_resultsHost`) stay. The placement comment calls it "where a
       run's results naturally get looked for" — that is the conflation being fixed.
-- [ ] **Admin has nowhere to see feedback.** `list_resource_feedback(entity_type, slug)` is
-      per-resource only, surfaced in Curate. No cross-resource view exists.
+- [x] **Admin → Observe → 💬 Feedback** built 2026-08-31. `GET /api/curate/feedback` plus
+      `list_all_resource_feedback` / `count_all_resource_feedback`; filter chips by entity type and
+      category. Three deliberate choices, each pinned by a test: `entity_type` defaults to empty
+      rather than `"repo"` (feedback exists on databases and filesystems too, and a repo default
+      would make those look unused); the route returns `filtered` so an empty list can say which
+      empty it is; and an absent rating renders `—` rather than zero stars, since the column is
+      nullable and "no rating given" is not a judgement of zero.
+
+      Observe is no longer a group of one. The log viewer is the remaining occupant.
 - [x] **Admin regrouped** 2026-08-31 — **Configure** (Annotation Types, Groups, Discovery Sources,
       Question Catalog) · **Reconcile** (Egeria Alignment, Egeria Links, Publish Queue, Repair) ·
       **Observe** (Prefect). Grouped by the question a person is asking, not by subsystem: grouping

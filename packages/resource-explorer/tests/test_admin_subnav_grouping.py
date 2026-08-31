@@ -33,6 +33,7 @@ ADMIN_PANES = {
     "admin-outbox",
     "admin-repair",
     "admin-prefect",
+    "admin-feedback",
 }
 
 
