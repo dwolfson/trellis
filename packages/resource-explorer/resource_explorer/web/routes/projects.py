@@ -1083,6 +1083,7 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
     dashboard list."""
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.repo_survey_definition_adapter import (
+        REPO_ANALYSIS_HEADLINE_MAP,
         REPO_ANALYSIS_RESULTS_MAP,
         SURVEY_RESULT_DASHBOARDS,
         get_dashboard_annotation_types,
@@ -1120,7 +1121,22 @@ async def get_survey_results(slug: str, stage: str = "", include_empty: bool = F
                     results = results_reader(registry, slug)
                 except Exception:
                     results = None
-            analyses.append({"analysis_id": analysis_id, "results": results})
+            # headline is the same {label, tone} summary the Tier-1 stat
+            # tiles already use (get_survey_results_summary above) — added
+            # 2026-08-31 so a custom dashboard renderer (renderSecurityOverview
+            # Dashboard's scorecard) can show a tile for an analysis without
+            # re-deriving its own summary logic in JS from raw findings, which
+            # would duplicate exactly what each analysis's headline_reader
+            # already computes. Same fail-soft shape as results — a reader
+            # that raises degrades to headline=None, never breaks the card.
+            headline_reader = REPO_ANALYSIS_HEADLINE_MAP.get(analysis_id)
+            headline = None
+            if headline_reader:
+                try:
+                    headline = headline_reader(registry, slug)
+                except Exception:
+                    headline = None
+            analyses.append({"analysis_id": analysis_id, "results": results, "headline": headline})
 
         # Only surface a card backed by something that actually ran. Previously
         # every dashboard was returned unconditionally and a card with no data

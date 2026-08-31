@@ -1746,10 +1746,13 @@ own precedent that a dashboard can be a single item (`dependencies` already was 
   existing theme (classification is its own question; `manifest_parse` is a refresh operation,
   not a topic), so forcing them into one would have been worse than a dashboard of one.
 
-`security_overview`'s custom scorecard renderer (`renderSecurityOverviewDashboard` in
-`index.html`) was not updated with dedicated tiles for the three new ids — they still render via
-the generic `_renderGroupedCardsDashboard` fallback the custom renderer already appends its
-scorecard to, just without a polished tile yet. Noted rather than left for someone to discover.
+**Closed 2026-08-31:** `security_overview`'s custom scorecard renderer now has dedicated tiles for
+the three new ids. Sourced from a new `headline` field added to the Tier-2 `/survey-results`
+payload alongside `results` (each analysis's existing `headline_reader` — the same one the Tier-1
+stat tiles already use — rather than re-deriving a summary from raw findings in JS, which would
+have duplicated that logic and let the two summaries drift). `headline_reader`'s tone vocabulary
+(`good`/`bad`/`neutral`/…) differs from the tile helper's (`ok`/`warn`/`gap`/…) — mapped, not
+unified, since both exist independently elsewhere in this codebase already.
 
 Locked in with a new ratchet test (`test_every_findings_producing_analysis_has_a_dashboard`,
 `test_survey_results_routes.py`) — a future analysis added to the catalog with no dashboard now
