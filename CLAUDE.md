@@ -51,6 +51,29 @@ Before committing, read `git status` and confirm every staged path is yours. An 
 a signal that another session is mid-write, not something to sweep in. If naming paths is tedious,
 it is because the change is large, not because the rule is wrong.
 
+**But a named path is per-FILE, not per-hunk — and that gap is invisible.** `git add <path>` stages
+*everything* in that file, including hunks another session wrote and has not committed. The file is
+legitimately yours to edit; the rule is satisfied; `git status` shows nothing unexpected, because the
+path IS one of yours.
+
+Happened 2026-08-31, to a session that had spent the day telling other sessions to name their paths.
+`3ce1254` added a 15-line cross-reference to `docs/egeria-reset-recovery.md` and carried 19 further
+lines — another session's `## 3a. The outbox does NOT restore anything`, written and not yet
+committed — into the same commit under the wrong author's message and sign-off. Nothing was lost and
+the content was correct, so it was only noticed because its author went to commit, found nothing
+staged, and used `git log -S` instead of assuming they had lost it.
+
+For a file several sessions write to — `CLAUDE.md`, the backlogs, the checklists, the runbooks —
+naming the path is not enough. Look at what you are about to stage:
+
+```
+git diff --stat -- <path>     # more changed than you changed?
+git add -p -- <path>          # stage your hunks, not the file
+```
+
+`git diff --stat` is the cheap version and catches the common case: if the line count is bigger than
+your edit, someone else is in there with you.
+
 **2. Never `git commit` while a merge is in progress unless the merge is yours.**
 
 This is the case where rule 1's advice does not merely weaken — it does not apply. `git commit`
