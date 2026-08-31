@@ -34,6 +34,7 @@ ADMIN_PANES = {
     "admin-repair",
     "admin-prefect",
     "admin-feedback",
+    "admin-logs",
 }
 
 

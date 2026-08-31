@@ -422,10 +422,15 @@ Everything below came out of one session. Design reasoning lives in
       setup — so declaring `root` there would tear out the ring buffer, and the viewer would be
       empty under the server and full under the CLI.
 
-- [ ] **Log viewer — now unblocked.** Source is `logging_setup.ring_handler` (`records(limit, level,
-      logger)`, newest first). **The viewer must say the buffer is in-memory and bounded**: it holds
-      5,000 records and is empty after a restart, so "no records" is not "nothing happened". Goes in
-      Admin → Observe beside Prefect and Feedback.
+- [x] **Log viewer built** 2026-08-31 — Admin → Observe → 📜 Logs, `GET /api/logs/` over the ring
+      buffer. Level chips, logger-name prefix filter, opt-in 5s auto-refresh that stops itself when
+      the pane is hidden. The three empties say three different sentences: filtered-out (naming the
+      total held), genuinely empty (saying the buffer starts empty on restart, so it is not evidence
+      nothing happened), and no-records. Levels are a fixed list rather than derived from the
+      buffer — deriving them would hide ERROR from the filter exactly when no error has occurred.
+
+      Not durable, by design. If logs need to survive a restart or leave the process, that is a
+      different feature (file handler or OTEL export) and this pane should not be mistaken for it.
 ### Refresh as a survey, not a button
 
 Reframed 2026-08-31: refresh wants to be a **schedulable survey in Automate** that decides whether
