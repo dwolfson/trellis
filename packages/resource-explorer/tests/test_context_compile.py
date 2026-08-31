@@ -200,6 +200,89 @@ class TestResolvingBeyondTheFindingsTable:
         assert '"from": "reader"' not in c.text, "the fallback overrode real findings"
 
 
+class TestReaderFindingsShapeIsFormattedNotCounted:
+    """Measured 2026-08-31: asking the chat "show me documentation coverage
+    on Egeria" answered "5 key(s) with 4 item(s) found" -- the model
+    narrating _results_to_rungs' generic SUMMARY verbatim.
+    _documentation_results (repo_survey_definition_adapter.py) returns
+    {"findings": [...], "_status": {...}}, the same finding shape the
+    findings table itself uses; the reader-fallback path was reducing it to
+    two cardinalities instead of reusing _findings_to_rungs' own per-check
+    formatting.
+
+    Tests hit _results_to_rungs directly, not through compile_context: the
+    bug is specifically in the SUMMARY rung, and a budget generous enough to
+    let the packer choose FULL instead (a full JSON dump, which happens to
+    contain the real strings too) would pass without the fix -- caught by
+    running these against the unfixed code before adding them."""
+
+    def _reader_output(self):
+        return {
+            "findings": [
+                {"check_name": "readme", "label": "present",
+                 "summary": "README.md found at repo root"},
+                {"check_name": "changelog", "label": "missing",
+                 "summary": "no CHANGELOG file located"},
+            ],
+            "_status": {"state": "measured", "outcome": "complete"},
+        }
+
+    def test_summary_rung_keeps_per_check_content(self):
+        from resource_explorer.context_compile import _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        rungs = _results_to_rungs(self._reader_output(), "documentation_coverage")
+        summary = rungs[Rung.SUMMARY]
+
+        assert "readme" in summary and "present" in summary
+        assert "changelog" in summary and "missing" in summary
+        # The exact bug: two cardinalities standing in for the content above.
+        assert "item(s)" not in summary
+        assert "key(s)" not in summary
+
+    def test_full_rung_also_uses_finding_formatting(self):
+        from resource_explorer.context_compile import _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        rungs = _results_to_rungs(self._reader_output(), "documentation_coverage")
+        full = rungs[Rung.FULL]
+
+        assert "README.md found at repo root" in full
+        assert "no CHANGELOG file located" in full
+        # Other top-level keys (here, _status) are noted, not silently dropped.
+        assert "_status" in full
+
+    def test_reaches_the_answer_through_compile_context_too(self, monkeypatch):
+        """Integration-level check that the fix is actually wired in, at
+        whichever rung the packer picks for a real compile."""
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
+                            "documentation_coverage",
+                            (lambda reg, slug: self._reader_output(), None))
+        c = cc.compile_context(_registry({}), "egeria_git", "is this ready to adopt?", budget=8000)
+        assert "documentation_coverage" not in {g["key"] for g in c.manifest["gaps"]}
+        assert "readme" in c.text
+
+    def test_a_reader_returning_a_genuinely_non_finding_shape_is_unaffected(self):
+        """The generic path (key: cardinality) still applies to shapes that
+        are not the findings-list envelope -- e.g. repository_health's flat
+        metrics dict. This exception is a shape match, not a blanket change
+        to every reader's output."""
+        from resource_explorer.context_compile import _results_to_rungs
+        from trellis_artifact_tree.model import Rung
+
+        rungs = _results_to_rungs({"overall": 85.8, "activity": 100.0}, "repository_health")
+        assert "85.8" in rungs[Rung.SUMMARY]
+        assert "key(s)" not in rungs[Rung.SUMMARY]  # no dict/list values here to miscount
+        # A shape that genuinely has no per-check identity keeps the old,
+        # structural summary -- e.g. a list-valued key still reads as a count.
+        rungs2 = _results_to_rungs({"by_ecosystem": {"pypi": 3, "npm": 5}, "total": 8},
+                                    "dependency_analysis")
+        assert "2 key(s)" in rungs2[Rung.SUMMARY]  # by_ecosystem: 2 key(s) — unchanged behavior
+
+
 class TestHasContent:
     """The zero case, which a first version got wrong.
 

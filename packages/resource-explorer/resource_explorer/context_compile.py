@@ -168,9 +168,34 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
     than field-aware: FULL is the payload, SUMMARY names each top-level part
     with its size, IDENTIFIERS names the parts. A reader that knew each shape
     would be a fourth place to keep that knowledge in sync.
+
+    ONE exception, and it is a shape, not an analysis: `{"findings": [...]}`
+    with `check_name`/`label`/`summary` per item is the same finding shape
+    `_findings_to_rungs` already formats well from the findings table itself
+    -- `_documentation_results`, `_license_results`,
+    `_repo_classification_results` and others return exactly this ("same
+    uniform finding shape" is their own recurring comment). Measured
+    2026-08-31: documentation_coverage's SUMMARY read
+    "- findings: 4 item(s)\n- _status: 5 key(s)", and the model narrated
+    that structural summary verbatim as "5 key(s) with 4 item(s) found" --
+    real per-check content, reduced to two counts, then repeated back as if
+    it meant something. Recognizing this one recurring shape and reusing
+    `_findings_to_rungs`' own formatting is not the field-aware special-
+    casing above rules out; it is not re-deriving from `_status` or any
+    other field this function still treats structurally.
     """
     if not _has_content(results):
         return {}
+
+    findings = results.get("findings")
+    if isinstance(findings, list) and findings and all(
+        isinstance(f, dict) and "check_name" in f for f in findings
+    ):
+        rungs = dict(_findings_to_rungs(findings, analysis_id))
+        other = sorted(k for k in results if k != "findings")
+        if other:
+            rungs[Rung.FULL] += "\n(also: " + ", ".join(other) + ")"
+        return rungs
 
     def _extent(value) -> str:
         if isinstance(value, list):
