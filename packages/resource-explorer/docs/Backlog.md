@@ -2491,25 +2491,38 @@ Milvus's gRPC surface — the case that motivated this — is no longer invisibl
 
 **What genuinely remains open, sharpened by Dan 2026-08-30:**
 
-**A. OpenAPI/REST/Swagger detection needs a second path — it only sees a *committed* spec file
-today, and most REST services don't ship one.** `_OPENAPI_NAMES` is filename matching against a
-static document (`openapi.json`, `swagger.yaml`, …). A **FastAPI service generates its spec at
-runtime from its own route decorators** — this codebase's own web app is exactly that case — so a
-repo can serve a real, sizeable REST API and `interfaces.py` records nothing, because no file named
-in `_OPENAPI_NAMES` exists to find.
+**A. OpenAPI/REST/Swagger detection needs a second path — DONE for FastAPI, 2026-08-30, same
+session.** `_OPENAPI_NAMES` only ever saw a *committed* spec file (`openapi.json`, `swagger.yaml`,
+…); a FastAPI service generates its spec at runtime from its own route decorators and ships none —
+this codebase's own web app was exactly that case, recording nothing.
 
-The evidence already exists, just not reused here: `code_markers.py`'s `fastapi-route-registration`
-rule matches individual `@app.get`/`.post`/`.put`/`.delete`/`.patch`/`.websocket` decorators — one
-match per route, already collected per-file for *component* classification
-(`arch_recovery/rules/fastapi-route.yml`). `len(matches)` is the operation count interfaces.py wants
-and doesn't have to derive it a second way. **This is real, additional work, not "just reuse it"
-for the other frameworks**: Spring's marker (`java-spring-service.yml`) matches
-`@RestController`/`@Controller` at the class level, and Go's (`go-http-server.yml`,
-`go-grpc-server.yml`) match server *construction* — neither is a per-endpoint marker today. Getting
-the same countable granularity for Spring needs a new rule on `@GetMapping`/`@PostMapping`/
-`@RequestMapping`-family method annotations; for Go it needs rules on whichever router's per-route
-registration call (`mux.HandleFunc`, gin's `.GET`, echo's `.GET`, …) a given service actually uses.
-FastAPI is the only language where this is genuinely "wire up what's already measured."
+Built as reuse, not a second detection: `code_markers.py`'s `fastapi-route-registration` rule
+already matches individual `@app.get`/`.post`/`.put`/`.delete`/`.patch`/`.websocket` decorators —
+one match per route, collected per-file for *component* classification
+(`arch_recovery/rules/fastapi-route.yml`) — but the count was discarded once converted into a
+component. `code_markers.propose()` now returns it as a 4th value, `{component slug: route count}`
+(`OPERATION_MARKERS`, a named subset of rule IDs that are genuinely per-operation, not per-file),
+threaded through `detectors.build_components()` → `arch_recovery_detect.py` →
+`interfaces.propose()`'s new `code_marker_operations` keyword. `interfaces.py` emits an `HTTP/REST`
+port from it for any component with a nonzero count **that has no port already from a static
+document** — a checked-in OpenAPI file is stronger, filename-attributable evidence than a decorator
+count, and both existing would report one REST interface as two, so the static-document reading
+wins where both exist.
+
+**Confirmed NOT free for Spring/Go, as flagged** — `OPERATION_MARKERS` has exactly one entry.
+Spring's marker (`java-spring-service.yml`) matches `@RestController`/`@Controller` at the class
+level, and Go's (`go-http-server.yml`, `go-grpc-server.yml`) match server *construction* — neither
+is a per-endpoint marker, so adding their rule IDs to `OPERATION_MARKERS` would count "1" regardless
+of how many routes exist. Getting the same countable granularity for Spring needs a new rule on
+`@GetMapping`/`@PostMapping`/`@RequestMapping`-family method annotations; for Go it needs rules on
+whichever router's per-route registration call (`mux.HandleFunc`, gin's `.GET`, echo's `.GET`, …) a
+given service actually uses. Left as a clearly-scoped follow-on, not attempted here.
+
+Suite: `test_arch_interfaces_idl.py` +5 (the reuse, the static-document precedence, the no-owner
+skip, the zero-count skip, and backward compatibility with no `code_marker_operations` passed),
+`test_arch_recovery_detectors.py` +2 (the count itself, and that a subtree with no route decorators
+is absent rather than zero). 214 passed across the directly affected files; 503 passed across the
+broader arch/interface/marker test surface.
 
 **B. Language bindings — Dan's steer narrows this from the original proposal, doesn't confirm it.**
 The entry as written proposed conventional directories (`clients/<lang>`, `sdk/<lang>`,

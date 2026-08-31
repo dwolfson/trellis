@@ -455,7 +455,8 @@ def go_subsystems(root: str, files: list[str]) -> list[dict]:
     return sorted(found.values(), key=lambda e: e["dir"])
 
 
-def build_components(root: str, files: list[str]) -> tuple[list[Component], list[Evidence], list[str]]:
+def build_components(root: str, files: list[str],
+                     ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
     components: list[Component] = []
     evidence: list[Evidence] = []
     notes: list[str] = []
@@ -720,9 +721,9 @@ def build_components(root: str, files: list[str]) -> tuple[list[Component], list
         package_roots_set.add(_g["dir"] or ".")
     package_roots_set.add(".")
     package_roots = sorted(package_roots_set)
-    mc, me, mn = _propose_markers(root, files, package_roots)
+    mc, me, mn, operation_counts = _propose_markers(root, files, package_roots)
     components.extend(mc)
     evidence.extend(me)
     notes.extend(mn)
 
-    return components, evidence, notes
+    return components, evidence, notes, operation_counts

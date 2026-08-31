@@ -73,7 +73,7 @@ class TestFinding4DockerfileWithoutManifest:
         _write(root, "handler/app.py", "print('hi')\n")
         files = ["handler/Dockerfile", "handler/app.py"]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
 
         assert len(components) == 1
         comp = components[0]
@@ -87,7 +87,7 @@ class TestFinding4DockerfileWithoutManifest:
         _write(root, "buildctx/Dockerfile", "FROM alpine\n")
         files = ["buildctx/Dockerfile"]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
 
         assert components == []
         assert any("build context" in n for n in notes)
@@ -116,7 +116,7 @@ class TestFinding5DeploymentContextQualifiesSlug:
                 f"{deployment}/{deployment}-local.yaml",
             ]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
         components = [c for c in components if c.type == "Long Running Daemon"]
 
         slugs = sorted(c.slug for c in components)
@@ -161,7 +161,7 @@ class TestFinding11LayeredComposeMerges:
         _write(root, "deploy/override.yaml", "services:\n  apache-web:\n    container_name: quickstart-web-server\n")
         files = ["deploy/base.yaml", "deploy/override.yaml"]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
 
         names = sorted(c.name for c in components)
         assert names == ["quickstart-web-server"]     # merged into ONE component
@@ -712,8 +712,50 @@ class TestFinding93GradleModules:
         _write(root, "core/src/main/java/A.java", "package a;\n")
         _write(root, "connect/api/src/main/java/B.java", "package b;\n")
         _git_init(root)
-        comps, _, _ = detectors.build_components(root, _tracked(root))
+        comps, _, _, _ = detectors.build_components(root, _tracked(root))
         gm = {c.name: c for c in comps if "gradle-module" in (c.proposed_by or [])}
         assert set(gm) == {"core", "connect:api"}
         assert gm["connect:api"].files == ["connect/api/**"]
         assert gm["connect:api"].perspective == "logical"
+
+
+class TestOperationCountsFromRouteDecorators:
+    """Backlog.md "interface extraction" entry — build_components()'s 4th
+    return value, {component slug: route count}, is what lets interfaces.py
+    see a REST API a FastAPI service never checks in as a static OpenAPI
+    document (it generates one at runtime from these same decorators)."""
+
+    def test_route_decorators_are_counted_per_component(self, tmp_path):
+        root = str(tmp_path)
+        # Two first-party files in svc/, matching build_hierarchy's own
+        # >=2-files-per-directory bar for a candidate subtree — a single
+        # file there would attribute the marker to the package root instead.
+        _write(root, "svc/app.py", (
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n\n"
+            "@app.get('/a')\n"
+            "def a(): ...\n\n"
+            "@app.post('/b')\n"
+            "def b(): ...\n\n"
+            "@app.delete('/c')\n"
+            "def c(): ...\n"
+        ))
+        _write(root, "svc/models.py", "class Item: ...\n")
+        _git_init(root)
+        _, _, _, operation_counts = detectors.build_components(root, _tracked(root))
+        assert operation_counts == {"code::svc": 3}
+
+    def test_a_subtree_with_no_route_decorators_is_absent_not_zero(self, tmp_path):
+        """None/absent means 'no operation marker matched here' — a component
+        with a CLI marker but no routes must not silently read as a REST API
+        with 0 operations, which is a different claim (a real, empty API)."""
+        root = str(tmp_path)
+        _write(root, "cli/main.py", (
+            "import typer\n"
+            "app = typer.Typer()\n\n"
+            "@app.command()\n"
+            "def run(): ...\n"
+        ))
+        _git_init(root)
+        _, _, _, operation_counts = detectors.build_components(root, _tracked(root))
+        assert operation_counts == {}
