@@ -605,7 +605,24 @@ uv run python scripts/reconcile_survey_definition_links.py --dry-run
 
 # both surveys load, reducer after its inputs
 uv run pytest tests/test_egeria_live_smoke.py tests/test_survey_definition_graph_walk.py tests/test_security_summary.py -q
+
+# the 12 perspectives exist — added 2026-08-31; the three checks above never looked
+uv run python scripts/verify_perspectives.py
 ```
+
+The perspective check was missing until 2026-08-31. Perspectives are authored by
+`foundations.md` in the same batch as the glossary and funnel stages, so they fail the
+same way 8 of 49 questions did — a heal reports success and some elements are simply
+not there. It compares against `foundations.md` rather than
+`egeria-redeploy-baseline-2026-08-26.json`; the two were verified identical that day, so
+the snapshot adds nothing the repo does not already hold, and a generator says what
+*should* exist where a snapshot only says what once did.
+
+**It exits 2, not 1, when Egeria is unreachable**, and prints that this says nothing
+about whether the perspectives exist. Written while the platform was down for this very
+redeploy, so its lookup path has never run against a live server — the first real
+exercise is your post-redeploy verification. A check that could not tell "not answering"
+from "gone" would report 0/12 at exactly the moment that reads as catastrophe.
 
 ### What the wipe also destroys, and what it does not
 
