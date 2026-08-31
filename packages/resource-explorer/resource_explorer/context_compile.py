@@ -76,6 +76,57 @@ MAX_FINDING_CHARS = 1200
 #: "this says almost nothing", not "this is short".
 THIN_FINDINGS_CHARS = 200
 
+#: Words too common to carry relevance on either side of _question_relevance's
+#: overlap -- without this, "results"/"survey" (present in nearly every
+#: question a Resource Explorer user asks, because that is what this tool
+#: does) would inflate every catalog entry's score roughly equally, which is
+#: the same as not scoring at all.
+_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "it", "of", "to", "and", "or", "for",
+    "on", "in", "at", "this", "that", "what", "how", "does", "do", "show",
+    "me", "all", "with", "about", "results", "result", "survey",
+})
+
+
+def _question_relevance(question: str, catalog_question: str, analysis_ids: list[str]) -> float:
+    """How much a catalog entry's own question and analysis ids overlap the
+    free-text question actually asked, as a fraction of the asked question's
+    own (stopword-stripped) tokens. Deterministic word-overlap, not an
+    embedding or model call — the packer must never trigger one (§20).
+
+    Measured 2026-08-31: asking "documentation survey results" packed
+    repository_health / architecture_doc_lens / language_file_classification
+    ahead of documentation_coverage itself, then dropped documentation_coverage
+    as a gap entirely — `question` was accepted by compile_context() and never
+    read again; every catalog entry weighed the same regardless of what was
+    asked, decaying only by its arbitrary position in the YAML. The model,
+    given evidence that did not answer the question, fell back to
+    vector_search and answered from Egeria's OWN documentation about its
+    Survey Framework feature — a keyword collision on "survey", not an answer
+    about the repository's documentation.
+
+    Analysis ids are folded into the candidate token set alongside the
+    catalog's own question phrasing: "documentation_coverage" tokenizes to
+    "documentation"/"coverage", which is the one thing an asker is most
+    likely to have said even when the catalog's own phrasing ("How well
+    documented is it?") shares no token with it.
+
+    A score, not a filter: Purpose already establishes that this system
+    ranks what it is uncertain of rather than excluding it (see
+    question_catalog_reader.get_questions()'s own docstring). This returns
+    0.0 for no overlap, not None or an exclusion — the caller decides what a
+    zero means for ranking.
+    """
+    import re
+    q_tokens = set(re.findall(r"[a-z0-9]+", question.lower())) - _STOPWORDS
+    if not q_tokens:
+        return 0.0
+    candidate_tokens = set(re.findall(r"[a-z0-9]+", catalog_question.lower()))
+    for aid in analysis_ids:
+        candidate_tokens |= set(aid.split("_"))
+    candidate_tokens -= _STOPWORDS
+    return len(q_tokens & candidate_tokens) / len(q_tokens)
+
 
 def _clip(text: str, analysis_id: str, check: str) -> str:
     if len(text) <= MAX_FINDING_CHARS:
@@ -303,6 +354,12 @@ def compile_context(
     # Rank matters: Purpose ORDERS, so the analyses reached by the highest-ranked
     # questions become the heaviest sections. Nothing is excluded by ranking --
     # a low-ranked analysis is a light section, not an absent one.
+    #
+    # `question` relevance is folded into rank too, not just Purpose/Perspective
+    # -- see _question_relevance's docstring for the reported failure this
+    # fixes. Without it, a compile with no Perspective chips set (the common
+    # case) ranks every one of the ~50 catalog questions by nothing but their
+    # position in the YAML, regardless of what was actually asked.
     weights: dict[str, float] = {}
     derivation: list[dict] = []
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
@@ -322,7 +379,13 @@ def compile_context(
         if not ids:
             continue
         # Weight decays with rank but never reaches zero.
-        weight = 1.0 / (1 + position * 0.1)
+        relevance = _question_relevance(question, entry["question"], ids)
+        # relevance dominates position by design: a question that names what
+        # it wants ("documentation") must outrank an unrelated question that
+        # merely sits earlier in the YAML. Position still breaks ties among
+        # equally (ir)relevant entries and keeps every entry's weight above
+        # zero -- nothing is excluded, same rule Purpose already follows.
+        weight = (1.0 + relevance * 20.0) / (1 + position * 0.1)
         for analysis_id in ids:
             weights[analysis_id] = max(weights.get(analysis_id, 0.0), weight)
         derivation.append({
@@ -330,8 +393,24 @@ def compile_context(
             "matched_purposes": d.get("matched_purposes", []),
             "matched_perspectives": d.get("matched_perspectives", []),
             "analysis_ids": ids,
+            # `rank` is this entry's position in get_questions()'s own
+            # Purpose-ordered catalog list -- NOT its position in this
+            # `derivation` list once sorted below. A low catalog rank with
+            # high relevance now sorts earlier here while keeping a
+            # numerically later `rank`; a reader wanting "why did this pack
+            # first" wants list order, and a reader wanting "where does the
+            # catalog itself rank this" wants `rank` -- they can diverge on
+            # purpose. (S4 review, 2026-08-31: confirmed worth calling out
+            # explicitly rather than leaving both readings equally plausible.)
             "rank": position,
+            "relevance": round(relevance, 2),
         })
+
+    # Sort by weight, not by catalog rank, before packing -- the manifest and
+    # "why these?" panel should read as "this is why these ranked first",
+    # which is now relevance-then-position, not the YAML's own order. See the
+    # `rank` comment above: this reorders the LIST, not the `rank` field.
+    derivation.sort(key=lambda d2: -max((weights.get(a, 0.0) for a in d2["analysis_ids"]), default=0.0))
 
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
     candidates: dict[str, Candidate] = {

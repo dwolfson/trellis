@@ -41,6 +41,112 @@ class TestDerivation:
         assert len(keys) > 3, "low-ranked analyses should still appear, as gaps"
 
 
+class TestQuestionRelevance:
+    """Measured 2026-08-31: "Show me all the documentation survey results for
+    egeria" packed repository_health / architecture_doc_lens /
+    language_file_classification and dropped documentation_coverage as a gap
+    entirely. `question` was accepted by compile_context() and never read
+    again -- with no Perspective chips set (the common case), every one of
+    the ~50 catalog questions weighed the same, decaying only by its
+    arbitrary position in question_catalog.yaml. The model, given evidence
+    that did not answer what was asked, fell back to vector_search and
+    answered from Egeria's OWN documentation about its Survey Framework
+    feature instead -- a keyword collision on "survey", not an answer."""
+
+    def test_a_question_naming_its_topic_outranks_unrelated_ones(self):
+        from resource_explorer.context_compile import _question_relevance
+        from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+        entries = get_questions("repo", perspectives=None, purposes=None)
+        question = "Show me all the documentation survey results for egeria"
+
+        scored = []
+        for position, e in enumerate(entries):
+            ids = e["answering"]["analysis_ids"]
+            if not ids:
+                continue
+            relevance = _question_relevance(question, e["question"], ids)
+            weight = (1.0 + relevance * 20.0) / (1 + position * 0.1)
+            scored.append((weight, e["question"], ids))
+        scored.sort(key=lambda t: -t[0])
+
+        top_ids = [ids for _, _, ids in scored[:2]]
+        assert all("documentation_coverage" in ids for ids in top_ids), (
+            f"documentation_coverage should rank first; got {scored[:2]}"
+        )
+
+    def test_weight_reaches_the_real_compile(self, monkeypatch):
+        """Not just the scoring helper in isolation -- the analysis actually
+        outranks an unrelated one in a real compile_context() call. Both
+        pack either way at this budget (each is tiny with one finding), so
+        membership alone does not distinguish fixed from unfixed -- PACKING
+        ORDER does, since packed sections are emitted in weight order and
+        repository_health (an unrelated, higher-catalog-position question)
+        used to rank ahead of the analysis the question actually named."""
+        import resource_explorer.surveyors.repo_survey_definition_adapter as adapter
+        from resource_explorer import context_compile as cc
+
+        reader_output = {"findings": [
+            {"check_name": "readme", "label": "present", "summary": "README present"},
+        ]}
+        monkeypatch.setitem(adapter.REPO_ANALYSIS_RESULTS_MAP,
+                            "documentation_coverage", (lambda reg, slug: reader_output, None))
+
+        c = cc.compile_context(_registry({}), "egeria",
+                               "Show me all the documentation survey results for egeria",
+                               budget=1200)
+        packed_order = [p["key"] for p in c.manifest["packed"] if p["key"] != "instructions"]
+        assert "documentation_coverage" in packed_order, (
+            f"documentation_coverage was crowded out; packed={packed_order}"
+        )
+        assert "repository_health" in packed_order, "test assumes both pack at this budget"
+        assert packed_order.index("documentation_coverage") < packed_order.index("repository_health"), (
+            f"documentation_coverage should outrank an unrelated question's "
+            f"analysis given what was asked; packed order was {packed_order}"
+        )
+
+    def test_irrelevant_questions_are_ranked_down_not_excluded(self):
+        """Purpose already establishes ranking over exclusion for this
+        system; this must not become the first thing that filters instead."""
+        from resource_explorer.context_compile import _question_relevance
+
+        assert _question_relevance(
+            "Show me all the documentation survey results for egeria",
+            "Are there outstanding CVEs?", ["cve_scan"],
+        ) == 0.0  # no overlap -- but a 0.0 weight component, not a dropped entry
+
+    def test_no_overlap_returns_zero_not_an_error(self):
+        from resource_explorer.context_compile import _question_relevance
+
+        assert _question_relevance("", "How well documented is it?",
+                                   ["documentation_coverage"]) == 0.0
+
+    def test_rank_is_catalog_position_not_list_order(self):
+        """S4 review, 2026-08-31: `derivation` is now sorted by weight
+        (relevance-then-position), but each entry's `rank` field still
+        reports its ORIGINAL catalog/Purpose position -- the two can and
+        should diverge for a low-catalog-rank, high-relevance entry. Locking
+        this in as intended behavior, not an oversight a future pass should
+        "fix" by renumbering `rank` to match list order."""
+        from resource_explorer.context_compile import compile_context
+
+        c = compile_context(_registry({}), "egeria",
+                            "Show me all the documentation survey results for egeria",
+                            budget=8000)
+        # documentation_coverage's catalog rank (24/25, see the module-level
+        # measurement in this class's docstring) is well behind several
+        # zero-relevance, position < 24 entries -- so it must now sort near
+        # the front of `derivation` while its own `rank` field still reads
+        # its true, larger catalog position.
+        doc_entries = [d for d in c.derivation if "documentation_coverage" in d["analysis_ids"]]
+        assert doc_entries, "documentation_coverage should be reachable from this question"
+        list_index = c.derivation.index(doc_entries[0])
+        assert doc_entries[0]["rank"] > list_index, (
+            "rank should still report catalog position even though list order "
+            f"now reflects relevance; rank={doc_entries[0]['rank']}, list_index={list_index}"
+        )
+
+
 class TestGapsAreNotSilence:
     def test_an_analysis_with_no_findings_is_reported(self):
         """The derivation says it answers the question and it has no stored
