@@ -122,10 +122,14 @@ at all. They are not synonyms and the mapping is explicit
 
 ### Flow
 
+Two paths, and confusing them is easy because only one of them is named after the thing it does.
+
+**Repo steps** run through `SurveyOrchestrator`:
+
 ```
 SurveyOrchestrator.run(slug, steps=None)
   → resolves steps (all, or a named subset)
-  → acquires shared resources once (zipball, git clone) via trellis-microflow
+  → acquires shared resources (zipball, git clone) via trellis-microflow
   → runs each step → Annotation objects
   → writes results to the step's own table
   → writes ONE activity_log entry
@@ -133,10 +137,33 @@ SurveyOrchestrator.run(slug, steps=None)
 ```
 
 `steps=None` runs everything; a list runs exactly those. That parameter is what lets a single
-analysis, a whole Survey Definition, or a scheduled bundle all share one execution path.
+analysis or a scheduled bundle share one execution path.
 
-**Resources are acquired once per run, not once per step.** A zipball download shared across
-eleven steps is the difference between a survey taking 14 seconds and 110.
+**A whole Survey Definition, on any resource type**, runs through
+`surveyors/survey_definition_executor.py` instead — a generic dispatch loop over the step
+graph, plus a `ResourceTypeAdapter` registered per resource type
+(`repo_survey_definition_adapter.py`, `database/survey_definition_adapter.py`,
+`filesystem/survey_definition_adapter.py`). That adapter layer is what makes Survey Definitions
+executable uniformly across repos, databases and filesystems; `SurveyOrchestrator` is the repo
+adapter's own machinery, not the general path.
+
+### Resource acquisition
+
+**Acquired once per commit, not once per run.** A zipball or treeless clone is cached on disk
+by `github/source_cache.py`, keyed on `(repo, commit SHA)`, so a re-survey of unchanged code
+pays nothing — and the key is what makes a stale hit impossible. Within a single run, steps
+also share one acquisition rather than each taking its own; that part has been true since
+2026-08-20 and is not what made surveys fast.
+
+The 110.5s → 14.4s measured on `egeria_python_git` came from two unrelated fixes, and it is
+worth knowing which, because the obvious explanation is the wrong one:
+
+- **`--find-renames=100%`** in `arch_recovery/cochange.py` — about 92s of it. `git log
+  --name-only`'s default *inexact* rename detection scores blob-content similarity, and the
+  history root is a `--filter=blob:none` clone, so every comparison was a lazy fetch: 86
+  upload-pack round trips inside one `git log`. Exact-rename detection compares blob OIDs
+  already in the tree. 41s → 0.03s on a cold clone.
+- **`SourceCache`** — acquisition 22.6s cold → 1.3s warm.
 
 ### Two coordinators, neither of which is RE
 
@@ -144,6 +171,13 @@ RE is not a workflow engine. Either **Egeria coordinates** and RE executes leaf 
 engine host, or **RE coordinates** and hands the graph to **Prefect**. Each step declares
 `executes_at: resource-explorer | prefect | egeria`. With Prefect unreachable, steps fall back
 to running in-process — safe, one connection attempt slower.
+
+A step marked `executes_at: egeria` is **not skipped** while RE coordinates. The adapter's
+`other_engine_handlers` lets RE actively trigger Egeria's own native survey engine for that one
+step and carry on coordinating the rest of the graph locally — both the database and filesystem
+adapters do this. That mechanism is the intended route for unifying database and filesystem
+survey launching (see `Backlog.md`, "Unify survey launching"), and it is untested end to end on
+either type.
 
 ### Publishing
 
