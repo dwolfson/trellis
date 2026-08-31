@@ -4,7 +4,7 @@
 survives a context reset. Short entries with a pointer; the reasoning lives in
 the design docs. Delete an entry when it is done — this is not a history.
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-31
 
 ---
 
@@ -375,6 +375,84 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       end to end on real data.
 
 ---
+
+## 6. Raised 2026-08-31 — the security/survey thread
+
+Everything below came out of one session. Design reasoning lives in
+`survey-composition-and-topic-summary-design.md` (98608f1); this is the do-list.
+
+### Done, do not redo
+- [x] `security_scan` renamed **Security Hygiene** with an honest description (98608f1). Id unchanged.
+- [x] `cii_badge` SSH-remote false negative — `git@github.com:...` reported a silver badge as
+      `not_registered` (3c71785).
+- [x] `ephemeral_prefect` autouse + the import note (a8dd281, e44300e).
+
+### Direct asks, not started
+
+- [ ] **Results → Dashboard rename.** 5 label strings in `index.html`; the 24 internal ids
+      (`'results'`, `stage-results`, `_resultsHost`) stay. The placement comment calls it "where a
+      run's results naturally get looked for" — that is the conflation being fixed.
+- [ ] **Admin has nowhere to see feedback.** `list_resource_feedback(entity_type, slug)` is
+      per-resource only, surfaced in Curate. No cross-resource view exists.
+- [ ] **Admin is 9 flat tabs.** Proposed grouping: *Config* (Annotation Types, Groups, Discovery
+      Sources, Question Catalog) · *Resync & Repair* (Egeria Alignment, Repair, Publish Queue) ·
+      *Observability* (Prefect, + Feedback and Logs when they exist). Scheduling already moved to
+      Automate, so it is not a fourth group.
+- [ ] **No logs viewer, and logging is not wired.** Root logger has no handlers and `uvicorn.run()`
+      takes no `log_config` (`cli/main.py:327`), so INFO is discarded and WARNING/ERROR arrive bare.
+      **Wire logging before building a viewer** or it will show nothing and read as broken.
+- [ ] **No UI for explicit refresh.** `POST /api/projects/{slug}/refresh` exists and does delta RAG
+      ingestion (SHA-gated) + query-cache invalidation. Nothing calls it — the `/refresh` hits in
+      `index.html` are Discovery Sources. Does not clear `SourceCache`, which is correct: it is
+      keyed on (repo, SHA), so a stale hit is impossible.
+
+### The ~30s stage load — diagnosed, not fixed
+
+`/api/survey-definitions/{type}/{slug}/candidates` measured **24.2s cold, 0.12s warm**, and
+`index.html` calls it **twice sequentially** (once for the stage, once for `automate_full`).
+The other two stage calls are 0.37s and 0.50s.
+
+- [ ] Fix. The two calls are independent, so concurrency halves it immediately; the real fix is one
+      round trip or a warm cache. It is a live Egeria call.
+- Caution: an earlier measurement of 14.7s was taken under load 65 caused by two orphaned `gh`
+  processes. Re-measure before and after, not against that number.
+
+### Catalog honesty — one instance fixed, the class open
+
+- [ ] **`documentation_coverage` overclaims.** Says it assesses "README completeness… inline comment
+      coverage"; actually checks which doc collections got indexed plus a filename hygiene list.
+      Same defect as `security_scan`, no mitigating history.
+- [ ] **~12 terse descriptions unaudited.** 15 of 29 repo entries are under 200 chars; the
+      discursive ones state their limits and are the ones that turned out honest. Length is a
+      fingerprint of having been reconciled against the code, not a virtue.
+- [ ] **Consider a ratchet** — an allowlist of audited entries that fails when a new one appears,
+      in the shape of the orphaned-slug fix. Claim-verb detection is probably too fuzzy.
+
+### From the design note — nothing built
+
+- [ ] Discovery **Security Survey**: `security_scan`, `security_features`, `ci_quality`,
+      `license_classification`, `repo_conventions`, `foss_scorecard`, `cii_badge` — all fast/inline.
+- [ ] **`Security_Assessment`** survey: the above + `cve_scan` (minutes/queued, excluded from
+      Discovery by rule 17) + the GAP steps below.
+- [ ] **Reducer steps and a topic-summary annotation.** `foss_scorecard` is already a reducer;
+      it needs naming as one. Optional and possibly several per survey.
+- [ ] **Four GAP questions with no analysis at all**: secret handling, telemetry/phone-home
+      detection, CLA/DCO provenance, SLA/availability content. Secret scanning is what
+      "Security Scan" claimed to do all along.
+- [ ] **Per-stage summary dashboards** — deferred by decision, 2026-08-31. Stage *filtering* already
+      works (`get_dashboard_stages`, membership not equality); summarising across stages does not.
+      Open when defining it: derived membership double-counts, since `security_overview` belongs to
+      both Discovery and Assessment.
+- [ ] **Do findings need a run identifier?** `project_analysis_findings` has no run column. A run is
+      identifiable only by a shared `surveyed_at`, by convention, and `query_findings` does not use
+      it that way. Blocks "summarise this run" being a real query. See open question 5.
+
+### Carried, not from today
+- [ ] `UNVERIFIED` is computed and never persisted, so query time cannot reach it.
+- [ ] `test_local_flow_execution_fallback` failed once on 2026-08-31 and did not reproduce — see
+      Backlog "Test reliability" for what is ruled out. Do not treat Prefect teardown noise as a
+      reproduction signature.
+
 
 ## Done 2026-08-26/27 — do not redo
 
