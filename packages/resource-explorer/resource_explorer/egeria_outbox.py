@@ -291,6 +291,28 @@ def enqueue_annotations(
     return row_ids
 
 
+def enqueue_resource_list(
+    registry, entity_slug: str, parent_guid: str, collection_guid: str, *, run_id: str = "",
+) -> int:
+    """Record the Project -> Collection ResourceList attach as a queued write.
+
+    Same basis as membership: `ResourceList` via `attach_collection` was measured
+    uni-link (2026-08-25), returning None and leaving one attachment however many
+    times it is called, so replay converges. The qualifiedName is synthetic — the
+    relationship has none — and exists only as the outbox's identity key.
+
+    This one element is queued rather than written directly because its failure
+    was previously appended to `PromotionResult.errors` and then forgotten: the
+    Project and Collection both existed, unlinked, and nothing ever tried again.
+    """
+    return registry.enqueue_outbox_element(
+        "investigation", entity_slug, "resource_list",
+        f"ResourceList::{parent_guid}::{collection_guid}",
+        {"parent_guid": parent_guid, "collection_guid": collection_guid},
+        run_id=run_id,
+    )
+
+
 def enqueue_collection_members(
     registry, entity_slug: str, collection_guid: str,
     members: list[dict], *, run_id: str = "",
@@ -342,7 +364,7 @@ def record_drain_outcome(
     """
     if not summary.get("failed") and not summary.get("dead"):
         return
-    from resource_explorer.activity_logger import log_catalog
+    from resource_explorer.activity_logger import log_catalog, log_rfa
 
     dead, failed = summary.get("dead", 0), summary.get("failed", 0)
     status = "error" if dead else "warning"
@@ -365,19 +387,39 @@ def record_drain_outcome(
         for run_id, slug in sorted(runs.items())
     ] or [{"kind": "publish_queue", "name": "all pending elements",
            "link": "admin-outbox", "run_id": "", "entity_slug": ""}]
+    detail = (
+        f"Outbox drain: {summary}. "
+        "Full per-element record — qualifiedName, attempts, and Egeria's own "
+        "error for each — is in Admin → Publish Queue."
+    )
     try:
-        log_catalog(
-            registry, entity_type or "repo", entity_slug or "", "", "",
-            status=status,
-            summary="Egeria publish incomplete — " + "; ".join(parts),
-            detail=(
-                f"Outbox drain: {summary}. "
-                "Full per-element record — qualifiedName, attempts, and Egeria's own "
-                "error for each — is in Admin → Publish Queue. Dead-lettered rows will "
-                "not be retried without intervention; they can be re-queued there."
-            ),
-            items=items,
-        )
+        if dead:
+            # A dead-lettered element will NEVER be retried on its own, so it is
+            # a request for human action, not a status line — and it goes to the
+            # RFA drawer, which is the surface people actually watch. One entry,
+            # not two: log_rfa writes an activity entry as well, so also calling
+            # log_catalog would double-report a single event.
+            log_rfa(
+                registry, entity_type or "repo", entity_slug or "", "",
+                status="error",
+                summary="Egeria publish stuck — " + "; ".join(parts),
+                detail=detail + (
+                    " These will not be retried without intervention; re-queue them "
+                    "there once the underlying cause is fixed."
+                ),
+                analysis_name="Egeria publish queue",
+                items=items,
+            )
+        else:
+            # Retrying-but-not-yet-stuck is not something to ask a person to act
+            # on — the scheduler is already handling it. It stays an audit line.
+            log_catalog(
+                registry, entity_type or "repo", entity_slug or "", "", "",
+                status=status,
+                summary="Egeria publish incomplete — " + "; ".join(parts),
+                detail=detail,
+                items=items,
+            )
     except Exception:
         # The activity write is the visibility mechanism, not the work. If it
         # fails, the rows themselves are still correct and still retryable.

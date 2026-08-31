@@ -16,6 +16,7 @@ from resource_explorer.egeria_outbox import (
     OutboxClients,
     apply_element,
     drain_outbox,
+    record_drain_outcome,
 )
 from resource_explorer.registry import Project, ProjectRegistry
 
@@ -482,3 +483,87 @@ class TestNothingWrittenIsNotOneState:
         rows = db.claim_due_outbox_elements()
         assert len(rows) == 1 and rows[0]["attempts"] == 0
         assert db.list_dead_outbox_elements() == []
+
+
+class TestDeadLettersReachAPerson:
+    """A dead-lettered element will never be retried on its own, so it is a
+    request for human action rather than a status line — and it has to reach
+    the RFA drawer, which is the surface people actually watch.
+
+    The drawer is fed by GET /api/activity/rfas, which keeps only ANNOTATIONS
+    whose annotation_type contains "RequestForAction" and ignores
+    operation="rfa" entirely. An entry without that annotation exists in the
+    activity log and is invisible where it matters — which is exactly how three
+    earlier RFA callers were silently unseen.
+    """
+
+    def test_a_dead_letter_raises_an_rfa_the_drawer_can_see(self, db, project):
+        # Driven to dead via mark_outbox_failed rather than repeated drains:
+        # the backoff means real drains would need a clock, and what is under
+        # test here is the reporting, not the retry policy.
+        row_id = _enqueue(db, project, qn="Q::dead")
+        for _ in range(ProjectRegistry.OUTBOX_MAX_ATTEMPTS):
+            db.mark_outbox_failed(row_id, "permission denied")
+        assert db.list_dead_outbox_elements()
+
+        record_drain_outcome(db, {"claimed": 1, "done": 0, "failed": 0, "dead": 1, "skipped": 0})
+        entries = db.list_activity(limit=10)
+        assert len(entries) == 1, "one event must produce one entry, not two"
+        entry = entries[0]
+        assert entry["operation"] == "rfa"
+        anns = entry.get("annotations") or []
+        assert any("RequestForAction" in (a.get("annotation_type") or "") for a in anns), (
+            "without this annotation the RFA drawer never shows it"
+        )
+        assert "stuck" in entry["summary"]
+
+    def test_a_retrying_failure_is_an_audit_line_not_an_rfa(self, db, project):
+        # The scheduler is already handling it; asking a person to act would
+        # make the drawer noise, and noise is how a drawer stops being read.
+        record_drain_outcome(db, {"claimed": 1, "done": 0, "failed": 1, "dead": 0, "skipped": 0})
+        entries = db.list_activity(limit=10)
+        assert len(entries) == 1
+        assert entries[0]["operation"] == "catalog"
+        assert "incomplete" in entries[0]["summary"]
+
+    def test_the_rfa_carries_the_link_to_the_publish_queue(self, db, project):
+        record_drain_outcome(db, {"claimed": 1, "dead": 1, "failed": 0, "done": 0, "skipped": 0},
+                             troubled_runs={"run-x": "p"})
+        entry = db.list_activity(limit=10)[0]
+        links = [i for i in (entry.get("items") or []) if i.get("link")]
+        assert links and links[0]["link"] == "admin-outbox"
+        assert links[0]["run_id"] == "run-x", (
+            "an RFA saying publishes are stuck is only actionable if it says which"
+        )
+
+
+class TestResourceListIsQueued:
+    def test_it_attaches_the_collection_to_its_parent(self, db, project):
+        from resource_explorer.egeria_outbox import enqueue_resource_list
+
+        calls = []
+
+        class CM:
+            def attach_collection(self, parent, coll):
+                calls.append((parent, coll))
+
+        enqueue_resource_list(db, "inv-1", "proj-guid", "coll-guid", run_id="rl")
+        summary = drain_outbox(db, OutboxClients(collection_manager=CM()), lambda qn: "",
+                               run_id="rl")
+        assert summary["done"] == 1
+        assert calls == [("proj-guid", "coll-guid")]
+
+    def test_a_failed_attach_survives_as_a_retryable_row(self, db, project):
+        # Previously this failure went into PromotionResult.errors and was
+        # forgotten, leaving a Project and Collection that both exist, unlinked.
+        from resource_explorer.egeria_outbox import enqueue_resource_list
+
+        class CM:
+            def attach_collection(self, parent, coll):
+                raise RuntimeError("no permission")
+
+        enqueue_resource_list(db, "inv-1", "p", "c", run_id="rl")
+        drain_outbox(db, OutboxClients(collection_manager=CM()), lambda qn: "", run_id="rl")
+        rows = db.list_outbox_elements(run_id="rl")
+        assert rows[0]["status"] == "failed"
+        assert "no permission" in rows[0]["last_error"]

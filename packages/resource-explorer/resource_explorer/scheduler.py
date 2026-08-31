@@ -137,9 +137,23 @@ def _drain_egeria_outbox() -> None:
     from resource_explorer.egeria_outbox import drain_outbox
     from resource_explorer.registry import ProjectRegistry
 
-    summary = drain_outbox(ProjectRegistry())
+    registry = ProjectRegistry()
+    summary = drain_outbox(registry)
     if summary.get("claimed"):
         log.info("Egeria outbox drain: %s", summary)
+
+    # Retention. Only completed rows, and only ones past the window — dead rows
+    # still need a human and pending rows are live work. Driven from here rather
+    # than left to the API route, because retention that has to be invoked by
+    # hand is not retention: one blueprint publish is ~14,000 rows (measured
+    # 2026-08-31), and nothing would ever call it in time.
+    try:
+        removed = registry.purge_outbox_completed()
+        if removed:
+            log.info("Egeria outbox: purged %d completed row(s) past retention", removed)
+    except Exception:
+        # Housekeeping must never break the drain that precedes it.
+        log.exception("Egeria outbox: retention purge failed")
 
 
 def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], list[str]]:

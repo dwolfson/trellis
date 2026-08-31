@@ -200,12 +200,33 @@ class EgeriaInvestigationPublisher:
         if ws_slug and res.collection_guid:
             self._registry.set_working_set_egeria_collection(ws_slug, res.collection_guid)
 
-        # 3. ResourceList: Project -> Collection
-        try:
-            cm.attach_collection(res.project_guid, res.collection_guid)
-            res.resource_list_linked = True
-        except Exception as exc:
-            res.errors.append(f"attach_collection failed: {type(exc).__name__}: {exc}")
+        # 3. ResourceList: Project -> Collection, through the outbox.
+        #
+        # Queued rather than called directly because a failure here used to be
+        # appended to res.errors and forgotten — leaving a Project and a
+        # Collection that both exist and are not linked, with nothing to notice.
+        # Enqueue-then-drain inline keeps the happy path identical.
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, drain_outbox, enqueue_resource_list,
+        )
+
+        rl_run_id = f"Investigation::{investigation_slug}::{res.collection_guid}::resource-list"
+        rl_row = enqueue_resource_list(
+            self._registry, investigation_slug, res.project_guid, res.collection_guid,
+            run_id=rl_run_id,
+        )
+        drain_outbox(
+            self._registry, OutboxClients(collection_manager=cm), lambda qn: "",
+            limit=1, run_id=rl_run_id,
+        )
+        rl_rows = self._registry.list_outbox_elements(run_id=rl_run_id, limit=1)
+        res.resource_list_linked = bool(rl_rows) and rl_rows[0]["status"] == "done"
+        if not res.resource_list_linked:
+            err = rl_rows[0]["last_error"] if rl_rows else "row disappeared"
+            res.errors.append(
+                f"attach_collection failed ({err}) — queued for retry, "
+                f"see Admin → Publish Queue"
+            )
 
         # 4. CollectionMembership per member, where the resource actually exists
         #    in Egeria. A member whose repo was never published has no asset to

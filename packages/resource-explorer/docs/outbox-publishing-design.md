@@ -248,6 +248,9 @@ and there the stored payload replays an identical qualifiedName.
      blocking. A partial drain therefore leaves a coherent prefix, never an annotation whose
      report was never written.
    - **Backoff** is exponential from 60s, capped at a day; **dead-letter** at 8 attempts.
+   - **Retention runs on that same loop** (close-out pass, 2026-08-31) —
+     `purge_outbox_completed()` drops `done` rows past 14 days. Retention reachable only from an
+     API route is not retention: nothing would have called it before a ~14,000-row blueprint run.
    - **An unreachable platform is not a failed write.** The drain leaves every row untouched and
      reports `skipped` rather than burning an attempt, so an outage cannot dead-letter a
      perfectly good write.
@@ -275,8 +278,15 @@ and there the stored payload replays an identical qualifiedName.
    and on a completed row it would re-apply a write that already succeeded. Both return 409
    rather than being absorbed.
 
-   **Not done, and deliberately:** a dead row is surfaced through `list_dead_outbox_elements()`,
-   an error log, an activity entry and the Publish Queue panel, but not yet as an RFA. `rfa_actions` rows hang off an `activity_log` entry
+   **A dead row now raises an RFA** (close-out pass, 2026-08-31). It will never be retried on
+   its own, so it is a request for human action rather than a status line, and it goes to the RFA
+   drawer — the surface people actually watch. One entry, not two: `log_rfa` writes an activity
+   entry as well, so also calling `log_catalog` would double-report a single event. A
+   *retrying* failure stays an audit line, because the scheduler is already handling it and
+   asking a person to act on it would make the drawer noise.
+
+   `log_rfa` gained an optional `items` parameter so the RFA carries the same Publish Queue link
+   an ordinary entry does — "3 publishes are stuck" is only actionable if it also says which. `rfa_actions` rows hang off an `activity_log` entry
    (`entry_id`, `annotation_index`), so raising one from a dead outbox row is its own small
    integration rather than a line of code.
 4. **Repo publisher migrated — DONE.** `EgeriaPublisher._create_annotations` now enqueues one
@@ -333,6 +343,11 @@ and there the stored payload replays an identical qualifiedName.
 
    Per-member results are read back from what the drain actually did, not from what was enqueued
    — an enqueued row is a promise, not a result.
+
+   **The ResourceList attach is queued too** (close-out pass, 2026-08-31), which is what gives
+   the `resource_list` creator a producer. Its failure previously went into
+   `PromotionResult.errors` and was forgotten, leaving a Project and a Collection that both exist
+   and are not linked, with nothing to notice.
 
    The Project and the Collection stay synchronous for the same reason the repo path's asset and
    report do: their GUIDs are needed by the steps that follow and are returned in the

@@ -1372,7 +1372,8 @@ class ProjectRegistry:
             # to 831 rows at this granularity. One future blueprint publish on
             # egeria_git (13,813 scoped findings) is ~14,000 rows in a single
             # run — which is why purge_outbox_completed() exists now rather
-            # than being left for later.
+            # than being left for later, and why scheduler.py calls it on the
+            # same loop that drains: retention nobody invokes is not retention.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS egeria_outbox (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
