@@ -63,6 +63,17 @@ analyses:
       - badge_freshness
       - criteria_coverage
 
+  security_summary:
+    findings_kind: security_summary
+    source: surveyors/sub_surveyors/security_summary.py:findings_for
+    # A reducer: these three describe the SUMMARY, not the repository. Coverage
+    # and freshness are checks in their own right because a verdict without them
+    # is the thing the step exists to avoid.
+    checks:
+      - security_posture
+      - input_coverage
+      - summary_freshness
+
   community_support:
     findings_kind: community_support
     source: surveyors/sub_surveyors/community_support.py:assess

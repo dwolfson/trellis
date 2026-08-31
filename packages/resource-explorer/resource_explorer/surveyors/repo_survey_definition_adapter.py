@@ -66,6 +66,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     DependencySurveyor,
     DocumentationSurveyor,
     FossScorecardSurveyor,
+    SecuritySummarySurveyor,
     FileInventorySurveyor,
     GitStatisticsSurveyor,
     WebsiteIngestionSurveyor,
@@ -567,6 +568,17 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # One batched call to a public advisory database — no repo download,
         # and nothing fetched about the repo itself.
         fetch_cost="api",
+    ),
+    "repo_security_summary": StepInfo(
+        "repo_security_summary", SecuritySummarySurveyor,
+        "Reduces the security family's stored findings to one topic summary. "
+        "Measures nothing itself — it reads what the other security steps wrote, "
+        "so it belongs LAST in any survey that runs them. Reports coverage and "
+        "the age of its oldest input alongside the verdict, and refuses a verdict "
+        "at all below four inputs.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # A reducer: no fetch, and no measurement of its own.
     ),
     "repo_foss_scorecard": StepInfo(
         "repo_foss_scorecard", FossScorecardSurveyor,
@@ -1299,6 +1311,48 @@ def _cve_scan_headline(registry, slug: str) -> dict | None:
     # A clean result never states itself without its coverage.
     return {"label": f"none in {checked} of {recorded} declared dependenc(ies)",
             "tone": "good" if checked == recorded else "warn"}
+
+
+def _security_summary_results(registry, slug: str) -> dict:
+    """The reduced topic summary. Findings only — the interesting values
+    (coverage, oldest input) already ride in each finding's detail, and
+    duplicating them at the top would give two places to disagree."""
+    rows = registry.query_findings(slug, "security_summary")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"],
+         "confidence": r["confidence"], "detail": _json_or_empty(r.get("detail_json")),
+         "surveyed_at": r["surveyed_at"]}
+        for r in rows
+    ]}
+
+
+def _security_summary_headline(registry, slug: str) -> dict | None:
+    """Coverage and staleness are part of the headline, not a detail below it.
+
+    A one-word verdict is the whole risk of a topic summary: "clean" over four
+    of eight inputs, resting on month-old evidence, reads identically to "clean"
+    over all eight measured this morning. If the tile has room for one line, that
+    line has to carry both.
+    """
+    rows = _security_summary_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    posture = next((r for r in rows if r["check_name"] == "security_posture"), None)
+    coverage = next((r for r in rows if r["check_name"] == "input_coverage"), None)
+    fresh = next((r for r in rows if r["check_name"] == "summary_freshness"), None)
+    if not posture or not posture["detail"].get("known"):
+        return {"label": "not enough inputs to summarise", "tone": "neutral"}
+
+    cov = coverage["detail"] if coverage else {}
+    bits = [f"security: {posture['label']}"]
+    if cov.get("total"):
+        bits.append(f"{cov.get('covered')}/{cov.get('total')} inputs")
+    if fresh and fresh["label"] == "stale":
+        bits.append("evidence is stale")
+    tone = ("bad" if posture["label"] == "concerns"
+            else "warn" if (fresh and fresh["label"] == "stale") or cov.get("missing")
+            else "good")
+    return {"label": " · ".join(bits), "tone": tone}
 
 
 def _foss_scorecard_results(registry, slug: str) -> dict:
@@ -2583,6 +2637,14 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             headline_reader=_foss_scorecard_headline,
         ),
     ),
+    "security_summary": AnalysisKind(
+        "security_summary", ["repo_security_summary"],
+        family="security",
+        results=AnalysisKindResults(
+            _security_summary_results, None, "findings_list",
+            headline_reader=_security_summary_headline,
+        ),
+    ),
     "maturity": AnalysisKind(
         "maturity", ["repo_maturity"],
         results=AnalysisKindResults(_maturity_results, None, "findings_list", headline_reader=_maturity_headline),
@@ -2802,7 +2864,11 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "security picture in one place, not five separate cards. Also gathers the three "
         "externally-sourced trust signals (CVE advisories, OpenSSF Scorecard, OpenSSF Best "
         "Practices badge) that ask the same question from outside the repo.",
-        ["security_scan", "security_features", "ci_quality", "license_classification",
+        # security_summary FIRST: it is the reduction of the other eight, and a
+        # reader who stops after one card should get the one that names its own
+        # coverage and staleness rather than an arbitrary input.
+        ["security_summary",
+         "security_scan", "security_features", "ci_quality", "license_classification",
          "repo_conventions", "cve_scan", "foss_scorecard", "cii_badge"],
         render="custom", custom_renderer="renderSecurityOverviewDashboard",
     ),

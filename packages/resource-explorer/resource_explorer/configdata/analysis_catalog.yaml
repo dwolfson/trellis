@@ -286,6 +286,28 @@ repo_analyses:
     availability: inline
     target_shape: whole_resource_only
 
+  - id: security_summary
+    name: "Security Summary"
+    # A REDUCER (docs/survey-composition-and-topic-summary-design.md §2): it
+    # measures nothing itself and reads what the other security steps wrote, so
+    # it must run LAST in any survey containing them. `availability: queued`
+    # despite being trivially fast — a compiler running this inline would
+    # summarise whatever happened to be stored at that instant, which is the
+    # "packer must never trigger a survey" rule seen from the other side.
+    description: "One security verdict reduced from the other security analyses, with the two things a verdict usually loses: how many of its inputs actually ran, and the age of the oldest result it rests on. Summarises the latest sighting of each input rather than one survey run, so its own timestamp is newer than some of its evidence. Refuses to give a verdict at all below four inputs — a grade over three of eight would be a judgement about absence, not about the repository."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Governance"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: foss_scorecard
     name: FOSS Scorecard
     description: "OpenSSF-Scorecard-shaped checks computed from data already collected — maintenance, licence, CI tests, releases, contributors, SAST settings. A check that cannot be evaluated reports unknown and is EXCLUDED from the score, rather than scored zero as OpenSSF's own tool does, and the coverage is reported alongside the number: 8.0 over five checks and 8.0 over twelve are different claims. Not comparable with a published OpenSSF score, by design."

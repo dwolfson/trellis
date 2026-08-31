@@ -14,6 +14,7 @@ from resource_explorer.surveyors.sub_surveyors.community_support import Communit
 from resource_explorer.surveyors.sub_surveyors.cve_scan import CveScanSurveyor
 from resource_explorer.surveyors.sub_surveyors.interface_surface import InterfaceSurfaceSurveyor
 from resource_explorer.surveyors.sub_surveyors.foss_scorecard import FossScorecardSurveyor
+from resource_explorer.surveyors.sub_surveyors.security_summary import SecuritySummarySurveyor
 from resource_explorer.surveyors.sub_surveyors.license_classifier import LicenseClassifierSurveyor
 from resource_explorer.surveyors.sub_surveyors.repo_classification import RepoClassificationSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_features import SecurityFeaturesSurveyor
@@ -53,6 +54,7 @@ __all__ = [
     "CveScanSurveyor",
     "InterfaceSurfaceSurveyor",
     "FossScorecardSurveyor",
+    "SecuritySummarySurveyor",
     "LicenseClassifierSurveyor",
     "RepoClassificationSurveyor",
     "SecurityFeaturesSurveyor",
