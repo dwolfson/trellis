@@ -365,7 +365,7 @@ def persist_ir(
     # writing the rows first and clustering after would persist an empty
     # blueprint on every one of them, which is the state the corpus was in
     # until today (3,215 components, `blueprint` empty on all of them).
-    cluster_sets = _cluster(components, slug_to_scope, extra_metrics, wires=wires)
+    cluster_sets = _cluster(components, slug_to_scope, extra_metrics, wires=wires, ports=ports)
 
     for c in components:
         loc = slug_to_scope[c.slug]
@@ -572,7 +572,8 @@ def persist_ir(
 
 def _cluster(components: list[Component], slug_to_scope: dict[str, str],
              extra_metrics: dict | None = None,
-             wires: list[dict] | None = None) -> dict:
+             wires: list[dict] | None = None,
+             ports: list[dict] | None = None) -> dict:
     """Propose candidate blueprints per perspective, and assign them.
 
     One clustering per §4.1 perspective, never one across all of them: the
@@ -581,14 +582,15 @@ def _cluster(components: list[Component], slug_to_scope: dict[str, str],
     scoring error (a deployment detector scored against logical ground truth) at
     the level of a single proposed solution.
 
-    `wires` (design §10 signal 2) is the same list `_persist_interfaces`/
-    `_persist_diagram` already receive — passed straight through, not
-    re-derived, since interfaces.propose() already did the detection work.
-    Wire endpoints name components by NAME OR SLUG (`interfaces.propose`
-    attributes a compose wire by service name, a port by slug), so `"name"`
-    travels alongside `"slug"` below for `clustering._wire_weights` to
-    resolve against — the same ambiguity `mermaid._resolve_endpoint`
-    already handles for the diagram.
+    `wires` (design §10 signal 2) and `ports` (design §10 signal 3) are the
+    same lists `_persist_interfaces`/`_persist_diagram` already receive —
+    passed straight through, not re-derived, since interfaces.propose()
+    already did the detection work. Wire endpoints name components by NAME
+    OR SLUG (`interfaces.propose` attributes a compose wire by service name,
+    a port by slug), so `"name"` travels alongside `"slug"` below for
+    `clustering._wire_weights`/`_interface_names` to resolve against — the
+    same ambiguity `mermaid._resolve_endpoint` already handles for the
+    diagram.
 
     Returns `{"clusters": {perspective: [top-level Cluster]}, "errors":
     {perspective: message}}`. Failure here must not lose the run — clustering is
@@ -621,7 +623,8 @@ def _cluster(components: list[Component], slug_to_scope: dict[str, str],
     errors: dict = {}
     for perspective in sorted({c.perspective for c in components if c.perspective}):
         try:
-            flat = clustering.propose(scoped, perspective, cohesion=cohesion, wires=wires)
+            flat = clustering.propose(scoped, perspective, cohesion=cohesion,
+                                      wires=wires, ports=ports)
             if not flat:
                 continue
             top = clustering.rollup(flat)

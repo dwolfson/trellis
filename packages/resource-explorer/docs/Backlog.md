@@ -2247,8 +2247,36 @@ existing handling of the same ambiguity — a compose wire is attributed by serv
 slug), kept as its own small copy rather than a shared import, same reasoning as
 `ComponentMaterializer._find_element_guid` duplicating `EgeriaPublisher`'s.
 
-Signal 3 (same external interface) stays blocked on the standing interface-extraction item, as
-before.
+**Shared interface (signal 3) — DONE 2026-08-30, same session, following directly from the
+interface-extraction work above (item A's OpenAPI/FastAPI reuse, item B's language-binding
+evidence).** The LAST fallback in the chain — tried only once deployment context, scope hierarchy,
+AND wire density have all found nothing further — because it needs an IDL/OpenAPI document per
+component, rarer input than a wire between two components that simply call each other. `interfaces.py`
+was extended first, to capture a structured *name* rather than just a count: `_openapi_info()`
+(renamed from `_count_openapi_operations`) now returns `info.title` alongside the operation count,
+`_count_proto_rpcs()` returns the joined, sorted, unique proto/gRPC service names, and both (plus
+Thrift) pass an `interface_name` into `_port_dict()`, stored in `additionalProperties["interfaceName"]`
+— the same sanctioned extension point `operationCount` already uses. GraphQL deliberately does NOT
+get one: its root type names (`Query`/`Mutation`/`Subscription`) are the same across almost every
+GraphQL service, so treating them as a shared-identity signal would cluster unrelated services that
+merely both speak GraphQL.
+
+`clustering.py` gained `_interface_names(components, ports)` (`{slug: {declared name, ...}}`,
+resolved slug-or-name the same way `_wire_density_split` resolves wire endpoints) and
+`_shared_interface_split(member_scopes, by_scope, interface_names)` — an exact partition by shared
+name, not a size-bounded weighted merge like wire-density: a name two or more scopes present together
+is the whole signal, so there is no `target_size` to respect the way wire-density has one. A scope
+presenting more than one interface name goes to whichever shared group is largest (deterministic
+tie-break by name), and a name only ONE scope presents contributes nothing — "no signal, no cluster"
+again, same as `_subdivide`/`_wire_density_split`'s existing contract. `_build()` and `propose()` got
+a new `interface_names`/`ports` parameter threaded exactly like `wire_weights`/`wires` was for signal
+2 (including through `persist.py`'s `_cluster()`, which already received `ports` as an unused-for-
+clustering parameter). Resulting clusters carry `signal: "shared-interface"`.
+
+Confirmed by test that wire-density strictly wins when both signals would apply to literally the same
+subset (a densely-wired group that also shares an interface name clusters as `"wire-density"`, never
+`"shared-interface"`) and that shared-interface still gets its turn where wire-density genuinely finds
+nothing (an interface-only context group with no wires among its own members).
 
 **Found and fixed alongside it — a live, untested bug in `_build`'s recursive `_subdivide` branch:**
 the call `_build(sub_name, sub_scopes, by_scope, perspective, target_size, depth_left - 1)` passed 6
@@ -2263,10 +2291,13 @@ hierarchy to exist below it. Two new regression tests exercise `_build` directly
 hierarchies and so never naturally reaches this branch either) to prove the recursive call no longer
 raises and the second-level split is real.
 
-Suite: `test_arch_clustering.py` grew from 29 to 41 cases (the bug-fix regression, ten
-`TestWireDensitySignal` cases, and one end-to-end test proving `persist_ir` actually threads `wires`
-through `_cluster()` into `clustering.propose()` — a unit test of `propose(wires=...)` alone would not
-have caught a broken wire-up in between). Broader arch/clustering/mermaid suite: 485 passed.
+Suite: `test_arch_clustering.py` grew from 29 to 50 cases (the bug-fix regression, ten
+`TestWireDensitySignal` cases, seven `TestSharedInterfaceSignal` cases, and two end-to-end tests
+proving `persist_ir` actually threads `wires`/`ports` through `_cluster()` into
+`clustering.propose()` — a unit test of `propose(wires=..., ports=...)` alone would not have caught
+a broken wire-up in between). `test_arch_interfaces_idl.py` +6 (`TestInterfaceNameIsAStructuredIdentity`
+— OpenAPI title capture, proto/Thrift service-name capture, GraphQL exclusion, absent-title case).
+Broader arch/clustering/interfaces/mermaid suite: 507 passed, 9 skipped.
 
 ---
 

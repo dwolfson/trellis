@@ -261,6 +261,108 @@ class TestWireDensitySignal:
         assert any(c.signal == "wire-density" for c in clusters)
 
 
+class TestSharedInterfaceSignal:
+    """Design §10 signal 3 — the LAST fallback, tried only once deployment
+    context, scope hierarchy, AND wire density have all found nothing
+    further. `flat::sN` scopes reuse TestOversizedIsReportedNotHidden's
+    genuinely-unsplittable shape; the difference here is a declared
+    interface name shared by some of them."""
+
+    @staticmethod
+    def _port(scope, name):
+        return {"component": f"flat::{scope}", "additionalProperties": {"interfaceName": name}}
+
+    def test_components_sharing_a_declared_interface_name_cluster(self):
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        ports = [self._port(f"s{i}", "orders.OrderService") for i in range(6)]
+        clusters = clustering.propose(comps, "deployment", ports=ports)
+        shared = [c for c in clusters if c.signal == "shared-interface"]
+        assert len(shared) == 1
+        assert set(shared[0].members) == {f"flat::s{i}" for i in range(6)}
+
+    def test_a_lone_interface_name_is_not_a_shared_signal(self):
+        """One component presenting an interface nobody else presents is not
+        evidence of a shared surface — 'no signal, no cluster' bars a
+        one-member 'group'."""
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        ports = [self._port("s0", "orders.OrderService")]
+        clusters = clustering.propose(comps, "deployment", ports=ports)
+        assert not any(c.signal == "shared-interface" for c in clusters)
+
+    def test_components_with_no_interface_are_left_ungrouped(self):
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        ports = [self._port(f"s{i}", "orders.OrderService") for i in range(6)]
+        clustered = {m for c in clustering.propose(comps, "deployment", ports=ports)
+                    for m in c.members}
+        assert clustered == {f"flat::s{i}" for i in range(6)}
+
+    def test_without_the_ports_kwarg_behaviour_is_unchanged(self):
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        with_none = clustering.propose(comps, "deployment")
+        with_empty = clustering.propose(comps, "deployment", ports=None)
+        assert [(c.name, tuple(sorted(c.members))) for c in with_none] == \
+               [(c.name, tuple(sorted(c.members))) for c in with_empty]
+
+    def test_wire_density_wins_when_both_signals_apply_to_the_same_group(self):
+        """A wire is stronger evidence than a shared interface name — where
+        the exact same subset is both densely wired AND shares a declared
+        interface name, wire-density must claim it, never shared-interface."""
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        wires = [{"source": f"flat::s{a}", "target": f"flat::s{b}"}
+                for a in range(10) for b in range(a + 1, 10)]
+        ports = [self._port(f"s{i}", "orders.OrderService") for i in range(10)]
+        clusters = clustering.propose(comps, "deployment", wires=wires, ports=ports)
+        wired = [c for c in clusters if set(c.members) == {f"flat::s{i}" for i in range(10)}]
+        assert len(wired) == 1
+        assert wired[0].signal == "wire-density"
+        assert not any(c.signal == "shared-interface" for c in clusters)
+
+    def test_shared_interface_still_fires_where_wire_density_finds_nothing(self):
+        """Signals compose per level, same as wire-density composes with
+        deployment context: a context split narrows the problem, wire
+        density finds nothing within the interface-only context group (no
+        wires connect those scopes), and shared-interface still gets its
+        turn there."""
+        comps = [
+            {"slug": f"flat::s{i}", "scope_locator": f"flat::s{i}",
+             "perspective": "deployment",
+             "identity": {"deployment_context": "comps/wired" if i < 5 else "comps/api"}}
+            for i in range(10)
+        ]
+        wires = [{"source": f"flat::s{a}", "target": f"flat::s{b}"}
+                for a in range(5) for b in range(a + 1, 5)]
+        ports = (
+            [self._port(f"s{i}", "orders.OrderService") for i in (5, 6, 7)]
+            + [self._port("s8", "billing.BillingService")]
+        )
+        clusters = clustering.propose(comps, "deployment", wires=wires, ports=ports,
+                                      target_size=3)
+        assert any(c.signal == "wire-density" for c in clusters)
+        shared = [c for c in clusters if c.signal == "shared-interface"]
+        assert len(shared) == 1
+        assert set(shared[0].members) == {"flat::s5", "flat::s6", "flat::s7"}
+
+    def test_deterministic_across_repeated_calls(self):
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        ports = [self._port(f"s{i}", "orders.OrderService") for i in range(6)]
+        first = clustering.propose(comps, "deployment", ports=ports)
+        second = clustering.propose(comps, "deployment", ports=ports)
+        assert [(c.name, tuple(c.members)) for c in first] == \
+               [(c.name, tuple(c.members)) for c in second]
+
+    def test_a_component_presenting_two_interfaces_goes_to_the_larger_group(self):
+        comps = [_c(f"flat::s{i}") for i in range(25)]
+        ports = (
+            [self._port(f"s{i}", "orders.OrderService") for i in range(6)]
+            + [self._port(f"s{i}", "billing.BillingService") for i in range(6, 8)]
+            + [self._port("s0", "billing.BillingService")]  # s0 presents both
+        )
+        clusters = clustering.propose(comps, "deployment", ports=ports)
+        shared = {c.name: set(c.members) for c in clusters if c.signal == "shared-interface"}
+        orders_group = next(m for m in shared.values() if "flat::s1" in m)
+        assert "flat::s0" in orders_group
+
+
 class TestRollup:
     """The ~10 goal binds at every level. Splitting genaiexamples by deployment
     context produced 87 readable clusters — and 87 blueprints for one repo is no
@@ -452,5 +554,22 @@ class TestWiresReachClusteringThroughPersistIr:
         blueprints = [f for f in reg.findings if f["kind"] == BLUEPRINT_KIND]
         assert any(
             (f.get("detail") or {}).get("signal") == "wire-density"
+            for f in blueprints
+        ), [f.get("detail") for f in blueprints]
+
+    def test_a_shared_interface_derived_blueprint_is_persisted(self):
+        from resource_explorer.surveyors.arch_recovery.persist import persist_ir, BLUEPRINT_KIND
+
+        components = [self._comp(f"flat::s{i}") for i in range(25)]
+        ports = [{"component": f"flat::s{i}",
+                 "additionalProperties": {"interfaceName": "orders.OrderService"}}
+                for i in range(6)]
+        reg = self._StubRegistry()
+        persist_ir(reg, "demo", components, [], "2026-08-30T00:00:00",
+                  ports=ports)
+
+        blueprints = [f for f in reg.findings if f["kind"] == BLUEPRINT_KIND]
+        assert any(
+            (f.get("detail") or {}).get("signal") == "shared-interface"
             for f in blueprints
         ), [f.get("detail") for f in blueprints]
