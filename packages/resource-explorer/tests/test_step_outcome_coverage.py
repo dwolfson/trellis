@@ -229,3 +229,64 @@ class TestCveScan:
             assert props["outcome"] in (NO_SIGNAL, UNVERIFIED)
             if props["outcome"] == NO_SIGNAL:
                 assert props["outcome_known_positive"] is True
+
+
+class TestLicenseClassifier:
+    """Three states were reported as two, and the merged pair is the one that
+    matters: a repo GitHub says has no license, and a repo nothing has fetched
+    stats for, both produced "No license detected on this repository."
+
+    That asserts the more alarming reading on no evidence — an unfetched repo
+    reads as unlicensed, which is the direction a reader acts on.
+    """
+
+    def _run(self, stats):
+        from resource_explorer.surveyors.sub_surveyors.license_classifier import (
+            LicenseClassifierSurveyor,
+        )
+
+        class _Reg:
+            def get_latest_project_stats(self, slug):
+                return stats
+
+            def upsert_finding(self, *a, **k):
+                pass
+
+        return LicenseClassifierSurveyor(_Proj(), _Reg()).run()
+
+    def test_no_stats_row_is_unverified_not_unlicensed(self):
+        anns = self._run(stats=None)
+        props = _outcome(anns)
+        assert props["outcome"] == UNVERIFIED
+        assert props["outcome_known_positive"] is False
+        assert "not a finding that the repo is unlicensed" in anns[0].summary
+
+    def test_no_stats_row_is_not_a_low_confidence_answer(self):
+        # It is a non-answer. 60 reads as "we looked and are somewhat unsure".
+        anns = self._run(stats=None)
+        assert anns[0].confidence == 0
+
+    def test_github_reporting_no_license_is_a_provable_zero(self):
+        anns = self._run(stats={"license": "", "license_spdx_id": ""})
+        props = _outcome(anns)
+        assert props["outcome"] == NO_SIGNAL
+        assert props["outcome_known_positive"] is True
+        assert anns[0].summary == "No license detected on this repository."
+
+    def test_a_classified_license_is_recovered(self):
+        anns = self._run(stats={"license": "Apache License 2.0",
+                                "license_spdx_id": "Apache-2.0"})
+        props = _outcome(anns)
+        assert props["outcome"] == RECOVERED
+        assert anns[0].confidence == 100
+
+    def test_a_license_this_table_does_not_carry_is_partial(self):
+        # Knowingly incomplete, not absent: a license IS present and the risk
+        # table does not classify it. The one place in this step where
+        # `partial` is the honest word — and the only use of it in the codebase.
+        anns = self._run(stats={"license": "Weird Public License",
+                                "license_spdx_id": "WPL-9.9"})
+        props = _outcome(anns)
+        assert props["outcome"] == "partial"
+        assert props["outcome_cause"] == "SPDX id not in the risk table"
+        assert anns[0].confidence == 60
