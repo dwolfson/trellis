@@ -73,7 +73,7 @@ class TestFinding4DockerfileWithoutManifest:
         _write(root, "handler/app.py", "print('hi')\n")
         files = ["handler/Dockerfile", "handler/app.py"]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
 
         assert len(components) == 1
         comp = components[0]
@@ -87,7 +87,7 @@ class TestFinding4DockerfileWithoutManifest:
         _write(root, "buildctx/Dockerfile", "FROM alpine\n")
         files = ["buildctx/Dockerfile"]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
 
         assert components == []
         assert any("build context" in n for n in notes)
@@ -116,7 +116,7 @@ class TestFinding5DeploymentContextQualifiesSlug:
                 f"{deployment}/{deployment}-local.yaml",
             ]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
         components = [c for c in components if c.type == "Long Running Daemon"]
 
         slugs = sorted(c.slug for c in components)
@@ -161,7 +161,7 @@ class TestFinding11LayeredComposeMerges:
         _write(root, "deploy/override.yaml", "services:\n  apache-web:\n    container_name: quickstart-web-server\n")
         files = ["deploy/base.yaml", "deploy/override.yaml"]
 
-        components, evidence, notes = detectors.build_components(root, files)
+        components, evidence, notes, _ops = detectors.build_components(root, files)
 
         names = sorted(c.name for c in components)
         assert names == ["quickstart-web-server"]     # merged into ONE component
@@ -712,8 +712,119 @@ class TestFinding93GradleModules:
         _write(root, "core/src/main/java/A.java", "package a;\n")
         _write(root, "connect/api/src/main/java/B.java", "package b;\n")
         _git_init(root)
-        comps, _, _ = detectors.build_components(root, _tracked(root))
+        comps, _, _, _ = detectors.build_components(root, _tracked(root))
         gm = {c.name: c for c in comps if "gradle-module" in (c.proposed_by or [])}
         assert set(gm) == {"core", "connect:api"}
         assert gm["connect:api"].files == ["connect/api/**"]
         assert gm["connect:api"].perspective == "logical"
+
+
+class TestOperationCountsFromRouteDecorators:
+    """Backlog.md "interface extraction" entry — build_components()'s 4th
+    return value, {component slug: route count}, is what lets interfaces.py
+    see a REST API a FastAPI service never checks in as a static OpenAPI
+    document (it generates one at runtime from these same decorators)."""
+
+    def test_route_decorators_are_counted_per_component(self, tmp_path):
+        root = str(tmp_path)
+        # Two first-party files in svc/, matching build_hierarchy's own
+        # >=2-files-per-directory bar for a candidate subtree — a single
+        # file there would attribute the marker to the package root instead.
+        _write(root, "svc/app.py", (
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n\n"
+            "@app.get('/a')\n"
+            "def a(): ...\n\n"
+            "@app.post('/b')\n"
+            "def b(): ...\n\n"
+            "@app.delete('/c')\n"
+            "def c(): ...\n"
+        ))
+        _write(root, "svc/models.py", "class Item: ...\n")
+        _git_init(root)
+        _, _, _, operation_counts = detectors.build_components(root, _tracked(root))
+        assert operation_counts == {"code::svc": 3}
+
+    def test_a_subtree_with_no_route_decorators_is_absent_not_zero(self, tmp_path):
+        """None/absent means 'no operation marker matched here' — a component
+        with a CLI marker but no routes must not silently read as a REST API
+        with 0 operations, which is a different claim (a real, empty API)."""
+        root = str(tmp_path)
+        _write(root, "cli/main.py", (
+            "import typer\n"
+            "app = typer.Typer()\n\n"
+            "@app.command()\n"
+            "def run(): ...\n"
+        ))
+        _git_init(root)
+        _, _, _, operation_counts = detectors.build_components(root, _tracked(root))
+        assert operation_counts == {}
+
+
+class TestLanguageBindingEvidence:
+    """Backlog.md "interface extraction" entry, item B, per Dan 2026-08-30:
+    "not sure about language bindings unless they are exported as a specific
+    library — eg. pyegeria." Not a classifier — a package's own declared
+    description is recorded verbatim as evidence on the component it names,
+    and nothing here decides whether it "is" a binding. Directory-name
+    conventions (`clients/<lang>`, `sdk/<lang>`) are deliberately NOT
+    consulted at all, per the same steer."""
+
+    def test_an_installable_package_with_a_description_gets_binding_evidence(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "pyproject.toml", (
+            "[project]\n"
+            'name = "pyegeria"\n'
+            'description = "A python client for the Egeria metadata management system"\n'
+            "[build-system]\n"
+            'requires = ["setuptools"]\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        binding_ev = [e for e in evidence
+                     if e.assertion == "publishes a python package — possible language binding"]
+        assert len(binding_ev) == 1
+        assert "Egeria metadata management" in binding_ev[0].locations[0].excerpt
+
+    def test_a_console_command_gets_no_binding_evidence(self, tmp_path):
+        """A CLI entry point is not the "installable, no entry point" shape
+        classify() reserves for Software Library — recording binding
+        evidence for it would claim more than the manifest states."""
+        root = str(tmp_path)
+        _write(root, "pyproject.toml", (
+            "[project]\n"
+            'name = "mytool"\n'
+            'description = "does something"\n'
+            "[project.scripts]\n"
+            'mytool = "mytool.cli:main"\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        assert not any("possible language binding" in e.assertion for e in evidence)
+
+    def test_no_description_yields_no_binding_evidence(self, tmp_path):
+        """A bare name with no description is not evidence of anything beyond
+        'this is installable' — classify() already records that; adding an
+        empty-description binding claim would invent detail the manifest
+        never stated."""
+        root = str(tmp_path)
+        _write(root, "pyproject.toml", (
+            '[project]\nname = "mylib"\n[build-system]\nrequires = ["setuptools"]\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        assert not any("possible language binding" in e.assertion for e in evidence)
+
+    def test_node_packages_are_covered_too(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "package.json", (
+            '{"name": "egeria-js", "version": "1.0.0", '
+            '"description": "A JavaScript client for Egeria", '
+            '"main": "index.js"}\n'
+        ))
+        _git_init(root)
+        _, evidence, _, _ = detectors.build_components(root, _tracked(root))
+        binding_ev = [e for e in evidence
+                     if e.assertion == "publishes a node package — possible language binding"]
+        assert len(binding_ev) == 1
+        assert "JavaScript client for Egeria" in binding_ev[0].locations[0].excerpt

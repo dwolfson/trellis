@@ -77,7 +77,7 @@ class ArchDetectSurveyor(BaseSurveyor):
             if self._scope_locator:
                 first_party = [f for f in first_party if path_matches_scope(f, self._scope_locator)]
 
-            components, evidence, notes = build_components(root, first_party)
+            components, evidence, notes, code_marker_operations = build_components(root, first_party)
 
             # Unlike coupling, detect has three independent ways to find a
             # component — package manifests, Dockerfile/compose deployment
@@ -157,7 +157,8 @@ class ArchDetectSurveyor(BaseSurveyor):
             try:
                 from resource_explorer.surveyors.arch_recovery import interfaces
                 ports, wires, iface_ev, iface_notes = interfaces.propose(
-                    root, first_party, components)
+                    root, first_party, components,
+                    code_marker_operations=code_marker_operations)
                 evidence.extend(iface_ev)
                 notes.extend(iface_notes)
             except Exception:
