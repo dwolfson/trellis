@@ -106,3 +106,49 @@ def test_the_pane_is_wired_and_states_the_buffer_is_volatile():
         "the empty state does not mention that the buffer starts empty on "
         "restart, so 'no logs' reads as a statement about the system"
     )
+
+def test_a_traceback_survives_into_the_record(client):
+    """The thing a log viewer exists for. A one-line "it failed" is what the
+    activity log already gives you."""
+    try:
+        raise ValueError("the actual cause")
+    except ValueError:
+        logging.getLogger("resource_explorer.viewer_test").exception("step failed")
+
+    rec = client.get("/api/logs/").json()["records"][0]
+    assert rec["exc"], "no traceback captured — the record is just the message"
+    assert "Traceback" in rec["exc"]
+    assert "the actual cause" in rec["exc"], (
+        "the traceback was captured but not the exception that caused it"
+    )
+    assert len(rec["exc"].splitlines()) > 1, "traceback collapsed to one line"
+
+
+def test_stack_info_is_captured_as_well_as_exc_info(client):
+    """Different fields, and only exc_info was read until 2026-08-31.
+
+    `log.warning(..., stack_info=True)` printed a stack to the console and
+    reached the viewer as a bare one-line message — the opposite of why anyone
+    passes stack_info.
+    """
+    logging.getLogger("resource_explorer.viewer_test").warning("where am I", stack_info=True)
+    rec = client.get("/api/logs/").json()["records"][0]
+    assert rec["exc"], "stack_info was dropped on the way into the buffer"
+    assert "Stack" in rec["exc"]
+
+
+def test_a_multi_line_message_keeps_its_lines(client):
+    """The record held the newlines; the view used to throw them away, because
+    a table cell collapses whitespace by default."""
+    logging.getLogger("resource_explorer.viewer_test").info("first\nsecond\nthird")
+    rec = client.get("/api/logs/").json()["records"][0]
+    assert rec["message"].splitlines() == ["first", "second", "third"]
+
+    html = INDEX.read_text()
+    cell = html[html.index("${_esc(r.message || '')}") - 400:]
+    cell = cell[:cell.index("</td>")]
+    assert "whitespace-pre-wrap" in cell, (
+        "the message cell does not preserve newlines, so a multi-line message "
+        "renders as one run-on line"
+    )
+

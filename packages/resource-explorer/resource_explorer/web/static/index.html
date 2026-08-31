@@ -12495,8 +12495,13 @@ async function loadAdminLogsPanel() {
             <td class="px-2 py-1 text-slate-600 whitespace-nowrap">${_esc(r.ts || '')}</td>
             <td class="px-2 py-1 whitespace-nowrap ${_LOG_LEVEL_CLASS[r.level] || 'text-slate-400'}">${_esc(r.level || '')}</td>
             <td class="px-2 py-1 text-cyan-500 whitespace-nowrap">${_esc(r.logger || '')}</td>
-            <td class="px-2 py-1 text-slate-300 break-all">${_esc(r.message || '')}${
-              r.exc ? `<pre class="mt-1 text-[10px] text-red-300 whitespace-pre-wrap">${_esc(r.exc)}</pre>` : ''}</td>
+            <!-- whitespace-pre-wrap on the MESSAGE too, not just the traceback.
+                 A multi-line message (a rendered table, a diff, anything with
+                 embedded newlines) was collapsed to one line by default table
+                 cell whitespace handling — the record held the newlines and the
+                 view threw them away. -->
+            <td class="px-2 py-1 text-slate-300 break-words whitespace-pre-wrap">${_esc(r.message || '')}${
+              r.exc ? `<pre class="mt-1 text-[10px] text-red-300 whitespace-pre-wrap break-words">${_esc(r.exc)}</pre>` : ''}</td>
           </tr>`).join('')}
       </tbody>
     </table>` : empty;

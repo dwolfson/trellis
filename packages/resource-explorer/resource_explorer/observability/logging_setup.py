@@ -63,13 +63,31 @@ class RingBufferHandler(logging.Handler):
                 "level": record.levelname,
                 "logger": record.name,
                 "message": record.getMessage(),
-                "exc": self.formatter.formatException(record.exc_info)
-                       if (record.exc_info and self.formatter) else "",
+                # exc_info AND stack_info. They are different fields and only
+                # the first was captured until 2026-08-31: log.warning(...,
+                # stack_info=True) printed a stack to the console and arrived in
+                # the viewer as a bare one-line message, which is the opposite
+                # of why someone passes stack_info.
+                "exc": self._detail(record),
             }
             with self._lock:
                 self._records.append(entry)
         except Exception:  # pragma: no cover - defensive, see above
             self.handleError(record)
+
+    def _detail(self, record: logging.LogRecord) -> str:
+        """Traceback and/or stack, whichever the record carries.
+
+        Both are multi-line and both are the reason someone opens a log viewer
+        rather than reading a summary, so neither may be dropped on the way in —
+        a viewer cannot render what the handler discarded.
+        """
+        parts = []
+        if record.exc_info and self.formatter:
+            parts.append(self.formatter.formatException(record.exc_info))
+        if getattr(record, "stack_info", None):
+            parts.append(logging.Formatter().formatStack(record.stack_info))
+        return "\n".join(p for p in parts if p)
 
     def records(self, limit: int = 500, level: str = "", logger: str = "") -> list[dict]:
         """Newest first. Filters are exact on level, prefix on logger name."""
