@@ -2349,6 +2349,15 @@ where the native survey's results actually surface (ties into the "results dashb
 paragraphs up — an `executes_at: egeria` step today only returns an engine-action GUID with
 "check Egeria's Asset Catalog," which is not itself a tested read-back path).
 
+**Also blocked on the same gap: Automate's own 📋 Surveys sub-tab (put a whole Survey Definition
+on a cadence) is hardcoded to repo end to end** — the frontend requires a selected repo before
+rendering anything, and `_saveSurveySchedule` posts to `/api/schedules/repo/...` unconditionally.
+`list_definitions()`'s `resource_type` field was fixed 2026-08-30 to be genuinely read per
+document instead of hardcoded `"repo"`, so the backend is ready — but there is nothing for it to
+show beyond repo until database/filesystem Survey Definitions exist (by the native-survey route
+above) *and* the tab's resource selector is generalized to match. Two separate small pieces once
+the native-survey path is proven, not one.
+
 ---
 
 #### MEDIUM (was HIGH) — Filesystem local survey: silent-failure causes fixed, true "hang" UX still open
