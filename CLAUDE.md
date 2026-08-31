@@ -108,6 +108,30 @@ place, and rooting a session in one repo gives that up.
 
 Absent that, **rules 1 and 2 are the only controls that actually operate.** Treat them accordingly.
 
+**If you do work in a worktree, fast-forward this checkout when you are done.**
+
+A worktree is real isolation, and that is exactly the problem: **the running app serves from THIS
+checkout** (`/Users/dwolfson/localGit/egeria-v6/trellis` — `resource-explorer web --reload`, port
+8810), not from yours. Pushing to `origin/main` does not move it. Nothing pulls it.
+
+Found the hard way on 2026-08-31: a session built six user-visible changes in a worktree, pushed
+each to `origin/main`, and reported each as shipped. Dan restarted the server, hard-refreshed, and
+saw none of them — this checkout was three commits behind, so he was looking at an earlier version
+of the same feature and reasonably concluded the fix had not worked. The work was fine; the
+delivery was not.
+
+So the last step of a change is not the push:
+
+```
+git -C /Users/dwolfson/localGit/egeria-v6/trellis fetch origin
+git -C /Users/dwolfson/localGit/egeria-v6/trellis status --porcelain   # someone else mid-write?
+git -C /Users/dwolfson/localGit/egeria-v6/trellis merge --ff-only origin/main
+```
+
+Check `status` first and stop if it is dirty or a merge is in progress — this checkout is shared,
+and rules 1 and 2 apply to it whoever is driving. `--ff-only` deliberately: if it will not
+fast-forward, this checkout has commits of its own and someone needs to look, not be merged past.
+
 **Before committing, read `git status` and confirm every staged path is yours.** An unexpected file
 is a signal that another session is mid-write, not something to sweep in.
 
