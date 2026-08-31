@@ -81,6 +81,7 @@ starting rather than after. That alone would have caught the collision above.
 | ~~`_COCHANGE_MAX_FILES = 50`~~ | dwolfson-59 | **measured, keep 50** — it is a cost control, not a quality control |
 | compiler item 10 — wire the Chat panel | — | open (S3) |
 | docs-as-source | — | open, designed and unbuilt |
+| `repo_survey_definition_adapter.py` — `_results_have_data` envelope-detection bug (nested `{"documentation": {"state": "not-attempted"}}` reads as "has data") | trellis-compiler-30 | in progress — fixing while adding `architecture_overview` to Survey Results; S1 (file's listed owner) confirmed no objection 2026-08-30 |
 
 Remove a row (or strike it) once its work lands or is abandoned — a table of stale claims that
 still look active is worse than no table.
