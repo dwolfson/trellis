@@ -412,9 +412,20 @@ Everything below came out of one session. Design reasoning lives in
 
       **Observe holds only Prefect on purpose**: it is the home for the two panes below, and a
       group of one that names a gap beats folding it somewhere it does not belong.
-- [ ] **No logs viewer, and logging is not wired.** Root logger has no handlers and `uvicorn.run()`
-      takes no `log_config` (`cli/main.py:327`), so INFO is discarded and WARNING/ERROR arrive bare.
-      **Wire logging before building a viewer** or it will show nothing and read as broken.
+- [x] **Logging wired** 2026-08-31 — `observability/logging_setup.py`. Root now has a formatted
+      console handler (timestamp, level, logger name) plus a bounded in-memory `RingBufferHandler`;
+      level from `$RE_LOG_LEVEL`, default INFO. `configure_logging()` is idempotent and called from
+      both the CLI and the web app's import, and `uvicorn.run()` is given a matching `log_config`.
+
+      The trap found while writing it, now guarded by a test: `dictConfig` **replaces** root's
+      handler list when a `root` key is present, and uvicorn applies its `log_config` *after* our
+      setup — so declaring `root` there would tear out the ring buffer, and the viewer would be
+      empty under the server and full under the CLI.
+
+- [ ] **Log viewer — now unblocked.** Source is `logging_setup.ring_handler` (`records(limit, level,
+      logger)`, newest first). **The viewer must say the buffer is in-memory and bounded**: it holds
+      5,000 records and is empty after a restart, so "no records" is not "nothing happened". Goes in
+      Admin → Observe beside Prefect and Feedback.
 ### Refresh as a survey, not a button
 
 Reframed 2026-08-31: refresh wants to be a **schedulable survey in Automate** that decides whether
