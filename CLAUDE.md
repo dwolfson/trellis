@@ -6,8 +6,9 @@ Package-specific guidance lives in `packages/resource-explorer/CLAUDE.md` and
 ## Git: multiple sessions run in this repo at once
 
 Several Claude Code sessions routinely work in this repo simultaneously, sometimes in the same
-worktree on the same branch. Two rules follow, and the first matters most because it holds even
-when you do not know what other sessions are doing.
+worktree on the same branch. Three rules follow. The first two matter most, because they hold
+even when you do not know what other sessions are doing — and the second is the case where the
+first one's advice does not apply at all.
 
 **1. No whole-tree git operations in a shared checkout. Name the paths — every command that
 takes a pathspec accepts one.**
@@ -50,7 +51,45 @@ Before committing, read `git status` and confirm every staged path is yours. An 
 a signal that another session is mid-write, not something to sweep in. If naming paths is tedious,
 it is because the change is large, not because the rule is wrong.
 
-**2. Worktrees are not currently a usable isolation mechanism here — know why before relying on
+**2. Never `git commit` while a merge is in progress unless the merge is yours.**
+
+This is the case where rule 1's advice does not merely weaken — it does not apply. `git commit`
+during a merge commits **the merge**: every staged path, including another session's conflict
+resolution, under your message and your sign-off. `git add <my paths>` does not save you,
+because the merge state is not addressed by a pathspec. There is no safe pathspec form of this
+one.
+
+That is what makes it worth its own rule. Everyone here has learned "name the paths", and here
+that habit offers no protection while feeling like it does.
+
+Check before committing, always — it is one command:
+
+```
+git rev-parse -q --verify MERGE_HEAD && echo "MERGE IN PROGRESS — do not commit"
+```
+
+Use that form, not `test -f .git/MERGE_HEAD`. Inside a linked worktree `.git` is a *file*, not
+a directory, so the `test -f` version finds nothing and reports all-clear during a real merge —
+a check that fails silently in exactly the setup rule 3 describes.
+
+`git status` does say so — "You have unmerged paths" while conflicts remain, "All conflicts
+fixed but you are still merging" once they are resolved — but it says it below the file list,
+which is exactly where a long status stops being read. The second wording is the dangerous
+one: it reads like an all-clear.
+
+Encountered 2026-08-30: a session finished a documentation change and found `MERGE_HEAD` set
+to `162200d` with three files `UU` — conflicts already resolved on disk by someone else, not
+yet staged. Committing would have completed a stranger's merge. The work was held for ten
+minutes until the merge landed, then committed normally.
+
+**If you find yourself here:** wait, and copy any uncommitted work of your own outside the
+checkout first. `git merge --abort` is a legitimate thing for the merge's owner to run and it
+takes unstaged changes with it — yours included, with no warning that they were there.
+
+The same shape appears in any whole-repository operation whose blast radius is invisible in its
+name. A bare `uv sync` is the other one people hit.
+
+**3. Worktrees are not currently a usable isolation mechanism here — know why before relying on
 one.**
 
 Every Claude session on this machine runs with `cwd: /Users/dwolfson`, which is not a git
@@ -67,7 +106,7 @@ the repo** rather than in the home directory. That is a deliberate trade: sessio
 precisely so they can work across trellis, egeria-python, egeria-workspaces and pyegeria in one
 place, and rooting a session in one repo gives that up.
 
-Absent that, **rule 1 is the only control that actually operates.** Treat it accordingly.
+Absent that, **rules 1 and 2 are the only controls that actually operate.** Treat them accordingly.
 
 **Before committing, read `git status` and confirm every staged path is yours.** An unexpected file
 is a signal that another session is mid-write, not something to sweep in.
