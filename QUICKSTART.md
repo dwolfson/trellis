@@ -1,0 +1,190 @@
+# Trellis — Quickstart
+
+From a fresh clone to a running app. Fifteen minutes, most of it waiting for model downloads.
+
+Trellis is a `uv` workspace holding two apps and six shared libraries. You do not need to
+understand the whole thing to run one app — start with the [10-minute path](#the-10-minute-path),
+which needs no Egeria server and no catalog.
+
+For what the repo *is* and why it is one repo, see [README.md](README.md).
+
+---
+
+## Prerequisites
+
+| Tool | Why | Check |
+|---|---|---|
+| [uv](https://docs.astral.sh/uv/) | Dependency + workspace manager | `uv --version` |
+| Docker | Postgres with the pgvector extension | `docker ps` |
+| [Ollama](https://ollama.com) | Local LLM, the default backend | `ollama --version` |
+
+Python itself is handled by `uv` from `.python-version` — you do not need to install it.
+
+**Optional, and genuinely optional:** an Egeria platform. Both apps answer questions without
+one. You need Egeria only to survey and catalog resources (see [The full path](#the-full-path)).
+
+---
+
+## The 10-minute path
+
+### 1. Install
+
+```bash
+git clone https://github.com/dwolfson/trellis.git
+cd trellis
+uv sync
+```
+
+One shared `.venv` at the repo root, for every workspace member.
+
+### 2. Start Postgres
+
+Both apps share one database. If you already run the `egeria-shared-postgres` container from an
+`egeria-workspaces` checkout, it is running — skip to creating the schema.
+
+```bash
+docker run -d --name trellis-postgres -p 5442:5432 \
+  -e POSTGRES_DB=egeria_advisor \
+  -e POSTGRES_USER=egeria_advisor \
+  -e POSTGRES_PASSWORD=advisor \
+  pgvector/pgvector:pg17
+```
+
+Resource Explorer keeps its tables in a named schema, which is the one thing that is not
+created for you:
+
+```bash
+docker exec trellis-postgres psql -U egeria_advisor -d egeria_advisor \
+  -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer AUTHORIZATION egeria_advisor;'
+```
+
+Everything else — tables, vector collections — is created on first use.
+
+### 3. Pull a model
+
+```bash
+ollama serve &          # skip if it runs as a service
+ollama pull llama3.1:8b
+```
+
+That one model is enough for Q&A in both apps. Egeria Advisor's governance-plan authoring also
+wants `qwen2.5-coder:32b` (~20GB) — leave it until you need it.
+
+### 4. Configure
+
+```bash
+cp packages/resource-explorer/.env.example packages/resource-explorer/.env
+cp packages/egeria-advisor/.env.example packages/egeria-advisor/.env
+```
+
+The defaults point at the Postgres and Ollama you just started. To let Resource Explorer read
+GitHub at a sensible rate limit, add a token to its `.env`:
+
+```
+GITHUB_TOKEN=ghp_...
+```
+
+Without one you get 60 API calls an hour, which is enough to look around and not enough to
+survey much.
+
+### 5. Run
+
+```bash
+make re-web     # Resource Explorer → http://localhost:8810
+make ea-web     # Egeria Advisor    → http://localhost:8880
+make dev        # both at once; Ctrl-C stops both
+```
+
+`make help` lists every target.
+
+### 6. First real action
+
+**Resource Explorer** — add a repo and ask about it:
+
+```bash
+uv run --package resource-explorer resource-explorer add \
+  https://github.com/odpi/egeria-python --yes
+```
+
+`add` runs an onboarding wizard that proposes which collections to index; `--yes` accepts its
+proposals instead of prompting. Drop the flag to choose them yourself.
+
+Then open <http://localhost:8810>, pick the repo in the sidebar, and use **🔍 Scouting**.
+Ingestion runs as part of `add` and takes a few minutes — pick a small repo first. `odpi/egeria`
+itself is large enough to be a poor first choice.
+
+**Egeria Advisor** — open <http://localhost:8880> and ask *"what is a governance zone?"*. It
+answers from its own bundled corpus, so nothing needs indexing first.
+
+---
+
+## The full path
+
+Everything above works with no Egeria server. These need one.
+
+Set the platform in each app's `.env` (`EGERIA_PLATFORM_URL`, view server, user), then:
+
+- **Survey and catalog a resource.** Resource Explorer writes survey results into Egeria as
+  the catalog of record. Start at [Resource Explorer's user guide](packages/resource-explorer/docs/user-guide.md).
+- **Run a Survey Definition.** Named, ordered bundles of analysis steps authored in Egeria via
+  Dr.Egeria documents — see [survey-definitions.md](packages/resource-explorer/docs/survey-definitions.md).
+- **Author governance plans.** Egeria Advisor's literate-governance flow — see
+  [LITERATE_GOVERNANCE_GUIDE.md](packages/egeria-advisor/docs/user-docs/LITERATE_GOVERNANCE_GUIDE.md).
+
+If Egeria has been reset or reseeded and Resource Explorer's cached GUIDs no longer resolve,
+[egeria-reset-recovery.md](packages/resource-explorer/docs/egeria-reset-recovery.md) is written
+from a real reset rather than from theory.
+
+---
+
+## Optional services
+
+None of these are needed to run either app; all are off unless configured.
+
+| Service | Default | What it adds | Start it |
+|---|---|---|---|
+| Prefect | `localhost:4200` | Real flow-run state, per-step logs and cancellation for survey steps | `make prefect-up` |
+| Kroki | `localhost:6002` | Server-rendered ER diagrams (database views only) | shared-infra compose |
+| MLflow | `localhost:5025` | Experiment tracking | `mlflow server --port 5025` |
+| Phoenix | `localhost:6006` | LLM tracing | `python -m phoenix.server.main` |
+
+With Prefect enabled and no server running, steps fall back to running in-process — safe, just
+slower by one connection attempt per step.
+
+---
+
+## Verifying your setup
+
+```bash
+make test          # both packages
+make test-re       # Resource Explorer only
+make test-ea       # Egeria Advisor only
+```
+
+Tests that need Postgres skip themselves when it is unreachable rather than failing, so a green
+run does not by itself prove your database is wired up. The honest check is step 6 above.
+
+---
+
+## When something is wrong
+
+| Symptom | Likely cause |
+|---|---|
+| `relation "..." does not exist` from Resource Explorer | The `resource_explorer` schema was never created — step 2 |
+| Empty or "I don't have enough information" answers | Ollama is not running, or the model was never pulled |
+| GitHub calls failing after a few minutes | No `GITHUB_TOKEN`; you are on the 60/hour anonymous limit |
+| Egeria calls failing | Expected without a platform — the 10-minute path does not need one |
+| A survey reports zero findings | May be honest. Both apps distinguish *measured zero* from *never ran*; check the result's own status rather than assuming |
+
+---
+
+## Where to go next
+
+| You want to | Read |
+|---|---|
+| Understand the repo layout and constraints | [README.md](README.md) |
+| Work on Resource Explorer | [packages/resource-explorer/README.md](packages/resource-explorer/README.md), then its `CLAUDE.md` |
+| Work on Egeria Advisor | [packages/egeria-advisor/README.md](packages/egeria-advisor/README.md), then its `CLAUDE.md` |
+| Use Resource Explorer's UI in earnest | [user-guide.md](packages/resource-explorer/docs/user-guide.md) and [admin-guide.md](packages/resource-explorer/docs/admin-guide.md) |
+| Know what is being worked on | [packages/resource-explorer/docs/Backlog.md](packages/resource-explorer/docs/Backlog.md) |
+| Add a shared library | [README.md](README.md) — "Notes for contributors" |

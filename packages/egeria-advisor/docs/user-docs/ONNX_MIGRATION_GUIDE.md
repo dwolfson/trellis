@@ -43,13 +43,13 @@ This guide explains how to migrate from PyTorch to ONNX Runtime for embedding ge
 ### Software Requirements
 ```bash
 # Install ONNX dependencies
-pip install -e .  # CPU version
+uv sync
 
 # OR for GPU support (NVIDIA)
-pip install -e ".[gpu]"
+uv sync   # extras: gpu
 
 # OR with optimization tools
-pip install -e ".[gpu,onnx-tools]"
+uv sync   # extras: gpu,onnx-tools
 ```
 
 ## Migration Steps
@@ -62,7 +62,7 @@ pip install -e ".[gpu,onnx-tools]"
 cd /path/to/egeria-advisor
 
 # Install ONNX dependencies (CPU version)
-pip install -e .
+uv sync
 
 # Install conversion tools (required for model conversion)
 pip install onnxscript
@@ -86,7 +86,7 @@ pip uninstall onnxruntime
 pip install onnxruntime-gpu
 
 # Install other dependencies
-pip install -e ".[onnx-tools]"
+uv sync   # extras: onnx-tools
 
 # Verify GPU support
 python -c "import onnxruntime as ort; print(ort.get_available_providers())"
@@ -136,7 +136,7 @@ lspci | grep -i vga
 pip install onnxruntime-rocm
 
 # Install other dependencies
-pip install -e ".[onnx-tools]"
+uv sync   # extras: onnx-tools
 
 # Set environment for your GPU (example for RX 6900 XT)
 export HSA_OVERRIDE_GFX_VERSION=10.3.0
@@ -171,7 +171,7 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 #### Option D: Apple Silicon (M1/M2/M3)
 ```bash
 # Install standard version (includes CoreML)
-pip install -e ".[onnx-tools]"
+uv sync   # extras: onnx-tools
 
 # Verify
 python -c "import onnxruntime as ort; print(ort.get_available_providers())"
@@ -283,7 +283,7 @@ embeddings:
 
 ```bash
 # Test with a simple query
-python -m advisor.cli.main "What is an asset?"
+uv run --package egeria-advisor python -m advisor.cli.main "What is an asset?"
 
 # Check logs for ONNX usage
 # Should see: "Using ONNX backend: models/all-MiniLM-L6-v2.onnx"

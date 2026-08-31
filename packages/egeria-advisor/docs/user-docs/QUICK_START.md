@@ -42,8 +42,7 @@ curl -k https://localhost:9443/open-metadata/platform-services/users/garygeeke/s
 
 ```bash
 cd /home/dwolfson/localGit/egeria-v6/egeria-advisor
-source activate_venv.sh
-python -m advisor.web.app
+uv run --package egeria-advisor python -m advisor.web.app
 # or: uvicorn advisor.web.app:app --reload --port 8880
 ```
 
@@ -235,8 +234,7 @@ If you pull new changes or the assistant makes code edits, always restart:
 
 ```bash
 # Stop the running server (Ctrl-C), then:
-source activate_venv.sh
-python -m advisor.web.app
+uv run --package egeria-advisor python -m advisor.web.app
 ```
 
 Existing drafts stored in `~/egeria-plans/drafts/` use commands extracted under the old

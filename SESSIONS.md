@@ -76,7 +76,7 @@ starting rather than after. That alone would have caught the collision above.
 | ~~cross-run acquisition cache (`zipball_root`/`git_clone_root`)~~ | dwolfson-59 | **landed** `f8710ef`, S1 reviewing |
 | architecture-focus UI (`index.html` arch block) | trellis-arch-ui-65 | in progress |
 | analysis-card run/background UX | trellis-survey-flows-59 | **landed** `a505d6e` |
-| take architecture results into Curate | trellis-survey-flows-59 | in progress |
+| ~~take architecture results into Curate~~ | trellis-arch-ui-65 | **decided (accept/reject/retype) and built** — `6f3afeb` `2a22c99` `f34d3c5` |
 | ~~`architecture_recovery` tier / `run_time`~~ | trellis-arch-ui-65 | **ruled: analysis** (Dan), landed `26c18f1`, on integration |
 | ~~`_COCHANGE_MAX_FILES = 50`~~ | dwolfson-59 | **measured, keep 50** — it is a cost control, not a quality control |
 | compiler item 10 — wire the Chat panel | — | open (S3) |
