@@ -108,10 +108,14 @@ class TestFilterByIntent:
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the
     # maintainer's explicit ruling, not this test's) even though both of its
     # steps fetch (repo_arch_detect needs a zipball, repo_arch_coupling also
-    # a git clone) — the one named exception to CLAUDE.md rule 17's zero-
-    # fetch signature. Recorded here rather than silently weakening the
-    # check for everything else: a NEW discovery entry that also fetches
-    # should still fail this test unless it is deliberately added here too.
+    # a git clone) — a named exception to CLAUDE.md rule 17's zero-fetch
+    # signature. RE-RETIERED to analysis 2026-08-30 (Dan: "architecture
+    # recovery is an analysis step and belongs there"), so it is gone from
+    # this set — not because the earlier ruling was wrong to record, but
+    # because the ruling itself changed. See analysis_catalog.yaml's entry
+    # for the fuller reasoning (profiled ~110s wait, not "cheap enough to
+    # gate the expensive tiers" by any measurement).
+    #
     # repo_classification added 2026-08-22. It declares requires_resources={},
     # so it would pass the check below WITHOUT being named here — and that is
     # exactly why it is named here. It reaches GitHub directly (repo tree,
@@ -121,15 +125,13 @@ class TestFilterByIntent:
     # handful of API calls passes; the honest way to record that is an explicit
     # exception, not silence. Design §5.5b.
     #
-    # `architecture_doc_lens` is the THIRD entry here (2026-08-25). It reads the
-    # project's architecture document, which is up to MAX_DOC_FILES GitHub calls
-    # and frequently against a DIFFERENT repository than the one being surveyed.
-    # Three exceptions is the point at which "discovery is the zero-fetch
-    # derivation tier" stops describing the tier and starts describing an
-    # intention — flagged here rather than absorbed, because the next addition
-    # should be a decision about the rule, not another entry in this set.
-    DISCOVERY_FETCHES_ANYWAY = {"architecture_recovery", "repo_classification",
-                                "architecture_doc_lens"}
+    # `architecture_doc_lens` is the SECOND entry here (2026-08-25, was third
+    # until architecture_recovery left). It reads the project's architecture
+    # document, which is up to MAX_DOC_FILES GitHub calls and frequently
+    # against a DIFFERENT repository than the one being surveyed. Recorded
+    # rather than absorbed, because the next addition should be a decision
+    # about the rule, not another entry in this set.
+    DISCOVERY_FETCHES_ANYWAY = {"repo_classification", "architecture_doc_lens"}
 
     def test_discovery_is_the_zero_fetch_derivation_tier(self):
         """Discovery reasons over what Scouting collected rather than fetching:
@@ -142,10 +144,12 @@ class TestFilterByIntent:
         analyses = acr.get_analyses("repo", intent="discovery", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
         # `architecture_summary` is in the ZERO-fetch set deliberately, unlike
-        # `architecture_recovery` beside it: its input is another step's output
-        # rather than an external resource, which is the shape rule 17's
-        # discovery tier describes. It is the first analysis here that consumes
-        # findings instead of collecting anything.
+        # `architecture_recovery` (retiered out of discovery entirely
+        # 2026-08-30, so it no longer appears in this set at all): its input
+        # is another step's output rather than an external resource, which is
+        # the shape rule 17's discovery tier describes. It is the first
+        # analysis here that consumes findings instead of collecting
+        # anything.
         assert ids == {"license_classification", "maturity", "repo_conventions",
                        "repo_classification", "architecture_summary",
                        # community_support was here from 2026-08-26 until
@@ -368,3 +372,113 @@ class TestShapeCompatibility:
         ids = {a["id"] for a in acr.compatible_analyses("repo", "file", include_egeria_live=False)}
         assert "api_structure" in ids  # corpus degrades fine to one file
         assert "repository_health" not in ids
+
+
+class TestAvailabilityIsDeclaredButGuarded:
+    """`availability` stopped deriving from `run_time` on 2026-08-30 (Dan's
+    ruling), because the two had come apart.
+
+    §20 of `context-compilation-design.md` argued for deriving it and was right
+    while they always agreed: a second hand-maintained column is one more thing
+    to keep consistent with the first. `architecture_recovery` is the
+    counterexample it did not have — 5.9s of COMPUTE, so `run_time: fast` is
+    honest, but a compile running it inline would also pay ACQUISITION (14.4s
+    warm, ~30s cold) inside a packer whose §20 says in bold that it "must never
+    trigger a survey".
+
+    Declaring it fixes that and reopens §20's real worry: a hand-maintained
+    column can drift. These tests are the answer to that worry — the value is
+    declared, but it cannot contradict what the steps actually do.
+    """
+
+    def _fetching(self, analysis_id):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            REPO_ANALYSIS_STEP_MAP,
+            STEP_REGISTRY,
+        )
+        steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id) or []
+        needed = set()
+        for step in steps:
+            info = STEP_REGISTRY.get(step)
+            needed |= set(getattr(info, "requires_resources", {}) or {})
+        return needed
+
+    def test_nothing_inline_acquires_a_resource(self):
+        """The hard safety property. A packer must never trigger a survey, and
+        anything declaring a zipball or a clone triggers a download."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        offenders = [
+            (a["id"], sorted(self._fetching(a["id"])))
+            for a in get_analyses("repo", include_egeria_live=False)
+            if a["availability"] == "inline" and self._fetching(a["id"])
+        ]
+        assert offenders == [], (
+            "these declare availability: inline but acquire a resource, so a "
+            f"context compile would download on its hot path: {offenders}"
+        )
+
+    def test_nothing_inline_is_slow_by_its_own_run_time(self):
+        """Fetch-free is necessary and not sufficient — `cve_scan` and the
+        ingestion steps fetch nothing through the resource mechanism and are
+        still minutes-scale work."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        offenders = [(a["id"], a["run_time"])
+                     for a in get_analyses("repo", include_egeria_live=False)
+                     if a["availability"] == "inline" and a["run_time"] != "fast"]
+        assert offenders == [], f"inline but not fast: {offenders}"
+
+    def test_architecture_recovery_is_the_case_this_exists_for(self):
+        """Pinned by name. It is `run_time: fast` and honestly so — the whole
+        point is that this no longer makes it inline."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        entry = next(a for a in get_analyses("repo", include_egeria_live=False)
+                     if a["id"] == "architecture_recovery")
+        assert entry["run_time"] == "fast"
+        assert entry["availability"] == "queued"
+
+    def test_an_undeclared_entry_defaults_to_queued(self):
+        """Guessing cheap is the dangerous direction. An entry nobody has
+        thought about must not license itself onto a hot path by its silence."""
+        from resource_explorer.surveyors.analysis_catalog_reader import _entry_from_yaml
+
+        entry = _entry_from_yaml({"id": "x", "name": "X", "run_time": "fast"})
+        assert entry.availability == "queued"
+
+    def test_something_is_actually_inline(self):
+        """Guards the guards: every assertion above is satisfied by tagging
+        nothing at all."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        inline = [a["id"] for a in get_analyses("repo", include_egeria_live=False)
+                  if a["availability"] == "inline"]
+        assert len(inline) > 10, f"only {len(inline)} inline — did the field stop loading?"
+
+    def test_a_fetching_analysis_declares_queued_rather_than_defaulting_to_it(self):
+        """"Deliberately queued because it fetches" and "nobody has considered
+        this yet" must not look identical in the catalog.
+
+        The default protects the second case. An analysis that acquires a
+        resource is queued for a STRUCTURAL reason, and saying so is what stops
+        a later reader assuming it was simply overlooked — the same distinction
+        `run_scope`/`partial` exist to make elsewhere in this codebase.
+
+        Raised by trellis-chat-panel-1f while verifying the merge, who noticed
+        architecture_recovery reached `queued` by falling through.
+        """
+        import re
+
+        from resource_explorer.surveyors.analysis_catalog_reader import _DEFAULT_CONFIG_PATH
+
+        raw = _DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+        for analysis_id in ("architecture_recovery", "code_symbol_extraction",
+                            "manifest_parse", "data_file_profiling"):
+            block = re.search(rf"^  - id: {analysis_id}$(.*?)(?=^  - id: |\Z)",
+                              raw, re.M | re.S)
+            assert block, f"{analysis_id} not found in the catalog"
+            assert "availability: queued" in block.group(1), (
+                f"{analysis_id} acquires a resource, so it must DECLARE "
+                "availability: queued rather than reach it by default"
+            )

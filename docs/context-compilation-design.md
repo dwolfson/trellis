@@ -249,6 +249,21 @@ established the tiering precedent.
   (whether detail specs inherit `content_filters` / `shape_defaults` or carry their own
   three-category model). It interacts directly with nested Investigations via
   `ProjectHierarchy`, and the two should be resolved together rather than twice.
+- **Is the replayability guarantee (`same spec + same as_of + same materialized state → same
+  context`) actually true, or only true of some resolvers? (added 2026-08-30, from a literature
+  check.)** "On the Reproducibility Limitations of RAG Systems" (arXiv:2509.18869) names retrieval-
+  side nondeterminism as a real, distinct problem from sampling randomness — good evidence this
+  guarantee targets something real. RAGdeterm (ScienceDirect, 2026) gets determinism the same way
+  this design does: grounding retrieval in an explicit structured representation instead of
+  similarity search. But "structured" does not imply deterministic — an unordered query, a
+  paginated cursor, or a resolver that calls an LLM mid-resolution are all "structured" and still
+  non-replayable (§9's own item above and the survey-side telemetry entry in `Backlog.md` both
+  flag LLM-based steps specifically). **The guarantee is a property of the resolver, not the
+  compiler as a whole**, and should be checkable per-resolver — a `deterministic: bool` tag in the
+  resolver registry, mirroring the cost-tier tags CLAUDE.md rule 17 already requires — rather than
+  an assumption that holds because the underlying store is Egeria and not a vector index. Neither
+  source states the guarantee in this doc's exact terms; I could not find this replayability
+  contract formulated anywhere in the public literature. See `Backlog.md`.
 
 ---
 
@@ -626,14 +641,29 @@ does not silently omit. This preserves the existing scheduler/outbox architectur
 competing with it, and it is consistent with the standing decision that shared analytics are
 **materialized, not live-called**.
 
-**Implementation finding (2026-08-27).** Two corrections from building this:
+**Implementation finding (2026-08-27), reversed (2026-08-30).** Two corrections from building this,
+one of which held only until a counterexample this section didn't have:
 
-- **`availability` is derived, not tagged.** The analysis catalog already carries `run_time`
-  (`fast` / `minutes` / `async`), which is the same cost signal. `AnalysisCatalogEntry.availability`
-  maps `fast` → `inline` and everything else → `queued`, with unknown values treated as `queued`
-  because guessing cheap is the dangerous direction. A second hand-maintained column would be one
-  more thing to keep consistent with the first — §19's argument against multiplying the vocabulary
-  applies to the catalog's own columns, not only to new axes.
+- ~~**`availability` is derived, not tagged.**~~ **REVERSED, Dan's ruling, 2026-08-30.** The
+  argument above was right while `run_time` and "may a compiler run this inline" always agreed —
+  `architecture_recovery` is the case where they came apart. Its *compute* is 5.9s, so
+  `run_time: fast` is honest; but a compile running it inline also pays *acquisition* (14.4s warm,
+  ~30s cold — `docs/Backlog.md` "costs 110s to fetch and 5.9s to run"), inside a packer this
+  section requires to **never trigger a survey**. `run_time` was carrying two loads — how
+  expensive the compute is, and whether a compiler may run this inline — and only the second
+  carries a hard safety requirement, so it is now its own field: `AnalysisCatalogEntry.availability`
+  is **declared**, defaulting to `queued` (unset means queued deliberately — guessing cheap is
+  still the dangerous direction, that half of the original reasoning stands). 20 entries declare
+  `inline` (fetch-free *and* fast, read off `STEP_REGISTRY.requires_resources`, not by eye); 9
+  declare `queued` (4 acquire a zipball/clone, 5 are minutes-scale or actions).
+  `architecture_recovery` is pinned `run_time: fast` **and** `availability: queued` — a
+  combination that was structurally impossible under the derived rule, which is the whole point of
+  no longer deriving it. `_derive_availability()` survives only as a fallback for
+  `_egeria_merge_entries`'s hand-built live-Egeria dicts, which have no catalog row to declare
+  from. Reopening the "two columns drift" risk this section originally argued against is answered
+  the same way §19 answers it elsewhere: guarded by tests (nothing `inline` acquires a resource or
+  runs slow, something *is* `inline`, `architecture_recovery` is pinned so the divergence can't be
+  quietly re-derived away) rather than hoped.
 - **`temporal` does not belong on the analysis catalog at all.** The compiler reads *stored,
   timestamped* analysis results, never a live run — so every analysis is as-of-able over its own
   results, and tagging 34 entries `as_of` would be a column with one value. `current_only` is a
@@ -800,9 +830,29 @@ Needs no spec, no packer, no tree. These are §18's measurement instruments in t
 
 ### Phase 1 — authoring, not code
 
-4. **Two columns on the analysis catalog**: `availability: materialized | schedulable` and
-   `temporal: as_of | current_only`. Vocabulary work in the CSV plus a regeneration. §20 depends
-   entirely on these and they are the cheapest items in the design.
+*(Status, 2026-08-30: item 4 is half-built, half-superseded, and reversed once already — see
+below. Items 5 and 6 are unbuilt: no `fetched_at`/`as_of`/source-GUID envelope is captured at
+ingest for an Egeria-sourced artifact, and `feedback` carries no `manifest_id`.)*
+
+4. ~~**Two columns on the analysis catalog**: `availability: materialized | schedulable` and
+   `temporal: as_of | current_only`.~~ **Partially built, on a different history than either
+   earlier note here predicted.** The vocabulary moved twice: this item's own
+   `materialized | schedulable` was never built; a 2026-08-27 finding then said `availability`
+   should be *derived* from `run_time` rather than tagged at all (superseding this item); and
+   Dan's 2026-08-30 ruling reversed that (§20) once `architecture_recovery` showed `run_time` and
+   "safe to run inline" coming apart. **Current state:** `availability: inline | queued` **is now
+   a declared field** on `AnalysisCatalogEntry`, defaulting to `queued`, with 20 entries declaring
+   `inline` and 9 declaring `queued` — see §20 for why the derived version stopped being safe. So
+   this half of the item is built, just not the way it was proposed, and not the way the
+   2026-08-27 note said it never would be.
+   * `temporal` **still does not belong on the analysis catalog** — the compiler reads stored,
+     timestamped results, so every analysis is as-of-able over its own output and the column would
+     have one value. `current_only` is a property of **resolver kind**, and no resolver-kind
+     registry exists yet — this half remains open, in a different place than this list said.
+
+   *Left struck through rather than deleted because the reasoning is the useful part: a reader
+   following the task list would rebuild exactly what §20 argued against, which is how this was
+   found.*
 5. **Envelope fields captured at ingest** — `source guid`, Egeria version, Egeria timestamp,
    `fetched_at` (§10). Additive schema; needs re-ingestion, which is cheap now.
 6. **Manifest id on feedback records** (§13). One column. Without it the signal cannot distinguish
@@ -820,6 +870,23 @@ Needs no spec, no packer, no tree. These are §18's measurement instruments in t
 10. Wire the **adoption gate** (§23) into RE's Chat panel with a manifest pane.
 
 **This is the first point at which the compiler impacts RE.** Everything before it is invisible.
+
+*(Status, 2026-08-30: 8 and 9 are built and green — `trellis_context.spec`, a 338-line packer, and
+`context_compile.py` with 40 passing tests. **10 is not started**, and it shows: the only caller of
+`compile_context` anywhere in the repo is `tests/test_context_compile.py`. On this list's own terms
+the compiler currently has no impact on RE.)*
+
+*(Superseded 2026-08-31: **10 is done and the "no caller" claim above is false.** `compile_context`
+has two real callers — `agents/conversation_agent.py`'s `_compiled_evidence()`, which injects packed
+evidence and judged gaps into the prompt, and `web/routes/compile_context.py` behind
+`POST /api/context/compile`, which the Chat panel's Evidence button calls. The compiler impacts RE.*
+
+*The stale line is left standing rather than rewritten because of what it is: a statement that was
+true when written, about a mechanism, that kept reading as a claim about the world after the world
+moved. That is the failure this document argues the compiler exists to prevent — "measured and found
+nothing" versus "never ran" versus "ran and could not tell" — and it went uncorrected here for a day
+while the thing it described was being built. A status note with no expiry is the same defect in
+prose. Date status notes, or make something fail when they go stale.)*
 
 ### Phase 4 — EA
 

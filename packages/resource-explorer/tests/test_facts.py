@@ -216,6 +216,26 @@ class TestQuestionsTabWiring:
         fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
         assert "not yet validated" in fn
 
+    def test_the_answer_stays_deterministic_but_reads_better(self):
+        """Reported 2026-08-31: a raw analysis id and an unlabelled key:value
+        dump ("catalog_presence — measured\\n\\nregistered: true · group:
+        egeria · ...") read as meaningless to someone who did not already
+        know what that analysis measures. Fixed WITHOUT routing this path
+        through an LLM -- that would violate
+        test_a_question_click_resolves_rather_than_prompting's whole point --
+        by using the catalog's own display name and moving the raw evidence
+        behind a plain <details> dropdown, same idiom the Survey Definition
+        step list already uses."""
+        html = self._html()
+        fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
+        assert "_analysisDisplayName(f.analysis_id)" in fn, (
+            "the raw analysis_id should read as a display name, not a slug"
+        )
+        assert "<details>" in fn and "<summary" in fn, (
+            "raw evidence should be collapsible, not dumped inline under the answer"
+        )
+        assert ">Evidence<" in fn
+
 
 class TestToolsDoNotAssertAbsence:
     """An empty table is not a finding.

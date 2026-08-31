@@ -52,6 +52,570 @@ Grouped by area. Within a group, the most actionable entries come first.
 
 ### Architecture recovery
 
+#### MEDIUM — telemetry for surveys, and the LLM-based survey step
+
+*(Opened 2026-08-30, from the decision-trace work — `architecture-recovery-decision-trace.md` §5.)*
+
+The decision trace is now persisted as findings, and that doc argues it should **not** go to
+MLflow, Phoenix or OTEL: decision provenance is read months later by resource and must be durable
+and queryable, while telemetry is sampled, retention-limited and keyed by trace id. **That part
+stands.** Two things around it do not, and want revisiting.
+
+**1. "Surveying is deterministic Python" is false as a general claim** (Dan, 2026-08-30). It is
+true of `repo_arch_detect` and `repo_arch_coupling`, which is all the original reasoning had in
+front of it. **A survey step can perform LLM-based analysis**, and where it does:
+
+- Phoenix/`BeeAIInstrumentor` instrumentation *is* directly relevant to that step — there is a real
+  model interaction to trace, with prompt, tokens and latency;
+- the step is **non-deterministic**, so the reproducibility argument that holds for the two
+  deterministic steps does not transfer;
+- there are then **two traces to keep apart**, not one: the model interaction (Phoenix/OTEL) and
+  the decision it produced (durable, per-resource, `architecture_decisions`).
+
+§16 of `context-compilation-design.md` already makes the matching argument one layer up — agent
+output must be *written down, versioned and provenance-stamped before it is packable*, precisely
+because agents are non-deterministic. A survey step that calls a model needs the same discipline,
+and the decision trace is the natural home for the written-down half. Worth checking whether any
+step already does this and is currently unprovenanced.
+
+**2. Execution telemetry for surveys has no home and no owner.** Per-step and per-detector timings,
+failure points, hot paths. OTEL is the right shape and nothing emits it. Not urgent — there is no
+open performance question, and the one measurement that mattered
+(`_withdraw_vacated` at 93ms over 10,135 rows) was answered with `time.perf_counter()`. Open it
+when there is a question to answer, and note the scaling item below is the likeliest trigger.
+
+**If tracing is added, the shape to use** is a span per survey step carrying the *finding id* — a
+pointer to the durable record, not a second copy of it. Dual-writing means two stores that can
+disagree, and the span copy is the one that expires.
+
+#### ~~HIGH — take architecture results into Curate~~ — DECIDED AND BUILT 2026-08-30
+
+*(Opened 2026-08-30 listing four candidate shapes and saying "none of this is designed yet".
+Dan chose the first and S1 built it the same day. This entry was left stale for several hours and
+was still being reported as an open design question when it was neither — corrected on Dan
+noticing. Then corrected AGAIN by S2, who had built the backend and pointed at the differing
+`Claude-Session` trailers on `6f3afeb` and `2a22c99` to prove it. Verified before accepting. Two
+attribution errors on one row, both from reading a summary instead of the commits — which is exactly
+what `re-multi-session-attribution` says not to do.)*
+
+**The shape: accept / reject / retype a proposed component.** The pipeline is explicitly a
+*proposal* (§4.1a, `report-then-curate`) and a curator's verdict was the missing half. It rides the
+Confidence/ContentStatus axis (§3.3b/§3.4) rather than introducing a vocabulary.
+
+Landed in three slices:
+
+| | |
+|---|---|
+| `6f3afeb` | accept/reject/retype on a proposed component — the backend (`web/routes/curate.py`, the `architecture_component_verdicts` table, `registry.py` methods) — **S2** |
+| `2a22c99` | verdicts wired into the architecture card — **S1** |
+| `f34d3c5` | **accepted proposals materialized as real Egeria `SolutionComponent`s** — **S1** |
+
+That third one is the one that closes the loop `report-then-curate` opened: a proposal a human
+accepted stops being a local finding and becomes a catalog element.
+
+**Still open from the original four**, and genuinely undesigned rather than merely unclaimed:
+
+- **Correct a name.** The live case is still the best argument: the disambiguator renamed Atlas'
+  main distribution config to `distro` because six modules shared the token `atlas` — unique and
+  truthful, and not what a curator would choose. No rule can know which member of a collision
+  deserves the shared name.
+- **Curator notes at component scope.** `resource_curator_notes` is whole-resource; architecture
+  recovery is scope-keyed throughout.
+- **Promote a reviewed set toward publication** — the ContentStatus ladder `report-then-curate`
+  describes and nothing yet walks end to end.
+
+See also the reflexion-vocabulary entry below: convergence/divergence/absence is a ready-made naming
+for the verdict axis, and worth reading before the next slice invents its own.
+
+#### HIGH — `architecture_recovery` costs 110s to fetch and 5.9s to run — fix the acquisition
+
+*(Opened 2026-08-30 as a tier question; **reframed the same day by profiling**, which killed three of
+the four options it originally listed. Dan's steer: the work likely goes into the analysis
+implementation, not the catalog.)*
+
+**The analysis was never slow.** Profiled on `egeria_python_git`:
+
+| | |
+|---|---|
+| compute, against a local checkout | **5.9s** — detect 3.1s, coupling 2.8s |
+| `zipball_root` + `git_clone_root` acquisition | 15.7s |
+| **the same two steps via `SurveyOrchestrator`** | **110.5s** |
+
+`architecture-recovery-phase1-findings.md` §3's **"5.3s per repo"** — the figure CLAUDE.md rule 17
+cites to justify Discovery placement — is **correct and still holds**. Nothing regressed. The cost
+is entirely in *how the route acquires the repo*.
+
+**Where it goes.** cProfile over exactly what the route calls:
+
+```
+738 calls    95.1s   {method 'poll' of 'select.poll' objects}    <- waiting on git subprocesses
+36569 calls  12.2s   {method 'read' of '_ssl._SSLSocket'}        <- network, inside the profile
+```
+
+Same step, same repo: **2.8s against a local checkout, 92.1s through the orchestrator.** The
+difference is `_acquire_git_clone_root`'s `--filter=blob:none --no-checkout`. Co-change analysis then
+runs `git` history commands against a **treeless** clone, and git lazily fetches from the remote for
+anything absent — so each operation pays network round-trips. Our `select.poll` time is git's
+network time.
+
+**Two candidate fixes, neither decided:**
+
+- **Cache the acquired roots.** Both providers clone into a *fresh tempdir every run*
+  (`_acquire_zipball_root`, `_acquire_git_clone_root`), so a repo is downloaded twice per run, every
+  run, forever. A cache keyed on commit SHA would make the second run of anything nearly free — and
+  it would benefit every step declaring these resources, not just this one.
+- **Give co-change what it actually needs.** It wants commit metadata and pathnames, which a
+  treeless clone *has*. Something is reaching for blob content and triggering the lazy fetch;
+  finding what would be a smaller, more surgical fix than caching.
+
+Worth doing the second first: it is diagnostic, and its answer determines whether the first is a
+performance nicety or the only option.
+
+**The instrumentation that flagged this is misattributing, and that is its own small bug.** The run
+emitted:
+
+> `repo_arch_coupling — declares compute_cost='medium' (ceiling 60s) but took 92.1s with no
+> connections, so that is compute`
+
+It is 92.1s of *network*, in a child process, invisible to whatever counts connections. So the guard
+built to catch exactly this case reported the opposite and nobody was reading the line anyway.
+
+**What this does NOT need.** The entry originally offered four options; the measurement leaves one:
+
+- ~~re-tier out of Discovery~~ — the analysis *is* Discovery-cost at 5.9s
+- ~~re-map the Discovery question to something cheaper~~ — same reason
+- ~~decouple `availability` from `run_time`~~ — `run_time` was never wrong about compute
+- **fix the acquisition** ✅
+
+`run_time: fast` therefore stays, and is now *defensible* rather than merely unchanged — with the
+caveat that it describes compute while a user experiences compute **plus** acquisition. If the
+acquisition fix lands, the two converge and the question disappears. If it does not, the honest tag
+is about the whole experience and the tier question comes back.
+
+Open, unresolved: whether `architecture_recovery` belongs in the **Analysis** intent rather than
+Discovery on other grounds — that is a separate judgement from cost, and cost no longer forces it.
+
+**Resolved the same day, separately, by S1 in a different session:** Dan ruled directly —
+"architecture recovery is an analysis step and belongs there." `intent: analysis` now, `run_time:
+fast` unchanged (this entry's reasoning above stands; the ruling was on tiering grounds, not cost).
+Recorded together in `analysis_catalog.yaml`'s entry so neither change reads as having overridden
+the other.
+
+**Still open and unclaimed as of 2026-08-30 (S1):** both candidate fixes above (cache the acquired
+roots; give co-change what it actually needs). S1 is coordinating with S2 before claiming either —
+see cross-session note, same date.
+
+**"Give co-change what it actually needs" — SOLVED, same day, by dwolfson-59** (reported via S2,
+not yet merged into `ui/architecture-focus`): the answer was `git log --name-only`'s **default
+inexact rename detection**, which scores blob-content similarity and is exactly what defeats
+`--filter=blob:none` — 86 lazy fetches, confirmed by a packet trace. Fix is `--find-renames=100%`:
+an exact rename compares blob OIDs already present in the tree, so it costs nothing extra, while
+inexact detection has to fetch and diff content. Commit `63e7ec6` on `re/deferred-cleanup-followups`
+(`cochange.py` only), merged into `re/survey-flows` at `d9e619f`.
+
+Reported new measurement (dwolfson-59, via S2 — not independently re-run by S1): acquisition now
+dominates the route's remaining cost rather than the reverse — 86% of `egeria_python_git`'s total for
+`repo_arch_coupling`, 61% for `docling_parse`. **This dissolves the tiering question further than
+this entry's own "the two converge and the question disappears" anticipated** — the cache-the-roots
+fix above is now the more clearly load-bearing of the two remaining candidates, since the per-run
+network chattiness this fix closed was the bigger of the two costs the earlier profiling found.
+
+**Cache the acquired roots — DONE 2026-08-30.** Built by dwolfson-59 (not S1 — a three-way crossed
+assignment: Dan gave it to S1 directly, S2 separately told dwolfson-59 to take it after dwolfson-59
+flagged it as provider-shaped. Sorted between the three sessions before either duplicate build
+started: dwolfson-59 finished it, S1 reviewed rather than rebuilding.
+
+`resource_explorer/github/source_cache.py` — `SourceCache`, SHA-keyed, 4 GiB LRU budget, atomic
+rename on write (two racers both do the work, one wins the rename, loser's copy is discarded).
+Caches the **artifact** (`.zip`, treeless clone) rather than the extracted/checked-out directory —
+every run still gets its own private tempdir via extraction or `git clone --local`, so concurrent
+surveys cannot see each other's mutations. That boundary matters more than usual for a git clone
+specifically: `git log` writes to `.git` for its own bookkeeping, so a shared clone would be a
+corruption risk, not merely a leak. Keyed on the commit SHA (one extra API call, ~0.49s) rather than
+the repo, so a stale hit is structurally impossible rather than merely unlikely; when the SHA can't
+be resolved, or `shallow_since` is given (a bounded clone must never share a key with an unbounded
+one), the cache is bypassed entirely and the old uncached behaviour runs unchanged.
+
+Measured (dwolfson-59, `odpi/egeria-python`): acquisition 22.64s cold → 1.28s warm. Full route for
+`egeria_python_git`: 110.5s originally → 30s after the rename fix above → **14.4s** now.
+
+**S1's review** (cherry-picked as `a7e5364` on `ui/architecture-focus`, from `f8710eff` on
+`re/deferred-cleanup-followups`):
+
+- Confirmed the two load-bearing design calls are right: artifact-not-working-directory for
+  isolation, SHA-keying for correctness. Would not have designed it differently.
+- Found and fixed one real regression while closing the test-coverage gap dwolfson-59 flagged
+  themselves (their two pre-existing provider test files route through the *uncacheable* path only,
+  by design, so the cached path integration was untested): the cached branch of `zipball_root()`
+  built `root / subproject_path` with **no existence check at all**, silently handing a caller a
+  non-existent directory instead of `download_zipball()`'s `ValueError` listing available
+  directories. Added `TestZipballRootCaching`/`TestGitCloneRootCaching` (9 new tests) exercising the
+  actual integration seam — cache hit, cache miss, two-calls-share-one-download, and the
+  `shallow_since`-bypasses-caching guarantee — plus the regression test that caught the bug above.
+- **Eviction race — FIXED, same day, after dwolfson-59 pushed back on how "narrow" S1's first pass
+  called it.** `_evict()`'s LRU sweep could delete a **directory** entry (a cached treeless clone)
+  while a concurrent `local_clone()` was still hardlink-copying from it — `shutil.rmtree` mid-walk
+  against files another process is reading. Zipball entries were always safe from this via POSIX
+  `unlink`-of-open-file semantics; directory entries were not. S1's first framing ("requires the
+  cache to be genuinely over budget AND mid-read at that exact moment") understated it: at ~50 MB
+  per zipball, the 60-repo corpus is ~3 GB against the 4 GiB default — **over budget is the steady
+  state once the cache fills, not an edge case** — and concurrent surveys are normal now, not
+  hypothetical. Fixed with `eviction_grace_seconds` (default 60s): an entry touched more recently
+  than that is never an eviction candidate, even if it is the oldest remaining and the cache stays
+  over budget as a result — cheap, since `get()`'s touch is instant and the actual use
+  (extraction/`clone --local`) measures 0.28-0.39s, so a generous window costs nothing in the case
+  that matters. `total_bytes()` still counts protected entries, so budget accounting stays honest.
+  Two other gaps stay open, unfixed, same category as before: no age bound/per-repo cap beyond
+  overall LRU, and no invalidation on a tag/branch pointer moving under an already-held SHA.
+
+Suite: 3033 passed + 9 new, 10 skipped (dwolfson-59's count plus S1's additions; not independently
+re-run against the full corpus).
+
+#### ~~MEDIUM — acquisition is now the whole cost~~ — SOLVED 2026-08-30
+
+*(Restored: this entry and the one below were lost when a `--theirs` conflict resolution on this
+file during the `ui/architecture-focus` merge dropped both. Second casualty of the same
+cherry-pick-then-merge; found only by going looking for one of them.)*
+
+After `63e7ec6` removed the blob-fetch cost, the download was essentially the entire wall-clock —
+86% of the route for `egeria_python_git`, 61% for `docling_parse` — because both providers cloned
+into a fresh tempdir every run. **Solved by `f8710ef`'s `SourceCache`**: acquisition 22.64s → 1.28s
+warm, full route 110.5s → 14.4s. See the entry above for the design.
+
+#### ~~LOW — `_COCHANGE_MAX_FILES = 50` is unvalidated~~ — MEASURED 2026-08-30, keep it
+
+*(Opened by S2's review of `63e7ec6`; closed the same day by measuring it. The cap is defensible —
+but it does not do what its name suggests, and that is the part worth keeping.)*
+
+**Distribution**, four repos with real history. The six `--depth 1` clones pulled today were
+excluded: a shallow checkout has one synthetic commit holding the entire repo, and DataHub's
+19,009-file entry alone produced about half the uncapped pair total on the first pass.
+
+```
+p50   6 files      p90   55      max 2796
+p75  16            p95  126
+                   p99  308
+```
+
+**50 lands almost exactly on p90** — it keeps 89.8% of pair-bearing commits. Not arbitrary,
+whatever its provenance.
+
+**The quadratic case for *a* cap is overwhelming** — the last 10% of commits carry **98.8% of all
+pairs**:
+
+| cap | commits kept | pairs | % of pairs |
+|---|---|---|---|
+| 25 | 81.9% | 28,175 | 0.4% |
+| **50** | **89.8%** | **85,835** | **1.2%** |
+| 100 | 93.4% | 188,436 | 2.6% |
+| 500 | 99.6% | 1,810,139 | 25.1% |
+| none | 100% | 7,201,804 | 100% |
+
+### The finding that matters: it is a cost control, not a quality control
+
+Pairs are not the output — components are. Varying the cap and re-running `coupling.propose`:
+
+| cap | egeria | egeria-python | egeria-workspaces |
+|---|---|---|---|
+| 25 | 703 | 52 | 72 |
+| **50** | **728** | **61** | **82** |
+| 100 | 743 (+15, −0) | 64 (+3, −0) | 96 (+14, −0) |
+| 500 | 820 (+92, −0) | 82 (+21, −0) | 121 (+39, −0) |
+
+**Raising the cap is purely additive — `−0` at every level.** Nothing proposed at 50 disappears at
+500. So it is not separating signal from noise, as "skip the huge refactor commits" implies; it is
+a volume limit. Across a **20× range** of cap, egeria's components move 703 → 820 (±13%) while
+pairs move 4,151 → 597,225 (**144×**).
+
+- **Raising it makes readability worse, not better.** egeria is already at 728 components against a
+  clustering target of ~10 per blueprint.
+- **The cost argument is weaker than it looks** at these sizes — even cap 500 on egeria runs in
+  1.2s. What the cap buys is bounded *pair* growth for the quadratic tail, not wall-clock.
+
+**Verdict: keep 50.** It sits on p90, it is monotone-subtractive so it cannot hide a boundary a
+higher cap would reveal *differently* (only *additionally*), and component count is nearly
+insensitive to it. What was genuinely unvalidated was the *reason* — the comment implies it filters
+noisy commits, and it bounds volume instead.
+
+**Honest limit:** four repos, all Egeria-family, and per-repo variance is large — at cap 50 egeria
+drops 32% of its commits while egeria-workspaces drops 2%. A single global cap treats those very
+differently. If anyone revisits this, a per-repo cap (that repo's own p90) is the shape to test, on
+a corpus that is not four repos from one family.
+
+#### MEDIUM — the analysis-card Run gives no prompt and no progress for slow work
+
+*(Opened 2026-08-30, live-reported: "pressing the architecture survey button does seem to start the
+task but it doesn't bring up the pop-up that asks if we should run this in the background so it's
+easy to miss the toast".)*
+
+Two different run paths exist and the analysis card has the weaker one:
+
+| path | behaviour |
+|---|---|
+| **Survey Definition** (`showSurveyDefRunModal`) | modal with elapsed-time progress, backgrounds the run, polls the activity entry, relabels its button `Close — keeps running in background →`, and toasts *"can take a while — check 📋 Activity if you navigate away"* |
+| **Analysis card** (`_runAnalysisCatalogCard`) | fires the POST, shows one `running` toast, and **blocks for the whole run** — no modal, no progress, no activity handle |
+
+A contributing cause is a catalog value that is measurably wrong and **deliberately not changed** —
+see the entry below.
+
+That fix does not close this entry. The analysis-card path still has no backgrounding for anything
+tagged `minutes`/`async`, and `POST /analyses/{id}/run` blocks rather than returning an
+`activity_id` the way `/survey-definitions/{type}/{slug}/run` does. The work is to give the
+analysis-card path the survey-definition path's shape — which is a route change plus a modal, not a
+toast tweak.
+
+#### MEDIUM — a compiled answer should be able to POINT at a view, not only describe it
+
+*(Opened 2026-08-30. Dan: "there is no reason why, in some cases, it can't provide a link to an
+architecture view elsewhere as well as providing a textual description.")*
+
+Not a UI affordance — a change to **what a `Section` can resolve to**. Today every section resolves
+to text that gets packed against a character budget (`trellis_context`'s `Candidate` carries
+`{Rung: str}`), so the only way for an architecture question to reach the architecture view is for
+the compiler to *describe* it in prose and hope the reader goes looking.
+
+A section that resolves to a **pointer** — resource, analysis, perspective, and the scope to focus —
+is different in three ways worth designing rather than bolting on:
+
+- **It costs almost no budget.** A link is tens of characters where the prose summary of egeria's
+  deployment architecture is hundreds. §9's packer currently trades detail against budget; a pointer
+  section changes that trade, since the expensive thing lives at the other end of the link.
+- **It stays correct as the data changes.** Packed prose is a snapshot; a pointer resolves against
+  whatever the view shows now. That cuts both ways — it breaks the §10/§14 replayability guarantee
+  (`same spec + same as_of + same materialized state -> same context`) unless the pointer carries
+  `as_of` too, which is the interesting design question here.
+- **It needs the target to exist and be addressable.** The architecture card now has perspective
+  tabs, so "the deployment view of egeria_git" is a real thing to point at — it was not before
+  today. Deep-linking to a perspective/scope is the prerequisite work.
+
+Both halves are wanted: prose for the model to reason over, link for the human to go and look.
+Likely shape is one section carrying both rungs — a short description at FULL, and the pointer as a
+sibling field rather than a competing candidate — but that is a guess and the packer's contract
+should decide it.
+
+Related: `context-compilation-design.md` §23 (what this looks like in RE and EA) and §20 (resolvers
+are mostly not RAG — a pointer resolver is about as far from RAG as a resolver gets).
+
+**Status, 2026-08-30: the compiler half is built** (`trellis_context.packer.Pointer`,
+`tests/test_packer.py::TestPointer`). Resolved as guessed above — pointer as a sibling field on
+`Candidate`/`PackedSection`, never a competing candidate, and it does reach both halves: its
+rendered form (`resource=… view=… as_of=…`) is appended to the packed text for the model, and the
+structured `Pointer` travels on `PackedSection.pointer` / the manifest's `packed[].pointer` for a
+UI to render as a real link. Sized at a small constant cost per candidate (added at every rung, so
+it counts against the ceiling but never changes which rung is chosen — `_size()` in `packer.py`).
+`as_of` is set from the pointing analysis's own `surveyed_at`, not compile time — same fact-vs-read
+split `_provenance` already draws.
+
+Wired for exactly one analysis so far (`context_compile.py`'s `_POINTABLE_VIEWS = {
+"architecture_recovery": "architecture"}`), because it is the only one with a real view to point
+at today. **What's still open, and it's the harder half:** RE's UI has no deep-linking at all — no
+hash routing, no way to open the architecture card at a given perspective/scope from a URL. The
+compiler now emits `{resource_slug, view, perspective, scope, as_of}` in a stable shape; turning
+that into a clickable link is UI work in `index.html`, not `trellis_context`.
+
+#### MEDIUM — presenting architecture recovery: a curator sees 20 of 1035 components
+
+*(Opened 2026-08-30. Evidence and three costed options in
+`architecture-recovery-presentation-findings.md` — findings only, no design chosen.)*
+
+`egeria_git`: 1035 components recovered, 451 after depth projection, **20 rendered**, chosen
+alphabetically by `path`. Four findings, in the order they are worth fixing:
+
+1. **The `structural` flag is computed and ignored.** `_architecture_recovery_results` marks
+   grouping nodes explicitly *so a consumer can render them as grouping rather than as a recovered
+   component* — and no consumer reads it. They render as `untyped · 0%`, identical to a component
+   we know nothing about, and because rows sort by `path` the **top line of Egeria's architecture is
+   a placeholder for the repo root**. 75 of 451 rows. Two-line fix that still needs a visual
+   decision, which is why it was not made in passing.
+2. **Ordering is alphabetical**, so the clean 8-component deployment reading is in the payload and
+   invisible behind 341 logical rows.
+3. **Perspective is neither shown nor filtered on**, though §4.1 is emphatic the four are not
+   interchangeable. Recommendation in the doc: perspective tabs defaulting to the smallest non-empty
+   perspective — a comparison, not a threshold.
+4. **Stale rows render identically to live ones** — resolved by tombstoning steps 1–3 for future
+   runs, but the UI still has to choose between hiding a withdrawn component and showing it marked,
+   and those are different answers for auditing history versus reading current state.
+
+Deliberately measured and not designed: presentation is a product decision, and raising the row cap
+treats a symptom when the problem is that they are the wrong 20.
+
+#### MEDIUM — tombstoning step 4: backfill the orphans no run can ever withdraw
+
+*(Opened 2026-08-30. Steps 1–3 are built; see `architecture-recovery-scope-tombstoning.md`.)*
+
+R2 forbids withdrawing rows that no step is recorded as having written, and **every existing orphan
+predates `run_label`** — measured, `_scopes_last_written_by` returns 0 scopes for `egeria_git`
+today. So ordinary runs can never clear them:
+
+```
+egeria_git, all perspectives    870 live   165 orphaned  (15%)
+egeria_git, deployment only       8 live    27 orphaned  (77%)
+egeria_workspaces_git, deployment 69 live    2 orphaned  ( 3%)
+```
+
+A curator opening Egeria's deployment architecture still sees 35 components where 8 are real.
+
+The backfill is **weaker evidence than a withdrawal from a real run** — it is a human asserting a
+scope is vacated, not a step observing it — and must say so: `cause: unclaimed`, plus a detail
+recording that it came from a dated backfill rather than a survey. A backfill writing rows
+indistinguishable from earned ones would launder an assertion into an observation.
+
+Last of the four steps deliberately, because it is the only one that touches already-published data
+and cannot be undone by re-running a survey.
+
+#### MEDIUM — borrow reflexion models' three-way vocabulary for curator verdicts
+
+*(Opened 2026-08-30, from a literature pass cross-reading this file against the academic/commercial
+record — feeds the "take architecture results into Curate" item above.)*
+
+Murphy, Notkin & Sullivan's reflexion models (IEEE TSE 2001, building on the 1995 SIGSOFT paper)
+name three outcomes when an extracted model meets a hypothesized high-level one: **convergence**,
+**divergence**, **absence**. That is a ready-made vocabulary for the undesigned axis in the item
+above (accept/reject/retype a proposed component) — a curator note *converges* with a detector's
+finding, *diverges* from it, or names something the detector found nothing for (absence). Cheaper
+to adopt their names than invent new ones, and their process is worth the same treatment: reflexion
+is explicitly iterative, recomputed each time the human's model changes, not a one-shot verdict.
+
+**Open question the paper does not answer.** Reflexion models are computed against *one*
+hypothesized model at a time — the technique is silent on whether "architecture" is absolute or
+perspective-specific. Architecture recovery already has four perspectives (Logical/Deployment/etc.,
+design doc §4.1) where the same component can read differently depending which view is asked.
+Nothing in the 2001 paper or its 1997 case-study followup addresses running reflexion per-
+perspective and reconciling the results — a component might converge under Deployment and diverge
+under Logical simultaneously. That reconciliation is genuinely new design work, not something to
+borrow.
+
+#### MEDIUM — separate "correct" from "useful right now": confidence and utility are different axes
+
+*(Opened 2026-08-30. Dan: "the goal isn't just architecture recovery — its recovery and
+understanding of useful artifacts... the threshold for useful isn't static — so at one end of the
+scale it might be everything, at the other it might be that we don't publish any of the artifacts
+we discover.")*
+
+CleanGraph's pattern (arXiv:2405.03932 — confidence/source/extractor metadata per edge, low-
+confidence routed to a human queue) is the wrong borrow if read as confidence routing alone.
+**Confidence** — is this component real? — and **usefulness** — is it worth a curator's attention
+*right now*, out of everything else competing for it? — are orthogonal. A component can be detected
+with high confidence and still not be interesting at the current threshold (a leaf utility module);
+a low-confidence guess can be exactly what a curator needs to see because it's the one thing
+standing between them and understanding a subsystem that matters.
+
+The 1035→451→20 collapse (`architecture-recovery-presentation-findings.md`) is already implicitly
+answering this question by discarding most of the graph — but as a fixed row cap, which is the
+wrong shape for a threshold that needs to slide from "show everything" to "publish nothing found."
+Worth designing as an explicit, adjustable utility score — a field separate from Confidence, not
+folded into it and not a hard-coded cap. Related: the presentation-findings item above already
+names the row-cap symptom; this names what the missing control actually is.
+
+#### MEDIUM — the replayability guarantee is only as strong as the resolver behind it
+
+*(Opened 2026-08-30. Dan, re: RAGdeterm's structured-retrieval determinism: "isn't it also
+dependent on mechanism too?")*
+
+Yes — and this sharpens `context-compilation-design.md` §9's untested claim rather than settling
+it. RAGdeterm (ScienceDirect, 2026) gets determinism by grounding retrieval in an explicit
+structured representation instead of similarity search — the same move the packer makes (resolvers
+over Egeria's materialized state, not a vector search). But "structured query" does not imply
+deterministic: an unordered `SELECT`, a paginated cursor, or a resolver that calls an LLM
+mid-resolution are all "structured" and still non-replayable. This file's own telemetry item
+(top of this section) already flags that a survey step can be LLM-based and non-deterministic —
+this is the same fact one layer up: **the replayability contract needs to be a property the
+compiler can check per-resolver**, not an assumption that holds because the store is structured.
+Worth a `deterministic: bool` tag on the resolver registry, mirroring the `run_time`/cost tags
+CLAUDE.md rule 17 already requires.
+
+#### LOW — Collibra's status lifecycle, checked
+
+*(Opened 2026-08-30, the promised follow-up on the item below.)*
+
+Collibra's Business Term lifecycle is **Candidate → Under Review → Accepted**, with **Rejected** a
+terminal state reachable from Candidate (an Onboarding Workflow moves a term out of Candidate;
+ineligible terms go to Rejected instead). Close to a 1:1 match for the ContentStatus ladder nothing
+here walks yet.
+
+The more useful thing to borrow isn't the four names — it's that Collibra implements statuses and
+the transitions between them as **configuration, not code**: a "Workflow Definition" declares which
+status transitions are legal, separate from the status values themselves. Worth copying regardless
+of what the final state names are, since it means a fifth ContentStatus later doesn't mean finding
+every place a transition is hard-coded. Could not verify Collibra's edge-case handling (what
+happens to relationships when a term is rejected; whether Rejected can re-enter Candidate) from
+public docs — that needs a live instance or their admin guide, not marketplace/product-resource
+pages.
+
+#### HIGH — Egeria already has this: `Memento` is architecture recovery's tombstone, native
+
+*(Opened 2026-08-30. Dan: "Egeria itself also implements tombstones (called mementos) in order to
+preserve lineage graphs over time. But sounds like there is more to learn here.")*
+
+Confirmed against the local Egeria checkout
+(`open-metadata-types/.../OpenMetadataTypesArchive2_6.java`, `addMementoClassification`) and
+egeria-project.org: `Memento` is a classification attachable to any `OpenMetadataRoot` entity,
+carrying `archiveDate`/`archiveUser`/`archiveProcess`/`archiveService`/`archiveMethod`/
+`archiveProperties`. Its stated purpose: *"indicates that an element is logically deleted because
+it is no longer describing all or part of a real-world digital resource... retained to support
+lineage graph queries."* **Memento elements are excluded from normal queries and only returned when
+the caller passes `forLineage`.**
+
+That is this project's tombstoning design, already built, natively, in the platform it is
+Egeria-first about. `WITHDRAWN_LABEL` (steps 1–3, `architecture-recovery-scope-tombstoning.md`)
+reimplements the same shape locally: mark-not-delete, retained for history, hidden from normal
+reads. Two things worth checking before step 4 (the backfill, above) goes further:
+
+- Does the local tombstone need to keep existing once a component is actually projected to Egeria
+  (Phase 2, still unbuilt — the item at the top of this file), or should local withdrawal just set
+  `Memento` on the published element and let Egeria's own `forLineage` filtering do the hiding?
+- If both are going to exist for a while (local proposals aren't published, so have nothing to put
+  `Memento` on), the *fields* are worth matching now rather than reconciling later —
+  `archiveProcess`/`archiveMethod` map onto exactly the "which step withdrew this, and how"
+  provenance `cause: unclaimed` (the backfill item above) is already trying to express by hand.
+
+Not "redone from scratch was wasted work" — the local version had to exist before anything reached
+Egeria, and still does for proposals that never get published. But it's now clear there's a real
+convergence point once Phase 2 lands, and designing step 4's backfill without checking `Memento`'s
+shape risks diverging further from a mechanism that already solves the identical problem one layer
+up.
+
+#### Note — is the eight-intent/curation model more complex than anything proven to need it?
+
+*(Opened 2026-08-30. Dan: "I wonder if our model is too complex and unnatural — something to keep
+in mind.")*
+
+Not a task — a caution worth keeping attached to future design work rather than resolving. Two data
+points from this session's research feed the worry directly: **no commercial catalog surveyed**
+(Amundsen, DataHub, Atlas, Collibra, Alation, Purview, Dataplex) **implements more than a two-tier
+automated/human split** — nothing resembling eight named intents exists in production elsewhere.
+And Egeria itself shipped `Memento` — a working tombstone — years before this project built its own
+(the entry above). Neither is proof the model is over-built: eight intents may be doing real work
+seven vendors happen not to need, the same way architecture recovery's multi-perspective view does
+work Reflexion Models never had to (the vocabulary entry above). But "nobody else needed this many
+moving parts" and "we rebuilt something that already existed one layer down" are both the kind of
+signal that's easy to miss from inside the project, and worth someone periodically asking from
+outside it rather than only from the momentum of the backlog that's accumulated.
+
+#### LOW — coupling's decision trace is 250 copies of one line
+
+*(Opened 2026-08-30, surfaced by persisting the trace — invisible while it was `log.info`-only.)*
+
+First real measurement of `architecture_decisions` on `egeria_git`:
+
+| step | notes | shape |
+|---|---|---|
+| `detect` | 4 | all high-signal — distillation arithmetic, platform consolidation, the variant drop |
+| `coupling` | **263** (200 kept, 63 truncated) | **250+ are one templated line**: `.: adopted unproposed subtree X (nothing else claims it)` |
+
+A trace dominated by one repeated message crowds out the notes a reader wants. Whether those should
+collapse into one summary note (`adopted 250 unproposed subtrees`) or are genuinely per-decision is
+a judgement about coupling's own semantics — hence LOW and not fixed in passing. The cap already
+reports the overflow rather than hiding it, so nothing is silently lost meanwhile.
+
+#### LOW — the decision-trace lookup is linear in run count
+
+*(Opened 2026-08-30.)* `_withdraw_vacated` reads the kind's whole finding history on every persist —
+**10,135 rows / 93ms for `egeria_git`**. Fine inside a survey that takes seconds, but history is
+append-only and never pruned, so this grows with every run. Measured and recorded rather than
+pre-optimised; the narrower two-query form (find the step's latest `surveyed_at`, then select only
+those rows) is available if it ever matters. Likeliest trigger for the telemetry item above.
+
 #### HIGH — architecture recovery: coverage closed on 2026-08-28; precision is now the whole entry
 
 **The first version of this entry said "3 of 46, 6% coverage". That was wrong, and wrong in the
@@ -1129,6 +1693,102 @@ Full context: `docs/egeria-collaboration-and-survey-model.md`, section 6, and op
 
 ### Analysis & surveyors
 
+#### DONE 2026-08-31 — Survey Results dashboards covered only 14 of 29 analyses; now covers all 25 findings-producing ones
+
+*(Opened 2026-08-31, from a results audit against `docs/dr-egeria/resource_questions.csv` — see
+the companion entry below on stage/intent mismatches, found in the same pass.)*
+
+`SURVEY_RESULT_DASHBOARDS` (`repo_survey_definition_adapter.py`) is 6 hand-authored dashboards,
+unchanged since `docs/survey-results-dashboard-plan.md` introduced it — which says so itself:
+*"Framework is the point of this pass — six real dashboards prove it end-to-end; more are a
+one-entry addition afterward, not a new mechanism."* That follow-through never happened. The
+catalog it was written against had 15 analyses; it now has 29, and the dashboard count never
+moved.
+
+**Measured:** 15 of 29 analyses have no dashboard. 4 are legitimate non-candidates — actions
+without findings, not surveys (`egeria_publish`, `rag_ingestion`, `website_ingestion`,
+`repo_profile_refresh`). **11 are real, findings-producing analyses with nowhere to show up in
+any Results tab:**
+
+- Assessment: `chaoss_metrics`, `cii_badge`, `community_support`, `cve_scan`, `foss_scorecard`
+- Discovery/Analysis: `architecture_doc_lens`, `architecture_recovery`, `architecture_summary`,
+  `interface_surface`, `repo_classification`, `manifest_parse`
+
+Confirmed this is *not* a stage-tagging bug: `get_dashboard_stages()` correctly derives a
+dashboard's stage(s) from `analysis_catalog.yaml`'s `intent` field (matching what the Survey tab
+routes by), not from the questions CSV — so Survey and Results already agree with each other on
+placement. The gap is purely dashboard **membership**: these 11 ids were never added to a
+dashboard, one-entry-at-a-time, the way the plan doc said they would be.
+
+This is very likely the concrete shape of "the Results tab doesn't show results from all the
+surveys" (live-reported 2026-08-31) — the mental model of "card = summary, Results tab =
+in-depth" is the intended design, just an unfinished rollout rather than a different design.
+
+**Status: 3 of the 11 closed 2026-08-31**, folded into one new dashboard. Added `architecture_overview`
+(`architecture_recovery` + `architecture_summary` + `architecture_doc_lens`) as a
+`render="grouped_cards"` dashboard — no new frontend code, same pattern
+`documentation_conventions` already proved out. Confirmed the pattern generalizes cleanly, but it
+also exposed a real, separate bug in `_results_have_data` (`web/routes/projects.py`): a never-run
+result shaped `{"state": "never_run", "message": "..."}` (not wrapped in `_status`) read as "has
+data" because the explanatory `message` string is non-empty, and `architecture_recovery`'s own
+decorative `documentation` field (documentation-SITE ingestion status, unrelated to its own
+findings) did the same. Both fixed and pinned with regression tests
+(`test_security_features_visibility.py`) — latent since result_status.py's vocabulary was
+adopted, just never triggered because none of the three analyses had reached a dashboard's
+`has_results` check before.
+
+**Remaining 8 closed 2026-08-31.** Folded rather than each given its own card, per the plan doc's
+own precedent that a dashboard can be a single item (`dependencies` already was one):
+
+- `cve_scan`, `foss_scorecard`, `cii_badge` → into `security_overview` (same "is this
+  trustworthy" question, asked from outside the repo instead of inside it)
+- `community_support`, `chaoss_metrics` → into `health_maturity` (community/activity signal,
+  same topic `repository_health` already reports a cruder version of)
+- `interface_surface` → into `code_structure` (same "what does this expose" surface
+  `api_structure` already reports, from declared dependencies rather than parsed source)
+- `repo_classification`, `manifest_parse` → each a new single-item dashboard — neither fit an
+  existing theme (classification is its own question; `manifest_parse` is a refresh operation,
+  not a topic), so forcing them into one would have been worse than a dashboard of one.
+
+**Closed 2026-08-31:** `security_overview`'s custom scorecard renderer now has dedicated tiles for
+the three new ids. Sourced from a new `headline` field added to the Tier-2 `/survey-results`
+payload alongside `results` (each analysis's existing `headline_reader` — the same one the Tier-1
+stat tiles already use — rather than re-deriving a summary from raw findings in JS, which would
+have duplicated that logic and let the two summaries drift). `headline_reader`'s tone vocabulary
+(`good`/`bad`/`neutral`/…) differs from the tile helper's (`ok`/`warn`/`gap`/…) — mapped, not
+unified, since both exist independently elsewhere in this codebase already.
+
+Locked in with a new ratchet test (`test_every_findings_producing_analysis_has_a_dashboard`,
+`test_survey_results_routes.py`) — a future analysis added to the catalog with no dashboard now
+fails loudly instead of sitting invisible until the next hand audit.
+
+#### MEDIUM — 27 stage/intent mismatches between the questions CSV and the analysis catalog; one question is unreachable
+
+*(Opened 2026-08-31, from the same results audit.)*
+
+`docs/dr-egeria/resource_questions.csv`'s "Funnel Stage" column and `analysis_catalog.yaml`'s
+`intent` field are two different axes **by deliberate design** — stage is "when a user would
+naturally ask this," intent is "which cost tier the analysis belongs to" (CLAUDE.md rule 17).
+Measured cross-check (`question_catalog_reader.get_questions()` against
+`analysis_catalog_reader.get_analyses()`, no dangling references found — that invariant holds):
+
+**27 of ~49 questions are filed under one stage while the analysis answering them carries a
+different `intent`.** Concentrated (20 of 27) in "Analysis"-stage questions answered by
+Discovery- or Assessment-tagged analyses — e.g. "Is there a current, published, security
+analysis?" is filed under Analysis but answered by `security_scan`/`cve_scan`/`foss_scorecard`/
+`cii_badge`/`security_features`, all `intent: assessment`. The split is intentional and the
+Results dashboards correctly key off `intent`, not stage (see `get_dashboard_stages()`'s own
+docstring) — but nothing in the UI tells a user standing in one stage's Questions tab that the
+evidence for a question actually lives under a different stage's Survey/Results tabs. Worth a UI
+affordance (a link from a Questions-tab answer to the stage that actually holds its evidence)
+more than a re-tagging pass — re-tagging would fight the Discovery-tier cost-tier logic rule 17
+already argues for.
+
+**One question is orphaned entirely:** a CSV row tagged stage=`Automate` ("How much has changed
+since the last time this was surveyed — is it worth re-running now?"), but `automate` is not in
+`index.html`'s `_QUESTION_PHASES` list and Automate's own subnav never offers a Questions tab —
+so this authored question has no reachable home in the UI today.
+
 #### `DependencyParser` covers 4 ecosystems; `_MANIFESTS` claims 12
 
 Found 2026-08-23 while checking whether the repos reporting zero dependencies genuinely had
@@ -1390,6 +2050,34 @@ guessed at further:
 - Out of scope for `docs/ingestion-pipeline-audit.md` itself, since it's a codebase-wide pattern
   rather than an RE-vs-EA ingestion-pipeline-duplication finding — that doc points here.
 
+#### `security_features` results reader has a fourth state its own test doesn't know about
+
+*(Found 2026-08-30, from a live-corpus test failure during routine integration —
+`test_security_features_visibility.py::test_no_repo_in_the_corpus_renders_a_bare_empty_card`.)*
+
+`_security_features_results` (`repo_survey_definition_adapter.py`) documents exactly three
+states — `measured` (findings exist), `skipped_by_design` (stats exist, GitHub hid the data),
+`never_run` (no stats at all) — and the test asserts every repo in the corpus lands in one of
+them, never a bare `{"findings": []}` with no stated cause.
+
+`egeria_workspaces_git` hits a fourth, undocumented case: it has **real, visible**
+`security_and_analysis` data (`dependabot_security_updates: enabled`, several others disabled —
+confirmed admin-visible, not GitHub's third-party redaction), yet **zero rows** in
+`project_analysis_findings` for `security_features`. The reader's last branch ("visible and
+genuinely nothing enabled — a real, final answer") is written for a repo where the data was
+checked and truly nothing is on; it cannot distinguish that from what this repo actually is —
+data that says something *is* enabled, but the `security_features` survey step itself has
+apparently never run to turn that into a finding row. The reader currently can't tell "ran,
+concluded nothing's on" from "never ran, but some other fetch happened to populate the stats
+JSON anyway."
+
+**Not yet fixed; not yet root-caused past this point.** Likely fix shape: the reader needs a way
+to know whether the `security_features` step itself has ever executed for this repo (a
+`last_run` marker, same shape `get_analysis_last_run` already tracks elsewhere) rather than
+inferring "ran" from "stats happen to be visible" — but confirm that's actually the gap before
+building it; the survey step's own write path hasn't been checked yet for whether it should have
+produced a finding for `dependabot_security_updates: enabled` and silently didn't.
+
 ---
 
 ### Platform & orchestration
@@ -1618,6 +2306,49 @@ Related, not yet built: polling Egeria for survey results so completed native (`
 
 Full context for the Survey Definitions side: `docs/egeria-collaboration-and-survey-model.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
 
+**RE-VERIFIED 2026-08-30 against this tree — the picture above is stale, and better than it says.**
+Significant unification already shipped without this entry being updated:
+- **Repo's legacy run path is gone.** `runSurveyFromSidebar`, `runScoutingScan`,
+  `publishScoutingRegistration`, `runProfileScan`, `publishProfileFindings` are all deleted
+  (confirmed by grep — zero hits). The Survey Definitions candidate panel is the only way to
+  launch a repo survey now (`docs/survey-tab-unification-plan.md` D1–D5, landed since the
+  2026-08-19 doc was written, despite that doc calling itself "not yet committed").
+- **Publish is unified for repo** — one route (`POST /api/egeria/{slug}/publish`), used by both
+  the Survey Definitions panel's generic `☁ Publish` (D4) and the repo detail page's own
+  "Publish survey →" button.
+- **The scheduler already dispatches Survey-Definition-typed schedules** for both repo and
+  database (`_run_scheduled_survey()` → `run_survey_definition()`).
+
+**What's still genuinely open:** filesystem has none of this — `showSurveyFsModal`/
+`submitSurveyFs` is the only way to survey one, and `scheduler.py`'s `_execute()` has no
+filesystem branch at all (repo/database only), so a filesystem schedule can never fire even if
+one were somehow created. Database's legacy `showSurveyDbModal`/`showPublishDbModal` also still
+exist alongside the Survey Definitions panel — not yet confirmed whether they're now a safe
+duplicate (like repo's were) or still do something the panel can't.
+
+**Direction from Dan (2026-08-30): database and filesystem should route through Egeria's own
+EXISTING native surveys, not through newly-authored RE-side Dr.Egeria Survey Definitions.**
+This changes what "closing this item" means for those two resource types — it is not "author a
+`database-survey-definition-*.md` / `filesystem-survey-definition-*.md` the way repo's eight
+were authored." Both adapters already carry the mechanism this points at:
+`other_engine_handlers={"egeria": _trigger_egeria_native_survey}` in both
+`database/survey_definition_adapter.py` and `filesystem/survey_definition_adapter.py` — a step
+tagged `executes_at="egeria"` actively triggers Egeria's own native survey rather than being
+skipped. The gap is not "build the trigger," it's "prove the trigger, end to end, and get its
+results back."
+
+**Testing gap, explicitly called out as open work (2026-08-30, Dan) — keep on the backlog:**
+`filesystem/survey_definition_adapter.py`'s own module docstring already says the native-trigger
+path is "not yet exercised end-to-end, since this environment has no cataloged filesystem to
+test against." Database's equivalent (`_trigger_egeria_native_survey` in
+`database/survey_definition_adapter.py`) has more surrounding coverage but its own live,
+end-to-end exercise (cataloged resource → triggered native survey → result actually lands
+somewhere RE reads it back from) has not been separately confirmed either. Both need a real
+pass: a cataloged filesystem and database resource, a live Egeria trigger, and confirmation of
+where the native survey's results actually surface (ties into the "results dashboard" gap two
+paragraphs up — an `executes_at: egeria` step today only returns an engine-action GUID with
+"check Egeria's Asset Catalog," which is not itself a tested read-back path).
+
 ---
 
 #### MEDIUM (was HIGH) — Filesystem local survey: silent-failure causes fixed, true "hang" UX still open
@@ -1638,6 +2369,126 @@ Originally: filling out the local filesystem survey pop-up and clicking Run appe
 Every repo download (full ingest, incremental refresh, Coarse Profile's `refresh_profile()`, symbol-only extraction, single-collection re-embed — confirmed all 5 call sites 2026-08-10) already downloads into a `tempfile.TemporaryDirectory()`, self-cleaning on the `with` block's exit — success, error, or exception. No local clone persists anywhere by design; disk usage from a repo download is transient, existing only for the duration of that one run. The one non-`TemporaryDirectory` temp file (notebook parsing, `NamedTemporaryFile(delete=False)`) is explicitly `os.unlink()`'d in a `finally` block.
 
 The one real gap: a hard process kill (`kill -9`, crash, power loss) mid-download skips the `with` block's cleanup entirely, potentially leaving an orphaned temp dir (partial zipball) in the OS temp directory. Rare, self-limiting (each leftover is at most one repo's zip; the OS's own temp-dir conventions eventually reclaim it), and not actively guarded against today. A small startup sweep clearing stale resource-explorer-tagged temp dirs from a previous crash would close it — not worth building unless actual `/tmp` bloat shows up in practice.
+
+---
+
+#### Clustering: propose candidate blueprints, starting with the deployment perspective
+
+Design: `docs/architecture-recovery-clustering.md` (2026-08-29). Promoted from "parallel workstream"
+to **prerequisite for the curator review surface**, because rendering the corpus showed more than a
+quarter of repos produce a proposal no curator could read and depth alone does not fix it.
+
+Measured, and it makes the first step cheap: every component already carries a §4.1 perspective
+(logical 1747 / deployment 1300 / physical 168 across 3,215 components), and `blueprint` is empty on
+**all** of them, so clustering has never run. Applying the existing `scope_hierarchy.derive()`
+grouping *within one perspective* already reaches the ~10-component goal for **deployment** on most
+repos — genaiexamples 546 -> 8, genaicomps 289 -> 4, milvus 31 -> 5. The **logical** perspective does
+not (egeria_git 924 -> 279), and that is precisely the perspective §4.1 says "needs inference or a
+human", so the automation boundary and the design's own prediction agree.
+
+Build order in the doc: deployment-perspective clustering first (cheapest real result, and it makes
+the renderer's blueprint grouping meaningful for the first time); perspective carried in the survey
+definition so a proposal records the context it was clustered for; wire density as the second signal
+against the logical perspective; RFA the cases that will not cluster rather than emitting a
+low-confidence grouping.
+
+**Deployment-perspective clustering (signal 1) — DONE, since before this entry was last read.**
+`arch_recovery/clustering.py` (`propose`/`_build`/`rollup`/`assign`), wired into `persist.py`'s
+`_cluster()` and running on every survey. Affinity promotion (Collection -> composed component via
+import-cohesion) landed alongside it. Tested: `test_arch_clustering.py`, 29 cases. This paragraph was
+stale — recorded here so the next reader doesn't re-derive "has clustering run yet" from scratch.
+
+**Wire density (signal 2) — DONE 2026-08-30, same session.** Tried only as a fallback, once every
+declared boundary (deployment context, scope hierarchy) is exhausted and a group is still over the
+~10 goal — not blended with those signals or given a vote alongside them. Built as greedy
+agglomerative merging over the wire graph (`interfaces.propose`'s own `wires` list, the same one
+`mermaid.render` draws from and `persist_ir` was already threading through as an unused parameter):
+repeatedly merge whichever two groups have the strongest total wire weight between them, bounded by
+`target_size`, stopping when no beneficial merge remains. Pairwise weights are computed once and
+updated incrementally per merge (a merged group's weight to a third group is the sum of its two
+parents' — wires are additive) rather than rescanned every iteration, since this runs on a survey's
+hot path; a size backstop (`_MAX_WIRE_DENSITY_MEMBERS = 200`, unmeasured, revisit if it's ever what's
+silencing a real group's wire signal) sits on top of that as insurance, not a substitute for it.
+"No signal, no cluster" applies here too — a member set with zero wires between any of them returns
+no split, same as `_subdivide`'s existing contract, rather than one bucket covering everyone.
+Resulting clusters carry `signal: "wire-density"` so a curator can tell a measured graph from a
+declared boundary. Wire endpoints resolve by slug-or-name (mirroring `mermaid._resolve_endpoint`'s
+existing handling of the same ambiguity — a compose wire is attributed by service name, a port by
+slug), kept as its own small copy rather than a shared import, same reasoning as
+`ComponentMaterializer._find_element_guid` duplicating `EgeriaPublisher`'s.
+
+**Shared interface (signal 3) — DONE 2026-08-30, same session, following directly from the
+interface-extraction work above (item A's OpenAPI/FastAPI reuse, item B's language-binding
+evidence).** The LAST fallback in the chain — tried only once deployment context, scope hierarchy,
+AND wire density have all found nothing further — because it needs an IDL/OpenAPI document per
+component, rarer input than a wire between two components that simply call each other. `interfaces.py`
+was extended first, to capture a structured *name* rather than just a count: `_openapi_info()`
+(renamed from `_count_openapi_operations`) now returns `info.title` alongside the operation count,
+`_count_proto_rpcs()` returns the joined, sorted, unique proto/gRPC service names, and both (plus
+Thrift) pass an `interface_name` into `_port_dict()`, stored in `additionalProperties["interfaceName"]`
+— the same sanctioned extension point `operationCount` already uses. GraphQL deliberately does NOT
+get one: its root type names (`Query`/`Mutation`/`Subscription`) are the same across almost every
+GraphQL service, so treating them as a shared-identity signal would cluster unrelated services that
+merely both speak GraphQL.
+
+`clustering.py` gained `_interface_names(components, ports)` (`{slug: {declared name, ...}}`,
+resolved slug-or-name the same way `_wire_density_split` resolves wire endpoints) and
+`_shared_interface_split(member_scopes, by_scope, interface_names)` — an exact partition by shared
+name, not a size-bounded weighted merge like wire-density: a name two or more scopes present together
+is the whole signal, so there is no `target_size` to respect the way wire-density has one. A scope
+presenting more than one interface name goes to whichever shared group is largest (deterministic
+tie-break by name), and a name only ONE scope presents contributes nothing — "no signal, no cluster"
+again, same as `_subdivide`/`_wire_density_split`'s existing contract. `_build()` and `propose()` got
+a new `interface_names`/`ports` parameter threaded exactly like `wire_weights`/`wires` was for signal
+2 (including through `persist.py`'s `_cluster()`, which already received `ports` as an unused-for-
+clustering parameter). Resulting clusters carry `signal: "shared-interface"`.
+
+Confirmed by test that wire-density strictly wins when both signals would apply to literally the same
+subset (a densely-wired group that also shares an interface name clusters as `"wire-density"`, never
+`"shared-interface"`) and that shared-interface still gets its turn where wire-density genuinely finds
+nothing (an interface-only context group with no wires among its own members).
+
+**Found and fixed alongside it — a live, untested bug in `_build`'s recursive `_subdivide` branch:**
+the call `_build(sub_name, sub_scopes, by_scope, perspective, target_size, depth_left - 1)` passed 6
+positional args to a 7-parameter function (missing `by_scope_components`), so every value after it
+landed in the wrong slot and `depth_left` got none at all — a `TypeError` on any call. Unreached by
+all 29 pre-existing tests: the oversized-cluster tests use flat scope locators (`flat::s{i}`)
+specifically so `scope_hierarchy.derive` finds nothing to subdivide, which is exactly what kept this
+branch from ever running; real corpus runs likely never hit it either, since an oversized group needs
+a deployment-context split to be genuinely unavailable (not just single-valued) AND a further scope
+hierarchy to exist below it. Two new regression tests exercise `_build` directly (bypassing
+`propose()`'s own first pass, which finds the finest qualifying split in one shot for realistic path
+hierarchies and so never naturally reaches this branch either) to prove the recursive call no longer
+raises and the second-level split is real.
+
+Suite: `test_arch_clustering.py` grew from 29 to 50 cases (the bug-fix regression, ten
+`TestWireDensitySignal` cases, seven `TestSharedInterfaceSignal` cases, and two end-to-end tests
+proving `persist_ir` actually threads `wires`/`ports` through `_cluster()` into
+`clustering.propose()` — a unit test of `propose(wires=..., ports=...)` alone would not have caught
+a broken wire-up in between). `test_arch_interfaces_idl.py` +6 (`TestInterfaceNameIsAStructuredIdentity`
+— OpenAPI title capture, proto/Thrift service-name capture, GraphQL exclusion, absent-title case).
+Broader arch/clustering/interfaces/mermaid suite: 507 passed, 9 skipped.
+
+---
+
+#### RE has no login at all, and its identity is inconsistent across 26 sites
+
+Dan, 2026-08-29: *"If RE doesn't have a login, it should"*, and *"both EA and RE will need
+(ultimately) to support multi-user."*
+
+`/api/egeria/whoami` returns `get_config().egeria.user_id` and the comment above it says it is
+*"deliberately NOT a login mechanism"* — so the header's "Connected as: erinoverview" is cosmetic.
+Identity is read from `os.getenv("EGERIA_USER", …)` at **26 sites**, each building its own pyegeria
+client, with four different fallbacks (4x `_DEFAULT_USER`, 3x `"steward"`, 3x `"erinoverview"`,
+1x `""`), so **which identity an RE operation acts as depends on which module built the client**.
+
+Full reasoning and the recommendation to extract `trellis-auth` rather than build a second login:
+`docs/trellis-auth-extraction.md` at the Trellis root. Four parts, and the package is the smallest:
+the extraction; a login UI in RE's SPA (it has never had one); collapsing the 26 sites onto the
+authenticated identity; and **the design question that should be settled first** — what RE does when
+nobody is logged in, since surveys and schedulers run unattended and a scheduled survey has no user.
+That needs a declared service identity, which is a legitimate configured account and NOT the same as
+the silent fallback EA's SS-4 decision removes.
 
 ---
 
@@ -1831,56 +2682,108 @@ use during runtime, we need to know how to interface to it — what kind of API 
 language bindings, the number of commands. We don't need the names of every request and their
 payloads/signatures — until we want to actually try to use it."*
 
-That is a **suitability** question, and it wants a coarse answer. Measured against what
-`arch_recovery/interfaces.py` extracts today:
+That is a **suitability** question, and it wants a coarse answer.
 
-| The question | Answerable now? | Why |
-|---|---|---|
-| Does it expose an interface at all? | **yes** | Dockerfile `EXPOSE`, compose `ports:`/`expose:` |
-| What kind of API? | **partly** | an OpenAPI filename ⇒ `HTTP/REST` |
-| Is it gRPC? | **no** | `.proto` is not recognised. Nor GraphQL, nor Thrift |
-| How many operations/commands? | **no** | the OpenAPI document is matched by **filename** and never opened |
-| What language bindings ship with it? | **no** | nothing extracts them |
+**Items 1 and 2 below are DONE (`b1488be`, "RE: Milvus is gRPC-first and we could not see it")** —
+recorded here so the next reader doesn't re-derive it, since this entry sat stale describing them
+as open after they'd already landed. `interfaces.py` now recognises `.proto`/GraphQL SDL/Thrift IDL
+alongside OpenAPI (`_PROTO_EXT`/`_GRAPHQL_EXTS`/`_THRIFT_EXT`), and `operation_count` (OpenAPI
+`paths` × methods, `.proto` `service`/`rpc` counts) rides in each port's `additionalProperties`.
+Milvus's gRPC surface — the case that motivated this — is no longer invisible.
 
-`propose()`'s own docstring says it works "from deployment artifacts only", and `_OPENAPI_NAMES`
-is a six-entry filename tuple. So for **Milvus** — gRPC-first, SDKs in several languages — we
-record that it exposes ports and miss its actual interface entirely.
+**What genuinely remains open, sharpened by Dan 2026-08-30:**
 
-**The general principle this exposes, and it is bigger than the gap.** A coarse answer often
-requires a *deeper* analysis that is then summarised. "REST, ~40 operations, Python and Go
-bindings" means opening the OpenAPI document and scanning for binding directories, then reporting
-three facts rather than forty signatures. **Today we do neither half**: no deep read, and no
-summarisation step. What we emit instead is the raw analysis at its own natural granularity —
-154 components for Milvus (finding 99) — which is not a precision failure so much as a missing
-summarisation level.
+**A. OpenAPI/REST/Swagger detection needs a second path — DONE for FastAPI, 2026-08-30, same
+session.** `_OPENAPI_NAMES` only ever saw a *committed* spec file (`openapi.json`, `swagger.yaml`,
+…); a FastAPI service generates its spec at runtime from its own route decorators and ships none —
+this codebase's own web app was exactly that case, recording nothing.
 
-This reframes the two-stage funnel that already exists. *"First determine if it's suitable; if so,
-later analyse the details to use it properly"* is Discovery → Analysis, and rule 17's
-`fetch_cost`/`compute_cost` already draws the cost boundary. What is missing is that **no step owns
-summarising up to the depth the question asked for.** Every surveyor emits at its own granularity
-and nothing collapses it.
+Built as reuse, not a second detection: `code_markers.py`'s `fastapi-route-registration` rule
+already matches individual `@app.get`/`.post`/`.put`/`.delete`/`.patch`/`.websocket` decorators —
+one match per route, collected per-file for *component* classification
+(`arch_recovery/rules/fastapi-route.yml`) — but the count was discarded once converted into a
+component. `code_markers.propose()` now returns it as a 4th value, `{component slug: route count}`
+(`OPERATION_MARKERS`, a named subset of rule IDs that are genuinely per-operation, not per-file),
+threaded through `detectors.build_components()` → `arch_recovery_detect.py` →
+`interfaces.propose()`'s new `code_marker_operations` keyword. `interfaces.py` emits an `HTTP/REST`
+port from it for any component with a nonzero count **that has no port already from a static
+document** — a checked-in OpenAPI file is stronger, filename-attributable evidence than a decorator
+count, and both existing would report one REST interface as two, so the static-document reading
+wins where both exist.
 
-**It also enlarges Purpose's role (§3 of the investigation-framing design).** If Purpose sets the
-required *depth of response*, it selects a summarisation level, not just a question ordering — and
-the same underlying analysis then serves both stages. A summariser over 154 components ("3
-subsystems, 8 services, one gRPC surface") answers the suitability question **without the component
-list needing to be correct at 8**, which is a materially cheaper path than the unported adjudicator.
+**Confirmed NOT free for Spring/Go, as flagged** — `OPERATION_MARKERS` has exactly one entry.
+Spring's marker (`java-spring-service.yml`) matches `@RestController`/`@Controller` at the class
+level, and Go's (`go-http-server.yml`, `go-grpc-server.yml`) match server *construction* — neither
+is a per-endpoint marker, so adding their rule IDs to `OPERATION_MARKERS` would count "1" regardless
+of how many routes exist. Getting the same countable granularity for Spring needs a new rule on
+`@GetMapping`/`@PostMapping`/`@RequestMapping`-family method annotations; for Go it needs rules on
+whichever router's per-route registration call (`mux.HandleFunc`, gin's `.GET`, echo's `.GET`, …) a
+given service actually uses. Left as a clearly-scoped follow-on, not attempted here.
 
-**Proposed work, cheap first:**
+Suite: `test_arch_interfaces_idl.py` +5 (the reuse, the static-document precedence, the no-owner
+skip, the zero-count skip, and backward compatibility with no `code_marker_operations` passed),
+`test_arch_recovery_detectors.py` +2 (the count itself, and that a subtree with no route decorators
+is absent rather than zero). 214 passed across the directly affected files; 503 passed across the
+broader arch/interface/marker test surface.
 
-1. **Recognise `.proto`, GraphQL SDL and Thrift IDL** alongside OpenAPI. Filename/extension
-   matching, same tier, no new fetch. Fixes the Milvus-shaped blind spot where the primary
-   interface is invisible.
-2. **Open the interface document and count.** OpenAPI `paths` × methods, `.proto` `service`/`rpc`
-   declarations. A count is a summary, not a listing — the signatures stay unread until stage two,
-   exactly as the driving question asks. Note the existing `_port_dict` has no field for it, so
-   this needs one (`operation_count`, or a `SolutionPort` property if Egeria has one — **check the
-   vocabulary first**, as §5.5f asked and as has paid off three times).
-3. **Language bindings** — conventional directories (`clients/<lang>`, `sdk/<lang>`, `bindings/`)
-   plus per-ecosystem manifests. Weakest evidence of the three; do it last and label it derived.
+**B. Language bindings — Dan's steer narrows this from the original proposal, doesn't confirm it.**
+The entry as written proposed conventional directories (`clients/<lang>`, `sdk/<lang>`,
+`bindings/`) as the signal, and called it "weakest evidence of the three; do it last." Dan, 2026-08-30:
+*"Not sure about language bindings unless they are exported as a specific library — eg. pyegeria."*
+That rules the directory-convention approach out rather than deferring it — a folder named
+`clients/python` is not evidence a real, usable client library exists at that path, and the
+codebase's own `_deployment_context_of`-style principle (read a declared boundary, don't infer
+intent from a name) argues the same way here.
 
-**Do NOT** extend this into reading request/response schemas. That is stage two, it is a different
-cost tier, and the driving question explicitly excludes it.
+What Dan's example asks for instead: recognise a **named, published package that IS a client
+library for this project** — `pyegeria` is a real PyPI package, with its own name and description,
+that exists specifically to bind to Egeria. That is verifiable evidence a directory name is not.
+
+**DONE, first cut, 2026-08-30, same session — Python and Node only.** Not `manifest_parse.py`/
+`DependencyParser` in the end (that pipeline belongs to a different survey step, `ManifestParseSurveyor`
+via `IngestionPipeline`, which `architecture_recovery` doesn't depend on and shouldn't couple to) but
+the *same kind* of parsing the entry anticipated, on the surface that was already free:
+`detectors.python_manifests()`/`node_manifests()` already read `pyproject.toml`'s `[project]` table
+and `package.json` wholesale for `classify()`'s "installable, no entry point ⇒ Software Library"
+signal — `description` was sitting in the already-parsed structure, unread. One field added to
+each, no new file walk, no new parse.
+
+**Deliberately NOT a classifier.** `build_components()` now attaches a second Evidence entry to any
+component `classify()` already calls `"Software Library"` (installable, no entry point — exactly
+pyegeria's shape) that has a non-empty `description`: the description, verbatim, up to 200 chars,
+assertion `"publishes a {ecosystem} package — possible language binding"`. Nothing here decides
+*whether* it's a binding — pyegeria's own description ("A python client for the Egeria metadata
+management system") needs no inference to read as one, and that restraint is the same one `protocol`
+already exercises by staying empty rather than guessed from a port number. A package with no
+description, or with an entry point (a CLI, not installable-as-a-library), gets no binding evidence
+at all — nothing invented to fill the gap.
+
+**Directory-convention detection (`clients/<lang>`, `sdk/<lang>`, `bindings/`) was NOT built**, per
+Dan's steer ruling it out rather than deferring it.
+
+**Real scope limits, stated rather than discovered later:**
+- **Java (Maven/Gradle) and Go are not covered.** `python_manifests`/`node_manifests` are the two
+  existing readers with a clean `name`/`description` shape to extend; `pom.xml` isn't parsed into a
+  dict at all today and Gradle's `settings.gradle` module list has no description field to read.
+  Real follow-on work, not attempted here.
+- **Single-repo only, and this is the sharper limit.** `pyegeria` is Egeria's binding but lives in a
+  *different* repository (`egeria-python`) from Egeria's own server code. Analysing the Egeria server
+  repo alone will never surface pyegeria as evidence — this only finds a binding a repo publishes
+  *of itself*, e.g. running this against `egeria-python` would find pyegeria's own self-description.
+  Cross-repo binding discovery (recognising that some OTHER analysed repo is a stated dependency of
+  and/or names the analysed one) is a different, larger question, not scoped here.
+- **Not yet surfaced in the curator-facing card.** The evidence is persisted and readable
+  (`_architecture_recovery_results`'s per-component `evidence` list already carries it, same generic
+  path every other Evidence record takes through `persist.py`), but `_archRow`'s summary line shows
+  only `proposed_by` (detector labels), not evidence text — a curator has to look past the summary to
+  see the description. A presentation follow-up, not a detection gap.
+
+Suite: `test_arch_recovery_detectors.py` +4 (an installable package with a description gets binding
+evidence; a console-command package does not; a bare name with no description does not; Node
+packages are covered too). 207 passed across the directly affected files.
+
+**Do NOT** extend either A or B into reading request/response schemas or binding call signatures.
+That is stage two, a different cost tier, and the driving question explicitly excludes it.
 
 ---
 

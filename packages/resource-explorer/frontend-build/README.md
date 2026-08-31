@@ -45,6 +45,14 @@ The build outputs are checked into the repo like any other static asset —
   the new class has no effect — this fails visually/silently at runtime, not
   at build or test time, so it's easy to miss. There is no CI check for this
   yet.
+  **Run `npm install` first if `package.json`'s `devDependencies` or
+  `plugins` in `tailwind.config.js` changed** (e.g. adding
+  `@tailwindcss/typography`, 2026-08-31) — `build:css` runs against whatever
+  is already in `node_modules`, so rebuilding with a stale install silently
+  regenerates `tailwind.css` WITHOUT the new plugin's rules, looking exactly
+  like the plugin was never added at all. `prose`/`prose-invert` sat unstyled
+  in `index.html` for this exact reason before anyone noticed the plugin
+  itself was missing, not just an unbuilt class.
 - `build:vendor`: to pick up a version bump for marked/plotly.js/
   svg-pan-zoom — bump the version in `package.json`, `npm install`, then
   `npm run build:vendor`. Versions are pinned deliberately; don't `npm

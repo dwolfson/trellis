@@ -90,6 +90,7 @@ repo_analyses:
     annotation_types: ["ResourceMeasureAnnotation", "ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: true
@@ -106,6 +107,7 @@ repo_analyses:
     annotation_types: ["QualityScoreAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: true
@@ -122,6 +124,7 @@ repo_analyses:
     annotation_types: ["DataClassAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -138,6 +141,7 @@ repo_analyses:
     annotation_types: ["RequestForActionAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: true
@@ -154,6 +158,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -175,6 +180,7 @@ repo_analyses:
       - ClassificationAnnotation
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -191,6 +197,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -207,6 +214,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     target_shape: whole_resource_only
 
   - id: community_support
@@ -218,6 +226,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     target_shape: whole_resource_only
 
   - id: cve_scan
@@ -240,6 +249,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     target_shape: whole_resource_only
 
   - id: cii_badge
@@ -251,6 +261,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     target_shape: whole_resource_only
 
   - id: foss_scorecard
@@ -262,6 +273,7 @@ repo_analyses:
     annotation_types: ["QualityScoreAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     target_shape: whole_resource_only
 
   - id: security_features
@@ -273,6 +285,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -289,6 +302,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -305,6 +319,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -321,6 +336,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -337,6 +353,11 @@ repo_analyses:
     annotation_types: ["SchemaAnalysisAnnotation", "DataClassAnnotation"]
     source: local
     run_time: minutes
+    # Queued STRUCTURALLY, not by omission: this acquires zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: corpus
     recommended: true
@@ -360,6 +381,7 @@ repo_analyses:
     annotation_types: ["ClassificationAnnotation", "ResourceMeasureAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: corpus
     native_process_ref: null
@@ -373,6 +395,7 @@ repo_analyses:
     annotation_types: ["SchemaAnalysisAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: corpus
     recommended: false
@@ -389,6 +412,11 @@ repo_analyses:
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
+    # Queued STRUCTURALLY, not by omission: this acquires zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -405,6 +433,11 @@ repo_analyses:
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
+    # Queued STRUCTURALLY, not by omission: this acquires zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: whole_resource_only
     recommended: false
@@ -416,21 +449,75 @@ repo_analyses:
     name: "Architecture Recovery"
     description: "Recover candidate architecture components from package manifests, deployment units (Dockerfile/compose), ast-grep code markers, and import/co-change coupling — a component partition proposal with confidence and evidence, not a published blueprint (docs/architecture-recovery-phase1-plan.md)."
     resource_types: ["repo"]
-    # Retagged to discovery 2026-08-22 (maintainer's ruling) — the stored
-    # candidate hierarchy (approach-portfolio-model.md §2a) is comfortably
-    # sufficient for "which subsystem is this?" (a coarse projection, see
-    # projection.py), marginal for component-scoped metrics, and nowhere
-    # near publishable. NOTE the tension this leaves with CLAUDE.md rule
-    # 17's collect-vs-reason axis: both repo_arch_detect (zipball_root) and
-    # repo_arch_coupling (zipball_root + git_clone_root) DO fetch fresh
-    # data, unlike every other discovery-tier analysis, which is zero-fetch
-    # by construction. Recorded rather than quietly reconciled — the
-    # maintainer's call was explicit and is not this comment's to override.
-    intent: discovery
+    # Retagged to discovery 2026-08-22 (maintainer's ruling), then RE-RETAGGED
+    # to analysis 2026-08-30 (Dan, directly: "architecture recovery is an
+    # analysis step and belongs there") — reversing the earlier call rather
+    # than layering a second exception on top of it. This closes the "Open,
+    # unresolved" question the PROFILED note below's Backlog entry named —
+    # intent on OTHER grounds than cost — separately from the cost question,
+    # which that same entry had already settled the other way (see below:
+    # `run_time: fast` stays). Both rulings reached the catalog the same day
+    # from two different sessions; recorded together here so neither reads as
+    # having overridden the other.
+    intent: analysis
     perspectives: ["Architecture", "App/AI Builder"]
     annotation_types: ["ResourceMeasureAnnotation", "RequestForActionAnnotation"]
     source: local
+    # PROFILED 2026-08-30 (docs/Backlog.md, "architecture_recovery costs 110s
+    # to fetch and 5.9s to run — fix the acquisition") — `fast` is right about
+    # COMPUTE, and the whole question turned out to be acquisition rather than
+    # tiering:
+    #   analysis compute, local checkout   5.9s  (detect 3.1 + coupling 2.8)
+    #   zipball + treeless clone          15.7s
+    #   the same two steps via the route 110.5s
+    #
+    # phase1-findings §3's "5.3s per repo" is correct and still holds for
+    # compute. cProfile pinned the gap to `git_clone_root`'s
+    # --filter=blob:none clone: co-change's git history commands lazily fetch
+    # from the remote against a treeless clone, so ~92s of a run is git's
+    # network time in a child process — invisible to whatever counts
+    # connections, which is a separate small bug the Backlog entry also
+    # records (a compute_cost guard misattributed 92s of network as compute).
+    #
+    # `run_time: fast` STAYS (Dan's steer, per that entry: "the work likely
+    # goes into the analysis implementation, not the catalog") — it was never
+    # wrong about compute, only silent about acquisition, and the two
+    # candidate fixes below are aimed at making the acquisition converge
+    # toward the compute figure rather than at re-tagging around it. If
+    # neither fix lands, the honest tag is about the whole experience and this
+    # question comes back — the entry says so explicitly.
+    #
+    # BOTH candidate fixes from that entry are now DONE (2026-08-30):
+    #   1. Give co-change what it actually needs — `git log --name-only`'s
+    #      default INEXACT rename detection scores blob-content similarity,
+    #      which is exactly what defeats --filter=blob:none (86 lazy
+    #      fetches, confirmed by packet trace). Fixed with
+    #      --find-renames=100% (dwolfson-59, re/deferred-cleanup-followups
+    #      commit 63e7ec6).
+    #   2. Cache the acquired roots — `SourceCache` (github/source_cache.py)
+    #      keys zipball_root/git_clone_root's downloads on (repo, commit
+    #      sha), shared ACROSS SurveyOrchestrator.run() calls rather than
+    #      only within one. `_default_branch_sha` now delegates to
+    #      `get_latest_commit_sha` (one API call) rather than reimplementing
+    #      it — no longer an unused method; it also backs IncrementalIndexer
+    #      and the CLI wizard. Built by dwolfson-59, reviewed by S1
+    #      (fbc19d7: fixed a lost subproject_path validation on the cached
+    #      path, added integration test coverage; 79eaf5b: closed an
+    #      eviction race with a grace window after review pushback).
+    #
+    # Measured result: acquisition 22.64s cold -> 1.28s warm; full route for
+    # egeria_python_git 110.5s originally -> 14.4s now. `run_time: fast`
+    # stays right about compute, same reasoning as above — what changed is
+    # that `availability` no longer derives from it (Dan's separate ruling,
+    # same day): this entry is fast AND queued, since a compile running it
+    # inline would still pay acquisition. See docs/Backlog.md's entry for
+    # the full history across all three sessions that touched this.
     run_time: fast
+    # Queued STRUCTURALLY, not by omission: this acquires git_clone_root + zipball_root, so a
+    # context compile running it inline would download on its hot path.
+    # Declared rather than left to default so "deliberately queued" is
+    # distinguishable from "nobody has considered this yet".
+    availability: queued
     action: survey
     target_shape: corpus
     recommended: false
@@ -442,17 +529,19 @@ repo_analyses:
     name: "Architecture Doc Lens"
     description: "Labels recovered components against the project's own architecture document, wherever it lives — in-repo, a sibling repository, or a documentation site. A lens, not an oracle: adds no component, removes none, assigns no type. Milvus goes from 206 candidates to the 15 its authors actually name. Measured scope: 13 of 46 gate-approved repos have a document located, and in-repo documents work far better than sibling-repo ones."
     resource_types: ["repo"]
-    # THIRD exception to "discovery is the zero-fetch derivation tier", after
-    # architecture_recovery and repo_classification. Up to MAX_DOC_FILES GitHub
-    # calls, often against a DIFFERENT repository than the one being surveyed.
-    # Recorded here rather than quietly added: three exceptions is the point
-    # where the tier's description stops being a rule and becomes a slogan, and
-    # somebody should decide which it is.
+    # SECOND exception to "discovery is the zero-fetch derivation tier", after
+    # repo_classification (architecture_recovery was the third, until it was
+    # re-tiered to analysis 2026-08-30 — see that entry). Up to MAX_DOC_FILES
+    # GitHub calls, often against a DIFFERENT repository than the one being
+    # surveyed. Recorded here rather than quietly added: this is the point
+    # where the tier's description stops being a rule and becomes a slogan for
+    # every entry that stays, and somebody should decide which it is.
     intent: discovery
     perspectives: ["Architecture", "Consumer"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: corpus
     recommended: false
@@ -474,6 +563,7 @@ repo_analyses:
     annotation_types: ["ResourceMeasureAnnotation"]
     source: local
     run_time: fast
+    availability: inline
     action: survey
     target_shape: whole_resource_only
     recommended: false

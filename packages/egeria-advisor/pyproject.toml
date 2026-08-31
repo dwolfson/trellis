@@ -14,6 +14,8 @@ dependencies = [
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.3.0",
     "trellis-vectorstore",
+    "trellis-querycache",
+    "trellis-auth[egeria]",
     "docling>=1.0.0",
     "click>=8.1.0",
     "rich>=13.7.0",

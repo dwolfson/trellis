@@ -571,22 +571,19 @@ class EgeriaFileSystemSurveyor:
         fs_slug: str,
         surveyed_at: str,
     ) -> None:
-        """Push a list of local Annotation objects to Egeria."""
-        for i, ann in enumerate(annotations):
-            qualified_name = f"Annotation::FileSystem::{fs_slug}::{surveyed_at}::{i}"
-            props = self._build_annotation_props(ann, qualified_name)
-            body = {
-                "class": "NewElementRequestBody",
-                "parentGUID": report_guid,
-                "parentRelationshipTypeName": "ReportedAnnotation",
-                "properties": props,
-            }
-            try:
-                self._discovery.create_annotation(body=body)
-            except Exception as exc:
-                log.warning(
-                    f"Failed to create annotation {i} ({ann.annotation_type.value}) in Egeria: {exc}"
-                )
+        """Push a list of local Annotation objects to Egeria.
+
+        Delegates to the shared implementation — see annotation_props.py.
+        Kept as a method because tests reach for it by name. `surveyed_at` is
+        this run's own timestamp (this run's identity, part of the
+        qualifiedName) — do not recompute it here."""
+        from resource_explorer.surveyors.annotation_props import publish_annotations
+
+        qualified_name_prefix = f"Annotation::FileSystem::{fs_slug}::{surveyed_at}"
+        publish_annotations(
+            self._discovery, self._find_element_guid,
+            annotations, report_guid, qualified_name_prefix,
+        )
 
     def _build_annotation_props(self, ann, qualified_name: str) -> dict:
         """Delegates to the shared implementation — see annotation_props.py.

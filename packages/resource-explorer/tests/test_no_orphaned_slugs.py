@@ -173,27 +173,51 @@ class TestNoOrphanedSlugs:
         """An entry for a table that no longer exists is a stale exemption
         hiding behind real ones.
 
-        Checked against the LIVE schema, read-only, and deliberately not
-        against the throwaway test schema. Tables there are created lazily by
-        whichever component owns them, so a table missing from a partial test
-        run is indistinguishable from a table that was dropped -- and this
-        assertion would then fail for the wrong reason every time the file is
-        run on its own. The live schema is the only complete set. It is only
-        read: no fixture, no writes, no dependence on test ordering.
-        """
-        conn = _connect()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT table_name FROM information_schema.tables
-                        WHERE table_schema = 'resource_explorer'""",
-                )
-                live = {r[0] for r in cur.fetchall()}
-        finally:
-            conn.close()
-        if not live:
-            import pytest
+        Checked against the tables DECLARED IN CODE, not against a database.
+        That is the complete, deterministic universe -- 54 of them, spanning
+        every component that owns one.
 
-            pytest.skip("live resource_explorer schema not present")
-        stale = sorted(set(UNGUARDED_BY_DESIGN) - live)
-        assert not stale, f"UNGUARDED_BY_DESIGN lists table(s) that are gone: {stale}"
+        Two earlier versions got that universe wrong in opposite directions,
+        and both failed in CI rather than locally:
+
+        * Against the LIVE `resource_explorer` schema, on the argument that it
+          "is the only complete set". True on a developer machine. In CI the
+          workflow creates that schema EMPTY (`CREATE SCHEMA IF NOT EXISTS`)
+          and tables appear only as tests happen to create them; the guard
+          skipped an empty schema but not a partial one, so CI saw a handful,
+          concluded five existing tables had been dropped, and failed every
+          run. That schema is also too broad -- ~101 tables, including
+          per-project pgvector collections this allowlist has no opinion on.
+        * Against the throwaway schema after `pg_registry` provisions it.
+          Complete for the tables `ProjectRegistry` owns, and only those:
+          `query_log` is created by `observability/metrics_collector.py`, so
+          it read as dropped.
+
+        The source is the only place that knows about all of them regardless
+        of which component provisions it, and it cannot be partially
+        populated. This test now needs no database and cannot fail for
+        environmental reasons -- which matters because it is a ratchet, and a
+        permanently red ratchet teaches people to merge past it until a real
+        staleness looks identical to the noise.
+        """
+        import re
+        from pathlib import Path
+
+        import resource_explorer
+
+        pattern = re.compile(
+            r'CREATE TABLE (?:IF NOT EXISTS )?"?([a-z_]+)"?', re.IGNORECASE)
+        root = Path(resource_explorer.__file__).parent
+        declared: set[str] = set()
+        for source in root.rglob("*.py"):
+            declared |= set(pattern.findall(source.read_text(errors="ignore")))
+
+        assert len(declared) > 40, (
+            f"only {len(declared)} CREATE TABLE statement(s) found -- the scan "
+            "is broken, and this check would then pass by inspecting nothing"
+        )
+
+        gone = sorted(set(UNGUARDED_BY_DESIGN) - declared)
+        assert not gone, (
+            f"UNGUARDED_BY_DESIGN lists table(s) that are gone: {gone}"
+        )

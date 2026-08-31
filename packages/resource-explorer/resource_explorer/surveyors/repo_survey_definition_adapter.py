@@ -42,6 +42,7 @@ from typing import Callable
 
 from trellis_microflow import ResourceProvider
 
+from resource_explorer.registry import WITHDRAWN_LABEL
 from resource_explorer.step_outcome import PARTIAL, UNVERIFIED
 from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.result_status import attach as attach_status
@@ -1868,6 +1869,35 @@ def _doc_ingestion_state(registry, slug: str) -> dict:
         return {"state": "", "detail": ""}
 
 
+def _verdict_view(row: dict | None) -> dict | None:
+    """The subset of an architecture_component_verdicts row a component card
+    needs — None when no curator has ruled on this component yet, so a
+    reader can tell "no verdict" from "verdict happens to be falsy" without
+    inspecting field values."""
+    if not row:
+        return None
+    return {
+        "verdict": row["verdict"],
+        "retyped_to": row.get("retyped_to", ""),
+        "note": row.get("note", ""),
+        "decided_at": row.get("created_at", ""),
+    }
+
+
+def _materialized_view(row: dict | None) -> dict | None:
+    """The subset of an architecture_materialized_components row a component
+    card needs — None when nothing has been materialized yet. Kept as its
+    own function alongside _verdict_view rather than folded in: a component
+    can carry a verdict with no materialization (e.g. 'rejected', or an
+    'accepted' whose materialize call failed — see curate.py's
+    _materialize_if_accepted) and the UI needs to tell those apart on a
+    page reload, not just in the transient POST response."""
+    if not row:
+        return None
+    return {"guid": row["guid"], "qualified_name": row["qualified_name"],
+            "materialized_at": row.get("materialized_at", "")}
+
+
 def _architecture_recovery_results(
     registry, slug: str, max_depth: int | None = arch_projection.DEFAULT_PROJECTION_DEPTH,
 ) -> dict:
@@ -1897,6 +1927,14 @@ def _architecture_recovery_results(
     scopes = registry.query_finding_scopes(slug, "architecture_recovery", check_name="component")
     components = []
     slug_to_path: dict[str, str] = {}
+    # A curator's accept/reject/retype call (docs/Backlog.md "take
+    # architecture results into Curate") — kept in its own table, not folded
+    # into this kind's findings, per that entry's own constraint: "a
+    # curator's verdict is evidence of a different kind, not a rewrite of
+    # what the detectors said." One query for the whole resource, same
+    # reasoning as everything else here that avoids a per-scope round trip.
+    verdicts = registry.get_component_verdicts("repo", slug)
+    materialized = registry.get_materialized_components("repo", slug)
     for scope in scopes:
         rows = registry.query_findings_all_runs(slug, "architecture_recovery", scope)
         comp_rows = [r for r in rows if r["check_name"] == "component"]
@@ -1908,7 +1946,13 @@ def _architecture_recovery_results(
         # the SAME component, unlike evidence, which accumulates.
         latest = max(comp_rows, key=lambda r: r["surveyed_at"])
         detail = _json_or_empty(latest.get("detail_json"))
-        approaches = sorted({r["label"] for r in evidence_rows if r["label"]})
+        # A WITHDRAWAL is not an approach. Its rows are `check_name !=
+        # "component"`, so they land in `evidence_rows` and their label
+        # ("withdrawn") was being rendered as though a detector by that name had
+        # proposed the component: measured in the browser, egeria's withdrawn
+        # rows showed `spring, withdrawn` on their provenance line.
+        approaches = sorted({r["label"] for r in evidence_rows
+                             if r["label"] and r["label"] != WITHDRAWN_LABEL})
         metrics = registry.query_metrics(slug, "architecture_recovery", scope)
         if detail.get("slug"):
             slug_to_path[detail["slug"]] = scope
@@ -1932,6 +1976,8 @@ def _architecture_recovery_results(
             # available reading, same as a root-attached node.
             "depth": detail.get("depth", 0),
             "parent_slug": detail.get("parent_slug", ""),
+            "verdict": _verdict_view(verdicts.get(scope)),
+            "materialized": _materialized_view(materialized.get(scope)),
             "evidence": [
                 {
                     "assertion": r["check_name"], "approach": r["label"],
@@ -2050,6 +2096,12 @@ def _architecture_recovery_results(
         default="",
     )
     return {
+        # Carried so the renderer can call the curator-verdict endpoints
+        # (/api/curate/component-verdicts/repo/{slug}) without a second
+        # parameter threaded through _renderCustomAnalysisResults' generic
+        # `(data) => html` registry contract — every other entry there stays
+        # untouched.
+        "slug": slug,
         "components": displayed,
         # Ports and wires live under the same analysis because they are the same
         # recovery run's output, but in their own key rather than folded into
@@ -2733,18 +2785,39 @@ class SurveyResultDashboard:
 
 
 SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
+    # cve_scan/foss_scorecard/cii_badge added 2026-08-31 (docs/Backlog.md
+    # "Survey Results dashboards cover 14 of 29 analyses", remaining-8 list) —
+    # all three are the same "is this trustworthy" question security_overview
+    # already asks, just from OSV.dev/OpenSSF-Scorecard-shape/bestpractices.dev
+    # rather than repo-local signals. renderSecurityOverviewDashboard's own
+    # scorecard tiles are NOT updated for these three (that's index.html, a
+    # separate change) — they still render, via _renderGroupedCardsDashboard's
+    # generic fallback the custom renderer already appends its scorecard to,
+    # just without a dedicated tile yet. Not silently dropped, just not
+    # polished — noted rather than left for someone to discover.
     "security_overview": SurveyResultDashboard(
         "security_overview", "Security Overview",
         "Artifact presence (SECURITY.md/CI/LICENSE), GitHub's native security feature "
         "toggles, CI quality, license risk tier, and security-policy content — the full "
-        "security picture in one place, not five separate cards.",
-        ["security_scan", "security_features", "ci_quality", "license_classification", "repo_conventions"],
+        "security picture in one place, not five separate cards. Also gathers the three "
+        "externally-sourced trust signals (CVE advisories, OpenSSF Scorecard, OpenSSF Best "
+        "Practices badge) that ask the same question from outside the repo.",
+        ["security_scan", "security_features", "ci_quality", "license_classification",
+         "repo_conventions", "cve_scan", "foss_scorecard", "cii_badge"],
         render="custom", custom_renderer="renderSecurityOverviewDashboard",
     ),
+    # community_support/chaoss_metrics added 2026-08-31, same Backlog entry —
+    # both are community/activity signal, same topic repository_health
+    # already reports a cruder version of (stars/forks dominate its score;
+    # these two report attention/participation/channels as separate
+    # dimensions instead of averaging them away — see community_support's
+    # own description).
     "health_maturity": SurveyResultDashboard(
         "health_maturity", "Health & Maturity",
-        "Activity/community signal from GitHub stats, alongside lifecycle-stage classification.",
-        ["repository_health", "maturity"],
+        "Activity/community signal from GitHub stats, alongside lifecycle-stage "
+        "classification and the community-health metrics that report attention, "
+        "participation and channels as separate dimensions rather than one averaged score.",
+        ["repository_health", "maturity", "community_support", "chaoss_metrics"],
     ),
     "documentation_conventions": SurveyResultDashboard(
         "documentation_conventions", "Documentation & Conventions",
@@ -2752,20 +2825,64 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "signals (build automation, deployment evidence, catalog self-description).",
         ["documentation_coverage", "repo_conventions"],
     ),
+    # Opened 2026-08-31 (docs/Backlog.md "Survey Results dashboards cover 14 of
+    # 29 analyses"): all three architecture analyses were homeless in this
+    # registry — architecture_recovery has its own bespoke card elsewhere in
+    # the UI, but nothing gathered its own summary (architecture_summary) and
+    # its doc-consistency lens (architecture_doc_lens) alongside it, even
+    # though a single authored question ("What is its internal architecture —
+    # what components exist and how do they relate?") already names all
+    # three together. render="grouped_cards" reuses each id's existing
+    # renderer as-is (architecture_recovery keeps its own perspective-tabbed
+    # custom view via _renderCustomAnalysisResults' dispatch) — no new
+    # frontend code needed, same pattern documentation_conventions above
+    # already proves out.
+    "architecture_overview": SurveyResultDashboard(
+        "architecture_overview", "Architecture Overview",
+        "Recovered architecture components, the depth-collapsed summary a question actually "
+        "asked for, and whether the project's own architecture document agrees with what was "
+        "recovered — three analyses of the same question, previously shown nowhere together.",
+        ["architecture_recovery", "architecture_summary", "architecture_doc_lens"],
+    ),
     "dependencies": SurveyResultDashboard(
         "dependencies", "Dependencies",
         "Package dependencies per ecosystem.",
         ["dependency_analysis"],
     ),
+    # interface_surface added 2026-08-31, same Backlog entry — "what can be
+    # talked to, and whether the contract is written down" is the same
+    # surface api_structure already reports on, just from declared
+    # dependencies/file inventory rather than parsed source.
     "code_structure": SurveyResultDashboard(
         "code_structure", "Code Structure",
-        "File/language classification, public API surface, and extracted code symbols.",
-        ["language_file_classification", "api_structure", "code_symbol_extraction"],
+        "File/language classification, public API surface, extracted code symbols, and "
+        "what interfaces the project exposes and whether they're documented.",
+        ["language_file_classification", "api_structure", "code_symbol_extraction",
+         "interface_surface"],
     ),
     "data_profile": SurveyResultDashboard(
         "data_profile", "Data Profile",
         "Data-file inventory/schema profiling and sub-resource cataloging candidates.",
         ["data_file_profiling", "sub_resource_survey"],
+    ),
+    # repo_classification and manifest_parse, added 2026-08-31, close out the
+    # remaining-8 list — neither fits an existing theme (classification is its
+    # own question; manifest_parse is a refresh operation, not a topic), so
+    # each gets a single-item dashboard rather than being forced into one that
+    # doesn't fit. `dependencies` above is the existing precedent for a
+    # single-item dashboard being an accepted shape, not a special case.
+    "repo_classification": SurveyResultDashboard(
+        "repo_classification", "Repo Classification",
+        "What the repo represents (library/application/tool/documentation/etc.), where its "
+        "expected artifacts live, and whether architecture recovery is worth running.",
+        ["repo_classification"],
+    ),
+    "manifest_refresh": SurveyResultDashboard(
+        "manifest_refresh", "Manifest Refresh",
+        "The last dependency/CI-workflow/repo-convention refresh from a fresh zipball — what "
+        "changed, not a fourth view of dependency_analysis/ci_quality/repo_conventions' own "
+        "data (those are the dashboards for that; this reports the refresh itself).",
+        ["manifest_parse"],
     ),
 }
 

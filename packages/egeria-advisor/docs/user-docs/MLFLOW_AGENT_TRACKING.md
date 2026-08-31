@@ -218,7 +218,7 @@ The CLI agent mode automatically uses MLflow tracking:
 
 ```bash
 # Agent mode with MLflow tracking
-python -m advisor.cli.main --agent --interactive
+uv run --package egeria-advisor python -m advisor.cli.main --agent --interactive
 
 # All queries are tracked to MLflow
 # View metrics at http://localhost:5025

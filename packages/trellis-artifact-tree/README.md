@@ -32,3 +32,31 @@ ladder.
 
 See `docs/context-compilation-design.md` §15 (the tree), §21 (format
 independence and graceful degradation), and §8 (package boundary).
+
+## Using it
+
+```python
+from trellis_artifact_tree import AdapterRegistry, ArtifactTreeStore
+from trellis_artifact_tree.model import Provenance
+
+registry = AdapterRegistry()      # Markdown and HTML by default
+tree = registry.parse(
+    artifact_id="docs/guide.md",
+    kind="markdown",              # picks the adapter
+    source=text,
+    provenance=Provenance(...),
+)
+
+store = ArtifactTreeStore(conn)
+store.create_schema()
+store.put(tree)
+```
+
+`AdapterRegistry()` carries Markdown and HTML only; pass `adapters=[...]` (or call `register`)
+to add the code, docling and generic-text adapters. Each turns one artifact into a containment
+tree of `DocItem` nodes, and the `Rung` on a node is what `trellis-context` packs at when the
+budget is tight.
+
+`TreeDiagnosis` reports trees that parsed without error and still say nothing useful — a
+27,000-character single node is valid and useless, so parsing cleanly is not the same as parsing
+well.

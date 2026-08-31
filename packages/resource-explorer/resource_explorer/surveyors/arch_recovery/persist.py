@@ -23,11 +23,35 @@ oversight — see the port's write-up for the trade.
 """
 from __future__ import annotations
 
+import json
+import logging
+
 from resource_explorer.step_outcome import PARTIAL, RECOVERED, StepOutcome
 
-from .ir import Component, Evidence
+from resource_explorer.registry import WITHDRAWN_LABEL
+
+from .ir import IR, Component, Evidence
+
+log = logging.getLogger(__name__)
 
 KIND = "architecture_recovery"
+
+#: The rendered proposal lives under its OWN kind, not under `KIND`.
+#:
+#: Not a filing preference — a measured consequence. `context_compile.py` calls
+#: `query_findings(slug, analysis_id)`, which defaults to whole-resource scope.
+#: Every `architecture_recovery` finding is written at COMPONENT scope, so that
+#: query returns nothing and the compiler correctly falls through to the
+#: analysis's own results reader. A whole-resource finding under `KIND` would
+#: make it return exactly one row — a Mermaid blob — and **suppress that
+#: fallback**, replacing the architecture section with a picture drawn for a
+#: curator rather than evidence a model can reason over. Capping its size
+#: downstream limits the damage but does not restore the reader.
+#:
+#: Same precedent, same reason: ports and wires live under
+#: `architecture_interfaces` with their own results reader, because they are
+#: not components either.
+DIAGRAM_KIND = "architecture_diagram"
 
 
 def scope_locator_for(component: Component) -> str:
@@ -102,6 +126,141 @@ def _scope_depth(scope: str) -> int:
     return len([p for p in scope.split("/") if p]) - 1
 
 
+#: Decision notes — WHY this run concluded what it concluded.
+#:
+#: Its own kind, for `DIAGRAM_KIND`'s reason: a whole-resource finding under
+#: `KIND` makes `context_compile`'s `query_findings(slug, analysis_id)` return
+#: exactly one row and suppress the results-reader fallback, replacing an
+#: analysis's evidence with whatever that row happens to be.
+#:
+#: **Why persist prose at all.** Every note the discoverers produce — "2
+#: declarations describe one platform … identical server sets", "qualified by
+#: build module, since a shared name becomes a shared slug", "6 profile overlays
+#: have no base config beside them" — went to `log.info` and nowhere else. That
+#: is the *why* behind a component's name or absence, and it evaporated unless
+#: someone was tailing logs at INFO when the survey ran. Evidence records say
+#: what was concluded; these say what was decided and rejected, which is what a
+#: reader needs when the answer looks wrong.
+DECISIONS_KIND = "architecture_decisions"
+
+
+def _persist_decisions(registry, slug: str, notes: list, surveyed_at: str,
+                       run_label: str, run_scope: str) -> None:
+    """One whole-resource row per RUN LABEL, carrying that step's notes.
+
+    Keyed by `run_label` in the `check_name` for the reason `persist_ir` already
+    prefixes its summary metric: `repo_arch_detect` and `repo_arch_coupling` are
+    independent steps that need not share a `surveyed_at`, and `query_findings`
+    returns only the rows at `MAX(surveyed_at)` per (slug, kind, scope). A
+    shared check_name at the same scope would let whichever step ran last hide
+    the other's reasoning entirely.
+
+    Read them with `query_findings_all_runs(slug, DECISIONS_KIND, "")` and keep
+    the newest row per `check_name`; a plain `query_findings` returns only the
+    step that ran most recently, which is a valid but partial view.
+    """
+    if not notes:
+        return
+    kept = [str(n) for n in notes][:_MAX_DECISION_NOTES]
+    try:
+        registry.upsert_finding(
+            slug, DECISIONS_KIND,
+            [{
+                "check_name": f"decisions:{run_label}",
+                "label": run_label,
+                "summary": f"{len(notes)} decision note(s) from {run_label}",
+                "confidence": 100,
+                "detail": {"notes": kept, "run_label": run_label,
+                           "run_scope": run_scope,
+                           "truncated": max(0, len(notes) - len(kept))},
+            }],
+            surveyed_at=surveyed_at, scope_locator="",
+        )
+    except Exception:
+        # A decision trace must never be able to fail a survey that otherwise
+        # succeeded — but it must say so rather than vanish, which is the exact
+        # failure this whole change exists to fix.
+        log.exception("%s: could not persist %s decision notes", slug, run_label)
+
+
+#: Cap. A note list is prose for a human; an unbounded one is a log file in a
+#: findings row. Measured: egeria 2, dataflow 5, atlas 20.
+_MAX_DECISION_NOTES = 200
+
+
+#: `check_name` for a withdrawal. Its LABEL is what the registry keys on
+#: (`WITHDRAWN_LABEL`); the check_name is for humans reading the table.
+WITHDRAWN_CHECK = "component_withdrawn"
+
+
+def _scopes_last_written_by(registry, slug: str, run_label: str, before: str) -> set[str]:
+    """Scopes this step wrote at its most recent run STRICTLY BEFORE `before`.
+
+    Its most recent run, not every run it ever did. Comparing against the union
+    of all history would re-withdraw the same scope on every subsequent run
+    forever; comparing against the previous run answers exactly R2's question —
+    *scopes I used to write and did not write this time*.
+
+    One query, not one per scope: `egeria` has ~1000 component scopes and this
+    runs inside `persist_ir`.
+    """
+    by_run: dict[str, set[str]] = {}
+    for row in registry.query_findings_history_raw(slug, KIND):
+        if row.get("check_name") != "component":
+            continue
+        surveyed = row.get("surveyed_at") or ""
+        if not surveyed or surveyed >= before:
+            continue
+        detail = row.get("detail_json") or {}
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail or "{}")
+            except ValueError:
+                continue
+        # R2: unattributed rows belong to no step, so no step may withdraw them.
+        # Everything written before `run_label` existed falls here, which is why
+        # the pre-existing orphan population needs the step-4 backfill and can
+        # never be cleared by an ordinary run.
+        if detail.get("run_label") != run_label:
+            continue
+        by_run.setdefault(surveyed, set()).add(row.get("scope_locator") or "")
+    return by_run[max(by_run)] if by_run else set()
+
+
+def _withdraw_vacated(registry, slug: str, run_label: str, written: set[str],
+                      surveyed_at: str, run_scope: str, outcome) -> list[str]:
+    """Withdraw the scopes this step used to write and no longer does.
+
+    **R1 — only a COMPLETE run may withdraw.** A withdrawal is inferred from
+    absence, and absence means nothing if the run could not see everything. A
+    scoped or partial run withdrawing the architecture outside its own scope is
+    the worst failure mode in this design, and §4.1c already writes both fields
+    this guards on.
+
+    **R3 — the cause is `unclaimed`, never `removed`.** "We renamed it" and "it
+    is gone from the repo" look identical from inside the pipeline and mean
+    opposite things to a reader; reporting absence as removal would destroy the
+    drift signal the catalog exists to carry.
+    """
+    if run_scope or (outcome is not None and getattr(outcome, "outcome", "") == PARTIAL):
+        return []
+    vacated = sorted(_scopes_last_written_by(registry, slug, run_label, surveyed_at) - written)
+    for scope in vacated:
+        registry.upsert_finding(
+            slug, KIND,
+            [{
+                "check_name": WITHDRAWN_CHECK,
+                "label": WITHDRAWN_LABEL,
+                "summary": f"no longer proposed by {run_label}",
+                "confidence": 100,
+                "detail": {"cause": "unclaimed", "run_label": run_label,
+                           "withdrawn_at": surveyed_at},
+            }],
+            surveyed_at=surveyed_at, scope_locator=scope,
+        )
+    return vacated
+
+
 def persist_ir(
     registry,
     slug: str,
@@ -111,6 +270,7 @@ def persist_ir(
     *,
     run_label: str = "run",
     run_scope: str = "",
+    notes: list[str] | None = None,
     ports: list[dict] | None = None,
     wires: list[dict] | None = None,
     extra_metrics: dict[str, dict[str, float]] | None = None,
@@ -200,8 +360,12 @@ def persist_ir(
             # where the parent came from.
             c.depth = _scope_depth(slug_to_scope.get(c.slug, ""))
 
-
-
+    # Candidate blueprints. Runs BEFORE the component rows are written so each
+    # component's persisted detail carries the blueprint it was assigned to —
+    # writing the rows first and clustering after would persist an empty
+    # blueprint on every one of them, which is the state the corpus was in
+    # until today (3,215 components, `blueprint` empty on all of them).
+    cluster_sets = _cluster(components, slug_to_scope, extra_metrics, wires=wires, ports=ports)
 
     for c in components:
         loc = slug_to_scope[c.slug]
@@ -219,6 +383,24 @@ def persist_ir(
                         "deployment_context": c.identity.deployment_context,
                     },
                     "run_scope": run_scope, **outcome_row,
+                    # WHICH STEP wrote this row. Step 1 of
+                    # `architecture-recovery-scope-tombstoning.md` and additive
+                    # by design: nothing reads it yet.
+                    #
+                    # It is the enabler for that note's R2 — a step may only
+                    # withdraw scopes IT wrote. `repo_arch_detect` and
+                    # `repo_arch_coupling` write the SAME kind, so an
+                    # unattributed withdrawal makes them erase each other's
+                    # components alternately and forever. `persist_ir` already
+                    # solved this collision once for metrics by prefixing
+                    # `run_label` into the metric name (see the run-summary row
+                    # below); this puts the same key where the component rows
+                    # can be grouped by it.
+                    #
+                    # NOT `proposed_by`, which is the tempting proxy and the
+                    # wrong one: it names the DETECTOR, and a detector can move
+                    # between steps without any component changing.
+                    "run_label": run_label,
                     "files": c.files, "blueprint": c.blueprint,
                     "proposed_by": c.proposed_by, "perspective": c.perspective,
                     "confidence_level": c.confidence_level,
@@ -252,9 +434,10 @@ def persist_ir(
     # them a type or a score would invent evidence to make a grouping look like
     # a finding, which is the failure `no metric, no number` (design §5) exists
     # to prevent. They are grouping structure and say so.
+    # Shared with mermaid.py's renderer, which must draw exactly the set this
+    # synthesises — see scope_hierarchy.missing_ancestors.
     present = {c.slug for c in components}
-    referenced = {c.parent_slug for c in components if c.parent_slug}
-    missing = sorted(referenced - present)
+    missing = scope_hierarchy.missing_ancestors(components)
     for anc_slug in missing:
         if anc_slug in derived_structural:
             # Derived from a scope locator, so the slug IS the scope — no
@@ -356,12 +539,265 @@ def persist_ir(
         surveyed_at=surveyed_at, scope_locator="",
     )
 
+    # R1/R2/R3 — withdraw the scopes this step used to write and no longer does,
+    # AFTER every component row for this run is in place so `written` is the
+    # complete set. Returns [] for a scoped or partial run.
+    withdrawn = _withdraw_vacated(registry, slug, run_label, set(slug_to_scope.values()),
+                                  surveyed_at, run_scope, outcome)
+    if withdrawn:
+        # Never silent: a cleanup that leaves no trace is indistinguishable from
+        # data loss to whoever comes looking in six months.
+        log.info("%s: %s withdrew %d vacated scope(s)", slug, run_label, len(withdrawn))
+        registry.upsert_metric(
+            slug, KIND, {f"{run_label}_withdrawn_count": float(len(withdrawn))},
+            detail={"cause": "unclaimed", "scopes": withdrawn[:50],
+                    "truncated": max(0, len(withdrawn) - 50)},
+            surveyed_at=surveyed_at, scope_locator="",
+        )
+
     if ports or wires:
         name_to_scope = {c.name: slug_to_scope.get(c.slug, "") for c in components}
         _persist_interfaces(registry, slug, surveyed_at, ports or [], wires or [],
                             name_to_scope)
 
+    _persist_blueprints(registry, slug, cluster_sets, surveyed_at, run_scope)
+
+    _persist_diagram(registry, slug, components, ports or [], wires or [],
+                     surveyed_at, run_scope)
+
+    _persist_decisions(registry, slug, notes or [], surveyed_at, run_label, run_scope)
+
     return slug_to_scope
+
+
+def _cluster(components: list[Component], slug_to_scope: dict[str, str],
+             extra_metrics: dict | None = None,
+             wires: list[dict] | None = None,
+             ports: list[dict] | None = None) -> dict:
+    """Propose candidate blueprints per perspective, and assign them.
+
+    One clustering per §4.1 perspective, never one across all of them: the
+    perspectives are different views of the same repo with different sources and
+    vocabularies, and mixing them inside one blueprint repeats the Phase 0
+    scoring error (a deployment detector scored against logical ground truth) at
+    the level of a single proposed solution.
+
+    `wires` (design §10 signal 2) and `ports` (design §10 signal 3) are the
+    same lists `_persist_interfaces`/`_persist_diagram` already receive —
+    passed straight through, not re-derived, since interfaces.propose()
+    already did the detection work. Wire endpoints name components by NAME
+    OR SLUG (`interfaces.propose` attributes a compose wire by service name,
+    a port by slug), so `"name"` travels alongside `"slug"` below for
+    `clustering._wire_weights`/`_interface_names` to resolve against — the
+    same ambiguity `mermaid._resolve_endpoint` already handles for the
+    diagram.
+
+    Returns `{"clusters": {perspective: [top-level Cluster]}, "errors":
+    {perspective: message}}`. Failure here must not lose the run — clustering is
+    a proposal *about* the components, and the components are the finding — but
+    it must not vanish either: a swallowed failure looks exactly like a
+    perspective that had nothing to group.
+    """
+    from . import clustering
+
+    # scope_locator is what clustering groups on, and it lives in the mapping
+    # rather than on the Component, so surface it without mutating the IR.
+    scoped = [
+        {"slug": c.slug, "name": c.name, "scope_locator": slug_to_scope.get(c.slug, c.slug),
+         "perspective": c.perspective, "identity": c.identity, "_component": c}
+        for c in components
+    ]
+    # Affinity: import cohesion per scope, from the metrics the coupling step
+    # attaches. Where present and at/above the bar, a group is carried as a
+    # composed component rather than a Collection (Dan's rule: no affinity
+    # leads you to collections). Absent — as it is for every run of the detect
+    # step, which computes no cohesion — every group stays a Collection, which
+    # is the correct default rather than a degraded one.
+    cohesion = {
+        scope: metrics["import_cohesion"]
+        for scope, metrics in (extra_metrics or {}).items()
+        if isinstance(metrics, dict) and "import_cohesion" in metrics
+    }
+
+    out: dict = {}
+    errors: dict = {}
+    for perspective in sorted({c.perspective for c in components if c.perspective}):
+        try:
+            flat = clustering.propose(scoped, perspective, cohesion=cohesion,
+                                      wires=wires, ports=ports)
+            if not flat:
+                continue
+            top = clustering.rollup(flat)
+            clustering.assign(scoped, top)
+            out[perspective] = top
+        except Exception as exc:
+            # Recorded, not just logged. A clustering failure and a perspective
+            # with nothing to cluster both produce zero blueprints, and under
+            # report-then-curate that difference matters to the curator: one
+            # means "no grouping was found", the other means "we did not manage
+            # to look". `_persist_blueprints` writes this as a finding.
+            log.warning("clustering failed for perspective %r: %s", perspective, exc)
+            errors[perspective] = f"{type(exc).__name__}: {exc}"
+
+    # Copy assignments back onto the real Components so the persisted rows and
+    # the rendered diagram both carry them.
+    for row in scoped:
+        if row.get("blueprint"):
+            row["_component"].blueprint = row["blueprint"]
+        if row.get("parent_slug"):
+            row["_component"].parent_slug = row["parent_slug"]
+    return {"clusters": out, "errors": errors}
+
+
+#: Candidate blueprints live under their OWN kind, for the same reason the
+#: diagram does: they are whole-resource, and every `architecture_recovery`
+#: finding is component-scoped, so a whole-resource row under KIND would make
+#: `context_compile.py`'s default-scope `query_findings` return exactly one row
+#: and suppress its fall-through to the results reader.
+BLUEPRINT_KIND = "architecture_blueprints"
+
+
+def _persist_blueprints(registry, slug: str, cluster_sets: dict,
+                        surveyed_at: str, run_scope: str) -> None:
+    """Write candidate blueprints as findings — one row per cluster.
+
+    `check_name` is the constant "candidate_blueprint", with the cluster's name
+    in `label`. Deliberately NOT a dynamic `blueprint:{name}` check_name: ports
+    and wires are written that way and it cost three wrong "zero" measurements
+    in one session, because an exact-match query against a computed check_name
+    silently returns nothing. A stable check_name is queryable; the name belongs
+    in a field.
+    """
+    clusters_by_perspective = cluster_sets.get("clusters") or {}
+    errors = cluster_sets.get("errors") or {}
+    if not clusters_by_perspective and not errors:
+        return
+
+    def rows_for(cluster, perspective: str, parent: str = "") -> list[dict]:
+        rows = [{
+            "check_name": "candidate_blueprint",
+            "label": cluster.name,
+            "summary": (f"{cluster.size} component(s), {perspective} perspective"
+                        + (f", nested under {parent}" if parent else "")
+                        + (" — OVER the ~10 goal and no further declared structure"
+                           if cluster.oversized else "")),
+            # Not a confidence claim about the architecture: a cluster is a
+            # proposal that these components belong together, and its members
+            # carry their own confidence. See the same note on the diagram.
+            "confidence": 0,
+            "detail": {
+                "name": cluster.name,
+                "perspective": perspective,
+                "signal": cluster.signal,
+                "carrier": cluster.carrier,
+                "composed_into": cluster.composed_into,
+                "size": cluster.size,
+                "members": sorted(cluster.members),
+                "children": [c.name for c in cluster.children],
+                "parent": parent,
+                "oversized": cluster.oversized,
+                "target_size": clustering_target(),
+                "run_scope": run_scope,
+                "not_a_claim": True,
+            },
+        }]
+        for child in cluster.children:
+            rows.extend(rows_for(child, perspective, cluster.name))
+        return rows
+
+    findings: list[dict] = []
+    for perspective, clusters in sorted(clusters_by_perspective.items()):
+        for cluster in clusters:
+            findings.extend(rows_for(cluster, perspective))
+
+    # A perspective whose clustering raised. Written as its own check_name so a
+    # reader can tell "no blueprints because nothing grouped" from "no
+    # blueprints because the attempt failed" — the distinction the
+    # no-silent-success ratchet exists to preserve.
+    for perspective, message in sorted(errors.items()):
+        findings.append({
+            "check_name": "clustering_failed",
+            "label": perspective,
+            "summary": f"clustering raised for the {perspective} perspective: {message}",
+            "confidence": 0,
+            "detail": {"perspective": perspective, "error": message,
+                       "run_scope": run_scope},
+        })
+    if findings:
+        registry.upsert_finding(slug, BLUEPRINT_KIND, findings,
+                                surveyed_at=surveyed_at, scope_locator="")
+
+
+def clustering_target() -> int:
+    from . import clustering
+    return clustering.TARGET_CLUSTER_SIZE
+
+
+def _persist_diagram(registry, slug: str, components: list[Component],
+                     ports: list[dict], wires: list[dict],
+                     surveyed_at: str, run_scope: str) -> None:
+    """Render the proposal as Mermaid and store it, once per run.
+
+    **Why this is written at analysis time rather than at read time.** Under
+    *report, then curate* (`docs/architecture-recovery-report-then-curate.md`)
+    the diagram is what a curator reads to decide whether the recovered
+    architecture is a good enough fit to materialise. It therefore has to be a
+    record of what THIS run proposed, captured beside the evidence it was drawn
+    from — not something re-derived later from an IR that has since moved. When
+    Phase 2 publishes proposals to Egeria, this value is what goes into the
+    annotation; pyegeria's own `MERMAID` output cannot produce it, because a
+    proposal's components are not Egeria elements yet.
+
+    Not written when there are no components: a diagram of nothing tells a
+    curator nothing, and publishing one would imply a proposal exists where the
+    run in fact found none. The component-count metric above already records
+    that outcome, and it is the row designed to carry it.
+    """
+    if not components:
+        return
+    from . import mermaid
+
+    ir = IR(target=slug, checkout="", components=list(components),
+            ports=list(ports), wires=list(wires))
+    try:
+        diagram = mermaid.render(ir)
+        caption = mermaid.caption(ir)
+    except Exception as exc:
+        # A rendering failure must not lose the run's findings — everything
+        # above is already written by this point, and the diagram is a view of
+        # it, not the thing itself.
+        log.warning("architecture diagram not rendered for %s: %s", slug, exc)
+        return
+
+    registry.upsert_finding(
+        slug, DIAGRAM_KIND,
+        [{
+            "check_name": "architecture_diagram",
+            "label": "Diagram",
+            "summary": caption,
+            # Not a confidence claim. The diagram asserts nothing of its own —
+            # it renders claims that each carry their own confidence, which is
+            # drawn on the nodes. 100 here would read as certainty about the
+            # architecture; anything lower would read as doubt about the
+            # drawing. The value is meaningless either way, so the honest
+            # reading is in `summary` and on the nodes themselves.
+            "confidence": 0,
+            "detail": {
+                "format": "mermaid",
+                "mermaid": diagram,
+                "projection_depth": mermaid.projection.DEFAULT_PROJECTION_DEPTH,
+                "run_scope": run_scope,
+                "not_a_claim": True,
+                # Stored regardless, but labelled: a consumer must be able to
+                # find out that this will not draw without discovering it at
+                # the moment a curator opens it. Not truncated — a silently
+                # shortened architecture is a different architecture.
+                "char_count": len(diagram),
+                "exceeds_renderer_limit": mermaid.exceeds_renderer_limit(diagram),
+            },
+        }],
+        surveyed_at=surveyed_at, scope_locator="",
+    )
 
 
 def _persist_interfaces(registry, slug: str, surveyed_at: str,

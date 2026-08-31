@@ -21,12 +21,13 @@ def _comp(slug, files):
                      identity=Identity(method="path", value=slug), files=list(files))
 
 
-def _propose(tmp_path, files: dict, components=None):
+def _propose(tmp_path, files: dict, components=None, code_marker_operations=None):
     for rel, body in files.items():
         f = tmp_path / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(body)
-    return I.propose(str(tmp_path), list(files), components or [])
+    return I.propose(str(tmp_path), list(files), components or [],
+                     code_marker_operations=code_marker_operations)
 
 
 class TestGrpcIsNoLongerInvisible:
@@ -112,7 +113,10 @@ class TestItRidesInEgeriasExtensionPoint:
         ports, _, _, _ = _propose(tmp_path, {"api/x.proto": """
 service S { rpc A (Q) returns (R); }
 """})
-        assert ports[0]["additionalProperties"] == {"operationCount": "1"}
+        # interfaceName rides alongside operationCount now (design §10
+        # signal 3) — a declared service name is the structured, comparable
+        # interface identity that signal needs.
+        assert ports[0]["additionalProperties"] == {"operationCount": "1", "interfaceName": "S"}
         assert isinstance(ports[0]["additionalProperties"]["operationCount"], str)
 
     def test_no_invented_top_level_attribute_is_added_to_the_port(self, tmp_path):
@@ -141,6 +145,56 @@ class TestOtherIdls:
         assert ports[0]["protocol"] == "Thrift"
 
 
+class TestInterfaceNameIsAStructuredIdentity:
+    """Design §10 signal 3 needs a comparable interface identity, not just a
+    count — two components each shipping the same declared service/document
+    name are jointly presenting one external interface, however they are
+    laid out in the repo. Unlike operation counts, this is read from the
+    exact same parse already done for counting; no second file read."""
+
+    def test_openapi_title_is_captured(self, tmp_path):
+        doc = {"openapi": "3.0.0", "info": {"title": "Payment Gateway API"},
+              "paths": {"/a": {"get": {}}}}
+        ports, _, _, _ = _propose(tmp_path, {"openapi.json": json.dumps(doc)})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "Payment Gateway API"
+
+    def test_no_title_yields_no_interface_name(self, tmp_path):
+        """Absent, not empty-string-as-a-value — an identity field with
+        nothing stated is the same as not stating it, unlike a count where
+        zero is itself informative."""
+        doc = {"openapi": "3.0.0", "paths": {"/a": {"get": {}}}}
+        ports, _, _, _ = _propose(tmp_path, {"openapi.json": json.dumps(doc)})
+        assert "interfaceName" not in ports[0].get("additionalProperties", {})
+
+    def test_proto_service_name_is_captured(self, tmp_path):
+        ports, _, _, _ = _propose(tmp_path, {"api/gateway.proto": """
+service GatewayAPI { rpc Route (Req) returns (Res); }
+"""})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "GatewayAPI"
+
+    def test_multiple_proto_services_join_deterministically(self, tmp_path):
+        ports, _, _, _ = _propose(tmp_path, {"api/x.proto": """
+service Beta { rpc A (Q) returns (R); }
+service Alpha { rpc B (Q) returns (R); }
+"""})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "Alpha, Beta"
+
+    def test_thrift_service_name_is_captured(self, tmp_path):
+        ports, _, _, _ = _propose(tmp_path, {"svc.thrift":
+                                             "service Calc {\n  i32 add(1:i32 a)\n}\n"})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "Calc"
+
+    def test_graphql_never_gets_an_interface_name(self, tmp_path):
+        """Root type names (Query/Mutation/Subscription) are near-universal
+        across GraphQL schemas — treating them as a shared identity would
+        claim two unrelated services present the same interface purely
+        because both are GraphQL, which is the opposite of what this signal
+        is for."""
+        ports, _, _, _ = _propose(tmp_path, {"schema.graphql":
+                                             "type Query { user: User }\ntype User { id: ID }\n"})
+        assert "additionalProperties" not in ports[0]
+
+
 class TestProtocolIsStillNeverGuessed:
     def test_a_bare_expose_does_not_acquire_a_protocol(self, tmp_path):
         """§5.5a(b)/finding 66: port 8080 is CONVENTIONALLY HTTP, and treating
@@ -148,3 +202,66 @@ class TestProtocolIsStillNeverGuessed:
         wearing a measured one's confidence. Unchanged by this work."""
         ports, _, _, _ = _propose(tmp_path, {"Dockerfile": "FROM x\nEXPOSE 8080\n"})
         assert ports and not ports[0]["protocol"]
+
+
+class TestFastApiRouteDecoratorsFillTheStaticDocumentGap:
+    """Backlog.md "interface extraction" entry, sharpened by Dan 2026-08-30:
+    a FastAPI service generates its OpenAPI spec at RUNTIME from its own
+    route decorators and ships no static document for `_OPENAPI_NAMES` to
+    find — this codebase's own web app is exactly that case. The evidence
+    already exists (code_markers.py's `fastapi-route-registration`, counted
+    per component for classification); this is that count reused as an
+    interface, not a second detection.
+    """
+
+    def test_a_route_count_with_no_static_document_becomes_a_port(self, tmp_path):
+        comps = [_comp("svc", files=[])]
+        ports, _, _, _ = _propose(
+            tmp_path, {}, components=comps,
+            code_marker_operations={"svc": 12},
+        )
+        assert len(ports) == 1
+        assert ports[0]["component"] == "svc"
+        assert ports[0]["protocol"] == "HTTP/REST"
+        assert ports[0]["direction"] == I.DIR_INPUT_OUTPUT
+        assert ports[0]["additionalProperties"]["operationCount"] == "12"
+
+    def test_a_component_already_covered_by_a_static_document_is_not_double_counted(self, tmp_path):
+        """One REST interface must not become two ports — a checked-in
+        OpenAPI document is stronger, filename-attributable evidence than a
+        decorator count for the same component."""
+        comps = [_comp("svc", files=["svc/**"])]
+        doc = {"openapi": "3.0.0", "paths": {"/a": {"get": {}}}}
+        ports, _, _, _ = _propose(
+            tmp_path, {"svc/openapi.json": json.dumps(doc)}, components=comps,
+            code_marker_operations={"svc": 40},
+        )
+        assert len(ports) == 1
+        assert ports[0]["additionalProperties"]["operationCount"] == "1", \
+            "the static document's count wins; the decorator count is not merged in"
+
+    def test_a_slug_with_no_matching_component_is_skipped_not_swept_in(self, tmp_path):
+        """A component filtered out upstream (distillation) or that never
+        existed leaves nothing to attach a port to — skipped, same as 'no
+        signal, no cluster' elsewhere in this codebase."""
+        ports, _, _, _ = _propose(
+            tmp_path, {}, components=[],
+            code_marker_operations={"code::gone": 5},
+        )
+        assert ports == []
+
+    def test_a_zero_count_yields_no_port(self, tmp_path):
+        comps = [_comp("svc", files=[])]
+        ports, _, _, _ = _propose(
+            tmp_path, {}, components=comps,
+            code_marker_operations={"svc": 0},
+        )
+        assert ports == []
+
+    def test_without_the_kwarg_behaviour_is_unchanged(self, tmp_path):
+        """Backward compatibility: every existing caller of propose() that
+        never passes code_marker_operations sees identical behaviour."""
+        comps = [_comp("svc", files=[])]
+        with_none = _propose(tmp_path, {}, components=comps)
+        with_empty = _propose(tmp_path, {}, components=comps, code_marker_operations={})
+        assert with_none == with_empty

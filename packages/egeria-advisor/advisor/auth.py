@@ -1,7 +1,33 @@
 """
-JWT-based authentication for Egeria Advisor.
+JWT-based authentication for Egeria Advisor — a thin adapter over the shared
+`trellis-auth` package.
 
-Public API:
+**Extraction note (2026-08-29):** this used to be a self-contained 255-line
+module. The mechanism (JWT create/decode, request-header parsing, Portal
+token exchange, live-credential validation) now lives in `trellis_auth` —
+shared with Resource Explorer so the two apps can't independently drift on
+the *contract with the Portal* (a shared-secret JWT agreement), which is the
+kind of divergence this repo has hit before (query cache, annotation
+properties, ...). See `docs/trellis-auth-extraction.md`.
+
+What stays here, deliberately, because it's EA's own policy/config, not
+mechanism:
+  * config file locations (`advisor/configdata/advisor.yaml`,
+    `mcp_servers.json`) and reading the environment for secrets;
+  * `_anonymous_rag_mode()` / `_auth_enabled()` — whether EA *requires* login
+    at all is EA's own answer, and `get_current_user`'s anonymous bypass
+    below depends on it, which is why `get_current_user`/`require_egeria_user`/
+    `is_authenticated`/`get_egeria_credentials` are re-implemented here (each
+    just a few lines) on top of this module's own bypass-aware
+    `get_current_user` rather than delegated straight to `trellis_auth`'s
+    versions of the same names, which have no notion of "auth disabled";
+  * `resolve_egeria_credentials`'s service-account fallback — deliberately
+    excluded from `trellis_auth` (see its module docstring) per the
+    2026-08-29 decision that artifact ownership requires an authenticated
+    identity with NO config fallback.
+
+Public API is unchanged from before the extraction — every name below, same
+signature, same behaviour:
   create_access_token(user_id, egeria_user, egeria_password) -> str
   decode_token(token) -> dict
   get_current_user(request) -> Optional[dict]   -- None for anonymous
@@ -13,18 +39,37 @@ Public API:
 """
 from __future__ import annotations
 
-import json
 import os
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, Optional
 
-import jwt
 from fastapi import HTTPException, Request
 from loguru import logger
 
+from trellis_auth import AuthConfig
+from trellis_auth import EgeriaCredentials
+from trellis_auth import create_access_token as _create_access_token
+from trellis_auth import decode_token as _decode_token
+from trellis_auth import exchange_portal_token as _exchange_portal_token
+from trellis_auth import get_current_user as _get_current_user
+from trellis_auth import validate_egeria_credentials as _validate_egeria_credentials
+
+__all__ = [
+    "EgeriaCredentials",
+    "create_access_token",
+    "decode_token",
+    "get_current_user",
+    "require_egeria_user",
+    "is_authenticated",
+    "get_egeria_credentials",
+    "resolve_egeria_credentials",
+    "exchange_portal_token",
+    "validate_egeria_credentials",
+]
+
 # ---------------------------------------------------------------------------
-# Configuration helpers
+# Configuration helpers — unchanged from before the extraction. Config file
+# locations and env-var names are EA's own; trellis_auth never reads either.
 # ---------------------------------------------------------------------------
 
 _CFG_PATH  = Path(__file__).parent / "configdata" / "advisor.yaml"
@@ -75,33 +120,66 @@ def _auth_enabled() -> bool:
     return bool(_auth_cfg().get("enabled", True))
 
 
-# ---------------------------------------------------------------------------
-# Token creation / decoding
-# ---------------------------------------------------------------------------
+def _base_config() -> AuthConfig:
+    """AuthConfig for the token-only operations (no Egeria connection needed)."""
+    return AuthConfig(
+        jwt_secret=_jwt_secret(),
+        jwt_ttl_hours=_jwt_ttl_hours(),
+        portal_secret=_portal_secret(),
+    )
 
-_ALG = "HS256"
 
+def _validation_config() -> AuthConfig:
+    """AuthConfig for validate_egeria_credentials — also carries the Egeria
+    connection + service-account-sanity-check fields. Built lazily (and only
+    when validation is actually invoked) to preserve the original module's
+    lazy `from advisor.mcp_config import ...` import, which avoids a
+    circular import at module load time."""
+    from advisor.mcp_config import get_pyegeria_platform_config
+
+    conn = get_pyegeria_platform_config()
+    view_server = conn["view_server"]
+    platform_url = conn["platform_url"]
+
+    svc_user = svc_pwd = ""
+    try:
+        import json
+        cfg = json.loads(_MCP_PATH.read_text())
+        env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
+        svc_user = env.get("EGERIA_USER", "")
+        svc_pwd = env.get("EGERIA_PASSWORD", "")
+    except Exception as exc:
+        logger.warning(f"auth: failed to read {_MCP_PATH} for service-account check: {exc}")
+
+    return AuthConfig(
+        jwt_secret=_jwt_secret(),
+        jwt_ttl_hours=_jwt_ttl_hours(),
+        portal_secret=_portal_secret(),
+        egeria_view_server=view_server,
+        egeria_platform_url=platform_url,
+        egeria_service_account_user=svc_user,
+        egeria_service_account_password=svc_pwd,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Token creation / decoding — pure delegation, no EA-specific behaviour.
+# ---------------------------------------------------------------------------
 
 def create_access_token(user_id: str, egeria_user: str, egeria_password: str) -> str:
     """Create a signed JWT containing the user's Egeria credentials."""
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub":            user_id,
-        "egeria_user":    egeria_user,
-        "egeria_password": egeria_password,
-        "iat":            now,
-        "exp":            now + timedelta(hours=_jwt_ttl_hours()),
-    }
-    return jwt.encode(payload, _jwt_secret(), algorithm=_ALG)
+    return _create_access_token(user_id, egeria_user, egeria_password, _base_config())
 
 
 def decode_token(token: str) -> Dict[str, Any]:
     """Decode and verify a JWT. Raises jwt.PyJWTError on failure."""
-    return jwt.decode(token, _jwt_secret(), algorithms=[_ALG])
+    return _decode_token(token, _base_config())
 
 
 # ---------------------------------------------------------------------------
-# FastAPI helpers
+# FastAPI helpers — reimplemented (not delegated) because they depend on
+# EA's anonymous-mode bypass, which trellis_auth deliberately has no notion
+# of (see module docstring).
 # ---------------------------------------------------------------------------
 
 def get_current_user(request: Request) -> Optional[Dict[str, Any]]:
@@ -112,16 +190,7 @@ def get_current_user(request: Request) -> Optional[Dict[str, Any]]:
     """
     if not _auth_enabled():
         return {"sub": "anonymous", "egeria_user": "", "egeria_password": "", "anonymous": True}
-
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return None
-    token = auth_header[len("Bearer "):]
-    try:
-        return decode_token(token)
-    except jwt.PyJWTError as exc:
-        logger.debug(f"auth: invalid token — {exc}")
-        return None
+    return _get_current_user(request, _base_config())
 
 
 def require_egeria_user(request: Request) -> Dict[str, Any]:
@@ -154,11 +223,6 @@ def is_authenticated(request: Request) -> bool:
 # as the actual signed-in user and not one shared identity for everyone.
 # ---------------------------------------------------------------------------
 
-class EgeriaCredentials(TypedDict):
-    user_id: str
-    password: str
-
-
 def get_egeria_credentials(request: Request) -> Optional[EgeriaCredentials]:
     """
     Extract {user_id, password} from the request's JWT.
@@ -183,6 +247,9 @@ def resolve_egeria_credentials(creds: Optional[Dict[str, str]]) -> EgeriaCredent
     Deliberately does NOT fall back to config/mcp_servers.json — that file's
     "EGERIA_USER"/"EGERIA_PASSWORD" env entries are unresolved template
     placeholders on a typical local checkout, never substituted anywhere.
+
+    This fallback stays app-specific and is NOT in trellis_auth — see the
+    module docstring above and docs/trellis-auth-extraction.md §4.
     """
     if creds and creds.get("user_id"):
         return {"user_id": creds["user_id"], "password": creds.get("password", "")}
@@ -191,7 +258,7 @@ def resolve_egeria_credentials(creds: Optional[Dict[str, str]]) -> EgeriaCredent
 
 
 # ---------------------------------------------------------------------------
-# Portal token exchange
+# Portal token exchange — pure delegation.
 # ---------------------------------------------------------------------------
 
 def exchange_portal_token(portal_token: str) -> Dict[str, Any]:
@@ -202,20 +269,13 @@ def exchange_portal_token(portal_token: str) -> Dict[str, Any]:
     Expected portal token payload:
       { egeria_user: str, egeria_password: str, iat: int, exp: int }
     """
-    secret = _portal_secret()
-    if not secret:
-        raise HTTPException(status_code=503, detail="Portal SSO is not configured on this server.")
-    try:
-        payload = jwt.decode(portal_token, secret, algorithms=[_ALG])
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Portal token has expired. Please reload from the Portal.")
-    except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid portal token: {exc}")
+    return _exchange_portal_token(portal_token, _base_config())
 
 
 # ---------------------------------------------------------------------------
-# Egeria credential validation
+# Egeria credential validation — delegates, but resolves EA's own connection
+# config + service-account-sanity-check values first (trellis_auth never
+# reads mcp_servers.json itself).
 # ---------------------------------------------------------------------------
 
 def validate_egeria_credentials(user_id: str, password: str) -> bool:
@@ -224,32 +284,4 @@ def validate_egeria_credentials(user_id: str, password: str) -> bool:
     create a bearer token.  Returns True on success, False on failure.
     Falls back to checking against configured service account if Egeria is down.
     """
-    try:
-        from advisor.mcp_config import get_pyegeria_platform_config
-        conn = get_pyegeria_platform_config()
-        view_server  = conn["view_server"]
-        platform_url = conn["platform_url"]
-
-        cfg = json.loads(_MCP_PATH.read_text())
-        env = cfg.get("mcpServers", {}).get("pyegeria", {}).get("env", {})
-        svc_user     = env.get("EGERIA_USER", "")
-        svc_pwd      = env.get("EGERIA_PASSWORD", "")
-
-        if not view_server or not platform_url:
-            logger.warning("auth: Egeria connection config incomplete — falling back to service account check")
-            return user_id == svc_user and password == svc_pwd
-
-        from pyegeria.egeria_tech_client import EgeriaTech
-        client = EgeriaTech(
-            view_server=view_server,
-            platform_url=platform_url,
-            user_id=user_id,
-            user_pwd=password,
-        )
-        client.create_egeria_bearer_token(user_id, password)
-        logger.info(f"auth: credentials validated for user {user_id!r}")
-        return True
-
-    except Exception as exc:
-        logger.info(f"auth: credential validation failed for {user_id!r} — {type(exc).__name__}: {exc}")
-        return False
+    return _validate_egeria_credentials(user_id, password, _validation_config())

@@ -8,8 +8,12 @@
 
 ## Quick Start
 
+New to Trellis? The [workspace quickstart](../../QUICKSTART.md) gets this app running from a
+fresh clone, including Postgres and Ollama, without needing an Egeria server. The commands below
+assume that is already done.
+
 ```bash
-# Install
+# Install (from the workspace root)
 uv sync
 cp .env.example .env          # set GITHUB_TOKEN, EGERIA_*, LLM_BACKEND, …
 
@@ -67,11 +71,13 @@ run the explicit command above so it's there from the start.
 | Document | Audience |
 |----------|----------|
 | [docs/user-guide.md](docs/user-guide.md) | Daily users — web UI walkthrough, chat, intents |
-| [docs/architecture.md](docs/architecture.md) | Developers — module map, query/survey flows, key design decisions |
+| [docs/architecture.md](docs/Architecture.md) | Developers — module map, query/survey flows, key design decisions |
 | [docs/admin-guide.md](docs/admin-guide.md) | Operators — installation, Egeria setup, scheduling, troubleshooting |
 | [docs/survey-activity-design.md](docs/survey-activity-design.md) | Architects — full design specification for survey/activity/annotation system |
 | [docs/surveyor-reference.md](docs/surveyor-reference.md) | Developers — surveyor API reference |
 | [docs/database-surveyor-design.md](docs/database-surveyor-design.md) | Developers — PostgreSQL surveyor internals |
+| [docs/Backlog.md](docs/Backlog.md) | Anyone — what is being worked on and what is deliberately closed |
+| [docs/archive/](docs/archive/README.md) | Historians — finished work, and the test used to decide it was finished |
 
 ---
 

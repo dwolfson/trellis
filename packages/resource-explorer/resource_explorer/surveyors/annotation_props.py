@@ -29,6 +29,19 @@ behaviour verbatim, so extracting it is a no-op for them and a fix for
 filesystems. The three callers keep their thin `_build_annotation_props`/
 `_to_string_map` methods as delegating wrappers, since tests and subclasses
 reach for them by name.
+
+2026-08-29: the CREATE loop itself (`_create_annotations`) was extracted the
+same way, as `publish_annotations` below, for the same reason — three
+near-identical copies, one of which had already drifted once. That loop also
+gained an idempotency guard (design doc `outbox-publishing-design.md` D2):
+before creating an annotation, look up its qualifiedName in Egeria and adopt
+the existing GUID rather than creating a duplicate. Previously
+`DataDiscovery.create_annotation` was called blind, so replaying a publish
+(e.g. after a crash between Egeria recording the write and the caller
+recording success) created a second annotation with the same qualifiedName.
+The qualifiedName format/timestamp is unchanged — see the module docstring on
+each caller's `_create_annotations` wrapper for why the run timestamp in it is
+correct and must not be removed.
 """
 from __future__ import annotations
 
@@ -169,3 +182,73 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["relationshipTypeName"] = rtn
 
     return props
+
+
+def publish_annotations(
+    discovery,
+    find_element_guid,
+    annotations: list,
+    report_guid: str,
+    qualified_name_prefix: str,
+) -> None:
+    """Create one Annotation element per item in `annotations`, idempotently.
+
+    The shared CREATE loop for EgeriaPublisher (repo), EgeriaDatabaseSurveyor
+    and EgeriaFileSystemSurveyor — previously three near-identical copies, all
+    of which called `DataDiscovery.create_annotation` blind, with no check for
+    an existing element of the same qualifiedName. Replaying a publish (e.g.
+    after a crash between Egeria recording the write and the caller recording
+    success) therefore created a duplicate annotation.
+
+    `find_element_guid` is injected rather than this module calling
+    `AutomatedCuration.get_guid_for_name` itself: all three callers already
+    have a connected `_find_element_guid(name) -> str` method that does
+    exactly this lookup for the identical purpose on sub-resources
+    (`EgeriaPublisher.publish_sub_resources`, D8) and on ExternalReferences
+    (`_publish_homepage_reference`) — reusing it means one fewer live call
+    path to test and maintain, and it already returns "" (never raises) when
+    nothing matches or the lookup itself fails.
+    `DataDiscovery.find_annotations(search_string=qn, starts_with=False)`
+    would also work, but it is a second, narrower search purely for
+    Annotation-typed elements where the existing generic-name lookup is
+    already proven correct here and cheap (unscoped, but qualifiedName
+    embeds project slug + run timestamp + index, so a same-name collision
+    with something else is not a realistic risk) — see get_guid_for_name's
+    own docstring: it raises only when *more than one* element matches.
+
+    qualified_name_prefix is everything before the trailing "::{i}" — the
+    caller owns that format (and its run timestamp) entirely; this function
+    only appends the per-annotation index.
+
+    Error handling unchanged from the three pre-existing copies: a failure
+    creating one annotation is logged and the loop continues rather than
+    aborting the run.
+    """
+    for i, ann in enumerate(annotations):
+        qualified_name = f"{qualified_name_prefix}::{i}"
+
+        try:
+            existing_guid = find_element_guid(qualified_name)
+        except Exception as exc:  # defensive — real _find_element_guid never raises
+            log.debug("Annotation lookup failed for %s (will attempt create): %s",
+                      qualified_name, exc)
+            existing_guid = ""
+        if existing_guid:
+            log.debug("Annotation %s already exists (GUID %s) — not re-creating",
+                      qualified_name, existing_guid)
+            continue
+
+        props = build_annotation_props(ann, qualified_name)
+        body = {
+            "class": "NewElementRequestBody",
+            "parentGUID": report_guid,
+            "parentRelationshipTypeName": "ReportedAnnotation",
+            "properties": props,
+        }
+        try:
+            discovery.create_annotation(body=body)
+        except Exception as exc:
+            log.warning(
+                "Failed to create annotation %d (%s): %s",
+                i, ann.annotation_type.value, exc,
+            )

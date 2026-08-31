@@ -370,6 +370,109 @@ class TestCurateNotesRouter:
         assert resp.status_code == 404
 
 
+class TestCurateComponentVerdictsRouter:
+    def test_add_and_list_verdict(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "accepted",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["verdict"] == "accepted"
+
+        listed = client.get("/api/curate/component-verdicts/repo/myproj").json()
+        assert listed["src/foo"]["verdict"] == "accepted"
+
+    def test_rejects_empty_scope_locator(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "  ", "verdict": "accepted",
+        })
+        assert resp.status_code == 400
+
+    def test_rejects_unknown_verdict(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "maybe",
+        })
+        assert resp.status_code == 400
+
+    def test_retyped_without_retyped_to_is_rejected(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "retyped",
+        })
+        assert resp.status_code == 400
+
+    def test_retyped_with_retyped_to_succeeds(self, client):
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "retyped", "retyped_to": "library",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["retyped_to"] == "library"
+
+    def test_history_reflects_every_call_newest_first(self, client):
+        client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "accepted",
+        })
+        client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "rejected",
+        })
+        history = client.get(
+            "/api/curate/component-verdicts/repo/myproj/history",
+            params={"scope_locator": "src/foo"},
+        ).json()
+        assert [h["verdict"] for h in history] == ["rejected", "accepted"]
+
+    def test_accepting_with_no_underlying_finding_reports_a_materialization_error(self, client):
+        """The verdict itself still saves — a curator's decision is real
+        independent of whether there's anything left to act on — but nothing
+        is silently skipped: the response says materialization was attempted
+        and could not proceed."""
+        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/never-surveyed", "verdict": "accepted",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["verdict"] == "accepted"
+        assert resp.json()["materialization"]["status"] == "error"
+
+    def test_rejected_and_retyped_never_attempt_materialization(self, client, registry):
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "svc", "type": "Software Service"},
+        }], surveyed_at="2026-08-30T00:00:00", scope_locator="src/foo")
+
+        rejected = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "rejected",
+        })
+        retyped = client.post("/api/curate/component-verdicts/repo/myproj", json={
+            "scope_locator": "src/foo", "verdict": "retyped", "retyped_to": "library",
+        })
+        assert "materialization" not in rejected.json()
+        assert "materialization" not in retyped.json()
+
+    def test_accepting_a_real_component_materializes_it(self, client, registry):
+        registry.upsert_finding("myproj", "architecture_recovery", [{
+            "check_name": "component", "label": "manifest",
+            "detail": {"name": "svc", "type": "Software Service", "perspective": "deployment"},
+        }], surveyed_at="2026-08-30T00:00:00", scope_locator="src/foo")
+
+        with patch("resource_explorer.surveyors.arch_recovery.materializer.ComponentMaterializer") as MockCls:
+            MockCls.return_value.materialize.return_value = {
+                "status": "materialized", "guid": "guid-1",
+                "qualified_name": "SolutionComponent::repo::myproj::src/foo",
+            }
+            resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
+                "scope_locator": "src/foo", "verdict": "accepted",
+            })
+
+        assert resp.status_code == 200
+        materialize_call = MockCls.return_value.materialize.call_args
+        assert materialize_call.args == ("repo", "myproj", "src/foo")
+        assert materialize_call.kwargs["name"] == "svc"
+        assert materialize_call.kwargs["component_type"] == "Software Service"
+        assert materialize_call.kwargs["perspective"] == "deployment"
+        assert resp.json()["materialization"] == {
+            "status": "materialized", "guid": "guid-1",
+            "qualified_name": "SolutionComponent::repo::myproj::src/foo",
+        }
+
+
 # ── /api/schedules — per-resource + global overview ─────────────────────────────
 
 class TestSchedulesRouter:

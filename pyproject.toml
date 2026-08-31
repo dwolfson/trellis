@@ -19,6 +19,8 @@ trellis-microflow = { workspace = true }
 trellis-vectorstore = { workspace = true }
 trellis-artifact-tree = { workspace = true }
 trellis-context = { workspace = true }
+trellis-querycache = { workspace = true }
+trellis-auth = { workspace = true }
 
 [tool.uv]
 # Combining both members' constraints in one resolution otherwise pulls an
