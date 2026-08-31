@@ -75,6 +75,26 @@ class FeedbackCreate(BaseModel):
     message: str
 
 
+@router.get("/feedback")
+def list_all_feedback(limit: int = 200, entity_type: str = "", category: str = "") -> dict:
+    """Every resource's feedback in one place, for Admin.
+
+    Declared before the /{entity_type}/{slug} route below only for readability;
+    they cannot collide, since that one needs two path segments.
+
+    Returns counts alongside the rows because an empty list is ambiguous on its
+    own — "nobody has left feedback" and "your filter excluded everything" look
+    identical, and the first is a fact worth stating plainly.
+    """
+    reg = _registry()
+    return {
+        "feedback": reg.list_all_resource_feedback(
+            limit=limit, entity_type=entity_type, category=category),
+        "counts": reg.count_all_resource_feedback(),
+        "filtered": bool(entity_type or category),
+    }
+
+
 @router.get("/feedback/{entity_type}/{slug}")
 def list_feedback(entity_type: str, slug: str) -> list[dict]:
     return _registry().list_resource_feedback(entity_type, slug)

@@ -133,8 +133,19 @@ repo_analyses:
       native_process_ref: null
 
   - id: security_scan
-    name: "Security Scan"
-    description: "Detect hardcoded secrets, insecure patterns, and missing security artifacts (SECURITY.md, signed commits)."
+    name: "Security Hygiene"
+    # Renamed from "Security Scan" 2026-08-31, and the description rewritten,
+    # because both claimed work this step has never done. It checked -- and
+    # still checks -- exactly three file-presence facts. It does NOT detect
+    # hardcoded secrets, insecure patterns, signed commits, CVEs or anything
+    # requiring SAST. The Python class was renamed SecuritySurveyor ->
+    # SecurityHygieneSurveyor for precisely this reason; that honesty stopped
+    # at the class and never reached the two fields a user actually reads, so
+    # "Security Scan: passing" on a published repo meant "has three files".
+    # The id stays `security_scan` deliberately: it keys existing schedules
+    # and stored findings. Real scanning belongs in new entries under the
+    # same `family="security"`, not by widening this one's claims again.
+    description: "Presence of three security-hygiene artifacts: a security policy (SECURITY.md), a CI configuration, and a licence. File presence only -- this does not scan code, detect secrets, or check CVEs. For GitHub's actual security toggles see Security Features."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — unchanged
     perspectives: ["Security", "Steward"]
@@ -151,7 +162,18 @@ repo_analyses:
 
   - id: documentation_coverage
     name: "Documentation Coverage"
-    description: "Assess README completeness, CHANGELOG, API docs, and inline comment coverage."
+    # Description rewritten 2026-08-31. It previously claimed to "assess README
+    # completeness... and inline comment coverage". Neither is measured: nothing
+    # here reads a line of source, computes a ratio, or judges whether a README
+    # is complete. Same defect as security_scan's, found in the same pass.
+    #
+    # The half worth stating explicitly is that `collection_present` reads
+    # `project.collections` -- OUR pgvector collections -- so it reports what we
+    # ingested, not what the project wrote. A well-documented repo we never
+    # ingested scores low, and that is a fact about us. Kept separate in the
+    # wording for the reason cii_badge keeps "unreachable" apart from
+    # "not registered".
+    description: "Which documentation signals are present: the doc collection types actually ingested for this repo (markdown, web docs, API reference, examples, PDFs, release notes) and which hygiene files exist (README, CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, AUTHORS, CODEOWNERS), banded into a quality score from the count of signals found. Presence, not depth -- no file content is read, no ratio is computed, and the collection half reflects what has been ingested here rather than what the project published."
     resource_types: ["repo"]
     intent: assessment  # scores completeness against a checklist — unchanged
     perspectives: ["Steward", "all"]
@@ -346,7 +368,12 @@ repo_analyses:
 
   - id: data_file_profiling
     name: "Data File Profiling"
-    description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."
+    # Reworded 2026-08-31 alongside a real fix. The old text promised "schema,
+    # row counts, and null statistics" flatly, and the columnar path was
+    # emitting null_pct: 0.0 without measuring anything -- an unmeasured value
+    # rendered as a confident measurement. Now null_pct is None there and the
+    # description says which formats get which.
+    description: "Profile tabular data files found in the file inventory. CSV, TSV and Excel are read to give schema, row counts and null rates. Parquet, Feather and Arrow are read from file metadata instead: schema and row count, but no null rates, which metadata does not carry. Files over 50 MB in the text formats are reported as too large rather than profiled — so a missing null rate means not applicable, too large, or never run, and these are kept apart rather than shown as zero."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural profiling, baseline for change-detection
     perspectives: ["Data Expert", "Steward"]
@@ -388,7 +415,17 @@ repo_analyses:
 
   - id: api_structure
     name: "API & Symbol Extraction"
-    description: "Extract public functions, classes, and API endpoints from Python, JavaScript, and OpenAPI source."
+    # Description rewritten 2026-08-31, wrong on three counts. It said "extract
+    # ... from Python, JavaScript, and OpenAPI source":
+    #   - it extracts nothing. Symbols are extracted earlier, inline during
+    #     ingestion (IngestionPipeline._ingest_code); this step READS
+    #     project_code_symbols and project_code_relationships. So on a repo that
+    #     was never ingested it reports nothing, and that is a fact about us.
+    #   - the languages were wrong in both directions: Java and Go were missing
+    #     (java_symbol_extractor.py, go_symbol_extractor.py, both tree-sitter).
+    #   - OpenAPI was never handled at all. No match for it anywhere in
+    #     ingestion/ or api_structure.py.
+    description: "Summarise the public API surface already extracted for this repo — module tree, public symbol counts, complexity and inheritance depth per language, plus total symbol and relationship counts. Reads the symbols captured during ingestion (Python, Java, JavaScript/TypeScript, Go) rather than parsing source itself, so it reports nothing for a repo that has not been ingested."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural extraction, not evaluative
     perspectives: ["Data Expert", "all"]

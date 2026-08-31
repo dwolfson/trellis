@@ -625,6 +625,10 @@
            docs/repair-operations-design.md. -->
       <div id="admin-repair-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <div id="admin-outbox-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Feedback view (Admin → Observe) — resource_feedback across every
+           resource. The per-resource list lives on the Curate pane; this is the
+           only place it can be read without already knowing where to look. -->
+      <div id="admin-feedback-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -1800,7 +1804,13 @@ function _scoutingSubnavHtml(active) {
   const tabs = [
     { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
-    { tab: 'results',     label: '📈 Results' },  // Survey Results dashboard (docs/survey-results-dashboard-plan.md) — repo-wide, cross-stage, next to Survey since that's where a run's results naturally get looked for
+    { tab: 'results',     label: '📈 Dashboard' },  // docs/survey-results-dashboard-plan.md — repo-wide, cross-stage.
+    // Labelled "Dashboard", not "Results" (2026-08-31). It sits beside Survey, and the old label
+    // plus that placement read as "this is what the run just produced". It is not: each analysis
+    // is read at MAX(surveyed_at) for its own kind, so this is the latest sighting of each, which
+    // can span runs days apart. A run's results are an event; this is a state. Internal ids stay
+    // 'results'/'stage-results'/_resultsHost — they key routing, not the claim.
+    // See docs/survey-composition-and-topic-summary-design.md.
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
@@ -1893,7 +1903,7 @@ function _assessmentSubnavHtml(active) {
     { tab: 'analyses',      label: '📊 Survey' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   // Questions/Disposition (D6, docs/survey-question-context-plan.md) — repo-only.
   if (_qdTabsApply()) {
     tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
@@ -1933,7 +1943,7 @@ function showAnalysisPane() {
 
 function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1979,7 +1989,7 @@ function _discoverySubnavHtml(active) {
   // same tab. Verified before removal — every definition the unscoped tab listed
   // is reachable from at least one stage's Survey tab.
   const tabs = [{ tab: 'analyses', label: '📊 Survey' }];
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -2014,7 +2024,7 @@ function showEnrichmentPane() {
 
 function _enrichmentSubnavHtml(active) {
   const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '📊 Survey' }];  // 📊 like every other stage — same concept, same glyph.
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -7268,10 +7278,10 @@ async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, s
     // repo-only for now — question_catalog_reader (the Perspective-derivation
     // join) has no db/filesystem entries today, same graceful degrade as the
     // Survey panel's own Perspective row (D4).
-    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Survey Results dashboards are repo-only for now.</div>';
+    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Dashboards are repo-only for now.</div>';
     return;
   }
-  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Results…</div>';
+  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading dashboards…</div>';
   try {
     // stage= asks the server for only this stage's cards; the server also
     // drops cards with no stored results, so an unsurveyed repo shows an empty
@@ -9023,11 +9033,12 @@ function showMainView(tab) {
   const adminPrefectView = document.getElementById('admin-prefect-view');
   const adminRepairView = document.getElementById('admin-repair-view');
   const adminOutboxView = document.getElementById('admin-outbox-view');
+  const adminFeedbackView = document.getElementById('admin-feedback-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, adminFeedbackView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The header Perspective row used to be hidden on the Questions tab, which
   // had its own filter over a different vocabulary. Both vocabularies are
   // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
@@ -9149,6 +9160,10 @@ function showMainView(tab) {
     document.getElementById('admin-outbox-view').classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminOutboxPanel();
+  } else if (tab === 'admin-feedback') {
+    document.getElementById('admin-feedback-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminFeedbackPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -10293,7 +10308,7 @@ function renderSurveyReport(data) {
           return `<span class="inline-flex items-center gap-1 text-xs bg-slate-800 rounded px-1.5 py-0.5">
             <span class="text-slate-200">${_esc(c.name)}</span>
             <span class="${nullBadge}">${_esc(c.dtype)}</span>
-            ${c.null_pct > 0 ? `<span class="text-slate-600">${c.null_pct}%∅</span>` : ''}
+            ${c.null_pct == null ? `<span class="text-slate-700" title="Null rate not measured">—</span>` : c.null_pct > 0 ? `<span class="text-slate-600">${c.null_pct}%∅</span>` : ''}
           </span>`;
         }).join('');
         html += `<div class="rounded bg-slate-800 px-3 py-2 space-y-1">
@@ -12251,7 +12266,12 @@ function renderFilesystemSurveyReport(fs, surveys) {
                       <tr>
                         <td class="px-2 py-1 text-slate-200 font-mono font-medium">${_esc(c.name)}</td>
                         <td class="px-2 py-1 text-slate-400 font-mono">${_esc(c.dtype)}</td>
-                        <td class="px-2 py-1 ${c.null_pct > 0 ? 'text-amber-400' : 'text-slate-500'} font-mono">${(c.null_pct ?? 0).toFixed(1)}%</td>
+                        <!-- null_pct == null means "not measured" (columnar formats are
+                             profiled from file metadata, which carries no null rates). It must
+                             not render as 0.0% — that is an unmeasured value shown as a
+                             measurement. `?? 0` did exactly that until 2026-08-31. -->
+                        <td class="px-2 py-1 ${c.null_pct == null ? 'text-slate-600' : c.null_pct > 0 ? 'text-amber-400' : 'text-slate-500'} font-mono"
+                            ${c.null_pct == null ? 'title="Not measured — read from file metadata, which does not carry null rates"' : ''}>${c.null_pct == null ? '—' : c.null_pct.toFixed(1) + '%'}</td>
                       </tr>
                     `).join('')}
                   </tbody>
@@ -12360,23 +12380,153 @@ function selectAnnotationType(typeName) {
 // system/catalog configuration, not something a user does to curate a
 // specific resource (that's the real Curate intent — see showCuratePane()
 // below). Reachable from the header's ⚙ Admin button, not #intent-nav. ────
-function _adminSubnavHtml(active) {
-  const tabs = [
-    { tab: 'annotations',       label: '📝 Annotation Types' },
-    { tab: 'admin-groups',     label: '🗂 Groups' },
+//: Admin's panes, grouped by what a person came to do (2026-08-31). It was a
+//: flat row of nine and read as nine unrelated errands.
+//:
+//: The axis is the question being asked, not the subsystem being touched:
+//:   Configure   — declare how the system behaves. Read-mostly, no side effects
+//:                 on resources.
+//:   Reconcile   — the catalog and reality disagree; make them agree. Every one
+//:                 of these exists because a publish can fail or drift.
+//:   Observe     — what is the system doing, and what did people say about it.
+//:
+//: Prefect sits alone under Observe today. That is deliberate rather than an
+//: oversight: it is the home for the two panes Admin is missing (resource
+//: feedback has no cross-resource view at all, and there is no log viewer —
+//: see docs/open-stack-checklist.md §6). A group of one that names a gap is
+//: more useful than folding it somewhere it does not belong.
+//:
+//: Groups are visual only. Every button still calls showMainView() directly
+//: with the same tab id, so routing, the single-active-pane architecture and
+//: #nav-admin-hdr's highlight are all untouched.
+const _ADMIN_GROUPS = [
+  { name: 'Configure', tabs: [
+    { tab: 'annotations',             label: '📝 Annotation Types' },
+    { tab: 'admin-groups',            label: '🗂 Groups' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
-    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
-    { tab: 'admin-prefect',           label: '⚡ Prefect' },
+  ]},
+  { name: 'Reconcile', tabs: [
     { tab: 'admin-resync',            label: '🔄 Egeria Alignment' },
-    { tab: 'admin-repair',            label: '🔧 Repair' },
+    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-outbox',            label: '📤 Publish Queue' },
-  ];
-  return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
-    ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
-        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
-        ${t.label}
-      </button>`).join('')}
+    { tab: 'admin-repair',            label: '🔧 Repair' },
+  ]},
+  { name: 'Observe', tabs: [
+    { tab: 'admin-prefect',           label: '⚡ Prefect' },
+    { tab: 'admin-feedback',          label: '💬 Feedback' },
+  ]},
+];
+
+// ── Admin → Feedback ────────────────────────────────────────────────────────
+// resource_feedback across every resource. Until 2026-08-31 this could only be
+// read per resource, from that resource's Curate pane — so finding out whether
+// anyone had said anything meant visiting every resource in turn, and nobody
+// did. Feedback that can only be read where it was written is feedback nobody
+// reads.
+let _adminFeedbackFilter = { entity_type: '', category: '' };
+
+function _feedbackRatingHtml(r) {
+  // A rating is optional (the column is nullable and the form allows a message
+  // with no score). Absent must not render as zero stars — "no rating given"
+  // and "rated 0" are different, and only one of them is a judgement.
+  if (r === null || r === undefined) {
+    return '<span class="text-slate-700" title="No rating given">—</span>';
+  }
+  return `<span class="text-amber-400">${'★'.repeat(r)}<span class="text-slate-700">${'★'.repeat(Math.max(0, 5 - r))}</span></span>`;
+}
+
+async function loadAdminFeedbackPanel() {
+  const view = document.getElementById('admin-feedback-view');
+  const subnav = _adminSubnavHtml('admin-feedback');
+  view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Loading feedback…</div>';
+  let data;
+  try {
+    const qs = new URLSearchParams();
+    if (_adminFeedbackFilter.entity_type) qs.set('entity_type', _adminFeedbackFilter.entity_type);
+    if (_adminFeedbackFilter.category) qs.set('category', _adminFeedbackFilter.category);
+    const res = await fetch(`/api/curate/feedback?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    view.innerHTML = subnav + `<div class="p-6 text-xs text-red-400">Could not load feedback: ${_esc(String(e))}</div>`;
+    return;
+  }
+
+  const rows = data.feedback || [];
+  const counts = data.counts || { total: 0, resources: 0 };
+  const types = [...new Set(rows.map(r => r.entity_type))].sort();
+  const cats = [...new Set(rows.map(r => r.category).filter(Boolean))].sort();
+
+  // An empty list means two different things and they must not look alike.
+  const empty = data.filtered
+    ? '<div class="text-xs text-slate-500 py-10 text-center">No feedback matches this filter. Clear it to see all ' + counts.total + '.</div>'
+    : '<div class="text-xs text-slate-500 py-10 text-center">No feedback has been left on any resource yet.<br><span class="text-slate-600">It is recorded from a resource\'s Curate tab.</span></div>';
+
+  const body = rows.length ? `
+    <table class="w-full text-xs">
+      <thead class="text-slate-500 border-b border-slate-800">
+        <tr>
+          <th class="px-2 py-1.5 text-left font-medium">When</th>
+          <th class="px-2 py-1.5 text-left font-medium">Resource</th>
+          <th class="px-2 py-1.5 text-left font-medium">Category</th>
+          <th class="px-2 py-1.5 text-left font-medium">Rating</th>
+          <th class="px-2 py-1.5 text-left font-medium">Message</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800">
+        ${rows.map(r => `
+          <tr class="hover:bg-slate-800/40">
+            <td class="px-2 py-1.5 text-slate-500 font-mono whitespace-nowrap">${_esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">
+              <span class="text-slate-600">${_esc(r.entity_type || '')}</span>
+              <span class="text-cyan-400 font-mono">${_esc(r.entity_slug || '')}</span>
+            </td>
+            <td class="px-2 py-1.5 text-slate-400">${_esc(r.category || '—')}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${_feedbackRatingHtml(r.rating)}</td>
+            <td class="px-2 py-1.5 text-slate-300">${_esc(r.message || '')}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : empty;
+
+  const chip = (label, key, val) => `<button onclick="_adminFeedbackSetFilter('${key}', '${_esc(val)}')"
+      class="text-xs px-2 py-0.5 rounded ${_adminFeedbackFilter[key] === val ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${_esc(label)}</button>`;
+
+  view.innerHTML = subnav + `
+    <div class="p-6 space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-200">💬 Feedback</h2>
+        <p class="text-xs text-slate-500 mt-1">
+          ${counts.total} item${counts.total === 1 ? '' : 's'} across ${counts.resources} resource${counts.resources === 1 ? '' : 's'}.
+          Recorded from each resource's Curate tab; this is the only place it can be read without knowing where to look.
+        </p>
+      </div>
+      <div class="flex items-center gap-1.5 flex-wrap">
+        ${chip('All', 'entity_type', '')}
+        ${types.map(t => chip(t, 'entity_type', t)).join('')}
+        ${cats.length ? '<span class="text-slate-700 px-1">|</span>' : ''}
+        ${cats.length ? chip('Any category', 'category', '') : ''}
+        ${cats.map(c => chip(c, 'category', c)).join('')}
+      </div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">${body}</div>
+    </div>`;
+}
+
+function _adminFeedbackSetFilter(key, val) {
+  _adminFeedbackFilter[key] = val;
+  loadAdminFeedbackPanel();
+}
+
+function _adminSubnavHtml(active) {
+  const group = g => `<div class="flex items-center gap-1.5">
+      <span class="text-[10px] uppercase tracking-wide text-slate-600 pr-0.5">${g.name}</span>
+      ${g.tabs.map(t => `<button onclick="showMainView('${t.tab}')"
+          class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+          ${t.label}
+        </button>`).join('')}
+    </div>`;
+  return `<div class="flex items-center flex-wrap gap-x-3 gap-y-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
+    ${_ADMIN_GROUPS.map(group).join('<span class="text-slate-700 select-none">|</span>')}
   </div>`;
 }
 

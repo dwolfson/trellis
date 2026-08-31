@@ -324,7 +324,15 @@ def web(
     """Start the web UI (FastAPI + HTML frontend with Plotly charts and markdown)."""
     import uvicorn
     console.print(f"[cyan]Starting web UI at http://{host}:{port}[/cyan]")
-    uvicorn.run("resource_explorer.web.app:app", host=host, port=port, reload=reload)
+    # Configure before the server starts, and hand uvicorn a matching config so
+    # server and application lines share one format and one destination. Without
+    # log_config, uvicorn installs its own non-propagating handlers and its
+    # output diverges from everything else's.
+    from resource_explorer.observability.logging_setup import (
+        configure_logging, uvicorn_log_config)
+    configure_logging()
+    uvicorn.run("resource_explorer.web.app:app", host=host, port=port, reload=reload,
+                log_config=uvicorn_log_config())
 
 
 @app.command()

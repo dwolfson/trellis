@@ -4,7 +4,7 @@
 survives a context reset. Short entries with a pointer; the reasoning lives in
 the design docs. Delete an entry when it is done — this is not a history.
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-31
 
 ---
 
@@ -375,6 +375,163 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       end to end on real data.
 
 ---
+
+## 6. Raised 2026-08-31 — the security/survey thread
+
+Everything below came out of one session. Design reasoning lives in
+`survey-composition-and-topic-summary-design.md` (98608f1); this is the do-list.
+
+### Done, do not redo
+- [x] `security_scan` renamed **Security Hygiene** with an honest description (98608f1). Id unchanged.
+- [x] `cii_badge` SSH-remote false negative — `git@github.com:...` reported a silver badge as
+      `not_registered` (3c71785).
+- [x] `ephemeral_prefect` autouse + the import note (a8dd281, e44300e).
+
+### Direct asks, not started
+
+- [ ] **Results → Dashboard rename.** 5 label strings in `index.html`; the 24 internal ids
+      (`'results'`, `stage-results`, `_resultsHost`) stay. The placement comment calls it "where a
+      run's results naturally get looked for" — that is the conflation being fixed.
+- [x] **Admin → Observe → 💬 Feedback** built 2026-08-31. `GET /api/curate/feedback` plus
+      `list_all_resource_feedback` / `count_all_resource_feedback`; filter chips by entity type and
+      category. Three deliberate choices, each pinned by a test: `entity_type` defaults to empty
+      rather than `"repo"` (feedback exists on databases and filesystems too, and a repo default
+      would make those look unused); the route returns `filtered` so an empty list can say which
+      empty it is; and an absent rating renders `—` rather than zero stars, since the column is
+      nullable and "no rating given" is not a judgement of zero.
+
+      Observe is no longer a group of one. The log viewer is the remaining occupant.
+- [x] **Admin regrouped** 2026-08-31 — **Configure** (Annotation Types, Groups, Discovery Sources,
+      Question Catalog) · **Reconcile** (Egeria Alignment, Egeria Links, Publish Queue, Repair) ·
+      **Observe** (Prefect). Grouped by the question a person is asking, not by subsystem: grouping
+      by subsystem would put Egeria Alignment beside Annotation Types, which is a taxonomy of the
+      code rather than of the errand. Visual only — every button still calls `showMainView()` with
+      the same tab id, so routing and the single-active-pane architecture are untouched.
+      `test_admin_subnav_grouping.py` guards that no pane is dropped, duplicated, or invented — a
+      pane left out of a group does not error, it silently becomes unreachable.
+
+      **Observe holds only Prefect on purpose**: it is the home for the two panes below, and a
+      group of one that names a gap beats folding it somewhere it does not belong.
+- [x] **Logging wired** 2026-08-31 — `observability/logging_setup.py`. Root now has a formatted
+      console handler (timestamp, level, logger name) plus a bounded in-memory `RingBufferHandler`;
+      level from `$RE_LOG_LEVEL`, default INFO. `configure_logging()` is idempotent and called from
+      both the CLI and the web app's import, and `uvicorn.run()` is given a matching `log_config`.
+
+      The trap found while writing it, now guarded by a test: `dictConfig` **replaces** root's
+      handler list when a `root` key is present, and uvicorn applies its `log_config` *after* our
+      setup — so declaring `root` there would tear out the ring buffer, and the viewer would be
+      empty under the server and full under the CLI.
+
+- [ ] **Log viewer — now unblocked.** Source is `logging_setup.ring_handler` (`records(limit, level,
+      logger)`, newest first). **The viewer must say the buffer is in-memory and bounded**: it holds
+      5,000 records and is empty after a restart, so "no records" is not "nothing happened". Goes in
+      Admin → Observe beside Prefect and Feedback.
+### Refresh as a survey, not a button
+
+Reframed 2026-08-31: refresh wants to be a **schedulable survey in Automate** that decides whether
+a refresh is needed and whether delta or full is cheaper — not a button. Design in
+`survey-composition-and-topic-summary-design.md` §2b (planner step).
+
+Already built, and this is mostly assembly:
+- Four refresh steps, all `queued` and independently schedulable: `repo_profile_refresh`
+  (scouting), `manifest_parse`, `rag_ingestion`, `website_ingestion` (analysis).
+- The Automate surface to hang it off — survey list beside Subscriptions and Schedules
+  (`fd63eed`, 2026-08-30). This was §4a's blocker; it is gone.
+- `POST /api/projects/{slug}/refresh` — delta RAG ingestion + query-cache invalidation. Nothing in
+  the UI calls it (the `/refresh` hits in `index.html` are Discovery Sources).
+
+Missing:
+- [ ] A **Refresh Survey Definition** bundling the four.
+- [ ] The **planner step** at the front of it: last SHA vs live head, which tables are populated,
+      how stale each is → decide per-step what runs.
+- [ ] A **per-step "still current?" check.** Only `IncrementalIndexer.refresh` SHA-gates today; the
+      other three redo their work regardless.
+
+Two traps, both already visible in the code:
+- **The gate cannot be survey-wide.** `IncrementalIndexer.refresh`'s no-change path still profiles
+  data files if that was never run. Unchanged ≠ complete; a survey-level skip would skip work never
+  done.
+- **Cheap acquisition ≠ cheap compute.** `SourceCache` is keyed on (repo, SHA), so an ungated step
+  costs 1.28s warm rather than 22.6s cold — which *hides* a missing gate instead of replacing it.
+  The parse/profile/embed work still repeats in full. (Not clearing `SourceCache` on refresh remains
+  correct: a stale hit is impossible.)
+
+### The ~30s stage load — diagnosed, not fixed
+
+`/api/survey-definitions/{type}/{slug}/candidates` measured **24.2s cold, 0.12s warm**, and
+`index.html` calls it **twice sequentially** (once for the stage, once for `automate_full`).
+The other two stage calls are 0.37s and 0.50s.
+
+- [ ] Fix. The two calls are independent, so concurrency halves it immediately; the real fix is one
+      round trip or a warm cache. It is a live Egeria call.
+- Caution: an earlier measurement of 14.7s was taken under load 65 caused by two orphaned `gh`
+  processes. Re-measure before and after, not against that number.
+
+### Catalog honesty — one instance fixed, the class open
+
+- [x] **`documentation_coverage` description fixed** 2026-08-31. It claimed "README completeness…
+      inline comment coverage"; it checks which doc collections were ingested plus a hygiene-file
+      list, banded by signal count. Name left as-is — see below.
+- [ ] **Is "Documentation *Coverage*" still an overclaim?** "Coverage" implies a measured ratio and
+      nothing computes one. Weaker than `security_scan`'s case, so not renamed unilaterally; decide
+      deliberately rather than leaving it unexamined.
+- [x] **Terse descriptions audited** 2026-08-31 — all 15 of the under-200-char repo entries, against
+      their implementations. Result: **3 overclaims in 15**, all now fixed (`security_scan`,
+      `documentation_coverage`, `api_structure`). The discursive half was not re-audited; every
+      entry sampled there states its own limits.
+
+      `api_structure` was the worst of the three: it claimed to *extract* from "Python, JavaScript,
+      and OpenAPI". It extracts nothing (it reads `project_code_symbols`, populated during
+      ingestion), the language list omitted Java and Go, and **no OpenAPI handling exists anywhere**.
+
+      Judged honest, no change: `license_classification` (tiers match the code exactly),
+      `rag_ingestion`, `repo_profile_refresh`, `repository_health`, `language_file_classification`,
+      `repo_classification`, `sub_resource_survey`, `egeria_publish`, `ci_quality`,
+      `security_features`, `repo_conventions`.
+
+- [x] **`data_file_profiling` — was a real defect, not the nuance it was logged as.** Fixed
+      2026-08-31. The columnar paths emitted `null_pct: 0.0` for every column of every
+      Parquet/Feather/Arrow file — an unmeasured value rendered as a confident measurement, since
+      file metadata carries no null rates. Both UI consumers showed it as a real zero, and one
+      (`c.null_pct ?? 0`) would have kept doing so after the profiler was fixed. Now `None`, with
+      a `null_summary` saying why, `—` in both UI surfaces, an honest description, and
+      `test_data_profiler_absence.py` pinning it in both directions.
+
+      Correcting the earlier entry: row counts are NOT missing for columnar formats — pyarrow reads
+      them from metadata. Only null rates were, and the earlier note had that wrong.
+
+- [ ] **Pattern worth acting on: "reads what something else produced" is the recurring lie.**
+      Two of the three (`documentation_coverage`, `api_structure`) describe work done during
+      ingestion as if this step did it, which also makes an un-ingested repo look like a deficient
+      one. That is the same fact-about-us/fact-about-them distinction `cii_badge` keeps explicit.
+- [ ] **Consider a ratchet** — an allowlist of audited entries that fails when a new one appears,
+      in the shape of the orphaned-slug fix. Claim-verb detection is probably too fuzzy.
+
+### From the design note — nothing built
+
+- [ ] Discovery **Security Survey**: `security_scan`, `security_features`, `ci_quality`,
+      `license_classification`, `repo_conventions`, `foss_scorecard`, `cii_badge` — all fast/inline.
+- [ ] **`Security_Assessment`** survey: the above + `cve_scan` (minutes/queued, excluded from
+      Discovery by rule 17) + the GAP steps below.
+- [ ] **Reducer steps and a topic-summary annotation.** `foss_scorecard` is already a reducer;
+      it needs naming as one. Optional and possibly several per survey.
+- [ ] **Four GAP questions with no analysis at all**: secret handling, telemetry/phone-home
+      detection, CLA/DCO provenance, SLA/availability content. Secret scanning is what
+      "Security Scan" claimed to do all along.
+- [ ] **Per-stage summary dashboards** — deferred by decision, 2026-08-31. Stage *filtering* already
+      works (`get_dashboard_stages`, membership not equality); summarising across stages does not.
+      Open when defining it: derived membership double-counts, since `security_overview` belongs to
+      both Discovery and Assessment.
+- [ ] **Do findings need a run identifier?** `project_analysis_findings` has no run column. A run is
+      identifiable only by a shared `surveyed_at`, by convention, and `query_findings` does not use
+      it that way. Blocks "summarise this run" being a real query. See open question 5.
+
+### Carried, not from today
+- [ ] `UNVERIFIED` is computed and never persisted, so query time cannot reach it.
+- [ ] `test_local_flow_execution_fallback` failed once on 2026-08-31 and did not reproduce — see
+      Backlog "Test reliability" for what is ruled out. Do not treat Prefect teardown noise as a
+      reproduction signature.
+
 
 ## Done 2026-08-26/27 — do not redo
 

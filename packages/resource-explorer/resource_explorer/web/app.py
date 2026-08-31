@@ -59,6 +59,13 @@ async def _lifespan(app: FastAPI):
     stop_bootstrap_monitor()
 
 
+# Configure logging at import, so `uvicorn resource_explorer.web.app:app` run
+# directly gets the same setup as `resource-explorer web`. Idempotent, so the
+# CLI calling it first makes this a no-op rather than a second set of handlers.
+from resource_explorer.observability.logging_setup import configure_logging as _configure_logging
+
+_configure_logging()
+
 app = FastAPI(
     title="Resource Explorer",
     description="Multi-agent RAG assistant for GitHub projects and databases",

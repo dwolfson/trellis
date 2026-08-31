@@ -465,14 +465,20 @@ class DataProfilerSurveyor(BaseSurveyor):
             meta = pq.read_metadata(path)
             schema = pq.read_schema(path)
             columns = [
-                {"name": schema.field(i).name, "dtype": str(schema.field(i).type), "null_pct": 0.0}
+                # null_pct is None, not 0.0. Reading it would mean loading the
+                # column data, which is exactly what these metadata-only paths
+                # avoid. 0.0 claimed "measured, no nulls" for every column of
+                # every parquet/feather file ever profiled -- an unmeasured
+                # value rendered as a confident measurement.
+                {"name": schema.field(i).name, "dtype": str(schema.field(i).type), "null_pct": None}
                 for i in range(len(schema))
             ]
             return {
                 "row_count": meta.num_rows,
                 "col_count": len(schema),
                 "columns": columns[:50],
-                "null_summary": "",
+                "null_summary": "Null rates not read — schema and row count come "
+                                "from file metadata, which does not carry them.",
                 "file_size": _fmt_size(path.stat().st_size),
             }
         except Exception as exc:
@@ -495,14 +501,20 @@ class DataProfilerSurveyor(BaseSurveyor):
                 table = reader.read_all([first_col] if first_col else [])
                 row_count = len(table)
             columns = [
-                {"name": schema.field(i).name, "dtype": str(schema.field(i).type), "null_pct": 0.0}
+                # null_pct is None, not 0.0. Reading it would mean loading the
+                # column data, which is exactly what these metadata-only paths
+                # avoid. 0.0 claimed "measured, no nulls" for every column of
+                # every parquet/feather file ever profiled -- an unmeasured
+                # value rendered as a confident measurement.
+                {"name": schema.field(i).name, "dtype": str(schema.field(i).type), "null_pct": None}
                 for i in range(len(schema))
             ]
             return {
                 "row_count": row_count,
                 "col_count": len(schema),
                 "columns": columns[:50],
-                "null_summary": "",
+                "null_summary": "Null rates not read — schema and row count come "
+                                "from file metadata, which does not carry them.",
                 "file_size": _fmt_size(path.stat().st_size),
             }
         except Exception as exc:

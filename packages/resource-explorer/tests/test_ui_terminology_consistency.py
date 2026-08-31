@@ -55,10 +55,13 @@ def test_the_runnable_tab_is_called_survey_everywhere(fn):
 
 
 def test_the_common_trailing_tabs_are_shared():
-    """Results / Questions / Disposition mean the same at every stage that has
+    """Dashboard / Questions / Disposition mean the same at every stage that has
     them, so they must be spelled the same. This is what makes the sub-nav
     learnable once rather than per stage."""
-    common = ["📈 Results", "❓ Questions", "🧭 Disposition"]
+    # "📈 Dashboard", not "Results", since 2026-08-31: the tab shows the latest
+    # sighting of each analysis across runs, not what one run produced. The
+    # invariant this test guards is unchanged — all five subnavs agree.
+    common = ["📈 Dashboard", "❓ Questions", "🧭 Disposition"]
     for fn in ("_scoutingSubnavHtml", "_discoverySubnavHtml", "_assessmentSubnavHtml",
                "_analysisSubnavHtml", "_enrichmentSubnavHtml"):
         labels = [lab for _, lab in _tabs(fn)]

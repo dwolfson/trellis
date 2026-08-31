@@ -1991,6 +1991,51 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_all_resource_feedback(self, limit: int = 200,
+                                   entity_type: str = "",
+                                   category: str = "") -> list[dict]:
+        """Feedback across every resource, newest first.
+
+        The per-resource reader (`list_resource_feedback`) answers "what did
+        people say about this one", which is the right question from a resource
+        page and the wrong one from Admin: nobody visits sixty resource pages to
+        find out whether anything has been said at all. Feedback that can only
+        be read where it was written is feedback nobody reads.
+
+        `entity_type` deliberately defaults to empty rather than "repo".
+        Feedback is recorded against databases and filesystems too, and a
+        default that quietly showed one kind would make the other two look like
+        they had none.
+        """
+        clauses, params = [], []
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM resource_feedback{where} "
+                "ORDER BY created_at DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_all_resource_feedback(self) -> dict:
+        """Totals for the Admin header: how much feedback exists, and on how
+        many distinct resources. Both, because "40 items" and "40 items across
+        3 resources" say different things about whether anyone is using it."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "COUNT(DISTINCT entity_type || ':' || entity_slug) AS resources "
+                "FROM resource_feedback"
+            ).fetchone()
+        return {"total": row["total"] or 0, "resources": row["resources"] or 0}
+
     def add_curator_note(self, entity_type: str, entity_slug: str, note: str) -> dict:
         """Ongoing curator commentary (discoverability, quality, readiness) —
         deliberately a separate stream from resource_context's 'notes' field,
