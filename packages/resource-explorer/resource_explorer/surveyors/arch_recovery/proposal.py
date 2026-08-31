@@ -66,11 +66,21 @@ TYPE_SUMMARY = "Architecture Proposal Summary"
 #: UI projects and the reason a curator's review projects are the same reason.
 PROPOSAL_DEPTH = 1
 
-#: Cap on components named individually, whatever the projection returns. A
-#: repo whose depth-1 partition is still enormous is a finding about that repo,
-#: not a reason to publish two thousand annotations — the structural payload
-#: still carries every one of them, and the summary says how many were named.
-MAX_NAMED_COMPONENTS = 200
+#: DEFAULT number of components named individually — a default, not a ceiling
+#: (Dan, 2026-08-31). Discovering dozens of components usually means the result
+#: is not interesting enough to catalog, so the default is deliberately modest;
+#: but if someone wants all 878 of egeria_git's components in Egeria, that is
+#: their call to make and not this module's to refuse. Pass `max_named=None`
+#: for no limit, or any integer to raise or lower it.
+#:
+#: Whatever the limit, the structural annotation still carries every component,
+#: and the summary reports how many were not named — a cap that hides its own
+#: existence would read as "these are all the components there are".
+DEFAULT_MAX_NAMED_COMPONENTS = 200
+
+#: Back-compat alias. Kept because the constant was published under this name
+#: before it became a default.
+MAX_NAMED_COMPONENTS = DEFAULT_MAX_NAMED_COMPONENTS
 
 
 def _results_reader() -> Callable[..., dict]:
@@ -85,6 +95,7 @@ def _results_reader() -> Callable[..., dict]:
 
 def build_proposal_annotations(
     registry, slug: str, *, results_reader: Callable[..., dict] | None = None,
+    max_named: int | None = DEFAULT_MAX_NAMED_COMPONENTS,
 ) -> list[Annotation]:
     """The proposal for `slug`, as annotations. Empty when nothing was derived.
 
@@ -104,15 +115,14 @@ def build_proposal_annotations(
     if not every:
         return []
 
-    annotations: list[Annotation] = []
-    for component in named[:MAX_NAMED_COMPONENTS]:
-        annotations.append(_component_annotation(component))
+    to_name = named if max_named is None else named[:max_named]
+    annotations: list[Annotation] = [_component_annotation(c) for c in to_name]
 
     annotations.append(_structural_annotation(every, full))
     clusters = _cluster_annotation(registry, slug)
     if clusters is not None:
         annotations.append(clusters)
-    annotations.append(_summary_annotation(named, every, full, projected))
+    annotations.append(_summary_annotation(named, every, full, len(to_name), max_named))
     return annotations
 
 
@@ -260,7 +270,8 @@ def _cluster_annotation(registry, slug: str) -> Annotation | None:
 
 
 def _summary_annotation(
-    named: list[dict], every: list[dict], full: dict, projected: dict,
+    named: list[dict], every: list[dict], full: dict, named_count: int,
+    max_named: int | None,
 ) -> Annotation:
     """Counts, census and analyzerVersion.
 
@@ -270,19 +281,21 @@ def _summary_annotation(
     """
     from .ir import ANALYZER, ANALYZER_VERSION
 
-    truncated = max(0, len(named) - MAX_NAMED_COMPONENTS)
+    truncated = max(0, len(named) - named_count)
     return ResourceMeasureAnnotation(
         summary=(
-            f"Architecture proposal: {len(named[:MAX_NAMED_COMPONENTS])} component(s) named "
+            f"Architecture proposal: {named_count} component(s) named "
             f"individually of {len(every)} derived"
-            + (f"; {truncated} not named (cap {MAX_NAMED_COMPONENTS})" if truncated else "")
+            + (f"; {truncated} not named (limit {max_named} — raise it to name them all)"
+               if truncated else "")
         ),
         analysis_step=STEP,
         annotation_type_name=TYPE_SUMMARY,
         resource_properties={
-            "components_named": len(named[:MAX_NAMED_COMPONENTS]),
+            "components_named": named_count,
             "components_derived": len(every),
             "components_not_named": truncated,
+            "name_limit": max_named if max_named is not None else "none",
             "projection_depth": PROPOSAL_DEPTH,
             "analyzerName": ANALYZER,
             "analyzerVersion": ANALYZER_VERSION,

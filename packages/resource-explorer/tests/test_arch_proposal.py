@@ -13,6 +13,7 @@ import json
 import pytest
 
 from resource_explorer.surveyors.arch_recovery.proposal import (
+    DEFAULT_MAX_NAMED_COMPONENTS,
     MAX_NAMED_COMPONENTS,
     TYPE_CLUSTERS,
     TYPE_COMPONENT,
@@ -186,3 +187,51 @@ class TestSummaryCarriesProvenance:
         assert summary.resource_properties["analyzerVersion"]
         assert summary.resource_properties["analyzerName"]
         assert summary.resource_properties["projection_depth"] == 1
+
+
+class TestTheLimitIsADefaultNotACeiling:
+    """Dan, 2026-08-31: "if they want to catalog 100 components, that's their
+    choice". Discovering dozens usually means the result is not interesting
+    enough to catalog, so the default is modest — but the module does not get
+    to refuse someone who wants all of them.
+    """
+
+    def _many(self, n):
+        return [_component(f"c{i}") for i in range(n)]
+
+    def test_the_default_applies_when_nothing_is_asked_for(self):
+        full = self._many(DEFAULT_MAX_NAMED_COMPONENTS + 10)
+        anns = build_proposal_annotations(
+            _Registry(), "p", results_reader=_reader(full, full))
+        named = [a for a in anns if a.annotation_type_name == TYPE_COMPONENT]
+        assert len(named) == DEFAULT_MAX_NAMED_COMPONENTS
+
+    def test_the_limit_can_be_raised_past_the_default(self):
+        full = self._many(DEFAULT_MAX_NAMED_COMPONENTS + 10)
+        anns = build_proposal_annotations(
+            _Registry(), "p", results_reader=_reader(full, full), max_named=500)
+        named = [a for a in anns if a.annotation_type_name == TYPE_COMPONENT]
+        assert len(named) == DEFAULT_MAX_NAMED_COMPONENTS + 10, (
+            "a raised limit above the population names all of it"
+        )
+
+    def test_none_means_no_limit(self):
+        full = self._many(DEFAULT_MAX_NAMED_COMPONENTS + 10)
+        anns = build_proposal_annotations(
+            _Registry(), "p", results_reader=_reader(full, full), max_named=None)
+        named = [a for a in anns if a.annotation_type_name == TYPE_COMPONENT]
+        assert len(named) == DEFAULT_MAX_NAMED_COMPONENTS + 10
+        summary = next(a for a in anns if a.annotation_type_name == TYPE_SUMMARY)
+        assert summary.resource_properties["components_not_named"] == 0
+        assert summary.resource_properties["name_limit"] == "none"
+
+    def test_a_lower_limit_still_reports_what_it_left_out(self):
+        full = self._many(20)
+        anns = build_proposal_annotations(
+            _Registry(), "p", results_reader=_reader(full, full), max_named=5)
+        summary = next(a for a in anns if a.annotation_type_name == TYPE_SUMMARY)
+        assert summary.resource_properties["components_named"] == 5
+        assert summary.resource_properties["components_not_named"] == 15
+        assert "raise it" in summary.summary, (
+            "a limit that hides its own existence reads as 'these are all there are'"
+        )
