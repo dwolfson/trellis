@@ -394,10 +394,17 @@ Everything below came out of one session. Design reasoning lives in
       run's results naturally get looked for" — that is the conflation being fixed.
 - [ ] **Admin has nowhere to see feedback.** `list_resource_feedback(entity_type, slug)` is
       per-resource only, surfaced in Curate. No cross-resource view exists.
-- [ ] **Admin is 9 flat tabs.** Proposed grouping: *Config* (Annotation Types, Groups, Discovery
-      Sources, Question Catalog) · *Resync & Repair* (Egeria Alignment, Repair, Publish Queue) ·
-      *Observability* (Prefect, + Feedback and Logs when they exist). Scheduling already moved to
-      Automate, so it is not a fourth group.
+- [x] **Admin regrouped** 2026-08-31 — **Configure** (Annotation Types, Groups, Discovery Sources,
+      Question Catalog) · **Reconcile** (Egeria Alignment, Egeria Links, Publish Queue, Repair) ·
+      **Observe** (Prefect). Grouped by the question a person is asking, not by subsystem: grouping
+      by subsystem would put Egeria Alignment beside Annotation Types, which is a taxonomy of the
+      code rather than of the errand. Visual only — every button still calls `showMainView()` with
+      the same tab id, so routing and the single-active-pane architecture are untouched.
+      `test_admin_subnav_grouping.py` guards that no pane is dropped, duplicated, or invented — a
+      pane left out of a group does not error, it silently becomes unreachable.
+
+      **Observe holds only Prefect on purpose**: it is the home for the two panes below, and a
+      group of one that names a gap beats folding it somewhere it does not belong.
 - [ ] **No logs viewer, and logging is not wired.** Root logger has no handlers and `uvicorn.run()`
       takes no `log_config` (`cli/main.py:327`), so INFO is discarded and WARNING/ERROR arrive bare.
       **Wire logging before building a viewer** or it will show nothing and read as broken.

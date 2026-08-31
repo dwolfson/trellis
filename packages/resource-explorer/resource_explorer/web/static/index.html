@@ -12371,23 +12371,53 @@ function selectAnnotationType(typeName) {
 // system/catalog configuration, not something a user does to curate a
 // specific resource (that's the real Curate intent — see showCuratePane()
 // below). Reachable from the header's ⚙ Admin button, not #intent-nav. ────
-function _adminSubnavHtml(active) {
-  const tabs = [
-    { tab: 'annotations',       label: '📝 Annotation Types' },
-    { tab: 'admin-groups',     label: '🗂 Groups' },
+//: Admin's panes, grouped by what a person came to do (2026-08-31). It was a
+//: flat row of nine and read as nine unrelated errands.
+//:
+//: The axis is the question being asked, not the subsystem being touched:
+//:   Configure   — declare how the system behaves. Read-mostly, no side effects
+//:                 on resources.
+//:   Reconcile   — the catalog and reality disagree; make them agree. Every one
+//:                 of these exists because a publish can fail or drift.
+//:   Observe     — what is the system doing, and what did people say about it.
+//:
+//: Prefect sits alone under Observe today. That is deliberate rather than an
+//: oversight: it is the home for the two panes Admin is missing (resource
+//: feedback has no cross-resource view at all, and there is no log viewer —
+//: see docs/open-stack-checklist.md §6). A group of one that names a gap is
+//: more useful than folding it somewhere it does not belong.
+//:
+//: Groups are visual only. Every button still calls showMainView() directly
+//: with the same tab id, so routing, the single-active-pane architecture and
+//: #nav-admin-hdr's highlight are all untouched.
+const _ADMIN_GROUPS = [
+  { name: 'Configure', tabs: [
+    { tab: 'annotations',             label: '📝 Annotation Types' },
+    { tab: 'admin-groups',            label: '🗂 Groups' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
-    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
-    { tab: 'admin-prefect',           label: '⚡ Prefect' },
+  ]},
+  { name: 'Reconcile', tabs: [
     { tab: 'admin-resync',            label: '🔄 Egeria Alignment' },
-    { tab: 'admin-repair',            label: '🔧 Repair' },
+    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-outbox',            label: '📤 Publish Queue' },
-  ];
-  return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
-    ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
-        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
-        ${t.label}
-      </button>`).join('')}
+    { tab: 'admin-repair',            label: '🔧 Repair' },
+  ]},
+  { name: 'Observe', tabs: [
+    { tab: 'admin-prefect',           label: '⚡ Prefect' },
+  ]},
+];
+
+function _adminSubnavHtml(active) {
+  const group = g => `<div class="flex items-center gap-1.5">
+      <span class="text-[10px] uppercase tracking-wide text-slate-600 pr-0.5">${g.name}</span>
+      ${g.tabs.map(t => `<button onclick="showMainView('${t.tab}')"
+          class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
+          ${t.label}
+        </button>`).join('')}
+    </div>`;
+  return `<div class="flex items-center flex-wrap gap-x-3 gap-y-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
+    ${_ADMIN_GROUPS.map(group).join('<span class="text-slate-700 select-none">|</span>')}
   </div>`;
 }
 
