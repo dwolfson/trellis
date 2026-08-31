@@ -21,12 +21,13 @@ def _comp(slug, files):
                      identity=Identity(method="path", value=slug), files=list(files))
 
 
-def _propose(tmp_path, files: dict, components=None):
+def _propose(tmp_path, files: dict, components=None, code_marker_operations=None):
     for rel, body in files.items():
         f = tmp_path / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(body)
-    return I.propose(str(tmp_path), list(files), components or [])
+    return I.propose(str(tmp_path), list(files), components or [],
+                     code_marker_operations=code_marker_operations)
 
 
 class TestGrpcIsNoLongerInvisible:
@@ -148,3 +149,66 @@ class TestProtocolIsStillNeverGuessed:
         wearing a measured one's confidence. Unchanged by this work."""
         ports, _, _, _ = _propose(tmp_path, {"Dockerfile": "FROM x\nEXPOSE 8080\n"})
         assert ports and not ports[0]["protocol"]
+
+
+class TestFastApiRouteDecoratorsFillTheStaticDocumentGap:
+    """Backlog.md "interface extraction" entry, sharpened by Dan 2026-08-30:
+    a FastAPI service generates its OpenAPI spec at RUNTIME from its own
+    route decorators and ships no static document for `_OPENAPI_NAMES` to
+    find — this codebase's own web app is exactly that case. The evidence
+    already exists (code_markers.py's `fastapi-route-registration`, counted
+    per component for classification); this is that count reused as an
+    interface, not a second detection.
+    """
+
+    def test_a_route_count_with_no_static_document_becomes_a_port(self, tmp_path):
+        comps = [_comp("svc", files=[])]
+        ports, _, _, _ = _propose(
+            tmp_path, {}, components=comps,
+            code_marker_operations={"svc": 12},
+        )
+        assert len(ports) == 1
+        assert ports[0]["component"] == "svc"
+        assert ports[0]["protocol"] == "HTTP/REST"
+        assert ports[0]["direction"] == I.DIR_INPUT_OUTPUT
+        assert ports[0]["additionalProperties"]["operationCount"] == "12"
+
+    def test_a_component_already_covered_by_a_static_document_is_not_double_counted(self, tmp_path):
+        """One REST interface must not become two ports — a checked-in
+        OpenAPI document is stronger, filename-attributable evidence than a
+        decorator count for the same component."""
+        comps = [_comp("svc", files=["svc/**"])]
+        doc = {"openapi": "3.0.0", "paths": {"/a": {"get": {}}}}
+        ports, _, _, _ = _propose(
+            tmp_path, {"svc/openapi.json": json.dumps(doc)}, components=comps,
+            code_marker_operations={"svc": 40},
+        )
+        assert len(ports) == 1
+        assert ports[0]["additionalProperties"]["operationCount"] == "1", \
+            "the static document's count wins; the decorator count is not merged in"
+
+    def test_a_slug_with_no_matching_component_is_skipped_not_swept_in(self, tmp_path):
+        """A component filtered out upstream (distillation) or that never
+        existed leaves nothing to attach a port to — skipped, same as 'no
+        signal, no cluster' elsewhere in this codebase."""
+        ports, _, _, _ = _propose(
+            tmp_path, {}, components=[],
+            code_marker_operations={"code::gone": 5},
+        )
+        assert ports == []
+
+    def test_a_zero_count_yields_no_port(self, tmp_path):
+        comps = [_comp("svc", files=[])]
+        ports, _, _, _ = _propose(
+            tmp_path, {}, components=comps,
+            code_marker_operations={"svc": 0},
+        )
+        assert ports == []
+
+    def test_without_the_kwarg_behaviour_is_unchanged(self, tmp_path):
+        """Backward compatibility: every existing caller of propose() that
+        never passes code_marker_operations sees identical behaviour."""
+        comps = [_comp("svc", files=[])]
+        with_none = _propose(tmp_path, {}, components=comps)
+        with_empty = _propose(tmp_path, {}, components=comps, code_marker_operations={})
+        assert with_none == with_empty

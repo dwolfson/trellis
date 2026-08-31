@@ -402,9 +402,23 @@ def _compose_interfaces(root: str, rel: str, service_names: dict[str, str],
     return ports, list(merged.values())
 
 
-def propose(root: str, first_party: list[str], components: list[Component],
+def propose(root: str, first_party: list[str], components: list[Component], *,
+            code_marker_operations: dict[str, int] | None = None,
             ) -> tuple[list[dict], list[dict], list[Evidence], list[str]]:
-    """`(ports, wires, evidence, notes)` from deployment artifacts only."""
+    """`(ports, wires, evidence, notes)` from deployment artifacts only.
+
+    `code_marker_operations` (Backlog.md "interface extraction" entry) is
+    `code_markers.propose()`'s 4th return value — {component slug: route
+    count} for FastAPI's `fastapi-route-registration` marker, already
+    computed for component classification and reused here rather than
+    re-scanning. Deployment-artifact-only stays true of the REST of this
+    function; this one input is the deliberate exception, because it closes
+    a real gap the artifact-only approach cannot: a FastAPI service
+    generates its OpenAPI spec at *runtime* from these same decorators and
+    ships no static document, so `_OPENAPI_NAMES` finds nothing to open for
+    it. See that function's own docstring for why only FastAPI has this
+    today and what other frameworks would need.
+    """
     from . import detectors
 
     by_path = _component_paths(components)
@@ -480,6 +494,27 @@ def propose(root: str, first_party: list[str], components: list[Component],
             p, w = _compose_interfaces(root, rel, names)
             ports.extend(p)
             wires.extend(w)
+
+    # FastAPI route decorators, when no static OpenAPI document already
+    # covers the same component — an owner with a real, checked-in spec has
+    # stronger, filename-attributable evidence than a decorator count, and
+    # emitting both would report one REST interface as two. "No signal, no
+    # cluster"'s sibling rule applies here too: a component with a route
+    # count but no resolvable name (filtered out by distillation upstream,
+    # or never a component at all) gets skipped rather than swept in.
+    if code_marker_operations:
+        slug_to_name = {c.slug: c.name for c in components}
+        existing_http_owners = {p["component"] for p in ports if p["protocol"] == "HTTP/REST"}
+        for slug, n_routes in sorted(code_marker_operations.items()):
+            owner = slug_to_name.get(slug)
+            if not owner or owner in existing_http_owners or n_routes <= 0:
+                continue
+            ports.append(_port_dict(
+                owner, "routes", DIR_INPUT_OUTPUT, "HTTP/REST", "", 0,
+                f"FastAPI route decorators observed in code (ast-grep) — "
+                f"{n_routes} route(s); no OpenAPI document present",
+                operation_count=n_routes,
+            ))
 
     # De-duplicate: two Dockerfiles in one component declaring the same port is
     # one fact about the component, not two.

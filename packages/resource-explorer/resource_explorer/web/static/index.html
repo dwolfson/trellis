@@ -3642,12 +3642,12 @@ function _archPaneCountLine(rows, raw, projected, surveyedAt) {
     + (projected ? ' · ' + raw + ' recovered in full, all perspectives' : '')
     + (surveyedAt ? ' · last run ' + _relTime(surveyedAt) : '');
 }
-function _archPanesHtml(uid, groups, active, raw, projected, surveyedAt) {
+function _archPanesHtml(uid, groups, active, raw, projected, surveyedAt, slug) {
   return Object.entries(groups).map(([p, rows]) => `
       <div data-arch-pane="${uid}" data-arch-persp="${_esc(p)}" class="${p === active ? '' : 'hidden'}">
         <div class="text-xs text-slate-400 mb-1">${_archPaneCountLine(rows, raw, projected, surveyedAt)}</div>
         ${rows.length > _ARCH_ROW_CAP ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : ''}
-        ${rows.slice(0, _ARCH_ROW_CAP).map(_archRow).join('')}
+        ${rows.slice(0, _ARCH_ROW_CAP).map((c, i) => _archRow(c, slug, `${uid}-${p}-${i}`)).join('')}
       </div>`).join('');
 }
 function _archStructuralHtml(uid, structural) {
@@ -3667,7 +3667,17 @@ function _archStructuralHtml(uid, structural) {
       </div>
     </div>`;
 }
-function _archRow(c) {
+function _archRow(c, slug, rowUid) {
+  // Curator verdicts (docs/Backlog.md "take architecture results into
+  // Curate", backend by S2/trellis-survey-flows-59) — accept/reject/retype
+  // a single proposed component. `c.verdict` is already merged onto each
+  // row server-side (_verdict_view in repo_survey_definition_adapter.py),
+  // so no second fetch here. `slug` gates the whole area: a payload built
+  // without it (a test fixture, or a future caller that doesn't carry it)
+  // renders no verdict UI rather than wiring buttons to a broken URL.
+  const verdictArea = !slug ? '' : (c.verdict
+    ? _archVerdictBadgeHtml(rowUid, slug, c.path, c.verdict, c.materialized)
+    : _archVerdictControlsHtml(rowUid, slug, c.path));
   return `
         <div class="text-xs text-slate-300 mb-1">
           <div class="flex justify-between gap-2">
@@ -3676,7 +3686,128 @@ function _archRow(c) {
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
+          ${verdictArea}
         </div>`;
+}
+
+// ─── Architecture component verdicts ────────────────────────────────────────
+// First slice of "take architecture results into Curate" — accept, reject,
+// or retype a single proposed component. Append-only on the backend (a
+// curator changing their mind is real history, not a correction), so
+// "change" below just re-opens the controls rather than editing anything;
+// submitting again always POSTs a fresh row.
+//
+// rowUid is generated from the arch card's own uid + perspective + row
+// index (all internal, enum-like strings) — never from repo content — so
+// it's safe to interpolate directly into onclick(...) call arguments and
+// querySelector attribute-value strings below. `slug`/`path` are NOT
+// interpolated that way; they come from surveyed repo content and could in
+// principle contain a quote, so they travel only via `data-*` attributes
+// (HTML-attribute-escaped through _esc(), safe regardless of quoting) and
+// are read back via `.dataset` inside the handlers instead.
+function _archVerdictControlsHtml(rowUid, slug, path) {
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+    <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
+      onclick="_archSubmitVerdict('${rowUid}','accepted')">✓ Accept</button>
+    <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
+      onclick="_archSubmitVerdict('${rowUid}','rejected')">✗ Reject</button>
+    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archShowRetype('${rowUid}')">✎ Retype</button>
+    <span data-arch-retype="${_esc(rowUid)}" class="hidden items-center gap-1">
+      <input type="text" data-arch-retype-input="${_esc(rowUid)}" placeholder="new type"
+        class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-0.5 w-24 text-slate-200"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();_archSubmitRetype('${rowUid}');}" />
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-200 hover:bg-slate-600"
+        onclick="_archSubmitRetype('${rowUid}')">Set</button>
+    </span>
+  </div>`;
+}
+
+// `materialized` is the persisted read-back (repo_survey_definition_adapter.py's
+// _materialized_view) on a page load, or the just-POSTed materialization
+// result on a fresh accept — either way {guid, qualified_name} on success.
+// A failed materialization is NEVER persisted (see materializer.py: nothing
+// is recorded to architecture_materialized_components unless Egeria
+// actually returned a usable GUID), so it can only ever appear as the
+// transient POST-response shape {status:"error", error}, never on reload —
+// the badge doesn't need to remember it past that one toast.
+function _archVerdictBadgeHtml(rowUid, slug, path, v, materialized) {
+  const label = v.verdict === 'accepted' ? '✓ Accepted'
+    : v.verdict === 'rejected' ? '✗ Rejected'
+    : `✎ Retyped → ${_esc(v.retyped_to || '?')}`;
+  const color = v.verdict === 'accepted' ? 'text-emerald-400'
+    : v.verdict === 'rejected' ? 'text-red-400' : 'text-cyan-400';
+  const egeriaBadge = (materialized && materialized.guid)
+    ? `<span class="text-[10px] text-cyan-500" title="${_esc(materialized.qualified_name || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`
+    : '';
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+    <span class="text-[10px] ${color}">${label}</span>
+    <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
+    ${egeriaBadge}
+    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertVerdictUi('${rowUid}')">change</button>
+  </div>`;
+}
+
+function _archShowRetype(rowUid) {
+  const span = document.querySelector(`[data-arch-retype="${rowUid}"]`);
+  if (!span) return;
+  span.classList.remove('hidden');
+  span.classList.add('inline-flex');
+  span.querySelector('input')?.focus();
+}
+
+function _archRevertVerdictUi(rowUid) {
+  const el = document.querySelector(`[data-arch-verdict="${rowUid}"]`);
+  if (!el) return;
+  el.outerHTML = _archVerdictControlsHtml(rowUid, el.dataset.archSlug, el.dataset.archPath);
+}
+
+function _archSubmitRetype(rowUid) {
+  const input = document.querySelector(`[data-arch-retype-input="${rowUid}"]`);
+  const value = (input?.value || '').trim();
+  if (!value) { showToast('error', 'Enter a type before setting it'); return; }
+  _archSubmitVerdict(rowUid, 'retyped', value);
+}
+
+async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
+  const el = document.querySelector(`[data-arch-verdict="${rowUid}"]`);
+  if (!el) return;
+  const slug = el.dataset.archSlug, path = el.dataset.archPath;
+  try {
+    const resp = await fetch(`/api/curate/component-verdicts/repo/${encodeURIComponent(slug)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope_locator: path, verdict, retyped_to: retypedTo || '' }),
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch (_) { /* body wasn't JSON */ }
+      throw new Error(detail);
+    }
+    // record_component_verdict's own row shape (registry.py) — `created_at`,
+    // not `decided_at`; that rename only happens in _verdict_view's
+    // read-back merge, which this direct POST response doesn't go through.
+    // `materialization` is only ever present on an 'accepted' call
+    // (curate.py's _materialize_if_accepted) — {status, guid, qualified_name}
+    // on success, {status:"error", error} if Egeria couldn't be reached or
+    // rejected the write. Either way the verdict above is already saved;
+    // materialization failing is reported, not treated as the call failing.
+    const saved = await resp.json();
+    const m = saved.materialization;
+    el.outerHTML = _archVerdictBadgeHtml(rowUid, slug, path, {
+      verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at,
+    }, m && m.status !== 'error' ? m : null);
+    if (m && m.status === 'error') {
+      showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
+    } else if (m && m.status === 'materialized') {
+      showToast('success', `Accepted — created as a real SolutionComponent in Egeria`);
+    } else if (m && m.status === 'already_materialized') {
+      showToast('success', `Accepted — already exists in Egeria`);
+    } else {
+      showToast('success', `Marked ${verdict}${retypedTo ? ` (${retypedTo})` : ''}`);
+    }
+  } catch (e) {
+    showToast('error', `Could not save verdict: ${_esc(e.message)}`);
+  }
 }
 
 // _renderArchitectureRecoveryResults — kind-plugin for `architecture_recovery`.
@@ -3763,7 +3894,7 @@ function _renderArchitectureRecoveryResults(data) {
   const _uid = 'arch' + (++_archUidSeq);
 
   const _tabs = _archTabsHtml(_uid, _groups, _active);
-  const _panes = _archPanesHtml(_uid, _groups, _active, _raw, _projected, data.surveyed_at);
+  const _panes = _archPanesHtml(_uid, _groups, _active, _raw, _projected, data.surveyed_at, data.slug);
   const _structuralBlock = _archStructuralHtml(_uid, _structural);
 
   return completeness

@@ -2221,6 +2221,52 @@ definition so a proposal records the context it was clustered for; wire density 
 against the logical perspective; RFA the cases that will not cluster rather than emitting a
 low-confidence grouping.
 
+**Deployment-perspective clustering (signal 1) — DONE, since before this entry was last read.**
+`arch_recovery/clustering.py` (`propose`/`_build`/`rollup`/`assign`), wired into `persist.py`'s
+`_cluster()` and running on every survey. Affinity promotion (Collection -> composed component via
+import-cohesion) landed alongside it. Tested: `test_arch_clustering.py`, 29 cases. This paragraph was
+stale — recorded here so the next reader doesn't re-derive "has clustering run yet" from scratch.
+
+**Wire density (signal 2) — DONE 2026-08-30, same session.** Tried only as a fallback, once every
+declared boundary (deployment context, scope hierarchy) is exhausted and a group is still over the
+~10 goal — not blended with those signals or given a vote alongside them. Built as greedy
+agglomerative merging over the wire graph (`interfaces.propose`'s own `wires` list, the same one
+`mermaid.render` draws from and `persist_ir` was already threading through as an unused parameter):
+repeatedly merge whichever two groups have the strongest total wire weight between them, bounded by
+`target_size`, stopping when no beneficial merge remains. Pairwise weights are computed once and
+updated incrementally per merge (a merged group's weight to a third group is the sum of its two
+parents' — wires are additive) rather than rescanned every iteration, since this runs on a survey's
+hot path; a size backstop (`_MAX_WIRE_DENSITY_MEMBERS = 200`, unmeasured, revisit if it's ever what's
+silencing a real group's wire signal) sits on top of that as insurance, not a substitute for it.
+"No signal, no cluster" applies here too — a member set with zero wires between any of them returns
+no split, same as `_subdivide`'s existing contract, rather than one bucket covering everyone.
+Resulting clusters carry `signal: "wire-density"` so a curator can tell a measured graph from a
+declared boundary. Wire endpoints resolve by slug-or-name (mirroring `mermaid._resolve_endpoint`'s
+existing handling of the same ambiguity — a compose wire is attributed by service name, a port by
+slug), kept as its own small copy rather than a shared import, same reasoning as
+`ComponentMaterializer._find_element_guid` duplicating `EgeriaPublisher`'s.
+
+Signal 3 (same external interface) stays blocked on the standing interface-extraction item, as
+before.
+
+**Found and fixed alongside it — a live, untested bug in `_build`'s recursive `_subdivide` branch:**
+the call `_build(sub_name, sub_scopes, by_scope, perspective, target_size, depth_left - 1)` passed 6
+positional args to a 7-parameter function (missing `by_scope_components`), so every value after it
+landed in the wrong slot and `depth_left` got none at all — a `TypeError` on any call. Unreached by
+all 29 pre-existing tests: the oversized-cluster tests use flat scope locators (`flat::s{i}`)
+specifically so `scope_hierarchy.derive` finds nothing to subdivide, which is exactly what kept this
+branch from ever running; real corpus runs likely never hit it either, since an oversized group needs
+a deployment-context split to be genuinely unavailable (not just single-valued) AND a further scope
+hierarchy to exist below it. Two new regression tests exercise `_build` directly (bypassing
+`propose()`'s own first pass, which finds the finest qualifying split in one shot for realistic path
+hierarchies and so never naturally reaches this branch either) to prove the recursive call no longer
+raises and the second-level split is real.
+
+Suite: `test_arch_clustering.py` grew from 29 to 41 cases (the bug-fix regression, ten
+`TestWireDensitySignal` cases, and one end-to-end test proving `persist_ir` actually threads `wires`
+through `_cluster()` into `clustering.propose()` — a unit test of `propose(wires=...)` alone would not
+have caught a broken wire-up in between). Broader arch/clustering/mermaid suite: 485 passed.
+
 ---
 
 #### RE has no login at all, and its identity is inconsistent across 26 sites
@@ -2434,56 +2480,108 @@ use during runtime, we need to know how to interface to it — what kind of API 
 language bindings, the number of commands. We don't need the names of every request and their
 payloads/signatures — until we want to actually try to use it."*
 
-That is a **suitability** question, and it wants a coarse answer. Measured against what
-`arch_recovery/interfaces.py` extracts today:
+That is a **suitability** question, and it wants a coarse answer.
 
-| The question | Answerable now? | Why |
-|---|---|---|
-| Does it expose an interface at all? | **yes** | Dockerfile `EXPOSE`, compose `ports:`/`expose:` |
-| What kind of API? | **partly** | an OpenAPI filename ⇒ `HTTP/REST` |
-| Is it gRPC? | **no** | `.proto` is not recognised. Nor GraphQL, nor Thrift |
-| How many operations/commands? | **no** | the OpenAPI document is matched by **filename** and never opened |
-| What language bindings ship with it? | **no** | nothing extracts them |
+**Items 1 and 2 below are DONE (`b1488be`, "RE: Milvus is gRPC-first and we could not see it")** —
+recorded here so the next reader doesn't re-derive it, since this entry sat stale describing them
+as open after they'd already landed. `interfaces.py` now recognises `.proto`/GraphQL SDL/Thrift IDL
+alongside OpenAPI (`_PROTO_EXT`/`_GRAPHQL_EXTS`/`_THRIFT_EXT`), and `operation_count` (OpenAPI
+`paths` × methods, `.proto` `service`/`rpc` counts) rides in each port's `additionalProperties`.
+Milvus's gRPC surface — the case that motivated this — is no longer invisible.
 
-`propose()`'s own docstring says it works "from deployment artifacts only", and `_OPENAPI_NAMES`
-is a six-entry filename tuple. So for **Milvus** — gRPC-first, SDKs in several languages — we
-record that it exposes ports and miss its actual interface entirely.
+**What genuinely remains open, sharpened by Dan 2026-08-30:**
 
-**The general principle this exposes, and it is bigger than the gap.** A coarse answer often
-requires a *deeper* analysis that is then summarised. "REST, ~40 operations, Python and Go
-bindings" means opening the OpenAPI document and scanning for binding directories, then reporting
-three facts rather than forty signatures. **Today we do neither half**: no deep read, and no
-summarisation step. What we emit instead is the raw analysis at its own natural granularity —
-154 components for Milvus (finding 99) — which is not a precision failure so much as a missing
-summarisation level.
+**A. OpenAPI/REST/Swagger detection needs a second path — DONE for FastAPI, 2026-08-30, same
+session.** `_OPENAPI_NAMES` only ever saw a *committed* spec file (`openapi.json`, `swagger.yaml`,
+…); a FastAPI service generates its spec at runtime from its own route decorators and ships none —
+this codebase's own web app was exactly that case, recording nothing.
 
-This reframes the two-stage funnel that already exists. *"First determine if it's suitable; if so,
-later analyse the details to use it properly"* is Discovery → Analysis, and rule 17's
-`fetch_cost`/`compute_cost` already draws the cost boundary. What is missing is that **no step owns
-summarising up to the depth the question asked for.** Every surveyor emits at its own granularity
-and nothing collapses it.
+Built as reuse, not a second detection: `code_markers.py`'s `fastapi-route-registration` rule
+already matches individual `@app.get`/`.post`/`.put`/`.delete`/`.patch`/`.websocket` decorators —
+one match per route, collected per-file for *component* classification
+(`arch_recovery/rules/fastapi-route.yml`) — but the count was discarded once converted into a
+component. `code_markers.propose()` now returns it as a 4th value, `{component slug: route count}`
+(`OPERATION_MARKERS`, a named subset of rule IDs that are genuinely per-operation, not per-file),
+threaded through `detectors.build_components()` → `arch_recovery_detect.py` →
+`interfaces.propose()`'s new `code_marker_operations` keyword. `interfaces.py` emits an `HTTP/REST`
+port from it for any component with a nonzero count **that has no port already from a static
+document** — a checked-in OpenAPI file is stronger, filename-attributable evidence than a decorator
+count, and both existing would report one REST interface as two, so the static-document reading
+wins where both exist.
 
-**It also enlarges Purpose's role (§3 of the investigation-framing design).** If Purpose sets the
-required *depth of response*, it selects a summarisation level, not just a question ordering — and
-the same underlying analysis then serves both stages. A summariser over 154 components ("3
-subsystems, 8 services, one gRPC surface") answers the suitability question **without the component
-list needing to be correct at 8**, which is a materially cheaper path than the unported adjudicator.
+**Confirmed NOT free for Spring/Go, as flagged** — `OPERATION_MARKERS` has exactly one entry.
+Spring's marker (`java-spring-service.yml`) matches `@RestController`/`@Controller` at the class
+level, and Go's (`go-http-server.yml`, `go-grpc-server.yml`) match server *construction* — neither
+is a per-endpoint marker, so adding their rule IDs to `OPERATION_MARKERS` would count "1" regardless
+of how many routes exist. Getting the same countable granularity for Spring needs a new rule on
+`@GetMapping`/`@PostMapping`/`@RequestMapping`-family method annotations; for Go it needs rules on
+whichever router's per-route registration call (`mux.HandleFunc`, gin's `.GET`, echo's `.GET`, …) a
+given service actually uses. Left as a clearly-scoped follow-on, not attempted here.
 
-**Proposed work, cheap first:**
+Suite: `test_arch_interfaces_idl.py` +5 (the reuse, the static-document precedence, the no-owner
+skip, the zero-count skip, and backward compatibility with no `code_marker_operations` passed),
+`test_arch_recovery_detectors.py` +2 (the count itself, and that a subtree with no route decorators
+is absent rather than zero). 214 passed across the directly affected files; 503 passed across the
+broader arch/interface/marker test surface.
 
-1. **Recognise `.proto`, GraphQL SDL and Thrift IDL** alongside OpenAPI. Filename/extension
-   matching, same tier, no new fetch. Fixes the Milvus-shaped blind spot where the primary
-   interface is invisible.
-2. **Open the interface document and count.** OpenAPI `paths` × methods, `.proto` `service`/`rpc`
-   declarations. A count is a summary, not a listing — the signatures stay unread until stage two,
-   exactly as the driving question asks. Note the existing `_port_dict` has no field for it, so
-   this needs one (`operation_count`, or a `SolutionPort` property if Egeria has one — **check the
-   vocabulary first**, as §5.5f asked and as has paid off three times).
-3. **Language bindings** — conventional directories (`clients/<lang>`, `sdk/<lang>`, `bindings/`)
-   plus per-ecosystem manifests. Weakest evidence of the three; do it last and label it derived.
+**B. Language bindings — Dan's steer narrows this from the original proposal, doesn't confirm it.**
+The entry as written proposed conventional directories (`clients/<lang>`, `sdk/<lang>`,
+`bindings/`) as the signal, and called it "weakest evidence of the three; do it last." Dan, 2026-08-30:
+*"Not sure about language bindings unless they are exported as a specific library — eg. pyegeria."*
+That rules the directory-convention approach out rather than deferring it — a folder named
+`clients/python` is not evidence a real, usable client library exists at that path, and the
+codebase's own `_deployment_context_of`-style principle (read a declared boundary, don't infer
+intent from a name) argues the same way here.
 
-**Do NOT** extend this into reading request/response schemas. That is stage two, it is a different
-cost tier, and the driving question explicitly excludes it.
+What Dan's example asks for instead: recognise a **named, published package that IS a client
+library for this project** — `pyegeria` is a real PyPI package, with its own name and description,
+that exists specifically to bind to Egeria. That is verifiable evidence a directory name is not.
+
+**DONE, first cut, 2026-08-30, same session — Python and Node only.** Not `manifest_parse.py`/
+`DependencyParser` in the end (that pipeline belongs to a different survey step, `ManifestParseSurveyor`
+via `IngestionPipeline`, which `architecture_recovery` doesn't depend on and shouldn't couple to) but
+the *same kind* of parsing the entry anticipated, on the surface that was already free:
+`detectors.python_manifests()`/`node_manifests()` already read `pyproject.toml`'s `[project]` table
+and `package.json` wholesale for `classify()`'s "installable, no entry point ⇒ Software Library"
+signal — `description` was sitting in the already-parsed structure, unread. One field added to
+each, no new file walk, no new parse.
+
+**Deliberately NOT a classifier.** `build_components()` now attaches a second Evidence entry to any
+component `classify()` already calls `"Software Library"` (installable, no entry point — exactly
+pyegeria's shape) that has a non-empty `description`: the description, verbatim, up to 200 chars,
+assertion `"publishes a {ecosystem} package — possible language binding"`. Nothing here decides
+*whether* it's a binding — pyegeria's own description ("A python client for the Egeria metadata
+management system") needs no inference to read as one, and that restraint is the same one `protocol`
+already exercises by staying empty rather than guessed from a port number. A package with no
+description, or with an entry point (a CLI, not installable-as-a-library), gets no binding evidence
+at all — nothing invented to fill the gap.
+
+**Directory-convention detection (`clients/<lang>`, `sdk/<lang>`, `bindings/`) was NOT built**, per
+Dan's steer ruling it out rather than deferring it.
+
+**Real scope limits, stated rather than discovered later:**
+- **Java (Maven/Gradle) and Go are not covered.** `python_manifests`/`node_manifests` are the two
+  existing readers with a clean `name`/`description` shape to extend; `pom.xml` isn't parsed into a
+  dict at all today and Gradle's `settings.gradle` module list has no description field to read.
+  Real follow-on work, not attempted here.
+- **Single-repo only, and this is the sharper limit.** `pyegeria` is Egeria's binding but lives in a
+  *different* repository (`egeria-python`) from Egeria's own server code. Analysing the Egeria server
+  repo alone will never surface pyegeria as evidence — this only finds a binding a repo publishes
+  *of itself*, e.g. running this against `egeria-python` would find pyegeria's own self-description.
+  Cross-repo binding discovery (recognising that some OTHER analysed repo is a stated dependency of
+  and/or names the analysed one) is a different, larger question, not scoped here.
+- **Not yet surfaced in the curator-facing card.** The evidence is persisted and readable
+  (`_architecture_recovery_results`'s per-component `evidence` list already carries it, same generic
+  path every other Evidence record takes through `persist.py`), but `_archRow`'s summary line shows
+  only `proposed_by` (detector labels), not evidence text — a curator has to look past the summary to
+  see the description. A presentation follow-up, not a detection gap.
+
+Suite: `test_arch_recovery_detectors.py` +4 (an installable package with a description gets binding
+evidence; a console-command package does not; a bare name with no description does not; Node
+packages are covered too). 207 passed across the directly affected files.
+
+**Do NOT** extend either A or B into reading request/response schemas or binding call signatures.
+That is stage two, a different cost tier, and the driving question explicitly excludes it.
 
 ---
 

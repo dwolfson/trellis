@@ -72,6 +72,27 @@ MARKER_ROLES: dict[str, tuple[str, int, bool]] = {
     "client-boto3":              ("",                  0,  False),
 }
 
+# Backlog.md "interface extraction answers 'does it expose something', not
+# 'can I use it'" — a rule ID belongs here when ONE MATCH IS ONE OPERATION
+# (a route, an RPC), not one match per component-or-file. This is the same
+# route-decorator evidence MARKER_ROLES already uses to classify the
+# component; `propose()` below counts it a second way for interfaces.py's
+# benefit, so a real REST API is visible even when the repo ships no static
+# OpenAPI document — a FastAPI service generates its spec at runtime, and
+# this codebase's own web app is exactly that case.
+#
+# FastAPI is the only entry today because it is the only rule that actually
+# matches per-route: `fastapi-route-registration` matches one `@app.get`/
+# `.post`/etc. decorator per route. Spring's marker (`java-spring-service`)
+# matches `@RestController`/`@Controller` at the CLASS level, and Go's
+# (`go-http-server`, `go-grpc-server`) match server CONSTRUCTION — neither is
+# a per-endpoint marker, so adding them here would count "1" regardless of
+# how many routes exist. Getting equivalent granularity needs new rules
+# (Spring's `@GetMapping`/`@PostMapping`/`@RequestMapping`-family method
+# annotations; whichever router a given Go service uses), not just adding
+# their existing rule IDs to this set.
+OPERATION_MARKERS: frozenset[str] = frozenset({"fastapi-route-registration"})
+
 
 def marker_languages() -> set[str]:
     """Which languages have at least one rule in RULES_DIR — read from each
@@ -246,11 +267,11 @@ def file_subtree_map(files: list[str],
 
 
 def propose(root: str, first_party: list[str], package_roots: list[str],
-            ) -> tuple[list[Component], list[Evidence], list[str]]:
+            ) -> tuple[list[Component], list[Evidence], list[str], dict[str, int]]:
     fp = set(first_party)
     hits = scan(root, fp)
     if not hits:
-        return [], [], ["ast-grep unavailable or no rule matched — no code-marker components"]
+        return [], [], ["ast-grep unavailable or no rule matched — no code-marker components"], {}
 
     notes: list[str] = []
     # Every candidate subtree at every depth (§2a) — a marker is attributed
@@ -328,4 +349,20 @@ def propose(root: str, first_party: list[str], package_roots: list[str],
 
     notes.append(f"code markers: {len(components)} logical components from "
                  f"{sum(len(v) for v in hits.values())} matches across {len(hits)} rules")
-    return components, evidence, notes
+
+    # slug -> operation count, for interfaces.py's benefit (Backlog.md
+    # "interface extraction" entry) — computed from by_subtree rather than
+    # re-deriving from `hits`, so it stays in sync with the exact subtree
+    # attribution `components` above used, not a separate reading of the
+    # same matches. A subtree can carry operation-marker matches whether or
+    # not that marker won `top_rule` for typing (e.g. a subtree already
+    # typed by `fastapi-app-construction` still had its route count
+    # recorded), since counting operations is a different question from
+    # naming the component's type.
+    operation_counts: dict[str, int] = {}
+    for sub, roles in by_subtree.items():
+        n = sum(len(roles[r]) for r in OPERATION_MARKERS if r in roles)
+        if n:
+            operation_counts[f"code::{sub.replace('/', '::')}"] = n
+
+    return components, evidence, notes, operation_counts
