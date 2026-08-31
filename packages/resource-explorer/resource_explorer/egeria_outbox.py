@@ -61,10 +61,10 @@ class OutboxClients:
             )
         return client
 
-#: Rows attempted per drain pass. A blueprint publish is ~14,000 rows
-#: (measured 2026-08-31), so a pass is deliberately bounded — the scheduler
-#: loop comes back every 15 minutes and an unbounded pass would hold one
-#: iteration open for the whole backlog.
+#: Rows attempted per drain pass. A proposal publish is up to ~2,100 rows
+#: (largest run observed 2026-08-31), so a pass is deliberately bounded — the
+#: scheduler loop comes back every 15 minutes and an unbounded pass would hold
+#: one iteration open for the whole backlog.
 DRAIN_BATCH = 200
 
 

@@ -145,8 +145,8 @@ def _drain_egeria_outbox() -> None:
     # Retention. Only completed rows, and only ones past the window — dead rows
     # still need a human and pending rows are live work. Driven from here rather
     # than left to the API route, because retention that has to be invoked by
-    # hand is not retention: one blueprint publish is ~14,000 rows (measured
-    # 2026-08-31), and nothing would ever call it in time.
+    # hand is not retention: one proposal publish is ~2,100 rows at the largest
+    # run observed, and nothing would ever call it in time.
     try:
         removed = registry.purge_outbox_completed()
         if removed:
