@@ -54,10 +54,40 @@ building regardless; nothing today can reproduce the inventory if the store is l
 
 ## 4a. Decision (2026-08-28): all three layers land together, with the wipe
 
-Layer 1 — Python identifiers — has been **done and proven**, on branch
+Layer 1 — Python identifiers — was **done and proven** on branch
 `re/vocabulary-rename` (`ad1e1ee`, off `4ad6133`): 526 NAME tokens across 54 files, full suite
-green at 2739, app builds, registry reads all 60 live resources. It is **not merged and should
-not be**, per this decision.
+green at 2739, app builds, registry reads all 60 live resources.
+
+> **Correction (2026-08-31): this section said `ad1e1ee` is "not merged and should not be". It
+> was merged, upstream, via PR #22 — contrary to this decision — and what merged is narrower
+> than "layer 1" reads.**
+>
+> Measured on `origin/main` rather than inferred from the plan:
+>
+> | | renamed | still old |
+> |---|---|---|
+> | `project_slug` → `resource_slug` | 507 | **282** |
+> | `ProjectRegistry` → `ResourceRegistry` | 0 | **524** |
+> | `class Project` → `Resource` | 2 | 9 |
+> | `/api/projects` route paths | 0 | **44** |
+> | quoted `"project_slug"` keys | 0 | **32** |
+> | SQL tables/columns | 0 | **24** |
+> | `group_slug` → `org_slug` | 0 | **173** |
+>
+> So `ad1e1ee` renamed the **`project_slug` identifier** and nothing else — the 526 NAME tokens
+> were overwhelmingly that one name. The classes, routes, table names and the whole `group` → `org`
+> half are untouched.
+>
+> **The consequence is a mixed vocabulary, and it is worse than either endpoint.** `resource_slug`
+> now outnumbers `project_slug` 507:282 while every class is still `Project*`, so nothing in the
+> code says which vocabulary is authoritative, and a reader cannot tell intent from usage.
+> `AliasRequest.project_slug` — called out in §4b below as the one place layers 1 and 2 are the
+> same edit — is now half-done. This is upstream, so odpi has it too.
+>
+> **What this does not change:** the sequencing argument below still holds, and the wipe still
+> gates layers 2 and 3 for exactly the reasons given. Only the claim about what has already
+> happened was wrong. Re-measure before starting rather than trusting this table, which is itself
+> a snapshot — see SESSIONS.md on timestamped claims.
 
 **The durable artifact is the procedure, not the branch.** The rename is a script plus three
 hand-judgements; re-running it against whatever the code looks like at wipe time is cheaper and
