@@ -8,7 +8,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -1344,6 +1344,66 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Pending Egeria writes, one row per ELEMENT (asset, report,
+            # each annotation, each relationship) — docs/outbox-publishing-
+            # design.md, D1, settled per-element 2026-08-31.
+            #
+            # Why per element and not per publish() call: the failure
+            # granularity that already exists IS per element. annotation_props
+            # .publish_annotations() logs a failed annotation and continues, so
+            # a SurveyReport is reported published even when every annotation
+            # under it failed to write. One row per call could only record
+            # "that publish failed", never how far it got — and "no half-
+            # published blueprint" is a claim about elements, not calls.
+            #
+            # qualified_name is the idempotency key and is NOT NULL: the apply
+            # step looks it up before creating (the behaviour
+            # _find_or_create_asset and publish_annotations already have) so a
+            # replay after a crash between Egeria's write and our recording of
+            # it adopts the existing element instead of duplicating it.
+            # egeria_guid, once recorded, is the primary identity and makes
+            # even that search unnecessary on later retries.
+            #
+            # depends_on_id is what makes ordering enforceable rather than
+            # aspirational: a row is eligible only when its dependency is
+            # 'done', so annotations cannot be attempted before their report.
+            #
+            # Volume, measured 2026-08-31: every publish ever performed comes
+            # to 831 rows at this granularity. One future blueprint publish on
+            # egeria_git (13,813 scoped findings) is ~14,000 rows in a single
+            # run — which is why purge_outbox_completed() exists now rather
+            # than being left for later.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS egeria_outbox (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type     TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    run_id          TEXT NOT NULL DEFAULT '',
+                    element_kind    TEXT NOT NULL,
+                    qualified_name  TEXT NOT NULL,
+                    payload_json    TEXT NOT NULL,
+                    depends_on_id   INTEGER DEFAULT NULL,
+                    status          TEXT NOT NULL DEFAULT 'pending',
+                    attempts        INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT NOT NULL DEFAULT '',
+                    last_error      TEXT DEFAULT '',
+                    egeria_guid     TEXT DEFAULT '',
+                    created_at      TEXT NOT NULL,
+                    completed_at    TEXT DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_due "
+                "ON egeria_outbox(status, next_attempt_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_run "
+                "ON egeria_outbox(run_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_entity "
+                "ON egeria_outbox(entity_type, entity_slug)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rfa_actions (
                     id                TEXT PRIMARY KEY,
@@ -3356,6 +3416,165 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             )
         return cur.rowcount > 0
+
+    # ── Egeria outbox — pending element writes ─────────────────────────────
+    # docs/outbox-publishing-design.md §5. The apply side lives in
+    # egeria_outbox.py; this class owns only the rows.
+
+    #: A row that has failed this many times is dead-lettered rather than
+    #: retried forever — the gap the rfa_actions precedent has, named in §3.
+    OUTBOX_MAX_ATTEMPTS = 8
+
+    #: Terminal states. 'done' succeeded; 'dead' exhausted its attempts and
+    #: needs a human. Neither is ever picked up again by the drain.
+    OUTBOX_TERMINAL = ("done", "dead")
+
+    def enqueue_outbox_element(
+        self, entity_type: str, entity_slug: str, element_kind: str,
+        qualified_name: str, payload: dict, *, run_id: str = "",
+        depends_on_id: int | None = None,
+    ) -> int:
+        """Record one pending Egeria element write. Returns its row id.
+
+        Callers enqueue inside the same local transaction that records the
+        survey, then drain — so a crash between "we recorded the survey" and
+        "we told Egeria" is impossible, which is the per-process hole in §2.
+
+        qualified_name must be the SAME string the apply step will search for
+        and create with. For annotations that means the caller's own run
+        timestamp is already baked in (see annotation_props.publish_annotations)
+        — a retry replays the stored payload and therefore produces a
+        byte-identical qualifiedName, which is what makes the replay converge
+        instead of duplicating.
+        """
+        if not qualified_name:
+            raise ValueError("qualified_name is the idempotency key and cannot be empty")
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO egeria_outbox "
+                "(entity_type, entity_slug, run_id, element_kind, qualified_name, "
+                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
+                (entity_type, entity_slug, run_id, element_kind, qualified_name,
+                 json.dumps(payload), depends_on_id, now, now),
+            )
+            row_id = getattr(cur, "lastrowid", None)
+            if row_id is None:
+                row_id = conn.execute(
+                    "SELECT id FROM egeria_outbox WHERE qualified_name=? "
+                    "ORDER BY id DESC LIMIT 1", (qualified_name,),
+                ).fetchone()["id"]
+        return int(row_id)
+
+    def claim_due_outbox_elements(self, limit: int = 200, now: str | None = None) -> list[dict]:
+        """Rows ready to attempt, oldest first.
+
+        A row is due when it is pending/failed, its backoff has elapsed, AND
+        its dependency (if any) is 'done'. That last clause is the whole point
+        of depends_on_id: annotations cannot be attempted before the report
+        they hang off, so a partial drain leaves a coherent prefix rather than
+        orphans.
+
+        Reads only — the drain marks each row in flight as it takes it, so this
+        stays a plain query and the caller decides its own concurrency.
+        """
+        now = now or datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.* FROM egeria_outbox o "
+                "LEFT JOIN egeria_outbox dep ON dep.id = o.depends_on_id "
+                "WHERE o.status IN ('pending', 'failed') "
+                "  AND o.next_attempt_at <= ? "
+                "  AND (o.depends_on_id IS NULL OR dep.status = 'done') "
+                "ORDER BY o.id ASC LIMIT ?",
+                (now, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_outbox_done(self, row_id: int, egeria_guid: str = "") -> None:
+        """Record the element as written, with the GUID it resolved to.
+
+        Once egeria_guid is set, a later retry of this row needs no
+        qualifiedName search at all — the GUID is Egeria's primary identity,
+        and the search is only how a row that never recorded one discovers it
+        nonetheless landed.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE egeria_outbox SET status='done', egeria_guid=?, "
+                "completed_at=?, last_error='' WHERE id=?",
+                (egeria_guid, datetime.utcnow().isoformat(), row_id),
+            )
+
+    def mark_outbox_failed(
+        self, row_id: int, error: str, *, max_attempts: int | None = None,
+        base_delay_seconds: int = 60, now: datetime | None = None,
+    ) -> str:
+        """Record a failed attempt and schedule the next one. Returns the new
+        status — 'failed' (will retry) or 'dead' (exhausted).
+
+        Exponential backoff, capped at a day: 1m, 2m, 4m ... The rfa_actions
+        precedent retries every pass forever with no backoff and no ceiling,
+        which is exactly how a permanently-broken write becomes invisible
+        noise instead of a signal.
+        """
+        max_attempts = self.OUTBOX_MAX_ATTEMPTS if max_attempts is None else max_attempts
+        now = now or datetime.utcnow()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT attempts FROM egeria_outbox WHERE id=?", (row_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No outbox row {row_id}")
+            attempts = int(row["attempts"]) + 1
+            if attempts >= max_attempts:
+                status, next_at = "dead", ""
+            else:
+                delay = min(base_delay_seconds * (2 ** (attempts - 1)), 86400)
+                status = "failed"
+                next_at = (now + timedelta(seconds=delay)).isoformat()
+            conn.execute(
+                "UPDATE egeria_outbox SET status=?, attempts=?, next_attempt_at=?, "
+                "last_error=? WHERE id=?",
+                (status, attempts, next_at, error[:2000], row_id),
+            )
+        return status
+
+    def list_dead_outbox_elements(self, limit: int = 100) -> list[dict]:
+        """Rows that exhausted their attempts — a stuck publish, visible to a
+        human instead of retrying silently forever."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM egeria_outbox WHERE status='dead' "
+                "ORDER BY id DESC LIMIT ?", (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def outbox_counts(self) -> dict[str, int]:
+        """Row count per status — what a health endpoint or the drain's own
+        log line reports."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM egeria_outbox GROUP BY status"
+            ).fetchall()
+        return {r["status"]: int(r["n"]) for r in rows}
+
+    def purge_outbox_completed(self, older_than_days: int = 14) -> int:
+        """Drop 'done' rows past the retention window. Returns rows removed.
+
+        Only 'done' — 'dead' rows are the ones a human still has to look at,
+        and failed/pending rows are live work. Retention exists from day one
+        because one blueprint publish on egeria_git is ~14,000 rows (measured
+        2026-08-31), not because today's 831-row total needs it.
+        """
+        cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM egeria_outbox WHERE status='done' AND completed_at <> '' "
+                "AND completed_at < ?", (cutoff,),
+            )
+        return cur.rowcount or 0
 
     def clear_egeria_registration(self, slug: str) -> dict:
         """Clear the cached Egeria GUID and all published survey records for a project.

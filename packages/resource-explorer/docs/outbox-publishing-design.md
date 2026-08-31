@@ -1,8 +1,8 @@
 # Outbox / retry publishing — design
 
-**Status:** steps 1 and 2 of §6 are BUILT (`c7e99f6`, 2026-08-29 — one day after this doc was
-written); step 3 onward is not. D1 below is the one open decision. Written 2026-08-28 to unblock
-`architecture-recovery-design.md`
+**Status:** steps 1-3 of §6 are BUILT. **D1 is settled: per element** (Dan, 2026-08-31).
+Step 4 — migrating the publishers to enqueue rather than call directly — is the remaining work
+before Phase 2. Written 2026-08-28 to unblock `architecture-recovery-design.md`
 §8.4, which names this as the sole remaining prerequisite for Phase 2 (Egeria projection of
 recovered architecture) and is blunt about why: *"a half-published blueprint is worse than none."*
 
@@ -100,7 +100,7 @@ unrelated.
 
 ## 4. Two decisions needed — Dan
 
-### D1. Outbox granularity: per publish, or per element?
+### D1. Outbox granularity — SETTLED 2026-08-31: per element
 
 *Per publish* — one row per `publish()` call, retried whole. Simple, few rows, and matches how
 callers already think. But retrying the whole call re-creates elements that already succeeded,
@@ -234,7 +234,29 @@ and there the stored payload replays an identical qualifiedName.
    a failed annotation is logged and the loop continues. That is the hole the outbox closes, and
    it was left alone rather than changed to raise, because raising without a retry layer would
    turn a partial publish into a failed survey.
-3. `egeria_outbox` table + drain on the existing scheduler loop, with backoff and dead-lettering.
+3. ~~`egeria_outbox` table + drain on the existing scheduler loop, with backoff and
+   dead-lettering.~~ — **DONE**. `registry.py` owns the rows (`enqueue_outbox_element`,
+   `claim_due_outbox_elements`, `mark_outbox_done`/`_failed`, `list_dead_outbox_elements`,
+   `outbox_counts`, `purge_outbox_completed`); `egeria_outbox.py` owns the apply side and the
+   drain; `scheduler.py`'s existing loop drives it alongside `reconcile_rfa_actions()`.
+
+   Behaviour worth knowing before step 4 builds on it:
+
+   - **Ordering is enforced, not advisory.** A row with `depends_on_id` is not returned by
+     `claim_due_outbox_elements` until its dependency is `done` — a *failed* dependency keeps
+     blocking. A partial drain therefore leaves a coherent prefix, never an annotation whose
+     report was never written.
+   - **Backoff** is exponential from 60s, capped at a day; **dead-letter** at 8 attempts.
+   - **An unreachable platform is not a failed write.** The drain leaves every row untouched and
+     reports `skipped` rather than burning an attempt, so an outage cannot dead-letter a
+     perfectly good write.
+   - **An unregistered `element_kind` raises** rather than quietly succeeding. Only `annotation`
+     has a creator today; asset/report/relationship are registered as step 4 needs them.
+
+   **Not done, and deliberately:** a dead row is surfaced through `list_dead_outbox_elements()`
+   and an error log, not yet as an RFA. `rfa_actions` rows hang off an `activity_log` entry
+   (`entry_id`, `annotation_index`), so raising one from a dead outbox row is its own small
+   integration rather than a line of code.
 4. Migrate publishers to enqueue rather than call directly — repo first, since Phase 2 needs only
    that path; database/filesystem/investigation follow.
 5. Only then Phase 2 (§10 of the recovery design).
