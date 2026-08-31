@@ -162,7 +162,18 @@ repo_analyses:
 
   - id: documentation_coverage
     name: "Documentation Coverage"
-    description: "Assess README completeness, CHANGELOG, API docs, and inline comment coverage."
+    # Description rewritten 2026-08-31. It previously claimed to "assess README
+    # completeness... and inline comment coverage". Neither is measured: nothing
+    # here reads a line of source, computes a ratio, or judges whether a README
+    # is complete. Same defect as security_scan's, found in the same pass.
+    #
+    # The half worth stating explicitly is that `collection_present` reads
+    # `project.collections` -- OUR pgvector collections -- so it reports what we
+    # ingested, not what the project wrote. A well-documented repo we never
+    # ingested scores low, and that is a fact about us. Kept separate in the
+    # wording for the reason cii_badge keeps "unreachable" apart from
+    # "not registered".
+    description: "Which documentation signals are present: the doc collection types actually ingested for this repo (markdown, web docs, API reference, examples, PDFs, release notes) and which hygiene files exist (README, CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, AUTHORS, CODEOWNERS), banded into a quality score from the count of signals found. Presence, not depth -- no file content is read, no ratio is computed, and the collection half reflects what has been ingested here rather than what the project published."
     resource_types: ["repo"]
     intent: assessment  # scores completeness against a checklist — unchanged
     perspectives: ["Steward", "all"]

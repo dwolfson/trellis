@@ -444,9 +444,12 @@ The other two stage calls are 0.37s and 0.50s.
 
 ### Catalog honesty — one instance fixed, the class open
 
-- [ ] **`documentation_coverage` overclaims.** Says it assesses "README completeness… inline comment
-      coverage"; actually checks which doc collections got indexed plus a filename hygiene list.
-      Same defect as `security_scan`, no mitigating history.
+- [x] **`documentation_coverage` description fixed** 2026-08-31. It claimed "README completeness…
+      inline comment coverage"; it checks which doc collections were ingested plus a hygiene-file
+      list, banded by signal count. Name left as-is — see below.
+- [ ] **Is "Documentation *Coverage*" still an overclaim?** "Coverage" implies a measured ratio and
+      nothing computes one. Weaker than `security_scan`'s case, so not renamed unilaterally; decide
+      deliberately rather than leaving it unexamined.
 - [ ] **~12 terse descriptions unaudited.** 15 of 29 repo entries are under 200 chars; the
       discursive ones state their limits and are the ones that turned out honest. Length is a
       fingerprint of having been reconciled against the code, not a virtue.
