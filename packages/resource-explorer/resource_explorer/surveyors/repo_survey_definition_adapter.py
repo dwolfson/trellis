@@ -569,17 +569,6 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # and nothing fetched about the repo itself.
         fetch_cost="api",
     ),
-    "repo_security_summary": StepInfo(
-        "repo_security_summary", SecuritySummarySurveyor,
-        "Reduces the security family's stored findings to one topic summary. "
-        "Measures nothing itself — it reads what the other security steps wrote, "
-        "so it belongs LAST in any survey that runs them. Reports coverage and "
-        "the age of its oldest input alongside the verdict, and refuses a verdict "
-        "at all below four inputs.",
-        ["ClassificationAnnotation"],
-        accepts_surveyed_at=True,
-        # A reducer: no fetch, and no measurement of its own.
-    ),
     "repo_foss_scorecard": StepInfo(
         "repo_foss_scorecard", FossScorecardSurveyor,
         "OpenSSF-Scorecard-shaped checks computed from data already held — an "
@@ -795,6 +784,32 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # zipball_root would force a download on every run including the common
     # no-op case. The resource-sharing win doesn't apply to a step whose common
     # case is fetching nothing at all.
+    # Placed after every security step it reads, and BEFORE
+    # repo_rag_ingestion, which has its own invariant: it is the most
+    # expensive step and nothing downstream reads it, so it stays last
+    # and must not delay the cheap signals a survey exists to produce
+    # (test_rag_ingestion_runs_last).
+    #
+    # Position here is load-bearing: "Repo Full Survey" is generated from
+    # the "*" sentinel — every STEP_REGISTRY step in this dict's order —
+    # so where this entry sits IS its position in that chain. Written
+    # first next to the other security steps, it landed at index 21 of 34,
+    # ahead of foss_scorecard and cve_scan, and would have reduced over
+    # inputs that had not run yet. Moving it to the very end then
+    # displaced rag_ingestion and broke that invariant instead. The
+    # requirement is "after its inputs", not "last" — the two only looked
+    # the same in the Assessment Survey, where nothing follows it anyway.
+    "repo_security_summary": StepInfo(
+        "repo_security_summary", SecuritySummarySurveyor,
+        "Reduces the security family's stored findings to one topic summary. "
+        "Measures nothing itself — it reads what the other security steps wrote, "
+        "so it belongs LAST in any survey that runs them. Reports coverage and "
+        "the age of its oldest input alongside the verdict, and refuses a verdict "
+        "at all below four inputs.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # A reducer: no fetch, and no measurement of its own.
+    ),
     "repo_rag_ingestion": StepInfo(
         "repo_rag_ingestion", RagIngestionSurveyor,
         "Refreshes the project's pgvector collections via IncrementalIndexer — "

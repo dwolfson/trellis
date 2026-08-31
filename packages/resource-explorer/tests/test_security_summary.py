@@ -175,19 +175,47 @@ def test_precedence_needs_both_sides_to_have_run():
 
 # ── wiring ───────────────────────────────────────────────────────────────────
 
-def test_the_reducer_runs_last_in_the_assessment_survey():
-    """It reads what the other steps wrote. Anywhere but last and it summarises
-    the previous run's data while reporting this one's."""
-    if not DOC.exists():  # pragma: no cover
-        pytest.skip(f"{DOC} not generated")
-    steps = re.findall(r"\| re_analysis_step \| (\S+) \|", DOC.read_text())
-    assert steps, "no steps parsed from the generated Assessment Survey"
-    assert steps[-1] == "repo_security_summary", (
-        f"the reducer is not the last step: {steps}"
-    )
-    # And nothing may follow it in the chain.
-    assert "### Governance Action Process Step\nGovActionProcessStep::RepoAssessmentSurvey::repo_security_summary" \
-        not in DOC.read_text(), "a step follows the reducer"
+@pytest.mark.parametrize("doc", ["repo-survey-definition-assessment.md",
+                                 "repo-survey-definition-full.md"])
+def test_the_reducer_runs_after_every_input_it_reads(doc):
+    """The real requirement, which is not "last".
+
+    It reads what the other security steps wrote, so it must follow all of them.
+    It need not be the final step: "Repo Full Survey" ends with
+    repo_rag_ingestion, which has its own invariant — the most expensive step,
+    nothing downstream reads it, so it must not delay the cheap signals
+    (test_rag_ingestion_runs_last).
+
+    Both surveys, because they order by different mechanisms and only one was
+    ever wrong. Assessment orders by the CSV's `step_order`. Full is generated
+    from the `*` sentinel — STEP_REGISTRY's own order — so the chain position is
+    wherever the entry sits in that dict. Written next to the other security
+    steps it landed at index 21 of 34, ahead of foss_scorecard and cve_scan;
+    moved to the very end it displaced rag_ingestion instead. "Last" passed in
+    Assessment either way, which is exactly why this asserts the property rather
+    than the position.
+    """
+    path = (PKG.parent / "docs" / "dr-egeria" / "survey-definitions" / doc)
+    if not path.exists():  # pragma: no cover
+        pytest.skip(f"{path} not generated")
+    steps = re.findall(r"\| re_analysis_step \| (\S+) \|", path.read_text())
+    assert len(steps) > 5, f"only {len(steps)} steps parsed from {doc} — parse is wrong"
+    assert "repo_security_summary" in steps, f"{doc} does not contain the reducer"
+
+    at = steps.index("repo_security_summary")
+    # The step keys whose findings this reducer reads, as they appear in a chain.
+    inputs = [s_ for s_ in steps if s_ in {
+        "repo_security", "repo_security_features", "repo_ci_quality",
+        "repo_license_classification", "repo_conventions", "repo_foss_scorecard",
+        "repo_cii_badge", "repo_cve_scan",
+    }]
+    assert inputs, f"no security inputs found in {doc} — the parse or the set is wrong"
+    for name in inputs:
+        assert steps.index(name) < at, (
+            f"{doc}: {name} runs at index {steps.index(name)}, after the reducer "
+            f"at {at} — the summary would reduce over data that step has not "
+            "written yet, reporting the previous run's answer as this one's"
+        )
 
 
 def test_it_is_registered_as_a_step_and_an_analysis():
