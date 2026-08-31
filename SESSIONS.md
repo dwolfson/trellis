@@ -167,6 +167,31 @@ Five sessions running suites on one machine pushed load average to 18–26, and 
 170s → 357s with tests that shell out to `git` failing and then passing. If a failure will not
 reproduce in isolation or in a pair, check `uptime` before hunting it.
 
+## `gh` needs `--repo dwolfson/trellis`, every time
+
+`git remote -v` says `git@github.com:dwolfson/trellis`, but **`gh` resolves this checkout to
+`odpi/egeria-trellis`** — the upstream. So a bare `gh` command silently acts on the wrong
+repository.
+
+The failure is confusing rather than loud. Opening PR #10 without the flag returned:
+
+```
+No commits between main and re/deferred-cleanup-followups
+```
+
+which reads as "your branch has no work in it" and actually meant "those two branch names on
+*odpi/egeria-trellis* have no commits between them". The branch was 109 ahead on the repo that
+matters.
+
+```
+gh pr create --repo dwolfson/trellis --base main --head <your-branch> ...
+gh pr list   --repo dwolfson/trellis
+gh api repos/dwolfson/trellis/...
+```
+
+The worse case is the one that does not error: a `gh pr create` that succeeds against `odpi` opens a
+PR into the upstream project. Pass the flag even when the command seems to be working.
+
 ## Ports
 
 One dev server at a time on 8810 (`.claude/launch.json`). A second session needs its own port, or
