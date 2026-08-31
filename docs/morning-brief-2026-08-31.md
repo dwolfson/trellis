@@ -12,15 +12,50 @@ from closed sessions removed.
 
 ## Start here
 
-### 1. `security_features` should report `skipped_by_design` — smallest real win
+### 1. Resource Explorer runs against GitHub with no token — CORRECTED 31 Aug
 
-The vocabulary already exists (`surveyors/result_status.py` defines it) and **nothing uses it.**
-GitHub returns `security_and_analysis` only to repository admins, so this analysis is
-*structurally impossible* for third-party repos — 2 of 60 populated. That is a fact about the
-world, not a failed run.
+**The 30 Aug version of this item was wrong on both counts and is replaced.** It claimed
+`skipped_by_design` was defined but unused, and that `security_features` was structurally
+impossible. Neither holds:
 
-It is the strongest case anyone has found for that state, the state is already defined, and the
-fix is one surveyor. It also removes 58 repos' worth of misleading "no data" from the UI.
+- `result_status.skipped()` **is** used — once, in `_security_features_results`, added
+  2026-08-25. The reader already distinguishes never-run from admin-invisible correctly.
+- The field is **not** invisible to us. Measured live against the real API: `admin=True` and
+  `security_and_analysis` present on `odpi/egeria`, `odpi/egeria-python`, `odpi/egeria-docs`,
+  `odpi/egeria-trellis` and `dwolfson/trellis` — 6 of the 60 registered repos.
+
+The real defect is upstream of all of it. `config.py`'s `_ENV_FILE_CONFIG` sets
+`env_file=".env"` — a **relative** path, resolved against the process working directory. The
+package's `.env` lives at `packages/resource-explorer/.env`, but `make re-web` runs
+`uv run --package resource-explorer resource-explorer web` from the workspace root. Measured:
+
+    from trellis root      token present: False
+    from the package dir   token present: True
+
+So every GitHub call made by the web app is **anonymous**. Two consequences, both observed:
+
+1. **60 requests/hour, not 5000.** This is the rate limit that interrupted scouting testing.
+2. **Admin-only fields silently vanish.** GitHub omits `security_and_analysis` from an
+   anonymous response, so it is stored as `{}`, and the analysis then reports *"GitHub only
+   returns these to repository admins, so they are invisible for a repo you do not own"* —
+   about repos you do own. A confident wrong answer, and the same failure shape as the six
+   found on 30 Aug: a record indistinguishable from a real one.
+
+The evidence is in the data. `egeria_docs` and `egeria_trellis` were fetched on 28 Aug and
+stored `{}`; `egeria_git` (27 Aug) and `egeria_workspaces_git` (30 Aug) stored real values —
+those two came from CLI runs inside the package directory.
+
+`config.py`'s own comment already records an earlier form of this bug ("`.env` support silently
+never worked for ANY of these classes... Found 2026-08-10"). It was fixed for nesting and left
+relative for path.
+
+**Fix:** resolve the env file against the package rather than the cwd —
+`Path(__file__).resolve().parents[1] / ".env"`. Then re-run stats and `security_features` on the
+six admin repos; the other 54 keep reporting `skipped_by_design`, which is correct for them.
+
+**Still open, and now a real design question rather than a bug:** whether `security_features`
+stays its own analysis or folds into a broader security survey that runs the admin-only checks
+only where admin is actually held.
 
 ### 2. Outbox/retry publishing — the one thing blocking the largest piece
 
