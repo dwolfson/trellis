@@ -1800,7 +1800,13 @@ function _scoutingSubnavHtml(active) {
   const tabs = [
     { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
-    { tab: 'results',     label: '📈 Results' },  // Survey Results dashboard (docs/survey-results-dashboard-plan.md) — repo-wide, cross-stage, next to Survey since that's where a run's results naturally get looked for
+    { tab: 'results',     label: '📈 Dashboard' },  // docs/survey-results-dashboard-plan.md — repo-wide, cross-stage.
+    // Labelled "Dashboard", not "Results" (2026-08-31). It sits beside Survey, and the old label
+    // plus that placement read as "this is what the run just produced". It is not: each analysis
+    // is read at MAX(surveyed_at) for its own kind, so this is the latest sighting of each, which
+    // can span runs days apart. A run's results are an event; this is a state. Internal ids stay
+    // 'results'/'stage-results'/_resultsHost — they key routing, not the claim.
+    // See docs/survey-composition-and-topic-summary-design.md.
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
@@ -1893,7 +1899,7 @@ function _assessmentSubnavHtml(active) {
     { tab: 'analyses',      label: '📊 Survey' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   // Questions/Disposition (D6, docs/survey-question-context-plan.md) — repo-only.
   if (_qdTabsApply()) {
     tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
@@ -1933,7 +1939,7 @@ function showAnalysisPane() {
 
 function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -1979,7 +1985,7 @@ function _discoverySubnavHtml(active) {
   // same tab. Verified before removal — every definition the unscoped tab listed
   // is reachable from at least one stage's Survey tab.
   const tabs = [{ tab: 'analyses', label: '📊 Survey' }];
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -2014,7 +2020,7 @@ function showEnrichmentPane() {
 
 function _enrichmentSubnavHtml(active) {
   const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '📊 Survey' }];  // 📊 like every other stage — same concept, same glyph.
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
   if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   if (tabs.length === 1) return '';
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
@@ -7268,10 +7274,10 @@ async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, s
     // repo-only for now — question_catalog_reader (the Perspective-derivation
     // join) has no db/filesystem entries today, same graceful degrade as the
     // Survey panel's own Perspective row (D4).
-    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Survey Results dashboards are repo-only for now.</div>';
+    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Dashboards are repo-only for now.</div>';
     return;
   }
-  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Results…</div>';
+  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading dashboards…</div>';
   try {
     // stage= asks the server for only this stage's cards; the server also
     // drops cards with no stored results, so an unsurveyed repo shows an empty
