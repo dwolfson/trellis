@@ -2785,18 +2785,39 @@ class SurveyResultDashboard:
 
 
 SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
+    # cve_scan/foss_scorecard/cii_badge added 2026-08-31 (docs/Backlog.md
+    # "Survey Results dashboards cover 14 of 29 analyses", remaining-8 list) —
+    # all three are the same "is this trustworthy" question security_overview
+    # already asks, just from OSV.dev/OpenSSF-Scorecard-shape/bestpractices.dev
+    # rather than repo-local signals. renderSecurityOverviewDashboard's own
+    # scorecard tiles are NOT updated for these three (that's index.html, a
+    # separate change) — they still render, via _renderGroupedCardsDashboard's
+    # generic fallback the custom renderer already appends its scorecard to,
+    # just without a dedicated tile yet. Not silently dropped, just not
+    # polished — noted rather than left for someone to discover.
     "security_overview": SurveyResultDashboard(
         "security_overview", "Security Overview",
         "Artifact presence (SECURITY.md/CI/LICENSE), GitHub's native security feature "
         "toggles, CI quality, license risk tier, and security-policy content — the full "
-        "security picture in one place, not five separate cards.",
-        ["security_scan", "security_features", "ci_quality", "license_classification", "repo_conventions"],
+        "security picture in one place, not five separate cards. Also gathers the three "
+        "externally-sourced trust signals (CVE advisories, OpenSSF Scorecard, OpenSSF Best "
+        "Practices badge) that ask the same question from outside the repo.",
+        ["security_scan", "security_features", "ci_quality", "license_classification",
+         "repo_conventions", "cve_scan", "foss_scorecard", "cii_badge"],
         render="custom", custom_renderer="renderSecurityOverviewDashboard",
     ),
+    # community_support/chaoss_metrics added 2026-08-31, same Backlog entry —
+    # both are community/activity signal, same topic repository_health
+    # already reports a cruder version of (stars/forks dominate its score;
+    # these two report attention/participation/channels as separate
+    # dimensions instead of averaging them away — see community_support's
+    # own description).
     "health_maturity": SurveyResultDashboard(
         "health_maturity", "Health & Maturity",
-        "Activity/community signal from GitHub stats, alongside lifecycle-stage classification.",
-        ["repository_health", "maturity"],
+        "Activity/community signal from GitHub stats, alongside lifecycle-stage "
+        "classification and the community-health metrics that report attention, "
+        "participation and channels as separate dimensions rather than one averaged score.",
+        ["repository_health", "maturity", "community_support", "chaoss_metrics"],
     ),
     "documentation_conventions": SurveyResultDashboard(
         "documentation_conventions", "Documentation & Conventions",
@@ -2828,15 +2849,40 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "Package dependencies per ecosystem.",
         ["dependency_analysis"],
     ),
+    # interface_surface added 2026-08-31, same Backlog entry — "what can be
+    # talked to, and whether the contract is written down" is the same
+    # surface api_structure already reports on, just from declared
+    # dependencies/file inventory rather than parsed source.
     "code_structure": SurveyResultDashboard(
         "code_structure", "Code Structure",
-        "File/language classification, public API surface, and extracted code symbols.",
-        ["language_file_classification", "api_structure", "code_symbol_extraction"],
+        "File/language classification, public API surface, extracted code symbols, and "
+        "what interfaces the project exposes and whether they're documented.",
+        ["language_file_classification", "api_structure", "code_symbol_extraction",
+         "interface_surface"],
     ),
     "data_profile": SurveyResultDashboard(
         "data_profile", "Data Profile",
         "Data-file inventory/schema profiling and sub-resource cataloging candidates.",
         ["data_file_profiling", "sub_resource_survey"],
+    ),
+    # repo_classification and manifest_parse, added 2026-08-31, close out the
+    # remaining-8 list — neither fits an existing theme (classification is its
+    # own question; manifest_parse is a refresh operation, not a topic), so
+    # each gets a single-item dashboard rather than being forced into one that
+    # doesn't fit. `dependencies` above is the existing precedent for a
+    # single-item dashboard being an accepted shape, not a special case.
+    "repo_classification": SurveyResultDashboard(
+        "repo_classification", "Repo Classification",
+        "What the repo represents (library/application/tool/documentation/etc.), where its "
+        "expected artifacts live, and whether architecture recovery is worth running.",
+        ["repo_classification"],
+    ),
+    "manifest_refresh": SurveyResultDashboard(
+        "manifest_refresh", "Manifest Refresh",
+        "The last dependency/CI-workflow/repo-convention refresh from a fresh zipball — what "
+        "changed, not a fourth view of dependency_analysis/ci_quality/repo_conventions' own "
+        "data (those are the dashboards for that; this reports the refresh itself).",
+        ["manifest_parse"],
     ),
 }
 
