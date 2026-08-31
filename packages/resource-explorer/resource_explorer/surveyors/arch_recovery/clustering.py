@@ -205,6 +205,95 @@ def _wire_weights(components, wires: list[dict]) -> dict[frozenset, int]:
     return weights
 
 
+def _interface_names(components, ports: list[dict]) -> dict[str, set[str]]:
+    """{slug: {declared interface name, ...}} — design §10 signal 3's raw
+    input. `interfaceName` (interfaces.py's `_port_dict`, added alongside
+    `operationCount`) is only ever present when a document/IDL file declares
+    one explicitly (an OpenAPI `info.title`, a `.proto`/Thrift service name);
+    GraphQL never contributes one (see interfaces.py's own note on why root
+    type names would be a false signal). Resolved slug-or-name, same
+    ambiguity `_wire_weights` and `mermaid._resolve_endpoint` already
+    handle: `interfaces.propose` attributes a port by component slug for
+    most kinds but the FastAPI-route fallback and compose-derived ports may
+    carry the component's NAME instead.
+    """
+    by_slug = {_slug_of(c): _slug_of(c) for c in components if _slug_of(c)}
+    by_name = {_name_of(c): _slug_of(c) for c in components if _name_of(c) and _slug_of(c)}
+    out: dict[str, set[str]] = {}
+    for p in ports or []:
+        name = (p.get("additionalProperties") or {}).get("interfaceName")
+        if not name:
+            continue
+        slug = _resolve_wire_endpoint(str(p.get("component") or ""), by_slug, by_name)
+        if not slug:
+            continue
+        out.setdefault(slug, set()).add(name)
+    return out
+
+
+def _shared_interface_split(member_scopes: list[str], by_scope: dict[str, list[str]],
+                            interface_names: dict[str, set[str]]) -> dict[str, list[str]]:
+    """Group scopes that present the SAME declared interface name (design
+    §10 signal 3) — the LAST fallback in `_build`'s chain, tried only once
+    deployment context, scope hierarchy, AND wire density have all failed to
+    reduce a group. Weakest of the three measured signals to have any input
+    at all: wires are "the best-supported... not blocked" (§10's own
+    measurement), while a shared interface name needs an IDL/OpenAPI
+    document per component, which is rarer than a wire between them — this
+    earns last place in the chain by what's actually available, not by
+    assumption.
+
+    Unlike wire density there is no weight to optimise: two scopes either
+    share an exact interface name or they don't, so this is a direct
+    grouping, not a merge search, and has no target_size to respect either
+    — a shared, declared interface name is stronger evidence than a
+    measured graph, closer in kind to a deployment context than to a wire
+    count, so it is not size-capped the way the weaker signal is.
+
+    A scope presenting more than one interface name (rare — a component
+    with both an OpenAPI document and a proto file) goes to whichever
+    shared group is LARGEST, deterministic tie-break by name. "No signal, no
+    cluster" applies here too: an unshared name, or a scope presenting none,
+    leaves that scope in its own singleton group rather than swept into the
+    nearest one — same rule `_wire_density_split` follows for a
+    disconnected member.
+    """
+    scopes = sorted(set(member_scopes))
+    if len(scopes) < 2:
+        return {}
+
+    scope_names: dict[str, set[str]] = {}
+    for scope in scopes:
+        names: set[str] = set()
+        for slug in by_scope.get(scope, []):
+            names |= interface_names.get(slug, set())
+        if names:
+            scope_names[scope] = names
+
+    by_name: dict[str, set[str]] = {}
+    for scope, names in scope_names.items():
+        for name in names:
+            by_name.setdefault(name, set()).add(scope)
+    # Only a name TWO OR MORE scopes share is evidence of anything — one
+    # component presenting an interface alone is not "shared".
+    qualifying = {name: members for name, members in by_name.items() if len(members) >= 2}
+    if not qualifying:
+        return {}
+
+    assigned: dict[str, str] = {}   # scope -> the group name it joins
+    for name in sorted(qualifying, key=lambda n: (-len(qualifying[n]), n)):
+        for scope in sorted(qualifying[name]):
+            assigned.setdefault(scope, name)   # first (largest) group wins ties
+
+    groups: dict[str, list[str]] = {}
+    for scope in scopes:
+        key = assigned.get(scope, scope)   # unassigned scopes stay their own singleton
+        groups.setdefault(key, []).append(scope)
+    # A "split" that puts everything back in one bucket has not split
+    # anything — same rule _subdivide and _wire_density_split both follow.
+    return groups if len(groups) > 1 else {}
+
+
 def _wire_density_split(member_scopes: list[str], by_scope: dict[str, list[str]],
                         wire_weights: dict[frozenset, int], target_size: int) -> dict[str, list[str]]:
     """Signal 2 (design §10): group by which components talk to each other,
@@ -351,6 +440,7 @@ def _subdivide(scopes: list[str]) -> dict[str, list[str]]:
 def propose(components, perspective: str, *,
             cohesion: dict[str, float] | None = None,
             wires: list[dict] | None = None,
+            ports: list[dict] | None = None,
             target_size: int = TARGET_CLUSTER_SIZE,
             max_depth: int = 3) -> list[Cluster]:
     """Candidate blueprints for one perspective, ordered largest first.
@@ -380,6 +470,15 @@ def propose(components, perspective: str, *,
     weaker evidence used only where stronger evidence ran out, not averaged
     against it. Without wires, behaviour is unchanged from before this
     signal existed.
+
+    `ports` (§10 signal 3, `interfaces.propose`'s own output) is the LAST
+    fallback signal, tried only where deployment context, scope hierarchy,
+    AND wire density all found nothing further to read. It groups components
+    that present the exact same declared interface name (an OpenAPI
+    `info.title`, a proto/Thrift service name) — evidence that they jointly
+    present one external surface, not that they merely call each other. Same
+    "no signal, no cluster" contract, same never-blended-with-stronger-signals
+    rule as `wires`. Without ports, behaviour is unchanged.
     """
     scoped = [c for c in components if _perspective_of(c) == perspective]
     if not scoped:
@@ -392,6 +491,7 @@ def propose(components, perspective: str, *,
         by_scope_components.setdefault(_scope_of(c), []).append(c)
 
     wire_weights = _wire_weights(scoped, wires) if wires else None
+    interface_names = _interface_names(scoped, ports) if ports else None
 
     scopes = sorted(by_scope)
     parents, _structural = scope_hierarchy.derive(scopes)
@@ -405,7 +505,8 @@ def propose(components, perspective: str, *,
     for name, member_scopes in sorted(groups.items()):
         clusters.extend(
             _build(name, member_scopes, by_scope, by_scope_components,
-                   perspective, target_size, max_depth, wire_weights)
+                   perspective, target_size, max_depth, wire_weights,
+                   interface_names)
         )
 
     # Affinity promotes a Collection to a composition. Applied after grouping
@@ -434,7 +535,8 @@ def propose(components, perspective: str, *,
 def _build(name: str, member_scopes: list[str], by_scope: dict[str, list[str]],
            by_scope_components: dict[str, list], perspective: str,
            target_size: int, depth_left: int,
-           wire_weights: "dict[frozenset[str], int] | None" = None) -> list[Cluster]:
+           wire_weights: "dict[frozenset[str], int] | None" = None,
+           interface_names: "dict[str, set[str]] | None" = None) -> list[Cluster]:
     """One group, subdivided while it is over the goal and structure remains."""
     slugs = [s for scope in member_scopes for s in by_scope.get(scope, [])]
 
@@ -456,7 +558,7 @@ def _build(name: str, member_scopes: list[str], by_scope: dict[str, list[str]],
         for context, ctx_scopes in sorted(by_context.items()):
             out.extend(_build(context, sorted(set(ctx_scopes)), by_scope,
                               by_scope_components, perspective, target_size,
-                              depth_left - 1, wire_weights))
+                              depth_left - 1, wire_weights, interface_names))
         return out
 
     sub = _subdivide(member_scopes)
@@ -470,23 +572,25 @@ def _build(name: str, member_scopes: list[str], by_scope: dict[str, list[str]],
         out: list[Cluster] = []
         for sub_name, sub_scopes in sorted(sub.items()):
             out.extend(_build(sub_name, sub_scopes, by_scope, by_scope_components,
-                              perspective, target_size, depth_left - 1, wire_weights))
+                              perspective, target_size, depth_left - 1,
+                              wire_weights, interface_names))
         return out
 
     # Declared structure is exhausted. Wire density (§10 signal 2) is the
-    # fallback, not the first resort: every earlier branch reads a boundary
-    # something declared, and wires are a measured graph rather than a
-    # declaration — weaker evidence, tried only once nothing stronger is
-    # left. "No signal, no cluster" still applies: a member set with no
+    # first fallback, not the first resort: every earlier branch reads a
+    # boundary something declared, and wires are a measured graph rather
+    # than a declaration — weaker evidence, tried only once nothing stronger
+    # is left. "No signal, no cluster" still applies: a member set with no
     # wires between any of them returns {} from _wire_density_split just
-    # like _subdivide does, and this function falls through to oversized.
+    # like _subdivide does, and this function falls through further.
     if wire_weights:
         wired = _wire_density_split(member_scopes, by_scope, wire_weights, target_size)
         if wired:
             out = []
             for wired_name, wired_scopes in sorted(wired.items()):
                 out.extend(_build(wired_name, wired_scopes, by_scope, by_scope_components,
-                                  perspective, target_size, depth_left - 1, wire_weights))
+                                  perspective, target_size, depth_left - 1,
+                                  wire_weights, interface_names))
             # Leaf clusters this pass actually produced (not further
             # recursion — a wire-derived group that still exceeds target_size
             # recurses through scope_hierarchy/wire-density again, in which
@@ -497,6 +601,24 @@ def _build(name: str, member_scopes: list[str], by_scope: dict[str, list[str]],
             for cluster in out:
                 if cluster.name in wired and not cluster.children:
                     cluster.signal = "wire-density"
+            return out
+
+    # Wire density found nothing either. Shared interface identity (§10
+    # signal 3) is the LAST fallback — it needs an IDL/OpenAPI document per
+    # component, rarer input than a wire, so it earns last place by what's
+    # actually available rather than by assumption. Same "no signal, no
+    # cluster" contract as every branch above.
+    if interface_names:
+        shared = _shared_interface_split(member_scopes, by_scope, interface_names)
+        if shared:
+            out = []
+            for shared_name, shared_scopes in sorted(shared.items()):
+                out.extend(_build(shared_name, shared_scopes, by_scope, by_scope_components,
+                                  perspective, target_size, depth_left - 1,
+                                  wire_weights, interface_names))
+            for cluster in out:
+                if cluster.name in shared and not cluster.children:
+                    cluster.signal = "shared-interface"
             return out
 
     # Over the goal and nothing further to read. Say so; do not truncate.

@@ -113,7 +113,10 @@ class TestItRidesInEgeriasExtensionPoint:
         ports, _, _, _ = _propose(tmp_path, {"api/x.proto": """
 service S { rpc A (Q) returns (R); }
 """})
-        assert ports[0]["additionalProperties"] == {"operationCount": "1"}
+        # interfaceName rides alongside operationCount now (design §10
+        # signal 3) — a declared service name is the structured, comparable
+        # interface identity that signal needs.
+        assert ports[0]["additionalProperties"] == {"operationCount": "1", "interfaceName": "S"}
         assert isinstance(ports[0]["additionalProperties"]["operationCount"], str)
 
     def test_no_invented_top_level_attribute_is_added_to_the_port(self, tmp_path):
@@ -140,6 +143,56 @@ class TestOtherIdls:
         ports, _, _, _ = _propose(tmp_path, {"svc.thrift":
                                              "service Calc {\n  i32 add(1:i32 a)\n}\n"})
         assert ports[0]["protocol"] == "Thrift"
+
+
+class TestInterfaceNameIsAStructuredIdentity:
+    """Design §10 signal 3 needs a comparable interface identity, not just a
+    count — two components each shipping the same declared service/document
+    name are jointly presenting one external interface, however they are
+    laid out in the repo. Unlike operation counts, this is read from the
+    exact same parse already done for counting; no second file read."""
+
+    def test_openapi_title_is_captured(self, tmp_path):
+        doc = {"openapi": "3.0.0", "info": {"title": "Payment Gateway API"},
+              "paths": {"/a": {"get": {}}}}
+        ports, _, _, _ = _propose(tmp_path, {"openapi.json": json.dumps(doc)})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "Payment Gateway API"
+
+    def test_no_title_yields_no_interface_name(self, tmp_path):
+        """Absent, not empty-string-as-a-value — an identity field with
+        nothing stated is the same as not stating it, unlike a count where
+        zero is itself informative."""
+        doc = {"openapi": "3.0.0", "paths": {"/a": {"get": {}}}}
+        ports, _, _, _ = _propose(tmp_path, {"openapi.json": json.dumps(doc)})
+        assert "interfaceName" not in ports[0].get("additionalProperties", {})
+
+    def test_proto_service_name_is_captured(self, tmp_path):
+        ports, _, _, _ = _propose(tmp_path, {"api/gateway.proto": """
+service GatewayAPI { rpc Route (Req) returns (Res); }
+"""})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "GatewayAPI"
+
+    def test_multiple_proto_services_join_deterministically(self, tmp_path):
+        ports, _, _, _ = _propose(tmp_path, {"api/x.proto": """
+service Beta { rpc A (Q) returns (R); }
+service Alpha { rpc B (Q) returns (R); }
+"""})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "Alpha, Beta"
+
+    def test_thrift_service_name_is_captured(self, tmp_path):
+        ports, _, _, _ = _propose(tmp_path, {"svc.thrift":
+                                             "service Calc {\n  i32 add(1:i32 a)\n}\n"})
+        assert ports[0]["additionalProperties"]["interfaceName"] == "Calc"
+
+    def test_graphql_never_gets_an_interface_name(self, tmp_path):
+        """Root type names (Query/Mutation/Subscription) are near-universal
+        across GraphQL schemas — treating them as a shared identity would
+        claim two unrelated services present the same interface purely
+        because both are GraphQL, which is the opposite of what this signal
+        is for."""
+        ports, _, _, _ = _propose(tmp_path, {"schema.graphql":
+                                             "type Query { user: User }\ntype User { id: ID }\n"})
+        assert "additionalProperties" not in ports[0]
 
 
 class TestProtocolIsStillNeverGuessed:

@@ -85,9 +85,9 @@ def _read_text(root: str, rel: str, limit: int = 4_000_000) -> str:
         return ""
 
 
-def _count_openapi_operations(root: str, rel: str) -> int | None:
-    """Number of operations an OpenAPI document declares, or None if the
-    document could not be parsed.
+def _openapi_info(root: str, rel: str) -> tuple[int | None, str]:
+    """`(operation count, info.title)` for an OpenAPI document, or
+    `(None, "")` if it could not be parsed.
 
     **A count, not a listing.** The driving question (Dan, 2026-08-24) is
     whether a repo is usable at runtime — "what kind of API it has, maybe
@@ -96,59 +96,81 @@ def _count_openapi_operations(root: str, rel: str) -> int | None:
     this opens the document, counts, and discards it. Reading the operation
     names and schemas is stage two and a different cost tier.
 
+    `info.title` is the one exception, and it earns it differently: it is
+    not a listing of anything, it is the document's OWN declared name for
+    the whole interface — "Payment Gateway API", not a path or a schema.
+    That is exactly the identity clustering signal 3 (design §10) needs:
+    two components each shipping an OpenAPI document with the same title
+    are jointly presenting one external interface, however they are laid
+    out in the repo. Read from the same parse the operation count already
+    does, not a second file open.
+
     None and 0 are different answers and are kept apart: None means we could
     not read it, 0 means a document that declares no operations.
     """
     text = _read_text(root, rel)
     if not text:
-        return None
+        return None, ""
     try:
         doc = yaml.safe_load(text)     # a superset of JSON, so this covers both
     except Exception:
-        return None
+        return None, ""
     if not isinstance(doc, dict):
-        return None
+        return None, ""
+    title = (doc.get("info") or {}).get("title") if isinstance(doc.get("info"), dict) else None
+    title = title.strip() if isinstance(title, str) else ""
     paths = doc.get("paths")
     if not isinstance(paths, dict):
-        return None
-    return sum(
+        return None, title
+    count = sum(
         1
         for item in paths.values() if isinstance(item, dict)
         for method in item
         if isinstance(method, str) and method.lower() in _OPENAPI_METHODS
     )
+    return count, title
 
 
-def _count_proto_rpcs(root: str, rel: str) -> tuple[int | None, int | None]:
-    """`(services, rpcs)` declared in a `.proto` file, or `(None, None)`.
+def _count_proto_rpcs(root: str, rel: str) -> tuple[int | None, int | None, str]:
+    """`(services, rpcs, service names joined)` declared in a `.proto` file,
+    or `(None, None, "")`.
 
     Regex rather than a protobuf parser: this runs at Discovery tier and must
     not add a dependency or a compile step. `service X {` and `rpc Y(` are
     unambiguous enough at line starts that a parser would buy very little.
+
+    Service names are kept, not just counted, for the same reason
+    `_openapi_info` keeps `info.title`: a declared service name is a
+    structured, comparable interface identity (design §10 signal 3), not a
+    listing of operations. Joined with `, ` rather than kept as a list — the
+    port dict's `additionalProperties` is `map<string,string>` (§6.4), same
+    constraint `operationCount` already works within.
     """
     text = _read_text(root, rel)
     if not text:
-        return None, None
-    return (len(_PROTO_SERVICE_RE.findall(text)),
-            len(_PROTO_RPC_RE.findall(text)))
+        return None, None, ""
+    names = _PROTO_SERVICE_RE.findall(text)
+    return len(names), len(_PROTO_RPC_RE.findall(text)), ", ".join(sorted(set(names)))
 
 
 def _port_dict(component: str, name: str, direction: str, protocol: str,
                path: str, line: int, detail: str,
-               operation_count: int | None = None) -> dict:
-    """`operation_count` rides in `additionalProperties`, Egeria's documented
-    extension point — not a bare local field and not an invented attribute.
+               operation_count: int | None = None,
+               interface_name: str = "") -> dict:
+    """`operation_count`/`interface_name` ride in `additionalProperties`,
+    Egeria's documented extension point — not bare local fields and not
+    invented attributes.
 
     Checked the type first, as §5.5f asks. Per 0735, `SolutionPort` carries
     exactly one attribute of its own — `direction` — so there is no operation
-    count to populate. But `SolutionPort` is a `Referenceable` (§3.3b, settled
-    by the `Confidence` classification being defined against `Referenceable` and
-    applying to `SolutionPort` directly), and `Referenceable` carries
-    `additionalProperties` as a `map<string,string>` which §6.4 already names as
-    "the documented extension point ... the interim carrier for anything not yet
-    typed". So this is the sanctioned place, and promoting `operationCount` to a
-    real attribute later is an upstream type change rather than a migration of
-    ours.
+    count or interface-name field to populate. But `SolutionPort` is a
+    `Referenceable` (§3.3b, settled by the `Confidence` classification being
+    defined against `Referenceable` and applying to `SolutionPort` directly),
+    and `Referenceable` carries `additionalProperties` as a
+    `map<string,string>` which §6.4 already names as "the documented
+    extension point ... the interim carrier for anything not yet typed". So
+    this is the sanctioned place, and promoting either to a real attribute
+    later is an upstream type change rather than a migration of ours.
 
     **Not `SolutionPortDelegation`.** That relationship maps a parent
     component's port to its decomposed children's ports, and modelling each
@@ -160,13 +182,20 @@ def _port_dict(component: str, name: str, direction: str, protocol: str,
     an int here would be a shape that cannot be published unchanged.
 
     None and 0 stay apart: None is "not counted or not readable", 0 is
-    "counted, and there are none".
+    "counted, and there are none". `interface_name` has no such distinction
+    to preserve — an empty string and "not stated" are the same thing for an
+    identity field, unlike a count where zero is itself informative.
     """
     port = {"component": component, "name": name, "direction": direction,
             "protocol": protocol, "evidence": {"path": path, "line": line},
             "detail": detail}
+    extra = {}
     if operation_count is not None:
-        port["additionalProperties"] = {"operationCount": str(operation_count)}
+        extra["operationCount"] = str(operation_count)
+    if interface_name:
+        extra["interfaceName"] = interface_name
+    if extra:
+        port["additionalProperties"] = extra
     return port
 
 
@@ -439,30 +468,32 @@ def propose(root: str, first_party: list[str], components: list[Component], *,
             # An OpenAPI document is a direct statement that this component
             # SERVES a request-response HTTP interface — the one place a strong
             # `Input-Output` is warranted without inference.
-            n_ops = _count_openapi_operations(root, rel)
+            n_ops, title = _openapi_info(root, rel)
             detail = "OpenAPI document — request-response interface provided"
             if n_ops is not None:
                 detail += f", {n_ops} operation(s)"
             else:
                 notes.append(f"{rel}: OpenAPI document could not be parsed — "
                              f"interface recorded, operation count unknown")
+            if title:
+                detail += f" — {title!r}"
             ports.append(_port_dict(
                 owner, base, DIR_INPUT_OUTPUT, "HTTP/REST", rel, 0, detail,
-                operation_count=n_ops,
+                operation_count=n_ops, interface_name=title,
             ))
 
         elif rel.lower().endswith(_PROTO_EXT):
             # gRPC. Milvus is the case that made this a gap: gRPC-first, and we
             # recorded its exposed ports while missing the interface entirely.
             owner = _owner_of(rel, by_path) or _root_artifact_owner(rel, components)
-            n_svc, n_rpc = _count_proto_rpcs(root, rel)
+            n_svc, n_rpc, svc_names = _count_proto_rpcs(root, rel)
             if n_svc:
                 detail = f"protobuf service definition — {n_svc} service(s)"
                 if n_rpc:
                     detail += f", {n_rpc} rpc(s)"
                 ports.append(_port_dict(
                     owner, base, DIR_INPUT_OUTPUT, "gRPC", rel, 0, detail,
-                    operation_count=n_rpc,
+                    operation_count=n_rpc, interface_name=svc_names,
                 ))
             # A .proto declaring only messages and no service is a schema, not
             # an interface. Silently skipping it is correct, not a miss.
@@ -474,6 +505,12 @@ def propose(root: str, first_party: list[str], components: list[Component], *,
             if roots:
                 # Only a schema declaring Query/Mutation/Subscription is a
                 # served interface; a fragment of type definitions is not.
+                # No interface_name here, deliberately: root type names
+                # (Query/Mutation/Subscription) are near-universal across
+                # GraphQL schemas and would match almost any two components
+                # that both serve GraphQL — the opposite of a same-interface
+                # signal, since it would claim identity from ubiquity rather
+                # than from anything the schemas actually share.
                 ports.append(_port_dict(
                     owner, base, DIR_INPUT_OUTPUT, "GraphQL", rel, 0,
                     f"GraphQL schema — root type(s): {', '.join(roots)}",
@@ -487,6 +524,7 @@ def propose(root: str, first_party: list[str], components: list[Component], *,
                 ports.append(_port_dict(
                     owner, base, DIR_INPUT_OUTPUT, "Thrift", rel, 0,
                     f"Thrift IDL — {len(svcs)} service(s)",
+                    interface_name=", ".join(sorted(set(svcs))),
                 ))
 
         elif detectors._is_compose(root, rel):
