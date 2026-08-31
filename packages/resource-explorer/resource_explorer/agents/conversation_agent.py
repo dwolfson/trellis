@@ -40,6 +40,14 @@ class ConversationAgent(BaseExplorerAgent):
         self.project_slug = project_slug
         self._rag = rag_system  # optional pre-warmed fallback; created lazily if None
         self._agent = None  # lazy-init; kept alive across turns
+        #: The CompiledContext behind the most recent handle() call, or None.
+        #: _compiled_evidence() computes this on every turn and previously
+        #: discarded it once the prompt lines were built -- the caller (the
+        #: HTTP route) had no way to show a user the same manifest/gaps/
+        #: pointers that shaped the answer without a second, separate compile
+        #: call. Read-after-handle() by the route, same pattern _sessions
+        #: already uses to treat this agent as a stateful, reused object.
+        self._last_compiled = None
 
     def system_prompt(self) -> str:
         scope = f" for the {self.project_slug} project/resource" if self.project_slug else ""
@@ -50,7 +58,26 @@ class ConversationAgent(BaseExplorerAgent):
             "Maintain context from the conversation — refer back to earlier questions "
             "and answers when relevant. "
             "When a question names a resource (project, database, or filesystem) explicitly, pass that slug/name to the tools. "
-            "When it doesn't, infer it from context or ask the user."
+            "When it doesn't, infer it from context or ask the user. "
+            "\n\n"
+            # Added 2026-08-31 after a measured failure: asked about this
+            # repository's documentation survey results, the model instead
+            # called vector_search and answered from Egeria's OWN
+            # documentation about its unrelated Survey Framework feature — a
+            # keyword match ("survey"), not an answer about this resource.
+            # An "Evidence" block was present and DID address the question by
+            # the time this was diagnosed; nothing told the model to prefer
+            # it over a general-corpus tool call it was equally free to make.
+            "When a message includes an 'Evidence (compiled from stored analysis results)' "
+            "block, that block is the authoritative material for THIS resource — prefer it "
+            "over vector_search, whose corpus is general documentation and can return content "
+            "that matches a keyword in the question while being about something else entirely "
+            "(a different feature, a different project) rather than about this resource. If the "
+            "evidence does not cover what was asked, say so plainly and either ask a clarifying "
+            "question or name what analysis would need to run — do not fall back to a broader "
+            "search and present its results as though they answered the question. A confident "
+            "answer built from the wrong source is a worse outcome than admitting the evidence "
+            "doesn't cover it."
         )
 
     def tools(self) -> list:
@@ -130,6 +157,11 @@ class ConversationAgent(BaseExplorerAgent):
             from resource_explorer.agents.examples_agent import ExamplesAgent
             return ExamplesAgent().handle(query, project_slug=slug)
 
+        # Reset per turn, not just on failure -- a question with no resource
+        # in scope must not show the previous turn's compiled evidence as if
+        # it belonged to this answer.
+        self._last_compiled = None
+
         lines: list[str] = []
         if slug:
             lines.append(f"Project: {slug}")
@@ -200,6 +232,8 @@ class ConversationAgent(BaseExplorerAgent):
         except Exception:
             logger.debug("compiled evidence unavailable for %s", slug, exc_info=True)
             return []
+
+        self._last_compiled = compiled
 
         out: list[str] = []
         if compiled.text.strip():
