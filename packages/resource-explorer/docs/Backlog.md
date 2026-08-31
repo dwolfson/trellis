@@ -55,6 +55,39 @@ rather than its behaviour.
 
 Grouped by area. Within a group, the most actionable entries come first.
 
+### Test reliability
+
+**`test_local_flow_execution_fallback` failed once and has not reproduced.** Seen 2026-08-31 in a
+full run on `c650df6`: 3075 passed / 1 failed. An immediate rerun of the same command, same commit,
+same `-p no:randomly`, gave 3076 passed / 0 failed. The test passes alone (8.3s) and passes as a
+whole file.
+
+**Status: open, cause unknown, one observation.** Recorded rather than closed because a fix that
+did not reproduce the failure cannot be shown to have fixed it.
+
+What has been ruled out, so nobody re-walks it:
+
+- **Not port contention.** The test is pure mocks and binds nothing. The port in the Prefect noise
+  comes from Prefect's own `prefect_test_harness`, not from our code.
+- **Not "a non-opted-in module poisons Prefect's cached client first."** This was the leading
+  hypothesis and it explained every symptom — passes alone, passes per-file, fails in the suite.
+  It was falsified: first-wins on a fixed sequence predicts a *deterministic* failure, and two
+  fixed-order runs disagreed. The mechanism it described is real (the fallback at
+  `prefect_adapter.py:153` calls the real `re_survey_flow`, using Prefect's own client rather than
+  the patched one) — it just is not what happened.
+- **Not a Prefect server left running by a concurrent session.** Reported as evidence and then
+  withdrawn: the "prefect processes" were `ps | grep "[p]refect"` matching the reporting session's
+  own `zsh -c` wrapper line. The bracket idiom stops grep matching itself; it does nothing about the
+  shell carrying the pattern as an argument.
+
+Do **not** read `Stopping temporary server on http://127.0.0.1:<port>` or `ValueError: I/O
+operation on closed file` as a reproduction signature. Both appear in runs where this test passes;
+they are Prefect teardown noise.
+
+If it recurs, capture the assertion text — not a `tail` of the run, which buries the summary under
+Prefect's teardown logging.
+
+
 ### Architecture recovery
 
 #### MEDIUM — telemetry for surveys, and the LLM-based survey step
