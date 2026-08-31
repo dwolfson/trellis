@@ -23,6 +23,7 @@ from datetime import datetime
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.step_outcome import UNVERIFIED, StepOutcome, no_signal
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.scoping import path_matches_scope
 from resource_explorer.surveyors.survey_report import (
     Annotation,
@@ -43,18 +44,75 @@ class ArchDetectSurveyor(BaseSurveyor):
         local_path: str | None = None,
         scope_locator: str = "",
         surveyed_at: str | None = None,
+        respect_gate: bool = True,
     ) -> None:
         super().__init__(project, registry)
         self.local_path = local_path
         self._scope_locator = scope_locator
         self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        #: Honour `repo_classification`'s architecture_recovery_gate. An
+        #: explicit "run this anyway" from a person passes False — the gate is
+        #: advisory, and a user who wants the answer for a tutorial repo is
+        #: entitled to it. Default True so automatic and scheduled runs do not
+        #: spend minutes deriving components for a repo with no code.
+        self._respect_gate = respect_gate
 
     @property
     def step_name(self) -> str:
         return STEP
 
+    def _gate_verdict(self) -> dict:
+        """`repo_classification`'s architecture_recovery_gate for this repo, or
+        {} when it has never been classified.
+
+        The gate is computed and stored today and nothing reads it — measured
+        2026-08-31: 45 repos gated `run`, 8 `skip`, and `monocle` was gated
+        `skip` while carrying 405 architecture findings. The classification did
+        its job; nothing acted on it.
+
+        Absence is treated as "run". A repo that has never been classified has
+        not been judged unsuitable, and silently skipping it would make an
+        unrun prerequisite look like a decision about the repo.
+        """
+        try:
+            rows = self.registry.query_findings(self.project.slug, "repo_classification")
+        except Exception:
+            return {}
+        gates = [r for r in rows if r.get("check_name") == "architecture_recovery_gate"]
+        if not gates:
+            return {}
+        return max(gates, key=lambda r: r.get("surveyed_at") or "")
+
+
     def run(self) -> list[Annotation]:
         results: list[Annotation] = []
+
+        gate = self._gate_verdict()
+        if self._respect_gate and gate and gate.get("label") == "skip":
+            # Not a failure and not an empty result — a deliberate skip, which
+            # is a distinct state with its own vocabulary. Reporting it as "no
+            # components found" would say the analysis looked and saw nothing,
+            # when it did not look.
+            return [ResourceMeasureAnnotation(
+                summary=f"Architecture recovery skipped — {gate.get('summary', 'gated')}",
+                analysis_step=STEP,
+                resource_properties={
+                    "component_count": 0,
+                    "gated": True,
+                    "gate_reason": gate.get("summary", ""),
+                },
+                confidence=100,
+                explanation=(
+                    "repo_classification judged this repo unlikely to hold recoverable "
+                    "architecture — see its architecture_recovery_gate. Advisory, not a "
+                    "prohibition: run the analysis explicitly to override."
+                ),
+                json_properties=result_status.skipped(
+                    gate.get("summary", "classified as holding no structural evidence"),
+                    gate="repo_classification.architecture_recovery_gate",
+                ),
+            )]
+
         if not self.local_path:
             self._warn(results, "No local checkout available — zipball_root resource was not resolved")
             return results
