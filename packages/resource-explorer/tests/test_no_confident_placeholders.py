@@ -17,6 +17,29 @@ either as a literal or through a local variable assigned `X or "unknown"` /
 `.get(k, "unknown")`. It does NOT follow values across functions, through
 attributes, or out of a registry row — a placeholder that arrives already
 substituted is invisible here. It is a floor, not a proof.
+
+**Two blind spots, measured rather than guessed, when `license_classifier`
+went through this check untouched on 2026-08-31 while carrying the same bug:**
+
+1. **Confidence below the threshold.** It published "No license detected on
+   this repository" for a repo whose stats had never been fetched — at
+   confidence 60, under the 70 here. Lowering the bar was tried and measured:
+   at 60 nothing new appears, and at 50 the only hit is
+   `file_classifier_surveyor`'s "N file(s) with unrecognized type" carrying
+   `["Other"]`, which is a real bucket honestly labelled. So the threshold
+   stays at 70 because moving it buys noise, not because 60 is safe.
+
+2. **Plain assignment.** The taint rule follows `x = y or "unknown"` and
+   `x = d.get(k, "unknown")`, but not `x = "none"` written outright, which is
+   how that step set its tier. Extending to every plain assignment was not
+   done deliberately: a placeholder assigned directly is very often a real
+   member of the step's own vocabulary, and a check that fires on all of them
+   trains people to add exemptions rather than to think.
+
+So this catches the `language` and `database_surveyor` shape and would not
+have caught `license_classifier`. Both were found by reading, not by the
+check. Treat a green result as "the known shape is absent", never as "no step
+publishes a confident non-answer".
 """
 from __future__ import annotations
 

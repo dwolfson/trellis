@@ -20,6 +20,7 @@ from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -104,16 +105,51 @@ class LicenseClassifierSurveyor(BaseSurveyor):
             license_name = stats.get("license") or ""
             spdx_id = stats.get("license_spdx_id") or ""
 
-            if not license_name and not spdx_id:
+            # Three states were reported as two, and the pair that got merged
+            # is the pair that matters: a repo GitHub told us has no license,
+            # and a repo nothing has ever fetched stats for, both produced
+            # "No license detected on this repository."
+            #
+            # The stats row is the known-positive. GitHub answering about this
+            # repo and naming no license is a fact about the repo. No row at
+            # all is a fact about our own pipeline, and saying "no license"
+            # then is asserting the more alarming of the two readings on no
+            # evidence — a repo with an unfetched profile reads as
+            # unlicensed, which is exactly the direction a reader acts on.
+            examined = bool(stats)
+
+            if not examined:
+                tier = "none"
+                summary = ("License not established — no repository statistics have been "
+                           "fetched, so nothing was examined. This is not a finding that "
+                           "the repo is unlicensed.")
+                outcome = StepOutcome("unverified", cause="no project_stats row")
+            elif not license_name and not spdx_id:
                 tier = "none"
                 summary = "No license detected on this repository."
+                outcome = no_signal("GitHub reported no license for this repository",
+                                    known_positive=True)
             else:
                 tier = _classify(spdx_id)
                 label = _TIER_LABELS[tier]
                 display_name = license_name or spdx_id
                 summary = f"{display_name} — {label}"
+                if tier == "unknown":
+                    # A license IS present and this table does not carry it.
+                    # Knowingly incomplete rather than absent — the one place
+                    # in this step where `partial` is the honest word.
+                    outcome = StepOutcome(
+                        "partial", cause="SPDX id not in the risk table",
+                        detail={"license_spdx_id": spdx_id})
+                else:
+                    outcome = StepOutcome("recovered", detail={"risk_tier": tier})
 
-            confidence = 100 if tier in ("permissive", "weak_copyleft", "strong_copyleft", "source_available") else 60
+            confidence = (
+                100 if tier in ("permissive", "weak_copyleft", "strong_copyleft", "source_available")
+                # Nothing was examined: not a low-confidence answer, a non-answer.
+                else 0 if not examined
+                else 60
+            )
 
             results.append(
                 ClassificationAnnotation(
@@ -125,6 +161,7 @@ class LicenseClassifierSurveyor(BaseSurveyor):
                         "license_name": license_name,
                         "license_spdx_id": spdx_id,
                         "risk_tier": tier,
+                        **outcome.as_row(),
                     },
                 )
             )
