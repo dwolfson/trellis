@@ -168,6 +168,22 @@ class TestDefinitionsListRoute:
             assert d["qualified_name"] == f"GovActionProcess::{d['name']}"
             assert d["step_count"] > 0
 
+    def test_resource_type_is_read_not_hardcoded(self):
+        """Was `"resource_type": "repo"` unconditionally on every entry,
+        regardless of what the document actually was — harmless while every
+        authored document happened to be repo-scoped, but would have
+        silently mislabeled the first database/filesystem Survey Definition
+        ever authored. Now inferred from the source filename's
+        `{resource_type}-survey-definition-*.md` convention (see
+        survey_definition_docs.py's _resource_type_from_filename) — every
+        currently-authored document is `repo-survey-definition-*.md`, so
+        this is the one value there is to confirm today, but the field is
+        no longer a constant."""
+        from resource_explorer.web.routes.survey_definitions import list_definitions
+        defs = list_definitions()
+        assert defs, "no Survey Definitions documented"
+        assert all(d["resource_type"] == "repo" for d in defs)
+
 
 class TestAScheduleMustNameAResourceThatExists:
     """POST /api/schedules/repo/egeria was accepted and stored on 2026-08-28,

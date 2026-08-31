@@ -8088,7 +8088,15 @@ function renderAutomateSurveysPanel(defs, existing) {
     if (s.target_kind === 'survey') byRef[s.analysis_id] = s;
   }
 
-  const rows = (defs || []).map(d => {
+  // This panel only ever loads for a selected repo (the guard above bails
+  // out otherwise) — /api/survey-definitions/definitions now returns a real
+  // resource_type per document instead of a hardcoded "repo", so a future
+  // database/filesystem Survey Definition doesn't silently show up here as
+  // something schedulable against the wrong resource type. Currently a
+  // no-op: every authored document today is repo-scoped.
+  defs = (defs || []).filter(d => d.resource_type === 'repo');
+
+  const rows = defs.map(d => {
     const sched = byRef[d.qualified_name];
     const selId = `survey-cadence-${d.name}`;
     const current = sched ? sched.schedule : 'manual';
@@ -8192,14 +8200,23 @@ async function loadAutomateSchedulesPanel() {
   view.innerHTML = _automateSubnavHtml('schedules') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading schedules…</div>';
   try {
-    const [schedules, repoCatalog, dbCatalog, fsCatalog] = await Promise.all([
+    const [schedules, repoCatalog, dbCatalog, fsCatalog, surveyDefs] = await Promise.all([
       fetch('/api/schedules/').then(r => r.json()),
       fetch('/api/analyses/repo').then(r => r.ok ? r.json() : []).catch(() => []),
       fetch('/api/analyses/database').then(r => r.ok ? r.json() : []).catch(() => []),
       fetch('/api/analyses/filesystem').then(r => r.ok ? r.json() : []).catch(() => []),
+      // A schedule can name either an analysis_id (target_kind="analysis",
+      // keyed against the three catalogs above) or a Survey Definition's
+      // qualified_name (target_kind="survey", e.g. "GovActionProcess::
+      // RepoFullSurvey") — neither catalog above has ever heard of the
+      // latter, so those rows fell back to showing the raw internal ref
+      // instead of a name ("not all the information is filled out", live
+      // feedback 2026-08-30). Same route the 📋 Surveys sub-tab already uses.
+      fetch('/api/survey-definitions/definitions').then(r => r.ok ? r.json() : []).catch(() => []),
     ]);
     const nameById = {};
     for (const a of [...repoCatalog, ...dbCatalog, ...fsCatalog]) nameById[a.id] = a.name;
+    for (const d of surveyDefs) nameById[d.qualified_name] = `📋 ${d.name}`;
     renderAutomateSchedulesPanel(schedules, nameById);
   } catch(e) {
     view.innerHTML = _automateSubnavHtml('schedules') +

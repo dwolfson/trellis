@@ -199,7 +199,13 @@ def list_definitions() -> list[dict]:
             "qualified_name": f"{_PROCESS_PREFIX}{name}",
             "step_count": len(doc.steps),
             "branches": doc.branches,
-            "resource_type": "repo",
+            # Was hardcoded "repo" here regardless of what the document
+            # actually was — harmless while every authored document happened
+            # to be repo-scoped, but wrong on its face and would have silently
+            # mislabeled the first database/filesystem Survey Definition ever
+            # authored. Now genuinely read from the doc (inferred from its
+            # filename by documented_definitions()) rather than assumed.
+            "resource_type": doc.resource_type,
         }
         for name, doc in sorted(documented_definitions().items())
     ]
