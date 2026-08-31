@@ -60,6 +60,7 @@ def main() -> int:
         maker = _connect(get_config)
         if maker is not None:
             _sweep_investigations(registry, maker, apply=args.apply)
+            _sweep_outbox(registry, apply=args.apply)
         return 0
     print(f"{len(cached)} project(s) carry a cached Egeria asset GUID.\n")
 
@@ -126,11 +127,20 @@ def main() -> int:
         # early return here is why they went unchecked for as long as they did.
         _report_orphan_publish_claims(registry, apply=args.apply)
         _sweep_investigations(registry, maker, apply=args.apply)
+        _sweep_outbox(registry, apply=args.apply)
         return 0
     if not args.apply:
         print(f"\nDry run. Re-run with --apply to clear {len(stale)} stale entr(ies).")
         print("Projects that could not be determined are never cleared.")
+        # Pre-existing gap, found 2026-08-31 by auditing every return path in
+        # this function rather than the one that happened to run: this branch —
+        # a dry run that DID find stale GUIDs — never reported orphaned publish
+        # claims. It is the same early-return omission the comment above warns
+        # about, one path along, and it means the most informative dry run was
+        # the least complete one.
+        _report_orphan_publish_claims(registry, apply=False)
         _sweep_investigations(registry, maker, apply=False)
+        _sweep_outbox(registry, apply=False)
         return 0
 
     total_surveys = total_published = 0
@@ -145,6 +155,7 @@ def main() -> int:
     print("Those repos now read as un-published, which is the truth. Re-publish to recreate them.")
     _report_orphan_publish_claims(registry, apply=args.apply)
     _sweep_investigations(registry, maker, apply=args.apply)
+    _sweep_outbox(registry, apply=args.apply)
     return 0
 
 
@@ -201,6 +212,75 @@ def _report_orphan_publish_claims(registry, *, apply: bool) -> None:
         ).rowcount
     print(f"    Cleared {deleted} orphaned publish claim(s). Those repos now read as "
           "un-published, which is the truth.")
+
+
+def _sweep_outbox(registry, *, apply: bool) -> None:
+    """Completed outbox rows for resources that no longer hold an asset GUID.
+
+    A FOURTH kind of cached Egeria GUID, and it did not exist when §6 of
+    docs/egeria-reset-recovery.md named three. `egeria_outbox.egeria_guid` is
+    written on success and becomes the row's primary identity: `apply_element`
+    short-circuits on it and returns without writing, and a row marked `done`
+    is never claimed again. So after a reset these are the most confidently
+    wrong rows in the registry — they assert a completed publish, carry a GUID
+    nothing resolves, and the retry machinery deliberately will not touch them.
+
+    **The outbox is not a recovery mechanism for a wipe.** Re-running the
+    surveys is. This only stops the queue claiming otherwise.
+
+    KEYED ON THE ASSET, NOT ON A PER-ROW LOOKUP, for two reasons. Correctness:
+    an annotation hangs off a SurveyReport which hangs off the asset, so if the
+    asset is gone every row published beneath it is gone too — the same
+    inference `_report_orphan_publish_claims` already makes one table along.
+    And honesty: the first version of this passed the connection factory to
+    `_resolves` as though it were a callable, so every lookup failed, all 92
+    rows came back "could not be determined", and the sweep abstained on
+    everything while looking like it had checked. That is precisely the failure
+    `_resolves`'s own docstring records from an earlier round, reproduced by
+    someone who had just read it.
+
+    Cleared rather than re-queued, deliberately: re-queueing would replay a
+    stored payload against a parent report and asset that are also gone,
+    creating the annotation under a dead parentGUID — a second wrong state
+    instead of an absent one.
+    """
+    try:
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.entity_slug AS slug, count(*) AS n "
+                "FROM egeria_outbox o "
+                "LEFT JOIN projects p ON p.slug = o.entity_slug "
+                "WHERE o.status = 'done' AND coalesce(o.egeria_guid, '') <> '' "
+                "  AND coalesce(p.egeria_asset_guid, '') = '' "
+                "GROUP BY o.entity_slug ORDER BY n DESC"
+            ).fetchall()
+    except Exception as exc:
+        print(f"\nCould not read egeria_outbox ({exc}) — skipped.")
+        return
+    if not rows:
+        print("\nNo completed outbox rows are stranded without an asset.")
+        return
+    total = sum(r["n"] for r in rows)
+    print(f"\n{total} completed outbox row(s) across {len(rows)} resource(s) claim a publish "
+          f"under an asset that is gone.")
+    print("The retry machinery will never revisit them: a done row with a GUID is terminal.")
+    for r in rows[:10]:
+        print(f"    stranded  {r['slug']:32} {r['n']} row(s)")
+    if len(rows) > 10:
+        print(f"    ... and {len(rows) - 10} more resource(s)")
+    if not apply:
+        print("    Dry run — re-run with --apply to clear these too.")
+        return
+    with registry._conn() as conn:
+        deleted = conn.execute(
+            "DELETE FROM egeria_outbox WHERE id IN ("
+            "  SELECT o.id FROM egeria_outbox o"
+            "  LEFT JOIN projects p ON p.slug = o.entity_slug"
+            "  WHERE o.status = 'done' AND coalesce(o.egeria_guid, '') <> ''"
+            "    AND coalesce(p.egeria_asset_guid, '') = '')"
+        ).rowcount
+    print(f"    Cleared {deleted} stranded outbox row(s). Re-run the surveys to republish — "
+          "the outbox does not restore them.")
 
 
 def _resolves(lookup, guid: str) -> bool | None:
