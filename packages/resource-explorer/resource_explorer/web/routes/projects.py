@@ -1045,7 +1045,18 @@ def _results_have_data(results) -> bool:
         # unrelated presentation reasons (_doc_ingestion_state) — never the
         # recovery analysis's own findings. Confirmed no other reader uses
         # "documentation" as a real top-level content key.
-        envelope = {"_status", "surveyed_at", "detail", "documentation"}
+        # `slug` is the resource's own identifier, echoed back by
+        # `_architecture_recovery_results` for the renderer's convenience. It is
+        # ALWAYS non-empty, so leaving it out of this set makes every payload
+        # containing it read as data — which is this function's failure mode
+        # exactly, not an edge of it. Caught 2026-08-31 in integration: the
+        # architecture_overview dashboard passed on its own branch and failed
+        # once merged, because `test_shaped_but_empty_results_do_not_count_as_data`
+        # only exists here.
+        #
+        # Same category as `surveyed_at` above: a name is evidence the resource
+        # exists, never evidence an analysis found anything about it.
+        envelope = {"_status", "surveyed_at", "detail", "documentation", "slug"}
         return any(_results_have_data(v) for k, v in results.items() if k not in envelope)
     if isinstance(results, (list, tuple, set)):
         return len(results) > 0
