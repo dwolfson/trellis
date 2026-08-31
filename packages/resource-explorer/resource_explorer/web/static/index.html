@@ -509,19 +509,19 @@
         <div id="charts-section" class="shrink-0">
           <!-- Repo chart tabs -->
           <div id="repo-chart-tabs" class="flex gap-1 flex-wrap mb-2">
-            <button onclick="showChart('stars')"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
-            <button onclick="showChart('commits')"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
-            <button onclick="showChart('languages')"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
-            <button onclick="showChart('health')"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
-            <button onclick="showChart('file_types')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
-            <button onclick="showEgeria()"            class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
+            <button onclick="showChart('stars')"      data-chart-key="stars"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
+            <button onclick="showChart('commits')"    data-chart-key="commits"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
+            <button onclick="showChart('languages')"  data-chart-key="languages"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
+            <button onclick="showChart('health')"     data-chart-key="health"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
+            <button onclick="showChart('file_types')" data-chart-key="file_types" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
+            <button onclick="showEgeria()"            data-chart-key="egeria"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
           </div>
           <!-- DB chart tabs -->
           <div id="db-chart-tabs" class="hidden flex gap-1 flex-wrap mb-2">
-            <button onclick="showDbChart('schema_distribution')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
-            <button onclick="showDbChart('table_sizes')"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
-            <button onclick="showDbChart('column_types')"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
-            <button onclick="showDbChart('survey_history')"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
+            <button onclick="showDbChart('schema_distribution')" data-chart-key="schema_distribution" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
+            <button onclick="showDbChart('table_sizes')"          data-chart-key="table_sizes"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
+            <button onclick="showDbChart('column_types')"         data-chart-key="column_types"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
+            <button onclick="showDbChart('survey_history')"       data-chart-key="survey_history"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
           </div>
           <div id="chart-container" class="chart-box rounded bg-slate-900"></div>
           <div id="egeria-panel" class="egeria-panel hidden"></div>
@@ -5308,8 +5308,19 @@ async function showChart(type) {
   const container = document.getElementById('chart-container');
   container.classList.remove('hidden');
   container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">Loading…</div>';
+  // Looked up by data-chart-key rather than event.target (2026-08-30, live-
+  // reported: "Understanding stage is always highlighted even when another
+  // stage is selected") — this used to rely on the ambient `event` global,
+  // which only reflects a real click. loadUnderstandingCharts() and several
+  // other places call showChart()/showDbChart()/showEgeria() programmatically
+  // (no click), so `event` fell back to window.event's stale value: whatever
+  // the last real DOM event was, almost always the nav button click that
+  // navigated to Understanding in the first place. That wrongly added these
+  // exact highlight classes to the NAV button, which nothing ever removes
+  // since setNavIntent's active-toggle only manages the `.active` token, not
+  // these Tailwind utility classes — so it stuck forever.
   document.querySelectorAll('#repo-chart-tabs .chart-tab').forEach(b => b.classList.remove('bg-cyan-800','text-white'));
-  event?.target?.classList.add('bg-cyan-800','text-white');
+  document.querySelector(`#repo-chart-tabs [data-chart-key="${type}"]`)?.classList.add('bg-cyan-800','text-white');
   try {
     const res = await fetch(`/api/stats/${selectedProject}/charts/${type}`);
     if (!res.ok) { container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">No data — run refresh first</div>'; return; }
@@ -5328,8 +5339,10 @@ async function showDbChart(type) {
   const container = document.getElementById('chart-container');
   container.classList.remove('hidden');
   container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">Loading…</div>';
+  // See showChart()'s comment above — same data-chart-key lookup, same bug
+  // it replaces (the ambient `event` global going stale on a programmatic call).
   document.querySelectorAll('#db-chart-tabs .chart-tab').forEach(b => b.classList.remove('bg-emerald-800','text-white'));
-  event?.target?.classList.add('bg-emerald-800','text-white');
+  document.querySelector(`#db-chart-tabs [data-chart-key="${type}"]`)?.classList.add('bg-emerald-800','text-white');
   try {
     const res = await fetch(`/api/stats/databases/${selectedDatabase}/${type}`);
     if (!res.ok) {
@@ -5392,8 +5405,9 @@ async function showEgeria() {
   document.getElementById('chart-container').classList.add('hidden');
   const panel = document.getElementById('egeria-panel');
   panel.classList.remove('hidden');
+  // See showChart()'s comment above — same fix, same bug.
   document.querySelectorAll('#repo-chart-tabs .chart-tab').forEach(b => b.classList.remove('bg-cyan-800','text-white'));
-  event?.target?.classList.add('bg-cyan-800','text-white');
+  document.querySelector('#repo-chart-tabs [data-chart-key="egeria"]')?.classList.add('bg-cyan-800','text-white');
   panel.innerHTML = '<div class="text-slate-500 text-xs py-2">Loading Egeria status…</div>';
   try {
     const res = await fetch(`/api/egeria/${selectedProject}/status`);
