@@ -5,6 +5,35 @@ Status: `open` · `in-progress` · `done` · `deferred`
 
 ---
 
+## Test debt
+
+### TD-1 — `test_report_spec_planner.py`: 6 failures, never passed in this repo
+
+**Status:** `open` · found 2026-08-30 during a documentation review.
+
+Six of the seven tests in `tests/unit/test_report_spec_planner.py` fail. They are **not a
+regression** — the file has not changed since `67352a6` ("Import Egeria Advisor as a workspace
+member package", 2026-08-06), and checking that commit directly shows the same mismatch, so
+they have never passed here. They came over broken from the original repo.
+
+Four distinct causes, not one:
+
+| Failure | Cause |
+|---|---|
+| `TypeError: get_report_draft_schema() missing 1 required positional argument: 'draft_id'` | The test calls it as `get_report_draft_schema("test_draft")`, but it is a FastAPI route handler with signature `(request: Request, draft_id: str)` — `advisor/web/app.py:1346`. Calling a route directly means constructing a `Request` or testing through `TestClient` instead. |
+| `assert 'Error' == 'Completed'` | Report execution returns Error where the test expects Completed. Needs a live check of whether this is a real behaviour change or a missing fixture. |
+| `assert None == 0` for `graph_query_depth` | The parameters dict is empty where the test expects a populated performance-hints block — plausibly the three-category parameter model (see the Report Spec Builder section) landing after the test was written. |
+| `assert [] == [{'attribute_path': 'guid', ...}]` (×2) | Dynamic schema discovery returns nothing. May need Egeria; may be genuinely broken. |
+
+**Why it matters more than six red tests.** `make test-ea` has been failing for anyone who ran
+it since the import, which trains people to read a red suite as normal — and a suite nobody
+trusts cannot report a real regression. That is the cost, not the four features.
+
+**Do not fix by deleting the assertions.** At least two look like real drift between the tests
+and code that moved on; the fix is to find out which, per row. If a test needs Egeria it should
+skip when unreachable, the way `requires_pgvector` already does elsewhere in this workspace,
+rather than fail.
+
 ## Intent Button Redesign
 
 See also `egeria-workspaces-fs/BACKLOG.md` IB-1 through IB-7 for the full item list.
