@@ -378,7 +378,25 @@ class TestMaturitySurveyorPersistence:
     def test_no_created_at_is_unknown(self, registry, project):
         annotations = MaturitySurveyor(project, registry).run()
         assert len(annotations) == 1
-        assert annotations[0].candidate_classifications == ["unknown"]
+        # NOT ["unknown"], as this asserted until 2026-08-31.
+        #
+        # candidate_classifications is what `annotation_props` publishes to
+        # Egeria, so offering "unknown" there tells the catalog we classify
+        # this repo AS unknown. It is not a maturity tier; it is the absence of
+        # one. Same correction as language.py's "Primary language: Unknown",
+        # and `file_classifier_surveyor` already uses an empty list this way.
+        #
+        # The finding below deliberately still carries "unknown": that is RE's
+        # own record, `_maturity_results` reads it, and the UI wants to show
+        # the tier as undetermined rather than show nothing.
+        assert annotations[0].candidate_classifications == []
+        assert annotations[0].confidence == 0, (
+            "40 read as a weak answer; there is no answer"
+        )
+        assert annotations[0].json_properties["outcome"] == "unverified", (
+            "every age-not-established path is a gap in what we hold — a repo "
+            "always HAS a creation date, so this can never be a provable zero"
+        )
         findings = registry.query_findings("myproj", "maturity")
         assert findings[0]["label"] == "unknown"
 

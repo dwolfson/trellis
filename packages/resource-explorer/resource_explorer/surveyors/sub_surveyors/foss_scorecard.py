@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, QualityScoreAnnotation
 
 log = logging.getLogger(__name__)
@@ -392,6 +393,17 @@ class FossScorecardSurveyor(BaseSurveyor):
                 json_properties={
                     **agg,
                     "checks": {r["check_name"]: r["label"] for r in results},
+                    # `checks_evaluated` is the known-positive the aggregate
+                    # already computes: a scorecard with a score evaluated real
+                    # checks; one with none evaluated looked at nothing, and
+                    # "No scorecard check could be evaluated" is a statement
+                    # about our inputs, not about the project's practices.
+                    **(StepOutcome("recovered",
+                                   detail={"checks_evaluated": agg["checks_evaluated"]})
+                       if agg["score"] is not None else
+                       no_signal("no scorecard check could be evaluated from the data held",
+                                 known_positive=bool(agg["checks_evaluated"]),
+                                 checks_total=agg["checks_total"])).as_row(),
                 },
             ))
         except Exception as exc:

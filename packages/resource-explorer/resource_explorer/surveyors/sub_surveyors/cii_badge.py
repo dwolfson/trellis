@@ -44,6 +44,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -273,6 +274,21 @@ def headline(findings: list) -> str:
         " (self-assessment is stale)" if stale else "")
 
 
+def _badge_outcome(level):
+    """recovered / no_signal / unverified for one badge lookup.
+
+    Deliberately mirrors `headline()`'s own three branches rather than
+    inventing a fourth reading: if these two ever disagree, the summary a human
+    reads and the label a query reads would be describing different runs.
+    """
+    if not level or not level["detail"]["known"]:
+        return StepOutcome("unverified", cause="badge lookup could not be completed")
+    if level["label"] == "not_registered":
+        return no_signal("the badge API answered and this project has no badge",
+                         known_positive=True)
+    return StepOutcome("recovered", detail={"badge_level": level["label"]})
+
+
 class CiiBadgeSurveyor(BaseSurveyor):
     """The real OpenSSF Best Practices badge, read rather than estimated."""
 
@@ -300,7 +316,17 @@ class CiiBadgeSurveyor(BaseSurveyor):
                 candidate_classifications=[
                     f["label"] for f in findings if f["detail"]["known"] and f["label"]],
                 confidence=100 if (level and level["detail"]["known"]) else 0,
-                json_properties={f["check_name"]: f["label"] for f in findings},
+                json_properties={
+                    **{f["check_name"]: f["label"] for f in findings},
+                    # Three states this step has always kept apart in prose —
+                    # "not_registered  a FACT about the project" versus
+                    # "unreachable  we could not ask. Never rendered as
+                    # not_registered" — and which the shared vocabulary could
+                    # not see. `known` is the lookup having succeeded, which is
+                    # exactly the known-positive: the badge API answering about
+                    # this project and saying "no badge" is a provable absence.
+                    **_badge_outcome(level).as_row(),
+                },
             ))
         except Exception as exc:
             log.exception("CiiBadgeSurveyor failed for %s", self.project.slug)

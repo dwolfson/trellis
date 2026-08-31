@@ -37,6 +37,7 @@ import logging
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -201,10 +202,12 @@ class CommunitySupportSurveyor(BaseSurveyor):
                     surveyed_at=self._surveyed_at,
                 )
                 out.append(ClassificationAnnotation(
-summary=_NOTHING_TO_ASSESS,
+                    summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
                     confidence=0,
+                    json_properties=StepOutcome(
+                        "unverified", cause="no repository statistics to assess").as_row(),
                 ))
                 return out
 
@@ -218,7 +221,18 @@ summary=_NOTHING_TO_ASSESS,
                     d["label"] for d in dimensions if d["detail"]["known"] and d["label"]
                 ],
                 confidence=80,
-                json_properties={d["check_name"]: d["label"] for d in dimensions},
+                json_properties={
+                    **{d["check_name"]: d["label"] for d in dimensions},
+                    # Each dimension carries its own `known`. Stats were read,
+                    # so a dimension nothing established is a real absence in
+                    # this repo rather than a gap in what we looked at.
+                    **(StepOutcome("recovered", detail={"dimensions": len(dimensions)})
+                       if any(d["detail"]["known"] for d in dimensions)
+                       else no_signal("no community-support dimension could be established "
+                                      "from the statistics read",
+                                      known_positive=True,
+                                      dimensions=len(dimensions))).as_row(),
+                },
             ))
         except Exception as exc:
             log.exception("CommunitySupportSurveyor failed for %s", self.project.slug)
