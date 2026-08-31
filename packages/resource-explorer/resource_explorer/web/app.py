@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, outbox, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -101,6 +101,7 @@ app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"]
 app.include_router(diagrams.router, prefix="/api/diagrams", tags=["diagrams"])
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
+app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")

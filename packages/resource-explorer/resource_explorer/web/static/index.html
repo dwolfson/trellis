@@ -629,6 +629,10 @@
            resource. The per-resource list lives on the Curate pane; this is the
            only place it can be read without already knowing where to look. -->
       <div id="admin-feedback-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Logs view (Admin → Observe) — the in-process ring buffer from
+           observability/logging_setup.py. No file, nothing shipped: bounded and
+           gone on restart, which the pane states rather than implying. -->
+      <div id="admin-logs-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -9034,11 +9038,12 @@ function showMainView(tab) {
   const adminRepairView = document.getElementById('admin-repair-view');
   const adminOutboxView = document.getElementById('admin-outbox-view');
   const adminFeedbackView = document.getElementById('admin-feedback-view');
+  const adminLogsView = document.getElementById('admin-logs-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, adminFeedbackView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, adminFeedbackView, adminLogsView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The header Perspective row used to be hidden on the Questions tab, which
   // had its own filter over a different vocabulary. Both vocabularies are
   // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
@@ -9164,6 +9169,10 @@ function showMainView(tab) {
     document.getElementById('admin-feedback-view').classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminFeedbackPanel();
+  } else if (tab === 'admin-logs') {
+    document.getElementById('admin-logs-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminLogsPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -12415,8 +12424,115 @@ const _ADMIN_GROUPS = [
   { name: 'Observe', tabs: [
     { tab: 'admin-prefect',           label: '⚡ Prefect' },
     { tab: 'admin-feedback',          label: '💬 Feedback' },
+    { tab: 'admin-logs',              label: '📜 Logs' },
   ]},
 ];
+
+// ── Admin → Logs ────────────────────────────────────────────────────────────
+// The in-process ring buffer from observability/logging_setup.py. Deliberately
+// states what it is: bounded, in-memory, empty after a restart. A viewer that
+// renders "nothing has been logged", "the buffer was cleared by a restart" and
+// "your filter excluded everything" identically would be the absence-as-answer
+// failure this codebase keeps finding — so each says its own sentence.
+let _adminLogsFilter = { level: '', logger: '' };
+let _adminLogsAuto = false;
+let _adminLogsTimer = null;
+
+const _LOG_LEVEL_CLASS = {
+  DEBUG: 'text-slate-500', INFO: 'text-slate-300', WARNING: 'text-amber-400',
+  ERROR: 'text-red-400', CRITICAL: 'text-red-300 font-semibold',
+};
+
+async function loadAdminLogsPanel() {
+  const view = document.getElementById('admin-logs-view');
+  const subnav = _adminSubnavHtml('admin-logs');
+  let data;
+  try {
+    const qs = new URLSearchParams({ limit: '300' });
+    if (_adminLogsFilter.level) qs.set('level', _adminLogsFilter.level);
+    if (_adminLogsFilter.logger) qs.set('logger', _adminLogsFilter.logger);
+    const res = await fetch(`/api/logs/?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    view.innerHTML = subnav + `<div class="p-6 text-xs text-red-400">Could not load logs: ${_esc(String(e))}</div>`;
+    return;
+  }
+
+  const rows = data.records || [];
+  const buf = data.buffer || {};
+
+  // Three different empties, three different sentences.
+  const empty = _adminLogsFilter.level || _adminLogsFilter.logger
+    ? `<div class="text-xs text-slate-500 py-10 text-center">No records match this filter.
+         ${buf.held} record${buf.held === 1 ? '' : 's'} held in total — clear the filter to see them.</div>`
+    : buf.held === 0
+      ? `<div class="text-xs text-slate-500 py-10 text-center">The buffer is empty.<br>
+           <span class="text-slate-600">It is in-memory and starts empty on every restart, so this is
+           not evidence that nothing has happened.</span></div>`
+      : '<div class="text-xs text-slate-500 py-10 text-center">No records to show.</div>';
+
+  const body = rows.length ? `
+    <table class="w-full text-xs font-mono">
+      <tbody class="divide-y divide-slate-800/60">
+        ${rows.map(r => `
+          <tr class="hover:bg-slate-800/40 align-top">
+            <td class="px-2 py-1 text-slate-600 whitespace-nowrap">${_esc(r.ts || '')}</td>
+            <td class="px-2 py-1 whitespace-nowrap ${_LOG_LEVEL_CLASS[r.level] || 'text-slate-400'}">${_esc(r.level || '')}</td>
+            <td class="px-2 py-1 text-cyan-500 whitespace-nowrap">${_esc(r.logger || '')}</td>
+            <td class="px-2 py-1 text-slate-300 break-all">${_esc(r.message || '')}${
+              r.exc ? `<pre class="mt-1 text-[10px] text-red-300 whitespace-pre-wrap">${_esc(r.exc)}</pre>` : ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : empty;
+
+  const chip = (label, val) => `<button onclick="_adminLogsSetLevel('${_esc(val)}')"
+      class="text-xs px-2 py-0.5 rounded ${_adminLogsFilter.level === val ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${_esc(label)}</button>`;
+
+  view.innerHTML = subnav + `
+    <div class="p-6 space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-200">📜 Logs</h2>
+        <p class="text-xs text-slate-500 mt-1">
+          ${buf.held} of ${buf.capacity} records held${buf.full ? ' — <span class="text-amber-500">buffer full, oldest are being dropped</span>' : ''}.
+          Root level ${_esc(data.root_level || '')}.
+        </p>
+        <p class="text-[11px] text-slate-600 mt-1">${_esc(buf.note || '')}</p>
+      </div>
+      <div class="flex items-center gap-1.5 flex-wrap">
+        ${chip('All', '')}
+        ${(data.levels || []).map(l => chip(l, l)).join('')}
+        <span class="text-slate-700 px-1">|</span>
+        <input id="admin-logs-logger" value="${_esc(_adminLogsFilter.logger)}"
+               placeholder="logger name prefix"
+               onchange="_adminLogsSetLogger(this.value)"
+               class="bg-slate-950 border border-slate-800 rounded px-2 py-0.5 text-xs text-slate-300 w-56">
+        <button onclick="loadAdminLogsPanel()" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻ Refresh</button>
+        <label class="text-xs text-slate-500 flex items-center gap-1">
+          <input type="checkbox" ${_adminLogsAuto ? 'checked' : ''} onchange="_adminLogsToggleAuto(this.checked)"> auto
+        </label>
+      </div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">${body}</div>
+    </div>`;
+}
+
+function _adminLogsSetLevel(v) { _adminLogsFilter.level = v; loadAdminLogsPanel(); }
+function _adminLogsSetLogger(v) { _adminLogsFilter.logger = (v || '').trim(); loadAdminLogsPanel(); }
+
+function _adminLogsToggleAuto(on) {
+  _adminLogsAuto = on;
+  if (_adminLogsTimer) { clearInterval(_adminLogsTimer); _adminLogsTimer = null; }
+  if (!on) return;
+  // Stops itself when the pane is no longer visible, so leaving auto on and
+  // navigating away does not poll for the rest of the session.
+  _adminLogsTimer = setInterval(() => {
+    const v = document.getElementById('admin-logs-view');
+    if (!v || v.classList.contains('hidden')) {
+      clearInterval(_adminLogsTimer); _adminLogsTimer = null; _adminLogsAuto = false; return;
+    }
+    loadAdminLogsPanel();
+  }, 5000);
+}
 
 // ── Admin → Feedback ────────────────────────────────────────────────────────
 // resource_feedback across every resource. Until 2026-08-31 this could only be
