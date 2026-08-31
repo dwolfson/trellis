@@ -41,6 +41,15 @@ log = logging.getLogger(__name__)
 #: deployment clusters already sit within it.
 TARGET_CLUSTER_SIZE = 10
 
+#: Backstop on `_wire_density_split`'s pairwise search (§10 signal 2) —
+#: reached only once every declared boundary is exhausted, so it should be
+#: rare, but a member set this large would still make the O(n^2) pairwise
+#: scan (incrementally updated per merge, not recomputed — see that
+#: function's docstring) slow enough to matter on a survey's hot path.
+#: Not tuned against a measured case; revisit if a real oversized group
+#: this large shows up and the cap is what's silencing its wire signal.
+_MAX_WIRE_DENSITY_MEMBERS = 200
+
 #: Affinity is what separates a composed component from a Collection (Dan,
 #: 2026-08-29: *"no affinity leads you to collections"*). The bar is
 #: `coupling.COHESIVE_BAR` — **reused, never redefined here**: it is the
@@ -145,6 +154,155 @@ def _slug_of(component) -> str:
     return str(value or "")
 
 
+def _name_of(component) -> str:
+    """Mirrors _slug_of — needed because interfaces.propose attributes a
+    compose wire's source/target by component NAME (`_owner_of` returns
+    `c.name`), not slug, while everything else here keys on slug. See
+    `_resolve_wire_endpoint`."""
+    value = getattr(component, "name", None) or (
+        component.get("name") if isinstance(component, dict) else None
+    )
+    return str(value or "")
+
+
+def _resolve_wire_endpoint(value: str, by_slug: dict[str, str], by_name: dict[str, str]) -> str | None:
+    """A wire endpoint to a slug, or None if it matches neither — the same
+    ambiguity `mermaid._resolve_endpoint` resolves, kept as its own copy
+    rather than a shared import for the same reason
+    ComponentMaterializer._find_element_guid duplicates
+    EgeriaPublisher._find_element_guid: these two modules don't share a
+    dependency relationship, and this is small enough that a shared helper
+    would cost more coupling than it saves. `by_slug`/`by_name` map to
+    slugs directly here (not to Component objects) since that is all a
+    caller building an edge-weight graph over slugs needs.
+    """
+    if value in by_slug:
+        return by_slug[value]
+    return by_name.get(value)
+
+
+def _wire_weights(components, wires: list[dict]) -> dict[frozenset, int]:
+    """{{slug_a, slug_b}: wire count} — undirected, since clustering asks
+    "do these talk to each other" rather than "who calls whom" (direction
+    matters for the diagram, not for whether two components belong in the
+    same blueprint). A self-wire (a component's dependency resolves to
+    itself, or an endpoint that resolves to nothing) contributes no edge —
+    an edge needs two distinct, resolved slugs to mean anything for
+    grouping purposes; `mermaid.py`'s "unresolved renders as external"
+    concern is about not hiding a missing edge from the diagram, which is a
+    different requirement from this one.
+    """
+    by_slug = {_slug_of(c): _slug_of(c) for c in components if _slug_of(c)}
+    by_name = {_name_of(c): _slug_of(c) for c in components if _name_of(c) and _slug_of(c)}
+    weights: dict[frozenset, int] = {}
+    for w in wires or []:
+        src = _resolve_wire_endpoint(str(w.get("source") or ""), by_slug, by_name)
+        dst = _resolve_wire_endpoint(str(w.get("target") or ""), by_slug, by_name)
+        if not src or not dst or src == dst:
+            continue
+        key = frozenset((src, dst))
+        weights[key] = weights.get(key, 0) + 1
+    return weights
+
+
+def _wire_density_split(member_scopes: list[str], by_scope: dict[str, list[str]],
+                        wire_weights: dict[frozenset, int], target_size: int) -> dict[str, list[str]]:
+    """Signal 2 (design §10): group by which components talk to each other,
+    when no declared boundary (deployment context, scope hierarchy) is left
+    to read. A cluster is a densely-wired subgraph — this builds one via
+    greedy agglomerative merging, the simplest thing that reads as "these
+    keep talking to each other" rather than inventing structure from
+    similarity: repeatedly merge whichever two groups have the strongest
+    total wire weight between them, stopping at target_size so growth stays
+    bounded the same way rollup()'s prefix-merge does.
+
+    Operates at SCOPE granularity (member_scopes), not slug — a scope may
+    hold several slugs (component hierarchy nesting predates clustering),
+    and the wire graph is over slugs, so a scope pair's weight is the sum
+    of wire weight across every slug pair one scope contributes and the
+    other receives.
+
+    Returns {} exactly like _subdivide when nothing merged — "no signal, no
+    cluster" (design §5) applies here too: a member set with zero wires
+    between any of them is not evidence of a boundary, and returning a
+    single bucket covering everyone would be indistinguishable from a real
+    finding to a curator reading it.
+
+    Pairwise weights are computed ONCE up front and updated incrementally
+    on each merge (a merged group's weight to any third group is the sum of
+    its two parents' weights to that group — wires are additive) rather
+    than rescanning the full slug-level graph every iteration, which would
+    make the search cost grow with the number of merges as well as the
+    number of members. `_MAX_WIRE_DENSITY_MEMBERS` is a backstop on top of
+    that, not a substitute for it: this is a fallback branch, reached only
+    once every declared boundary is exhausted, and a pathological group
+    must not turn into a slow survey run — reported via log.debug rather
+    than silently skipped, since a silent skip reads as "no wires" instead
+    of "not attempted".
+    """
+    scopes = sorted(set(member_scopes))
+    if len(scopes) < 2:
+        return {}
+    if len(scopes) > _MAX_WIRE_DENSITY_MEMBERS:
+        log.debug("wire-density: %d members exceeds the cap of %d, skipping",
+                  len(scopes), _MAX_WIRE_DENSITY_MEMBERS)
+        return {}
+
+    scope_slugs = {scope: by_scope.get(scope, []) for scope in scopes}
+    sizes: dict[str, int] = {scope: len(scope_slugs[scope]) for scope in scopes}
+    groups: dict[str, set[str]] = {scope: {scope} for scope in scopes}  # group name -> member scopes
+
+    pair_w: dict[frozenset, int] = {}
+    for i, sa in enumerate(scopes):
+        for sb in scopes[i + 1:]:
+            total = sum(
+                wire_weights.get(frozenset((slug_a, slug_b)), 0)
+                for slug_a in scope_slugs[sa] for slug_b in scope_slugs[sb]
+            )
+            if total:
+                pair_w[frozenset((sa, sb))] = total
+
+    merged_any = False
+    while len(groups) > 1:
+        best: tuple[int, str, str] | None = None  # (weight, name_a, name_b), name_a < name_b
+        names = sorted(groups)
+        for i, name_a in enumerate(names):
+            for name_b in names[i + 1:]:
+                if sizes[name_a] + sizes[name_b] > target_size:
+                    continue
+                weight = pair_w.get(frozenset((name_a, name_b)), 0)
+                if weight <= 0:
+                    continue
+                candidate = (weight, name_a, name_b)
+                # Highest weight first; deterministic tie-break by name pair
+                # so the same input always merges the same way.
+                if best is None or candidate[0] > best[0] or (
+                    candidate[0] == best[0] and (candidate[1], candidate[2]) < (best[1], best[2])
+                ):
+                    best = candidate
+        if best is None:
+            break
+        _, name_a, name_b = best
+        merged_name = sorted(groups[name_a] | groups[name_b])[0] + "~wired"
+        merged_members = groups.pop(name_a) | groups.pop(name_b)
+        merged_size = sizes.pop(name_a) + sizes.pop(name_b)
+        groups[merged_name] = merged_members
+        sizes[merged_name] = merged_size
+        merged_any = True
+
+        for other in list(groups):
+            if other == merged_name:
+                continue
+            combined = pair_w.pop(frozenset((name_a, other)), 0) + pair_w.pop(frozenset((name_b, other)), 0)
+            if combined:
+                pair_w[frozenset((merged_name, other))] = combined
+
+    if not merged_any:
+        return {}
+    result = {name: sorted(member_scopes_set) for name, member_scopes_set in groups.items()}
+    return result if len(result) > 1 else {}
+
+
 def _deployment_context_of(component) -> str:
     """The path whose deployment artifact declared this component.
 
@@ -192,6 +350,7 @@ def _subdivide(scopes: list[str]) -> dict[str, list[str]]:
 
 def propose(components, perspective: str, *,
             cohesion: dict[str, float] | None = None,
+            wires: list[dict] | None = None,
             target_size: int = TARGET_CLUSTER_SIZE,
             max_depth: int = 3) -> list[Cluster]:
     """Candidate blueprints for one perspective, ordered largest first.
@@ -212,6 +371,15 @@ def propose(components, perspective: str, *,
     honest carrier for that. Without cohesion data every group is a Collection,
     which is the correct default — co-location says where things were declared,
     not that they belong to one another.
+
+    `wires` (§10 signal 2, `interfaces.propose`'s own output — the same edge
+    list `mermaid.render` draws) is the fallback signal, tried only where
+    every declared boundary (deployment context, scope hierarchy) is
+    exhausted and a group is still over `target_size`. It is not blended
+    with the declared-boundary signals or given a vote alongside them —
+    weaker evidence used only where stronger evidence ran out, not averaged
+    against it. Without wires, behaviour is unchanged from before this
+    signal existed.
     """
     scoped = [c for c in components if _perspective_of(c) == perspective]
     if not scoped:
@@ -222,6 +390,8 @@ def propose(components, perspective: str, *,
     for c in scoped:
         by_scope.setdefault(_scope_of(c), []).append(_slug_of(c))
         by_scope_components.setdefault(_scope_of(c), []).append(c)
+
+    wire_weights = _wire_weights(scoped, wires) if wires else None
 
     scopes = sorted(by_scope)
     parents, _structural = scope_hierarchy.derive(scopes)
@@ -235,7 +405,7 @@ def propose(components, perspective: str, *,
     for name, member_scopes in sorted(groups.items()):
         clusters.extend(
             _build(name, member_scopes, by_scope, by_scope_components,
-                   perspective, target_size, max_depth)
+                   perspective, target_size, max_depth, wire_weights)
         )
 
     # Affinity promotes a Collection to a composition. Applied after grouping
@@ -263,7 +433,8 @@ def propose(components, perspective: str, *,
 
 def _build(name: str, member_scopes: list[str], by_scope: dict[str, list[str]],
            by_scope_components: dict[str, list], perspective: str,
-           target_size: int, depth_left: int) -> list[Cluster]:
+           target_size: int, depth_left: int,
+           wire_weights: "dict[frozenset[str], int] | None" = None) -> list[Cluster]:
     """One group, subdivided while it is over the goal and structure remains."""
     slugs = [s for scope in member_scopes for s in by_scope.get(scope, [])]
 
@@ -285,22 +456,54 @@ def _build(name: str, member_scopes: list[str], by_scope: dict[str, list[str]],
         for context, ctx_scopes in sorted(by_context.items()):
             out.extend(_build(context, sorted(set(ctx_scopes)), by_scope,
                               by_scope_components, perspective, target_size,
-                              depth_left - 1))
+                              depth_left - 1, wire_weights))
         return out
 
     sub = _subdivide(member_scopes)
-    if not sub:
-        # Over the goal and nothing further to read. Say so; do not truncate.
-        log.debug("%s: cluster %r has %d members and no further structure",
-                  perspective, name, len(slugs))
-        return [Cluster(name=name, perspective=perspective, members=sorted(slugs),
-                        oversized=True)]
+    if sub:
+        # Bug fixed 2026-08-30: this recursive call was missing
+        # by_scope_components (6 args into a 7-parameter function with no
+        # defaults) — a live TypeError, unreached by any existing test
+        # because the oversized-cluster tests use flat scope locators
+        # specifically so scope_hierarchy.derive() never finds anything to
+        # subdivide, which is exactly what avoids this branch.
+        out: list[Cluster] = []
+        for sub_name, sub_scopes in sorted(sub.items()):
+            out.extend(_build(sub_name, sub_scopes, by_scope, by_scope_components,
+                              perspective, target_size, depth_left - 1, wire_weights))
+        return out
 
-    out: list[Cluster] = []
-    for sub_name, sub_scopes in sorted(sub.items()):
-        out.extend(_build(sub_name, sub_scopes, by_scope, perspective,
-                          target_size, depth_left - 1))
-    return out
+    # Declared structure is exhausted. Wire density (§10 signal 2) is the
+    # fallback, not the first resort: every earlier branch reads a boundary
+    # something declared, and wires are a measured graph rather than a
+    # declaration — weaker evidence, tried only once nothing stronger is
+    # left. "No signal, no cluster" still applies: a member set with no
+    # wires between any of them returns {} from _wire_density_split just
+    # like _subdivide does, and this function falls through to oversized.
+    if wire_weights:
+        wired = _wire_density_split(member_scopes, by_scope, wire_weights, target_size)
+        if wired:
+            out = []
+            for wired_name, wired_scopes in sorted(wired.items()):
+                out.extend(_build(wired_name, wired_scopes, by_scope, by_scope_components,
+                                  perspective, target_size, depth_left - 1, wire_weights))
+            # Leaf clusters this pass actually produced (not further
+            # recursion — a wire-derived group that still exceeds target_size
+            # recurses through scope_hierarchy/wire-density again, in which
+            # case a NESTED signal earned the tag, not this one) get their
+            # provenance recorded, since a curator judging a proposal needs
+            # to know it read a measured graph, not a directory a person
+            # declared — the same reason `signal` exists on Cluster at all.
+            for cluster in out:
+                if cluster.name in wired and not cluster.children:
+                    cluster.signal = "wire-density"
+            return out
+
+    # Over the goal and nothing further to read. Say so; do not truncate.
+    log.debug("%s: cluster %r has %d members and no further structure",
+              perspective, name, len(slugs))
+    return [Cluster(name=name, perspective=perspective, members=sorted(slugs),
+                    oversized=True)]
 
 
 def rollup(clusters: list[Cluster], *, target: int = TARGET_CLUSTER_SIZE) -> list[Cluster]:

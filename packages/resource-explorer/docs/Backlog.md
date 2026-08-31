@@ -2227,23 +2227,45 @@ low-confidence grouping.
 import-cohesion) landed alongside it. Tested: `test_arch_clustering.py`, 29 cases. This paragraph was
 stale — recorded here so the next reader doesn't re-derive "has clustering run yet" from scratch.
 
-**Wire density (signal 2) — CLAIMED 2026-08-30 by S1, starting now.** The other two signals: signal 1
-is done above; signal 3 (same external interface) stays blocked on the standing interface-extraction
-item. Wires already exist (`interfaces.propose`, persisted under `architecture_interfaces`, and
-`persist_ir` already threads `wires` through as a parameter `_cluster()` was never given) — this is
-wiring an input that exists into a signal that doesn't, not new detection work.
+**Wire density (signal 2) — DONE 2026-08-30, same session.** Tried only as a fallback, once every
+declared boundary (deployment context, scope hierarchy) is exhausted and a group is still over the
+~10 goal — not blended with those signals or given a vote alongside them. Built as greedy
+agglomerative merging over the wire graph (`interfaces.propose`'s own `wires` list, the same one
+`mermaid.render` draws from and `persist_ir` was already threading through as an unused parameter):
+repeatedly merge whichever two groups have the strongest total wire weight between them, bounded by
+`target_size`, stopping when no beneficial merge remains. Pairwise weights are computed once and
+updated incrementally per merge (a merged group's weight to a third group is the sum of its two
+parents' — wires are additive) rather than rescanned every iteration, since this runs on a survey's
+hot path; a size backstop (`_MAX_WIRE_DENSITY_MEMBERS = 200`, unmeasured, revisit if it's ever what's
+silencing a real group's wire signal) sits on top of that as insurance, not a substitute for it.
+"No signal, no cluster" applies here too — a member set with zero wires between any of them returns
+no split, same as `_subdivide`'s existing contract, rather than one bucket covering everyone.
+Resulting clusters carry `signal: "wire-density"` so a curator can tell a measured graph from a
+declared boundary. Wire endpoints resolve by slug-or-name (mirroring `mermaid._resolve_endpoint`'s
+existing handling of the same ambiguity — a compose wire is attributed by service name, a port by
+slug), kept as its own small copy rather than a shared import, same reasoning as
+`ComponentMaterializer._find_element_guid` duplicating `EgeriaPublisher`'s.
 
-**Found while reading the code to wire this in — a live, untested bug in `_build`'s recursive
-`_subdivide` branch:** the call `_build(sub_name, sub_scopes, by_scope, perspective, target_size,
-depth_left - 1)` passes 6 positional args to a 7-parameter function (missing `by_scope_components`),
-so every value after it lands in the wrong slot and `depth_left` gets none at all — a `TypeError` on
-any call. Unreached by all 29 existing tests: the oversized-cluster tests use flat scope locators
-(`flat::s{i}`) specifically so `scope_hierarchy.derive` finds nothing to subdivide, which is exactly
-what keeps this branch from ever running. Real corpus runs likely never hit it either — an oversized
-group needs a deployment-context split to be genuinely unavailable (not just single-valued) AND a
-further scope hierarchy to exist below it, which most oversized groups apparently don't reach before
-bottoming out one of the earlier checks. Fixing alongside the wire-density change since it's the same
-function, with a regression test that would have caught it.
+Signal 3 (same external interface) stays blocked on the standing interface-extraction item, as
+before.
+
+**Found and fixed alongside it — a live, untested bug in `_build`'s recursive `_subdivide` branch:**
+the call `_build(sub_name, sub_scopes, by_scope, perspective, target_size, depth_left - 1)` passed 6
+positional args to a 7-parameter function (missing `by_scope_components`), so every value after it
+landed in the wrong slot and `depth_left` got none at all — a `TypeError` on any call. Unreached by
+all 29 pre-existing tests: the oversized-cluster tests use flat scope locators (`flat::s{i}`)
+specifically so `scope_hierarchy.derive` finds nothing to subdivide, which is exactly what kept this
+branch from ever running; real corpus runs likely never hit it either, since an oversized group needs
+a deployment-context split to be genuinely unavailable (not just single-valued) AND a further scope
+hierarchy to exist below it. Two new regression tests exercise `_build` directly (bypassing
+`propose()`'s own first pass, which finds the finest qualifying split in one shot for realistic path
+hierarchies and so never naturally reaches this branch either) to prove the recursive call no longer
+raises and the second-level split is real.
+
+Suite: `test_arch_clustering.py` grew from 29 to 41 cases (the bug-fix regression, ten
+`TestWireDensitySignal` cases, and one end-to-end test proving `persist_ir` actually threads `wires`
+through `_cluster()` into `clustering.propose()` — a unit test of `propose(wires=...)` alone would not
+have caught a broken wire-up in between). Broader arch/clustering/mermaid suite: 485 passed.
 
 ---
 
