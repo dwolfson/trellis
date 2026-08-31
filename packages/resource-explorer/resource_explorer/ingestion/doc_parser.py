@@ -59,19 +59,19 @@ class DocParser:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-    def parse_markdown(self, content: str, file_path: str, project_slug: str) -> list[DocChunk]:
+    def parse_markdown(self, content: str, file_path: str, resource_slug: str) -> list[DocChunk]:
         sections = self._split_on_headings(content)
         chunks = []
         for section in sections:
             for chunk in self._fixed_window(section):
                 chunks.append(DocChunk(
                     text=chunk,
-                    metadata={"file_path": file_path, "project_slug": project_slug, "type": "markdown"},
+                    metadata={"file_path": file_path, "project_slug": resource_slug, "type": "markdown"},
                 ))
         return chunks
 
     def parse_pdf(
-        self, file_path: str, project_slug: str, document=None,
+        self, file_path: str, resource_slug: str, document=None,
     ) -> list[DocChunk]:
         """Use Docling for layout-aware PDF parsing.
 
@@ -87,12 +87,12 @@ class DocParser:
         return [
             DocChunk(
                 text=chunk,
-                metadata={"file_path": file_path, "project_slug": project_slug, "type": "pdf"},
+                metadata={"file_path": file_path, "project_slug": resource_slug, "type": "pdf"},
             )
             for chunk in self._fixed_window(text)
         ]
 
-    def parse_url(self, url: str, project_slug: str) -> list[DocChunk]:
+    def parse_url(self, url: str, resource_slug: str) -> list[DocChunk]:
         """Use Docling to fetch and parse a web page."""
         from docling.document_converter import DocumentConverter
         converter = DocumentConverter()
@@ -101,7 +101,7 @@ class DocParser:
         return [
             DocChunk(
                 text=chunk,
-                metadata={"source_url": url, "project_slug": project_slug, "type": "web"},
+                metadata={"source_url": url, "project_slug": resource_slug, "type": "web"},
             )
             for chunk in self._fixed_window(text)
         ]

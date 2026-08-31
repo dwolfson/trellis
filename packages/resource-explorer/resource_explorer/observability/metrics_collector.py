@@ -119,7 +119,7 @@ class MetricsCollector:
         self,
         query: str,
         intent: str,
-        project_slug: str | None,
+        resource_slug: str | None,
         response: str,
         latency_ms: int = 0,
         cache_hit: bool = False,
@@ -143,7 +143,7 @@ class MetricsCollector:
                    (timestamp, query_hash, intent, project_slug, latency_ms,
                     cache_hit, response_length, chunk_refs, derivation)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (datetime.utcnow().isoformat(), query_hash, intent, project_slug,
+                (datetime.utcnow().isoformat(), query_hash, intent, resource_slug,
                  latency_ms, int(cache_hit), len(response),
                  json.dumps(chunk_refs or []), json.dumps(derivation or {})),
             )
@@ -153,7 +153,7 @@ class MetricsCollector:
             log_query(
                 query=query,
                 intent=intent,
-                project_slug=project_slug,
+                resource_slug=resource_slug,
                 response=response,
                 latency_ms=latency_ms,
                 collections_used=chunk_refs or [],

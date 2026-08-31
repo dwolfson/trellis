@@ -29,7 +29,7 @@ def project(registry):
 
 def _insert_stats(db_path: str, slug: str, **overrides):
     defaults = dict(
-        project_slug=slug,
+        resource_slug=slug,
         fetched_at="2024-06-01T12:00:00",
         stars=1500,
         forks=200,
@@ -51,7 +51,7 @@ def _insert_stats(db_path: str, slug: str, **overrides):
         (project_slug, fetched_at, stars, forks, watchers, open_issues,
          contributors_count, commits_30d, commits_90d, releases_count,
          latest_release, latest_release_at, primary_language, language_breakdown)
-        VALUES (:project_slug, :fetched_at, :stars, :forks, :watchers, :open_issues,
+        VALUES (:resource_slug, :fetched_at, :stars, :forks, :watchers, :open_issues,
                 :contributors_count, :commits_30d, :commits_90d, :releases_count,
                 :latest_release, :latest_release_at, :primary_language, :language_breakdown)
     """, row)

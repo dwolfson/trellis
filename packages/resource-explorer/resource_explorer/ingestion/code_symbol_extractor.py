@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class CodeSymbol:
-    project_slug: str
+    resource_slug: str
     file_path: str
     language: str
     kind: str            # class | function | method | interface | enum
@@ -48,52 +48,52 @@ class CodeSymbolExtractor:
     """
 
     def extract(
-        self, file_path: str, content: str, project_slug: str, language: str
+        self, file_path: str, content: str, resource_slug: str, language: str
     ) -> list[CodeSymbol]:
         try:
             if language == "python":
-                return self._extract_python(file_path, content, project_slug)
+                return self._extract_python(file_path, content, resource_slug)
             if language in ("javascript", "typescript"):
-                return self._extract_js(file_path, content, project_slug, language)
+                return self._extract_js(file_path, content, resource_slug, language)
             if language == "java":
-                return self._extract_java_tree_sitter(file_path, content, project_slug)
+                return self._extract_java_tree_sitter(file_path, content, resource_slug)
             if language == "go":
-                return self._extract_go(file_path, content, project_slug)
+                return self._extract_go(file_path, content, resource_slug)
         except Exception:
             pass
         return []
 
     # ── Java — tree-sitter (see ingestion/java_symbol_extractor.py) ────────
 
-    def _extract_java_tree_sitter(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def _extract_java_tree_sitter(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
         from resource_explorer.ingestion.java_symbol_extractor import JavaSymbolExtractor
-        return JavaSymbolExtractor().extract(file_path, content, project_slug)
+        return JavaSymbolExtractor().extract(file_path, content, resource_slug)
 
     # ── Python — AST ─────────────────────────────────────────────────────────
 
-    def _extract_python(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def _extract_python(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
         try:
             tree = ast.parse(content)
         except SyntaxError:
             return []
-        visitor = _PythonVisitor(file_path, project_slug)
+        visitor = _PythonVisitor(file_path, resource_slug)
         visitor.visit(tree)
         return visitor.symbols
 
     # ── JavaScript / TypeScript — tree-sitter, regex fallback ──────────────
 
     def _extract_js(
-        self, file_path: str, content: str, project_slug: str, language: str
+        self, file_path: str, content: str, resource_slug: str, language: str
     ) -> list[CodeSymbol]:
         from resource_explorer.ingestion.js_symbol_extractor import JsSymbolExtractor
-        symbols = JsSymbolExtractor().extract(file_path, content, project_slug, language)
+        symbols = JsSymbolExtractor().extract(file_path, content, resource_slug, language)
         if symbols:
             return symbols
         # Empty from tree-sitter means either a genuinely empty file or the
         # [ast] extra isn't installed (JsSymbolExtractor returns [] when its
         # parser is unavailable) — the regex path below still gives partial
         # coverage in that case rather than nothing.
-        return self._extract_js_regex(file_path, content, project_slug, language)
+        return self._extract_js_regex(file_path, content, resource_slug, language)
 
     _JS_CLASS  = re.compile(r'^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)', re.M)
     _JS_IFACE  = re.compile(r'^(?:export\s+)?interface\s+(\w+)', re.M)
@@ -112,7 +112,7 @@ class CodeSymbolExtractor:
     _JS_KEYWORDS = frozenset({"if", "for", "while", "switch", "catch", "do", "else"})
 
     def _extract_js_regex(
-        self, file_path: str, content: str, project_slug: str, language: str
+        self, file_path: str, content: str, resource_slug: str, language: str
     ) -> list[CodeSymbol]:
         symbols: list[CodeSymbol] = []
         current_class: str | None = None
@@ -123,28 +123,28 @@ class CodeSymbolExtractor:
         for m in self._JS_CLASS.finditer(content):
             current_class = m.group(1)
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="class", name=m.group(1), qualified_name=m.group(1),
                 signature="", docstring="", start_line=ln(m), end_line=ln(m),
             ))
 
         for m in self._JS_IFACE.finditer(content):
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="interface", name=m.group(1), qualified_name=m.group(1),
                 signature="", docstring="", start_line=ln(m), end_line=ln(m),
             ))
 
         for m in self._JS_FUNC.finditer(content):
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="function", name=m.group(1), qualified_name=m.group(1),
                 signature=f"({m.group(2)})", docstring="", start_line=ln(m), end_line=ln(m),
             ))
 
         for m in self._JS_ARROW.finditer(content):
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="function", name=m.group(1), qualified_name=m.group(1),
                 signature=f"({m.group(2)})", docstring="", start_line=ln(m), end_line=ln(m),
             ))
@@ -155,7 +155,7 @@ class CodeSymbolExtractor:
                 continue
             qname = f"{current_class}.{name}" if current_class else name
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language=language,
+                resource_slug=resource_slug, file_path=file_path, language=language,
                 kind="method", name=name, qualified_name=qname,
                 signature=f"({m.group(2)})", docstring="", start_line=ln(m), end_line=ln(m),
             ))
@@ -164,14 +164,14 @@ class CodeSymbolExtractor:
 
     # ── Go — tree-sitter, regex fallback ────────────────────────────────────
 
-    def _extract_go(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def _extract_go(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
         from resource_explorer.ingestion.go_symbol_extractor import GoSymbolExtractor
-        symbols = GoSymbolExtractor().extract(file_path, content, project_slug)
+        symbols = GoSymbolExtractor().extract(file_path, content, resource_slug)
         if symbols:
             return symbols
         # Same fallback reasoning as _extract_js — empty means either a
         # genuinely empty file or the [ast] extra isn't installed.
-        return self._extract_go_regex(file_path, content, project_slug)
+        return self._extract_go_regex(file_path, content, resource_slug)
 
     _GO_FUNC   = re.compile(
         r'^func\s+(?:\((\w+\s+\*?\w+)\)\s+)?(\w+)\s*(\([^)]*\))\s*(?:\(([^)]*)\)|([\w*\[\]]+))?',
@@ -180,7 +180,7 @@ class CodeSymbolExtractor:
     _GO_STRUCT = re.compile(r'^type\s+(\w+)\s+struct\b', re.M)
     _GO_IFACE  = re.compile(r'^type\s+(\w+)\s+interface\b', re.M)
 
-    def _extract_go_regex(self, file_path: str, content: str, project_slug: str) -> list[CodeSymbol]:
+    def _extract_go_regex(self, file_path: str, content: str, resource_slug: str) -> list[CodeSymbol]:
         symbols: list[CodeSymbol] = []
 
         def ln(m: re.Match) -> int:
@@ -188,14 +188,14 @@ class CodeSymbolExtractor:
 
         for m in self._GO_STRUCT.finditer(content):
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="go",
+                resource_slug=resource_slug, file_path=file_path, language="go",
                 kind="class", name=m.group(1), qualified_name=m.group(1),
                 signature="", docstring="", start_line=ln(m), end_line=ln(m),
             ))
 
         for m in self._GO_IFACE.finditer(content):
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="go",
+                resource_slug=resource_slug, file_path=file_path, language="go",
                 kind="interface", name=m.group(1), qualified_name=m.group(1),
                 signature="", docstring="", start_line=ln(m), end_line=ln(m),
             ))
@@ -210,7 +210,7 @@ class CodeSymbolExtractor:
             qname = f"{receiver_type}.{name}" if receiver_type else name
             sig = params + (f" -> {ret}" if ret else "")
             symbols.append(CodeSymbol(
-                project_slug=project_slug, file_path=file_path, language="go",
+                resource_slug=resource_slug, file_path=file_path, language="go",
                 kind=kind, name=name, qualified_name=qname,
                 signature=sig, docstring="", start_line=ln(m), end_line=ln(m),
             ))
@@ -221,9 +221,9 @@ class CodeSymbolExtractor:
 # ── Python AST visitor ────────────────────────────────────────────────────────
 
 class _PythonVisitor(ast.NodeVisitor):
-    def __init__(self, file_path: str, project_slug: str) -> None:
+    def __init__(self, file_path: str, resource_slug: str) -> None:
         self._file_path = file_path
-        self._project_slug = project_slug
+        self._project_slug = resource_slug
         self.symbols: list[CodeSymbol] = []
         self._class_stack: list[str] = []
 
@@ -268,7 +268,7 @@ class _PythonVisitor(ast.NodeVisitor):
         parent_class = self._class_stack[-2] if len(self._class_stack) > 1 else ""
         bases = [ast.unparse(b) for b in node.bases]
         return CodeSymbol(
-            project_slug=self._project_slug,
+            resource_slug=self._project_slug,
             file_path=self._file_path,
             language="python",
             kind="class",
@@ -288,7 +288,7 @@ class _PythonVisitor(ast.NodeVisitor):
         parent_class = self._class_stack[-1] if self._class_stack else ""
         return_type = ast.unparse(node.returns) if node.returns else ""
         return CodeSymbol(
-            project_slug=self._project_slug,
+            resource_slug=self._project_slug,
             file_path=self._file_path,
             language="python",
             kind=kind,

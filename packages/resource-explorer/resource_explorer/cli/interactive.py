@@ -12,15 +12,15 @@ from resource_explorer.agents.conversation_agent import ConversationAgent
 class InteractiveSession:
     def __init__(
         self,
-        project_slug: str | None = None,
+        resource_slug: str | None = None,
         session_id: str | None = None,
     ) -> None:
         self.console = Console()
         self.session_id = session_id or str(uuid.uuid4())
-        self.project_slug = project_slug
+        self.resource_slug = resource_slug
         self._confirmed_aliases: set[str] = set()
 
-        self.agent = ConversationAgent(project_slug=project_slug)
+        self.agent = ConversationAgent(resource_slug=resource_slug)
         self._load_history()
 
     def _load_history(self) -> None:
@@ -40,13 +40,13 @@ class InteractiveSession:
         try:
             from resource_explorer.registry import ProjectRegistry
             registry = ProjectRegistry()
-            registry.append_turn(self.session_id, "user", query, self.project_slug)
-            registry.append_turn(self.session_id, "assistant", response, self.project_slug)
+            registry.append_turn(self.session_id, "user", query, self.resource_slug)
+            registry.append_turn(self.session_id, "assistant", response, self.resource_slug)
         except Exception:
             pass
 
     def run(self) -> None:
-        scope = f" [{self.project_slug}]" if self.project_slug else ""
+        scope = f" [{self.resource_slug}]" if self.resource_slug else ""
         self.console.print(f"[bold]Resource Explorer{scope}[/bold] — type 'exit' to quit")
         self.console.print(f"[dim]Session: {self.session_id}[/dim]\n")
         while True:
@@ -59,7 +59,7 @@ class InteractiveSession:
             if not query.strip():
                 continue
 
-            effective_slug = self.project_slug
+            effective_slug = self.resource_slug
             if not effective_slug:
                 effective_slug = self._check_alias(query)
 

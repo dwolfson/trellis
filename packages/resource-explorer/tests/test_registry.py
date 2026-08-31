@@ -535,7 +535,7 @@ class TestCodeSymbolsAndRelationships:
     def _symbol(self, **overrides):
         from resource_explorer.ingestion.code_symbol_extractor import CodeSymbol
         defaults = dict(
-            project_slug="test-project", file_path="mod.py", language="python",
+            resource_slug="test-project", file_path="mod.py", language="python",
             kind="function", name="f", qualified_name="f", signature="()",
             docstring="", start_line=1, end_line=2,
         )
@@ -684,7 +684,7 @@ class TestRepoDispositions:
 
     def test_records_project_slug_when_given(self, db, sample_project):
         db.add(sample_project)
-        db.set_disposition(sample_project.github_url, "investigating", project_slug=sample_project.slug)
+        db.set_disposition(sample_project.github_url, "investigating", resource_slug=sample_project.slug)
         disp = db.get_disposition(sample_project.github_url)
         assert disp["project_slug"] == "test-project"
 

@@ -23,22 +23,22 @@ def _verify_signature(body: bytes, signature_header: str | None, secret: str) ->
     return hmac.compare_digest(f"sha256={expected}", signature_header)
 
 
-def _do_refresh(project_slug: str) -> None:
+def _do_refresh(resource_slug: str) -> None:
     from resource_explorer.ingestion.incremental import IncrementalIndexer
     from resource_explorer.query_cache import QueryCache
     from resource_explorer.registry import ProjectRegistry
 
-    project = ProjectRegistry().get(project_slug)
+    project = ProjectRegistry().get(resource_slug)
     if not project:
-        logger.warning("Webhook refresh: project '%s' not found in registry", project_slug)
+        logger.warning("Webhook refresh: project '%s' not found in registry", resource_slug)
         return
-    logger.info("Webhook: starting incremental refresh for '%s'", project_slug)
+    logger.info("Webhook: starting incremental refresh for '%s'", resource_slug)
     try:
         IncrementalIndexer().refresh(project)
-        QueryCache().invalidate_project(project_slug)
-        logger.info("Webhook: refresh complete for '%s'", project_slug)
+        QueryCache().invalidate_project(resource_slug)
+        logger.info("Webhook: refresh complete for '%s'", resource_slug)
     except Exception as exc:
-        logger.error("Webhook: refresh failed for '%s': %s", project_slug, exc)
+        logger.error("Webhook: refresh failed for '%s': %s", resource_slug, exc)
 
 
 @router.post("/webhook/github")

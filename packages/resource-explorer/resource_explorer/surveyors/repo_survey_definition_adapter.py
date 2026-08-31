@@ -2951,7 +2951,7 @@ def _publish(project, step_outputs: list, surveyed_at: str, registry) -> str:
     from resource_explorer.surveyors.survey_report import SurveyResult
 
     result = SurveyResult(
-        project_slug=project.slug,
+        resource_slug=project.slug,
         project_display_name=project.display_name,
         github_url=project.github_url,
     )

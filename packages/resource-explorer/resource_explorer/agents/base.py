@@ -40,7 +40,7 @@ class BaseExplorerAgent(ABC):
         ...
 
     @abstractmethod
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
         """Process a query and return a response string."""
         ...
 

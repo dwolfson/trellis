@@ -52,7 +52,7 @@ class TestCompiledEvidenceSeam:
         agent = ConversationAgent()
         agent._last_compiled = _fake_compiled()
         with patch.object(agent, "_run_persistent", return_value="some answer"):
-            agent.handle("a question naming no project", project_slug=None)
+            agent.handle("a question naming no project", resource_slug=None)
 
         assert agent._last_compiled is None
 

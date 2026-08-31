@@ -58,12 +58,12 @@ class StatsFetcher:
         self.registry = ProjectRegistry()
 
     def fetch(
-        self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
+        self, resource_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
         fetch_diff_stats: bool = True,
     ) -> dict:
-        project = self.registry.get(project_slug)
+        project = self.registry.get(resource_slug)
         if not project:
-            raise ValueError(f"Project '{project_slug}' not found")
+            raise ValueError(f"Project '{resource_slug}' not found")
 
         slug = project.slug  # always use normalized slug for DB writes
 
@@ -181,7 +181,7 @@ class StatsFetcher:
         return stats
 
     def _fetch_commits(
-        self, project_slug: str, repo, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
+        self, resource_slug: str, repo, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT,
         fetch_diff_stats: bool = True,
     ) -> int:
         """
@@ -208,7 +208,7 @@ class StatsFetcher:
             existing_with_stats = {
                 row[0] for row in conn.execute(
                     "SELECT sha FROM project_commits WHERE project_slug = ? AND additions IS NOT NULL",
-                    (project_slug,),
+                    (resource_slug,),
                 ).fetchall()
             }
 
@@ -256,7 +256,7 @@ class StatsFetcher:
                         fetch_diff_stats = False
 
             rows.append((
-                project_slug,
+                resource_slug,
                 c.sha,
                 (commit.message or "").split("\n")[0][:200],
                 author.name if author else "",
@@ -282,10 +282,10 @@ class StatsFetcher:
                 rows,
             )
 
-        self._compute_contributor_stats(project_slug, lookback_days=lookback_days)
+        self._compute_contributor_stats(resource_slug, lookback_days=lookback_days)
         return len(rows)
 
-    def _compute_contributor_stats(self, project_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> None:
+    def _compute_contributor_stats(self, resource_slug: str, lookback_days: int = _COMMIT_LOOKBACK_DAYS_DEFAULT) -> None:
         """
         Aggregate per-author commits/additions/deletions for 30d, 90d (and 365d when data covers it)
         windows and classify each contributor into a tier (core / regular / occasional).
@@ -308,7 +308,7 @@ class StatsFetcher:
                        WHERE project_slug = ? AND committed_at >= ?
                        GROUP BY author_email, author_name
                        ORDER BY commits DESC""",
-                    (project_slug, cutoff),
+                    (resource_slug, cutoff),
                 ).fetchall()
 
             if not raw:
@@ -349,7 +349,7 @@ class StatsFetcher:
                     "deletions": deletions,
                     "tier": tier,
                 })
-            self.registry.upsert_contributor_stats(project_slug, stat_rows)
+            self.registry.upsert_contributor_stats(resource_slug, stat_rows)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

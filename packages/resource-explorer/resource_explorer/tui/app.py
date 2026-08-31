@@ -215,7 +215,7 @@ class ProjectExplorerApp(App):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, ProjectItem):
             self.selected_project = event.item.slug
-            self._conv.project_slug = event.item.slug  # keep ConversationAgent in sync
+            self._conv.resource_slug = event.item.slug  # keep ConversationAgent in sync
             self._set_status(f"Scoped to: {event.item.display_name}  [{event.item.slug}]")
             if self._pending_clarification:
                 pending = self._pending_clarification
@@ -268,7 +268,7 @@ class ProjectExplorerApp(App):
 
         accumulated = ""
         try:
-            for item in self._rag.stream(query, project_slug=self.selected_project):
+            for item in self._rag.stream(query, resource_slug=self.selected_project):
                 if isinstance(item, dict) and item.get("_done"):
                     break
                 chunk = str(item)

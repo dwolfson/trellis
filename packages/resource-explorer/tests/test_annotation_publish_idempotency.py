@@ -131,7 +131,7 @@ class TestEachPublisherWiredThroughSharedImplementation:
         from resource_explorer.surveyors.survey_report import SurveyResult
 
         result = SurveyResult(
-            project_slug="myproj",
+            resource_slug="myproj",
             project_display_name="My Proj",
             github_url="https://github.com/test/myproj",
             surveyed_at=datetime(2026, 8, 29, 12, 0, 0),

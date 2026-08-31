@@ -46,7 +46,7 @@ class IngestionPipeline:
 
     def run(
         self,
-        project_slug: str,
+        resource_slug: str,
         github_url: str,
         collection_types: list[CollectionType],
         subproject_path: str | None = None,
@@ -55,7 +55,7 @@ class IngestionPipeline:
     ) -> None:
         from resource_explorer.github.client import GitHubClient
 
-        self.registry.update_status(project_slug, ProjectStatus.INDEXING)
+        self.registry.update_status(resource_slug, ProjectStatus.INDEXING)
         active_collections: list[str] = []
         extra_docs_paths = extra_docs_paths or []
 
@@ -70,7 +70,7 @@ class IngestionPipeline:
                 self.console.print(f"[cyan]Using local path {full_root}[/cyan]")
                 code_root, resolved_extra = self._setup_roots(full_root, subproject_path, extra_docs_paths)
                 file_count, loc = self._ingest_from_root(
-                    project_slug, repo, collection_types, code_root, resolved_extra, active_collections
+                    resource_slug, repo, collection_types, code_root, resolved_extra, active_collections
                 )
             else:
                 with tempfile.TemporaryDirectory() as tmp:
@@ -89,18 +89,18 @@ class IngestionPipeline:
                         code_root = extracted
                         resolved_extra = []
                     file_count, loc = self._ingest_from_root(
-                        project_slug, repo, collection_types, code_root, resolved_extra, active_collections
+                        resource_slug, repo, collection_types, code_root, resolved_extra, active_collections
                     )
 
-            self.registry.update_indexed_at(project_slug, active_collections)
-            self.registry.update_ingestion_stats(project_slug, file_count, loc)
-            self.registry.update_status(project_slug, ProjectStatus.ACTIVE)
+            self.registry.update_indexed_at(resource_slug, active_collections)
+            self.registry.update_ingestion_stats(resource_slug, file_count, loc)
+            self.registry.update_status(resource_slug, ProjectStatus.ACTIVE)
             self.console.print(
                 f"[green]Ingestion complete. {len(active_collections)} collections populated.[/green]"
             )
 
         except Exception as e:
-            self.registry.update_status(project_slug, ProjectStatus.ERROR, str(e))
+            self.registry.update_status(resource_slug, ProjectStatus.ERROR, str(e))
             raise
 
     def _setup_roots(
@@ -120,7 +120,7 @@ class IngestionPipeline:
 
     def _ingest_from_root(
         self,
-        project_slug: str,
+        resource_slug: str,
         repo,
         collection_types: list[CollectionType],
         code_root: Path,
@@ -131,10 +131,10 @@ class IngestionPipeline:
         with Progress(console=self.console) as progress:
             task = progress.add_task("Ingesting...", total=len(collection_types))
             for ctype in collection_types:
-                collection_name = f"{project_slug}_{ctype.name}"
+                collection_name = f"{resource_slug}_{ctype.name}"
                 extra = resolved_extra if ctype.name in self._DOC_CTYPES else []
                 count = self._ingest_collection(
-                    repo, project_slug, collection_name, ctype, code_root,
+                    repo, resource_slug, collection_name, ctype, code_root,
                     extra_paths=extra,
                 )
                 if count > 0:
@@ -142,18 +142,18 @@ class IngestionPipeline:
                 progress.advance(task)
 
         file_count, loc = self._count_repo_stats(code_root)
-        self._store_file_inventory(project_slug, code_root, repo=repo)
-        self._parse_dependencies(project_slug, code_root)
-        self._profile_data_files(project_slug, code_root)
-        self._parse_ci_workflows(project_slug, code_root)
-        self._parse_supply_chain(project_slug, code_root)
-        self._parse_repo_conventions(project_slug, code_root)
+        self._store_file_inventory(resource_slug, code_root, repo=repo)
+        self._parse_dependencies(resource_slug, code_root)
+        self._profile_data_files(resource_slug, code_root)
+        self._parse_ci_workflows(resource_slug, code_root)
+        self._parse_supply_chain(resource_slug, code_root)
+        self._parse_repo_conventions(resource_slug, code_root)
         return file_count, loc
 
     def _ingest_collection(
         self,
         repo,
-        project_slug: str,
+        resource_slug: str,
         collection_name: str,
         ctype: CollectionType,
         local_root: Path | None = None,
@@ -198,7 +198,7 @@ class IngestionPipeline:
 
         # release_notes use the GitHub releases API, not file content
         if ctype.name == "release_notes":
-            chunks = self._ingest_releases(repo, project_slug, ctype)
+            chunks = self._ingest_releases(repo, resource_slug, ctype)
         else:
             if local_root is None:
                 # Fallback for incremental single-collection calls
@@ -206,11 +206,11 @@ class IngestionPipeline:
                 client = GitHubClient()
                 with tempfile.TemporaryDirectory() as tmp:
                     local_root = client.download_zipball(repo, Path(tmp))
-                    chunks = _file_dispatch[ctype.name](local_root, project_slug, ctype)
+                    chunks = _file_dispatch[ctype.name](local_root, resource_slug, ctype)
             elif ctype.name in self._DOC_CTYPES and extra_paths:
-                chunks = _doc_dispatch[ctype.name](local_root, project_slug, ctype, extra_paths)
+                chunks = _doc_dispatch[ctype.name](local_root, resource_slug, ctype, extra_paths)
             else:
-                chunks = _file_dispatch[ctype.name](local_root, project_slug, ctype)
+                chunks = _file_dispatch[ctype.name](local_root, resource_slug, ctype)
 
         chunks = DataPrep().filter(chunks)
         if changed_files is not None:
@@ -223,7 +223,7 @@ class IngestionPipeline:
 
     def refresh_profile(
         self,
-        project_slug: str,
+        resource_slug: str,
         github_url: str,
         collections: list[str],
         subproject_path: str | None = None,
@@ -262,11 +262,11 @@ class IngestionPipeline:
         # repo_survey_definition_adapter.py's _acquire_zipball_root; one real
         # implementation of "download a zipball into a tempdir", not two.
         with client.zipball_root(repo, subproject_path) as local_root:
-            file_count = self._store_file_inventory(project_slug, local_root, repo=repo, client=client)
-            self._profile_data_files(project_slug, local_root)
-            self._parse_ci_workflows(project_slug, local_root)
-            self._parse_supply_chain(project_slug, local_root)
-            self._parse_repo_conventions(project_slug, local_root)
+            file_count = self._store_file_inventory(resource_slug, local_root, repo=repo, client=client)
+            self._profile_data_files(resource_slug, local_root)
+            self._parse_ci_workflows(resource_slug, local_root)
+            self._parse_supply_chain(resource_slug, local_root)
+            self._parse_repo_conventions(resource_slug, local_root)
 
             if include_symbols:
                 from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
@@ -274,23 +274,23 @@ class IngestionPipeline:
                 code_ctypes = [
                     COLLECTION_TYPES[name]
                     for name in self._CTYPE_LANGUAGE
-                    if name in COLLECTION_TYPES and f"{project_slug}_{name}" in collections
+                    if name in COLLECTION_TYPES and f"{resource_slug}_{name}" in collections
                 ]
                 extractor = CodeSymbolExtractor()
                 for ctype in code_ctypes:
                     language = self._CTYPE_LANGUAGE[ctype.name]
-                    self.registry.clear_code_symbols(project_slug, language)
+                    self.registry.clear_code_symbols(resource_slug, language)
                     symbols = []
                     for path, content in self._local_files(local_root, ctype.file_extensions):
-                        symbols.extend(extractor.extract(path, content, project_slug, language))
+                        symbols.extend(extractor.extract(path, content, resource_slug, language))
                     if symbols:
-                        self.registry.upsert_code_symbols(project_slug, symbols)
+                        self.registry.upsert_code_symbols(resource_slug, symbols)
                         symbol_count += len(symbols)
                         self.console.print(f"  [dim]{ctype.name}: {len(symbols)} symbols[/dim]")
 
         return ProfileResult(file_count=file_count, symbol_count=symbol_count)
 
-    def extract_symbols_only(self, project_slug: str, github_url: str, collections: list[str]) -> int:
+    def extract_symbols_only(self, resource_slug: str, github_url: str, collections: list[str]) -> int:
         """
         Download the repo and extract code symbols to SQLite without touching pgvector.
 
@@ -303,20 +303,20 @@ class IngestionPipeline:
         `-> int` contract are unchanged.
         """
         return self.refresh_profile(
-            project_slug, github_url, collections, include_symbols=True,
+            resource_slug, github_url, collections, include_symbols=True,
         ).symbol_count
 
-    def _parse_dependencies(self, project_slug: str, local_root: Path) -> None:
+    def _parse_dependencies(self, resource_slug: str, local_root: Path) -> None:
         try:
             from resource_explorer.ingestion.dependency_parser import DependencyParser
-            deps = DependencyParser().parse(local_root, project_slug)
+            deps = DependencyParser().parse(local_root, resource_slug)
             if deps:
-                self.registry.upsert_dependencies(project_slug, deps)
+                self.registry.upsert_dependencies(resource_slug, deps)
                 self.console.print(f"[dim]Dependencies: {len(deps)} entries indexed.[/dim]")
         except Exception as exc:
             self.console.print(f"[dim]Dependency parsing skipped: {exc}[/dim]")
 
-    def _parse_ci_workflows(self, project_slug: str, local_root: Path) -> None:
+    def _parse_ci_workflows(self, resource_slug: str, local_root: Path) -> None:
         """Assessment expansion plan B4 — mirrors _parse_dependencies'
         pattern exactly, but writes straight into the generic
         project_analysis_findings table (kind="ci_quality") rather than a
@@ -332,14 +332,14 @@ class IngestionPipeline:
             findings = CiWorkflowParser().parse(local_root)
             if findings:
                 self.registry.upsert_finding(
-                    project_slug, "ci_quality", findings,
+                    resource_slug, "ci_quality", findings,
                     surveyed_at=datetime.utcnow().isoformat(),
                 )
                 self.console.print(f"[dim]CI quality: {len(findings)} check(s) evaluated.[/dim]")
         except Exception as exc:
             self.console.print(f"[dim]CI workflow parsing skipped: {exc}[/dim]")
 
-    def _parse_supply_chain(self, project_slug: str, local_root: Path) -> None:
+    def _parse_supply_chain(self, resource_slug: str, local_root: Path) -> None:
         """Supply-chain signals from the same workflow YAML, its own finding kind.
 
         Deliberately not folded into ci_quality. That analysis answers "does CI
@@ -352,7 +352,7 @@ class IngestionPipeline:
             findings = SupplyChainParser().parse(local_root)
             if findings:
                 self.registry.upsert_finding(
-                    project_slug, "supply_chain", findings,
+                    resource_slug, "supply_chain", findings,
                     surveyed_at=datetime.utcnow().isoformat(),
                 )
                 self.console.print(
@@ -360,7 +360,7 @@ class IngestionPipeline:
         except Exception as exc:
             self.console.print(f"[dim]Supply-chain parsing skipped: {exc}[/dim]")
 
-    def _parse_repo_conventions(self, project_slug: str, local_root: Path) -> None:
+    def _parse_repo_conventions(self, resource_slug: str, local_root: Path) -> None:
         """Discovery-tier convention signals (Part 2, security_policy_content/
         automated_build/deployment_docker/catalog_info/doc_breadth) — same
         pattern as _parse_ci_workflows: parsed once here (already-downloaded
@@ -372,7 +372,7 @@ class IngestionPipeline:
             findings = RepoConventionsParser().parse(local_root)
             if findings:
                 self.registry.upsert_finding(
-                    project_slug, "repo_conventions", findings,
+                    resource_slug, "repo_conventions", findings,
                     surveyed_at=datetime.utcnow().isoformat(),
                 )
                 self.console.print(f"[dim]Repo conventions: {len(findings)} check(s) evaluated.[/dim]")
@@ -404,7 +404,7 @@ class IngestionPipeline:
         return file_count, line_count
 
     def _store_file_inventory(
-        self, project_slug: str, local_root: Path, repo=None, client=None,
+        self, resource_slug: str, local_root: Path, repo=None, client=None,
     ) -> int:
         """Persist every file path (relative to local_root) and its size to SQLite.
 
@@ -447,7 +447,7 @@ class IngestionPipeline:
                 pass
 
         try:
-            self.registry.upsert_file_inventory(project_slug, paths_with_sizes, modes_by_path)
+            self.registry.upsert_file_inventory(resource_slug, paths_with_sizes, modes_by_path)
             self.console.print(
                 f"[dim]File inventory: {len(paths_with_sizes)} paths stored.[/dim]"
             )
@@ -456,7 +456,7 @@ class IngestionPipeline:
             self.console.print(f"[dim]File inventory skipped: {exc}[/dim]")
             return 0
 
-    def _profile_data_files(self, project_slug: str, local_root: Path) -> None:
+    def _profile_data_files(self, resource_slug: str, local_root: Path) -> None:
         """Profile CSV/XLSX/Parquet files while the repo is still on disk.
 
         Results are stored in project_data_profiles so DataProfilerSurveyor can
@@ -518,7 +518,7 @@ class IngestionPipeline:
 
         if profiles:
             try:
-                self.registry.store_data_profiles(project_slug, profiles)
+                self.registry.store_data_profiles(resource_slug, profiles)
                 readable = sum(1 for p in profiles if p.get("row_count") is not None)
                 self.console.print(
                     f"[dim]Data profiles: {len(profiles)} data file(s) found"
@@ -573,7 +573,7 @@ class IngestionPipeline:
                         pass
         return results
 
-    def _report_tree_result(self, result, project_slug: str) -> None:
+    def _report_tree_result(self, result, resource_slug: str) -> None:
         """Surface anything other than a clean run or a disabled feature.
 
         console, not logging: this module reports through rich throughout, and
@@ -583,14 +583,14 @@ class IngestionPipeline:
             # The only reliable way to learn OCR was needed: Docling reports no
             # error for a page it could not read.
             self.console.print(
-                f"[yellow]{result.near_empty} artifact(s) in {project_slug} "
+                f"[yellow]{result.near_empty} artifact(s) in {resource_slug} "
                 f"parsed to almost no text — likely rasterised or scanned. "
                 f"Enable OCR (PDF_OCR_ENABLED=true) to read them.[/yellow]"
             )
         if result.status in ("disabled", "stored"):
             return
         self.console.print(
-            f"[yellow]artifact trees for {project_slug}: {result.status} "
+            f"[yellow]artifact trees for {resource_slug}: {result.status} "
             f"(stored={result.stored} skipped={result.skipped})"
             f"{' — ' + result.reason if result.reason else ''}[/yellow]"
         )
@@ -604,7 +604,7 @@ class IngestionPipeline:
         "go_code": "go",
     }
 
-    def _ingest_code(self, local_root: Path, project_slug: str, ctype: CollectionType) -> list:
+    def _ingest_code(self, local_root: Path, resource_slug: str, ctype: CollectionType) -> list:
         from resource_explorer.ingestion.code_parser import CodeParser
         from resource_explorer.ingestion.code_symbol_extractor import CodeSymbolExtractor
 
@@ -614,19 +614,19 @@ class IngestionPipeline:
 
         # Clear stale symbols for this language before re-ingesting
         if language:
-            self.registry.clear_code_symbols(project_slug, language)
+            self.registry.clear_code_symbols(resource_slug, language)
 
         chunks = []
         all_symbols = []
         walked: list[tuple[str, str]] = []
         for path, content in self._local_files(local_root, ctype.file_extensions):
             walked.append((path, content))
-            chunks.extend(parser.parse(path, content, project_slug))
+            chunks.extend(parser.parse(path, content, resource_slug))
             if extractor:
-                all_symbols.extend(extractor.extract(path, content, project_slug, language))
+                all_symbols.extend(extractor.extract(path, content, resource_slug, language))
 
         if all_symbols:
-            self.registry.upsert_code_symbols(project_slug, all_symbols)
+            self.registry.upsert_code_symbols(resource_slug, all_symbols)
 
         # Containment trees, off by default. Distinct from the symbols above:
         # a symbol table answers what is declared and where it is referenced,
@@ -635,13 +635,13 @@ class IngestionPipeline:
         if language:
             from resource_explorer.ingestion.artifact_tree_sink import build_code_trees
             self._report_tree_result(
-                build_code_trees(walked, project_slug, language), project_slug,
+                build_code_trees(walked, resource_slug, language), resource_slug,
             )
 
         return chunks
 
     def _ingest_markdown(
-        self, local_root: Path, project_slug: str, ctype: CollectionType,
+        self, local_root: Path, resource_slug: str, ctype: CollectionType,
         extra_paths: list[tuple[str, Path]] | None = None,
     ) -> list:
         from resource_explorer.ingestion.doc_parser import DocParser
@@ -650,10 +650,10 @@ class IngestionPipeline:
         walked: list[tuple[str, str]] = []
         for path, content in self._local_files(local_root, ctype.file_extensions):
             walked.append((path, content))
-            chunks.extend(parser.parse_markdown(content, path, project_slug))
+            chunks.extend(parser.parse_markdown(content, path, resource_slug))
         for path, content in self._local_files_for_paths(extra_paths or [], ctype.file_extensions):
             walked.append((path, content))
-            chunks.extend(parser.parse_markdown(content, path, project_slug))
+            chunks.extend(parser.parse_markdown(content, path, resource_slug))
 
         # Containment trees, off by default (ARTIFACT_TREE_ENABLED). Built from
         # the SAME walk rather than a second read, and in addition to the chunks
@@ -661,13 +661,13 @@ class IngestionPipeline:
         # Fail-soft by construction: this cannot reduce what gets ingested.
         from resource_explorer.ingestion.artifact_tree_sink import build_trees
         self._report_tree_result(
-            build_trees(walked, project_slug, kind="markdown"), project_slug,
+            build_trees(walked, resource_slug, kind="markdown"), resource_slug,
         )
 
         return chunks
 
     def _ingest_web_docs(
-        self, local_root: Path, project_slug: str, ctype: CollectionType,
+        self, local_root: Path, resource_slug: str, ctype: CollectionType,
         extra_paths: list[tuple[str, Path]] | None = None,
     ) -> list:
         import re
@@ -684,7 +684,7 @@ class IngestionPipeline:
             for chunk_text in parser._fixed_window(text):
                 chunks.append(DocChunk(
                     text=chunk_text,
-                    metadata={"file_path": path, "project_slug": project_slug, "type": "web"},
+                    metadata={"file_path": path, "project_slug": resource_slug, "type": "web"},
                 ))
 
         # Trees from the ORIGINAL markup, not the tag-stripped text above.
@@ -693,13 +693,13 @@ class IngestionPipeline:
         # what a containment tree is for.
         from resource_explorer.ingestion.artifact_tree_sink import build_trees
         self._report_tree_result(
-            build_trees(all_files, project_slug, kind="html"), project_slug,
+            build_trees(all_files, resource_slug, kind="html"), resource_slug,
         )
 
         return chunks
 
     def _ingest_api_specs(
-        self, local_root: Path, project_slug: str, ctype: CollectionType,
+        self, local_root: Path, resource_slug: str, ctype: CollectionType,
         extra_paths: list[tuple[str, Path]] | None = None,
     ) -> list:
         from resource_explorer.ingestion.api_parser import APIParser
@@ -710,13 +710,13 @@ class IngestionPipeline:
             + self._local_files_for_paths(extra_paths or [], ctype.file_extensions)
         )
         for path, content in all_files:
-            parsed = parser.parse(path, content, project_slug)
+            parsed = parser.parse(path, content, resource_slug)
             if parsed:
                 chunks.extend(parsed)
         return chunks
 
     def _ingest_examples(
-        self, local_root: Path, project_slug: str, ctype: CollectionType,
+        self, local_root: Path, resource_slug: str, ctype: CollectionType,
         extra_paths: list[tuple[str, Path]] | None = None,
     ) -> list:
         from resource_explorer.ingestion.code_parser import CodeParser
@@ -735,15 +735,15 @@ class IngestionPipeline:
                     f.write(content)
                     tmp = f.name
                 try:
-                    chunks.extend(nb_parser.parse(tmp, project_slug))
+                    chunks.extend(nb_parser.parse(tmp, resource_slug))
                 finally:
                     os.unlink(tmp)
             else:
-                chunks.extend(code_parser.parse(path, content, project_slug))
+                chunks.extend(code_parser.parse(path, content, resource_slug))
         return chunks
 
     def _ingest_pdfs(
-        self, local_root: Path, project_slug: str, ctype: CollectionType,
+        self, local_root: Path, resource_slug: str, ctype: CollectionType,
         extra_paths: list[tuple[str, Path]] | None = None,
     ) -> list:
         from resource_explorer.ingestion.doc_parser import DocParser
@@ -777,7 +777,7 @@ class IngestionPipeline:
                 return
             converted.append((display, document))
             try:
-                chunks.extend(parser.parse_pdf(abs_str, project_slug, document=document))
+                chunks.extend(parser.parse_pdf(abs_str, resource_slug, document=document))
             except Exception:
                 pass
 
@@ -794,12 +794,12 @@ class IngestionPipeline:
             build_pdf_trees_from_documents,
         )
         self._report_tree_result(
-            build_pdf_trees_from_documents(converted, project_slug), project_slug,
+            build_pdf_trees_from_documents(converted, resource_slug), resource_slug,
         )
 
         return chunks
 
-    def _ingest_releases(self, repo, project_slug: str, ctype: CollectionType) -> list:
+    def _ingest_releases(self, repo, resource_slug: str, ctype: CollectionType) -> list:
         from resource_explorer.ingestion.doc_parser import DocChunk, DocParser
         parser = DocParser(ctype.chunk_size, ctype.chunk_overlap)
         chunks = []
@@ -818,7 +818,7 @@ class IngestionPipeline:
                     chunks.append(DocChunk(
                         text=chunk_text,
                         metadata={
-                            "project_slug": project_slug,
+                            "project_slug": resource_slug,
                             "tag": release.tag_name,
                             "published_at": release.published_at.isoformat() if release.published_at else "",
                             "type": "release_notes",

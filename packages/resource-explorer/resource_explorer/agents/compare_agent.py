@@ -37,7 +37,7 @@ class CompareAgent(BaseExplorerAgent):
             get_symbol_detail,
         ]
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
         slugs = self._infer_all_project_slugs(query)
 
         if len(slugs) < 2:

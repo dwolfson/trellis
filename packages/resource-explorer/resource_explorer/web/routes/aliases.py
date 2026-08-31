@@ -2,14 +2,21 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter()
 
 
 class AliasRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     alias: str
-    project_slug: str
+    # alias keeps the JSON wire key as `project_slug` while the Python
+    # vocabulary moves to `resource_slug`. A Pydantic field name IS the
+    # wire key, so this is the one place the identifier rename and the
+    # API contract are the same edit. index.html still sends the old
+    # key; drop the alias when the wire format moves too.
+    resource_slug: str = Field(alias="project_slug")
 
 
 @router.post("/")
@@ -17,10 +24,10 @@ async def add_alias(request: AliasRequest) -> dict:
     """Store a confirmed alias → project_slug mapping."""
     from resource_explorer.registry import ProjectRegistry
     registry = ProjectRegistry()
-    if not registry.exists(request.project_slug):
-        raise HTTPException(status_code=404, detail=f"Project '{request.project_slug}' not found")
-    registry.add_alias(request.alias, request.project_slug, confirmed_by="user")
-    return {"alias": request.alias, "project_slug": request.project_slug, "saved": True}
+    if not registry.exists(request.resource_slug):
+        raise HTTPException(status_code=404, detail=f"Project '{request.resource_slug}' not found")
+    registry.add_alias(request.alias, request.resource_slug, confirmed_by="user")
+    return {"alias": request.alias, "project_slug": request.resource_slug, "saved": True}
 
 
 @router.get("/{slug}")

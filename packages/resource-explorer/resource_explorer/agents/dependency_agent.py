@@ -19,8 +19,8 @@ class DependencyAgent(BaseExplorerAgent):
         from resource_explorer.agents.tools import query_dependencies, query_project_stats
         return [query_dependencies, query_project_stats]
 
-    def handle(self, query: str, project_slug: str | None = None, **kwargs) -> str:
-        slug = project_slug or self._infer_project_slug(query)
+    def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        slug = resource_slug or self._infer_project_slug(query)
 
         if not slug:
             projects = self._list_all_slugs()

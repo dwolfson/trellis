@@ -8,7 +8,7 @@ from resource_explorer.observability.reachability import endpoint_reachable
 def log_query(
     query: str,
     intent: str,
-    project_slug: str | None,
+    resource_slug: str | None,
     response: str,
     latency_ms: int,
     collections_used: list[str],
@@ -23,7 +23,7 @@ def log_query(
         with mlflow.start_run():
             mlflow.log_params({
                 "intent": intent,
-                "project_slug": project_slug or "all",
+                "project_slug": resource_slug or "all",
                 "collections_count": len(collections_used),
             })
             mlflow.log_metrics({

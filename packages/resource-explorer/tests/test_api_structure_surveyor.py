@@ -28,7 +28,7 @@ def project(registry):
 def _symbol(**overrides):
     from resource_explorer.ingestion.code_symbol_extractor import CodeSymbol
     defaults = dict(
-        project_slug="apiproj", file_path="mod.py", language="python",
+        resource_slug="apiproj", file_path="mod.py", language="python",
         kind="function", name="f", qualified_name="f", signature="()",
         docstring="", start_line=1, end_line=2,
     )
