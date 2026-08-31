@@ -221,3 +221,93 @@ class TestRetention:
         assert remaining == {"done": 1, "dead": 1, "pending": 1}, (
             "dead rows still need a human and pending rows are live work"
         )
+
+
+class TestRunScoping:
+    """A publisher that enqueues then drains inline must write ITS OWN rows.
+
+    An unscoped claim takes the oldest due rows in the table, so a publish
+    could drain an unrelated resource's backlog and return believing it had
+    published — the caller would see success with none of its own annotations
+    written.
+    """
+
+    def test_a_scoped_drain_leaves_other_runs_alone(self, db, project):
+        old = db.enqueue_outbox_element("repo", project, "annotation", "Old::0", {}, run_id="run-old")
+        mine = db.enqueue_outbox_element("repo", project, "annotation", "Mine::0", {}, run_id="run-mine")
+
+        claimed = db.claim_due_outbox_elements(run_id="run-mine")
+        assert [r["id"] for r in claimed] == [mine], "the older row must not be claimed"
+
+        discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g"}})()
+        drain_outbox(db, discovery, lambda qn: "", run_id="run-mine")
+
+        counts = db.outbox_counts()
+        assert counts == {"done": 1, "pending": 1}
+        assert [r["id"] for r in db.claim_due_outbox_elements()] == [old]
+
+    def test_an_unscoped_drain_still_sees_everything(self, db, project):
+        db.enqueue_outbox_element("repo", project, "annotation", "A::0", {}, run_id="r1")
+        db.enqueue_outbox_element("repo", project, "annotation", "B::0", {}, run_id="r2")
+        assert len(db.claim_due_outbox_elements()) == 2
+
+
+class TestEnqueueAnnotations:
+    def test_it_writes_one_row_per_annotation_with_indexed_qualified_names(self, db, project):
+        from resource_explorer.egeria_outbox import enqueue_annotations
+        from resource_explorer.surveyors.survey_report import ClassificationAnnotation
+
+        # The real annotation class, not a stub — build_annotation_body reads
+        # fields a hand-rolled fake will not have, and a fake that drifts from
+        # the real shape is how the filesystem publisher's AttributeError
+        # survived under test (see test_annotation_props.py's docstring).
+        anns = [ClassificationAnnotation(summary="a", analysis_step="s",
+                                         candidate_classifications=["python"]),
+                ClassificationAnnotation(summary="b", analysis_step="s",
+                                         candidate_classifications=["rust"])]
+        ids = enqueue_annotations(
+            db, "repo", project, anns, "report-guid",
+            "Annotation::p::2026-01-01T00:00:00", run_id="r1",
+        )
+        assert len(ids) == 2
+        rows = db.claim_due_outbox_elements(run_id="r1")
+        assert [r["qualified_name"] for r in rows] == [
+            "Annotation::p::2026-01-01T00:00:00::0",
+            "Annotation::p::2026-01-01T00:00:00::1",
+        ]
+        body = json.loads(rows[0]["payload_json"])
+        assert body["parentGUID"] == "report-guid"
+        assert body["class"] == "NewElementRequestBody"
+
+    def test_no_annotations_enqueues_nothing(self, db, project):
+        from resource_explorer.egeria_outbox import enqueue_annotations
+
+        assert enqueue_annotations(db, "repo", project, [], "g", "Q") == []
+        assert db.outbox_counts() == {}
+
+
+class TestDrainOutcomeIsVisible:
+    """Logging is not a surface: nothing configures logging and uvicorn.run()
+    is called without a log_config, so INFO is discarded and WARNING/ERROR
+    reach only the server's stderr. Failures must reach the activity log."""
+
+    def test_a_failure_is_written_to_the_activity_log(self, db, project):
+        _enqueue(db, project)
+
+        class D:
+            def create_annotation(self, body):
+                raise RuntimeError("egeria said no")
+
+        drain_outbox(db, D(), lambda qn: "")
+        entries = db.list_activity(limit=10)
+        assert any("Egeria publish incomplete" in e["summary"] for e in entries), (
+            "a failed drain must be visible in the Activity tab, not only on stderr"
+        )
+
+    def test_a_clean_pass_writes_no_activity_entry(self, db, project):
+        # An entry every quarter-hour saying nothing was wrong is how a log
+        # stops being read.
+        _enqueue(db, project)
+        discovery = type("D", (), {"create_annotation": lambda self, body: {"guid": "g"}})()
+        drain_outbox(db, discovery, lambda qn: "")
+        assert db.list_activity(limit=10) == []

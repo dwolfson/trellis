@@ -184,6 +184,24 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
     return props
 
 
+def build_annotation_body(ann, qualified_name: str, report_guid: str) -> dict:
+    """The exact body `DataDiscovery.create_annotation` expects.
+
+    Extracted so the two paths that create an annotation — publishing it
+    directly (`publish_annotations` below) and enqueueing it for the outbox
+    (`egeria_outbox.enqueue_annotations`) — build the identical payload. If
+    they diverged, a retried annotation would differ from the one the direct
+    path would have written, which is exactly the class of drift the outbox
+    exists to remove rather than introduce.
+    """
+    return {
+        "class": "NewElementRequestBody",
+        "parentGUID": report_guid,
+        "parentRelationshipTypeName": "ReportedAnnotation",
+        "properties": build_annotation_props(ann, qualified_name),
+    }
+
+
 def publish_annotations(
     discovery,
     find_element_guid,
@@ -238,13 +256,7 @@ def publish_annotations(
                       qualified_name, existing_guid)
             continue
 
-        props = build_annotation_props(ann, qualified_name)
-        body = {
-            "class": "NewElementRequestBody",
-            "parentGUID": report_guid,
-            "parentRelationshipTypeName": "ReportedAnnotation",
-            "properties": props,
-        }
+        body = build_annotation_body(ann, qualified_name, report_guid)
         try:
             discovery.create_annotation(body=body)
         except Exception as exc:

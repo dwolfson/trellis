@@ -3467,7 +3467,9 @@ class ProjectRegistry:
                 ).fetchone()["id"]
         return int(row_id)
 
-    def claim_due_outbox_elements(self, limit: int = 200, now: str | None = None) -> list[dict]:
+    def claim_due_outbox_elements(
+        self, limit: int = 200, now: str | None = None, run_id: str | None = None,
+    ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
         A row is due when it is pending/failed, its backoff has elapsed, AND
@@ -3476,20 +3478,32 @@ class ProjectRegistry:
         they hang off, so a partial drain leaves a coherent prefix rather than
         orphans.
 
+        `run_id` scopes the claim to one publish's rows. A publisher that
+        enqueues and then drains inline needs its OWN annotations written
+        before it returns; an unscoped claim takes the oldest due rows in the
+        table, which could be another resource's backlog entirely — leaving
+        the caller believing it had published when it had in fact drained
+        someone else's queue.
+
         Reads only — the drain marks each row in flight as it takes it, so this
         stays a plain query and the caller decides its own concurrency.
         """
         now = now or datetime.utcnow().isoformat()
+        sql = (
+            "SELECT o.* FROM egeria_outbox o "
+            "LEFT JOIN egeria_outbox dep ON dep.id = o.depends_on_id "
+            "WHERE o.status IN ('pending', 'failed') "
+            "  AND o.next_attempt_at <= ? "
+            "  AND (o.depends_on_id IS NULL OR dep.status = 'done') "
+        )
+        params: list = [now]
+        if run_id is not None:
+            sql += "  AND o.run_id = ? "
+            params.append(run_id)
+        sql += "ORDER BY o.id ASC LIMIT ?"
+        params.append(limit)
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT o.* FROM egeria_outbox o "
-                "LEFT JOIN egeria_outbox dep ON dep.id = o.depends_on_id "
-                "WHERE o.status IN ('pending', 'failed') "
-                "  AND o.next_attempt_at <= ? "
-                "  AND (o.depends_on_id IS NULL OR dep.status = 'done') "
-                "ORDER BY o.id ASC LIMIT ?",
-                (now, limit),
-            ).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
     def mark_outbox_done(self, row_id: int, egeria_guid: str = "") -> None:

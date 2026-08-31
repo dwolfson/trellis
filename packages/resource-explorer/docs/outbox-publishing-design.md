@@ -1,8 +1,9 @@
 # Outbox / retry publishing — design
 
-**Status:** steps 1-3 of §6 are BUILT. **D1 is settled: per element** (Dan, 2026-08-31).
-Step 4 — migrating the publishers to enqueue rather than call directly — is the remaining work
-before Phase 2. Written 2026-08-28 to unblock `architecture-recovery-design.md`
+**Status:** steps 1-4 are BUILT for the **repo** path — which is all Phase 2 needs (§6 step 4's
+own scoping). **D1 settled: per element** (Dan, 2026-08-31). Database, filesystem and
+investigation publishers still call Egeria directly. Written 2026-08-28 to unblock
+`architecture-recovery-design.md`
 §8.4, which names this as the sole remaining prerequisite for Phase 2 (Egeria projection of
 recovered architecture) and is blunt about why: *"a half-published blueprint is worse than none."*
 
@@ -253,12 +254,49 @@ and there the stored payload replays an identical qualifiedName.
    - **An unregistered `element_kind` raises** rather than quietly succeeding. Only `annotation`
      has a creator today; asset/report/relationship are registered as step 4 needs them.
 
-   **Not done, and deliberately:** a dead row is surfaced through `list_dead_outbox_elements()`
-   and an error log, not yet as an RFA. `rfa_actions` rows hang off an `activity_log` entry
+   **Logging is not a surface here — measured 2026-08-31.** Nothing in this package configures
+   logging, and `uvicorn.run()` (`cli/main.py:327`) is called without a `log_config`, so uvicorn
+   configures only its own `uvicorn.*` loggers. Application records fall through to Python's
+   `lastResort` handler: WARNING and ERROR reach the server's **stderr** with no timestamp and no
+   logger name, and **INFO is discarded outright** — which silently included the drain summary
+   line as first written. So `drain_outbox` now calls `record_drain_outcome`, writing failures and
+   dead-letters to the **activity log**, which the Activity tab already reads. A clean pass writes
+   nothing: an entry every quarter-hour saying nothing was wrong is how a log stops being read.
+
+   **Not done, and deliberately:** a dead row is surfaced through `list_dead_outbox_elements()`,
+   an error log and now an activity entry, but not yet as an RFA. `rfa_actions` rows hang off an `activity_log` entry
    (`entry_id`, `annotation_index`), so raising one from a dead outbox row is its own small
    integration rather than a line of code.
-4. Migrate publishers to enqueue rather than call directly — repo first, since Phase 2 needs only
-   that path; database/filesystem/investigation follow.
+4. **Repo publisher migrated — DONE.** `EgeriaPublisher._create_annotations` now enqueues one
+   outbox row per annotation and drains inline, instead of calling `publish_annotations`
+   directly.
+
+   **The asset and the SurveyReport stay synchronous, deliberately.** `publish()` returns the
+   report GUID and callers record it, so those two cannot become deferred work without breaking
+   that contract — and they do not need to. They are single elements whose failure aborts the
+   publish outright; annotations are the plural part, the part that swallowed failures per
+   element, and therefore the part where "half-published" actually happened.
+
+   **The happy path is byte-for-byte unchanged.** Rows are enqueued and drained within the same
+   call, so a successful publish still writes everything before returning. What changed is the
+   unhappy path: a failed annotation is now a durable row the scheduler retries with backoff,
+   rather than a warning in a log nobody reads. `_create_annotations` still does not raise —
+   `publish()`'s contract that a publish problem must not turn a successful survey into a
+   reported error is unchanged. The difference is that the work is no longer *lost* when it is
+   swallowed.
+
+   **The inline drain is scoped by `run_id`.** An unscoped claim takes the oldest due rows in
+   the table, which could be an entirely different resource's backlog — the publisher would then
+   return believing it had published while having drained someone else's queue. Found while
+   writing this, not in production; `TestRunScoping` pins it.
+
+   Falls back to the direct path when the publisher has no registry, since there is then nowhere
+   to record a row and silently skipping the annotations would be worse.
+
+   **Remaining:** database, filesystem and investigation publishers. Each needs its own
+   `element_kind` creators registered (`asset`, `report`, `relationship`) and is where
+   `depends_on_id` starts earning its place — those paths queue the report itself, so ordering
+   stops being trivially satisfied.
 5. Only then Phase 2 (§10 of the recovery design).
 
 **Note for step 4:** the two survey-launch paths still diverge on five axes (current-state doc

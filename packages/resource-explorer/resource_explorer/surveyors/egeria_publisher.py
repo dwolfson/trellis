@@ -530,19 +530,60 @@ class EgeriaPublisher:
     # ── annotations ───────────────────────────────────────────────────────────
 
     def _create_annotations(self, result: SurveyResult, report_guid: str) -> None:
-        """Delegates to the shared implementation — see annotation_props.py.
+        """Write this run's annotations to Egeria, through the outbox.
 
-        Kept as a method (rather than inlining the call at the one call site)
-        because tests reach for it by name. The qualifiedName prefix built
-        here — and specifically `result.surveyed_at.isoformat()`, this run's
-        own timestamp, NOT recomputed at publish time — is this run's
-        identity; do not remove it as a "fix"."""
-        from resource_explorer.surveyors.annotation_props import publish_annotations
+        The qualifiedName prefix built here — and specifically
+        `result.surveyed_at.isoformat()`, this run's own timestamp, NOT
+        recomputed at publish time — is this run's identity; do not remove it
+        as a "fix". It is also what makes a retry safe: the outbox replays the
+        stored payload, so a retried annotation carries a byte-identical
+        qualifiedName and converges on the element already written instead of
+        minting a second one.
 
+        **What changed, and what deliberately did not** (design §6 step 4).
+        Previously this called `publish_annotations` directly, which logs a
+        failed annotation and moves on — so a SurveyReport was reported
+        published even when every annotation beneath it failed to write, and
+        nothing anywhere remembered that they had not. Now each annotation is
+        recorded as a durable outbox row *first*, then applied immediately.
+
+        The happy path is therefore unchanged: rows are enqueued and drained
+        within this call, so a successful publish still writes everything
+        before returning, and callers see exactly what they saw before. What
+        changes is the unhappy path — a failure is now a row the scheduler
+        will retry with backoff, not a warning in a log nobody reads.
+
+        This method still does not raise on a failed annotation. That is
+        deliberate and unchanged: `publish()`'s contract is that a publish
+        problem must not turn an otherwise-successful survey into a reported
+        error. The difference is that the work is no longer lost when it is
+        swallowed.
+
+        Falls back to the direct path when there is no registry — an
+        EgeriaPublisher built without one has nowhere to record an outbox row,
+        and silently skipping the annotations would be worse than writing them
+        the old way.
+        """
         qualified_name_prefix = f"Annotation::{result.resource_slug}::{result.surveyed_at.isoformat()}"
-        publish_annotations(
-            self._discovery, self._find_element_guid,
-            result.annotations, report_guid, qualified_name_prefix,
+
+        if self._registry is None:
+            from resource_explorer.surveyors.annotation_props import publish_annotations
+
+            publish_annotations(
+                self._discovery, self._find_element_guid,
+                result.annotations, report_guid, qualified_name_prefix,
+            )
+            return
+
+        from resource_explorer.egeria_outbox import drain_outbox, enqueue_annotations
+
+        enqueue_annotations(
+            self._registry, "repo", result.resource_slug, result.annotations,
+            report_guid, qualified_name_prefix, run_id=qualified_name_prefix,
+        )
+        drain_outbox(
+            self._registry, self._discovery, self._find_element_guid,
+            limit=max(len(result.annotations), 1), run_id=qualified_name_prefix,
         )
 
     # ── sub-resource cataloging (repo scope-narrowing funnel doc, D2/D3) ────

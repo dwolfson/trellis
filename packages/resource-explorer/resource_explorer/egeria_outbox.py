@@ -123,7 +123,8 @@ _CREATORS: dict[str, Callable[[object, dict], str]] = {
 }
 
 
-def drain_outbox(registry, discovery=None, find_element_guid=None, *, limit: int = DRAIN_BATCH) -> dict:
+def drain_outbox(registry, discovery=None, find_element_guid=None, *,
+                 limit: int = DRAIN_BATCH, run_id: str | None = None) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
     Called from `scheduler.py`'s existing loop, once per iteration — the same
@@ -139,7 +140,7 @@ def drain_outbox(registry, discovery=None, find_element_guid=None, *, limit: int
     """
     summary = {"claimed": 0, "done": 0, "failed": 0, "dead": 0, "skipped": 0}
     try:
-        rows = registry.claim_due_outbox_elements(limit=limit)
+        rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary
@@ -176,6 +177,8 @@ def drain_outbox(registry, discovery=None, find_element_guid=None, *, limit: int
     if summary["dead"]:
         log.error("Outbox drain: %d row(s) dead-lettered and need a human — "
                   "see registry.list_dead_outbox_elements()", summary["dead"])
+    # Logging is not a surface here — see record_drain_outcome's docstring.
+    record_drain_outcome(registry, summary)
     return summary
 
 
@@ -186,3 +189,81 @@ def _default_clients():
 
     publisher = EgeriaPublisher()
     return publisher._discovery, publisher._find_element_guid
+
+
+def enqueue_annotations(
+    registry, entity_type: str, entity_slug: str, annotations: list,
+    report_guid: str, qualified_name_prefix: str, *, run_id: str = "",
+) -> list[int]:
+    """Record one outbox row per annotation. Returns the row ids, in order.
+
+    This is the write half of write-then-publish. The rows are durable before
+    anything is sent, so the per-process hole closes: a crash after this
+    returns leaves work the drain will finish, where previously it left
+    nothing at all.
+
+    `qualified_name_prefix` carries this run's own timestamp and the caller
+    owns its format entirely — the same contract `publish_annotations` has.
+    That is what makes a retry replay a byte-identical qualifiedName instead
+    of minting a new identity, so the replay converges on the element already
+    written rather than duplicating it.
+
+    No `depends_on_id`: the caller creates the SurveyReport synchronously and
+    passes its GUID, so the dependency these rows have is already satisfied
+    before they exist. Ordering matters when the report is itself queued —
+    which is what step 4's later publishers will need, and why the column is
+    there now.
+    """
+    from resource_explorer.surveyors.annotation_props import build_annotation_body
+
+    row_ids: list[int] = []
+    for i, ann in enumerate(annotations):
+        qualified_name = f"{qualified_name_prefix}::{i}"
+        body = build_annotation_body(ann, qualified_name, report_guid)
+        row_ids.append(registry.enqueue_outbox_element(
+            entity_type, entity_slug, "annotation", qualified_name, body, run_id=run_id,
+        ))
+    return row_ids
+
+
+def record_drain_outcome(registry, summary: dict, entity_type: str = "", entity_slug: str = "") -> None:
+    """Put a drain's failures where a person will actually see them.
+
+    Logging alone does not surface anything here: nothing in this package
+    configures logging and `uvicorn.run()` is called without a log_config, so
+    application records fall through to Python's lastResort handler — WARNING
+    and above reach the server's stderr with no timestamp or logger name, and
+    INFO is discarded outright. A dead-lettered publish that only logged would
+    be invisible in the UI, in any file, and in the activity trail.
+
+    So anything worse than "everything worked" is written to the activity log,
+    which the Activity tab already reads. A clean pass writes nothing — an
+    entry per quarter-hour tick saying "nothing was wrong" is how a log stops
+    being read.
+    """
+    if not summary.get("failed") and not summary.get("dead"):
+        return
+    from resource_explorer.activity_logger import log_catalog
+
+    dead, failed = summary.get("dead", 0), summary.get("failed", 0)
+    status = "error" if dead else "warning"
+    parts = []
+    if dead:
+        parts.append(f"{dead} element(s) dead-lettered after exhausting retries")
+    if failed:
+        parts.append(f"{failed} element(s) failed and will retry")
+    try:
+        log_catalog(
+            registry, entity_type or "repo", entity_slug or "", "", "",
+            status=status,
+            summary="Egeria publish incomplete — " + "; ".join(parts),
+            detail=(
+                f"Outbox drain: {summary}. "
+                "Dead-lettered rows are listed by registry.list_dead_outbox_elements() "
+                "and will not be retried without intervention."
+            ),
+        )
+    except Exception:
+        # The activity write is the visibility mechanism, not the work. If it
+        # fails, the rows themselves are still correct and still retryable.
+        log.exception("Outbox drain: could not record outcome to the activity log")
