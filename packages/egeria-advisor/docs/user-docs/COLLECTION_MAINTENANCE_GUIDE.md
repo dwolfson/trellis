@@ -122,14 +122,13 @@ open http://localhost:8880/admin
 Use the incremental indexer to refresh a single collection without touching the others:
 
 ```bash
-source activate_venv.sh
 
 # Re-index one collection (drops and rebuilds)
-python -m advisor.incremental_indexer --collection pyegeria
+uv run --package egeria-advisor python -m advisor.incremental_indexer --collection pyegeria
 
 # Common targets
-python -m advisor.incremental_indexer --collection egeria_concepts
-python -m advisor.incremental_indexer --collection egeria_templates
+uv run --package egeria-advisor python -m advisor.incremental_indexer --collection egeria_concepts
+uv run --package egeria-advisor python -m advisor.incremental_indexer --collection egeria_templates
 ```
 
 To re-index all collections from scratch, from a guaranteed-consistent snapshot of every
@@ -157,7 +156,7 @@ python scripts/ingest_collections.py --phase all --force
 1. Define a `CollectionMetadata` instance in `advisor/collection_config.py`. Choose parameters using the rationale above.
 2. Add it to `ALL_COLLECTIONS` in the same file.
 3. Add domain terms to `config/routing.yaml` under `collection_domain_terms` so the `CollectionRouter` can select it.
-4. Run `python -m advisor.incremental_indexer --collection <new_name>` to populate it.
+4. Run `uv run --package egeria-advisor python -m advisor.incremental_indexer --collection <new_name>` to populate it.
 5. Verify with `python scripts/count_vectors.py` and a test query via the Web UI.
 
 ---

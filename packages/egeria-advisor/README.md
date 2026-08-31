@@ -437,37 +437,76 @@ All query metrics are stored locally in `data/metrics.db` regardless of MLflow s
 
 ## Documentation
 
-### Design & Architecture
+New to Trellis entirely? Start at the [workspace quickstart](../../QUICKSTART.md), which gets
+both apps running without needing an Egeria server.
+
+### Getting started
+
+- [Quick Start](docs/user-docs/QUICK_START.md) — this app specifically, in five minutes
+- [Ollama setup](docs/user-docs/ollama-setup-guide.md) — the default LLM backend
+- [Testing guide](docs/user-docs/TESTING_GUIDE.md)
+
+### Using it
+
+- [Prompt Patterns Guide](docs/user-docs/PROMPT_PATTERNS_GUIDE.md) — examples by role, intent, and use case
+- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) — how routing works under the hood
+- [Interactive Routing Guide](docs/user-docs/INTERACTIVE_ROUTING_GUIDE.md) — when it asks you to disambiguate
+- [Data-Driven Routing Guide](docs/user-docs/DATA_DRIVEN_ROUTING_GUIDE.md)
+- [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md)
+- [Literate Governance Guide](docs/user-docs/LITERATE_GOVERNANCE_GUIDE.md) — authoring governance plans
+- [Report Spec Guide](docs/user-docs/REPORT_SPEC_GUIDE.md)
+- [CLI Command Agent Guide](docs/user-docs/CLI_COMMAND_AGENT_GUIDE.md)
+- [MCP Integration Guide](docs/user-docs/MCP_INTEGRATION_GUIDE.md)
+- [User Feedback Guide](docs/user-docs/USER_FEEDBACK_GUIDE.md)
+
+### Operating it
+
+- [Collection Maintenance Guide](docs/user-docs/COLLECTION_MAINTENANCE_GUIDE.md)
+- [Repo Update Guide](docs/user-docs/REPO_UPDATE_GUIDE.md)
+- [RAG Tuning Guide](docs/user-docs/RAG_TUNING_GUIDE.md)
+- [Quality Improvement Guide](docs/user-docs/QUALITY_IMPROVEMENT_GUIDE.md)
+- [ONNX Migration Guide](docs/user-docs/ONNX_MIGRATION_GUIDE.md) — the faster embedding path
+- [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md) and
+  [experiment tracking](docs/user-docs/mlflow-experiment-tracking-guide.md)
+
+### Design & architecture
 
 - [System Architecture](docs/design/SYSTEM_ARCHITECTURE.md)
 - [Multi-Collection Design](docs/design/MULTI_COLLECTION_DESIGN.md)
 - [Query Classification & Tracking](docs/design/QUERY_CLASSIFICATION_AND_TRACKING.md)
 - [Egeria Docs Split Strategy](docs/design/EGERIA_DOCS_SPLIT_STRATEGY.md)
 
-### Usage Guides
+How live subsystems actually work — these were unlinked until 2026-08-30, which is why they
+were hard to find rather than out of date:
 
-- [Quick Start](docs/user-docs/QUICK_START.md)
-- [Prompt Patterns Guide](docs/user-docs/PROMPT_PATTERNS_GUIDE.md) — examples by role, intent, and use case
-- [Query Routing Guide](docs/user-docs/QUERY_ROUTING_GUIDE.md) — how routing works under the hood
-- [Multi-Collection Usage Guide](docs/user-docs/MULTI_COLLECTION_USAGE_GUIDE.md)
-- [MLflow Enhanced Tracking](docs/user-docs/MLFLOW_ENHANCED_TRACKING.md)
+- [Incremental Indexing](docs/design/INCREMENTAL_INDEXING_DESIGN.md) — `advisor/incremental_indexer.py`
+- [Scoped Queries](docs/design/SCOPED_QUERIES_IMPLEMENTATION.md) and its
+  [troubleshooting notes](docs/design/SCOPED_QUERIES_TROUBLESHOOTING.md)
+- [Exhaustive Query Detection](docs/design/EXHAUSTIVE_QUERY_DETECTION.md)
+- [Metadata Filtering](docs/design/METADATA_FILTERING_ENHANCEMENT.md) — `advisor/metadata_filters.py`
+- [Code Analysis Update Guide](docs/design/CODE_ANALYSIS_UPDATE_GUIDE.md)
+- [Egeria & pyegeria wish list](docs/design/egeria-wishlist.md) — gaps found while integrating
+
+Finished and abandoned work is in [docs/archive/](docs/archive/README.md), which explains what
+moved there and why.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+This package is a member of the Trellis `uv` workspace — there is one shared `.venv` at the
+repo root and no per-package virtualenv to activate. Run everything from the workspace root.
 
 ```bash
-# Development setup
-source activate_venv.sh
-pip install -e ".[dev]"
+# Development setup — installs every workspace member
+uv sync
 
 # Format and lint
-black advisor/
-ruff check advisor/
-mypy advisor/
+uv run black packages/egeria-advisor/advisor/
+uv run ruff check packages/egeria-advisor/advisor/
+uv run mypy packages/egeria-advisor/advisor/
 
-# Run tests
-python scripts/test_end_to_end.py --quick
+# Run tests (the dev extra carries pytest-cov, which a plain `uv sync` omits)
+uv run --package egeria-advisor --extra dev pytest packages/egeria-advisor/tests
+# or, from the repo root: make test-ea
 ```
 
 ## Support

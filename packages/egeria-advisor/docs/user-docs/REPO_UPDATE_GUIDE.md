@@ -34,7 +34,7 @@ you suspect drift or want a guaranteed-consistent baseline.
 python scripts/ingest_collections.py --dry-run --phase all
 
 # 3. Incremental update (changed files only)
-python -m advisor.incremental_indexer --collection pyegeria
+uv run --package egeria-advisor python -m advisor.incremental_indexer --collection pyegeria
 
 # 4. Force full re-ingest of a specific collection
 python scripts/ingest_collections.py --collection pyegeria --force
@@ -92,15 +92,15 @@ chmod +x scripts/update_repos.sh
 The incremental indexer compares file modification times and content hashes, updating only changed chunks:
 
 ```bash
-python -m advisor.incremental_indexer --collection pyegeria
-python -m advisor.incremental_indexer --collection pyegeria_drE
+uv run --package egeria-advisor python -m advisor.incremental_indexer --collection pyegeria
+uv run --package egeria-advisor python -m advisor.incremental_indexer --collection pyegeria_drE
 ```
 
 **When to use incremental vs. full re-ingest:**
 
 | Situation | Command |
 |-----------|---------|
-| Normal repo update (some files changed) | `python -m advisor.incremental_indexer --collection <name>` |
+| Normal repo update (some files changed) | `uv run --package egeria-advisor python -m advisor.incremental_indexer --collection <name>` |
 | Collection config changed (new paths or patterns) | `python scripts/ingest_collections.py --collection <name> --force` |
 | First-time setup | `python scripts/ingest_collections.py --phase all --force` |
 | Embedding model changed | `python scripts/ingest_collections.py --phase all --force` |
@@ -145,7 +145,7 @@ python scripts/ingest_collections.py --phase all --force
 python scripts/count_vectors.py
 
 # Terminal dashboard (refreshes every 5 seconds)
-python -m advisor.dashboard.terminal_dashboard
+uv run --package egeria-advisor python -m advisor.dashboard.terminal_dashboard
 ```
 
 ## How Ingestion Works
