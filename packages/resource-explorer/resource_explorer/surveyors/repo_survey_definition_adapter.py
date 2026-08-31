@@ -2782,6 +2782,25 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "signals (build automation, deployment evidence, catalog self-description).",
         ["documentation_coverage", "repo_conventions"],
     ),
+    # Opened 2026-08-31 (docs/Backlog.md "Survey Results dashboards cover 14 of
+    # 29 analyses"): all three architecture analyses were homeless in this
+    # registry — architecture_recovery has its own bespoke card elsewhere in
+    # the UI, but nothing gathered its own summary (architecture_summary) and
+    # its doc-consistency lens (architecture_doc_lens) alongside it, even
+    # though a single authored question ("What is its internal architecture —
+    # what components exist and how do they relate?") already names all
+    # three together. render="grouped_cards" reuses each id's existing
+    # renderer as-is (architecture_recovery keeps its own perspective-tabbed
+    # custom view via _renderCustomAnalysisResults' dispatch) — no new
+    # frontend code needed, same pattern documentation_conventions above
+    # already proves out.
+    "architecture_overview": SurveyResultDashboard(
+        "architecture_overview", "Architecture Overview",
+        "Recovered architecture components, the depth-collapsed summary a question actually "
+        "asked for, and whether the project's own architecture document agrees with what was "
+        "recovered — three analyses of the same question, previously shown nowhere together.",
+        ["architecture_recovery", "architecture_summary", "architecture_doc_lens"],
+    ),
     "dependencies": SurveyResultDashboard(
         "dependencies", "Dependencies",
         "Package dependencies per ecosystem.",

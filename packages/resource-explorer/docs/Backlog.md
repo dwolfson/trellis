@@ -1720,13 +1720,24 @@ This is very likely the concrete shape of "the Results tab doesn't show results 
 surveys" (live-reported 2026-08-31) — the mental model of "card = summary, Results tab =
 in-depth" is the intended design, just an unfinished rollout rather than a different design.
 
-**Next step, undecided:** either extend `SURVEY_RESULT_DASHBOARDS` with the 11 missing ids
-(cheap — the plan doc already calls this "a one-entry addition," no new mechanism), fold some
-into existing dashboards (e.g. `cve_scan`/`foss_scorecard`/`cii_badge`/`community_support`/
-`chaoss_metrics` plausibly belong in or beside `security_overview`/`health_maturity`), or add new
-dashboards for the architecture-recovery family (which already has its own bespoke presentation
-outside this mechanism — see the Architecture recovery section above — so a dashboard entry here
-may be redundant rather than missing).
+**Status: 3 of the 11 closed 2026-08-31**, folded into one new dashboard. Added `architecture_overview`
+(`architecture_recovery` + `architecture_summary` + `architecture_doc_lens`) as a
+`render="grouped_cards"` dashboard — no new frontend code, same pattern
+`documentation_conventions` already proved out. Confirmed the pattern generalizes cleanly, but it
+also exposed a real, separate bug in `_results_have_data` (`web/routes/projects.py`): a never-run
+result shaped `{"state": "never_run", "message": "..."}` (not wrapped in `_status`) read as "has
+data" because the explanatory `message` string is non-empty, and `architecture_recovery`'s own
+decorative `documentation` field (documentation-SITE ingestion status, unrelated to its own
+findings) did the same. Both fixed and pinned with regression tests
+(`test_security_features_visibility.py`) — latent since result_status.py's vocabulary was
+adopted, just never triggered because none of the three analyses had reached a dashboard's
+`has_results` check before.
+
+**Remaining 8, still undecided** (`chaoss_metrics`, `cii_badge`, `community_support`, `cve_scan`,
+`foss_scorecard`, `interface_surface`, `repo_classification`, `manifest_parse`): extend
+`SURVEY_RESULT_DASHBOARDS` with them one at a time, or fold some into existing dashboards —
+`cve_scan`/`foss_scorecard`/`cii_badge`/`community_support`/`chaoss_metrics` plausibly belong in
+or beside `security_overview`/`health_maturity` rather than each needing their own card.
 
 #### MEDIUM — 27 stage/intent mismatches between the questions CSV and the analysis catalog; one question is unreachable
 
