@@ -876,6 +876,18 @@ ingest for an Egeria-sourced artifact, and `feedback` carries no `manifest_id`.)
 `compile_context` anywhere in the repo is `tests/test_context_compile.py`. On this list's own terms
 the compiler currently has no impact on RE.)*
 
+*(Superseded 2026-08-31: **10 is done and the "no caller" claim above is false.** `compile_context`
+has two real callers — `agents/conversation_agent.py`'s `_compiled_evidence()`, which injects packed
+evidence and judged gaps into the prompt, and `web/routes/compile_context.py` behind
+`POST /api/context/compile`, which the Chat panel's Evidence button calls. The compiler impacts RE.*
+
+*The stale line is left standing rather than rewritten because of what it is: a statement that was
+true when written, about a mechanism, that kept reading as a claim about the world after the world
+moved. That is the failure this document argues the compiler exists to prevent — "measured and found
+nothing" versus "never ran" versus "ran and could not tell" — and it went uncorrected here for a day
+while the thing it described was being built. A status note with no expiry is the same defect in
+prose. Date status notes, or make something fail when they go stale.)*
+
 ### Phase 4 — EA
 
 Gated on a decision rather than a task: **where the Investigation table lives and who writes it**
