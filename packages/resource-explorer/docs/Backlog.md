@@ -2480,56 +2480,58 @@ use during runtime, we need to know how to interface to it — what kind of API 
 language bindings, the number of commands. We don't need the names of every request and their
 payloads/signatures — until we want to actually try to use it."*
 
-That is a **suitability** question, and it wants a coarse answer. Measured against what
-`arch_recovery/interfaces.py` extracts today:
+That is a **suitability** question, and it wants a coarse answer.
 
-| The question | Answerable now? | Why |
-|---|---|---|
-| Does it expose an interface at all? | **yes** | Dockerfile `EXPOSE`, compose `ports:`/`expose:` |
-| What kind of API? | **partly** | an OpenAPI filename ⇒ `HTTP/REST` |
-| Is it gRPC? | **no** | `.proto` is not recognised. Nor GraphQL, nor Thrift |
-| How many operations/commands? | **no** | the OpenAPI document is matched by **filename** and never opened |
-| What language bindings ship with it? | **no** | nothing extracts them |
+**Items 1 and 2 below are DONE (`b1488be`, "RE: Milvus is gRPC-first and we could not see it")** —
+recorded here so the next reader doesn't re-derive it, since this entry sat stale describing them
+as open after they'd already landed. `interfaces.py` now recognises `.proto`/GraphQL SDL/Thrift IDL
+alongside OpenAPI (`_PROTO_EXT`/`_GRAPHQL_EXTS`/`_THRIFT_EXT`), and `operation_count` (OpenAPI
+`paths` × methods, `.proto` `service`/`rpc` counts) rides in each port's `additionalProperties`.
+Milvus's gRPC surface — the case that motivated this — is no longer invisible.
 
-`propose()`'s own docstring says it works "from deployment artifacts only", and `_OPENAPI_NAMES`
-is a six-entry filename tuple. So for **Milvus** — gRPC-first, SDKs in several languages — we
-record that it exposes ports and miss its actual interface entirely.
+**What genuinely remains open, sharpened by Dan 2026-08-30:**
 
-**The general principle this exposes, and it is bigger than the gap.** A coarse answer often
-requires a *deeper* analysis that is then summarised. "REST, ~40 operations, Python and Go
-bindings" means opening the OpenAPI document and scanning for binding directories, then reporting
-three facts rather than forty signatures. **Today we do neither half**: no deep read, and no
-summarisation step. What we emit instead is the raw analysis at its own natural granularity —
-154 components for Milvus (finding 99) — which is not a precision failure so much as a missing
-summarisation level.
+**A. OpenAPI/REST/Swagger detection needs a second path — it only sees a *committed* spec file
+today, and most REST services don't ship one.** `_OPENAPI_NAMES` is filename matching against a
+static document (`openapi.json`, `swagger.yaml`, …). A **FastAPI service generates its spec at
+runtime from its own route decorators** — this codebase's own web app is exactly that case — so a
+repo can serve a real, sizeable REST API and `interfaces.py` records nothing, because no file named
+in `_OPENAPI_NAMES` exists to find.
 
-This reframes the two-stage funnel that already exists. *"First determine if it's suitable; if so,
-later analyse the details to use it properly"* is Discovery → Analysis, and rule 17's
-`fetch_cost`/`compute_cost` already draws the cost boundary. What is missing is that **no step owns
-summarising up to the depth the question asked for.** Every surveyor emits at its own granularity
-and nothing collapses it.
+The evidence already exists, just not reused here: `code_markers.py`'s `fastapi-route-registration`
+rule matches individual `@app.get`/`.post`/`.put`/`.delete`/`.patch`/`.websocket` decorators — one
+match per route, already collected per-file for *component* classification
+(`arch_recovery/rules/fastapi-route.yml`). `len(matches)` is the operation count interfaces.py wants
+and doesn't have to derive it a second way. **This is real, additional work, not "just reuse it"
+for the other frameworks**: Spring's marker (`java-spring-service.yml`) matches
+`@RestController`/`@Controller` at the class level, and Go's (`go-http-server.yml`,
+`go-grpc-server.yml`) match server *construction* — neither is a per-endpoint marker today. Getting
+the same countable granularity for Spring needs a new rule on `@GetMapping`/`@PostMapping`/
+`@RequestMapping`-family method annotations; for Go it needs rules on whichever router's per-route
+registration call (`mux.HandleFunc`, gin's `.GET`, echo's `.GET`, …) a given service actually uses.
+FastAPI is the only language where this is genuinely "wire up what's already measured."
 
-**It also enlarges Purpose's role (§3 of the investigation-framing design).** If Purpose sets the
-required *depth of response*, it selects a summarisation level, not just a question ordering — and
-the same underlying analysis then serves both stages. A summariser over 154 components ("3
-subsystems, 8 services, one gRPC surface") answers the suitability question **without the component
-list needing to be correct at 8**, which is a materially cheaper path than the unported adjudicator.
+**B. Language bindings — Dan's steer narrows this from the original proposal, doesn't confirm it.**
+The entry as written proposed conventional directories (`clients/<lang>`, `sdk/<lang>`,
+`bindings/`) as the signal, and called it "weakest evidence of the three; do it last." Dan, 2026-08-30:
+*"Not sure about language bindings unless they are exported as a specific library — eg. pyegeria."*
+That rules the directory-convention approach out rather than deferring it — a folder named
+`clients/python` is not evidence a real, usable client library exists at that path, and the
+codebase's own `_deployment_context_of`-style principle (read a declared boundary, don't infer
+intent from a name) argues the same way here.
 
-**Proposed work, cheap first:**
+What Dan's example asks for instead: recognise a **named, published package that IS a client
+library for this project** — `pyegeria` is a real PyPI package, with its own name and description,
+that exists specifically to bind to Egeria. That is verifiable evidence a directory name is not.
+`manifest_parse.py`/`DependencyParser` already reads `pyproject.toml`/`package.json`/`pom.xml` for a
+project's *dependencies*; the same parsing surface could read a project's own declared package
+metadata (name, description, and for a monorepo, each published sub-package) to check whether the
+repo publishes something that presents as a binding for itself. Not designed further than that —
+this is a real, different mechanism from the original proposal, not an implementation detail of it,
+and should be scoped as its own small design pass before building.
 
-1. **Recognise `.proto`, GraphQL SDL and Thrift IDL** alongside OpenAPI. Filename/extension
-   matching, same tier, no new fetch. Fixes the Milvus-shaped blind spot where the primary
-   interface is invisible.
-2. **Open the interface document and count.** OpenAPI `paths` × methods, `.proto` `service`/`rpc`
-   declarations. A count is a summary, not a listing — the signatures stay unread until stage two,
-   exactly as the driving question asks. Note the existing `_port_dict` has no field for it, so
-   this needs one (`operation_count`, or a `SolutionPort` property if Egeria has one — **check the
-   vocabulary first**, as §5.5f asked and as has paid off three times).
-3. **Language bindings** — conventional directories (`clients/<lang>`, `sdk/<lang>`, `bindings/`)
-   plus per-ecosystem manifests. Weakest evidence of the three; do it last and label it derived.
-
-**Do NOT** extend this into reading request/response schemas. That is stage two, it is a different
-cost tier, and the driving question explicitly excludes it.
+**Do NOT** extend either A or B into reading request/response schemas or binding call signatures.
+That is stage two, a different cost tier, and the driving question explicitly excludes it.
 
 ---
 
