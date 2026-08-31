@@ -1,5 +1,11 @@
 # Recovering RE after Egeria's database is reset
 
+> **Changing a definition on a LIVE platform instead? Use
+> [`egeria-publishing-a-changed-definition.md`](egeria-publishing-a-changed-definition.md).**
+> This document assumes nothing exists and the bootstrap heals by canary. When the elements
+> already exist, two of the rules here invert: re-running a whole document duplicates every link
+> in it, and running the full questions document is usually wrong rather than required.
+
 **Status:** written 2026-08-21, from an actual reset rather than from theory. Every
 step below was run against a real recovery; where something is untested it says so.
 
@@ -186,6 +192,32 @@ empty.
 
 ---
 
+## 3a. The outbox does NOT restore anything — added 2026-08-31
+
+`egeria_outbox` arrived after this runbook was written, and it is the most
+confidently wrong state in the registry after a reset. A row is marked `done`
+with the GUID it created, `apply_element` short-circuits on a recorded GUID and
+returns without writing, and a `done` row is never claimed again. So those rows
+assert a completed publish, point at an element that is gone, and the retry
+machinery **deliberately will not touch them**.
+
+**Recovery is re-running the surveys, not draining the queue.** "The outbox
+guarantees delivery" is the natural assumption and it is wrong across a wipe:
+the queue guarantees delivery of work it still considers pending, and a reset
+does not make completed work pending again.
+
+`scripts/sweep_stale_egeria_guids.py` now clears them. It keys on the resource
+having no asset GUID rather than looking each row up: an annotation hangs off a
+SurveyReport which hangs off the asset, so if the asset is gone every row
+published beneath it is gone — the same inference the publish-claims sweep makes
+one table along, and it avoids hundreds of per-annotation round trips.
+
+Measured on the current catalogue before a reset: **92 completed rows across 3
+repos** (`egeria_git` 88, `egeria_docs` 3, `egeria_python_git` 1) would be
+stranded. Rows are cleared rather than re-queued — replaying a stored payload
+would create the annotation under a parent report and asset that are also gone,
+which is a second wrong state rather than an absent one.
+
 ## 4. What is *not* affected
 
 Worth stating, because the natural fear after a reset is that everything must be redone:
@@ -237,6 +269,7 @@ sweep script both knew only about the first.
 | `projects.egeria_asset_guid` | the ☁ Published badge, and anything needing the asset |
 | `investigations.egeria_project_guid` | the investigation renders "linked" to a Project that is gone; promoting again fails on a GUID nothing resolves |
 | `working_sets.egeria_collection_guid` | each disposition's Collection |
+| `egeria_outbox.egeria_guid` **(added 2026-08-31)** | a completed publish row asserting work that no longer exists — and the one the retry machinery will never revisit |
 
 `scripts/sweep_stale_egeria_guids.py` now checks all three, on both dry runs and
 `--apply`. It also clears `project_published_annotation_types` alongside the
