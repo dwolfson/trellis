@@ -40,6 +40,14 @@ class ConversationAgent(BaseExplorerAgent):
         self.project_slug = project_slug
         self._rag = rag_system  # optional pre-warmed fallback; created lazily if None
         self._agent = None  # lazy-init; kept alive across turns
+        #: The CompiledContext behind the most recent handle() call, or None.
+        #: _compiled_evidence() computes this on every turn and previously
+        #: discarded it once the prompt lines were built -- the caller (the
+        #: HTTP route) had no way to show a user the same manifest/gaps/
+        #: pointers that shaped the answer without a second, separate compile
+        #: call. Read-after-handle() by the route, same pattern _sessions
+        #: already uses to treat this agent as a stateful, reused object.
+        self._last_compiled = None
 
     def system_prompt(self) -> str:
         scope = f" for the {self.project_slug} project/resource" if self.project_slug else ""
@@ -130,6 +138,11 @@ class ConversationAgent(BaseExplorerAgent):
             from resource_explorer.agents.examples_agent import ExamplesAgent
             return ExamplesAgent().handle(query, project_slug=slug)
 
+        # Reset per turn, not just on failure -- a question with no resource
+        # in scope must not show the previous turn's compiled evidence as if
+        # it belonged to this answer.
+        self._last_compiled = None
+
         lines: list[str] = []
         if slug:
             lines.append(f"Project: {slug}")
@@ -200,6 +213,8 @@ class ConversationAgent(BaseExplorerAgent):
         except Exception:
             logger.debug("compiled evidence unavailable for %s", slug, exc_info=True)
             return []
+
+        self._last_compiled = compiled
 
         out: list[str] = []
         if compiled.text.strip():
