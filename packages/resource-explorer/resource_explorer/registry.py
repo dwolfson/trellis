@@ -332,6 +332,22 @@ TARGET_ANALYSIS = "analysis"
 TARGET_SURVEY = "survey"
 
 
+#: A finding row carrying this `label` WITHDRAWS its `scope_locator`: it states
+#: that as of that `surveyed_at`, whatever used to propose this scope no longer
+#: does. See `docs/architecture-recovery-scope-tombstoning.md` in
+#: resource-explorer for the full design.
+#:
+#: A reserved LABEL rather than a check_name, so the registry stays
+#: kind-agnostic — any analysis kind withdraws a scope the same way, and
+#: `query_finding_scopes` needs one generic rule rather than a vocabulary of
+#: per-kind exceptions.
+#:
+#: **Withdrawal is not deletion.** The rows stay, `query_findings` still returns
+#: them, and `query_findings_all_runs` is untouched — the provenance view must
+#: keep answering "who proposed what, ever" after the current answer changes.
+WITHDRAWN_LABEL = "withdrawn"
+
+
 class ProjectRegistry:
     def __init__(self, db_path: str = "data/registry.db", database_url: str | None = None) -> None:
         """database_url, when given, is used verbatim — bypassing the
@@ -1352,6 +1368,37 @@ class ProjectRegistry:
                 "ON resource_curator_notes(entity_type, entity_slug)"
             )
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS architecture_component_verdicts (
+                    id             TEXT PRIMARY KEY,
+                    entity_type    TEXT NOT NULL,
+                    entity_slug    TEXT NOT NULL,
+                    scope_locator  TEXT NOT NULL,
+                    verdict        TEXT NOT NULL,   -- 'accepted' | 'rejected' | 'retyped'
+                    retyped_to     TEXT NOT NULL DEFAULT '',
+                    note           TEXT NOT NULL DEFAULT '',
+                    created_at     TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_architecture_component_verdicts_scope "
+                "ON architecture_component_verdicts(entity_type, entity_slug, scope_locator)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS architecture_materialized_components (
+                    id             TEXT PRIMARY KEY,
+                    entity_type    TEXT NOT NULL,
+                    entity_slug    TEXT NOT NULL,
+                    scope_locator  TEXT NOT NULL,
+                    qualified_name TEXT NOT NULL,
+                    guid           TEXT NOT NULL,
+                    materialized_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_architecture_materialized_components_scope "
+                "ON architecture_materialized_components(entity_type, entity_slug, scope_locator)"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_schedules (
                     entity_type  TEXT NOT NULL,
                     entity_slug  TEXT NOT NULL,
@@ -2050,6 +2097,159 @@ class ProjectRegistry:
             cur = conn.execute("DELETE FROM resource_curator_notes WHERE id=?", (note_id,))
         return cur.rowcount > 0
 
+    #: Valid architecture_component_verdicts.verdict values — kept here
+    #: (rather than only in the route's Pydantic model) so a caller reading
+    #: this module has one place to find the vocabulary.
+    COMPONENT_VERDICTS = {"accepted", "rejected", "retyped"}
+
+    def record_component_verdict(
+        self, entity_type: str, entity_slug: str, scope_locator: str,
+        verdict: str, retyped_to: str = "", note: str = "",
+    ) -> dict:
+        """A curator's accept/reject/retype call on one proposed architecture
+        component (docs/Backlog.md "take architecture results into Curate").
+
+        Append-only, same convention as every other findings-shaped table in
+        this codebase (query_findings, architecture_decisions): a new verdict
+        is a new row, not an UPDATE. This is deliberate, not an oversight —
+        the backlog entry's own constraint is that "a curator's verdict is
+        evidence of a different kind, not a rewrite of what the detectors
+        said" (§4.2 "map, never merge"), and that applies to a curator's OWN
+        prior verdicts too: if someone accepts a component and later rejects
+        it, both calls are real history, not a correction of a mistake.
+        get_component_verdicts() reads back only the latest per scope;
+        list_component_verdict_history() returns the full trail.
+
+        scope_locator is the same join key architecture_recovery findings use
+        (persist.py's scope_locator_for) — the component's path prefix — so
+        the results reader can attach a verdict to a component by the same
+        key it already groups on, with no separate identity to keep in sync.
+        """
+        if verdict not in self.COMPONENT_VERDICTS:
+            raise ValueError(f"verdict must be one of {self.COMPONENT_VERDICTS}, got {verdict!r}")
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "scope_locator": scope_locator,
+            "verdict": verdict,
+            "retyped_to": retyped_to,
+            "note": note,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO architecture_component_verdicts
+                   (id, entity_type, entity_slug, scope_locator, verdict, retyped_to, note, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
+    def get_component_verdicts(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{scope_locator: latest verdict row} for every component this
+        resource has ever received a verdict on — the shape
+        _architecture_recovery_results merges onto each component by `path`.
+        One query, not one per component, same reasoning as
+        query_finding_scopes' withdrawal check."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_component_verdicts
+                   WHERE entity_type=? AND entity_slug=?
+                   ORDER BY created_at ASC""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        # ASC-ordered, so the last write per scope_locator wins on overwrite —
+        # same "newest instant" rule query_findings uses.
+        latest: dict[str, dict] = {}
+        for r in rows:
+            latest[r["scope_locator"]] = dict(r)
+        return latest
+
+    def list_component_verdict_history(
+        self, entity_type: str, entity_slug: str, scope_locator: str,
+    ) -> list[dict]:
+        """Every verdict ever recorded for one component, newest first —
+        the full trail behind get_component_verdicts()'s single latest row,
+        same relationship query_findings_all_runs has to query_findings."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_component_verdicts
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=?
+                   ORDER BY created_at DESC""",
+                (entity_type, entity_slug, scope_locator),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_materialized_component(
+        self, entity_type: str, entity_slug: str, scope_locator: str,
+    ) -> dict | None:
+        """Whether a real Egeria SolutionComponent already exists for this
+        scope, or None. The idempotency check ComponentMaterializer runs
+        before ever calling Egeria — a re-materialize (e.g. a curator
+        re-accepting after re-running the underlying survey) must find the
+        existing element, not create a duplicate. One row per scope: unlike
+        verdicts, there is nothing append-only about "does this exist in
+        Egeria" — it is a fact with one current answer, kept current by
+        `record_materialized_component`'s INSERT OR REPLACE."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM architecture_materialized_components
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=?""",
+                (entity_type, entity_slug, scope_locator),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_materialized_components(self, entity_type: str, entity_slug: str) -> dict[str, dict]:
+        """{scope_locator: row} for every component this resource has ever
+        materialized — the bulk read the results reader merges onto each
+        component alongside its verdict, one query for the whole resource
+        rather than a per-component round trip. Mirrors
+        get_component_verdicts' shape exactly; the only difference is that
+        this table has no history to collapse (see
+        get_materialized_component's docstring)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM architecture_materialized_components
+                   WHERE entity_type=? AND entity_slug=?""",
+                (entity_type, entity_slug),
+            ).fetchall()
+        return {r["scope_locator"]: dict(r) for r in rows}
+
+    def record_materialized_component(
+        self, entity_type: str, entity_slug: str, scope_locator: str,
+        qualified_name: str, guid: str,
+    ) -> dict:
+        """Record that `scope_locator` now has a real Egeria SolutionComponent.
+        Keyed by (entity_type, entity_slug, scope_locator) as a natural key
+        via INSERT OR REPLACE, not appended — see get_materialized_component's
+        docstring for why this table's shape differs from the verdicts
+        table it sits beside."""
+        from datetime import timezone
+        entry = {
+            "id": str(uuid.uuid4()),
+            "entity_type": entity_type,
+            "entity_slug": entity_slug,
+            "scope_locator": scope_locator,
+            "qualified_name": qualified_name,
+            "guid": guid,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """DELETE FROM architecture_materialized_components
+                   WHERE entity_type=? AND entity_slug=? AND scope_locator=?""",
+                (entity_type, entity_slug, scope_locator),
+            )
+            conn.execute(
+                """INSERT INTO architecture_materialized_components
+                   (id, entity_type, entity_slug, scope_locator, qualified_name, guid, materialized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                tuple(entry.values()),
+            )
+        return entry
+
     _SCHEDULE_DAYS: dict[str, int] = {"daily": 1, "weekly": 7, "monthly": 30}
 
     def _next_run_iso(self, schedule: str, enabled: bool) -> str:
@@ -2553,6 +2753,7 @@ class ProjectRegistry:
         "survey_definition_cache", "egeria_linkage_status",
         "resource_working_set", "entity_egeria_project_context",
         "working_set_members", "notification_subscriptions",
+        "architecture_component_verdicts", "architecture_materialized_components",
     )
 
     def rename_project_slug(self, old_slug: str, new_slug: str, *,
@@ -3173,11 +3374,18 @@ class ProjectRegistry:
         means differs per kind (a gap-count for security, a quality-rank for
         documentation) — that aggregation belongs in each kind's own
         trend_reader (repo_survey_definition_adapter.py), not as per-kind
-        SQL branches in this otherwise-generic function."""
+        SQL branches in this otherwise-generic function.
+
+        `scope_locator` is included (added 2026-08-30) so a scope-keyed kind can
+        answer "which scopes did this step write, and when" in ONE query rather
+        than one per scope — architecture recovery has ~1000 scopes on `egeria`,
+        so the per-scope form is not usable at persist time. Additive: existing
+        callers read named keys."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at "
+                "SELECT check_name, label, summary, confidence, detail_json, surveyed_at, "
+                "       scope_locator "
                 "FROM project_analysis_findings WHERE project_slug = ? AND kind = ? "
                 "ORDER BY surveyed_at ASC",
                 (slug, kind),
@@ -3288,7 +3496,8 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def query_finding_scopes(self, slug: str, kind: str, check_name: str = "") -> list[str]:
+    def query_finding_scopes(self, slug: str, kind: str, check_name: str = "",
+                             include_withdrawn: bool = False) -> list[str]:
         """Distinct `scope_locator`s that currently have at least one
         finding row for (slug, kind) — optionally narrowed to one
         check_name. This is the "list every component" query for a
@@ -3296,6 +3505,27 @@ class ProjectRegistry:
         (design doc §6.0: a component IS a scope_locator/path prefix),
         where query_findings' single-scope_locator contract has nothing to
         enumerate against. Ordered for stable UI rendering, not by recency.
+
+        **Withdrawn scopes are excluded** unless `include_withdrawn=True`
+        (step 2 of docs/architecture-recovery-scope-tombstoning.md). This
+        query previously had NO notion of currency — no timestamp, no
+        recency, no filter — so a scope, once written, was enumerable
+        forever. Measured 2026-08-30: 165 of `egeria_git`'s 1035 component
+        scopes were written by no current run, and 27 of its 35
+        deployment-perspective components were dead, every one rendered at
+        its original confidence.
+
+        A withdrawal is a row carrying `label = WITHDRAWN_LABEL`, written on
+        the vacated scope. The mechanism is a reserved LABEL rather than an
+        architecture-specific check_name so this method stays kind-agnostic:
+        any analysis kind may withdraw a scope the same way.
+
+        **A scope counts as withdrawn only when the newest information about
+        it says so and nothing at that instant says otherwise** — i.e. at its
+        latest `surveyed_at` there is a withdrawal and no ordinary row. That
+        gives revival for free: `repo_arch_detect` and `repo_arch_coupling`
+        write the same kind, so a scope one step still proposes stays live
+        even after the other withdraws it, with no special case.
         """
         slug = self._normalize_slug(slug)
         sql = "SELECT DISTINCT scope_locator FROM project_analysis_findings WHERE project_slug = ? AND kind = ?"
@@ -3306,7 +3536,27 @@ class ProjectRegistry:
         sql += " ORDER BY scope_locator"
         with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [r["scope_locator"] for r in rows]
+            scopes = [r["scope_locator"] for r in rows]
+            if include_withdrawn or not scopes:
+                return scopes
+            # One query for every scope's newest instant, then which of those
+            # instants are withdrawal-only. Deliberately NOT narrowed by
+            # check_name: a withdrawal is about the SCOPE, so it must be
+            # visible to a caller enumerating any check_name within it.
+            withdrawn = conn.execute(
+                "SELECT f.scope_locator FROM project_analysis_findings f "
+                "JOIN (SELECT scope_locator, MAX(surveyed_at) AS ts "
+                "      FROM project_analysis_findings "
+                "      WHERE project_slug = ? AND kind = ? GROUP BY scope_locator) latest "
+                "  ON f.scope_locator = latest.scope_locator AND f.surveyed_at = latest.ts "
+                "WHERE f.project_slug = ? AND f.kind = ? "
+                "GROUP BY f.scope_locator "
+                "HAVING SUM(CASE WHEN f.label = ? THEN 1 ELSE 0 END) > 0 "
+                "   AND SUM(CASE WHEN f.label = ? THEN 0 ELSE 1 END) = 0",
+                (slug, kind, slug, kind, WITHDRAWN_LABEL, WITHDRAWN_LABEL),
+            ).fetchall()
+        dead = {r["scope_locator"] for r in withdrawn}
+        return [s for s in scopes if s not in dead]
 
     def query_findings_all_runs(self, slug: str, kind: str, scope_locator: str) -> list[dict]:
         """Every finding row ever written for one (kind, scope_locator) —

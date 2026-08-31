@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass
 
 from trellis_artifact_tree.model import Rung
-from trellis_context import Candidate, ContextSpec, Section, pack
+from trellis_context import Candidate, ContextSpec, Pointer, Section, pack
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,83 @@ class CompiledContext:
     derivation: list[dict]
 
 
+#: No single finding may take more than this share of a section's FULL rung.
+#: Findings are written for whatever consumer the surveyor had in mind, and some
+#: of those are not prose: a rendered diagram, a serialised graph, a file listing.
+#: One of them can consume a whole section's budget and crowd out every other
+#: check in the same analysis, which is a worse context than omitting it.
+#: Truncation is marked, never silent — an elided finding that looked complete
+#: would be the failure this module keeps finding in other forms.
+MAX_FINDING_CHARS = 1200
+
+#: Below this, a section's findings are too slight to be trusted as the whole
+#: story, and the analysis's own results reader is consulted as well. Set at the
+#: same order as the near-empty tree threshold and for the same reason: it marks
+#: "this says almost nothing", not "this is short".
+THIN_FINDINGS_CHARS = 200
+
+#: Words too common to carry relevance on either side of _question_relevance's
+#: overlap -- without this, "results"/"survey" (present in nearly every
+#: question a Resource Explorer user asks, because that is what this tool
+#: does) would inflate every catalog entry's score roughly equally, which is
+#: the same as not scoring at all.
+_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "it", "of", "to", "and", "or", "for",
+    "on", "in", "at", "this", "that", "what", "how", "does", "do", "show",
+    "me", "all", "with", "about", "results", "result", "survey",
+})
+
+
+def _question_relevance(question: str, catalog_question: str, analysis_ids: list[str]) -> float:
+    """How much a catalog entry's own question and analysis ids overlap the
+    free-text question actually asked, as a fraction of the asked question's
+    own (stopword-stripped) tokens. Deterministic word-overlap, not an
+    embedding or model call — the packer must never trigger one (§20).
+
+    Measured 2026-08-31: asking "documentation survey results" packed
+    repository_health / architecture_doc_lens / language_file_classification
+    ahead of documentation_coverage itself, then dropped documentation_coverage
+    as a gap entirely — `question` was accepted by compile_context() and never
+    read again; every catalog entry weighed the same regardless of what was
+    asked, decaying only by its arbitrary position in the YAML. The model,
+    given evidence that did not answer the question, fell back to
+    vector_search and answered from Egeria's OWN documentation about its
+    Survey Framework feature — a keyword collision on "survey", not an answer
+    about the repository's documentation.
+
+    Analysis ids are folded into the candidate token set alongside the
+    catalog's own question phrasing: "documentation_coverage" tokenizes to
+    "documentation"/"coverage", which is the one thing an asker is most
+    likely to have said even when the catalog's own phrasing ("How well
+    documented is it?") shares no token with it.
+
+    A score, not a filter: Purpose already establishes that this system
+    ranks what it is uncertain of rather than excluding it (see
+    question_catalog_reader.get_questions()'s own docstring). This returns
+    0.0 for no overlap, not None or an exclusion — the caller decides what a
+    zero means for ranking.
+    """
+    import re
+    q_tokens = set(re.findall(r"[a-z0-9]+", question.lower())) - _STOPWORDS
+    if not q_tokens:
+        return 0.0
+    candidate_tokens = set(re.findall(r"[a-z0-9]+", catalog_question.lower()))
+    for aid in analysis_ids:
+        candidate_tokens |= set(aid.split("_"))
+    candidate_tokens -= _STOPWORDS
+    return len(q_tokens & candidate_tokens) / len(q_tokens)
+
+
+def _clip(text: str, analysis_id: str, check: str) -> str:
+    if len(text) <= MAX_FINDING_CHARS:
+        return text
+    return (
+        text[:MAX_FINDING_CHARS].rstrip()
+        + f"\n  […truncated {len(text) - MAX_FINDING_CHARS} chars — read "
+          f"{analysis_id}/{check} directly for the whole thing]"
+    )
+
+
 def _findings_to_rungs(findings: list[dict], analysis_id: str) -> dict[Rung, str]:
     """Three rungs from stored findings, all free — no summariser involved.
 
@@ -76,7 +153,7 @@ def _findings_to_rungs(findings: list[dict], analysis_id: str) -> dict[Rung, str
     for f in findings:
         check = f.get("check_name") or "?"
         label = f.get("label") or ""
-        text = (f.get("summary") or "").strip()
+        text = _clip((f.get("summary") or "").strip(), analysis_id, check)
         names.append(check)
         summary.append(f"- {check}: {label}" if label else f"- {check}")
         full.append(f"- {check}: {label}\n  {text}" if text else f"- {check}: {label}")
@@ -142,9 +219,34 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
     than field-aware: FULL is the payload, SUMMARY names each top-level part
     with its size, IDENTIFIERS names the parts. A reader that knew each shape
     would be a fourth place to keep that knowledge in sync.
+
+    ONE exception, and it is a shape, not an analysis: `{"findings": [...]}`
+    with `check_name`/`label`/`summary` per item is the same finding shape
+    `_findings_to_rungs` already formats well from the findings table itself
+    -- `_documentation_results`, `_license_results`,
+    `_repo_classification_results` and others return exactly this ("same
+    uniform finding shape" is their own recurring comment). Measured
+    2026-08-31: documentation_coverage's SUMMARY read
+    "- findings: 4 item(s)\n- _status: 5 key(s)", and the model narrated
+    that structural summary verbatim as "5 key(s) with 4 item(s) found" --
+    real per-check content, reduced to two counts, then repeated back as if
+    it meant something. Recognizing this one recurring shape and reusing
+    `_findings_to_rungs`' own formatting is not the field-aware special-
+    casing above rules out; it is not re-deriving from `_status` or any
+    other field this function still treats structurally.
     """
     if not _has_content(results):
         return {}
+
+    findings = results.get("findings")
+    if isinstance(findings, list) and findings and all(
+        isinstance(f, dict) and "check_name" in f for f in findings
+    ):
+        rungs = dict(_findings_to_rungs(findings, analysis_id))
+        other = sorted(k for k in results if k != "findings")
+        if other:
+            rungs[Rung.FULL] += "\n(also: " + ", ".join(other) + ")"
+        return rungs
 
     def _extent(value) -> str:
         if isinstance(value, list):
@@ -154,13 +256,45 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
         return str(value)
 
     keys = sorted(results)
+    # Fenced, not bare -- this text reaches two readers: the model, for which a
+    # ```json block is exactly as parseable as a bare dump, and now the Chat
+    # panel's own "show packed text" toggle, which renders it through
+    # marked.parse(). Unfenced, a raw JSON dump reads as a run-on paragraph of
+    # braces; fenced, marked.js gives it a monospace block. Same bytes reach
+    # the model either way -- this is a display fix, not a content change.
     return {
-        Rung.FULL: f"## {analysis_id}\n"
-                   + json.dumps(results, indent=2, default=str, sort_keys=True),
+        Rung.FULL: f"## {analysis_id}\n```json\n"
+                   + json.dumps(results, indent=2, default=str, sort_keys=True)
+                   + "\n```",
         Rung.SUMMARY: f"## {analysis_id}\n"
                       + "\n".join(f"- {k}: {_extent(results[k])}" for k in keys),
         Rung.IDENTIFIERS: f"## {analysis_id}\nreports: " + ", ".join(keys),
     }
+
+
+#: Which analyses have a real, addressable view to point at. Deliberately
+#: narrow: Backlog "a compiled answer should be able to POINT at a view" notes
+#: deep-linking to a perspective/scope is the *prerequisite* work, and today
+#: only the architecture card has perspective tabs (`_archTabsHtml` in
+#: index.html) worth linking into. Add an entry here once a view exists to
+#: point at — the compiler side needs no other change, since `Pointer` is
+#: already resource/analysis-agnostic.
+_POINTABLE_VIEWS = {"architecture_recovery": "architecture"}
+
+
+def _pointer_for(analysis_id: str, slug: str, provenance: tuple[dict, ...]) -> Pointer | None:
+    """A link to where this analysis's own view lives, alongside its prose.
+
+    `as_of` comes from the analysis's own `surveyed_at`, not compile time —
+    the same fact-vs-read distinction `_provenance` already draws (§10):
+    the pointer should say when the view's *data* is from, not when this
+    context happened to be compiled.
+    """
+    view = _POINTABLE_VIEWS.get(analysis_id)
+    if view is None:
+        return None
+    surveyed_at = next((p.get("surveyed_at") for p in provenance if p.get("surveyed_at")), "")
+    return Pointer(resource_slug=slug, view=view, as_of=surveyed_at or "")
 
 
 def _provenance(findings: list[dict], analysis_id: str) -> tuple[dict, ...]:
@@ -220,6 +354,12 @@ def compile_context(
     # Rank matters: Purpose ORDERS, so the analyses reached by the highest-ranked
     # questions become the heaviest sections. Nothing is excluded by ranking --
     # a low-ranked analysis is a light section, not an absent one.
+    #
+    # `question` relevance is folded into rank too, not just Purpose/Perspective
+    # -- see _question_relevance's docstring for the reported failure this
+    # fixes. Without it, a compile with no Perspective chips set (the common
+    # case) ranks every one of the ~50 catalog questions by nothing but their
+    # position in the YAML, regardless of what was actually asked.
     weights: dict[str, float] = {}
     derivation: list[dict] = []
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
@@ -239,7 +379,13 @@ def compile_context(
         if not ids:
             continue
         # Weight decays with rank but never reaches zero.
-        weight = 1.0 / (1 + position * 0.1)
+        relevance = _question_relevance(question, entry["question"], ids)
+        # relevance dominates position by design: a question that names what
+        # it wants ("documentation") must outrank an unrelated question that
+        # merely sits earlier in the YAML. Position still breaks ties among
+        # equally (ir)relevant entries and keeps every entry's weight above
+        # zero -- nothing is excluded, same rule Purpose already follows.
+        weight = (1.0 + relevance * 20.0) / (1 + position * 0.1)
         for analysis_id in ids:
             weights[analysis_id] = max(weights.get(analysis_id, 0.0), weight)
         derivation.append({
@@ -247,8 +393,24 @@ def compile_context(
             "matched_purposes": d.get("matched_purposes", []),
             "matched_perspectives": d.get("matched_perspectives", []),
             "analysis_ids": ids,
+            # `rank` is this entry's position in get_questions()'s own
+            # Purpose-ordered catalog list -- NOT its position in this
+            # `derivation` list once sorted below. A low catalog rank with
+            # high relevance now sorts earlier here while keeping a
+            # numerically later `rank`; a reader wanting "why did this pack
+            # first" wants list order, and a reader wanting "where does the
+            # catalog itself rank this" wants `rank` -- they can diverge on
+            # purpose. (S4 review, 2026-08-31: confirmed worth calling out
+            # explicitly rather than leaving both readings equally plausible.)
             "rank": position,
+            "relevance": round(relevance, 2),
         })
+
+    # Sort by weight, not by catalog rank, before packing -- the manifest and
+    # "why these?" panel should read as "this is why these ranked first",
+    # which is now relevance-then-position, not the YAML's own order. See the
+    # `rank` comment above: this reorders the LIST, not the `rank` field.
+    derivation.sort(key=lambda d2: -max((weights.get(a, 0.0) for a in d2["analysis_ids"]), default=0.0))
 
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
     candidates: dict[str, Candidate] = {
@@ -261,12 +423,24 @@ def compile_context(
         provenance = _provenance(findings, analysis_id)
 
         # The findings table holds results for a MINORITY of analyses. Where it
-        # is empty, ask the analysis's own results reader — the same one the UI
-        # renders from — before concluding there is nothing stored. Without
-        # this, a gap means "not in project_analysis_findings" while claiming
-        # to mean "never run", which is the confident-wrong-answer shape this
-        # whole spec exists to avoid.
-        if not rungs:
+        # is empty OR THIN, ask the analysis's own results reader — the same one
+        # the UI renders from — before concluding there is nothing stored.
+        # Without this, a gap means "not in project_analysis_findings" while
+        # claiming to mean "never run", which is the confident-wrong-answer
+        # shape this whole spec exists to avoid.
+        #
+        # "or thin" is the correction. An earlier version fell back only when
+        # `rungs` was empty, so ANY whole-resource finding — however slight —
+        # suppressed the reader entirely. dwolfson-59 hit it exactly: a single
+        # diagram finding written at whole-resource scope replaced an analysis's
+        # real results with a picture, and the section got worse than before the
+        # finding existed. They fixed the trigger at source; this fixes the
+        # fragility, which would otherwise wait for the next analysis to write
+        # one thin whole-resource row.
+        #
+        # The rule is now about evidence, not precedence: consult both when the
+        # findings are slight, and keep whichever says more.
+        if len(rungs.get(Rung.FULL, "")) < THIN_FINDINGS_CHARS:
             from resource_explorer.surveyors.repo_survey_definition_adapter import (
                 REPO_ANALYSIS_RESULTS_MAP,
             )
@@ -282,14 +456,20 @@ def compile_context(
                                 analysis_id, slug, exc)
                     results = None
                 if results is not None:
-                    rungs = _results_to_rungs(results, analysis_id)
-                    if rungs:
+                    from_reader = _results_to_rungs(results, analysis_id)
+                    # Keep whichever says more. Overwriting unconditionally was
+                    # safe only while this ran solely on empty findings; now
+                    # that a THIN finding also reaches here, a reader with less
+                    # to say must not displace the little that was real.
+                    if len(from_reader.get(Rung.FULL, "")) > len(rungs.get(Rung.FULL, "")):
+                        rungs = from_reader
                         provenance = ({"analysis_id": analysis_id,
                                        "check": None, "surveyed_at": None},)
 
         if rungs:
             candidates[analysis_id] = Candidate(
                 analysis_id, rungs, provenance=provenance,
+                pointer=_pointer_for(analysis_id, slug, provenance),
             )
         # No rungs => no candidate => the packer records a gap. Deliberately not
         # skipped here: a section the derivation says should exist, with nothing

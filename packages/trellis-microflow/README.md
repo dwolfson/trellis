@@ -50,3 +50,22 @@ Those stay in the consuming app (`resource_explorer.surveyors.
 survey_orchestrator`/`repo_survey_definition_adapter` for
 resource-explorer's own repo Survey model) — this package is
 intentionally just the resource-sharing primitive underneath it.
+
+## Using it
+
+Resources are acquired once and shared across the steps that need them, rather than each step
+fetching its own copy.
+
+```python
+from contextlib import ExitStack
+from trellis_microflow import resolve_resources
+
+with ExitStack() as stack:
+    resources = resolve_resources(stack, providers, needed={"zipball_root"})
+    root = resources["zipball_root"]
+    ...   # every step needing zipball_root reuses this one
+```
+
+`providers` maps a resource name to a `ResourceProvider`; `needed` is the union of what the
+steps about to run declare. Anything not asked for is never acquired, and the `ExitStack`
+releases what was.

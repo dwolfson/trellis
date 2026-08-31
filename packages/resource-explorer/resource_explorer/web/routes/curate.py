@@ -112,3 +112,100 @@ def delete_note(note_id: str) -> dict:
     if not _registry().delete_curator_note(note_id):
         raise HTTPException(status_code=404, detail="Note not found")
     return {"status": "success"}
+
+
+# ── Architecture component verdicts ─────────────────────────────────────────
+#
+# First slice of docs/Backlog.md "take architecture results into Curate":
+# accept / reject / retype a single proposed component (§4.1a's proposal
+# framing, §3.3b/§3.4's Confidence/ContentStatus axis — not a new
+# vocabulary). scope_locator is the same join key architecture_recovery
+# findings use (a component's path prefix); the results reader
+# (_architecture_recovery_results) merges the latest verdict onto each
+# component it returns.
+
+class ComponentVerdictCreate(BaseModel):
+    scope_locator: str
+    verdict: str  # "accepted" | "rejected" | "retyped"
+    retyped_to: str = ""  # required (and only meaningful) when verdict="retyped"
+    note: str = ""
+
+
+@router.get("/component-verdicts/{entity_type}/{slug}")
+def list_component_verdicts(entity_type: str, slug: str) -> dict[str, dict]:
+    """{scope_locator: latest verdict} for every component this resource has
+    a curator verdict on — the same shape merged onto each component by
+    _architecture_recovery_results."""
+    return _registry().get_component_verdicts(entity_type, slug)
+
+
+def _materialize_if_accepted(registry: ProjectRegistry, entity_type: str, slug: str,
+                              scope_locator: str, verdict: str) -> dict | None:
+    """docs/architecture-recovery-report-then-curate.md — acting on the
+    decision, not just recording it. Only 'accepted' triggers a real Egeria
+    write (see materializer.py's module docstring for the full scope). Only
+    wired for entity_type='repo' today, the only kind architecture_recovery
+    runs against — a database/filesystem proposal kind would need its own
+    materializer, not this one reused past what it was built for.
+
+    Returns None when nothing was attempted (wrong verdict, wrong entity
+    type, or the component's own finding row is gone — e.g. withdrawn since
+    the review surface last loaded). Never raises: a materialization
+    failure is reported in the field the caller merges into the response,
+    the same non-fatal-but-visible shape as EgeriaPublisher.publish()'s
+    annotation_types_warning, since the verdict itself is already saved and
+    real regardless of whether Egeria was reachable just now.
+    """
+    if verdict != "accepted" or entity_type != "repo":
+        return None
+    rows = [r for r in registry.query_findings_all_runs(slug, "architecture_recovery", scope_locator)
+            if r["check_name"] == "component"]
+    if not rows:
+        return {"status": "error", "error": "no component finding at this scope to materialize"}
+    latest = max(rows, key=lambda r: r["surveyed_at"])
+    import json as _json
+    detail = _json.loads(latest.get("detail_json") or "{}") if latest.get("detail_json") else {}
+    from resource_explorer.surveyors.arch_recovery.materializer import (
+        ComponentMaterializer, MaterializationError,
+    )
+    try:
+        return ComponentMaterializer(registry=registry).materialize(
+            entity_type, slug, scope_locator,
+            name=detail.get("name", scope_locator),
+            component_type=detail.get("type") or "",
+            perspective=detail.get("perspective", ""),
+            confidence=latest.get("confidence", 0),
+        )
+    except MaterializationError as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@router.post("/component-verdicts/{entity_type}/{slug}")
+def add_component_verdict(entity_type: str, slug: str, body: ComponentVerdictCreate) -> dict:
+    if not body.scope_locator.strip():
+        raise HTTPException(status_code=400, detail="scope_locator must not be empty")
+    if body.verdict not in ProjectRegistry.COMPONENT_VERDICTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"verdict must be one of {sorted(ProjectRegistry.COMPONENT_VERDICTS)}, got {body.verdict!r}",
+        )
+    if body.verdict == "retyped" and not body.retyped_to.strip():
+        raise HTTPException(status_code=400, detail="retyped_to is required when verdict='retyped'")
+    registry = _registry()
+    verdict = registry.record_component_verdict(
+        entity_type, slug, body.scope_locator, body.verdict, body.retyped_to, body.note,
+    )
+    materialization = _materialize_if_accepted(
+        registry, entity_type, slug, body.scope_locator, body.verdict,
+    )
+    if materialization is not None:
+        verdict["materialization"] = materialization
+    return verdict
+
+
+@router.get("/component-verdicts/{entity_type}/{slug}/history")
+def component_verdict_history(entity_type: str, slug: str, scope_locator: str) -> list[dict]:
+    """Full verdict trail for one component, newest first — scope_locator as
+    a query param (not a path segment) since it's a path prefix and routinely
+    contains slashes."""
+    return _registry().list_component_verdict_history(entity_type, slug, scope_locator)

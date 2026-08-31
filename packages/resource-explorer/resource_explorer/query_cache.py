@@ -1,17 +1,27 @@
-"""LRU query cache — in-process by default, Redis-backed optionally."""
+"""LRU query cache — a thin adapter over the shared `trellis-querycache`.
+
+The implementation moved to `trellis_querycache` (Trellis consolidation, see
+`docs/re-ea-consolidation-audit.md` item 1); this file keeps RE's own
+vocabulary — a *resource* scope, an *intent* parameter — over the shared class,
+and resolves RE's pydantic `CacheConfig` into the shared frozen config.
+
+Behaviour is unchanged: same LRU + TTL semantics, same Redis key layout
+(`pe:cache:` / `pe:project:` — Redis key strings are layer two and deliberately
+unrenamed, like the SQL columns), so an already-running Redis keeps its shape.
+The key *digest* changed with the extraction, so entries cached before an
+upgrade simply read as misses — a cold start, not a correctness problem.
+"""
 from __future__ import annotations
 
-import hashlib
-import json
-import time
-from collections import OrderedDict
+from trellis_querycache import QueryCache as _SharedQueryCache
+from trellis_querycache import QueryCacheConfig
 
 from resource_explorer.config import get_config
 
 
-class QueryCache:
+class QueryCache(_SharedQueryCache):
     """
-    LRU cache keyed on (normalized_query, project_slug, intent).
+    LRU cache keyed on (normalized_query, resource_slug, intent).
 
     Biggest latency win in the system — implement before optimizing retrieval.
     In-memory by default; set CACHE__BACKEND=redis + CACHE__REDIS_URL to use Redis.
@@ -20,105 +30,44 @@ class QueryCache:
 
     def __init__(self, max_size: int | None = None, ttl_seconds: int | None = None) -> None:
         cfg = get_config().cache
-        self._max_size = max_size or cfg.max_size
-        self._ttl = ttl_seconds or cfg.ttl_seconds
 
-        # Redis only when default construction (no overrides) and explicitly configured
+        # Redis only when default construction (no overrides) and explicitly
+        # configured — an explicitly-sized cache is a caller wanting its own
+        # local one, not a share of the deployment-wide store.
         use_redis = (
             max_size is None
             and ttl_seconds is None
             and cfg.backend == "redis"
-            and cfg.redis_url
+            and bool(cfg.redis_url)
         )
-        if use_redis:
-            self._redis = self._connect_redis(cfg.redis_url)
-            self._store = None
-        else:
-            self._redis = None
-            self._store: OrderedDict[str, tuple[str, float, str | None]] = OrderedDict()
+        super().__init__(
+            QueryCacheConfig(
+                max_size=max_size or cfg.max_size,
+                ttl_seconds=ttl_seconds or cfg.ttl_seconds,
+                backend="redis" if use_redis else "memory",
+                redis_url=cfg.redis_url if use_redis else "",
+                key_prefix="pe:cache:",
+                scope_prefix="pe:project:",
+            )
+        )
 
-    # ── key helpers ───────────────────────────────────────────────────────────
+    # ── RE's interface over the shared one ────────────────────────────────
 
     def _key(self, query: str, resource_slug: str | None, intent: str) -> str:
-        payload = json.dumps({"q": query.strip().lower(), "p": resource_slug, "i": intent})
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-    # ── public interface ──────────────────────────────────────────────────────
+        return self.key(query, resource_slug, {"intent": intent})
 
     def get(self, query: str, resource_slug: str | None, intent: str) -> str | None:
-        if self._redis is not None:
-            return self._redis_get(query, resource_slug, intent)
-        return self._mem_get(query, resource_slug, intent)
+        return super().get(query, scope=resource_slug, intent=intent)
 
     def set(self, query: str, resource_slug: str | None, intent: str, response: str) -> None:
-        if self._redis is not None:
-            self._redis_set(query, resource_slug, intent, response)
-        else:
-            self._mem_set(query, resource_slug, intent, response)
+        super().set(query, response, scope=resource_slug, intent=intent)
 
     def invalidate_project(self, resource_slug: str) -> int:
-        """Drop all cached entries for a project (call after re-indexing)."""
-        if self._redis is not None:
-            return self._redis_invalidate(resource_slug)
-        return self._mem_invalidate(resource_slug)
+        """Drop all cached entries for a resource (call after re-indexing).
 
-    # ── in-memory backend ─────────────────────────────────────────────────────
-
-    def _mem_get(self, query: str, resource_slug: str | None, intent: str) -> str | None:
-        key = self._key(query, resource_slug, intent)
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        value, expires_at, _slug = entry
-        if time.time() > expires_at:
-            del self._store[key]
-            return None
-        self._store.move_to_end(key)
-        return value
-
-    def _mem_set(self, query: str, resource_slug: str | None, intent: str, response: str) -> None:
-        key = self._key(query, resource_slug, intent)
-        self._store[key] = (response, time.time() + self._ttl, resource_slug)
-        self._store.move_to_end(key)
-        while len(self._store) > self._max_size:
-            self._store.popitem(last=False)
-
-    def _mem_invalidate(self, resource_slug: str) -> int:
-        to_delete = [k for k, (_v, _t, slug) in self._store.items() if slug == resource_slug]
-        for k in to_delete:
-            del self._store[k]
-        return len(to_delete)
-
-    # ── Redis backend ─────────────────────────────────────────────────────────
-
-    _CACHE_PREFIX = "pe:cache:"
-    _PROJECT_PREFIX = "pe:project:"
-
-    def _connect_redis(self, url: str):
-        import redis
-        return redis.from_url(url, decode_responses=True)
-
-    def _redis_get(self, query: str, resource_slug: str | None, intent: str) -> str | None:
-        key = self._CACHE_PREFIX + self._key(query, resource_slug, intent)
-        raw = self._redis.get(key)
-        if raw is None:
-            return None
-        return json.loads(raw)["response"]
-
-    def _redis_set(self, query: str, resource_slug: str | None, intent: str, response: str) -> None:
-        key = self._CACHE_PREFIX + self._key(query, resource_slug, intent)
-        payload = json.dumps({"response": response, "project_slug": resource_slug})
-        self._redis.setex(key, self._ttl, payload)
-        if resource_slug is not None:
-            project_set = f"{self._PROJECT_PREFIX}{resource_slug}:keys"
-            self._redis.sadd(project_set, key)
-            self._redis.expire(project_set, self._ttl * 2)
-
-    def _redis_invalidate(self, resource_slug: str) -> int:
-        project_set = f"{self._PROJECT_PREFIX}{resource_slug}:keys"
-        keys = self._redis.smembers(project_set)
-        if not keys:
-            return 0
-        deleted = self._redis.delete(*keys)
-        self._redis.delete(project_set)
-        return deleted
+        Method name keeps `_project` to match main after the #22 rename, which
+        moved the parameter and left the method name alone — every caller
+        (`scheduler.py`, `webhook.py`, `cli/main.py`, `projects.py`, `tui/app.py`)
+        still calls it by that name.
+        """
+        return self.invalidate_scope(resource_slug)

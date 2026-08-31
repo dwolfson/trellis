@@ -8,6 +8,7 @@ from trellis_context.packer import (
     Manifest,
     PackedContext,
     PackedSection,
+    Pointer,
     pack,
 )
 from trellis_context.spec import ContextSpec, Section
@@ -19,6 +20,7 @@ __all__ = [
     "Manifest",
     "PackedContext",
     "PackedSection",
+    "Pointer",
     "Section",
     "pack",
 ]

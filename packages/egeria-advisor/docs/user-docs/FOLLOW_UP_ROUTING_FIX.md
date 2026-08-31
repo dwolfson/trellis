@@ -64,12 +64,12 @@ egeria-advisor -a
 egeria-advisor --agent
 
 # Or run as module
-python -m advisor.cli.main --agent
-python -m advisor.cli.main -a
+uv run --package egeria-advisor python -m advisor.cli.main --agent
+uv run --package egeria-advisor python -m advisor.cli.main -a
 
 # ❌ WRONG - treats "agent" as a query
 egeria-advisor agent
-python -m advisor.cli.main agent
+uv run --package egeria-advisor python -m advisor.cli.main agent
 ```
 
 **Interactive Mode (No Memory):**
@@ -129,7 +129,7 @@ This tests:
 
 ### Manual Testing
 ```bash
-python -m advisor.cli.main --agent
+uv run --package egeria-advisor python -m advisor.cli.main --agent
 
 # Then try:
 agent> What does CollectionManager do?
@@ -200,7 +200,7 @@ These fixes also address:
 **Issue**: CLI treats flag as query
 - Use `--agent` not `agent`
 - Use `-a` as shorthand
-- Check `python -m advisor.cli.main --help`
+- Check `uv run --package egeria-advisor python -m advisor.cli.main --help`
 
 ## Future Improvements
 

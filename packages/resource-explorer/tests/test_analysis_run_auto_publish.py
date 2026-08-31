@@ -1,7 +1,11 @@
 """Tests for POST /api/projects/{slug}/analyses/{analysis_id}/run's auto-publish
-(projects.py's run_single_analysis) — gated on ProjectRegistry.has_assigned_egeria_
-project(), same gate survey_definition_executor.py's Survey Definition path uses.
-Confirmed live 2026-08-27 this route never published at all before this change.
+(projects.py's _run_single_analysis_sync, invoked from the background thread
+run_single_analysis's route starts — see test_scouting_overview_routes.py's
+TestRunSingleAnalysisBackground for why the dispatch logic is exercised there
+rather than through the live route) — gated on
+ProjectRegistry.has_assigned_egeria_project(), same gate
+survey_definition_executor.py's Survey Definition path uses. Confirmed live
+2026-08-27 this route never published at all before that change.
 """
 from __future__ import annotations
 
@@ -50,16 +54,32 @@ def _fake_survey_result(errors=None, with_annotation=True):
     return result
 
 
+def _run_background(registry, analysis_id="fake_analysis"):
+    """Starts the 'running' row run_single_analysis's route would, then runs
+    the background function synchronously (in-thread, not backgrounded) — see
+    test_scouting_overview_routes.py's TestRunSingleAnalysisBackground for why
+    dispatch is exercised this way rather than through the live route."""
+    from resource_explorer.activity_logger import log_analysis_run
+    from resource_explorer.web.routes.projects import _run_single_analysis_background
+
+    activity_id = log_analysis_run(
+        registry, "repo", "myproj", "My Project", "running",
+        f"Running '{analysis_id}' on myproj…", analysis_id,
+    )
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=registry):
+        _run_single_analysis_background("myproj", analysis_id, activity_id)
+    return registry.get_activity(activity_id)
+
+
 class TestAutoPublishOnAnalysisRun:
     def test_unassigned_project_does_not_publish(self, client, registry):
         registry.set_project_context("repo", "myproj", status="unset")
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
              patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as MockPub:
             MockOrch.return_value.run.return_value = _fake_survey_result()
-            r = client.post("/api/projects/myproj/analyses/fake_analysis/run")
+            entry = _run_background(registry)
 
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
+        assert entry["status"] == "ok"
         MockPub.assert_not_called()
 
     def test_assigned_project_auto_publishes(self, client, registry):
@@ -67,9 +87,9 @@ class TestAutoPublishOnAnalysisRun:
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
              patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as MockPub:
             MockOrch.return_value.run.return_value = _fake_survey_result()
-            r = client.post("/api/projects/myproj/analyses/fake_analysis/run")
+            entry = _run_background(registry)
 
-        assert r.status_code == 200
+        assert entry["status"] == "ok"
         MockPub.assert_called_once()
         MockPub.return_value.publish.assert_called_once()
 
@@ -78,9 +98,9 @@ class TestAutoPublishOnAnalysisRun:
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch, \
              patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as MockPub:
             MockOrch.return_value.run.return_value = _fake_survey_result(errors=["boom"])
-            r = client.post("/api/projects/myproj/analyses/fake_analysis/run")
+            entry = _run_background(registry)
 
-        assert r.json()["status"] == "error"
+        assert entry["status"] == "error"
         MockPub.assert_not_called()
 
     def test_publish_failure_does_not_turn_a_successful_run_into_an_error(self, client, registry):
@@ -89,11 +109,10 @@ class TestAutoPublishOnAnalysisRun:
              patch("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher") as MockPub:
             MockOrch.return_value.run.return_value = _fake_survey_result()
             MockPub.return_value.publish.side_effect = RuntimeError("egeria unreachable")
-            r = client.post("/api/projects/myproj/analyses/fake_analysis/run")
+            entry = _run_background(registry)
 
-        body = r.json()
-        assert body["status"] == "ok"
-        assert "egeria unreachable" in body["message"]
+        assert entry["status"] == "ok"
+        assert "egeria unreachable" in entry["summary"]
 
         # Backs the ☁ Publish button staying visible as a retry action —
         # see registry.py's get_analysis_last_run() / TestAnalysisLastRun

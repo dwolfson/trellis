@@ -175,18 +175,41 @@ class ArchCouplingSurveyor(BaseSurveyor):
             # decision above (see module docstring).
             file_subtree = coupling.candidate_subtrees(sorted(first_party), package_roots)
             coc_table = coupling.cohesion_table(file_subtree, cochange_result["pairs"], "a", "b", "cochange_count")
+            # `import_cohesion` alongside it. The import graph is already built
+            # above (`graph`), `cohesion_table` is generic over edge shape, and
+            # `persist_ir`'s own docstring has claimed since August that this
+            # step "attaches import_cohesion/cochange_cohesion" — but only the
+            # co-change half was ever wired, so the corpus carries 1,617
+            # cochange_cohesion rows and **zero** import_cohesion rows. The
+            # capability existed and nothing connected it to storage, which is
+            # the same shape as spike finding 89 (ports and wires computed by
+            # the throwaway harness and stored nowhere in the product).
+            #
+            # It matters more than a missing diagnostic: co-location signals
+            # cannot group the LOGICAL perspective (egeria_git: 924 components
+            # -> 279 groups), and import cohesion is an affinity signal over
+            # exactly that perspective's evidence — imports, not deployment
+            # artifacts. See docs/architecture-recovery-clustering.md §7.
+            imp_table = coupling.cohesion_table(
+                file_subtree, graph["edges"], "source", "target", "weight")
             extra_metrics: dict[str, dict[str, float]] = {}
             for c in components:
                 sub = c.identity.value   # module-path identity == the subtree
+                metrics: dict[str, float] = {}
                 coc = coc_table.get(sub)
                 if coc and coc.get("total_weight"):
-                    extra_metrics[scope_locator_for(c)] = {"cochange_cohesion": coc["cohesion"]}
+                    metrics["cochange_cohesion"] = coc["cohesion"]
+                imp = imp_table.get(sub)
+                if imp and imp.get("total_weight"):
+                    metrics["import_cohesion"] = imp["cohesion"]
+                if metrics:
+                    extra_metrics[scope_locator_for(c)] = metrics
 
             persist_ir(
                 self.registry, self.project.slug, components, evidence,
                 self._surveyed_at, run_label="coupling",
                 run_scope=self._scope_locator, extra_metrics=extra_metrics,
-                outcome=coupling_outcome,
+                outcome=coupling_outcome, notes=notes,
             )
 
             shape_counts: dict[str, int] = {}

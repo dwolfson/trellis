@@ -21,6 +21,18 @@ import pytest
 from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
 
+#: Asserts over whatever the LIVE shared registry HOLDS, not over fixtures.
+#: That is the point — "58 of 60 real repos render an empty security-features
+#: card" is a fact no fixture would have produced — and it is also why these are
+#: opt-in: five sessions share one Postgres, and a peer running a survey can turn
+#: them red in a file nobody touched (measured 2026-08-30, when a concurrent
+#: survey of egeria_workspaces_git caught it mid-run).
+#:
+#: Run with `pytest --corpus` when the corpus is quiet, which is the only time
+#: their answer means anything.
+pytestmark = pytest.mark.corpus
+
+
 READER = ANALYSIS_KINDS["security_features"].results.results_reader
 
 
@@ -97,3 +109,40 @@ def test_a_status_envelope_is_not_counted_as_data():
                                                            "hint": "a long explanation"}}) is False
     assert _results_have_data({"findings": [], "surveyed_at": "2026-08-25T00:00:00"}) is False
     assert _results_have_data({"findings": [{"check_name": "x"}], "_status": {}}) is True
+
+
+def test_a_bare_never_run_state_is_not_counted_as_data():
+    """Regression, 2026-08-31: architecture_summary/architecture_doc_lens's
+    never-run shape is `{"state": "never_run", "message": "..."}` -- a bare
+    top-level `state`, not wrapped in `_status`. The explanatory `message` is
+    non-empty text, so the general envelope exclusion above didn't catch it
+    until wiring these three into a dashboard for the first time exposed it
+    (docs/Backlog.md "Survey Results dashboards cover 14 of 29 analyses").
+
+    `nothing_found` must NOT be excluded the same way -- result_status.py's
+    own ladder calls it "a real, final answer", not an absence, and hiding it
+    here would be the exact inversion this function exists to prevent."""
+    from resource_explorer.web.routes.projects import _results_have_data
+
+    assert _results_have_data(
+        {"state": "never_run", "message": "No architecture summary yet — run the analysis."}
+    ) is False
+    assert _results_have_data(
+        {"state": "nothing_found", "message": "The architecture documentation was consulted "
+                                               "and named nothing."}
+    ) is True
+
+
+def test_architecture_recoverys_doc_ingestion_field_is_not_counted_as_data():
+    """Regression, 2026-08-31: architecture_recovery decorates every response
+    with `{"documentation": {"state": "not-attempted", "detail": ""}}` — the
+    documentation-SITE ingestion status, carried for unrelated presentation
+    reasons (_doc_ingestion_state), never the recovery analysis's own
+    findings. A never-surveyed repo's otherwise-all-empty/zero payload read
+    as "has data" purely because of this nested field."""
+    from resource_explorer.web.routes.projects import _results_have_data
+
+    assert _results_have_data({
+        "components": [], "component_count": 0,
+        "documentation": {"state": "not-attempted", "detail": ""},
+    }) is False

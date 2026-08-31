@@ -509,19 +509,19 @@
         <div id="charts-section" class="shrink-0">
           <!-- Repo chart tabs -->
           <div id="repo-chart-tabs" class="flex gap-1 flex-wrap mb-2">
-            <button onclick="showChart('stars')"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
-            <button onclick="showChart('commits')"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
-            <button onclick="showChart('languages')"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
-            <button onclick="showChart('health')"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
-            <button onclick="showChart('file_types')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
-            <button onclick="showEgeria()"            class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
+            <button onclick="showChart('stars')"      data-chart-key="stars"      class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Stars</button>
+            <button onclick="showChart('commits')"    data-chart-key="commits"    class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Commits</button>
+            <button onclick="showChart('languages')"  data-chart-key="languages"  class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Languages</button>
+            <button onclick="showChart('health')"     data-chart-key="health"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Health</button>
+            <button onclick="showChart('file_types')" data-chart-key="file_types" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">File Types</button>
+            <button onclick="showEgeria()"            data-chart-key="egeria"     class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-cyan-800 text-slate-300">Egeria</button>
           </div>
           <!-- DB chart tabs -->
           <div id="db-chart-tabs" class="hidden flex gap-1 flex-wrap mb-2">
-            <button onclick="showDbChart('schema_distribution')" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
-            <button onclick="showDbChart('table_sizes')"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
-            <button onclick="showDbChart('column_types')"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
-            <button onclick="showDbChart('survey_history')"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
+            <button onclick="showDbChart('schema_distribution')" data-chart-key="schema_distribution" class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Schemas</button>
+            <button onclick="showDbChart('table_sizes')"          data-chart-key="table_sizes"          class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Tables</button>
+            <button onclick="showDbChart('column_types')"         data-chart-key="column_types"         class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">Col Types</button>
+            <button onclick="showDbChart('survey_history')"       data-chart-key="survey_history"       class="chart-tab text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-emerald-800 text-slate-300">History</button>
           </div>
           <div id="chart-container" class="chart-box rounded bg-slate-900"></div>
           <div id="egeria-panel" class="egeria-panel hidden"></div>
@@ -1098,6 +1098,32 @@
         <button onclick="hidePublishDbModal()"
           class="px-4 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition-colors">
           Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Run Analysis (catalog card) modal — gives the analysis-card "Run" action
+     the same backgrounded shape as the Run Survey Definition modal below:
+     activity-log progress instead of a single blocking toast (2026-08-30,
+     docs/Backlog.md "the analysis-card Run gives no prompt and no progress
+     for slow work"). No credentials/submit step — a card's Run already
+     means "run it now", so this opens straight into "Starting…". -->
+<div id="analysis-run-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="flex items-center justify-between mb-4">
+      <span class="font-semibold text-slate-100">Running — <span id="analysis-run-name" class="text-emerald-400"></span></span>
+      <button onclick="hideAnalysisRunModal()" class="text-slate-500 hover:text-slate-200 text-lg leading-none">×</button>
+    </div>
+    <div class="space-y-3">
+      <div id="analysis-run-error" class="text-red-400 text-xs hidden"></div>
+      <div id="analysis-run-progress" class="text-slate-400 text-xs hidden">Starting…</div>
+      <div id="analysis-run-result" class="hidden text-xs bg-slate-800/60 rounded p-2 space-y-1"></div>
+      <div class="flex gap-2 pt-1">
+        <button id="analysis-run-close-btn" onclick="hideAnalysisRunModal()"
+          class="flex-1 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm transition-colors">
+          Close — keeps running in background →
         </button>
       </div>
     </div>
@@ -3556,105 +3582,103 @@ function _renderWebsiteIngestionResults(data) {
 // This is the same fix findings_list and metrics already had (2026-08-24) —
 // the custom branches were simply missed, and kept asserting "not run" about
 // measured absence.
-function _renderCustomAnalysisResults(analysisId, data) {
-  if (analysisId === 'repo_classification') return _renderRepoClassificationResults(data);
-  if (analysisId === 'website_ingestion') return _renderWebsiteIngestionResults(data);
-  if (analysisId === 'manifest_parse') return _renderManifestParseResults(data);
-  if (analysisId === 'dependency_analysis') {
-    const ecosystems = Object.entries(data.by_ecosystem || {});
-    if (!ecosystems.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.total} dependenc${data.total === 1 ? 'y' : 'ies'} across ${ecosystems.length} ecosystem(s)</div>` +
-      ecosystems.map(([eco, deps]) => `
-        <div class="text-xs">
-          <span class="text-cyan-400 font-medium">${_esc(eco)}</span>
-          <span class="text-slate-500">(${deps.length})</span>
-          <div class="text-slate-400 truncate" title="${_esc(deps.map(d => d.dep_name).join(', '))}">
-            ${_esc(deps.slice(0, 10).map(d => d.dep_name).join(', '))}${deps.length > 10 ? ' …' : ''}
-          </div>
-        </div>`).join('');
-  }
-  if (analysisId === 'data_file_profiling') {
-    if (!data.profiles || !data.profiles.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.total} data file(s) profiled</div>` +
-      data.profiles.slice(0, 8).map(p => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span class="truncate" title="${_esc(p.file_path)}">${_esc(p.file_path)}</span>
-          <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
-        </div>`).join('');
-  }
-  if (analysisId === 'language_file_classification') {
-    if (!data.by_type || !data.by_type.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
-      data.by_type.map(t => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span>${_esc(t.type_label)}</span>
-          <span class="text-slate-500">${t.file_count}</span>
-        </div>`).join('');
-  }
-  if (analysisId === 'api_structure') {
-    const langs = Object.entries(data.by_language || {});
-    if (!langs.length) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.relationship_count} inheritance relationship(s)</div>` +
-      langs.map(([lang, kinds]) => `
-        <div class="text-xs text-slate-300">
-          <span class="text-cyan-400 font-medium">${_esc(lang)}</span>:
-          ${Object.entries(kinds).map(([k, c]) => `${c} ${_esc(k)}${c === 1 ? '' : 's'}`).join(', ')}
-        </div>`).join('');
-  }
-  if (analysisId === 'code_symbol_extraction') {
-    const langs = Object.entries(data.by_language || {});
-    if (!data.symbol_count) return _renderEmptyResultState(data);
-    return `<div class="text-xs text-slate-400 mb-1">${data.symbol_count} symbol(s)${data.surveyed_at ? ` · extracted ${_relTime(data.surveyed_at)}` : ''}, ${data.relationship_count} inheritance relationship(s)</div>` +
-      langs.map(([lang, count]) => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
-          <span class="text-slate-500">${count}</span>
-        </div>`).join('');
-  }
-  if (analysisId === 'architecture_recovery') {
-    // The reader computes run_scope/outcome/completeness_note precisely so a
-    // SCOPED or UNVERIFIED run cannot be mistaken for a complete one, and its
-    // own docstring says "writing a field nobody reads is the same failure as
-    // not writing it". This renderer then read none of them — the same failure
-    // one layer further along, which is exactly how the signal died the first
-    // time. A partial run that presents as complete is the most expensive
-    // wrong answer this card can give: it invites conclusions about an
-    // architecture from a component set that is incomplete by construction.
-    const completeness = (() => {
-      const bits = [];
-      if (data.partial) bits.push('this run covered only part of the repository');
-      if ((data.unverified || []).length) bits.push(`${data.unverified.join(', ')} could not verify this repo`);
-      if (data.completeness_note) bits.push(data.completeness_note);
-      if (!bits.length) return '';
-      return `<div class="text-[11px] text-amber-400/80 mb-1 leading-snug">⚠ ${_esc(bits.join(' — '))}</div>`;
-    })();
-    // Interfaces can exist with no components recovered — a compose file
-    // declares a topology whether or not component detection resolved it — so
-    // the topology renders on its own rather than being gated behind them.
-    if (!data.components || !data.components.length) {
-      return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
-             + _renderDocIngestionState(data.documentation)
-             + _renderDeploymentInterfaces(data.interfaces);
-    }
-    // Counts must be honest about BOTH coarsenings: the server-side depth
-    // projection AND this list's own cap. The payload has carried
-    // raw_component_count all along, added so a UI could say "13 shown (of 42
-    // total)" rather than let a projected view look like the whole answer —
-    // and nothing read it, while the header printed the projected count as if
-    // it were everything.
-    const _shown = Math.min(data.components.length, _ARCH_ROW_CAP);
-    const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
-    const _projected = (_raw !== null && _raw > data.component_count);
-    const _capped = data.components.length > _ARCH_ROW_CAP;
-    const _countLine = _shown + ' shown'
-      + (_capped ? ' of ' + data.components.length + ' at this depth' : '')
-      + (_projected ? ' · ' + _raw + ' recovered in full' : '')
-      + (data.surveyed_at ? ' · last run ' + _relTime(data.surveyed_at) : '');
 
-    return completeness
-      + `<div class="text-xs text-slate-400 mb-1">${_countLine}</div>`
-      + (_capped ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : '')
-      + data.components.slice(0, _ARCH_ROW_CAP).map(c => `
+// ─── Architecture perspectives ──────────────────────────────────────────────
+// Design §4.1: the four perspectives are NOT interchangeable, and a component
+// is only comparable to another within its own. The payload has carried
+// `perspective` all along and this card rendered all of them in one flat list
+// sorted by path — so egeria's clean 8-component DEPLOYMENT reading sat
+// invisible behind 341 logical rows, and the cap showed whichever 20 sorted
+// first alphabetically.
+const _ARCH_PERSPECTIVE_LABEL = {
+  deployment: 'Deployment', logical: 'Logical', physical: 'Physical', dev: 'Dev/DevOps',
+};
+// Deployment first when it exists (Dan, 2026-08-30). Not "smallest non-empty",
+// which was the earlier proposal and picks `physical` (1 component) for
+// egeria-workspaces — smallest is a proxy for readable and stops being one the
+// moment a perspective is small because it is nearly empty. Deployment is the
+// perspective a curator wants when there is one.
+function _archDefaultPerspective(groups) {
+  if (groups.deployment && groups.deployment.length) return 'deployment';
+  let best = '', n = -1;
+  for (const [k, v] of Object.entries(groups)) {
+    if (v.length > n) { best = k; n = v.length; }
+  }
+  return best;
+}
+let _archUidSeq = 0;
+function _archShowPerspective(uid, persp) {
+  document.querySelectorAll('[data-arch-pane="' + uid + '"]').forEach(el => {
+    el.classList.toggle('hidden', el.dataset.archPersp !== persp);
+  });
+  document.querySelectorAll('[data-arch-tab="' + uid + '"]').forEach(el => {
+    const on = el.dataset.archPersp === persp;
+    el.classList.toggle('bg-slate-700', on);
+    el.classList.toggle('text-cyan-300', on);
+    el.classList.toggle('text-slate-400', !on);
+  });
+}
+function _archToggleStructural(uid, btn) {
+  const box = document.querySelector('[data-arch-structural="' + uid + '"]');
+  if (!box) return;
+  const nowHidden = box.classList.toggle('hidden');
+  btn.textContent = (nowHidden ? 'Show ' : 'Hide ') + btn.dataset.archCount + ' grouping node(s)';
+}
+function _archTabsHtml(uid, groups, active) {
+  return Object.keys(groups)
+    .sort((a, b) => groups[b].length - groups[a].length)
+    .map(p => `<button data-arch-tab="${uid}" data-arch-persp="${_esc(p)}"
+         onclick="_archShowPerspective('${uid}', '${_esc(p)}')"
+         class="text-[11px] px-2 py-0.5 rounded ${p === active ? 'bg-slate-700 text-cyan-300' : 'text-slate-400'} hover:text-cyan-300">
+         ${_esc(_ARCH_PERSPECTIVE_LABEL[p] || p)} <span class="text-slate-500">${groups[p].length}</span>
+       </button>`).join('');
+}
+// Counts stay honest about BOTH coarsenings — the server-side depth projection
+// and this list's own cap — but per perspective now, since a whole-payload
+// count says nothing about the tab being looked at.
+function _archPaneCountLine(rows, raw, projected, surveyedAt) {
+  return Math.min(rows.length, _ARCH_ROW_CAP) + ' shown'
+    + (rows.length > _ARCH_ROW_CAP ? ' of ' + rows.length + ' at this depth' : '')
+    + (projected ? ' · ' + raw + ' recovered in full, all perspectives' : '')
+    + (surveyedAt ? ' · last run ' + _relTime(surveyedAt) : '');
+}
+function _archPanesHtml(uid, groups, active, raw, projected, surveyedAt, slug) {
+  return Object.entries(groups).map(([p, rows]) => `
+      <div data-arch-pane="${uid}" data-arch-persp="${_esc(p)}" class="${p === active ? '' : 'hidden'}">
+        <div class="text-xs text-slate-400 mb-1">${_archPaneCountLine(rows, raw, projected, surveyedAt)}</div>
+        ${rows.length > _ARCH_ROW_CAP ? `<div class="text-[11px] text-amber-400/80 mb-1">Showing the first ${_ARCH_ROW_CAP}. Reduce depth for a smaller, structural view.</div>` : ''}
+        ${rows.slice(0, _ARCH_ROW_CAP).map((c, i) => _archRow(c, slug, `${uid}-${p}-${i}`)).join('')}
+      </div>`).join('');
+}
+function _archStructuralHtml(uid, structural) {
+  if (!structural.length) return '';
+  return `
+    <div class="mt-2 pt-2 border-t border-slate-700/50">
+      <button data-arch-count="${structural.length}"
+        onclick="_archToggleStructural('${uid}', this)"
+        class="text-[11px] text-slate-500 hover:text-cyan-300">Show ${structural.length} grouping node(s)</button>
+      <div data-arch-structural="${uid}" class="hidden mt-1">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+          Grouping only — directories that hold components, not components themselves
+        </div>
+        ${structural.slice(0, _ARCH_ROW_CAP).map(c => `
+          <div class="text-xs text-slate-500 mb-1 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>`).join('')}
+        ${structural.length > _ARCH_ROW_CAP ? `<div class="text-[11px] text-slate-600">… and ${structural.length - _ARCH_ROW_CAP} more</div>` : ''}
+      </div>
+    </div>`;
+}
+function _archRow(c, slug, rowUid) {
+  // Curator verdicts (docs/Backlog.md "take architecture results into
+  // Curate", backend by S2/trellis-survey-flows-59) — accept/reject/retype
+  // a single proposed component. `c.verdict` is already merged onto each
+  // row server-side (_verdict_view in repo_survey_definition_adapter.py),
+  // so no second fetch here. `slug` gates the whole area: a payload built
+  // without it (a test fixture, or a future caller that doesn't carry it)
+  // renders no verdict UI rather than wiring buttons to a broken URL.
+  const verdictArea = !slug ? '' : (c.verdict
+    ? _archVerdictBadgeHtml(rowUid, slug, c.path, c.verdict, c.materialized)
+    : _archVerdictControlsHtml(rowUid, slug, c.path));
+  return `
         <div class="text-xs text-slate-300 mb-1">
           <div class="flex justify-between gap-2">
             <span class="font-medium text-cyan-400 truncate" title="${_esc(c.path)}">${_esc(c.name)}</span>
@@ -3662,20 +3686,328 @@ function _renderCustomAnalysisResults(analysisId, data) {
           </div>
           <div class="text-slate-500 truncate" title="${_esc(c.path)}">${_esc(c.path)}</div>
           <div class="text-slate-500">${(c.proposed_by || []).map(_esc).join(', ') || '—'}</div>
-        </div>`).join('')
-      + _renderDocIngestionState(data.documentation)
-      + _renderDeploymentInterfaces(data.interfaces);
+          ${verdictArea}
+        </div>`;
+}
+
+// ─── Architecture component verdicts ────────────────────────────────────────
+// First slice of "take architecture results into Curate" — accept, reject,
+// or retype a single proposed component. Append-only on the backend (a
+// curator changing their mind is real history, not a correction), so
+// "change" below just re-opens the controls rather than editing anything;
+// submitting again always POSTs a fresh row.
+//
+// rowUid is generated from the arch card's own uid + perspective + row
+// index (all internal, enum-like strings) — never from repo content — so
+// it's safe to interpolate directly into onclick(...) call arguments and
+// querySelector attribute-value strings below. `slug`/`path` are NOT
+// interpolated that way; they come from surveyed repo content and could in
+// principle contain a quote, so they travel only via `data-*` attributes
+// (HTML-attribute-escaped through _esc(), safe regardless of quoting) and
+// are read back via `.dataset` inside the handlers instead.
+function _archVerdictControlsHtml(rowUid, slug, path) {
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+    <button class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70"
+      onclick="_archSubmitVerdict('${rowUid}','accepted')">✓ Accept</button>
+    <button class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 hover:bg-red-900/70"
+      onclick="_archSubmitVerdict('${rowUid}','rejected')">✗ Reject</button>
+    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archShowRetype('${rowUid}')">✎ Retype</button>
+    <span data-arch-retype="${_esc(rowUid)}" class="hidden items-center gap-1">
+      <input type="text" data-arch-retype-input="${_esc(rowUid)}" placeholder="new type"
+        class="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-0.5 w-24 text-slate-200"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();_archSubmitRetype('${rowUid}');}" />
+      <button class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-200 hover:bg-slate-600"
+        onclick="_archSubmitRetype('${rowUid}')">Set</button>
+    </span>
+  </div>`;
+}
+
+// `materialized` is the persisted read-back (repo_survey_definition_adapter.py's
+// _materialized_view) on a page load, or the just-POSTed materialization
+// result on a fresh accept — either way {guid, qualified_name} on success.
+// A failed materialization is NEVER persisted (see materializer.py: nothing
+// is recorded to architecture_materialized_components unless Egeria
+// actually returned a usable GUID), so it can only ever appear as the
+// transient POST-response shape {status:"error", error}, never on reload —
+// the badge doesn't need to remember it past that one toast.
+function _archVerdictBadgeHtml(rowUid, slug, path, v, materialized) {
+  const label = v.verdict === 'accepted' ? '✓ Accepted'
+    : v.verdict === 'rejected' ? '✗ Rejected'
+    : `✎ Retyped → ${_esc(v.retyped_to || '?')}`;
+  const color = v.verdict === 'accepted' ? 'text-emerald-400'
+    : v.verdict === 'rejected' ? 'text-red-400' : 'text-cyan-400';
+  const egeriaBadge = (materialized && materialized.guid)
+    ? `<span class="text-[10px] text-cyan-500" title="${_esc(materialized.qualified_name || '')}\n${_esc(materialized.guid)}">⬡ in Egeria</span>`
+    : '';
+  return `<div class="flex gap-2 items-center mt-1 flex-wrap" data-arch-verdict="${_esc(rowUid)}" data-arch-slug="${_esc(slug)}" data-arch-path="${_esc(path)}">
+    <span class="text-[10px] ${color}">${label}</span>
+    <span class="text-[10px] text-slate-600">${v.decided_at ? _relTime(v.decided_at) : ''}</span>
+    ${egeriaBadge}
+    <button class="text-[10px] text-slate-500 hover:text-cyan-300" onclick="_archRevertVerdictUi('${rowUid}')">change</button>
+  </div>`;
+}
+
+function _archShowRetype(rowUid) {
+  const span = document.querySelector(`[data-arch-retype="${rowUid}"]`);
+  if (!span) return;
+  span.classList.remove('hidden');
+  span.classList.add('inline-flex');
+  span.querySelector('input')?.focus();
+}
+
+function _archRevertVerdictUi(rowUid) {
+  const el = document.querySelector(`[data-arch-verdict="${rowUid}"]`);
+  if (!el) return;
+  el.outerHTML = _archVerdictControlsHtml(rowUid, el.dataset.archSlug, el.dataset.archPath);
+}
+
+function _archSubmitRetype(rowUid) {
+  const input = document.querySelector(`[data-arch-retype-input="${rowUid}"]`);
+  const value = (input?.value || '').trim();
+  if (!value) { showToast('error', 'Enter a type before setting it'); return; }
+  _archSubmitVerdict(rowUid, 'retyped', value);
+}
+
+async function _archSubmitVerdict(rowUid, verdict, retypedTo) {
+  const el = document.querySelector(`[data-arch-verdict="${rowUid}"]`);
+  if (!el) return;
+  const slug = el.dataset.archSlug, path = el.dataset.archPath;
+  try {
+    const resp = await fetch(`/api/curate/component-verdicts/repo/${encodeURIComponent(slug)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope_locator: path, verdict, retyped_to: retypedTo || '' }),
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch (_) { /* body wasn't JSON */ }
+      throw new Error(detail);
+    }
+    // record_component_verdict's own row shape (registry.py) — `created_at`,
+    // not `decided_at`; that rename only happens in _verdict_view's
+    // read-back merge, which this direct POST response doesn't go through.
+    // `materialization` is only ever present on an 'accepted' call
+    // (curate.py's _materialize_if_accepted) — {status, guid, qualified_name}
+    // on success, {status:"error", error} if Egeria couldn't be reached or
+    // rejected the write. Either way the verdict above is already saved;
+    // materialization failing is reported, not treated as the call failing.
+    const saved = await resp.json();
+    const m = saved.materialization;
+    el.outerHTML = _archVerdictBadgeHtml(rowUid, slug, path, {
+      verdict: saved.verdict, retyped_to: saved.retyped_to, decided_at: saved.created_at,
+    }, m && m.status !== 'error' ? m : null);
+    if (m && m.status === 'error') {
+      showToast('error', `Verdict saved, but Egeria materialization failed: ${_esc(m.error)}`);
+    } else if (m && m.status === 'materialized') {
+      showToast('success', `Accepted — created as a real SolutionComponent in Egeria`);
+    } else if (m && m.status === 'already_materialized') {
+      showToast('success', `Accepted — already exists in Egeria`);
+    } else {
+      showToast('success', `Marked ${verdict}${retypedTo ? ` (${retypedTo})` : ''}`);
+    }
+  } catch (e) {
+    showToast('error', `Could not save verdict: ${_esc(e.message)}`);
   }
-  if (analysisId === 'sub_resource_survey') {
-    if (!data.findings || !data.findings.length) return _renderEmptyResultState(data);
-    const worthy = data.findings.filter(f => f.label === 'worthy');
-    return `<div class="text-xs text-slate-400 mb-1">${worthy.length} of ${data.findings.length} sub-resource(s) worth cataloging</div>` +
-      worthy.slice(0, 8).map(f => `
-        <div class="text-xs text-slate-300 flex justify-between gap-2">
-          <span class="truncate" title="${_esc(f.path)}">${_esc(f.path || f.check_name)}</span>
-          <span class="text-slate-500 shrink-0">${_esc(f.kind || '')}</span>
-        </div>`).join('');
+}
+
+// _renderArchitectureRecoveryResults — kind-plugin for `architecture_recovery`.
+//
+// Pulled out of `_renderCustomAnalysisResults`'s if/else chain on its own,
+// ahead of the other branches there, because this is the one analysis kind
+// with a real curation lifecycle in front of it (see
+// docs/architecture-recovery-report-then-curate.md §4 and §8): a proposal
+// derived by analysis, reviewed by a curator, materialised on accept. That
+// design is explicit that curation "generalises — do not build it
+// repo-shaped": other resource kinds (a database's data-class candidates, a
+// filesystem's own proposals) will need the same review lifecycle with a
+// different renderer and a different materialiser, dispatched the same way
+// `technology_type_processes.yaml` and the analysis catalog already dispatch
+// per-kind elsewhere in this codebase.
+//
+// This function is that renderer half, taking exactly the shape a future
+// `kind -> {renderer, materializer}` registry would want: `(data) => html`,
+// nothing about dispatch or the surrounding card baked in. It is still called
+// from the same if/else chain below — the registry itself, the `proposals`
+// table, and the accept/reject materialiser are a separate, larger change,
+// not implied by this extraction. Keeping the extraction and the
+// registry as two different changes so this one stays reviewable on its own.
+function _renderArchitectureRecoveryResults(data) {
+  // The reader computes run_scope/outcome/completeness_note precisely so a
+  // SCOPED or UNVERIFIED run cannot be mistaken for a complete one, and its
+  // own docstring says "writing a field nobody reads is the same failure as
+  // not writing it". This renderer then read none of them — the same failure
+  // one layer further along, which is exactly how the signal died the first
+  // time. A partial run that presents as complete is the most expensive
+  // wrong answer this card can give: it invites conclusions about an
+  // architecture from a component set that is incomplete by construction.
+  const completeness = (() => {
+    const bits = [];
+    if (data.partial) bits.push('this run covered only part of the repository');
+    if ((data.unverified || []).length) bits.push(`${data.unverified.join(', ')} could not verify this repo`);
+    if (data.completeness_note) bits.push(data.completeness_note);
+    if (!bits.length) return '';
+    return `<div class="text-[11px] text-amber-400/80 mb-1 leading-snug">⚠ ${_esc(bits.join(' — '))}</div>`;
+  })();
+  // Interfaces can exist with no components recovered — a compose file
+  // declares a topology whether or not component detection resolved it — so
+  // the topology renders on its own rather than being gated behind them.
+  if (!data.components || !data.components.length) {
+    return completeness + `<div class="text-xs text-slate-500">No architecture components recovered yet.</div>`
+           + _renderDocIngestionState(data.documentation)
+           + _renderDeploymentInterfaces(data.interfaces);
   }
+  // Counts must be honest about BOTH coarsenings: the server-side depth
+  // projection AND this list's own cap. The payload has carried
+  // raw_component_count all along, added so a UI could say "13 shown (of 42
+  // total)" rather than let a projected view look like the whole answer —
+  // and nothing read it, while the header printed the projected count as if
+  // it were everything.
+  const _raw = (typeof data.raw_component_count === 'number') ? data.raw_component_count : null;
+  const _projected = (_raw !== null && _raw > data.component_count);
+
+  // Grouping nodes are not components. The reader marks them `structural`
+  // precisely so a consumer can render them as grouping rather than as a
+  // recovered component — and nothing read it, so 75 of egeria's 451 rows
+  // showed as `untyped · 0%`; and since rows sort by path, the TOP LINE of
+  // the architecture was a placeholder for the repository root.
+  const _structural = data.components.filter(c => c.structural);
+  const _real = data.components.filter(c => !c.structural);
+
+  const _groups = {};
+  for (const c of _real) (_groups[c.perspective || 'physical'] ||= []).push(c);
+  // The backend sorts `components` by `path` (repo_survey_definition_adapter.py)
+  // so `depth`/projection stays deterministic — but that leaves the row CAP
+  // choosing whichever 20 paths sort first, which is an arbitrary slice, not
+  // a considered one (2026-08-30 findings: egeria's clean 8-component
+  // deployment reading sat behind 341 logical rows outranking nothing but the
+  // alphabet). Re-order for display only, per perspective: typed components
+  // before untyped (a component we could name beats one we only detected),
+  // then higher confidence first, then path as the final tie-break so the
+  // order is still stable across renders of the same payload.
+  for (const rows of Object.values(_groups)) {
+    rows.sort((a, b) =>
+      (b.type ? 1 : 0) - (a.type ? 1 : 0)
+      || b.confidence - a.confidence
+      || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  }
+  const _active = _archDefaultPerspective(_groups);
+  const _uid = 'arch' + (++_archUidSeq);
+
+  const _tabs = _archTabsHtml(_uid, _groups, _active);
+  const _panes = _archPanesHtml(_uid, _groups, _active, _raw, _projected, data.surveyed_at, data.slug);
+  const _structuralBlock = _archStructuralHtml(_uid, _structural);
+
+  return completeness
+    + (Object.keys(_groups).length > 1
+        ? `<div class="flex flex-wrap gap-1 mb-1">${_tabs}</div>` : '')
+    + _panes
+    + _structuralBlock
+    + _renderDocIngestionState(data.documentation)
+    + _renderDeploymentInterfaces(data.interfaces);
+}
+
+function _renderDependencyAnalysisResults(data) {
+  const ecosystems = Object.entries(data.by_ecosystem || {});
+  if (!ecosystems.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.total} dependenc${data.total === 1 ? 'y' : 'ies'} across ${ecosystems.length} ecosystem(s)</div>` +
+    ecosystems.map(([eco, deps]) => `
+      <div class="text-xs">
+        <span class="text-cyan-400 font-medium">${_esc(eco)}</span>
+        <span class="text-slate-500">(${deps.length})</span>
+        <div class="text-slate-400 truncate" title="${_esc(deps.map(d => d.dep_name).join(', '))}">
+          ${_esc(deps.slice(0, 10).map(d => d.dep_name).join(', '))}${deps.length > 10 ? ' …' : ''}
+        </div>
+      </div>`).join('');
+}
+
+function _renderDataFileProfilingResults(data) {
+  if (!data.profiles || !data.profiles.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.total} data file(s) profiled</div>` +
+    data.profiles.slice(0, 8).map(p => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span class="truncate" title="${_esc(p.file_path)}">${_esc(p.file_path)}</span>
+        <span class="text-slate-500 shrink-0">${p.row_count ?? '—'} rows × ${p.col_count ?? '—'} cols</span>
+      </div>`).join('');
+}
+
+function _renderLanguageFileClassificationResults(data) {
+  if (!data.by_type || !data.by_type.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.total_files} file(s)${data.surveyed_at ? ` · classified ${_relTime(data.surveyed_at)}` : ''}</div>` +
+    data.by_type.map(t => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span>${_esc(t.type_label)}</span>
+        <span class="text-slate-500">${t.file_count}</span>
+      </div>`).join('');
+}
+
+function _renderApiStructureResults(data) {
+  const langs = Object.entries(data.by_language || {});
+  if (!langs.length) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.relationship_count} inheritance relationship(s)</div>` +
+    langs.map(([lang, kinds]) => `
+      <div class="text-xs text-slate-300">
+        <span class="text-cyan-400 font-medium">${_esc(lang)}</span>:
+        ${Object.entries(kinds).map(([k, c]) => `${c} ${_esc(k)}${c === 1 ? '' : 's'}`).join(', ')}
+      </div>`).join('');
+}
+
+function _renderCodeSymbolExtractionResults(data) {
+  const langs = Object.entries(data.by_language || {});
+  if (!data.symbol_count) return _renderEmptyResultState(data);
+  return `<div class="text-xs text-slate-400 mb-1">${data.symbol_count} symbol(s)${data.surveyed_at ? ` · extracted ${_relTime(data.surveyed_at)}` : ''}, ${data.relationship_count} inheritance relationship(s)</div>` +
+    langs.map(([lang, count]) => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span class="text-cyan-400 font-medium">${_esc(lang)}</span>
+        <span class="text-slate-500">${count}</span>
+      </div>`).join('');
+}
+
+function _renderSubResourceSurveyResults(data) {
+  if (!data.findings || !data.findings.length) return _renderEmptyResultState(data);
+  const worthy = data.findings.filter(f => f.label === 'worthy');
+  return `<div class="text-xs text-slate-400 mb-1">${worthy.length} of ${data.findings.length} sub-resource(s) worth cataloging</div>` +
+    worthy.slice(0, 8).map(f => `
+      <div class="text-xs text-slate-300 flex justify-between gap-2">
+        <span class="truncate" title="${_esc(f.path)}">${_esc(f.path || f.check_name)}</span>
+        <span class="text-slate-500 shrink-0">${_esc(f.kind || '')}</span>
+      </div>`).join('');
+}
+
+// _CUSTOM_RESULT_RENDERERS — kind -> renderer, `(data) => html`.
+//
+// This is the dispatch half of the "kind-plugin" shape started with
+// `_renderArchitectureRecoveryResults`: every analysis kind with a bespoke
+// results view is one entry here rather than a branch in an if/else chain,
+// so adding a kind means adding an entry, not editing a chain everyone else's
+// branch also lives in. Same pattern as `_ARCH_PERSPECTIVE_LABEL` and the
+// per-kind tables elsewhere in this file (`technology_type_processes.yaml`'s
+// server-side equivalent), applied to rendering.
+//
+// This is still ONLY the renderer half. `architecture_recovery` is the one
+// entry with a curation lifecycle in front of it today (report, then
+// curate — docs/architecture-recovery-report-then-curate.md §4); the others
+// are plain results views with no accept/reject step. Generalising Curate
+// across resource kinds (a database's data-class candidates, a filesystem's
+// own proposals) needs a `kind -> {renderer, materializer}` registry keyed
+// the same way, plus the `proposals` table backing it — neither exists yet.
+// This object is deliberately shaped so that registry can wrap it later
+// (`renderer: _CUSTOM_RESULT_RENDERERS[kind]`) rather than needing a rewrite.
+const _CUSTOM_RESULT_RENDERERS = {
+  repo_classification: _renderRepoClassificationResults,
+  website_ingestion: _renderWebsiteIngestionResults,
+  manifest_parse: _renderManifestParseResults,
+  architecture_recovery: _renderArchitectureRecoveryResults,
+  dependency_analysis: _renderDependencyAnalysisResults,
+  data_file_profiling: _renderDataFileProfilingResults,
+  language_file_classification: _renderLanguageFileClassificationResults,
+  api_structure: _renderApiStructureResults,
+  code_symbol_extraction: _renderCodeSymbolExtractionResults,
+  sub_resource_survey: _renderSubResourceSurveyResults,
+};
+
+function _renderCustomAnalysisResults(analysisId, data) {
+  const renderer = _CUSTOM_RESULT_RENDERERS[analysisId];
+  if (renderer) return renderer(data);
   return '<div class="text-xs text-slate-500">No results view for this analysis.</div>';
 }
 
@@ -3729,23 +4061,7 @@ function _renderAnalysisTrendChart(elId, runs, analysisId) {
 function _runAnalysisCatalogCard(_analysisId) {
   if (resourceTypeFacet === 'repo') {
     if (!selectedProject) { showToast('info', 'Select a repo first.', 4000); return; }
-    const slug = selectedProject;
-    fetch(`/api/projects/${slug}/analyses/${_analysisId}/run`, { method: 'POST' })
-      .then(r => r.json())
-      .then(data => {
-        if (data.status === 'ok') {
-          showToast('success', `'${_esc(_analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(data.message)}`, 6000);
-          if (_analysisId in _REPO_RESULTS_RENDER_MODE) {
-            const safeId = String(_analysisId).replace(/[^a-zA-Z0-9]/g, '_');
-            document.getElementById(`results-${safeId}`)?.classList.remove('hidden');
-            loadAnalysisResults(_analysisId, slug);
-          }
-        } else {
-          showToast('error', `'${_esc(_analysisId)}' failed: ${_esc(data.error || 'unknown error')}`, 8000);
-        }
-      })
-      .catch(e => showToast('error', `Request failed: ${_esc(e.message)}`, 8000));
-    showToast('running', `Running <strong>${_esc(_analysisId)}</strong> on <strong>${_esc(slug)}</strong>…`, 0);
+    runAnalysisCatalogCard(_analysisId, selectedProject);
   } else if (resourceTypeFacet === 'db') {
     if (!selectedDatabase) { showToast('info', 'Select a database first.', 4000); return; }
     showSurveyDbModal(selectedDatabase);
@@ -3753,6 +4069,83 @@ function _runAnalysisCatalogCard(_analysisId) {
     if (!selectedFilesystem) { showToast('info', 'Select a filesystem first.', 4000); return; }
     showSurveyFsModal(selectedFilesystem);
   }
+}
+
+function hideAnalysisRunModal() {
+  document.getElementById('analysis-run-modal').classList.add('hidden');
+}
+
+// Gives the analysis-card path the Run Survey Definition modal's shape
+// (2026-08-30, docs/Backlog.md "the analysis-card Run gives no prompt and no
+// progress for slow work") — POST /run now returns an activity_id
+// immediately (see projects.py's run_single_analysis) instead of blocking
+// for the whole run, so this backgrounds and polls exactly like
+// submitSurveyDefinitionRun() does, reusing its _pollActivityUntilDone.
+// Unlike that modal there's no credentials/submit step: a card's Run already
+// means "run it now" — this opens the modal straight into "Starting…".
+async function runAnalysisCatalogCard(analysisId, slug) {
+  document.getElementById('analysis-run-name').textContent = analysisId;
+  const errEl    = document.getElementById('analysis-run-error');
+  const progress = document.getElementById('analysis-run-progress');
+  const resultEl = document.getElementById('analysis-run-result');
+  const closeBtn = document.getElementById('analysis-run-close-btn');
+
+  errEl.classList.add('hidden'); errEl.textContent = '';
+  resultEl.classList.add('hidden'); resultEl.innerHTML = '';
+  progress.classList.remove('hidden'); progress.textContent = 'Starting…';
+  closeBtn.textContent = 'Close — keeps running in background →';
+  document.getElementById('analysis-run-modal').classList.remove('hidden');
+
+  const opId = logOp({ type:'analysis', slug, status:'running',
+    summary:`Running '${analysisId}' on ${slug}…` });
+
+  let started;
+  try {
+    const startRes = await fetch(`/api/projects/${slug}/analyses/${analysisId}/run`, { method: 'POST' });
+    started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+  } catch(e) {
+    progress.classList.add('hidden');
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+    updateOp(opId, 'error', `Failed to start '${analysisId}'`, e.message);
+    showToast('error', `Failed to start '${_esc(analysisId)}': ${_esc(e.message)}`, 8000);
+    return;
+  }
+
+  showToast('running', `Running <strong>${_esc(analysisId)}</strong> on <strong>${_esc(slug)}</strong>… (can take a while — check 📋 Activity if you navigate away)`, 0);
+  const runningToastId = `toast-${_toastSeq}`;
+
+  const final = await _pollActivityUntilDone(started.activity_id, {
+    onTick: (elapsedSec) => { progress.textContent = `Running… (${elapsedSec}s elapsed — this may take a while)`; },
+  });
+  document.getElementById(runningToastId)?.remove();
+  progress.classList.add('hidden');
+
+  // The run's outcome is JSON-encoded into the completed activity entry's
+  // own `detail` field — see projects.py's _run_single_analysis_background.
+  let data = {};
+  try { data = final.detail ? JSON.parse(final.detail) : {}; } catch { data = {}; }
+
+  if (final.status === 'error') {
+    const msg = data.error || final.summary || 'Run failed';
+    updateOp(opId, 'error', `'${analysisId}' failed`, msg);
+    showToast('error', `'${_esc(analysisId)}' failed: ${_esc(msg)}`, 8000);
+    resultEl.innerHTML = `<div class="text-red-400">${_esc(msg)}</div>`;
+    resultEl.classList.remove('hidden');
+  } else {
+    const msg = data.message || final.summary || 'Complete';
+    updateOp(opId, 'ok', `'${analysisId}' complete`, msg);
+    showToast('success', `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong> — ${_esc(msg)}`, 6000);
+    resultEl.innerHTML = `<div class="text-emerald-400">${_esc(msg)}</div>`;
+    resultEl.classList.remove('hidden');
+    if (analysisId in _REPO_RESULTS_RENDER_MODE) {
+      const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+      document.getElementById(`results-${safeId}`)?.classList.remove('hidden');
+      loadAnalysisResults(analysisId, slug);
+    }
+  }
+  closeBtn.textContent = 'Done';
 }
 
 // ── persistent chat panel + RFA drawer toggles ──────────────────────────────────
@@ -4915,8 +5308,19 @@ async function showChart(type) {
   const container = document.getElementById('chart-container');
   container.classList.remove('hidden');
   container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">Loading…</div>';
+  // Looked up by data-chart-key rather than event.target (2026-08-30, live-
+  // reported: "Understanding stage is always highlighted even when another
+  // stage is selected") — this used to rely on the ambient `event` global,
+  // which only reflects a real click. loadUnderstandingCharts() and several
+  // other places call showChart()/showDbChart()/showEgeria() programmatically
+  // (no click), so `event` fell back to window.event's stale value: whatever
+  // the last real DOM event was, almost always the nav button click that
+  // navigated to Understanding in the first place. That wrongly added these
+  // exact highlight classes to the NAV button, which nothing ever removes
+  // since setNavIntent's active-toggle only manages the `.active` token, not
+  // these Tailwind utility classes — so it stuck forever.
   document.querySelectorAll('#repo-chart-tabs .chart-tab').forEach(b => b.classList.remove('bg-cyan-800','text-white'));
-  event?.target?.classList.add('bg-cyan-800','text-white');
+  document.querySelector(`#repo-chart-tabs [data-chart-key="${type}"]`)?.classList.add('bg-cyan-800','text-white');
   try {
     const res = await fetch(`/api/stats/${selectedProject}/charts/${type}`);
     if (!res.ok) { container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">No data — run refresh first</div>'; return; }
@@ -4935,8 +5339,10 @@ async function showDbChart(type) {
   const container = document.getElementById('chart-container');
   container.classList.remove('hidden');
   container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-xs">Loading…</div>';
+  // See showChart()'s comment above — same data-chart-key lookup, same bug
+  // it replaces (the ambient `event` global going stale on a programmatic call).
   document.querySelectorAll('#db-chart-tabs .chart-tab').forEach(b => b.classList.remove('bg-emerald-800','text-white'));
-  event?.target?.classList.add('bg-emerald-800','text-white');
+  document.querySelector(`#db-chart-tabs [data-chart-key="${type}"]`)?.classList.add('bg-emerald-800','text-white');
   try {
     const res = await fetch(`/api/stats/databases/${selectedDatabase}/${type}`);
     if (!res.ok) {
@@ -4999,8 +5405,9 @@ async function showEgeria() {
   document.getElementById('chart-container').classList.add('hidden');
   const panel = document.getElementById('egeria-panel');
   panel.classList.remove('hidden');
+  // See showChart()'s comment above — same fix, same bug.
   document.querySelectorAll('#repo-chart-tabs .chart-tab').forEach(b => b.classList.remove('bg-cyan-800','text-white'));
-  event?.target?.classList.add('bg-cyan-800','text-white');
+  document.querySelector('#repo-chart-tabs [data-chart-key="egeria"]')?.classList.add('bg-cyan-800','text-white');
   panel.innerHTML = '<div class="text-slate-500 text-xs py-2">Loading Egeria status…</div>';
   try {
     const res = await fetch(`/api/egeria/${selectedProject}/status`);
@@ -5870,8 +6277,8 @@ function renderActivityLog() {
     list.innerHTML = '<div class="text-slate-600 text-xs text-center py-12">No operations yet. Run a survey or publish to Egeria to see activity here.</div>';
     return;
   }
-  const typeLabel = { survey:'Survey', catalog:'Catalog → Egeria', publish:'Publish → Egeria', scout:'Scout', discover:'Discover DBs', refresh:'Refresh', rfa:'RFA' };
-  const typeIcon  = { survey:'📊', catalog:'☁', publish:'☁', scout:'🔍', discover:'🔍', refresh:'🔄', rfa:'📝' };
+  const typeLabel = { survey:'Survey', catalog:'Catalog → Egeria', publish:'Publish → Egeria', scout:'Scout', discover:'Discover DBs', refresh:'Refresh', rfa:'RFA', analysis:'Analysis' };
+  const typeIcon  = { survey:'📊', catalog:'☁', publish:'☁', scout:'🔍', discover:'🔍', refresh:'🔄', rfa:'📝', analysis:'⚙' };
   const intentColor = { scouting:'text-cyan-500', assessment:'text-violet-400', discovery:'text-emerald-400', enrichment:'text-amber-400' };
   const entityIcon  = { repo:'📁', database:'🗄', server:'🖥', filesystem:'📂', file:'📄' };
   const guidRx = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
@@ -7695,7 +8102,15 @@ function renderAutomateSurveysPanel(defs, existing) {
     if (s.target_kind === 'survey') byRef[s.analysis_id] = s;
   }
 
-  const rows = (defs || []).map(d => {
+  // This panel only ever loads for a selected repo (the guard above bails
+  // out otherwise) — /api/survey-definitions/definitions now returns a real
+  // resource_type per document instead of a hardcoded "repo", so a future
+  // database/filesystem Survey Definition doesn't silently show up here as
+  // something schedulable against the wrong resource type. Currently a
+  // no-op: every authored document today is repo-scoped.
+  defs = (defs || []).filter(d => d.resource_type === 'repo');
+
+  const rows = defs.map(d => {
     const sched = byRef[d.qualified_name];
     const selId = `survey-cadence-${d.name}`;
     const current = sched ? sched.schedule : 'manual';
@@ -7799,14 +8214,23 @@ async function loadAutomateSchedulesPanel() {
   view.innerHTML = _automateSubnavHtml('schedules') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading schedules…</div>';
   try {
-    const [schedules, repoCatalog, dbCatalog, fsCatalog] = await Promise.all([
+    const [schedules, repoCatalog, dbCatalog, fsCatalog, surveyDefs] = await Promise.all([
       fetch('/api/schedules/').then(r => r.json()),
       fetch('/api/analyses/repo').then(r => r.ok ? r.json() : []).catch(() => []),
       fetch('/api/analyses/database').then(r => r.ok ? r.json() : []).catch(() => []),
       fetch('/api/analyses/filesystem').then(r => r.ok ? r.json() : []).catch(() => []),
+      // A schedule can name either an analysis_id (target_kind="analysis",
+      // keyed against the three catalogs above) or a Survey Definition's
+      // qualified_name (target_kind="survey", e.g. "GovActionProcess::
+      // RepoFullSurvey") — neither catalog above has ever heard of the
+      // latter, so those rows fell back to showing the raw internal ref
+      // instead of a name ("not all the information is filled out", live
+      // feedback 2026-08-30). Same route the 📋 Surveys sub-tab already uses.
+      fetch('/api/survey-definitions/definitions').then(r => r.ok ? r.json() : []).catch(() => []),
     ]);
     const nameById = {};
     for (const a of [...repoCatalog, ...dbCatalog, ...fsCatalog]) nameById[a.id] = a.name;
+    for (const d of surveyDefs) nameById[d.qualified_name] = `📋 ${d.name}`;
     renderAutomateSchedulesPanel(schedules, nameById);
   } catch(e) {
     view.innerHTML = _automateSubnavHtml('schedules') +
@@ -9095,7 +9519,10 @@ function _renderEnvelopeMarkdown(env, slug) {
   lines.push(`Answering from ${known.length} measurement(s) on **${slug}**:\n`);
   known.forEach(f => {
     const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
-    lines.push(`- ${st.icon} **${f.analysis_id}** — ${st.text}` +
+    // _analysisDisplayName, not the raw analysis_id -- "catalog_presence" is
+    // a slug, "Catalog Presence" (the catalog's own `name`) is what someone
+    // asking a plain-language question can actually read.
+    lines.push(`- ${st.icon} **${_esc(_analysisDisplayName(f.analysis_id))}** — ${st.text}` +
       // Evidence informs a judgement; it is not the judgement. Phrasing it as
       // an answer would have this report "yes, it replaces X" from nothing
       // more than a shared primary language.
@@ -9103,7 +9530,16 @@ function _renderEnvelopeMarkdown(env, slug) {
       (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '') +
       (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
     const summary = _summariseFactValue(f.value);
-    if (summary) lines.push(`  \n  ${summary}`);
+    // Reported 2026-08-31: "registered: true · group: egeria ·
+    // siblings_in_group: 4 · ..." read as raw, not meaningful, right under
+    // the actual answer. Same fixed-wording state line above IS the answer;
+    // this is what backs it up. <details>/<summary> is plain HTML passed
+    // through marked() untouched (no sanitizer configured) -- the same
+    // collapsed-by-default, no-JS-state idiom already used for the Survey
+    // Definition step list, not a new mechanism.
+    if (summary) {
+      lines.push(`  \n  <details><summary class="cursor-pointer text-slate-500">Evidence</summary>\n\n  ${summary}\n  </details>`);
+    }
     if (f.note) lines.push(`  \n  _${f.note}_`);
   });
   if (unknown.length) {
@@ -10621,6 +11057,13 @@ async function compileContext() {
   if (!slug) { showToast('error', 'Select a resource first.', 3000); return; }
 
   appendMessage('you', question);
+  await _recompile(slug, question);
+}
+
+// Shared by the Evidence button and by anything that wants to re-run the same
+// compile silently -- a gap's "run" completing, or the message's own "refresh"
+// button -- without appending a second "you" bubble for the same question.
+async function _recompile(slug, question) {
   setThinking(true);
   try {
     const res = await fetch('/api/context/compile', {
@@ -10639,7 +11082,7 @@ async function compileContext() {
       const detail = await res.text();
       throw new Error(`HTTP ${res.status}: ${detail.slice(0, 200)}`);
     }
-    _renderCompiledContext(await res.json());
+    _renderCompiledContext(await res.json(), slug, question);
   } catch (e) {
     showToast('error', `Could not compile context: ${e.message}`, 6000);
   } finally {
@@ -10647,22 +11090,236 @@ async function compileContext() {
   }
 }
 
-function _renderCompiledContext(data) {
-  const m = data.manifest || {};
-  const messages = document.getElementById('messages');
-  const wrap = document.createElement('div');
-  wrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+// ── viewing results from chat ────────────────────────────────────────────────
+// Two entry points end up at the same place: a pointer section (a compiled
+// answer linking to where its own view lives NOW, alongside its packed prose
+// -- "prose for the model to reason over, link for the human to go and look",
+// Backlog "a compiled answer should be able to point at a view") and a plain
+// "results ↗" link on ANY packed section that has a results view at all, not
+// only the one analysis a pointer names. RE has no routing, so "go to a view"
+// means driving the same client-side nav a person would click through by
+// hand -- select the resource, switch to whichever intent the analysis'
+// catalog entry actually lives under, open its Results, and, for a pointer,
+// its named perspective tab.
 
+// Short poll for an element an async panel render will produce -- setNavIntent()
+// and its showXPane() callees fetch before they render, so the target element
+// (a results-<id> div) does not exist synchronously the way the rest of this
+// file's onclick handlers assume. Bounded, not indefinite: a target that never
+// materialises (a stale analysis id, or the fetch failed) should say so rather
+// than hang.
+function _waitForEl(id, timeoutMs) {
+  return new Promise(resolve => {
+    const start = performance.now();
+    (function tick() {
+      const el = document.getElementById(id);
+      if (el) return resolve(el);
+      if (performance.now() - start > timeoutMs) return resolve(null);
+      setTimeout(tick, 50);
+    })();
+  });
+}
+
+// Which intent-nav tab an analysis id's catalog entry lives under, fetched
+// once and cached. Looked up rather than hardcoded on purpose: today's own
+// session history is the reason -- architecture_recovery's intent moved
+// between discovery and analysis twice in one day, and a hardcoded map here
+// would have gone stale exactly when the catalog changed under it.
+let _analysisIntentCache = null;
+async function _analysisIntent(analysisId) {
+  if (!_analysisIntentCache) {
+    _analysisIntentCache = {};
+    try {
+      const res = await fetch('/api/analyses/repo');
+      if (res.ok) for (const a of await res.json()) _analysisIntentCache[a.id] = a.intent;
+    } catch { /* fall through to the caller's default */ }
+  }
+  return _analysisIntentCache[analysisId];
+}
+
+async function _openAnalysisResults(analysisId, slug) {
+  selectProject(slug);
+  setNavIntent((await _analysisIntent(analysisId)) || 'analysis');
+  const safeId = String(analysisId).replace(/[^a-zA-Z0-9]/g, '_');
+  const resultsEl = await _waitForEl(`results-${safeId}`, 3000);
+  if (!resultsEl) {
+    showToast('error', `Couldn't find the results view for ${_esc(analysisId)} on ${_esc(slug)} — select it manually.`, 6000);
+    return null;
+  }
+  // Opens closed, closes open — same as clicking the card's own Results
+  // button. Fine for the common case (this opens a card the user hadn't);
+  // re-opening an already-open card closes it instead of a no-op, which is
+  // the one place this shortcuts the real toggle affordance.
+  await toggleAnalysisResults(analysisId, slug, null);
+  resultsEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  return resultsEl;
+}
+
+// Deliberately as narrow as the backend's own _POINTABLE_VIEWS
+// (context_compile.py): one entry per view RE actually has somewhere to
+// point today. Add an entry here only once the backend map grows to match;
+// the two are meant to stay in step.
+const _POINTER_VIEW_ANALYSIS = { architecture: 'architecture_recovery' };
+
+function _pointerLinkHtml(pointer) {
+  if (!pointer) return '';
+  const known = _POINTER_VIEW_ANALYSIS[pointer.view];
+  const label = known ? pointer.view : `${pointer.view} (no view registered yet)`;
+  const asOf = pointer.as_of ? ` · as of ${_esc(_relTime(pointer.as_of))}` : '';
+  return `<div class="text-[10px]">
+      <button onclick='_openPointer(${JSON.stringify(pointer)})'
+              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
+        📍 open ${_esc(label)} view for ${_esc(pointer.resource_slug)}
+      </button>${asOf}
+    </div>`;
+}
+
+// Inline, not "results ↗" plus a navigate-away: the same tables, charts and
+// per-kind renderers the Analysis card's own "📊 Results" already draws from
+// (_renderAnalysisResultsContent, _renderFileTypePieChart,
+// _renderAnalysisTrendChart -- unmodified, this is a second place calling
+// them, not a second implementation), loaded on demand into a container that
+// lives in the chat message itself. A raw JSON dump behind "show packed
+// text" is what the model reads; this is what a person reads.
+let _chatResultsSeq = 0;
+
+function _inlineResultsToggleHtml(analysisId, slug) {
+  if (!(analysisId in _REPO_RESULTS_RENDER_MODE)) return '';
+  const uid = `chat-res-${++_chatResultsSeq}`;
+  return `<div class="text-[10px] mt-0.5">
+      <button onclick='_toggleInlineResults(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)}, ${JSON.stringify(uid)})'
+              class="text-cyan-400 hover:text-cyan-300 underline decoration-dotted decoration-cyan-700">
+        📊 view results
+      </button>
+      <div id="${uid}" class="hidden mt-1"></div>
+    </div>`;
+}
+
+async function _toggleInlineResults(analysisId, slug, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  if (el.dataset.loaded === '1') {
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    return;
+  }
+  el.innerHTML = '<div class="text-slate-500 text-xs py-1">Loading…</div>';
+  try {
+    const [resultsRes, trendRes] = await Promise.all([
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/results`),
+      fetch(`/api/projects/${slug}/analyses/${analysisId}/trend`),
+    ]);
+    if (!resultsRes.ok) throw new Error(`HTTP ${resultsRes.status}`);
+    const data = await resultsRes.json();
+    const trend = trendRes.ok ? (await trendRes.json()).runs || [] : [];
+    const hasPie = analysisId === 'language_file_classification' && data.by_type && data.by_type.length > 1;
+    const pieId = `${containerId}-pie`, trendId = `${containerId}-trend`;
+    el.innerHTML = `<div class="bg-slate-950 border border-slate-800 rounded p-2 space-y-2">
+      ${_renderAnalysisResultsContent(analysisId, data)}
+      ${hasPie ? `<div id="${pieId}" style="height:150px"></div>` : ''}
+      ${trend.length > 1 ? `<div id="${trendId}" style="height:100px"></div>` : ''}
+    </div>`;
+    if (hasPie) _renderFileTypePieChart(pieId, data.by_type);
+    if (trend.length > 1) _renderAnalysisTrendChart(trendId, trend, analysisId);
+    el.dataset.loaded = '1';
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  } catch (e) {
+    el.innerHTML = `<div class="text-red-400 text-xs py-1">Failed to load results: ${_esc(e.message)}</div>`;
+  }
+}
+
+async function _openPointer(pointer) {
+  const analysisId = _POINTER_VIEW_ANALYSIS[pointer.view];
+  if (!analysisId) {
+    showToast('info', `No view registered for "${pointer.view}" yet.`, 4000);
+    return;
+  }
+  const resultsEl = await _openAnalysisResults(analysisId, pointer.resource_slug);
+  if (!resultsEl) return;
+  if (pointer.perspective) {
+    // Best-effort: _archTabsHtml's buttons carry a uid generated at render
+    // time that isn't known in advance, so select by perspective value
+    // instead once the card has had a tick to render.
+    setTimeout(() => {
+      resultsEl.querySelector(`[data-arch-tab][data-arch-persp="${pointer.perspective}"]`)?.click();
+    }, 150);
+  }
+}
+
+// ── running a survey from chat ───────────────────────────────────────────────
+// The same background-run endpoint and poll the Analysis card's own Run
+// button uses (runAnalysisCatalogCard) -- no new backend, just a second place
+// to trigger it. This is a person clicking "run" on a gap the Evidence
+// preview named, not the compiler triggering a survey itself: §20's rule
+// ("the packer must never trigger a survey") is about the compile path, not
+// about whether a human can ask for one from here instead of the card grid.
+async function _runGapAnalysis(analysisId, slug, btn) {
+  btn.disabled = true;
+  btn.textContent = 'starting…';
+  const opId = logOp({ type: 'analysis', slug, status: 'running',
+    summary: `Running '${analysisId}' on ${slug} (from chat)…` });
+
+  let started;
+  try {
+    const startRes = await fetch(`/api/projects/${slug}/analyses/${analysisId}/run`, { method: 'POST' });
+    started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.detail || 'Failed to start run');
+  } catch (e) {
+    btn.textContent = '▶ run';
+    btn.disabled = false;
+    updateOp(opId, 'error', `Failed to start '${analysisId}'`, e.message);
+    showToast('error', `Failed to start '${_esc(analysisId)}': ${_esc(e.message)}`, 8000);
+    return;
+  }
+
+  const final = await _pollActivityUntilDone(started.activity_id, {
+    onTick: (s) => { btn.textContent = `running… (${s}s)`; },
+  });
+  let data = {};
+  try { data = final.detail ? JSON.parse(final.detail) : {}; } catch { data = {}; }
+
+  if (final.status === 'error') {
+    const msg = data.error || final.summary || 'Run failed';
+    btn.textContent = '▶ retry';
+    btn.disabled = false;
+    updateOp(opId, 'error', `'${analysisId}' failed`, msg);
+    showToast('error', `'${_esc(analysisId)}' failed: ${_esc(msg)}`, 8000);
+    return;
+  }
+
+  updateOp(opId, 'ok', `'${analysisId}' complete`, data.message || final.summary || 'Complete');
+  showToast('success', `'${_esc(analysisId)}' complete for <strong>${_esc(slug)}</strong>`, 5000);
+  btn.outerHTML = `<span class="text-emerald-400">✓ ran</span>` + _inlineResultsToggleHtml(analysisId, slug);
+}
+
+// Body shared by two call sites: the standalone "Evidence" button
+// (_renderCompiledContext, its own message bubble) and the real answer's
+// own "📎 evidence used" toggle (_evidenceSummaryHtml, ConversationAgent
+// already compiled this to shape the answer -- same data, no second
+// compile call). One builder so the gap/run/results/pointer machinery
+// exists in exactly one place.
+function _compiledEvidenceHtml(data, slug, question) {
+  const m = data.manifest || {};
   const gaps = m.gaps || [], packed = m.packed || [], dropped = m.dropped || [];
   const pct = m.budget ? Math.round((m.used / m.budget) * 100) : 0;
 
+  // Each gap gets its own "▶ run" — the same background run the Analysis
+  // card's Run button starts, just triggered from here. A person asking a
+  // question that resolves to a not-yet-run analysis is exactly the moment
+  // "well, run it then" is the useful next action, and until now that meant
+  // leaving the chat to find the right card.
   const gapHtml = gaps.length
     ? `<div class="mt-2 border border-amber-700/60 rounded p-2 bg-amber-950/20">
          <div class="text-[11px] font-semibold text-amber-400 mb-1">
            Missing — ${gaps.length} analysis/analyses that would answer this have not run
          </div>
-         <div class="text-[10px] text-amber-200/80 leading-relaxed">
-           ${gaps.map(g => _esc(g.key)).join(' · ')}
+         <div class="space-y-1">
+           ${gaps.map(g => `<div class="flex items-center justify-between gap-2 text-[10px] text-amber-200/80">
+               <span>${_esc(g.key)}${g.reason ? ` <span class="text-amber-400/60">— ${_esc(g.reason)}</span>` : ''}</span>
+               <button onclick='_runGapAnalysis(${JSON.stringify(g.key)}, ${JSON.stringify(slug)}, this)'
+                       class="shrink-0 px-1.5 py-0.5 rounded bg-amber-800/40 hover:bg-amber-700/50 text-amber-200 transition-colors">▶ run</button>
+             </div>`).join('')}
          </div>
        </div>`
     : `<div class="mt-2 text-[11px] text-emerald-400">
@@ -10673,7 +11330,7 @@ function _renderCompiledContext(data) {
     ? packed.map(p => `<div class="flex justify-between gap-2">
           <span class="text-slate-300">${_esc(p.key)}</span>
           <span class="text-slate-500">${_esc(p.rung)} · ${p.size}</span>
-        </div>`).join('')
+        </div>${!p.pointer ? _inlineResultsToggleHtml(p.key, slug) : ''}${_pointerLinkHtml(p.pointer)}`).join('')
     : '<div class="text-slate-500">nothing packed</div>';
 
   const droppedHtml = dropped.length
@@ -10690,10 +11347,21 @@ function _renderCompiledContext(data) {
         </div>
       </div>`).join('') || '<div class="text-slate-500">no questions matched</div>';
 
-  wrap.innerHTML = `
-    <div class="text-xs font-semibold mb-1 text-cyan-400">Evidence for this question</div>
-    <div class="text-[10px] text-slate-500 mb-1">
-      What the adoption gate would assemble. Not the source of any answer above.
+  // The packed evidence prose itself -- what actually reaches the model when
+  // this compile feeds a real answer (ConversationAgent._compiled_evidence).
+  // Everything above describes the compile; this is the compile. Rendered
+  // with marked() because _findings_to_rungs/_results_to_rungs already write
+  // "## analysis_id" markdown headers into it.
+  const textHtml = (data.text || '').trim()
+    ? marked.parse(data.text)
+    : '<div class="text-slate-500">nothing packed</div>';
+
+  return `
+    <div class="flex items-center justify-between gap-2 mb-1">
+      <div class="text-xs font-semibold text-cyan-400">Evidence for this question</div>
+      <button onclick='_recompile(${JSON.stringify(slug)}, ${JSON.stringify(question)})'
+              title="Re-check — useful after running a gap above"
+              class="text-[10px] text-slate-500 hover:text-cyan-400 transition-colors">🔄 refresh</button>
     </div>
     ${gapHtml}
     <div class="mt-2 text-[10px]">
@@ -10701,12 +11369,49 @@ function _renderCompiledContext(data) {
       <div class="space-y-0.5">${packedHtml}</div>
       ${droppedHtml}
     </div>
-    <button onclick="this.nextElementSibling.classList.toggle('hidden')"
-            class="text-[10px] text-slate-600 hover:text-cyan-400 mt-2 transition-colors">why these?</button>
-    <div class="hidden mt-1 pl-2 border-l border-slate-700 text-[10px]">${derivHtml}</div>`;
+    <div class="flex gap-3 mt-2">
+      <button onclick="this.parentElement.nextElementSibling.classList.toggle('hidden')"
+              class="text-[10px] text-slate-600 hover:text-cyan-400 transition-colors">why these?</button>
+      <button onclick="this.parentElement.nextElementSibling.nextElementSibling.classList.toggle('hidden')"
+              class="text-[10px] text-slate-600 hover:text-cyan-400 transition-colors">show packed text</button>
+    </div>
+    <div class="hidden mt-1 pl-2 border-l border-slate-700 text-[10px]">${derivHtml}</div>
+    <div class="hidden mt-1 prose prose-invert max-w-none text-[11px] bg-slate-950/60 rounded p-2 border border-slate-800">${textHtml}</div>`;
+}
 
+// Standalone "Evidence" button — its own message bubble, always expanded.
+// What the adoption gate WOULD assemble for the question in the box, on
+// demand, without waiting on or paying for a full model turn.
+function _renderCompiledContext(data, slug, question) {
+  const messages = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
+  wrap.innerHTML = `
+    <div class="text-[10px] text-slate-500 mb-1">
+      What the adoption gate would assemble. Not the source of any answer above.
+    </div>
+    ${_compiledEvidenceHtml(data, slug, question)}`;
   messages.appendChild(wrap);
   messages.scrollTop = messages.scrollHeight;
+}
+
+// Attached under a REAL answer (runQuery's "done" event) — the same compile
+// ConversationAgent._compiled_evidence already ran to shape that answer,
+// not a second one. Collapsed by default, one toggle, so an ordinary reply
+// stays short and the gaps/tables/charts/packed-text that back it are one
+// click away in the SAME message rather than a second chat action.
+function _evidenceSummaryHtml(data, slug, question) {
+  const m = (data || {}).manifest || {};
+  const packedCount = (m.packed || []).length, gapCount = (m.gaps || []).length;
+  if (!packedCount && !gapCount) return '';  // nothing compiled -- no resource in scope, or empty
+  const uid = `ev-${++_chatResultsSeq}`;
+  return `<div class="mt-2 pt-2 border-t border-slate-700/50">
+      <button onclick="document.getElementById('${uid}').classList.toggle('hidden')"
+              class="text-[10px] text-slate-500 hover:text-cyan-400 transition-colors">
+        📎 evidence used — ${packedCount} section(s)${gapCount ? `, ${gapCount} missing` : ''}
+      </button>
+      <div id="${uid}" class="hidden mt-1">${_compiledEvidenceHtml(data, slug, question)}</div>
+    </div>`;
 }
 
 async function sendQuery() {
@@ -10742,7 +11447,12 @@ async function runQuery(query, projectSlug, databaseSlug) {
   header.textContent = 'Assistant';
   wrap.appendChild(header);
   const body = document.createElement('div');
-  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  // prose-sm, not bare prose: prose's default spacing/heading scale assumes
+  // a 1rem reading column. Bare prose (no plugin registered at all, until
+  // 2026-08-31 — frontend-build/tailwind.config.js) rendered as nothing;
+  // once registered, its default (non -sm) margins read as oversized next
+  // to this panel's text-sm body copy. prose-sm's ~14px baseline matches.
+  body.className = 'prose prose-sm prose-invert text-sm text-slate-200 max-w-none';
   wrap.appendChild(body);
   messages.appendChild(wrap);
   messages.scrollTop = messages.scrollHeight;
@@ -10888,6 +11598,16 @@ async function runQuery(query, projectSlug, databaseSlug) {
             wrap.appendChild(banner);
           }
 
+          // Same compile ConversationAgent._compiled_evidence already ran to
+          // shape the answer above -- not a second Evidence-button call.
+          // See _evidenceSummaryHtml: empty string (nothing appended) when
+          // there was no resource in scope or nothing compiled.
+          if (event.compiled) {
+            const evDiv = document.createElement('div');
+            evDiv.innerHTML = _evidenceSummaryHtml(event.compiled, projectSlug, query);
+            if (evDiv.innerHTML) wrap.appendChild(evDiv.firstElementChild);
+          }
+
           if (event.hash) {
             const fb = document.createElement('div');
             fb.className = 'mt-1.5 flex gap-2';
@@ -10916,7 +11636,12 @@ function appendMessage(role, text, opts = {}) {
   header.textContent = role === 'you' ? 'You' : opts.clarify ? 'Assistant · clarification needed' : 'Assistant';
   wrap.appendChild(header);
   const body = document.createElement('div');
-  body.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
+  // prose-sm, not bare prose: prose's default spacing/heading scale assumes
+  // a 1rem reading column. Bare prose (no plugin registered at all, until
+  // 2026-08-31 — frontend-build/tailwind.config.js) rendered as nothing;
+  // once registered, its default (non -sm) margins read as oversized next
+  // to this panel's text-sm body copy. prose-sm's ~14px baseline matches.
+  body.className = 'prose prose-sm prose-invert text-sm text-slate-200 max-w-none';
   body.innerHTML = marked.parse(text);
   wrap.appendChild(body);
   messages.appendChild(wrap);

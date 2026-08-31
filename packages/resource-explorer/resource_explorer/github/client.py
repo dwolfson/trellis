@@ -1,12 +1,15 @@
 """GitHub API wrapper — PyGitHub for REST, httpx for GraphQL batch queries."""
 from __future__ import annotations
 
+import logging
 from functools import cached_property
 
 from github import Github, GithubException
 from github.Repository import Repository
 
 from resource_explorer.config import get_config
+
+log = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -94,11 +97,48 @@ class GitHubClient:
         import requests
         from requests.exceptions import ConnectionError, SSLError, Timeout
 
+        zip_path = Path(dest_dir) / "_repo.zip"
+        self.fetch_zipball(repo, zip_path)
+
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(dest_dir)
+        zip_path.unlink(missing_ok=True)
+
+        # GitHub zips have a single top-level dir named "owner-repo-sha"
+        subdirs = [d for d in Path(dest_dir).iterdir() if d.is_dir()]
+        repo_root = subdirs[0] if subdirs else Path(dest_dir)
+
+        if subproject_path:
+            sub = repo_root / subproject_path
+            if not sub.is_dir():
+                raise ValueError(
+                    f"Subproject path '{subproject_path}' does not exist in this repository. "
+                    f"Available top-level directories: "
+                    f"{[d.name for d in repo_root.iterdir() if d.is_dir()]}"
+                )
+            return sub
+
+        return repo_root
+
+    def fetch_zipball(self, repo: Repository, zip_path: "Path") -> "Path":
+        """Download `repo`'s zipball to `zip_path`, with retries. No extraction.
+
+        Split out of `download_zipball` so `SourceCache` can fill an entry with
+        the artifact itself rather than downloading and then re-zipping, and so
+        the retry/SSL-diagnostics logic has exactly one implementation.
+        """
+        import time
+        from pathlib import Path
+
+        import requests
+        from requests.exceptions import ConnectionError, SSLError, Timeout
+
         cfg = get_config().github
         branch = repo.default_branch
         url = f"{self._base_url}/repos/{repo.full_name}/zipball/{branch}"
         headers = {"Authorization": f"token {cfg.token}"} if cfg.token else {}
-        zip_path = Path(dest_dir) / "_repo.zip"
+        zip_path = Path(zip_path)
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
 
         last_exc: Exception | None = None
         for attempt in range(3):
@@ -132,25 +172,31 @@ class GitHubClient:
                 f"Network error downloading repo after 3 attempts — {last_exc}"
             ) from last_exc
 
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(dest_dir)
-        zip_path.unlink(missing_ok=True)
+        return zip_path
 
-        # GitHub zips have a single top-level dir named "owner-repo-sha"
-        subdirs = [d for d in Path(dest_dir).iterdir() if d.is_dir()]
-        repo_root = subdirs[0] if subdirs else Path(dest_dir)
+    def _default_branch_sha(self, repo: Repository) -> str | None:
+        """The default branch head, or None if it cannot be established.
 
-        if subproject_path:
-            sub = repo_root / subproject_path
-            if not sub.is_dir():
-                raise ValueError(
-                    f"Subproject path '{subproject_path}' does not exist in this repository. "
-                    f"Available top-level directories: "
-                    f"{[d.name for d in repo_root.iterdir() if d.is_dir()]}"
-                )
-            return sub
+        This is the cache key, and it is what makes a stale hit impossible: a
+        cache keyed on the repo alone would serve yesterday's code silently.
+        Measured at 0.49s against a 23.7s download, which is a good trade for
+        never being quietly wrong.
 
-        return repo_root
+        Returns None rather than raising — if GitHub cannot be asked, the
+        caller falls back to downloading, which is the old behaviour. A
+        correctness mechanism that can take the feature down with it is worse
+        than the cost it saves.
+        """
+        try:
+            # Delegates rather than reimplementing: `get_latest_commit_sha` was
+            # already here (used by IncrementalIndexer and the CLI wizard) and
+            # this method is only its error-handling wrapper. Two ways to ask
+            # the same question is how they drift.
+            return self.get_latest_commit_sha(repo)
+        except Exception as exc:
+            log.warning("could not resolve default-branch SHA for %s (%s) — "
+                        "downloading uncached", getattr(repo, "full_name", "?"), exc)
+            return None
 
     def zipball_root(self, repo: Repository, subproject_path: str | None = None):
         """Context manager: download `repo`'s zipball into a fresh tempdir
@@ -168,13 +214,50 @@ class GitHubClient:
         doesn't reduce to this same simple shape.
         """
         import tempfile
+        import zipfile
         from contextlib import contextmanager
         from pathlib import Path
+
+        from resource_explorer.github.source_cache import SourceCache
 
         @contextmanager
         def _cm():
             with tempfile.TemporaryDirectory() as tmp:
-                yield self.download_zipball(repo, Path(tmp), subproject_path)
+                # The ZIP is cached; the EXTRACTION is not. Measured
+                # 2026-08-30: download 23.74s, extract 0.39s, so caching one
+                # layer back removes 98% of the cost while every caller still
+                # gets a private directory it can do what it likes with.
+                # Handing out a shared extracted tree would let concurrent
+                # surveys see each other's mutations.
+                sha = self._default_branch_sha(repo)
+                if sha is None:
+                    yield self.download_zipball(repo, Path(tmp), subproject_path)
+                    return
+                cache = SourceCache()
+                zip_path = cache.get("zipball", repo.full_name, sha)
+                if zip_path is None:
+                    def _produce(target: Path) -> None:
+                        self.fetch_zipball(repo, target)
+                    zip_path = cache.put("zipball", repo.full_name, sha, _produce)
+                extract_to = Path(tmp) / "x"
+                with zipfile.ZipFile(zip_path) as z:
+                    z.extractall(extract_to)
+                root = next((d for d in extract_to.iterdir() if d.is_dir()), extract_to)
+                if subproject_path:
+                    sub = root / subproject_path
+                    if not sub.is_dir():
+                        # Same validation download_zipball() does on the
+                        # uncached path — lost here originally, and silently:
+                        # the cache path would have handed a caller a
+                        # non-existent directory instead of this message.
+                        raise ValueError(
+                            f"Subproject path '{subproject_path}' does not exist in this repository. "
+                            f"Available top-level directories: "
+                            f"{[d.name for d in root.iterdir() if d.is_dir()]}"
+                        )
+                    yield sub
+                else:
+                    yield root
 
         return _cm()
 
@@ -285,11 +368,31 @@ class GitHubClient:
         from contextlib import contextmanager
         from pathlib import Path
 
+        from resource_explorer.github.source_cache import SourceCache, local_clone
+
         @contextmanager
         def _cm():
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "repo"
-                yield self.clone_git_root(repo, dest, shallow_since=shallow_since)
+                # Same shape as zipball_root: the CLONE is cached, the copy is
+                # not. `git log` writes to `.git` for its own bookkeeping, so a
+                # shared clone is a corruption risk between concurrent surveys,
+                # not merely a leak. `clone --local` hardlinks — 0.28s measured
+                # against 1.6s over the network.
+                #
+                # A `shallow_since` bound changes what history the clone
+                # CONTAINS, so it must not share a key with an unbounded one.
+                sha = self._default_branch_sha(repo)
+                if sha is None or shallow_since:
+                    yield self.clone_git_root(repo, dest, shallow_since=shallow_since)
+                    return
+                cache = SourceCache()
+                cached = cache.get("gitclone", repo.full_name, sha)
+                if cached is None:
+                    def _produce(target: Path) -> None:
+                        self.clone_git_root(repo, target, shallow_since=None)
+                    cached = cache.put("gitclone", repo.full_name, sha, _produce)
+                yield local_clone(cached, dest)
 
         return _cm()
 

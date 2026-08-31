@@ -28,13 +28,26 @@ than maintaining three near-duplicate implementations across separate repos.
 
 ```
 trellis/
-├── pyproject.toml            # workspace root — declares members, holds shared tooling config
-├── uv.lock                   # single shared lockfile for the whole workspace
+├── QUICKSTART.md              # clone → running app; start here
+├── docs/trellis-architecture.md   # how the two apps and six libraries fit together
+├── pyproject.toml             # workspace root — declares members, holds shared tooling config
+├── uv.lock                    # single shared lockfile for the whole workspace
 ├── .python-version            # pinned Python version for the workspace
+├── Makefile                   # wraps the common `uv run --package ...` invocations
 └── packages/
-    ├── resource-explorer/     # Resource Explorer — own pyproject.toml, own tests, own CLI/web entry points
-    └── egeria-advisor/        # Egeria Advisor — own pyproject.toml, own tests, own CLI/web entry points
+    ├── resource-explorer/     # app — own pyproject.toml, tests, CLI/web entry points
+    ├── egeria-advisor/        # app — own pyproject.toml, tests, CLI/web entry points
+    │
+    ├── trellis-artifact-tree/ # containment tree over ingested artifacts — the structure retrieval walks
+    ├── trellis-auth/          # JWT auth + Portal SSO token exchange
+    ├── trellis-context/       # ContextSpec + deterministic packer — bounded context under a budget
+    ├── trellis-microflow/     # resource-sharing primitives for microflow-style step execution
+    ├── trellis-querycache/    # TTL + LRU query cache
+    └── trellis-vectorstore/   # pgvector-backed vector store
 ```
+
+The two apps are the products; the six `trellis-*` members are libraries they share. A library
+member has no CLI, no web server and no Egeria connection — it is imported, never deployed.
 
 Each package keeps its own `config`/`configdata` directory *inside* its own top-level package
 (`resource_explorer/configdata/`, `advisor/configdata/`) rather than as a sibling directory —
@@ -44,13 +57,17 @@ package boundary.
 
 ## Getting started
 
+**→ [QUICKSTART.md](QUICKSTART.md) takes you from a clone to a running app in about fifteen
+minutes, without needing an Egeria server.** The rest of this section is the reference version:
+what each step is doing and why, for when the quickstart's defaults are not what you want.
+
 ```bash
 git clone https://github.com/dwolfson/trellis.git
 cd trellis
 uv sync
 ```
 
-`uv sync` resolves and installs dependencies for both workspace members into a single shared
+`uv sync` resolves and installs dependencies for every workspace member into a single shared
 `.venv` at the repo root.
 
 ### Configuration
@@ -175,10 +192,12 @@ by a plain `uv sync`.)
   and Egeria Advisor's runtime behavior together (as opposed to sharing a library both import)
   are out of scope for this workspace's design — see each package's own `CLAUDE.md` for its
   architecture.
-- **Shared code should live in its own workspace member**, not be duplicated between the two
-  apps. As common patterns get extracted (vector store access, intent/perspective
-  classification, admin tooling, feedback capture), they belong in a new `packages/<name>/`
-  member both apps depend on via `[tool.uv.sources]`, not copy-pasted.
+- **Shared code lives in its own workspace member**, not duplicated between the two apps. This
+  has happened six times now — `trellis-vectorstore` was the first extraction and is the worked
+  example to follow; `trellis-querycache` and `trellis-auth` are the most recent. A new shared
+  library is a `packages/<name>/` member with its own `pyproject.toml` and tests, added to
+  `[tool.uv.sources]`, and imported by both apps. It gets no CLI, no web server and no Egeria
+  client: the moment a library needs one of those, it is an app, not a library.
 - **The workspace root's `pyproject.toml`** carries one deliberate dependency override —
   `numba>=0.60.0` — needed because resolving both members' dependencies together otherwise
   pulls an ancient `numba`/`llvmlite` (via `beeai-framework[rag]` → `unstructured`) that

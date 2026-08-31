@@ -503,6 +503,7 @@ class GovernancePlanAgent:
             if original_steps and echoed_blocks:
                 new_command_md, materialized_display = self._rebuild_command_sequence(
                     original_steps, echoed_blocks, ex_counts.get('detail', []),
+                    mode=self._draft_mode(draft_id),
                 )
                 if source_folder != "outbox":
                     refreshed_plan_content = self._replace_command_section(plan_content, new_command_md)
@@ -772,6 +773,7 @@ class GovernancePlanAgent:
         original_steps: List[Dict[str, Any]],
         echoed_blocks: List[Dict[str, Any]],
         commands_detail: List[Dict[str, Any]],
+        mode: str = "basic",
     ) -> Tuple[str, str]:
         """
         Build a refreshed Command Sequence from Dr.Egeria's echoed output, plus
@@ -784,6 +786,11 @@ class GovernancePlanAgent:
         commands_detail confirms that step succeeded; a step marked failed
         keeps its original verb, since a command that didn't run shouldn't
         be treated as if it created the object.
+
+        *mode* must be the plan's own tier: this re-composes the whole Command
+        Sequence, so re-composing an advanced plan against the basic template
+        would strip its advanced fields on the execution round-trip — the same
+        loss as PC-1, one step later.
         """
         by_step = {d.get("step"): d for d in (commands_detail or []) if d.get("step") is not None}
 
@@ -803,7 +810,7 @@ class GovernancePlanAgent:
                         "action": orig["action"],
                         "narrative": orig["narrative"],
                         "params": orig.get("fields", {}),
-                        "template_parsed": self._load_template(orig["action"]),
+                        "template_parsed": self._load_template(orig["action"], mode),
                     },
                     step_num,
                 ))
@@ -841,7 +848,7 @@ class GovernancePlanAgent:
                     "action": final_action,
                     "narrative": orig["narrative"],
                     "params": params,
-                    "template_parsed": self._load_template(final_action),
+                    "template_parsed": self._load_template(final_action, mode),
                 },
                 step_num,
             ))
@@ -1707,11 +1714,59 @@ JSON:"""
     # Template loading                                                         #
     # ---------------------------------------------------------------------- #
 
-    def _load_template(self, action: str) -> Optional[Dict]:
+    @staticmethod
+    def _draft_mode(draft_id: Optional[str]) -> str:
+        """The tier ("basic"/"advanced") a draft was authored at.
+
+        Falls back to "basic" whenever the draft can't be read — an execution
+        must not fail because the tier lookup did. A missing draft here is
+        normal, not exceptional: a plan can be executed straight from a
+        document with no draft behind it.
         """
-        Find and parse the best-matching basic template file for *action*.
+        if not draft_id:
+            return "basic"
+        try:
+            from advisor.governance_draft import get_draft_manager
+
+            spec = get_draft_manager().load(draft_id)
+            return (spec or {}).get("mode") or "basic"
+        except Exception as exc:
+            logger.debug(f"GovernancePlanAgent: could not read mode from draft {draft_id!r}: {exc}")
+            return "basic"
+
+    def _load_template(self, action: str, mode: str = "basic") -> Optional[Dict]:
+        """
+        Find and parse the best-matching template file for *action* at the
+        given tier ("basic" or "advanced").
 
         Returns the parsed template dict, or None if not found.
+
+        **This used to load the basic tier unconditionally** (BACKLOG.md PC-1),
+        which silently dropped every advanced-only field at compose time —
+        `_compose_command_block` only emits an attribute that appears in the
+        loaded template's `attributes` list. Confirmed live 2026-07-06: a
+        `Parent ID` / `Parent Relationship Type Name` set on a Create Project
+        command rendered as neither field, with no error and no warning.
+
+        Switching tiers is safe rather than a trade-off, and that was measured
+        rather than assumed (2026-08-28, all four template roots on this
+        machine — `examples/templates`, egeria-workspaces' two, and
+        egeria-python's sample-data):
+
+          * every basic template has an advanced counterpart (325/325 in
+            `examples/templates`, 0 missing anywhere);
+          * advanced is a strict superset of basic — no field exists in basic
+            and not in advanced, anywhere;
+          * the *required* set is identical in every one of the 325 pairs, so
+            loading advanced cannot introduce a new "<!-- TODO: fill in -->"
+            line. The extra advanced attributes are all optional, and
+            `_compose_command_block` emits an optional attribute only when it
+            has a value.
+
+        So there is no cross-tier merge to perform — the question BACKLOG.md
+        left open. Advanced mode simply stops discarding what the user set.
+        The fallback chain (requested tier -> basic -> root) still covers a
+        template collection that predates the two-tier layout.
         """
         from advisor.agents.tools import _templates_root, _normalise
         from advisor.agents.dr_egeria_agent import parse_template
@@ -1720,7 +1775,9 @@ JSON:"""
         if root is None:
             return None
 
-        level_dir = root / "basic"
+        level_dir = root / (mode or "basic")
+        if not level_dir.is_dir():
+            level_dir = root / "basic"
         if not level_dir.is_dir():
             level_dir = root
 

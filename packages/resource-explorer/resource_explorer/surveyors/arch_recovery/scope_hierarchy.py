@@ -130,6 +130,21 @@ def derive(scopes: list, min_group: int = MIN_GROUP) -> tuple:
     return parents, structural
 
 
+def missing_ancestors(components) -> list:
+    """Parent slugs referenced by `components` that are not themselves components.
+
+    These are the structural grouping nodes: `persist.py` synthesises exactly
+    this set as `structural_node` findings (confidence 0, no type), and
+    `mermaid.py` draws exactly this set as grouping-only nodes. Both callers
+    must agree — a node drawn as a component but persisted as structural, or
+    the reverse, shows a curator a different architecture from the one the
+    findings describe — so the computation lives here rather than in each.
+    """
+    present = {c.slug for c in components}
+    referenced = {c.parent_slug for c in components if c.parent_slug}
+    return sorted(referenced - present)
+
+
 def summarise(scopes: list, parents: dict) -> str:
     """One line for the run notes — never a bare count, since a hierarchy that
     collapsed nothing and one that collapsed everything both report a number."""

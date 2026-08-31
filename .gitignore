@@ -248,3 +248,7 @@ packages/resource-explorer/frontend-build/node_modules/
 # (e.g. packages/resource-explorer/docs/dr-egeria/re-inventory-2026-08-21.csv)
 # — if a .numbers source is worth keeping, commit it deliberately with -f.
 *.numbers
+
+# Per-laptop session coordination — lives at ../SESSIONS.md, shared by all worktrees.
+# Deliberately untracked: it describes one developer's local worktree layout.
+SESSIONS.md

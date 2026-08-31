@@ -86,6 +86,7 @@ def log_analysis_run(
     summary: str,
     analysis_id: str,
     published: bool | None = None,
+    runner: dict | None = None,
 ) -> str:
     """One row per local AnalysisKind run (POST /{slug}/analyses/{analysis_id}
     /run) — the Analyses cards' equivalent of log_survey's Survey Definition
@@ -101,8 +102,21 @@ def log_analysis_run(
     are already stored, only the Egeria write needs retrying), or None
     (never attempted — unassigned resource or no annotations, same button
     stays visible as the only way to publish at all). See
-    registry.get_analysis_last_run()'s `last_publish_failed`."""
+    registry.get_analysis_last_run()'s `last_publish_failed`.
+
+    `runner` (2026-08-30, backgrounded analysis-card runs): the owning
+    process's identity (`run_reconciler.process_identity()`), embedded under
+    `_runner` in `detail` exactly like `survey_definitions.py`'s
+    `log_survey()` call does for its own 'running' row — this is the field
+    `run_reconciler.owner_of()` reads to resolve a row left "running" by a
+    process that died mid-run. Pass it only for the initial 'running' call;
+    the terminal `update_activity_status()` overwrites `detail` and drops it,
+    which is fine — a terminal row is never a reconciliation candidate."""
     import json
+
+    detail = {"analysis_id": analysis_id, "published": published}
+    if runner is not None:
+        detail["_runner"] = runner
 
     entry_id = str(uuid.uuid4())
     registry.write_activity(ActivityEntry(
@@ -116,7 +130,7 @@ def log_analysis_run(
         entity_location="",
         status=status,
         summary=summary,
-        detail=json.dumps({"analysis_id": analysis_id, "published": published}),
+        detail=json.dumps(detail),
     ))
     return entry_id
 

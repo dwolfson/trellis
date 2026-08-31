@@ -121,20 +121,43 @@ classifications attach only to entities. So the `Confidence` classification (§3
 to a wire.** `SolutionPort` *is* an entity (`OpenMetadataType.java:6345`), so the resolution is to carry
 wire confidence on the ports the wire connects rather than inventing a mechanism. Recorded in Q4.
 
-### 3.3a `SolutionBlueprint` is a Collection — blueprints do not nest
+### 3.3a `SolutionBlueprint` is a Collection — and blueprints therefore DO nest
 
-`SolutionBlueprint` (`OpenMetadataType.java:6396`) is *"a collection of solution components that make up
-a solution."* There is **no blueprint-to-blueprint relationship**. Nesting is `SolutionComposition`
-(`OpenMetadataType.java:6303`), which relates **SolutionComponents** to each other; `SolutionDesign`
-relates a blueprint to a digital service or product.
+**Corrected 2026-08-29.** This section previously concluded *"blueprints do not nest"* and *"one
+blueprint per repo"*. Both were wrong, and the second followed from the first. The original
+observation — that there is no blueprint-to-blueprint *relationship* — is true; the conclusion drawn
+from it is not, because nesting does not need a dedicated relationship when the type is a Collection.
 
-For a monorepo this means: one blueprint per repo, each package a top-level `SolutionComponent`,
-`SolutionComposition` decomposing below that.
+`SolutionBlueprint` (`OpenMetadataType.java:6298`) is *"a collection of solution components that make
+up a solution."* It is a `Collection` by inheritance, traced through the type archive:
 
-The Collection nature gives something better than nesting anyway — **a component can be a member of
-more than one blueprint.** Cross-repo composition therefore works by wiring components across
-blueprints and collecting them into an estate-level blueprint, without duplicating anything. That is
-also the only mechanism by which §9's estate-wide ISC candidates could work. Recorded in Q8.
+```
+SolutionBlueprint --extends--> DesignModel --extends--> Collection
+  OpenMetadataTypesArchive1_7.java:1109      OpenMetadataTypesArchive1_2.java:9647
+  (SolutionBlueprintProperties extends DesignModelProperties extends CollectionProperties)
+
+CollectionMembership   end1 = Collection      OpenMetadataTypesArchive1_2.java:3170
+                       end2 = Referenceable   OpenMetadataTypesArchive1_2.java:3185
+```
+
+A `Collection` may hold any `Referenceable`, and a `SolutionBlueprint` is one. **So a blueprint can
+be a member of another blueprint, through the ordinary `CollectionMembership` mechanism.** No
+blueprint-specific relationship is needed or exists.
+
+Component-to-component nesting is separate and also available: `SolutionComposition`
+(`OpenMetadataType.java:6303`) relates **SolutionComponents** to each other. `SolutionDesign` relates
+a blueprint to a digital service or product. So there are two independent nesting axes — blueprints
+within blueprints, and components within components — and they answer different questions.
+
+**A repo is a storage boundary, not a solution boundary.** A monorepo can legitimately hold several
+blueprints over different clusters of components, and the natural shape for one is a repo-level
+blueprint whose members are sub-blueprints, each a coherent solution in its own right. What proposes
+those clusters is undesigned work — see `architecture-recovery-report-then-curate.md` §2b.
+
+The Collection nature also gives — independently of nesting — **membership of a component in more
+than one blueprint.** Cross-repo composition therefore works by wiring components across blueprints
+and collecting them into an estate-level blueprint, without duplicating anything. That is also the
+only mechanism by which §9's estate-wide ISC candidates could work. Recorded in Q8.
 
 ### 3.3b `Confidence` is a classification on `Referenceable` — confirmed
 
@@ -195,6 +218,17 @@ estate will sit in.
 The second non-redundant case is `Obsolete` versus `ContentStatus.Deprecated`: *Deprecated* is a
 decision ("stop using this"), *Obsolete* is a fact about the source ("this no longer reflects
 reality"). A stale overlay entry pointing at deleted code is Obsolete, not Deprecated.
+
+**A fourth axis is missing, and none of the three above can stand in for it (added 2026-08-30).**
+Provenance, Degree and Workflow all answer some version of "is this claim correct, and has a human
+signed off." None answer "is this claim worth a curator's attention *right now*" — the goal is not
+architecture recovery for its own sake but recovery of *useful* artifacts, and usefulness is not
+static: at one extreme everything recovered is worth surfacing, at the other almost nothing is.
+Folding that into `Degree`/confidence conflates two different questions — a component can be
+detected with high confidence and still be uninteresting (a leaf utility module), and a low-
+confidence guess can be exactly what a curator needs to see. Needs its own field, not a reuse of
+`confidence`. See `Backlog.md`'s "separate correct from useful" entry — not designed here, flagged
+here because §7 is where it would eventually attach.
 
 ### 3.4 `ContentStatus` is the derived/validated axis — confirmed
 
@@ -363,6 +397,16 @@ The same effect shows up in the type vocabularies. Asked to classify RE's front 
 picked `Application` — which is not one of the 13 `SolutionComponentType` values but *is* a
 `SoftwareCapability` subtype. That is not a mistake; it is classifying in the deployment perspective
 when the logical one was asked for. Four perspectives, three vocabularies, and no signposting.
+
+**Related work (added 2026-08-30, from a literature check against this design):** Murphy, Notkin &
+Sullivan's software reflexion models (IEEE TSE 2001, building on their 1995 SIGSOFT paper) establish
+the general technique this section is an instance of — an extracted model and a hypothesized
+high-level model are kept as two artifacts related by a computed correspondence, never collapsed
+into one. But reflexion, as published, is computed against **one** hypothesized model at a time; the
+literature does not address running it once per perspective and reconciling the results. **Open
+question this design inherits and does not answer:** can a component converge under Deployment while
+diverging under Logical, and if so, is that one finding or two? See `Backlog.md`'s "borrow reflexion
+models' three-way vocabulary" entry.
 
 ### 4.1a Specification, not deployment — the correction that renames a perspective
 
@@ -594,6 +638,17 @@ is cheap and therefore dangerous. Extend only for a case that survives the mappi
 
 **What is needed instead:** every recorded type states *which vocabulary it came from*, and the
 projection maps between them.
+
+**This is "map, never merge," and the name has a quarter-century of prior art.** Murphy, Notkin &
+Sullivan's software reflexion models (IEEE TSE 2001) apply exactly this discipline to the narrower
+case of one extracted model against one human model: disagreement is computed and displayed, never
+resolved by rewriting either side. On the data-curation side, CleanGraph (arXiv:2405.03932) attaches
+confidence/source/extractor metadata per edge in a knowledge graph and routes low-confidence matches
+to a human queue rather than auto-merging — the same shape applied to entity resolution instead of
+architecture. Neither source gives a name to the curator's verdict itself; reflexion's own vocabulary
+for how two models relate — **convergence** (they agree), **divergence** (they disagree),
+**absence** (one names something the other doesn't) — is a candidate for §7.1's curator-action
+vocabulary. See `Backlog.md`.
 
 ### 4.3 Successive refinement — perspectives map onto the funnel
 
@@ -964,6 +1019,24 @@ Three consequences for this design:
    observation and its dates as evidence (§5.4); let the confidence axes (§3.3c) and a human carry
    the interpretation. Recording "docs lag code by N days" is defensible; ranking projects by it is
    not.
+
+**(d) The outward hop was built, and it measured near-zero on the case that motivated it.**
+Added 2026-08-29. `doc_locations.py` resolves sibling repos and doc sites as (a) asks, and it works
+— 13 of 46 gate-approved repos get a document located. But the lens built on top of it named **1 of
+Egeria's 999 logical components**, from `odpi/egeria-docs`, and that one match is a directory called
+`egeria` matching the term `egeria`. The document names `Common Services`, `OMAS`, `OMVS`; the
+pipeline proposed Java package paths. Nothing joins, and better matching cannot make it join.
+
+The diagnosis is a §4.1 violation this document did not anticipate: `coupling.propose()` asserts
+`perspective="logical"` beside `identity.method="module-path"`, so a directory path and `OMAS` are
+filed under the same word and the lens joins on it. The only genuinely logical source in the
+pipeline is the one input forbidden from proposing anything.
+
+Decision (Dan, 2026-08-29): **a documentation-derived component may exist without a
+`scope_locator`** — docs become a source, bridged to code by `ImplementedBy` (§3.6, §4.1). The
+consequences, the gate this needs (the existing `undetected_is_meaningful` licenses *reading*, not
+*proposing*, and its denominator is circular), and why §5.5a(b)'s dating becomes a precondition
+rather than an enhancement are in **`architecture-recovery-docs-as-source.md`**.
 
 ### 5.5b What the repo *is* — classification before analysis
 
@@ -2044,51 +2117,55 @@ it does not appear there at all (checked 2026-08-26, zero occurrences). The char
 the citation did not, and a false citation is worse than none because it stops the next reader
 checking. This feature writes far more elements per run.
 
-**Annotations are not idempotent, and this blocks a naive outbox.** Found 2026-08-26 while
-designing the retry: an annotation's qualifiedName is
-`Annotation::{slug}::{surveyed_at.isoformat()}::{i}` (`egeria_publisher.py:535`), so the **run
-timestamp is part of its identity**. A retry carries a new timestamp, mints a new qualifiedName, and
-therefore *creates a second annotation rather than converging on the first*. An outbox over that
-turns one transient failure into unbounded duplicates — strictly worse than today's silent loss.
+**CORRECTED 2026-08-29 — annotation identity is NOT the blocker this section previously described.**
+The paragraphs that stood here (written 2026-08-26) said an annotation's qualifiedName carries the
+run timestamp and a positional index, that no stable substitute exists (134 annotations across 7
+types on `egeria_workspaces_git`), and therefore that the prerequisite had a prerequisite: a change
+to the annotation model. **That analysis conflated two different things and overstated the work.**
 
-**The three failures rank by how visible they are, and that ordering is what makes each step worse
-than the last:** a *missing write* leaves a gap someone eventually notices; a *duplicate* is harder
-to see, because everything expected is present and merely repeated; a *cross-wire* is hardest of
-all, because the right number of results are there, each looks well-formed, and only their content
-is attached to the wrong thing.
+The two things:
 
-The asset path (`_find_or_create_asset`) and `publish_sub_resources` already do lookup-then-create
-and are safe to retry.
+1. **Retrying one publish** — the case an outbox actually serves.
+2. **Converging a later survey run onto an earlier run's annotations** — which Egeria's survey model
+   never asked for.
 
-**So the prerequisite has a prerequisite, and it is `annotation identity` — NOT "remove the
-timestamp".** That second phrasing is a trap, and it was this document's first wording of it. The
-qualifiedName's other component, `::{i}`, is `enumerate()`'s index over the run's annotation list
-(`egeria_publisher.py:533`) — **pure position, carrying no identity at all.** Drop the timestamp and
-keep the index, and annotation 3 of a later run converges onto annotation 3 of an earlier one, which
-is a *different logical annotation* the moment a check is added, skipped or reordered. A converging
-write then silently overwrites one result with an unrelated one.
+**For (1) the identity is already stable.** `SurveyResult.surveyed_at` is
+`field(default_factory=datetime.utcnow)` (`survey_report.py:109`) — stamped when the result is
+*constructed*, at survey time, not at publish time. An outbox stores the payload, so a retry replays
+the same `surveyed_at` and the same list order and produces byte-identical qualifiedNames. The
+timestamp is not a defect; it is the run's identity, which is exactly what
+`Annotation::{slug}::{surveyed_at}::{i}` is for, and the index is stable within a stored payload.
 
-**That is strictly worse than the duplication it was meant to fix** — one step further down the
-visibility ordering above, and the step where a reader loses any way of telling.
+**For (2) divergence is correct behaviour.** A `SurveyReport` *is* a dated record of one act of
+analysis, so each run legitimately mints its own with its own annotations beneath it — visible in
+RE's own bookkeeping, where `deep_causality` carries 10 distinct `egeria_report_guid` values over
+three days. Converging run B onto run A would destroy survey history rather than protect it.
 
-Nor is a stable identity lying around to substitute. The obvious candidate — `analysis_step` +
-`annotation_type_name`, whose docstring says it names *"WHICH result this is"*
-(`survey_report.py:31`) — collides badly against what has actually been published: measured
-2026-08-26, `egeria_workspaces_git` has 134 annotations across 7 distinct types, `egeria_git` 106
-across 9, roughly **19 annotations per name**. And `project_published_annotation_types` accumulates
-across runs, so that type count *over*-states per-run distinctness — the collision is worse than the
-ratio suggests, not better.
+So the 134-vs-7 collision measurement was real but answered a question nobody needs to ask, and the
+cross-wire hazard is reachable only by attempting cross-run convergence — which is now explicitly
+not the plan. **"Remove the timestamp" remains the wrong move**, but for a better reason than first
+given: it would collapse distinct survey runs into one.
 
-A converging identity therefore has to be content-derived (a digest over `analysis_step` +
-`annotation_type_name` + `scope_locator` + `expression` + `summary`, or similar), or annotations must
-carry a stable key from whatever emits them. **This is a change to the annotation model, not a
-string tweak at the publish site.**
+**What is genuinely missing is narrow and publisher-layer.** `_create_annotations` calls
+`create_annotation` blind, where `_find_or_create_asset` (`egeria_publisher.py:277`) and
+`publish_sub_resources` both search by qualifiedName first and are already safe to retry. The real
+failure mode is a crash after Egeria wrote the annotation but before the outbox recorded success;
+replaying that row would create a duplicate. Two things settle it, neither a model change:
 
-One consequence to decide with it: convergence aligns Egeria with RE's *default* read —
-`query_findings` selects `MAX(surveyed_at)` (`registry.py:3148`), so locally the latest run already
-wins — while giving up the Egeria-side per-run history that exists today. RE's own history is
-untouched either way; `query_findings_history_raw` and `query_findings_all_runs` still read across
-runs.
+- **Verify whether Egeria enforces qualifiedName uniqueness on annotations** — a test against a live
+  server. `_find_or_create_asset` searches rather than relying on a uniqueness error, which hints it
+  does not, but that is an inference from how the code is written, not a verified fact.
+- **Generalise lookup-then-create to annotations**, which the deduplication of the three publishers'
+  near-identical `_create_annotations` was going to do anyway.
+
+**Net: annotation identity does not block the outbox.** It is one publisher-layer change plus one
+live-server check.
+
+The visibility ordering written here in the earlier version still holds as a way of thinking about
+the failure modes — a *missing write* leaves a gap someone eventually notices; a *duplicate* is
+harder to see, because everything expected is present and merely repeated; a *cross-wire* is hardest
+of all, because the right number of results are there, each well-formed, with only their content
+attached to the wrong thing.
 
 Design in `docs/outbox-publishing-design.md` (D2, §4 and top of §6's sequencing).
 
@@ -2246,10 +2323,15 @@ made a type claim):
   `shared-infra.yaml` components (`kafka`, `postgres`, `kroki`, `proxy`), optionally admit the add-ons'
   components, and hold their own variant components (§8.2a). Shared membership rather than duplication.
 
-  The "blueprints nest" half is not available — blueprints are Collections with no blueprint-to-blueprint relationship; nesting is
-  `SolutionComposition` between *components* (§3.3a). Collection membership gives something better:
-  a component can belong to several blueprints, which is how cross-repo composition and §9's estate-wide
-  ISC candidates would work.
+  **Corrected 2026-08-29 — the "blueprints nest" half IS available.** This previously read "not
+  available", reasoning from the absence of a blueprint-to-blueprint relationship. But a
+  `SolutionBlueprint` is a `Collection` and `CollectionMembership` admits any `Referenceable`, so a
+  blueprint nests inside a blueprint through the ordinary mechanism — full type chain in §3.3a. Note
+  this entry's own example already assumed **two** blueprints in one repo, which the old §3.3a
+  ("one blueprint per repo") contradicted; §3.3a was the outlier and has been corrected.
+  Component-to-component nesting via `SolutionComposition` remains separately available, and
+  Collection membership still gives what it always gave: a component can belong to several
+  blueprints, which is how cross-repo composition and §9's estate-wide ISC candidates would work.
 - ~~**Q9** — where do Phase 4's metrics land?~~ **RESOLVED:** `CodeAnalysis` as an Annotation subtype
   (§6.1), base `Annotation` + `additionalProperties` as the interim carrier (§6.4). Further resolved in
   this revision: **one annotation per analyzer per component** (§6.2), not one aggregate.

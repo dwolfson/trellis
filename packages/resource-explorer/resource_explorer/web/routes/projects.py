@@ -617,6 +617,11 @@ async def get_scouting_questions(
 
 
 class AnalysisRunResult(BaseModel):
+    """Still the response shape for run_scoped_analysis below — that route is
+    out of scope for the backgrounding done here (2026-08-30's fix is
+    specifically the analysis-card path's docs/Backlog.md "no prompt, no
+    progress" entry). run_single_analysis itself no longer returns this: see
+    its own docstring."""
     status: str  # "ok" | "error"
     slug: str
     analysis_id: str
@@ -624,74 +629,40 @@ class AnalysisRunResult(BaseModel):
     error: str | None = None
 
 
-@router.post("/{slug}/analyses/{analysis_id}/run", response_model=AnalysisRunResult)
-async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
-    """Runs only the sub-surveyor step(s) for one named repo analysis, not
-    the whole 10-surveyor survey — the per-card "Run" action in Analysis/
-    Assessment. Reuses the same analysis_id -> step(s) map the scheduler's
-    per-analysis-id dispatch uses (repo_survey_definition_adapter.py)."""
+def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool, steps: list[str] | None) -> dict:
+    """The actual run — plain sync function (no FastAPI/asyncio coupling) so
+    it's trivially callable from a daemon thread with its own fresh registry
+    connection, matching survey_definitions.py's
+    `_execute_survey_definition_sync` precedent. Returns a plain dict —
+    {"status", "summary", "error", "published"} — for the caller (the
+    background wrapper below) to fold into the activity entry's terminal
+    `detail`; never raises for an analysis-level failure, only for something
+    genuinely unexpected (caught by the caller, same split
+    `_run_survey_definition_background` makes)."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
-    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
-    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
     registry = ProjectRegistry()
     project = registry.get(slug)
     if not project:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+        # Can't happen in practice — the route checks this synchronously
+        # before ever starting the thread — but a background function must
+        # not assume the world hasn't moved (e.g. the project was removed
+        # between the route's check and the thread actually running).
+        return {"status": "error", "error": f"Project '{slug}' not found"}
 
-    # action:"ingest" (currently just rag_ingestion) isn't a SurveyOrchestrator
-    # step at all — it re-embeds content into pgvector via IncrementalIndexer,
-    # not a survey. Checked before the step-map lookup below, same as
-    # scheduler.py's own action:"publish" special-case.
-    catalog_entry = next(
-        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
-    )
-    if catalog_entry and catalog_entry.get("action") == "ingest":
-        from resource_explorer.activity_logger import log_analysis_run
+    if is_ingest:
+        from resource_explorer.ingestion.incremental import IncrementalIndexer
+        from resource_explorer.query_cache import QueryCache
 
-        def _run_ingest():
-            from resource_explorer.ingestion.incremental import IncrementalIndexer
-            from resource_explorer.query_cache import QueryCache
-            IncrementalIndexer().refresh(project)
-            QueryCache().invalidate_project(slug)
+        IncrementalIndexer().refresh(project)
+        QueryCache().invalidate_project(slug)
+        return {"status": "ok", "summary": "Re-ingested into pgvector.", "published": None}
 
-        try:
-            await asyncio.to_thread(_run_ingest)
-        except Exception as exc:
-            log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
-            return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
-        log_analysis_run(registry, "repo", slug, project.display_name, "ok", "Re-ingested into pgvector.", analysis_id)
-        return AnalysisRunResult(status="ok", slug=slug, analysis_id=analysis_id, message="Re-ingested into pgvector.")
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
-    steps = REPO_ANALYSIS_STEP_MAP.get(analysis_id)
-    if not steps:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Analysis '{analysis_id}' has no mapped survey step(s) — "
-                   "either it's a publish action (not a survey) or an unknown id.",
-        )
-
-    def _run():
-        return SurveyOrchestrator(registry).run(slug, steps=steps)
-
-    # Real, live-reported gap (2026-08-24): this route never wrote to
-    # activity_log at all, so Analyses cards had no last-run signal —
-    # unlike Survey Definition cards, which do (survey_definitions.py's
-    # run route). log_analysis_run below closes that; see
-    # registry.get_analysis_last_run()'s docstring for the read side.
-    from resource_explorer.activity_logger import log_analysis_run
-
-    try:
-        result = await asyncio.to_thread(_run)
-    except Exception as exc:
-        log_analysis_run(registry, "repo", slug, project.display_name, "error", str(exc), analysis_id)
-        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=str(exc))
-
+    result = SurveyOrchestrator(registry).run(slug, steps=steps)
     if result.errors:
-        error = "; ".join(result.errors)
-        log_analysis_run(registry, "repo", slug, project.display_name, "error", error, analysis_id)
-        return AnalysisRunResult(status="error", slug=slug, analysis_id=analysis_id, error=error)
+        return {"status": "error", "error": "; ".join(result.errors)}
     summary = f"{len(result.annotations)} annotation(s)."
 
     # Auto-publish, gated the same way survey_definition_executor.py's Survey
@@ -713,6 +684,15 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
     if result.annotations and registry.has_assigned_egeria_project("repo", slug):
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+            # Already off the FastAPI event loop here (this whole function
+            # runs in a daemon thread), so no asyncio.to_thread needed —
+            # pyegeria's synchronous methods drive their own event loop
+            # internally, which is what made the OLD synchronous route (this
+            # call wrapped in asyncio.to_thread from inside a running loop)
+            # raise "this event loop is already running" and fail auto-publish
+            # on every Egeria-bound project reached through this route, softly,
+            # into `summary`, with the run still reporting ok.
             EgeriaPublisher(registry=registry).publish(result)
             published = True
         except Exception as exc:
@@ -720,11 +700,116 @@ async def run_single_analysis(slug: str, analysis_id: str) -> AnalysisRunResult:
             summary += f" (⚠ auto-publish to Egeria failed: {exc})"
             log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
 
-    log_analysis_run(registry, "repo", slug, project.display_name, "ok", summary, analysis_id, published=published)
-    return AnalysisRunResult(
-        status="ok", slug=slug, analysis_id=analysis_id,
-        message=summary,
+    return {"status": "ok", "summary": summary, "published": published}
+
+
+def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str) -> None:
+    """Runs in a daemon thread — nothing here returns to an HTTP response.
+    Mirrors survey_definitions.py's `_run_survey_definition_background`
+    precedent: the ONE activity entry the route created up front
+    (status='running') gets its terminal status/summary written back via
+    registry.update_activity_status(), `detail` re-encoded as
+    {"analysis_id", "published", ...} so registry.get_analysis_last_run()
+    keeps reading the same shape it always has — see log_analysis_run()'s
+    docstring for why the running row's own `_runner` key is fine to drop
+    here rather than round-tripped."""
+    import json
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+
+    catalog_entry = next(
+        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
     )
+    is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
+    steps = None if is_ingest else REPO_ANALYSIS_STEP_MAP.get(analysis_id)
+
+    registry = ProjectRegistry()
+    try:
+        result = _run_single_analysis_sync(slug, analysis_id, is_ingest, steps)
+    except Exception as exc:  # pragma: no cover — genuinely unexpected, not an analysis-step error
+        log.exception("Analysis run background thread crashed for %s/%s", slug, analysis_id)
+        registry.update_activity_status(
+            activity_id, "error", summary=f"'{analysis_id}' run crashed: {exc}",
+            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc)}),
+        )
+        return
+
+    status = result["status"]
+    summary = result.get("summary") or result.get("error") or ""
+    detail = {"analysis_id": analysis_id, "published": result.get("published")}
+    if status == "error":
+        detail["error"] = result.get("error", summary)
+    else:
+        detail["message"] = summary
+    registry.update_activity_status(activity_id, status, summary=summary, detail=json.dumps(detail))
+
+
+@router.post("/{slug}/analyses/{analysis_id}/run")
+async def run_single_analysis(slug: str, analysis_id: str) -> dict:
+    """Fire-and-forget (background thread), not synchronous — a real,
+    live-reported gap (2026-08-30): "pressing the architecture survey button
+    starts the task but doesn't bring up the pop-up asking if we should run
+    it in the background, so it's easy to miss the toast" — this route used
+    to block the whole HTTP request for the run's entire duration (measured
+    100s+ for architecture_recovery, see docs/Backlog.md), with only a toast
+    and no way to tell whether it was still working or had hung. Mirrors
+    survey_definitions.py's `run_survey_definition_route` precedent exactly:
+    returns an activity_id immediately; the frontend polls
+    GET /api/activity/{id} until it's terminal, then reads the run's result
+    back out of that entry's own `detail` field (see
+    `_run_single_analysis_background`).
+
+    Runs only the sub-surveyor step(s) for one named repo analysis, not the
+    whole 10-surveyor survey — the per-card "Run" action in Analysis/
+    Assessment. Reuses the same analysis_id -> step(s) map the scheduler's
+    per-analysis-id dispatch uses (repo_survey_definition_adapter.py)."""
+    import threading
+
+    from resource_explorer.activity_logger import log_analysis_run
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.run_reconciler import process_identity
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.repo_survey_definition_adapter import REPO_ANALYSIS_STEP_MAP
+
+    registry = ProjectRegistry()
+    project = registry.get(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+
+    # action:"ingest" (currently just rag_ingestion) isn't a SurveyOrchestrator
+    # step at all — it re-embeds content into pgvector via IncrementalIndexer,
+    # not a survey. Checked before the step-map lookup below, same as
+    # scheduler.py's own action:"publish" special-case. Done here too (not
+    # only in the background function) so an unknown analysis_id still fails
+    # fast with a 400, synchronously, rather than starting a thread just to
+    # background a validation error.
+    catalog_entry = next(
+        (a for a in get_analyses("repo", include_egeria_live=False) if a["id"] == analysis_id), None,
+    )
+    is_ingest = bool(catalog_entry and catalog_entry.get("action") == "ingest")
+    if not is_ingest and not REPO_ANALYSIS_STEP_MAP.get(analysis_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis '{analysis_id}' has no mapped survey step(s) — "
+                   "either it's a publish action (not a survey) or an unknown id.",
+        )
+
+    activity_id = log_analysis_run(
+        registry, "repo", slug, project.display_name, "running",
+        f"Running '{analysis_id}' on {slug}…", analysis_id, published=None,
+        runner=process_identity(),
+    )
+
+    t = threading.Thread(
+        target=_run_single_analysis_background,
+        args=(slug, analysis_id, activity_id),
+        daemon=True, name="resource-explorer-analysis-run",
+    )
+    t.start()
+
+    return {"status": "started", "activity_id": activity_id}
 
 
 @router.get("/{slug}/analyses/last-activity")
@@ -923,6 +1008,26 @@ def _results_have_data(results) -> bool:
     if not results:
         return False
     if isinstance(results, dict):
+        # Caught 2026-08-31 wiring architecture_recovery/architecture_summary/
+        # architecture_doc_lens into a dashboard for the first time (docs/
+        # Backlog.md "Survey Results dashboards cover 14 of 29 analyses") —
+        # the exact "shaped but empty" bug this function exists for, just
+        # never triggered before because none of the three had ever reached
+        # this code path. A never-run result here isn't an empty collection,
+        # it's `{"state": "never_run", "message": "..."}` — result_status.py's
+        # vocabulary, and the explanatory `message` is non-empty text, so the
+        # general envelope exclusion below didn't catch it.
+        #
+        # `state` alone can't be blanket-excluded: result_status.py's ladder
+        # gives `nothing_found` the SAME shape and it is "a real, final
+        # answer" (a genuine negative result), not an absence — excluding it
+        # here would hide real content the same way this function exists to
+        # stop pretending emptiness is content. Only the never-run state
+        # itself means nothing was produced.
+        from resource_explorer.surveyors import result_status
+        if results.get("state") == result_status.NEVER_RUN:
+            return False
+
         # `_status` is an ENVELOPE, not content — it describes why a payload is
         # empty, so counting it as data makes every explained emptiness claim to
         # hold something. That is the opposite of what this function exists for:
@@ -934,7 +1039,24 @@ def _results_have_data(results) -> bool:
         # a reader that returns only a timestamp has nothing to show.
         # (_renderMetricsResults in index.html already filters exactly these
         # three for the same reason; this is the server-side half of it.)
-        envelope = {"_status", "surveyed_at", "detail"}
+        #
+        # `documentation` is architecture_recovery's own decorative field —
+        # the documentation-SITE ingestion status, carried on this card for
+        # unrelated presentation reasons (_doc_ingestion_state) — never the
+        # recovery analysis's own findings. Confirmed no other reader uses
+        # "documentation" as a real top-level content key.
+        # `slug` is the resource's own identifier, echoed back by
+        # `_architecture_recovery_results` for the renderer's convenience. It is
+        # ALWAYS non-empty, so leaving it out of this set makes every payload
+        # containing it read as data — which is this function's failure mode
+        # exactly, not an edge of it. Caught 2026-08-31 in integration: the
+        # architecture_overview dashboard passed on its own branch and failed
+        # once merged, because `test_shaped_but_empty_results_do_not_count_as_data`
+        # only exists here.
+        #
+        # Same category as `surveyed_at` above: a name is evidence the resource
+        # exists, never evidence an analysis found anything about it.
+        envelope = {"_status", "surveyed_at", "detail", "documentation", "slug"}
         return any(_results_have_data(v) for k, v in results.items() if k not in envelope)
     if isinstance(results, (list, tuple, set)):
         return len(results) > 0

@@ -45,16 +45,45 @@ class TestSurveyResultDashboardsRegistry:
             unknown = [a for a in dashboard.analysis_ids if a not in ANALYSIS_KINDS]
             assert not unknown, f"{dashboard.id}: unknown analysis_ids {unknown}"
 
+    # Actions without findings -- not surveys, never candidates for a Results
+    # dashboard (docs/Backlog.md "Survey Results dashboards cover 14 of 29
+    # analyses"). egeria_publish writes to Egeria; rag_ingestion/
+    # website_ingestion feed pgvector; repo_profile_refresh refreshes the
+    # coarse profile tables another card already reads.
+    _NON_SURVEY_ACTIONS = frozenset({
+        "egeria_publish", "rag_ingestion", "website_ingestion", "repo_profile_refresh",
+    })
+
+    def test_every_findings_producing_analysis_has_a_dashboard(self):
+        """Ratchet against the coverage gap this whole registry was built to
+        close: 15 of 29 analyses had no dashboard as of 2026-08-31, 11 of
+        them real gaps rather than non-survey actions. A future analysis
+        added to the catalog with no dashboard entry should fail here loudly,
+        not sit invisible in the Results tab until someone happens to
+        re-audit by hand."""
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        all_ids = {a["id"] for a in get_analyses("repo", include_egeria_live=False)}
+        covered: set[str] = set()
+        for dashboard in SURVEY_RESULT_DASHBOARDS.values():
+            covered.update(dashboard.analysis_ids)
+        missing = all_ids - covered - self._NON_SURVEY_ACTIONS
+        assert not missing, f"analyses with no Results dashboard: {sorted(missing)}"
+
     def test_custom_dashboards_declare_a_renderer_name(self):
         for dashboard in SURVEY_RESULT_DASHBOARDS.values():
             if dashboard.render == "custom":
                 assert dashboard.custom_renderer
 
     def test_security_overview_spans_the_expected_analysis_ids(self):
+        """2026-08-31: gained the three externally-sourced trust signals
+        (cve_scan, foss_scorecard, cii_badge) — same "is this trustworthy"
+        question, asked from outside the repo instead of inside it."""
         d = SURVEY_RESULT_DASHBOARDS["security_overview"]
         assert set(d.analysis_ids) == {
             "security_scan", "security_features", "ci_quality",
             "license_classification", "repo_conventions",
+            "cve_scan", "foss_scorecard", "cii_badge",
         }
 
 

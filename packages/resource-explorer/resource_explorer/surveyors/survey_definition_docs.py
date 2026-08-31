@@ -57,6 +57,15 @@ class DefinitionDoc:
     #: (previous_step_key, next_step_key, guard) as authored. Not derived
     #: from `steps` — a branch has edges the step order cannot express.
     links: list = field(default_factory=list)
+    #: Which resource type this survey runs against — "repo" | "database" |
+    #: "filesystem". Inferred by documented_definitions() from the source
+    #: filename's `{resource_type}-survey-definition-*.md` convention
+    #: (docs/dr-egeria/survey-definitions/), not from anything in the
+    #: document body itself, which carries no resource-type field. Defaults
+    #: to "repo" here only as the dataclass default for direct construction
+    #: (e.g. in tests) — every document actually read through
+    #: documented_definitions() gets a real inferred value.
+    resource_type: str = "repo"
 
     @property
     def branches(self) -> bool:
@@ -149,6 +158,26 @@ def definition_docs_dir() -> Path:
             / "survey-definitions")
 
 
+#: Every resource type a Survey Definition doc can be authored for — see
+#: repo_survey_definition_adapter.py / database / filesystem's own
+#: survey_definition_adapter.py registrations. A filename prefix outside
+#: this set is not a resource type this codebase knows about, and
+#: _resource_type_from_filename falls back to "repo" for it (the codebase's
+#: only resource type before this field existed at all) rather than
+#: inventing a new value silently.
+_KNOWN_RESOURCE_TYPES = {"repo", "database", "filesystem"}
+
+
+def _resource_type_from_filename(path: Path) -> str:
+    """Infer resource_type from the `{resource_type}-survey-definition-*.md`
+    filename convention every doc in this directory follows (all eight
+    current documents are `repo-survey-definition-*.md`). Falls back to
+    "repo" for anything that doesn't match — matches this field's dataclass
+    default and every pre-existing document."""
+    prefix = path.stem.split("-survey-definition")[0]
+    return prefix if prefix in _KNOWN_RESOURCE_TYPES else "repo"
+
+
 def documented_definitions(directory=None) -> dict:
     """{definition name: DefinitionDoc} across every authored document."""
     directory = Path(directory) if directory else definition_docs_dir()
@@ -158,6 +187,7 @@ def documented_definitions(directory=None) -> dict:
     for path in sorted(directory.glob("*.md")):
         doc = parse_document(path)
         if doc.process and doc.steps:
+            doc.resource_type = _resource_type_from_filename(path)
             out[doc.process] = doc
     return out
 
