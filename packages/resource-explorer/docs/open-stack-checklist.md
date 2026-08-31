@@ -4,7 +4,7 @@
 survives a context reset. Short entries with a pointer; the reasoning lives in
 the design docs. Delete an entry when it is done — this is not a history.
 
-**Last updated:** 2026-08-31
+**Last updated:** 2026-08-31 (redeploy prep)
 
 ---
 
@@ -559,6 +559,75 @@ it.
 - [ ] `test_local_flow_execution_fallback` failed once on 2026-08-31 and did not reproduce — see
       Backlog "Test reliability" for what is ruled out. Do not treat Prefect teardown noise as a
       reproduction signature.
+
+
+## 7. Before/after the redeploy + database wipe — 2026-08-31
+
+**Everything authored into Egeria today is destroyed by a redeploy.** The quickstart platform does
+not persist custom-authored elements across restarts (`repo_survey_types.csv` row 2 records a
+previous instance of exactly this). Nothing below is a code change — the code is committed and
+safe. These are *deployments* that have to happen again.
+
+### What has to come back, and in this order
+
+`_folder_order.json` encodes the order and it is load-bearing: a Survey Definition's
+`Link Element To Scope` commands bind to Question terms **by name**, so running definitions before
+questions succeeds silently while creating no ScopedBy links at all.
+
+1. **foundations** — glossary, perspectives, funnel stages.
+2. **questions** — all 49 from `resource_questions.csv` via `questions/scouting-questions.md`.
+3. **survey-definitions** — all 8 documents, including `repo_security_summary` in both
+   `RepoAssessmentSurvey` (10 steps) and `RepoFullSurvey` (35 steps).
+4. **`scripts/reconcile_survey_definition_links.py`** — always, after step 3.
+
+`resource_explorer/bootstrap.py`'s `check_and_heal()` does 1–3 by canary and then the post-heal
+reconcile, so a wiped platform should self-heal on startup. **Verify rather than assume it did** —
+the canary proves a batch *ran*, not that every element inside it exists. That is precisely how 8
+of 49 questions went missing today.
+
+### Run the FULL questions document after a wipe, not the subset
+
+`questions/missing-questions-2026-08-31.md` exists because 41 of 49 terms already existed and
+re-running the whole document would have re-fired 168 `Link Perspective to Question` commands
+against them, with **no reconciler** to clean up after. After a wipe that reasoning inverts: nothing
+exists, so nothing can be duplicated, and the full document is both correct and required — the
+subset would leave 41 questions missing. **Delete the subset file once the full document has run
+against the wiped platform**; keeping it is how someone runs the wrong one.
+
+### Verification after the redeploy — the checks, not the impressions
+
+```
+# 49 of 49 questions resolve
+uv run python -c "import csv; from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader as R, clear_caches; clear_caches(); r=R(); qs=[x['Question'] for x in csv.DictReader(open('docs/dr-egeria/resource_questions.csv'))]; m=[q for q in qs if not r.resolve_question_guid(q)]; print(f'{len(qs)-len(m)}/{len(qs)} resolve'); [print('  MISSING:', q[:70]) for q in m]"
+
+# 0 duplicate / 0 stale on all 8 definitions
+uv run python scripts/reconcile_survey_definition_links.py --dry-run
+
+# both surveys load, reducer after its inputs
+uv run pytest tests/test_egeria_live_smoke.py tests/test_survey_definition_graph_walk.py tests/test_security_summary.py -q
+```
+
+### What the wipe also destroys, and what it does not
+
+- **Destroyed:** every `project_analysis_findings` row, so every analysis reverts to *never ran* —
+  including today's `security_summary` result on `egeria_git`. Also the registry's projects,
+  activity log, and pgvector collections.
+- **NOT destroyed:** `data/source-cache` (on disk, keyed by commit SHA), and all code, tests and
+  documents, which are committed and pushed.
+- **In flight and lost:** a `manifest_parse` on `egeria_git` was running to populate dependencies so
+  `cve_scan` could run and take the summary from 7/8 to 8/8. Abandoned — see below.
+
+### Unfinished: the security summary is 7 of 8
+
+`cve_scan` has never run on `egeria_git` because the repo has **0 dependency rows**, and cve_scan
+scans dependencies already parsed. It correctly declined to report rather than claiming "no CVEs" —
+that is the intended behaviour, not a failure. The chain to close it is
+`manifest_parse` → `cve_scan` → `security_summary`.
+
+**Blocked on the `--reload` bug below it in `Backlog.md`** ("`--reload` and the source cache cannot
+both be right"): `manifest_parse` on a repo the size of Egeria cannot complete on a server started
+with `--reload`, because the zipball extracts inside the watched tree and restarts the server. Run
+the app **without `--reload`** to close this out.
 
 
 ## Done 2026-08-26/27 — do not redo

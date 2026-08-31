@@ -2120,6 +2120,56 @@ produced a finding for `dependabot_security_updates: enabled` and silently didn'
 
 ### Platform & orchestration
 
+#### `--reload` and the source cache cannot both be right — a survey of any large repo cannot finish
+
+Found 2026-08-31 while trying to get `cve_scan` onto `egeria_git`.
+
+`SourceCache.DEFAULT_CACHE_DIR` is `Path("data/source-cache")` — **relative**, so it resolves
+against the process cwd. The server runs from the repo root, so every acquired zipball and
+treeless clone extracts *inside the directory uvicorn watches*. Extracting Egeria's zipball
+produced, in the server's own log:
+
+    INFO watchfiles.main: 485 changes detected
+    INFO watchfiles.main:  92 changes detected
+    INFO watchfiles.main:  17 changes detected
+
+Each one restarts the server and kills the in-flight survey. `manifest_parse` on `egeria_git`
+ran for **ten minutes and wrote zero dependency rows** — no error, no timeout, just repeatedly
+killed and restarted. It completed normally on a server started without `--reload`.
+
+**Neither side is careless, which is why this survived.** The cache location is a considered
+choice, and its comment says so: under `data/` beside the registry databases, so a checkout
+stays self-contained and `rm -rf data/source-cache` is a complete, safe reset. Auto-reload on
+save is equally reasonable for development. The two are individually right and jointly fatal.
+
+**It is silent from every angle a person would look.**
+
+- The run endpoint returns `{"status":"started"}` and the activity log gets its entry, so the
+  caller sees a successful launch.
+- `data/` is gitignored, so 44 MB of extracted source never appears in `git status`.
+- `watchfiles` does **not** read `.gitignore` for its exclusions, so being ignored buys nothing.
+- The only visible trace is `watchfiles.main` at INFO — which was **discarded entirely** before
+  logging was wired earlier the same day. This was findable for the first time this morning.
+
+**Directly upstream of the entry below.** That one fixed the *symptom* of a restart mid-survey
+(an `activity_log` row stuck at `running` forever) and treats restarts as an occasional event —
+"restarting the web server to pick up a git pull". This makes them routine and self-inflicted:
+every large survey triggers its own.
+
+Options, none chosen:
+
+1. **Absolute cache dir outside the tree** (`~/.cache/resource-explorer/source-cache`, or
+   `$RE_SOURCE_CACHE_DIR`). Fixes it everywhere, and costs the self-contained-checkout property
+   the current comment is defending.
+2. **`--reload-exclude data/*`** on the `uvicorn.run()` call in `cli/main.py`. Keeps both
+   properties; only helps the one entry point, and anyone running uvicorn directly still hits it.
+3. **Do not pass `--reload` while surveying.** Free, and relies on remembering — the kind of rule
+   that gets routed around because nothing enforces it.
+
+Whichever is chosen, the silence deserves its own fix: a survey killed mid-flight should be
+distinguishable from one that ran and found nothing, which is this codebase's most-repeated bug
+class and is exactly what the entry below already built the machinery for.
+
 #### FIXED — a server restart mid-survey left activity_log rows stuck at 'running' forever
 
 Confirmed live 2026-08-26: restarting the web server to pick up a git pull killed two
