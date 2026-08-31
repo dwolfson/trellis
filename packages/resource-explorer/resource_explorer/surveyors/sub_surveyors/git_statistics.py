@@ -43,6 +43,7 @@ from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
 log = logging.getLogger(__name__)
@@ -98,6 +99,14 @@ class GitStatisticsSurveyor(BaseSurveyor):
                         + (f" Refresh error: {error}" if error else "")
                     ),
                     resource_properties={"refreshed": False},
+                    # Already confidence 0 with a stated reason — the reasoning
+                    # was right and only the label was missing. Never
+                    # `no_signal`: a repo with no readable stats row is a gap in
+                    # what we hold, not a repo with no stars.
+                    json_properties=StepOutcome(
+                        "unverified",
+                        cause="project_stats could not be refreshed or read",
+                        detail={"refresh_error": error or ""}).as_row(),
                 )
             ]
 
@@ -111,6 +120,14 @@ class GitStatisticsSurveyor(BaseSurveyor):
             "last_pushed_at": stats.get("last_pushed_at") or "",
             "refreshed": refreshed,
         }
+        # `refreshed` is the distinction that matters and the summary already
+        # carries it: serving a stored row after a failed refresh is a real
+        # answer about an older moment, which is `partial` — produced
+        # something, knowingly incomplete — not a clean `recovered`.
+        stats_outcome = (StepOutcome("recovered", detail={"refreshed": True})
+                         if refreshed else
+                         StepOutcome("partial", cause="refresh failed; serving stored stats",
+                                     detail={"refresh_error": error or ""}))
         return [
             ResourceMeasureAnnotation(
                 summary=(
@@ -129,5 +146,6 @@ class GitStatisticsSurveyor(BaseSurveyor):
                        "previously stored ones." if not refreshed else "")
                 ),
                 resource_properties=headline,
+                json_properties=stats_outcome.as_row(),
             )
         ]

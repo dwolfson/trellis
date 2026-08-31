@@ -303,8 +303,24 @@ class TestCiQualitySurveyorPersistence:
     DependencySurveyor has with project_dependencies) — it just re-emits
     whatever IngestionPipeline._parse_ci_workflows() last wrote."""
 
-    def test_no_findings_yields_no_annotations(self, registry, project):
-        assert CiQualitySurveyor(project, registry).run() == []
+    def test_no_findings_says_so_rather_than_going_silent(self, registry, project):
+        """Changed 2026-08-31; this asserted `== []`.
+
+        Silence made "ran and found nothing" identical to "never ran", and for
+        a pass-through step the empty case usually means the UPSTREAM step has
+        not run — so the survey report simply had no CI-quality section, which
+        reads as "no issues" at least as easily as "not assessed".
+
+        `cve_scan` already made this exact choice for the same relationship:
+        it emits "No dependencies are recorded for this resource, so nothing
+        could be checked" rather than returning nothing. This follows that
+        precedent rather than inventing one.
+        """
+        annotations = CiQualitySurveyor(project, registry).run()
+        assert len(annotations) == 1
+        assert annotations[0].confidence == 0
+        assert "not a finding that the repo has none" in annotations[0].summary
+        assert annotations[0].json_properties["outcome"] == "unverified"
 
     def test_reemits_persisted_findings_as_annotations(self, registry, project):
         registry.upsert_finding(
@@ -338,8 +354,14 @@ class TestRepoConventionsSurveyorPersistence:
     """RepoConventionsSurveyor is read-only at survey time, same relationship
     CiQualitySurveyor has with IngestionPipeline._parse_repo_conventions()."""
 
-    def test_no_findings_yields_no_annotations(self, registry, project):
-        assert RepoConventionsSurveyor(project, registry).run() == []
+    def test_no_findings_says_so_rather_than_going_silent(self, registry, project):
+        """Changed 2026-08-31 — see the CiQuality twin above for the reasoning;
+        these two steps have the same pass-through shape and had the same
+        silence."""
+        annotations = RepoConventionsSurveyor(project, registry).run()
+        assert len(annotations) == 1
+        assert annotations[0].confidence == 0
+        assert annotations[0].json_properties["outcome"] == "unverified"
 
     def test_reemits_persisted_findings_as_annotations(self, registry, project):
         registry.upsert_finding(

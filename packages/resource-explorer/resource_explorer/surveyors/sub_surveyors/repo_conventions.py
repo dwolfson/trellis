@@ -16,6 +16,7 @@ import logging
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,24 @@ class RepoConventionsSurveyor(BaseSurveyor):
         try:
             slug = self.project.slug
             findings = self.registry.query_findings(slug, "repo_conventions")
+            if not findings:
+                # An empty result set produced NO annotations at all, so a run
+                # that found nothing and a run that never happened were the
+                # same silence — and this step reads what `manifest_parse`
+                # persisted, so an empty set usually means that upstream step
+                # has not run rather than that this repo has no conventions.
+                # Saying so is what makes the absence attributable.
+                return [ClassificationAnnotation(
+                    summary=("No repo_conventions findings are recorded for this resource — "
+                             "run the dependency/manifest refresh first. This is not "
+                             "a finding that the repo has none."),
+                    analysis_step=STEP,
+                    candidate_classifications=[],
+                    confidence=0,
+                    json_properties=StepOutcome(
+                        "unverified",
+                        cause="no repo_conventions findings recorded").as_row(),
+                )]
             for f in findings:
                 results.append(
                     ClassificationAnnotation(
@@ -45,7 +64,10 @@ class RepoConventionsSurveyor(BaseSurveyor):
                         analysis_step=STEP,
                         candidate_classifications=[f["label"]],
                         confidence=f.get("confidence", 80),
-                        json_properties={"check_name": f["check_name"]},
+                        json_properties={"check_name": f["check_name"],
+                                         **StepOutcome(
+                                             "recovered",
+                                             detail={"findings": len(findings)}).as_row()},
                     )
                 )
         except Exception as exc:
