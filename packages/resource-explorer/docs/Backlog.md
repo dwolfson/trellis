@@ -2206,6 +2206,49 @@ Related, not yet built: polling Egeria for survey results so completed native (`
 
 Full context for the Survey Definitions side: `docs/egeria-collaboration-and-survey-model.md` section 6; the A2A item below covers the async-notification half of "unified dashboard."
 
+**RE-VERIFIED 2026-08-30 against this tree — the picture above is stale, and better than it says.**
+Significant unification already shipped without this entry being updated:
+- **Repo's legacy run path is gone.** `runSurveyFromSidebar`, `runScoutingScan`,
+  `publishScoutingRegistration`, `runProfileScan`, `publishProfileFindings` are all deleted
+  (confirmed by grep — zero hits). The Survey Definitions candidate panel is the only way to
+  launch a repo survey now (`docs/survey-tab-unification-plan.md` D1–D5, landed since the
+  2026-08-19 doc was written, despite that doc calling itself "not yet committed").
+- **Publish is unified for repo** — one route (`POST /api/egeria/{slug}/publish`), used by both
+  the Survey Definitions panel's generic `☁ Publish` (D4) and the repo detail page's own
+  "Publish survey →" button.
+- **The scheduler already dispatches Survey-Definition-typed schedules** for both repo and
+  database (`_run_scheduled_survey()` → `run_survey_definition()`).
+
+**What's still genuinely open:** filesystem has none of this — `showSurveyFsModal`/
+`submitSurveyFs` is the only way to survey one, and `scheduler.py`'s `_execute()` has no
+filesystem branch at all (repo/database only), so a filesystem schedule can never fire even if
+one were somehow created. Database's legacy `showSurveyDbModal`/`showPublishDbModal` also still
+exist alongside the Survey Definitions panel — not yet confirmed whether they're now a safe
+duplicate (like repo's were) or still do something the panel can't.
+
+**Direction from Dan (2026-08-30): database and filesystem should route through Egeria's own
+EXISTING native surveys, not through newly-authored RE-side Dr.Egeria Survey Definitions.**
+This changes what "closing this item" means for those two resource types — it is not "author a
+`database-survey-definition-*.md` / `filesystem-survey-definition-*.md` the way repo's eight
+were authored." Both adapters already carry the mechanism this points at:
+`other_engine_handlers={"egeria": _trigger_egeria_native_survey}` in both
+`database/survey_definition_adapter.py` and `filesystem/survey_definition_adapter.py` — a step
+tagged `executes_at="egeria"` actively triggers Egeria's own native survey rather than being
+skipped. The gap is not "build the trigger," it's "prove the trigger, end to end, and get its
+results back."
+
+**Testing gap, explicitly called out as open work (2026-08-30, Dan) — keep on the backlog:**
+`filesystem/survey_definition_adapter.py`'s own module docstring already says the native-trigger
+path is "not yet exercised end-to-end, since this environment has no cataloged filesystem to
+test against." Database's equivalent (`_trigger_egeria_native_survey` in
+`database/survey_definition_adapter.py`) has more surrounding coverage but its own live,
+end-to-end exercise (cataloged resource → triggered native survey → result actually lands
+somewhere RE reads it back from) has not been separately confirmed either. Both need a real
+pass: a cataloged filesystem and database resource, a live Egeria trigger, and confirmation of
+where the native survey's results actually surface (ties into the "results dashboard" gap two
+paragraphs up — an `executes_at: egeria` step today only returns an engine-action GUID with
+"check Egeria's Asset Catalog," which is not itself a tested read-back path).
+
 ---
 
 #### MEDIUM (was HIGH) — Filesystem local survey: silent-failure causes fixed, true "hang" UX still open
