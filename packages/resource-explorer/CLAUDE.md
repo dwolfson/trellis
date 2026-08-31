@@ -98,157 +98,23 @@ RFA (RequestForAction) is **not** one of the eight intents either — it's a per
 
 ## Architecture
 
-### Query Flow
+**Single source: [`docs/Architecture.md`](docs/Architecture.md).** Read it before making
+architectural changes.
 
-```
-User Query
-  → Intent classification (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate)
-  → Resource type context (repo / database / filesystem)
-  → QueryCache                    ← cache hit → return immediately
-  → QueryProcessor                ← classifies sub-intent
-      ├── statistical  → StatsAgent (GitHub API + SQLite time-series)
-      ├── comparison   → CompareAgent (multi-project RAG + structured diff)
-      ├── examples     → ExamplesAgent (generates runnable Python code)
-      ├── code_search  → CodeAgent (code collections in pgvector)
-      ├── conceptual   → DocAgent (markdown + web docs)
-      ├── health       → HealthAgent (community metrics)
-      ├── schema       → survey metadata query (databases / file systems)
-      └── general      → RAG (CollectionRouter → pgvector → LLM)
-  → LLM generation (Ollama or API backend)
-  → Response formatting
-  → Async: MLflow + Phoenix tracing, metrics write, cache store
-```
+It used to be duplicated here, and on 2026-08-30 both copies were found stale in the same two
+places — both called the registry SQLite when it has been PostgreSQL by default for weeks, and
+both listed seven intents after Automate made eight. Two copies did not give two chances to be
+right; they gave one bug two homes. This section is now a pointer so there is one place to fix.
 
-For **databases and file systems**, RAG searches the survey metadata (schema, annotations, activity log) rather than raw content — unless content has been explicitly ingested.
+What that document covers: the survey and query layers, storage and the six table families,
+the Survey Definition / step / analysis distinction, the two coordinators (Egeria or Prefect —
+never RE itself), compiled context, and why absence is a first-class result.
 
-### Survey Flow
+For how this package sits in the workspace — the two apps, the six shared libraries, and the
+one Postgres they share — see [`docs/trellis-architecture.md`](../../docs/trellis-architecture.md).
 
-```
-SurveyOrchestrator.run(slug, resource_type)
-  → [repo]      FileClassifier, FileStructure, FileSizeSurveyor, DataProfiler,
-                LanguageSurveyor, HealthSurveyor, DependencySurveyor,
-                DocumentationSurveyor, SecuritySurveyor, ApiStructureSurveyor
-  → [database]  DatabaseSurveyor (local) and/or EgeriaDatabaseSurveyor (native)
-  → SurveyResult (plain dataclasses)
-  → ActivityLog entry written (persistent SQLite table)
-  → [--publish] EgeriaPublisher → Egeria catalog of record
-```
-
-### Activity Log
-
-The activity log is the central audit trail for all operations. Every scout/survey/catalog/publish/RFA operation writes an entry. Schema (D3 in the design doc):
-
-```
-ActivityEntry {
-  id, ts, operation, intent, entity_type, entity_slug,
-  entity_name, entity_location, status, summary, detail,
-  items[]:       { kind, display_name, qualified_name, guid, location }
-  annotations[]: { analysis_name, annotation_type, count, status, summary }
-}
-```
-
-The activity log lives in `activity_log` SQLite table. It is the NEW replacement for the in-memory `_activityLog` that existed in Project Explorer's web UI.
-
-### Web UI
-
-`resource_explorer/web/static/index.html` — single-page app, intent-based shell:
-- `#intent-nav`: the 8-intent tab strip (Scouting / Discovery / Assessment / Analysis / Enrichment / Understanding / Curate / Automate) — the primary navigation axis, replacing the old resource-type-first sidebar tabs
-- Left sidebar: a resource-type **facet** (Repos / Databases / File Systems) that filters within whichever intent is active — `resourceTypeFacet` + `setResourceTypeFacet()`, not the primary nav
-- Perspective row: concurrent, multi-select filter over Egeria's own Perspective vocabulary (the 12 authored in `docs/dr-egeria/foundations/foundations.md` — Admin, Architecture, Community, Consumer, Data Expert, Data Owner, Financial, Governance, Privacy, Security, Steward, App/AI Builder), cross-cutting rather than exclusive like intent/facet. **RE's own four (`dba`/`data_scientist`/`steward`/`security`) were retired 2026-08-26** — the same word meant different things on the Analyses row and the Questions checklist, and Egeria's other eight had no local meaning. `dba`→Admin and `data_scientist`→Data Expert were mapped by description, not name. The row is shown on every intent that renders cards, and it is the ONLY Perspective control: the in-panel rows the Survey, Results and Questions tabs each carried are gone.
-- Main panel: content depends on the active intent (survey report, analysis catalog cards, Survey Definitions, context form, charts, or the Curate tags/feedback/notes pane)
-- Persistent side surfaces, independent of the intent panel: `#chat-panel` (RAG-backed Q&A, scope-aware) and `#rfa-drawer` (RequestForAction response actions — defer/reassign/complete), both toggleable from `#intent-nav`, both stay open across intent switches
-- Header-level, also decoupled from `#intent-nav`: 📋 Activity (persistent log) and ⚙ Admin (Annotation Types / Groups / Discovery Sources — system config, not one of the 8 intents; see the Enrichment-vs-Curate note above). Schedules monitoring moved from here into 🔔 Automate's own "⏱ Schedules" sub-tab (2026-08-13).
-
-### Egeria Integration
-
-Egeria is the catalog of record. Survey results are written there via `EgeriaPublisher`. Local SQLite is a cache for fast reads and offline operation.
-
-Key pyegeria patterns:
-- `AutomatedCuration.create_postgres_server_element_from_template()` / `create_postgres_database_element_from_template()`
-- `initiate_postgres_server_survey()` / `initiate_postgres_database_survey()` — both async
-- `AssetMaker` (view_server, platform_url, user_id, user_password) — note arg order
-- `find_technology_types()` / `get_tech_type_detail()` — source for the analysis menu
-
-## Module Map
-
-```
-resource_explorer/
-├── config.py              # Pydantic settings (ExplorerConfig)
-├── registry.py            # SQLite registry: projects, databases, db_servers,
-│                          # activity_log, project_stats, project_commits,
-│                          # project_code_symbols, project_dependencies,
-│                          # project_file_type_counts, project_file_inventory,
-│                          # project_data_profiles, project_egeria_surveys,
-│                          # database_surveys
-├── rag_system.py          # Main orchestrator — entry point for all queries
-├── query_processor.py     # Intent classifier + agent router
-├── collection_router.py   # Selects relevant pgvector collections per query
-├── query_cache.py         # LRU cache with optional Redis backend
-├── llm_client.py          # LLMBackend protocol + Ollama/OpenAI/Anthropic impls
-├── embeddings.py          # SentenceTransformer wrapper (MPS-aware)
-├── vector_store_base.py   # BaseVectorStore ABC
-├── vector_store_pg.py     # PgVectorStore + MultiCollectionStore (pgvector multi-tenant operations)
-├── prompt_templates.py    # Per-agent prompt templates
-├── agentstack_server.py   # AgentStack A2A server
-├── github/                # GitHub API client + stats fetcher
-├── ingestion/             # Ingestion pipeline (GitHub repos → pgvector)
-├── agents/                # BeeAI RequirementAgent implementations
-│   ├── base.py            # BaseExplorerAgent
-│   ├── tools.py           # @tool functions
-│   └── *.py               # Specialist agents (stats, code, doc, health, compare, examples)
-├── cli/
-│   └── main.py            # Typer CLI
-├── configdata/
-│   ├── technology_type_processes.yaml  # Egeria Technology Type -> native process table
-│   └── analysis_catalog.yaml           # Analysis menu, tagged by the 8 intents (see analysis_catalog_reader.py)
-├── web/
-│   ├── app.py             # FastAPI application
-│   ├── static/index.html  # Single-page UI — intent-based shell (#intent-nav, 8 intents; see "Eight User Intents" above)
-│   └── routes/
-│       ├── query.py               # POST /api/query/
-│       ├── projects.py            # GET/POST /api/projects/, groups CRUD
-│       ├── stats.py                # GET /api/stats/{slug}/charts/{type} — backs Understanding
-│       ├── egeria.py               # Egeria survey + annotation + catalog-elements + whoami routes
-│       ├── databases.py            # Database management routes
-│       ├── db_servers.py           # DB server management routes
-│       ├── analyses.py             # GET /api/analyses/{resource_type} + /perspectives + /egeria-status — backs Assessment/Analysis
-│       ├── activity.py             # Activity log + GET/PATCH /api/activity/rfas — backs the RFA drawer
-│       ├── context.py              # GET/POST /api/context/{type}/{slug} — backs Enrichment
-│       ├── curate.py               # Tags/feedback/curator-notes CRUD — backs Curate
-│       ├── schedules.py            # Analysis schedule CRUD + GET /api/schedules/ (global) — backs the per-card ⏱ Schedule action and Automate's ⏱ Schedules monitoring sub-tab
-│       ├── survey_definitions.py   # Egeria Survey Definition candidates/run — backs Discovery
-│       ├── project_context.py      # GET/POST /api/project-context/{type}/{slug} + search/candidates — backs the Egeria Project context picker (Part 5)
-│       └── automate.py             # notification_subscriptions CRUD — backs Automate (Part 4)
-├── notification_detector.py  # Generic latest-two-runs change detection for Automate subscriptions
-├── tui/app.py             # Textual TUI
-├── dashboard/graphs.py    # Plotly figure builders
-├── surveyors/             # Survey framework
-│   ├── survey_report.py
-│   ├── base_surveyor.py
-│   ├── survey_orchestrator.py
-│   ├── egeria_publisher.py
-│   ├── egeria_reader.py
-│   ├── egeria_tech_type_catalog.py    # EgeriaTechTypeCatalog — live Technology Type queries
-│   ├── technology_type_processes.py   # Reader for configdata/technology_type_processes.yaml
-│   ├── analysis_catalog_reader.py     # Reader for configdata/analysis_catalog.yaml + optional live-Egeria merge
-│   ├── survey_definition_reader.py    # Generic Survey Definition (GovernanceActionProcess) reader
-│   ├── survey_definition_executor.py  # Generic dispatch loop + ResourceTypeAdapter interface
-│   ├── repo_survey_definition_adapter.py  # re_analysis_step -> repo sub-surveyor mapping
-│   ├── file_classifier/   # File type classification
-│   ├── sub_surveyors/     # Repo sub-surveyors (language, health, security, etc.)
-│   ├── database/          # PostgreSQL surveying
-│   │   ├── connection.py
-│   │   ├── database_surveyor.py
-│   │   ├── egeria_database_surveyor.py
-│   │   ├── hybrid_database_surveyor.py
-│   │   └── survey_definition_adapter.py
-│   └── filesystem/        # Filesystem surveying
-│       ├── local_filesystem_surveyor.py
-│       ├── egeria_filesystem_surveyor.py
-│       ├── hybrid_filesystem_surveyor.py
-│       └── survey_definition_adapter.py
-└── observability/         # MLflow, Phoenix, metrics
-```
+The rules for *working on* this code stay here: the tech stack above, the eight intents below,
+and the numbered design rules.
 
 ## What's New vs. Project Explorer
 

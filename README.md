@@ -29,6 +29,7 @@ than maintaining three near-duplicate implementations across separate repos.
 ```
 trellis/
 ├── QUICKSTART.md              # clone → running app; start here
+├── docs/trellis-architecture.md   # how the two apps and six libraries fit together
 ├── pyproject.toml             # workspace root — declares members, holds shared tooling config
 ├── uv.lock                    # single shared lockfile for the whole workspace
 ├── .python-version            # pinned Python version for the workspace

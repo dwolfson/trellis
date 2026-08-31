@@ -1,255 +1,241 @@
 # Resource Explorer — Architecture
 
-**Last revised:** 2026-06-10
+**Last revised:** 2026-08-30. Supersedes the 2026-06-10 revision, which described a
+SQLite-only registry, ten sub-surveyors and eleven web routes — the counts are now 51 tables,
+33 sub-surveyors and 25 route modules.
+
+This document describes **shape**: layers, boundaries, and how work flows through them. It
+deliberately does not enumerate every module, because the previous revision did and that is
+precisely what went stale — 157 modules existed that it did not mention. Directories and
+responsibilities change slowly; file lists change weekly.
+
+- Conventions and rules for *working on* this code: [`../CLAUDE.md`](../CLAUDE.md)
+- Getting it running: [the workspace quickstart](../../../QUICKSTART.md)
+- What is being worked on: [`Backlog.md`](Backlog.md)
 
 ---
 
 ## Overview
 
-Resource Explorer is an Egeria-first tool for discovering, assessing, and cataloging information resources. Its primary data model is Egeria's open metadata — every survey result that can be written to Egeria should be. Local SQLite is a cache and queue for offline work and fast reads.
+Resource Explorer discovers, understands and catalogs information resources — Git
+repositories, PostgreSQL databases and file systems — using [Egeria](https://egeria-project.org/)
+as the catalog of record.
 
-The system has two layers:
-1. **Survey layer** — ingests structure and metadata from resources (repos, databases, file systems) and writes to SQLite + Egeria
-2. **Query layer** — answers natural-language questions using survey metadata, RAG (pgvector), and specialized agents
+**Egeria-first, but not Egeria-dependent.** Every survey result that can be written to Egeria
+should be. Local storage is a cache and a queue, so the tool keeps working while Egeria is
+unreachable and reconciles afterwards. RAG-based querying needs no Egeria at all.
+
+Two layers:
+
+1. **Survey layer** — collects structure and metadata from resources, writes locally, and
+   publishes to Egeria.
+2. **Query layer** — answers natural-language questions from survey metadata, RAG over
+   pgvector, and specialist agents.
 
 ---
 
-## Module Map
+## Storage
+
+**The registry is PostgreSQL by default**, in a named `resource_explorer` schema inside the
+`egeria_advisor` database shared with Egeria Advisor. SQLite remains a supported fallback via
+`REGISTRY_DATABASE_URL` — used by tests and single-user setups. Both are driven through the
+same `ProjectRegistry` API; nothing above it knows which is underneath.
+
+*(The previous revision claimed "all persistent state lives in a single SQLite file". That
+stopped being true when the shared Postgres instance arrived, and the claim survived because
+nothing tested it.)*
+
+Vector data lives in the same Postgres via pgvector, in per-resource collections named
+`{slug}_{collection_type}`, created lazily on first insert.
+
+### Table families
+
+51 tables, which group into six families rather than needing individual description:
+
+| Family | Examples | Shape |
+|---|---|---|
+| **Resource identity** | `projects`, `databases`, `file_systems`, `db_servers`, `project_aliases`, `project_groups` | One row per registered resource |
+| **Collected facts** | `project_stats`, `project_commits`, `project_file_inventory`, `project_code_symbols`, `project_dependencies` | Refreshed in place or appended per run |
+| **Analysis results** | `project_analysis_findings`, `project_analysis_metrics`, `project_file_type_counts` | Append-only, `surveyed_at`-stamped, latest-batch reads |
+| **Human judgement** | `resource_context`, `resource_tags`, `resource_feedback`, `resource_curator_notes`, `repo_dispositions`, `investigations` | What a person decided, never inferred |
+| **Machine attention** | `resource_schedules`, `notification_subscriptions`, `rfa_actions` | Recurring work and its delivery |
+| **Egeria linkage** | `project_egeria_surveys`, `entity_egeria_project_context`, `egeria_linkage_status`, `survey_definition_cache` | What is published, and what Egeria said |
+
+Two properties matter more than the list:
+
+- **Analysis results are append-only.** A survey run does not overwrite its predecessor; it
+  adds a `surveyed_at`-stamped batch. History is the point — trends, and "what changed since
+  last time", both depend on it.
+- **Collected facts and analysis results are different tables on purpose.** Most analyses do
+  not write to `project_analysis_findings`; they read `project_stats` or the file inventory and
+  report over it. Assuming the findings table is where results live is a mistake that has been
+  made twice, most recently by the context compiler.
+
+---
+
+## Directory map
 
 ```
 resource_explorer/
-├── config.py                  # Pydantic settings (ExplorerConfig)
-├── registry.py                # Registry — all tables, all read/write methods (Postgres by default, SQLite fallback)
-├── activity_logger.py         # Thin helpers for writing activity log entries
-├── analysis_catalog.py        # Local analysis registry (intent/persona/source tags)
-├── scheduler.py               # Background daemon thread — executes due analyses
+├── registry.py             # every table, every read/write. Postgres or SQLite.
+├── config.py               # Pydantic settings
+├── scheduler.py            # daemon thread — runs due schedules, fires subscriptions
+├── facts.py                # FactLayer: reads what is known, never runs anything
+├── step_outcome.py         # recovered / partial / no_signal / unverified / regression
+│   surveyors/result_status.py   # measured / nothing_found / not_established / never_run / …
 │
-├── rag_system.py              # Main query orchestrator
-├── query_processor.py         # Intent classifier (routing.yaml) + agent router
-├── collection_router.py       # Selects relevant pgvector collections per query
-├── query_cache.py             # LRU cache with optional Redis backend
-├── llm_client.py              # LLMBackend protocol + Ollama/OpenAI/Anthropic impls
-├── embeddings.py              # SentenceTransformer wrapper (MPS-aware)
-├── vector_store_base.py       # BaseVectorStore ABC
-├── vector_store_pg.py         # PgVectorStore + MultiCollectionStore (pgvector multi-tenant operations)
-├── prompt_templates.py        # Per-agent prompt templates
-├── agentstack_server.py       # AgentStack A2A server
+├── rag_system.py           # query orchestrator
+├── query_processor.py      # intent classification + agent routing
+├── collection_router.py    # which pgvector collections a query needs
+├── context_compile.py      # question → ContextSpec → packed context + manifest
 │
-├── github/                    # GitHub API client + stats fetcher
-│
-├── ingestion/                 # Ingestion pipeline (GitHub repos → pgvector)
-│   ├── pipeline.py            # IngestionPipeline — downloads, chunks, indexes
-│   └── incremental.py        # IncrementalIndexer — commit-diff based re-index
-│
-├── agents/                    # BeeAI RequirementAgent implementations
-│   ├── base.py                # BaseExplorerAgent
-│   ├── tools.py               # @tool decorated functions
-│   └── *.py                   # stats, code, doc, health, compare, examples agents
-│
-├── cli/main.py                # Typer CLI entry point
-│
-├── web/
-│   ├── app.py                 # FastAPI application + lifespan (starts scheduler)
-│   ├── static/index.html      # Single-page UI
-│   └── routes/
-│       ├── activity.py        # GET /api/activity/ — activity log + RFAs
-│       ├── analyses.py        # GET /api/analyses/{resource_type}
-│       ├── context.py         # GET/POST /api/context/{entity_type}/{slug}
-│       ├── databases.py       # CRUD + survey + diff for databases
-│       ├── db_servers.py      # DB server management
-│       ├── egeria.py          # Egeria survey, catalog, annotation, diff routes
-│       ├── projects.py        # CRUD + refresh for repos
-│       ├── query.py           # POST /api/query/
-│       ├── schedules.py       # GET/POST /api/schedules/{entity_type}/{slug}
-│       ├── stats.py           # Charts and survey history endpoints
-│       └── webhook.py         # GitHub webhook handler
-│
-├── tui/app.py                 # Textual TUI
-├── dashboard/graphs.py        # Plotly figure builders
-│
-├── surveyors/
-│   ├── survey_report.py       # SurveyReport, Annotation dataclasses
-│   ├── base_surveyor.py       # BaseSurveyor protocol
-│   ├── survey_orchestrator.py # Runs all sub-surveyors; writes activity log
-│   ├── egeria_publisher.py    # Writes survey results to Egeria
-│   ├── egeria_reader.py       # Reads survey results back from Egeria
-│   ├── file_classifier/       # File type classification
-│   ├── sub_surveyors/         # Language, health, security, dependency, …
-│   └── database/
-│       ├── connection.py               # psycopg2 connection helpers
-│       ├── database_surveyor.py        # Local PostgreSQL introspection
-│       ├── egeria_database_surveyor.py # Triggers Egeria native survey
-│       └── hybrid_database_surveyor.py # Runs both; local scan for immediate data
-│
-└── observability/             # MLflow, Phoenix, metrics
+├── github/                 # API client, stats fetcher, org importer, source cache
+├── ingestion/              # repo → chunks → pgvector; incremental re-index
+├── agents/                 # BeeAI specialist agents (stats, code, doc, health, …)
+├── surveyors/              # the survey layer — see below
+├── web/                    # FastAPI app, 25 route modules, single-page UI
+├── cli/                    # Typer CLI
+└── observability/          # MLflow, Phoenix, metrics
 ```
 
----
-
-## SQLite Tables
-
-All persistent state lives in a single SQLite file (default `~/.resource-explorer/registry.db`).
-
-| Table | Purpose |
-|-------|---------|
-| `projects` | Registered Git repositories |
-| `databases` | Registered PostgreSQL databases |
-| `db_servers` | Database server connection info |
-| `activity_log` | Audit trail — every operation writes an entry |
-| `project_stats` | GitHub API stats snapshots |
-| `project_commits` | Commit history |
-| `project_file_type_counts` | File type breakdown per survey run (multiple rows per slug, timestamped) |
-| `project_file_inventory` | Full file path list |
-| `project_data_profiles` | Data file column/row profiles |
-| `project_code_symbols` | Extracted class/function symbols |
-| `project_dependencies` | Parsed dependencies |
-| `project_egeria_surveys` | Egeria survey job tracking |
-| `database_surveys` | Database survey snapshots (multiple rows per slug, timestamped) |
-| `resource_context` | Human-provided context (environment, owner, sensitivity, …) |
-| `resource_schedules` | Per-resource analysis schedule configuration |
+Shared libraries live outside this package and are imported: `trellis-vectorstore`,
+`trellis-context`, `trellis-artifact-tree`, `trellis-microflow`, `trellis-querycache`,
+`trellis-auth`. See the [workspace architecture](../../../docs/trellis-architecture.md).
 
 ---
 
-## Query Flow
+## The survey layer
+
+### Three concepts, deliberately distinct
+
+Conflating these has caused real bugs, so they are named precisely:
+
+| Concept | What it is | Where it lives |
+|---|---|---|
+| **Survey Definition** | A named, ordered graph of steps — "run these, in this order" | Egeria, as a `GovernanceActionProcess`; mirrored locally in authored Dr.Egeria documents |
+| **Step** (microflow) | One unit of work — "classify the languages" | `surveyors/sub_surveyors/`, 33 of them, keyed by a step name like `repo_health` |
+| **Analysis** | A catalog entry describing a result a person can look at | `configdata/analysis_catalog.yaml`, tagged by intent |
+
+An analysis usually maps to one step, occasionally to several, and four steps have no analysis
+at all. They are not synonyms and the mapping is explicit
+(`REPO_ANALYSIS_STEP_MAP`, `REPO_ANALYSIS_RESULTS_MAP`).
+
+### Flow
 
 ```
-User query (Web / CLI / A2A)
-  → QueryCache                       cache hit → return immediately
-  → QueryProcessor.classify()        intent classification via config/routing.yaml
-      ├── survey_meta  → SurveyMetaAgent  (activity log, RFAs, schedules, context)
-      ├── statistical  → StatsAgent
-      ├── comparison   → CompareAgent
-      ├── examples     → ExamplesAgent
-      ├── code_search  → CodeAgent
-      ├── conceptual   → DocAgent
-      ├── health       → HealthAgent
-      └── general      → RAG (CollectionRouter → pgvector → LLM)
-  → LLM generation (Ollama / OpenAI / Anthropic)
-  → Response
-  → Async: MLflow + Phoenix tracing, cache store
+SurveyOrchestrator.run(slug, steps=None)
+  → resolves steps (all, or a named subset)
+  → acquires shared resources once (zipball, git clone) via trellis-microflow
+  → runs each step → Annotation objects
+  → writes results to the step's own table
+  → writes ONE activity_log entry
+  → optionally publishes to Egeria
 ```
 
-`survey_meta` is evaluated first. It handles questions about when a resource was last surveyed, what analyses are scheduled, what RFAs are open, or what the resource context contains — all answered from the registry without hitting pgvector.
+`steps=None` runs everything; a list runs exactly those. That parameter is what lets a single
+analysis, a whole Survey Definition, or a scheduled bundle all share one execution path.
 
-For database and file-system resources, RAG searches survey metadata stored in pgvector (schema, annotations) rather than raw content — unless content has been explicitly ingested.
+**Resources are acquired once per run, not once per step.** A zipball download shared across
+eleven steps is the difference between a survey taking 14 seconds and 110.
+
+### Two coordinators, neither of which is RE
+
+RE is not a workflow engine. Either **Egeria coordinates** and RE executes leaf steps as an
+engine host, or **RE coordinates** and hands the graph to **Prefect**. Each step declares
+`executes_at: resource-explorer | prefect | egeria`. With Prefect unreachable, steps fall back
+to running in-process — safe, one connection attempt slower.
+
+### Publishing
+
+`EgeriaPublisher` finds or creates a `SourceControlLibrary` asset by exact `qualifiedName`,
+then attaches a `SurveyReport` and one annotation per result. The exact-match search is load-
+bearing: a prefix match once made two sibling repos share an asset, and each other's findings.
 
 ---
 
-## Survey Flow
-
-A survey is a collection of analyses. Each analysis produces zero or more annotations. The survey report is all annotations produced during one survey execution instance.
+## The query layer
 
 ```
-SurveyOrchestrator.run(slug)
-  → [repo]      FileClassifier, FileStructure, FileSizeSurveyor, DataProfiler,
-                LanguageSurveyor, HealthSurveyor, DependencySurveyor,
-                DocumentationSurveyor, SecuritySurveyor, ApiStructureSurveyor
-  → [database]  DatabaseSurveyor (local) and/or EgeriaDatabaseSurveyor (native)
-  → SurveyResult (plain dataclasses)
-       ↳ annotations[]:   each annotation links to its analysis (analysis_step)
-  → ActivityLog entry written (operation='survey', annotations=[{analysis_name, count, …}])
-  → [--publish] EgeriaPublisher.publish(result, zone_names=[…])
-                   ↳ Creates SourceControlLibrary asset (with optional zoneMembership)
-                   ↳ Creates SurveyReport linked via ReportSubject
-                   ↳ Creates one Annotation per SurveyResult.annotation
+Query (web / CLI / A2A)
+  → QueryCache                        hit → return
+  → QueryProcessor.classify()
+      ├── survey_meta → answered from the registry, no vector search
+      ├── statistical / comparison / examples / code_search / conceptual / health → specialist agent
+      └── general → RAG (CollectionRouter → pgvector → LLM)
+  → optionally: compiled evidence (see below)
+  → LLM generation
+  → async: tracing, metrics, cache store
 ```
 
-`HybridDatabaseSurveyor` runs the local scan immediately after triggering the Egeria native survey, because Egeria surveys are async and produce no immediate schema data.
+`survey_meta` is evaluated first and never touches pgvector — "when was this last surveyed"
+is a registry read, and routing it through retrieval would be slower and worse.
+
+### Compiled context
+
+A newer path, and the one that changes answer quality most. `context_compile.py` turns a
+question into a `ContextSpec`: the question catalog already maps Purpose and Perspective to
+questions and to the analyses that answer them, so those analyses become **sections**, stored
+results become **candidates**, and `trellis-context` packs what fits a character budget.
+
+What it returns alongside the text matters as much as the text:
+
+- **manifest** — what was packed and at which rung, what was dropped for budget, and what is
+  **missing**
+- **derivation** — why each section is there: this Purpose ranked that question, which
+  dispatches this analysis
+
+Sections resolve through the **fact layer**, not raw results, so a gap distinguishes *never
+ran* from *ran and found nothing*. Nothing is executed to fill a gap — a compile never blocks
+on a survey.
 
 ---
 
-## Activity Log Schema
+## Cross-cutting: absence is a first-class result
 
-Every operation (scout, survey, catalog, publish, RFA, refresh) writes one `ActivityEntry`:
+The single most common bug class in this codebase is **a result that looks like an answer and
+is not**. Three vocabularies exist to prevent it, and they are not interchangeable:
 
-```
-ActivityEntry {
-  id            uuid (PRIMARY KEY)
-  ts            ISO 8601 UTC
-  operation     scout | survey | catalog | publish | discover | rfa | refresh
-  intent        scouting | assessment | discovery | enrichment
-  entity_type   repo | database | server | filesystem | file
-  entity_slug
-  entity_name
-  entity_location
-  status        running | ok | error | pending
-  summary
-  detail
-  items[]       { kind, display_name, qualified_name, guid, location }
-  annotations[] { analysis_name, annotation_type, count, status, summary }
-}
-```
+- `surveyors/result_status.py` — `measured` / `nothing_found` / `not_established` /
+  `never_run`, plus `skipped_by_design` and `misgrouped` for results that are absent on
+  purpose rather than by failure
+- `step_outcome.py` — `recovered` / `partial` / `no_signal` / `unverified` / `regression`,
+  where `CONCLUSIVE` deliberately excludes `unverified`
+- The compile manifest's **gaps**, which name analyses with no stored result
 
-Items and annotations are stored as JSON text columns in SQLite.
+A zero from an analysis that never ran and a zero from one that ran and found nothing are
+different facts. Surfaces that flatten them produce confident wrong answers, which is worse
+than an error because nothing looks broken.
 
 ---
 
-## Survey Source Badges
+## The eight intents
 
-Section headers in the survey report carry source badges:
+`scouting` · `discovery` · `assessment` · `analysis` · `enrichment` · `understanding` ·
+`curate` · `automate`
 
-| Badge | Meaning |
-|-------|---------|
-| ☁ Egeria | Data from Egeria native survey |
-| 🏠 Local | Data from local Python/SQL scan |
-| ⏳ Pending | Analysis triggered but result not yet available |
-
----
-
-## Scheduler
-
-`scheduler.py` starts a daemon thread via FastAPI `lifespan`. It wakes every 15 minutes, queries `resource_schedules` for entries whose `next_run ≤ now()`, executes each due analysis (repo survey via `SurveyOrchestrator`, database survey via `run_database_survey`), then advances `next_run`. Supported intervals: `manual`, `daily`, `weekly`, `monthly`.
+These are canonical strings, used in the activity log, UI filters, analysis catalog tags and
+query routing. The axis that separates the early stages is **does this collect, or does it
+reason over what is already collected** — not evaluative-versus-structural. See `CLAUDE.md`
+rule 17, which carries the full reasoning and its exceptions.
 
 ---
 
-## Analysis Catalog
+## The activity log
 
-`analysis_catalog.py` defines all available analyses as plain Python dicts with fields:
-
-| Field | Values |
-|-------|--------|
-| `id` | unique slug |
-| `intent` | `scouting` \| `assessment` \| `discovery` \| `enrichment` |
-| `perspectives` | `all`, `dba`, `data_scientist`, `steward`, `security` |
-| `annotation_types` | Egeria annotation class names produced by this analysis |
-| `source` | `local` \| `egeria` |
-| `run_time` | `fast` \| `minutes` \| `async` |
-| `action` | `survey` \| `publish` |
-| `recommended` | bool |
-
-`GET /api/analyses/{resource_type}?intent=…&perspective=…` filters and returns this catalog.
-
-The field was renamed from `personas` to `perspectives` — filter accordingly.
+Every scout, survey, catalog, publish and RFA operation writes an entry. It is the audit
+trail and the UI's history view, and it is also load-bearing for correctness: the
+"was this ever published?" check that distinguishes *lost an asset* from *never catalogued*
+reads it rather than guessing.
 
 ---
 
-## Egeria Configuration
+## Key design rules
 
-`config.py` exposes `ExplorerConfig.egeria` (type `EgeriaConfig`) with:
+The full numbered list lives in [`../CLAUDE.md`](../CLAUDE.md) and is not duplicated here —
+one copy, deliberately. The ones with the most architectural reach:
 
-| Field | Env var | Default |
-|-------|---------|---------|
-| `platform_url` | `EGERIA_PLATFORM_URL` | `https://localhost:9443` |
-| `view_server` | `EGERIA_VIEW_SERVER` | `qs-view-server` |
-| `user_id` | `EGERIA_USER_ID` | `erinoverview` |
-| `user_password` | `EGERIA_USER_PASSWORD` | `secret` |
-| `default_catalog_zones` | `EGERIA__DEFAULT_CATALOG_ZONES` | `[]` |
-| `default_survey_zones` | `EGERIA__DEFAULT_SURVEY_ZONES` | `[]` |
-
-`default_catalog_zones` sets the `zoneMembership` on new SourceControlLibrary assets created via `EgeriaPublisher`. Override per-request by passing `zone_names` to `EgeriaPublisher.__init__()` or `publish()`, or by sending `{ "zone_names": [...] }` in the POST body of `/api/egeria/{slug}/publish`. The web UI exposes a comma-separated text input in the Egeria panel.
-
----
-
-## Key Design Rules
-
-1. Classify intent before touching the vector store — statistical queries never hit pgvector.
-2. Min retrieval score = 0.30 — below this, return "I don't have enough information."
-3. Query cache is the highest-ROI latency win — implement before optimizing retrieval.
-4. Observability runs in background threads — never block the query response.
-5. Incremental indexing for repos — commit-diff based, not full re-index.
-6. Four canonical intent labels: `scouting`, `assessment`, `discovery`, `enrichment`.
-7. All operations must write activity log entries.
-8. Egeria is the catalog of record; SQLite is a cache and queue.
-9. `HybridDatabaseSurveyor` must run local scan immediately — Egeria surveys are async.
-10. Analysis catalog field is `perspectives` (not `personas`) — filter with `?perspective=`.
-11. `survey_meta` intent routes to `SurveyMetaAgent`; evaluated before all other intents.
+- Classify intent before touching the vector store (rule 1)
+- Activity log entries for **all** operations, not just Egeria publishes (rule 16)
+- The eight intent labels are canonical (rule 17)
+- `HybridDatabaseSurveyor` must run the local scan immediately after triggering Egeria's
+  async native survey (rule 15)
