@@ -12,13 +12,51 @@ from fastapi.testclient import TestClient
 from resource_explorer.web.app import app
 
 
+@pytest.fixture(autouse=True)
+def _isolated_registry(pg_test_schema, monkeypatch):
+    """Point the investigation routes at the throwaway schema, never the shared
+    `resource_explorer` one.
+
+    These tests drive the real FastAPI app, so they were CREATING REAL
+    INVESTIGATIONS in the registry every other session reads — and relying on a
+    teardown to remove them again. A teardown that does not run (an interrupt, a
+    crash, a `-x` exit mid-module) leaks rows into a store five sessions share.
+    Reading the shared registry can only give you a false red; writing it can
+    give somebody else false data, which is the worse direction.
+
+    `_registry()` is a single module-level factory behind all 18 routes, which
+    is the whole reason this is a four-line fix rather than a refactor.
+
+    Consequence worth stating: these now require a reachable Postgres and skip
+    without one, the same trade the rest of the integration tier already makes.
+    """
+    from resource_explorer.config import get_config
+
+    cfg = get_config()
+    url = (f"postgresql://{cfg.pgvector.db_user}:{cfg.pgvector.password}"
+           f"@{cfg.pgvector.host}:{cfg.pgvector.port}/{cfg.pgvector.dbname}"
+           f"?options=-csearch_path%3D{pg_test_schema}")
+    # Patched on the CONFIG, not on the routes' `_registry()` factory. The
+    # factory covers the 18 routes; this file also builds `ProjectRegistry()`
+    # directly 27 times inside test bodies to assert against what the routes
+    # wrote. Patching only the factory sent writes and reads to different
+    # schemas — 24 tests failed instantly, which is a better outcome than the
+    # half-isolated version passing.
+    #
+    # Every `ProjectRegistry()` resolves its URL through this one attribute, so
+    # one seam covers the app, the tests, and the teardown alike. monkeypatch
+    # restores it.
+    monkeypatch.setattr(cfg.registry, "database_url", url)
+    return url
+
+
 @pytest.fixture(scope="module")
 def client():
     return TestClient(app)
 
 
 @pytest.fixture
-def made(client):
+def made(client, _isolated_registry):
     created = []
 
     def _make(**kw):
@@ -30,7 +68,10 @@ def made(client):
 
     yield _make
     from resource_explorer.registry import ProjectRegistry
-    reg = ProjectRegistry()
+    # The isolated schema, not the shared registry — otherwise this deletes
+    # from the wrong place (harmlessly, since nothing matches, but the belt
+    # would not be attached to the braces).
+    reg = ProjectRegistry()          # resolves to the isolated schema
     with reg._conn() as conn:
         for slug in created:
             # EVERY collection this investigation owns, not just its folio. An

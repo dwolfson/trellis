@@ -149,9 +149,23 @@ how "58 of 60 repos render an empty security-features card" was found — no fix
 produced that. Run them with `--corpus` when the corpus is quiet, which is the only time their
 answer means anything.
 
-**Still open, not addressed here:** `test_investigation_routes.py` *writes* to the shared registry
-(creating investigations and cleaning up after). That is a stronger form of the same hazard, since
-it mutates rather than reads. It has not bitten yet.
+**The write hazard is fixed too.** `test_investigation_routes.py` drove the real FastAPI app and so
+created **real investigations in the shared registry**, relying on a teardown to remove them — and a
+teardown that does not run (an interrupt, a crash, a `-x` exit mid-module) leaks rows into a store
+five sessions read. Reading the shared registry can only give you a false red; writing it can give
+somebody else false data.
+
+It now runs against the same PID-namespaced throwaway schema the rest of the integration tier uses,
+patched at `config.registry.database_url` — the one attribute every `ProjectRegistry()` resolves
+through, so one seam covers the 18 routes, the 27 registry constructions inside test bodies, and the
+teardown alike. Consequence: these now need a reachable Postgres and skip without one, the same
+trade the integration tier already makes.
+
+### A third form: machine load
+
+Five sessions running suites on one machine pushed load average to 18–26, and the suite swung
+170s → 357s with tests that shell out to `git` failing and then passing. If a failure will not
+reproduce in isolation or in a pair, check `uptime` before hunting it.
 
 ## Ports
 

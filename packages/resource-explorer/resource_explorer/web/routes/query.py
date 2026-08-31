@@ -82,6 +82,25 @@ class QueryResponse(BaseModel):
     query_hash: str
     cached: bool = False
     chart: dict | None = None  # Plotly figure JSON when intent warrants a chart
+    #: The CompiledContext (text/manifest/derivation) that shaped this answer,
+    #: when a session/slug went through ConversationAgent._compiled_evidence.
+    #: Same shape as POST /api/context/compile's response body -- one caller
+    #: fewer for the frontend to special-case. None when there was no
+    #: resource in scope, or the compile itself produced nothing.
+    compiled: dict | None = None
+
+
+def _compiled_payload(agent) -> dict | None:
+    """Read the CompiledContext ConversationAgent.handle() just computed.
+
+    Fail-soft and narrow: an agent that never ran _compiled_evidence (the
+    RAGSystem fallback path, or the EXAMPLES intent's early return) simply
+    has no attribute here, same as one that ran it and got nothing back.
+    """
+    compiled = getattr(agent, "_last_compiled", None)
+    if compiled is None:
+        return None
+    return {"text": compiled.text, "manifest": compiled.manifest, "derivation": compiled.derivation}
 
 
 class FeedbackRequest(BaseModel):
@@ -145,11 +164,13 @@ async def ask(request: QueryRequest) -> QueryResponse:
     intent = QueryProcessor().classify(request.query)
     query_hash = hashlib.sha256(request.query.encode()).hexdigest()[:16]
 
+    compiled = None
     if request.session_id:
         agent = _get_or_create_session(request.session_id, request.project_slug)
         response = agent.handle(request.query, project_slug=request.project_slug,
                                 perspectives=request.perspectives)
         _persist_turn(request.session_id, request.query, response, request.project_slug)
+        compiled = _compiled_payload(agent)
     else:
         from resource_explorer.rag_system import RAGSystem
         response = RAGSystem().query(request.query, project_slug=request.project_slug)
@@ -160,6 +181,7 @@ async def ask(request: QueryRequest) -> QueryResponse:
         intent=intent.value,
         query_hash=query_hash,
         chart=chart,
+        compiled=compiled,
     )
 
 
@@ -170,7 +192,12 @@ async def stream(request: QueryRequest) -> StreamingResponse:
 
     Yields newline-delimited JSON events:
       {"t":"chunk","v":"<text>"}   — one or more text chunks
-      {"t":"done","intent":"...","hash":"...","chart":...}  — terminal event
+      {"t":"done","intent":"...","hash":"...","chart":...,"compiled":...}  — terminal event
+        "compiled" is the same {text, manifest, derivation} shape as
+        POST /api/context/compile's response, sourced from the same compile
+        ConversationAgent._compiled_evidence already did to shape this
+        answer -- None when there was no resource in scope, or nothing
+        compiled (the RAGSystem fallback path, no session_id).
     """
     import asyncio
 
@@ -191,8 +218,9 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     text = agent.handle(request.query, project_slug=request.project_slug,
                                         perspectives=request.perspectives)
                     _persist_turn(request.session_id, request.query, text, request.project_slug)
+                    compiled = _compiled_payload(agent)
                     loop.call_soon_threadsafe(queue.put_nowait, text)
-                    loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False})
+                    loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled})
                 else:
                     from resource_explorer.rag_system import RAGSystem
                     rag = RAGSystem()
@@ -220,6 +248,7 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     "hash": item.get("hash", ""),
                     "cached": item.get("cached", False),
                     "chart": chart,
+                    "compiled": item.get("compiled"),
                 }
                 # Structured symbol table for code_inventory queries
                 if intent_val == "code_inventory" and request.project_slug:
