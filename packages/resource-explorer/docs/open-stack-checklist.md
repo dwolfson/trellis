@@ -412,6 +412,14 @@ Everything below came out of one session. Design reasoning lives in
 
       **Observe holds only Prefect on purpose**: it is the home for the two panes below, and a
       group of one that names a gap beats folding it somewhere it does not belong.
+
+      **Layout corrected same day, from the running app.** The first version was a single row of
+      buttons with inline group labels. With eleven panes it wrapped, and a wrapped row left a group
+      label stranded mid-line reading as a stray word rather than a heading — grouping only helps if
+      the group is visibly whole. Now one native `<select>` per group, matching the two dozen
+      already in this file: width no longer scales with the number of panes, the group holding the
+      current pane is highlighted and shows it as its selection, and the others show their own name
+      as a disabled placeholder. No custom menu, so keyboard and screen-reader behaviour come free.
 - [x] **Logging wired** 2026-08-31 — `observability/logging_setup.py`. Root now has a formatted
       console handler (timestamp, level, logger name) plus a bounded in-memory `RingBufferHandler`;
       level from `$RE_LOG_LEVEL`, default INFO. `configure_logging()` is idempotent and called from

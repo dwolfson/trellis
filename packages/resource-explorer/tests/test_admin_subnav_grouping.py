@@ -84,3 +84,39 @@ def test_groups_are_named_by_the_question_being_asked():
     block = s[s.index("const _ADMIN_GROUPS"):s.index("function _adminSubnavHtml")]
     names = re.findall(r"name:\s*'([^']+)'", block)
     assert names == ["Configure", "Reconcile", "Observe"], names
+
+def test_the_subnav_does_not_wrap_into_a_second_row():
+    """Eleven buttons plus three labels will not stay on one line, and a wrapped
+    row strands a group heading in the middle of it — reported from the running
+    app 2026-08-31, which is how the button row was found to be wrong.
+
+    Asserted structurally rather than visually: one control per group instead of
+    one per pane is what makes the width independent of how many panes exist.
+    """
+    html = INDEX.read_text()
+    fn = html[html.index("function _adminSubnavHtml"):]
+    fn = fn[:fn.index("\nfunction ")]
+
+    assert "<select" in fn, "the subnav no longer renders a control per group"
+    assert "flex-wrap" not in fn, (
+        "the subnav container allows wrapping again — with a control per group "
+        "it does not need to, and wrapping is what stranded the group labels"
+    )
+    # One <select> per group, not one <button> per pane.
+    assert fn.count("<button") == 0, (
+        "buttons are back in the subnav: that is the layout that wrapped"
+    )
+
+
+def test_the_active_pane_is_selected_in_its_own_group():
+    """A dropdown that does not show the current pane makes the subnav a
+    navigation control with no state — the user cannot tell where they are."""
+    html = INDEX.read_text()
+    fn = html[html.index("function _adminSubnavHtml"):]
+    fn = fn[:fn.index("\nfunction ")]
+    assert "t.tab === active ? 'selected' : ''" in fn, (
+        "no option is marked selected for the active pane"
+    )
+    assert "holdsActive" in fn, (
+        "nothing distinguishes the group containing the active pane from the others"
+    )

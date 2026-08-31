@@ -12649,15 +12649,37 @@ function _adminFeedbackSetFilter(key, val) {
 }
 
 function _adminSubnavHtml(active) {
-  const group = g => `<div class="flex items-center gap-1.5">
-      <span class="text-[10px] uppercase tracking-wide text-slate-600 pr-0.5">${g.name}</span>
-      ${g.tabs.map(t => `<button onclick="showMainView('${t.tab}')"
-          class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
-          ${t.label}
-        </button>`).join('')}
-    </div>`;
-  return `<div class="flex items-center flex-wrap gap-x-3 gap-y-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
-    ${_ADMIN_GROUPS.map(group).join('<span class="text-slate-700 select-none">|</span>')}
+  // Three dropdowns, one per group, rather than a row of buttons.
+  //
+  // The button row was tried first (2026-08-31) and did not survive contact
+  // with eleven panes: it wrapped to two lines, and a wrapped line put a group
+  // label in the middle of the row where it read as a stray word rather than a
+  // heading. Grouping only helps if the group is visibly whole, and eleven
+  // buttons plus three labels will not stay on one line at any realistic width.
+  //
+  // Native <select>, matching the two dozen already in this file — no custom
+  // menu, no outside-click handling, keyboard and screen-reader behaviour for
+  // free. The group holding the current pane shows it as the selection and is
+  // highlighted; the others show their own name as a disabled placeholder, so
+  // every group still reads as a heading with a list under it.
+  const groupHtml = (g) => {
+    const holdsActive = g.tabs.some(t => t.tab === active);
+    const activeLabel = (g.tabs.find(t => t.tab === active) || {}).label || '';
+    return `<label class="flex items-center gap-1.5">
+      <span class="text-[10px] uppercase tracking-wide ${holdsActive ? 'text-cyan-500' : 'text-slate-600'}">${g.name}</span>
+      <select onchange="if (this.value) showMainView(this.value);"
+        title="${_esc(g.name)}${holdsActive ? ' — showing ' + _esc(activeLabel) : ''}"
+        class="text-xs rounded px-2 py-1 border transition-colors cursor-pointer
+               ${holdsActive
+                 ? 'bg-cyan-700 text-white border-cyan-600'
+                 : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'}">
+        <option value="" ${holdsActive ? '' : 'selected'} disabled>${_esc(g.name)}…</option>
+        ${g.tabs.map(t => `<option value="${t.tab}" ${t.tab === active ? 'selected' : ''}>${t.label}</option>`).join('')}
+      </select>
+    </label>`;
+  };
+  return `<div class="flex items-center gap-4 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
+    ${_ADMIN_GROUPS.map(groupHtml).join('')}
   </div>`;
 }
 
