@@ -9488,7 +9488,10 @@ function _renderEnvelopeMarkdown(env, slug) {
   lines.push(`Answering from ${known.length} measurement(s) on **${slug}**:\n`);
   known.forEach(f => {
     const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
-    lines.push(`- ${st.icon} **${f.analysis_id}** — ${st.text}` +
+    // _analysisDisplayName, not the raw analysis_id -- "catalog_presence" is
+    // a slug, "Catalog Presence" (the catalog's own `name`) is what someone
+    // asking a plain-language question can actually read.
+    lines.push(`- ${st.icon} **${_esc(_analysisDisplayName(f.analysis_id))}** — ${st.text}` +
       // Evidence informs a judgement; it is not the judgement. Phrasing it as
       // an answer would have this report "yes, it replaces X" from nothing
       // more than a shared primary language.
@@ -9496,7 +9499,16 @@ function _renderEnvelopeMarkdown(env, slug) {
       (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '') +
       (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
     const summary = _summariseFactValue(f.value);
-    if (summary) lines.push(`  \n  ${summary}`);
+    // Reported 2026-08-31: "registered: true · group: egeria ·
+    // siblings_in_group: 4 · ..." read as raw, not meaningful, right under
+    // the actual answer. Same fixed-wording state line above IS the answer;
+    // this is what backs it up. <details>/<summary> is plain HTML passed
+    // through marked() untouched (no sanitizer configured) -- the same
+    // collapsed-by-default, no-JS-state idiom already used for the Survey
+    // Definition step list, not a new mechanism.
+    if (summary) {
+      lines.push(`  \n  <details><summary class="cursor-pointer text-slate-500">Evidence</summary>\n\n  ${summary}\n  </details>`);
+    }
     if (f.note) lines.push(`  \n  _${f.note}_`);
   });
   if (unknown.length) {
