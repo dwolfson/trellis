@@ -128,9 +128,25 @@ git -C /Users/dwolfson/localGit/egeria-v6/trellis status --porcelain   # someone
 git -C /Users/dwolfson/localGit/egeria-v6/trellis merge --ff-only origin/main
 ```
 
-Check `status` first and stop if it is dirty or a merge is in progress — this checkout is shared,
-and rules 1 and 2 apply to it whoever is driving. `--ff-only` deliberately: if it will not
-fast-forward, this checkout has commits of its own and someone needs to look, not be merged past.
+`--ff-only` is doing more work than it looks. **It refuses rather than clobbers**, on both counts:
+
+- If a locally-modified file would be overwritten it stops with *"Your local changes to the
+  following files would be overwritten by merge"* and changes nothing. Verified directly on
+  2026-08-31 rather than assumed. So a fast-forward **cannot** destroy another session's
+  uncommitted work — a dirty checkout is not by itself a reason to hold off.
+- If it will not fast-forward at all, this checkout has commits of its own and someone needs to
+  look at them, not be merged past.
+
+**Stop when it refuses. Do not force it, do not stash to get past it, do not `checkout --` the
+path.** Those are the operations rules 1 and 2 are about, and the refusal is the signal to ask
+whoever is active rather than to work around it. Check for a merge in progress too
+(`git rev-parse -q --verify MERGE_HEAD`) — rule 2 applies here whoever is driving.
+
+*This paragraph originally said "stop if it is dirty". That was over-strict, and the session that
+wrote it then broke it twice within the hour on a checkout that had three of someone else's files
+modified — safely both times, because `--ff-only` was doing the protecting rather than the rule. A
+rule people route around teaches them to route around rules; the accurate one is narrower and
+actually load-bearing.*
 
 **Before committing, read `git status` and confirm every staged path is yours.** An unexpected file
 is a signal that another session is mid-write, not something to sweep in.
