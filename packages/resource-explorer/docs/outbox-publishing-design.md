@@ -265,14 +265,18 @@ and there the stored payload replays an identical qualifiedName.
      `collection_membership` and `resource_list` have creators; `asset` and `report` deliberately
      do not, because both publishers create those synchronously for their GUIDs.
 
-   **Logging is not a surface here — measured 2026-08-31.** Nothing in this package configures
-   logging, and `uvicorn.run()` (`cli/main.py:327`) is called without a `log_config`, so uvicorn
-   configures only its own `uvicorn.*` loggers. Application records fall through to Python's
-   `lastResort` handler: WARNING and ERROR reach the server's **stderr** with no timestamp and no
-   logger name, and **INFO is discarded outright** — which silently included the drain summary
-   line as first written. So `drain_outbox` now calls `record_drain_outcome`, writing failures and
-   dead-letters to the **activity log**, which the Activity tab already reads. A clean pass writes
-   nothing: an entry every quarter-hour saying nothing was wrong is how a log stops being read.
+   **Logging was not a surface — measured 2026-08-31, and since fixed.** Nothing in the package
+   configured logging and `uvicorn.run()` was called without a `log_config`, so application records
+   fell through to Python's `lastResort` handler: WARNING and ERROR reached the server's stderr
+   bare, and **INFO was discarded outright** — silently including the drain summary as first
+   written. That measurement prompted `observability/logging_setup.py` (2026-08-31), so logs now
+   surface properly.
+
+   **`record_drain_outcome` stays, and for a better reason than the original.** A log line is not
+   an *actionable* surface even when it is a visible one: a stuck publish needs somewhere a person
+   returns to and can act from. Failures go to the **activity log**, which the Activity tab reads,
+   and a dead letter raises an RFA. A clean pass writes nothing: an entry every quarter-hour saying
+   nothing was wrong is how a log stops being read.
 
    **The detail surface: Admin → Publish Queue** (`web/routes/outbox.py`, 2026-08-31). The
    activity log is an audit trail — one line per operation — so it carries the *summary* ("3
