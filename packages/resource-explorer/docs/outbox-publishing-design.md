@@ -120,12 +120,19 @@ only one that makes "half-published" observable rather than inferred.
 | | rows |
 |---|---|
 | All 68 publishes ever performed, per-element (627 annotations + ~3 structural each) | **831 total** |
-| One future blueprint publish on `egeria_git` (13,813 scoped findings — the earlier "945" was wrong and far too low) | **~14,000 per run** |
+| One future proposal publish on `egeria_git` — largest single run observed | **~2,100 per run** |
+| All scoped recovery findings ever stored for `egeria_git` (14 runs) | 13,813 total |
 
-So per-element is free for everything publishing today and expensive only for the blueprint case
-that does not exist yet. Retention policy is therefore not needed on day one for correctness, but
-is needed before Phase 2 turns on — and the second column is the number that decides it, not the
-first.
+So per-element is free for everything publishing today and costs real volume only for the
+proposal case.
+
+**Corrected 2026-08-31 (second measurement).** This table first said ~14,000 per run. That was
+`egeria_git`'s **all-history** scoped-finding count read as a single run's; it is spread over 14
+runs. One run's proposal is 466 (latest) to 2,092 (largest observed) recovery findings, plus ~67
+candidate blueprints and ~18 interfaces. Still one to two orders of magnitude above today's
+largest publish of 136 annotations, so retention and bounded drain batches remain right — the
+justification simply is not the number originally given. Caught by re-deriving ("over how many
+runs?") rather than re-measuring, which reproduces the same correct-but-mislabelled figure.
 
 ### D2. Annotation identity — CORRECTED 2026-08-29, and it is much smaller than this section first said
 
@@ -250,21 +257,26 @@ and there the stored payload replays an identical qualifiedName.
    - **Backoff** is exponential from 60s, capped at a day; **dead-letter** at 8 attempts.
    - **Retention runs on that same loop** (close-out pass, 2026-08-31) —
      `purge_outbox_completed()` drops `done` rows past 14 days. Retention reachable only from an
-     API route is not retention: nothing would have called it before a ~14,000-row blueprint run.
+     API route is not retention: nothing would have called it before a ~2,100-row proposal run.
    - **An unreachable platform is not a failed write.** The drain leaves every row untouched and
      reports `skipped` rather than burning an attempt, so an outage cannot dead-letter a
      perfectly good write.
-   - **An unregistered `element_kind` raises** rather than quietly succeeding. Only `annotation`
-     has a creator today; asset/report/relationship are registered as step 4 needs them.
+   - **An unregistered `element_kind` raises** rather than quietly succeeding. `annotation`,
+     `collection_membership` and `resource_list` have creators; `asset` and `report` deliberately
+     do not, because both publishers create those synchronously for their GUIDs.
 
-   **Logging is not a surface here — measured 2026-08-31.** Nothing in this package configures
-   logging, and `uvicorn.run()` (`cli/main.py:327`) is called without a `log_config`, so uvicorn
-   configures only its own `uvicorn.*` loggers. Application records fall through to Python's
-   `lastResort` handler: WARNING and ERROR reach the server's **stderr** with no timestamp and no
-   logger name, and **INFO is discarded outright** — which silently included the drain summary
-   line as first written. So `drain_outbox` now calls `record_drain_outcome`, writing failures and
-   dead-letters to the **activity log**, which the Activity tab already reads. A clean pass writes
-   nothing: an entry every quarter-hour saying nothing was wrong is how a log stops being read.
+   **Logging was not a surface — measured 2026-08-31, and since fixed.** Nothing in the package
+   configured logging and `uvicorn.run()` was called without a `log_config`, so application records
+   fell through to Python's `lastResort` handler: WARNING and ERROR reached the server's stderr
+   bare, and **INFO was discarded outright** — silently including the drain summary as first
+   written. That measurement prompted `observability/logging_setup.py` (2026-08-31), so logs now
+   surface properly.
+
+   **`record_drain_outcome` stays, and for a better reason than the original.** A log line is not
+   an *actionable* surface even when it is a visible one: a stuck publish needs somewhere a person
+   returns to and can act from. Failures go to the **activity log**, which the Activity tab reads,
+   and a dead letter raises an RFA. A clean pass writes nothing: an entry every quarter-hour saying
+   nothing was wrong is how a log stops being read.
 
    **The detail surface: Admin → Publish Queue** (`web/routes/outbox.py`, 2026-08-31). The
    activity log is an audit trail — one line per operation — so it carries the *summary* ("3

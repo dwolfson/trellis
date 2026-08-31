@@ -1369,9 +1369,11 @@ class ProjectRegistry:
             # 'done', so annotations cannot be attempted before their report.
             #
             # Volume, measured 2026-08-31: every publish ever performed comes
-            # to 831 rows at this granularity. One future blueprint publish on
-            # egeria_git (13,813 scoped findings) is ~14,000 rows in a single
-            # run — which is why purge_outbox_completed() exists now rather
+            # to 831 rows at this granularity. One future proposal publish on
+            # egeria_git is ~2,100 rows at the largest run observed (the
+            # 13,813 scoped findings that figure was first taken from are
+            # ALL-history, over 14 runs — a correct count of the wrong
+            # population) — which is why purge_outbox_completed() exists rather
             # than being left for later, and why scheduler.py calls it on the
             # same loop that drains: retention nobody invokes is not retention.
             conn.execute("""
@@ -3675,8 +3677,8 @@ class ProjectRegistry:
 
         Only 'done' — 'dead' rows are the ones a human still has to look at,
         and failed/pending rows are live work. Retention exists from day one
-        because one blueprint publish on egeria_git is ~14,000 rows (measured
-        2026-08-31), not because today's 831-row total needs it.
+        because one proposal publish on egeria_git is ~2,100 rows at the
+        largest run observed, not because today's 831-row total needs it.
         """
         cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
         with self._conn() as conn:

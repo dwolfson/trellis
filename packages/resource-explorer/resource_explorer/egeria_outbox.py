@@ -61,10 +61,10 @@ class OutboxClients:
             )
         return client
 
-#: Rows attempted per drain pass. A blueprint publish is ~14,000 rows
-#: (measured 2026-08-31), so a pass is deliberately bounded — the scheduler
-#: loop comes back every 15 minutes and an unbounded pass would hold one
-#: iteration open for the whole backlog.
+#: Rows attempted per drain pass. A proposal publish is up to ~2,100 rows
+#: (largest run observed 2026-08-31), so a pass is deliberately bounded — the
+#: scheduler loop comes back every 15 minutes and an unbounded pass would hold
+#: one iteration open for the whole backlog.
 DRAIN_BATCH = 200
 
 
@@ -350,12 +350,14 @@ def record_drain_outcome(
 ) -> None:
     """Put a drain's failures where a person will actually see them.
 
-    Logging alone does not surface anything here: nothing in this package
-    configures logging and `uvicorn.run()` is called without a log_config, so
-    application records fall through to Python's lastResort handler — WARNING
-    and above reach the server's stderr with no timestamp or logger name, and
-    INFO is discarded outright. A dead-lettered publish that only logged would
-    be invisible in the UI, in any file, and in the activity trail.
+    A log line is not an actionable surface, even now that it is a visible one.
+    When this was written nothing in the package configured logging, so INFO was
+    discarded outright and WARNING reached only the server's stderr; that was
+    fixed on 2026-08-31 by `observability/logging_setup.py`, which the outbox's
+    own finding prompted. The conclusion is unchanged and the reason is now the
+    better one: a stuck publish needs a place a person returns to and can act
+    from, not a line in a stream nobody is watching at 3am. The activity log is
+    that place, and a dead letter goes further and raises an RFA.
 
     So anything worse than "everything worked" is written to the activity log,
     which the Activity tab already reads. A clean pass writes nothing — an

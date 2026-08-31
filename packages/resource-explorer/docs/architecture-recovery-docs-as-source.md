@@ -1,7 +1,10 @@
 # Architecture Recovery — Documentation as a *source*, not only a lens
 
-**Status:** design note. Nothing here is built. It records a decision (Dan,
-2026-08-29: *"no scope_locator is fine"*) and the measurement that forces it.
+**Status:** §9 step 1 is BUILT (2026-08-31) — the unmatched-term population is now persisted
+durably and uncapped under `check_name="undetected_term"`. **§9 step 2 has been run, and its
+answer is negative: none of §5's three proposing tests separate overview from corpus, and one
+of them inverts.** See §5a. Step 3 therefore does not start. Originally a design note recording a
+decision (Dan, 2026-08-29: *"no scope_locator is fine"*) and the measurement that forces it.
 
 Extends design doc **§5.5a** (documentation is a source, a dated source, and a
 signal) and **§4.1** (four perspectives). It does not revise them; it closes the
@@ -208,6 +211,70 @@ That is a design sketch, not a specification, and it should be **measured before
 being built** — the count is small enough to read by hand across the 13 repos
 with a located document, which is the cheapest possible way to find out whether
 the three tests above separate the cases.
+
+## 5a. §9 step 2, run 2026-08-31 — the three tests do not work
+
+Measured on the five repos that actually produce unmatched terms. The other six of the eleven
+with a `lens_run` row yield zero — everything matched (`amundsen`) or no document was read — so
+they cannot discriminate anything and are excluded rather than counted as passes.
+
+| repo | sources read | terms | doc chars | modal heading level | self-describes | existing gate |
+|---|---|---|---|---|---|---|
+| `monocle` | 2 | 18 | 3,467 | 55% | no | usable |
+| `egeria_git` | 1 | 30 | 18,231 | 50% | no | usable |
+| `enterprise_inference` | 1 | 352 | 156,353 | 54% | **yes** | not usable |
+| `egeria_workspaces_git` | 1 | 1,728 | 249,860 | 48% | no | not usable |
+| `milvus` | 5 | 1,137 | 421,965 | 45% | **yes** | not usable |
+
+**Test 1 — "one document, not a corpus" — fails.** The hypothesis was that a corpus shows up as
+many documents; §1 cites Milvus's 1,140 terms coming from 25 design documents. But
+`egeria_workspaces_git` reads **one** source and yields **1,728 terms** — more than Milvus's five
+sources combined. A single document can be a corpus by itself, so source count does not separate,
+and the test as written would license proposing from the noisiest document measured.
+
+*Enabling detail, not previously recoverable:* `lens.evidence` records only the **first** source
+that read, while terms are extracted from every readable source concatenated — so `docs/design-docs`
+silently fronted five documents. `sources_read` is now persisted alongside each term; without it
+this test could not have been evaluated even in principle.
+
+**Test 2 — "terms are structurally sibling" — fails.** All five documents sit between 45% and 55%
+of headings at their modal level. The two the existing gate calls usable (50%, 55%) fall *inside*
+the range of the three it rejects (45%, 48%, 54%). No discrimination at all.
+
+**Test 3 — "an explicit self-description" — inverts.** The two documents whose opening announces
+"architecture" are `milvus` and `enterprise_inference` — the two largest corpora. Neither of the
+two usable documents self-describes. Selecting on this test picks exactly the wrong documents. In
+hindsight the mechanism is unsurprising: a large documentation site has "Architecture" in its
+navigation, while a small focused overview is often titled with the project's own name.
+
+**What does separate, and was not hypothesised: size.** Document length and term count both split
+the sample with an order-of-magnitude gap — 3.5k/18k chars and 18/30 terms on one side, 156k/250k/422k
+and 352/1,137/1,728 on the other. This is offered as an observation, **not as a proposed gate**:
+it needs a threshold constant, which §5 explicitly argues against ("needs no constant, cannot be
+quietly adjusted to make a number look better"), and n=5 cannot set one honestly.
+
+### Limits of this measurement, stated rather than buried
+
+- **n=5.** Three tests judged against five documents. A negative result on five is enough to stop
+  step 3; it would not have been enough to start it.
+- **Test 2 was measured by proxy.** The test speaks of *the terms* being structurally sibling;
+  `extract_terms` returns a flat list with no record of which pattern (heading / bold / code span)
+  or heading depth produced each term. What was measured is the *document's* heading distribution.
+  Instrumenting term provenance is the honest version and was not done.
+- **Test 3 used a permissive regex over the first 400 characters** — "architecture" with an
+  optional qualifier. §5's actual example is Milvus's page being *labelled* "logical architecture".
+  A stricter reading was not tested, and the 400-character window is this measurement's choice,
+  not the design's.
+
+### What follows
+
+§9's own instruction — *"Step 3 should not start until step 2 has a number attached to it"* — is
+satisfied, and the number says no. Docs-as-source does not proceed on these tests. Either a
+different discriminator is found and measured on a larger sample, or documentation stays a lens.
+
+Nothing about §3's decision (a doc-derived component may exist without a `scope_locator`) is
+overturned; it was never the blocker. The blocker is deciding *which documents earn the right to
+propose*, and that question is still open.
 
 ## 6. Staleness is not optional here
 
