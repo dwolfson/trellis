@@ -54,6 +54,15 @@ def test_all_step_keys_are_registered():
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
         "repo_foss_scorecard", "repo_cve_scan", "repo_community_support", "repo_interface_surface",
         "repo_chaoss_metrics", "repo_cii_badge", "repo_security_summary",
+        # The four GAP analyses, registered 2026-09-01
+        # (docs/gap-analyses-design.md). Listed explicitly rather than the
+        # assertion being loosened: this test is exhaustive ON PURPOSE, because
+        # a step without a runner surfaces only as a Survey Definition that
+        # silently does less than it claims — and "does less than it claims"
+        # with no error is the failure mode this whole family of analyses was
+        # commissioned to remove.
+        "repo_secret_scan", "repo_telemetry_scan",
+        "repo_contribution_provenance", "repo_sla_content",
         "repo_refresh_plan",
         "repo_arch_detect", "repo_arch_coupling", "repo_arch_lens", "repo_arch_summary",
         "repo_manifest_parse", "repo_classification",
@@ -156,6 +165,20 @@ class TestStepCostTiers:
             # workflow content and convention signals from the SAME extraction
             # the steps above share, so it adds no download of its own.
             "repo_manifest_parse",
+            # The four GAP analyses (2026-09-01). All read repository CONTENT —
+            # committed-credential patterns, telemetry call sites, CONTRIBUTING
+            # text, SLA documents — so each genuinely needs the extraction, and
+            # each shares the SAME one: resolve_resources dedupes zipball_root
+            # across every selected step, so adding four members here costs no
+            # additional download.
+            #
+            # Listed rather than the assertion being widened. A step quietly
+            # acquiring a download is a real cost change, and this test exists
+            # so it has to be argued for — the same reason the high-compute
+            # guard stayed an equality assertion when repo_arch_coupling joined
+            # it earlier today.
+            "repo_secret_scan", "repo_telemetry_scan",
+            "repo_contribution_provenance", "repo_sla_content",
         }
 
     def test_arch_coupling_needs_BOTH_a_source_tree_and_git_history(self):

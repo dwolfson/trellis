@@ -2964,6 +2964,19 @@ async function _submitSchedule(analysisId, entityType, slug) {
 // genuinely bespoke shapes handled by name in _renderCustomAnalysisResults()
 // below (dependency-by-ecosystem, data-profile summary, API structure).
 const _REPO_RESULTS_RENDER_MODE = {
+  // The four GAP analyses, added 2026-09-01. All `findings_list`, which needs
+  // no new frontend code (design D4) — the point of that render mode is that a
+  // new analysis reaching the Results tab costs a backend reader and nothing
+  // here but a line.
+  //
+  // They are listed because a backend results view with no entry in this map
+  // means the Results button never renders: the findings would be computed,
+  // stored, and unreachable. test_every_kind_with_results_has_a_render_mode
+  // exists to catch exactly that, and did.
+  secret_scan: 'findings_list',
+  telemetry_scan: 'findings_list',
+  contribution_provenance: 'findings_list',
+  sla_content: 'findings_list',
   chaoss_metrics: 'findings_list',
   cii_badge: 'findings_list',
   security_summary: 'findings_list',

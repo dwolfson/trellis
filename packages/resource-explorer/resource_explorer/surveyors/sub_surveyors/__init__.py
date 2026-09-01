@@ -12,6 +12,12 @@ from resource_explorer.surveyors.sub_surveyors.chaoss_metrics import ChaossMetri
 from resource_explorer.surveyors.sub_surveyors.cii_badge import CiiBadgeSurveyor
 from resource_explorer.surveyors.sub_surveyors.community_support import CommunitySupportSurveyor
 from resource_explorer.surveyors.sub_surveyors.cve_scan import CveScanSurveyor
+from resource_explorer.surveyors.sub_surveyors.contribution_provenance import (
+    ContributionProvenanceSurveyor,
+)
+from resource_explorer.surveyors.sub_surveyors.secret_scan import SecretScanSurveyor
+from resource_explorer.surveyors.sub_surveyors.sla_content import SlaContentSurveyor
+from resource_explorer.surveyors.sub_surveyors.telemetry_scan import TelemetryScanSurveyor
 from resource_explorer.surveyors.sub_surveyors.interface_surface import InterfaceSurfaceSurveyor
 from resource_explorer.surveyors.sub_surveyors.foss_scorecard import FossScorecardSurveyor
 from resource_explorer.surveyors.sub_surveyors.security_summary import SecuritySummarySurveyor
@@ -74,4 +80,8 @@ __all__ = [
     "ArchLensSurveyor",
     "ArchSummarySurveyor",
     "ArchCouplingSurveyor",
+    "ContributionProvenanceSurveyor",
+    "SecretScanSurveyor",
+    "SlaContentSurveyor",
+    "TelemetryScanSurveyor",
 ]

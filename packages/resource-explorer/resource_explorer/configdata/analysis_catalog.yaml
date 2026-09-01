@@ -262,6 +262,56 @@ repo_analyses:
     run_time: minutes
     target_shape: whole_resource_only
 
+  # ── The four GAP analyses (docs/gap-analyses-design.md), added 2026-09-01 ──
+  #
+  # Each states what it will NOT claim, because for this family the refusal is
+  # the design: a confident wrong answer about secrets or telemetry is worse
+  # than no answer, and OpenSSF Scorecard's own habit of scoring a check it
+  # could not evaluate is the failure being avoided.
+  - id: secret_scan
+    name: Committed Secrets
+    description: "Scans HEAD content for committed-credential patterns using a VENDORED gitleaks ruleset (222 rules, MIT-licensed, source commit and pull date recorded). Reports WHICH ruleset and version produced the result, and surfaces the ruleset's own age — a stale ruleset misses key formats that did not exist when it was written and returns a confident clean. Never claims 'no secrets': only 'no matches against this ruleset, in the current HEAD snapshot of tracked files'. Says nothing about git history, which is where a removed secret still lives."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Admin"]
+    annotation_types: ["ClassificationAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: minutes
+    target_shape: whole_resource_only
+
+  - id: telemetry_scan
+    name: Telemetry and Phone-Home
+    description: "Looks for telemetry SDK imports and literal outbound endpoints in source, paired with whether the project DISCLOSES them — an undisclosed call is the finding, not the call itself. Deliberately conservative in the opposite direction from secret scanning: an ordinary API client is not telemetry, and labelling one as such would make the analysis untrustworthy in the direction that matters. Never claims a repo does not phone home; only that curated patterns did not match what was scanned."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Admin"]
+    annotation_types: ["ClassificationAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: minutes
+    target_shape: whole_resource_only
+
+  - id: contribution_provenance
+    name: CLA / DCO Provenance
+    description: "Keeps two questions apart that are usually conflated: whether contributor sign-off is STATED (CONTRIBUTING content mentions DCO or a CLA) and whether it is ENFORCED (a bot, workflow or branch protection actually blocks unsigned commits). Config presence alone reports `partial`, never `pass`. Note a disclosed limit: enforcement currently cannot be confirmed at all, because branch-protection data is not fetched anywhere in RE — that half reports UNVERIFIED rather than inventing a verdict."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Steward", "Community", "Admin"]
+    annotation_types: ["ClassificationAnnotation", "RequestForActionAnnotation"]
+    source: local
+    run_time: fast
+    target_shape: whole_resource_only
+
+  - id: sla_content
+    name: Published Support Commitments
+    description: "Whether the project publishes support or service-level commitments. Deliberately NEUTRAL — present or absent, not pass or gap — because most repositories legitimately publish none, and grading their absence would manufacture a finding out of a normal state. Absence alone never raises an action, and a stated commitment is never assessed for whether it is honoured."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Steward", "Community", "Admin"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    target_shape: whole_resource_only
+
   - id: chaoss_metrics
     name: CHAOSS Metrics
     description: "CHAOSS community-health metrics over recorded commits, each reported on its own terms and never averaged into a score. Chiefly the elephant factor — the fewest contributors accounting for half the commits — which separates projects every other signal here rates the same: measured across the catalogue, deep_causality is 1 (one person wrote 98% of it) while kafka is 15. Organizational diversity is reported only where enough authorship is attributable; 72% of author emails in the catalogue are personal addresses with no employer in them."

@@ -1,0 +1,510 @@
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Git Statistics
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_git_statistics
+
+### Description
+Refreshes project_stats (stars, forks, contributors, commit activity, releases, security config, deployments) from the GitHub API — the table eight other steps read. Replaces five independent StatsFetcher calls that each refreshed it separately in the same run.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_git_statistics |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo File Inventory
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_file_inventory
+
+### Description
+Refreshes project_file_inventory from a fresh zipball — the table every file-shape step reads. Closes the gap where the inventory was written only by RAG ingestion/refresh_profile and never by a survey step, so a survey reported whatever an earlier, unrelated run had left behind.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_file_inventory |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Manifest Parse
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_manifest_parse
+
+### Description
+Parses dependency manifests, CI workflow content, supply-chain signals and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions"/"supply_chain") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_manifest_parse |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Security
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_security
+
+### Description
+Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_security |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo License Classification
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_license_classification
+
+### Description
+Classifies the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown).
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_license_classification |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Security Features
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_security_features
+
+### Description
+GitHub's native security feature toggles (Dependabot, secret scanning, etc.) — configuration state, not artifact presence.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_security_features |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Cii Badge
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_cii_badge
+
+### Description
+The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level with the age of the self-assessment behind it, and keeps 'no badge' apart from 'could not ask'.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_cii_badge |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Cve Scan
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_cve_scan
+
+### Description
+Dependency advisories from OSV.dev, over dependencies the manifest parser already recorded. Reports coverage with the count: declared dependencies only, and only those with a pinned, parseable version.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_cve_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Secret Scan
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_secret_scan
+
+### Description
+Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (222 rules, MIT, provenance recorded). Reports what it matched AND which ruleset version it matched with — never 'no secrets', only 'no matches against this ruleset in HEAD'.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_secret_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Telemetry Scan
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_telemetry_scan
+
+### Description
+Telemetry / phone-home indicators: known SDK imports and literal outbound endpoints, paired with whether the project discloses them. Never labels an ordinary API client as telemetry.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_telemetry_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Contribution Provenance
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_contribution_provenance
+
+### Description
+CLA/DCO provenance, kept as two separate questions: whether sign-off is STATED, and whether it is ENFORCED. Config presence alone is reported `partial`, never `pass`.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_contribution_provenance |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Sla Content
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_sla_content
+
+### Description
+Whether the project publishes support or service-level commitments. Deliberately NEUTRAL (present/absent, not pass/gap): most repositories legitimately publish none, and absence alone never raises an action.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_sla_content |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Foss Scorecard
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_foss_scorecard
+
+### Description
+OpenSSF-Scorecard-shaped checks computed from data already held — an unevaluable check reports unknown and is excluded from the score, rather than scored zero as OpenSSF's own tool does.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_foss_scorecard |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Compliance Survey — Repo Security Summary
+
+### Qualified Name
+GovActionProcessStep::RepoComplianceSurvey::repo_security_summary
+
+### Description
+Reduces the security family's stored findings to one topic summary. Measures nothing itself — it reads what the other security steps wrote, so it belongs LAST in any survey that runs them. Reports coverage and the age of its oldest input alongside the verdict, and refuses a verdict at all below four inputs.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_security_summary |
+
+___
+
+## Create Governance Action Process
+### Display Name
+Compliance Survey
+
+### Qualified Name
+GovActionProcess::RepoComplianceSurvey
+
+### Description
+Everything that assesses a repository's compliance and disclosure posture, in one runnable survey: the existing security-family steps plus the four gap analyses added 2026-09-01 (secret handling, telemetry/phone-home, CLA/DCO provenance, published SLA content). A NEW GROUP rather than more steps on RepoAssessmentSurvey, which is already ten steps and deliberately all-low-compute — adding four download-tier steps would have inverted that, and test_analysis_survey_carries_the_expensive_steps treats such an inversion as evidence the MEMBERSHIP is wrong rather than a number to adjust. Steps are shared, not moved: every one of these also remains in whatever group it already belonged to, which the step->group mapping has always supported (11 of 36 steps were already multi-group before this). Prefixed by the two prerequisite refresh steps because every gap analysis declares requires_context={'has_file_inventory': ...} and would otherwise be correctly SKIPPED_BY_DESIGN on a repo nothing had inventoried.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| supported_technology_type | Git Repository |
+| survey_kind | assessment |
+
+___
+
+## Link First Process Step
+### Governance Action Process
+GovActionProcess::RepoComplianceSurvey
+
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_git_statistics
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_git_statistics
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_file_inventory
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_file_inventory
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_manifest_parse
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_manifest_parse
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_security
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_security
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_license_classification
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_license_classification
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_security_features
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_security_features
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_cii_badge
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_cii_badge
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_cve_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_cve_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_secret_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_secret_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_telemetry_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_telemetry_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_contribution_provenance
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_contribution_provenance
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_sla_content
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_sla_content
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_foss_scorecard
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_foss_scorecard
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoComplianceSurvey::repo_security_summary
+
+### Guard
+Any
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Does it fit into our security infrastructure?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Is there a current, published, security analysis?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+What explicit license does the repository use, and are there non-standard or copyleft terms?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Does it hold an OpenSSF Best Practices (CII) badge, and how current is the self-assessment behind it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Are there outstanding CVEs?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Is this repository actively maintained?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+How does it score against OpenSSF Scorecard-style criteria?
+
