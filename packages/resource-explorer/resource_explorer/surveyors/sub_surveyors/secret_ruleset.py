@@ -50,8 +50,10 @@ here).
 from __future__ import annotations
 
 import logging
+import math
 import re
 import tomllib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,11 +92,72 @@ RULESET_STALENESS_THRESHOLD_DAYS = 180
 
 
 @dataclass(frozen=True)
+class RuleAllowlist:
+    """One `[[rules.allowlists]]` block.
+
+    gitleaks' semantics, reproduced rather than approximated:
+
+    - `regexTarget` selects what the regexes are tested against — "secret"
+      (the default) is the capture group, "match" the whole matched text,
+      "line" the containing line. We do not have the line at match time and
+      do not fabricate one: a "line"-targeted allowlist is applied against
+      the full match, which is a superset of the secret and the closest
+      honest approximation. Recorded here rather than silently ignored.
+    - `stopwords` match if the secret CONTAINS the stopword,
+      case-insensitively — not equality. That is what makes 1,446 of them
+      tractable to write.
+    - Blocks are OR-ed with each other and, within a block, a hit on any
+      regex or any stopword allowlists the match. `condition = "AND"` is
+      accepted by gitleaks but used by no rule in the vendored file
+      (verified at load time, warned about if that ever changes).
+    """
+    regexes: tuple[re.Pattern, ...]
+    stopwords: tuple[str, ...]      # already lower-cased
+    regex_target: str               # "secret" | "match" | "line"
+
+    def allows(self, secret: str, whole_match: str) -> bool:
+        target = whole_match if self.regex_target in ("match", "line") else secret
+        if any(pat.search(target) for pat in self.regexes):
+            return True
+        if self.stopwords:
+            lowered = secret.lower()
+            if any(sw in lowered for sw in self.stopwords):
+                return True
+        return False
+
+
+@dataclass(frozen=True)
 class SecretRule:
     rule_id: str
     description: str
     pattern: re.Pattern
     keywords: tuple[str, ...]   # already lower-cased
+    #: Minimum Shannon entropy of the extracted secret, from the rule's own
+    #: `entropy = ` key. None means the rule declares none.
+    #:
+    #: Not implementing this was worth ~48,500 false positives on one repo
+    #: (2026-09-01): `generic-api-key` declares entropy 3.5, and every
+    #: `"key": "contact_methods"` in a dict literal matched its regex and
+    #: was reported as a committed credential. 130 of the 222 vendored
+    #: rules declare a threshold — a matcher that ignores it is not running
+    #: the ruleset it claims to run, and says so in the provenance line.
+    entropy: float | None = None
+    #: Per-rule `[[rules.allowlists]]`, applied after the global ones.
+    allowlists: tuple[RuleAllowlist, ...] = ()
+    #: Which regex group holds the secret. gitleaks: `secretGroup` if set,
+    #: else group 1 if the pattern has one, else the whole match.
+    secret_group: int | None = None
+
+    def extract_secret(self, m: re.Match) -> str:
+        """The text the entropy and allowlist gates are applied to."""
+        if self.secret_group is not None:
+            try:
+                return m.group(self.secret_group) or ""
+            except (IndexError, re.error):
+                return m.group(0)
+        if m.re.groups >= 1:
+            return m.group(1) or m.group(0)
+        return m.group(0)
 
 
 @dataclass(frozen=True)
@@ -144,6 +207,15 @@ class SecretRuleset:
                 value = m.group(0)
                 if self._value_is_noise(value):
                     continue
+                # The three per-rule gates gitleaks applies after its regex
+                # and before reporting. Skipping them is not "being
+                # cautious" — it is running a different, much noisier
+                # ruleset while reporting gitleaks' name and commit.
+                secret = rule.extract_secret(m)
+                if rule.entropy is not None and shannon_entropy(secret) < rule.entropy:
+                    continue
+                if any(al.allows(secret, value) for al in rule.allowlists):
+                    continue
                 line = text.count("\n", 0, m.start()) + 1
                 matches.append(SecretMatch(
                     rule_id=rule.rule_id, description=rule.description,
@@ -186,6 +258,22 @@ class SecretRuleset:
             version_or_as_of=RULESET_VERSION,
             source_url=RULESET_SOURCE_URL,
         )
+
+
+def shannon_entropy(value: str) -> float:
+    """Shannon entropy in bits per character — gitleaks' own measure.
+
+    An empty string scores 0.0, which is below every declared threshold, so
+    a rule whose capture group came back empty is dropped rather than
+    admitted on a technicality.
+    """
+    if not value:
+        return 0.0
+    n = len(value)
+    return -sum(
+        (c / n) * math.log2(c / n)
+        for c in Counter(value).values()
+    )
 
 
 def mask_excerpt(value: str, *, keep: int = 4, max_len: int = 40) -> str:
@@ -235,9 +323,55 @@ def load_ruleset(toml_path: Path | str | None = None) -> SecretRuleset:
                         rule_id, exc)
             continue
         keywords = tuple(str(k).lower() for k in raw.get("keywords", []) or [])
+
+        # Per-rule gates. These are not optional refinements — see
+        # SecretRule.entropy for what ignoring them cost.
+        raw_entropy = raw.get("entropy")
+        entropy = None
+        if raw_entropy is not None:
+            try:
+                entropy = float(raw_entropy)
+            except (TypeError, ValueError):
+                log.warning("secret_ruleset: rule %r has an unparseable entropy "
+                            "value %r — scanning it WITHOUT an entropy gate, which "
+                            "will over-report", rule_id, raw_entropy)
+
+        allowlists: list[RuleAllowlist] = []
+        for raw_al in raw.get("allowlists", []) or []:
+            if str(raw_al.get("condition", "OR")).upper() == "AND":
+                # No vendored rule uses this today. Warn rather than
+                # silently OR it, because OR-ing an AND block allowlists
+                # MORE than intended — it would suppress real findings,
+                # which is the dangerous direction to be wrong in.
+                log.warning("secret_ruleset: rule %r has an allowlist with "
+                            "condition=AND, which is not implemented — treating "
+                            "as OR, which may over-suppress", rule_id)
+            al_regexes: list[re.Pattern] = []
+            for raw_pat in raw_al.get("regexes", []) or []:
+                try:
+                    al_regexes.append(re.compile(raw_pat))
+                except re.error as exc:
+                    log.warning("secret_ruleset: rule %r has an allowlist regex that "
+                                "would not compile under Python's re — dropping it, "
+                                "so this rule will over-report: %s", rule_id, exc)
+            stopwords = tuple(str(w).lower() for w in raw_al.get("stopwords", []) or [])
+            if al_regexes or stopwords:
+                allowlists.append(RuleAllowlist(
+                    regexes=tuple(al_regexes), stopwords=stopwords,
+                    regex_target=str(raw_al.get("regexTarget", "secret")),
+                ))
+
+        secret_group = raw.get("secretGroup")
+        try:
+            secret_group = int(secret_group) if secret_group is not None else None
+        except (TypeError, ValueError):
+            secret_group = None
+
         rules.append(SecretRule(
             rule_id=rule_id, description=raw.get("description", ""),
             pattern=pattern, keywords=keywords,
+            entropy=entropy, allowlists=tuple(allowlists),
+            secret_group=secret_group,
         ))
 
     excluded_paths: list[re.Pattern] = []

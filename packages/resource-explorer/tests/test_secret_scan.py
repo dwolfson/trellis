@@ -11,6 +11,11 @@ import pytest
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.sub_surveyors import secret_ruleset as ruleset_mod
+from resource_explorer.surveyors.sub_surveyors.secret_ruleset import (
+    RuleAllowlist,
+    load_ruleset,
+    shannon_entropy,
+)
 from resource_explorer.surveyors.sub_surveyors.secret_scan import (
     FINDING_KIND,
     SecretScanSurveyor,
@@ -207,3 +212,89 @@ class TestProvenanceOnEveryRow:
         SecretScanSurveyor(project, registry, local_path=str(root)).run()
         rows = _finding(registry, project.slug, "secret_pattern")
         assert rows[0]["detail"]["provider_name"] == "gitleaks"
+
+
+# ── The gates gitleaks applies after its regex ──────────────────────────────
+#
+# Found live on 2026-09-01: a Committed Secrets run against egeria-python
+# reported 48,581 "secret-shaped matches". 48,577 of them were one rule,
+# generic-api-key, and the ruleset's own file declares three gates that our
+# loader read past entirely — `entropy`, `[[rules.allowlists]]`, and 1,446
+# `stopwords` on that one rule.
+#
+# Dan spotted it from the output, not from the code: "Some of the files
+# listed don't seem to be from egeria-python - e.g. .ai-sandbox/
+# verify_nesting.py is not a file I created." The file WAS his (commit
+# 8002089d). What was wrong was the finding: line 22 is
+#
+#     {"name": "Contact Methods", "key": "contact_methods"},
+#
+# and the capture group is `contact_methods` — entropy 3.32 against a
+# declared threshold of 3.5, and a literal match for the rule's own
+# `^[a-zA-Z_.-]+$` allowlist. Real gitleaks drops it twice over.
+#
+# Nothing failed. The scan ran, the self-test passed, the provenance line
+# named the right ruleset and commit, and the number was wrong by four
+# orders of magnitude — a scan reporting a different, much noisier ruleset
+# under gitleaks' name and commit hash.
+class TestPerRuleGates:
+    def test_a_dict_key_is_not_an_api_key(self):
+        """The exact line from the live report. Known-negative: remove the
+        entropy check or the allowlist check from scan_text and this fails."""
+        ruleset = load_ruleset()
+        line = '                {"name": "Contact Methods", "key": "contact_methods"},'
+        assert ruleset.scan_text(".ai-sandbox/verify_nesting.py", line) == []
+
+    def test_low_entropy_alone_suppresses(self):
+        """Isolates the entropy gate. `aaaa1111aaaa1111` has entropy 1.00 and
+        does NOT match the rule's `^[a-zA-Z_.-]+$` allowlist (it has digits),
+        so only the entropy check can drop it.
+
+        The first version of this class tested only `contact_methods`, which
+        BOTH gates catch — so removing either one individually still passed,
+        and the suite would have reported green over half the fix missing.
+        """
+        ruleset = load_ruleset()
+        assert ruleset.scan_text("app/config.py", 'api_key = "aaaa1111aaaa1111"') == []
+
+    def test_allowlist_alone_suppresses(self):
+        """Isolates the allowlist gate. `xJvQmZpLrNtWyBcFhKdGeQ` has entropy
+        4.37 — comfortably ABOVE the 3.5 threshold — but is letters-only, so
+        only the `^[a-zA-Z_.-]+$` allowlist can drop it."""
+        ruleset = load_ruleset()
+        assert ruleset.scan_text("app/config.py", 'api_key = "xJvQmZpLrNtWyBcFhKdGeQ"') == []
+
+    def test_the_rule_still_matches_a_real_looking_key(self):
+        """The other half — a gate that suppressed everything would pass the
+        test above and be worse than the bug it fixed."""
+        ruleset = load_ruleset()
+        line = 'api_key = "xJ9v2Qm4Zp7Lr1Nt6Wy8Bc3Fh5Kd0Ge"'
+        hits = ruleset.scan_text("app/config.py", line)
+        assert any(h.rule_id == "generic-api-key" for h in hits), (
+            "high-entropy, non-allowlisted value must still be reported"
+        )
+
+    def test_entropy_and_allowlists_are_actually_loaded(self):
+        """Guards the loader, not the matcher: the gates existed in the TOML
+        all along and were simply never read."""
+        ruleset = load_ruleset()
+        rule = next(r for r in ruleset.rules if r.rule_id == "generic-api-key")
+        assert rule.entropy == 3.5
+        assert rule.allowlists
+        assert sum(len(a.stopwords) for a in rule.allowlists) > 1000
+        assert sum(1 for r in ruleset.rules if r.entropy is not None) > 100
+
+    def test_stopwords_match_by_containment_not_equality(self):
+        """gitleaks' semantics. Equality would allowlist almost nothing and
+        quietly restore most of the over-reporting."""
+        al = RuleAllowlist(regexes=(), stopwords=("example",), regex_target="secret")
+        assert al.allows("my-example-value-here", "whole") is True
+        assert al.allows("EXAMPLE", "whole") is True
+        assert al.allows("unrelated", "whole") is False
+
+    def test_empty_secret_scores_zero_entropy(self):
+        """An empty capture group must fail every threshold rather than be
+        admitted because there was nothing to measure."""
+        assert shannon_entropy("") == 0.0
+        assert shannon_entropy("aaaa") == 0.0
+        assert shannon_entropy("ab") == 1.0

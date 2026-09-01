@@ -270,7 +270,7 @@ repo_analyses:
   # could not evaluate is the failure being avoided.
   - id: secret_scan
     name: Committed Secrets
-    description: "Scans HEAD content for committed-credential patterns using a VENDORED gitleaks ruleset (222 rules, MIT-licensed, source commit and pull date recorded). Reports WHICH ruleset and version produced the result, and surfaces the ruleset's own age — a stale ruleset misses key formats that did not exist when it was written and returns a confident clean. Never claims 'no secrets': only 'no matches against this ruleset, in the current HEAD snapshot of tracked files'. Says nothing about git history, which is where a removed secret still lives."
+    description: "Scans HEAD content for committed-credential patterns using a VENDORED gitleaks ruleset (222 rules, MIT-licensed, source commit and pull date recorded). Reports WHICH ruleset and version produced the result, and surfaces the ruleset's own age — a stale ruleset misses key formats that did not exist when it was written and returns a confident clean. Never claims 'no secrets': only 'no matches against this ruleset, in the current HEAD snapshot of tracked files'. Says nothing about git history, which is where a removed secret still lives. Ruleset: https://github.com/gitleaks/gitleaks (MIT) — rules at https://github.com/gitleaks/gitleaks/blob/master/cmd/generate/config/rules"
     resource_types: ["repo"]
     intent: assessment
     perspectives: ["Security", "Steward", "Admin"]
