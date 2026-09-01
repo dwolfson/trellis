@@ -3436,3 +3436,55 @@ no gate at all.
 - **Do not add a boolean beside the outcome.** `detail["ingested"]` was hardcoded `True` while the
   `StepOutcome` next to it correctly said the site was never read, and downstream code read the
   boolean. A profile with a `usable: true` flag would repeat that exactly.
+
+---
+
+## Export findings/metrics for use outside RE
+
+**Raised 2026-09-01**, after a Committed Secrets run reported 48,581 matches and the drawer took
+minutes to render an incomplete list. Dan: *"there should probably be a separate report that is
+downloadable - maybe a csv that contains all these details. They aren't useable in the raw in
+Results."* Agreed as worth doing, deliberately **not** built the same day, because fixing the
+scan's own defect (`docs/` — the ruleset's per-rule entropy/allowlist/stopword gates were never
+read) took that repo from 48,581 rows to 5, which removed the urgency and changed what the
+feature is for.
+
+**Build it once, on the two generic tables — not per survey.** `project_analysis_findings` and
+`project_analysis_metrics` already reduce every analysis kind to two shapes, so an export hung
+off those means each current *and future* kind gets it from its `AnalysisKind` registration.
+The alternative — an export per analysis — is ten places to drift, the same argument that
+produced the registry in the first place.
+
+**The requirement that makes this non-trivial: an export must not be able to lie more
+confidently than the screen it replaces.** A file reads as complete; there is no scrollbar to
+suggest otherwise, and it travels — into a ticket, a spreadsheet, someone else's inbox — long
+after the run that produced it. Two specific hazards, both of which this codebase has already
+been bitten by in other forms:
+
+- **Truncation must be self-evident.** A 200-row export of a 48,581-row result is worse than a
+  truncated page. The row count as the *source* reports it, and any applied filter, belong in
+  the artifact.
+- **Provenance must travel with the rows.** Analysis id, `surveyed_at`, provider name and
+  version (ruleset commit, tool version), the coverage denominator (files scanned vs excluded),
+  outcome status and self-test result. The 2026-09-01 episode is the argument: the count was
+  wrong by four orders of magnitude *and the provenance line was impeccable*. Stripping that
+  metadata into a bare CSV is how a careful finding becomes a confident spreadsheet.
+
+**CSV and JSONL, and the reason is honesty rather than choice.** Findings carry a nested
+`detail_json`; flattening it to CSV loses information, so CSV-only is the same
+"looks complete, isn't" problem one layer down. CSV for the columns people actually paste into
+a spreadsheet; JSONL when they need everything.
+
+**Two things this is explicitly not:**
+
+- **Not a substitute for a render cap.** The 48,581-row page was the bug; an export does not fix
+  it. A user must never be able to get an incomplete screen that does not say so. That is a
+  separate, smaller change and stands on its own merits.
+- **Not the same as publishing to Egeria.** RE already has that path, and it serves the catalog.
+  Export serves humans and external tools — a ticket, a review, a vulnerability tracker. Naming
+  the distinction here so the item is not later closed as "we already have publish".
+
+**Trigger for picking it up:** a second analysis with a real external workflow. `secret_scan`
+post-fix yields 5 rows on egeria-python and makes no case by itself; `dependency_analysis`
+produces ~880 rows on amundsen and feeds license/SBOM review, which does. If that is the
+trigger, it argues for the generic build from the start rather than a one-off.
