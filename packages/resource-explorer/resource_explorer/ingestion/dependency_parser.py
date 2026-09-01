@@ -18,7 +18,7 @@ class DependencyParser:
       Python  — pyproject.toml, requirements.txt, setup.py
       Node.js — package.json
       Go      — go.mod
-      Java    — pom.xml
+      Java    — pom.xml, build.gradle, build.gradle.kts
     """
 
     def parse(self, local_root: Path, resource_slug: str) -> list[dict]:
@@ -49,6 +49,11 @@ class DependencyParser:
         for manifest in root.rglob("pom.xml"):
             if "vendor" not in str(manifest):
                 deps.extend(self._parse_pom_xml(manifest))
+
+        for pattern in ("build.gradle", "build.gradle.kts"):
+            for manifest in root.rglob(pattern):
+                if "vendor" not in str(manifest):
+                    deps.extend(self._parse_gradle(manifest))
 
         # Deduplicate by (dep_name, ecosystem, source_file)
         seen: set[tuple] = set()
@@ -198,6 +203,122 @@ class DependencyParser:
                     deps.append(self._dep("java", name, ver, dep_type, "pom.xml"))
         except Exception as exc:
             logger.debug("pom.xml parse error at %s: %s", path, exc)
+        return deps
+
+    #: Gradle configurations, mapped to this module's dep_type vocabulary.
+    #: `compileOnly` is dev rather than runtime deliberately: it is on the compile
+    #: classpath and absent at runtime, so treating it as a runtime dependency
+    #: would overstate what actually ships.
+    _GRADLE_CONFIGS = {
+        "implementation": "runtime", "api": "runtime", "runtimeOnly": "runtime",
+        "compile": "runtime", "runtime": "runtime",
+        "compileOnly": "dev", "annotationProcessor": "dev", "developmentOnly": "dev",
+        "testImplementation": "test", "testCompileOnly": "test",
+        "testRuntimeOnly": "test", "testCompile": "test",
+    }
+
+    #: `implementation 'g:a:v'` / `implementation("g:a")` — Groovy and Kotlin DSL.
+    _GRADLE_STRING_RE = re.compile(
+        r"^\s*(?P<config>[A-Za-z]+)\s*\(?\s*['\"](?P<coord>[^'\"]+)['\"]\s*\)?\s*$"
+    )
+    #: `implementation group: 'g', name: 'a', version: 'v'` — the map form.
+    _GRADLE_MAP_RE = re.compile(
+        r"^\s*(?P<config>[A-Za-z]+)\s+group\s*:\s*['\"](?P<group>[^'\"]+)['\"]"
+        r"\s*,\s*name\s*:\s*['\"](?P<name>[^'\"]+)['\"]"
+        r"(?:\s*,\s*version\s*:\s*['\"](?P<version>[^'\"]+)['\"])?"
+    )
+    #: `implementation project(':x')` — an internal module, NOT an external package.
+    _GRADLE_PROJECT_RE = re.compile(r"^\s*[A-Za-z]+\s*\(?\s*project\s*\(")
+
+    def _parse_gradle(self, path: Path) -> list[dict]:
+        """Coordinates declared literally in a Gradle build file.
+
+        **Deliberately partial, and it says what it skipped.** `build.gradle` is
+        Groovy (or Kotlin) *code*, not a data format: a coordinate can come from a
+        version catalog (`libs.spring.core`), an `ext` property, a variable, or a
+        plugin, and resolving those means running Gradle. This reads the literal
+        forms only.
+
+        Two exclusions matter more than the parsing:
+
+        * `project(':some:module')` is an internal module, not a package. Recording
+          those would invent dependencies that exist in no registry, and every one
+          would come back unmatched from a CVE lookup — noise indistinguishable
+          from a clean result.
+        * A coordinate with no version is recorded **with an empty version**, not
+          dropped. Egeria is the worked example: all 714 of its literal coordinates
+          are `group:artifact`, because versions come from a BOM. `cve_scan`
+          already classifies those as unqueryable with "no pinned version to
+          query" rather than as clean, so recording them turns "we never looked"
+          into "we looked and cannot answer without the BOM" — a different and
+          more useful state.
+
+        What could not be resolved is logged per file rather than silently
+        dropped, because a dependency list quietly missing its version-catalog
+        entries looks complete and is worse than none.
+        """
+        deps: list[dict] = []
+        unresolved = internal = 0
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            logger.debug("gradle read error at %s: %s", path, exc)
+            return deps
+
+        source = path.name
+        for raw in text.splitlines():
+            line = raw.split("//", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            head = line.strip().split(None, 1)[0].split("(", 1)[0]
+            if head not in self._GRADLE_CONFIGS:
+                continue
+            dep_type = self._GRADLE_CONFIGS[head]
+
+            if self._GRADLE_PROJECT_RE.match(line):
+                internal += 1
+                continue
+
+            m = self._GRADLE_MAP_RE.match(line)
+            if m:
+                deps.append(self._dep(
+                    "java", f"{m.group('group')}:{m.group('name')}",
+                    m.group("version") or "", dep_type, source))
+                continue
+
+            m = self._GRADLE_STRING_RE.match(line)
+            if m:
+                coord = m.group("coord")
+                parts = coord.split(":")
+                if len(parts) == 3:
+                    # `${jacksonVersion}` is an unresolved Groovy variable, not a
+                    # version. Recording it as one would put a string no registry
+                    # can match into dep_version; cve_scan would then reject it as
+                    # "a range or unparseable", which is a true statement about the
+                    # wrong thing. Empty means "declared here, resolved elsewhere",
+                    # which is what actually happened.
+                    ver = parts[2]
+                    if "$" in ver:
+                        ver = ""
+                        unresolved += 1
+                    deps.append(self._dep("java", f"{parts[0]}:{parts[1]}", ver, dep_type, source))
+                elif len(parts) == 2:
+                    # No version: resolved by a BOM or platform, not absent.
+                    deps.append(self._dep("java", coord, "", dep_type, source))
+                else:
+                    unresolved += 1
+                continue
+
+            # A configuration line naming something this cannot read — a version
+            # catalog accessor, a variable, a function call.
+            unresolved += 1
+
+        if unresolved or internal:
+            logger.info(
+                "gradle %s: %d dependency(ies) recorded, %d unresolved "
+                "(version catalog/variable/plugin), %d internal project() refs skipped",
+                path, len(deps), unresolved, internal,
+            )
         return deps
 
     # ── helpers ───────────────────────────────────────────────────────────────
