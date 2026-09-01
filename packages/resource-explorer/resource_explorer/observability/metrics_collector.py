@@ -85,6 +85,7 @@ class MetricsCollector:
                 CREATE TABLE IF NOT EXISTS chunk_feedback (
                     chunk_ref TEXT PRIMARY KEY,
                     positive_count INTEGER DEFAULT 0,
+                    neutral_count INTEGER DEFAULT 0,
                     total_count INTEGER DEFAULT 0,
                     last_updated TEXT
                 )
@@ -114,6 +115,26 @@ class MetricsCollector:
             # See docs/context-compilation-design.md §13.
             if "derivation" not in existing:
                 conn.execute("ALTER TABLE query_log ADD COLUMN derivation TEXT DEFAULT '{}'")
+
+            # Migration: add neutral_count to existing chunk_feedback tables
+            # (2026-09 — the third, "partially correct" vote, matching EA's
+            # convention of encoding neutral as feedback=0). Same
+            # information_schema/PRAGMA split as above, against
+            # chunk_feedback this time.
+            if conn.is_postgres:
+                rows = conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'chunk_feedback'"
+                ).fetchall()
+                cf_existing = {r["column_name"] for r in rows}
+            else:
+                cf_existing = {
+                    r[1] for r in conn.execute("PRAGMA table_info(chunk_feedback)").fetchall()
+                }
+            if "neutral_count" not in cf_existing:
+                conn.execute(
+                    "ALTER TABLE chunk_feedback ADD COLUMN neutral_count INTEGER DEFAULT 0"
+                )
 
     def record_query(
         self,
@@ -162,7 +183,17 @@ class MetricsCollector:
             pass
 
     def record_feedback(self, query_hash: str, feedback: int) -> None:
-        """Record thumbs-up (+1) or thumbs-down (-1) for a query and update per-chunk scores."""
+        """Record thumbs-up (+1), neutral/"partially correct" (0), or
+        thumbs-down (-1) for a query, and update per-chunk scores.
+
+        `feedback` follows EA's convention (`advisor/web/app.py:1815-1827`):
+        > 0 positive, == 0 neutral, < 0 negative. That convention makes a
+        naive `1 if feedback > 0 else 0` sign test collapse neutral into
+        negative for chunk scoring — `0 > 0` is False, same branch as
+        `-1 > 0` — so the three states are scored explicitly below rather
+        than inferred from a sign check. See test_metrics_collector_neutral_feedback.py
+        for the regression this guards.
+        """
         with self._conn() as conn:
             # Update query_log feedback column
             conn.execute(
@@ -184,18 +215,35 @@ class MetricsCollector:
             except Exception:
                 refs = []
 
-            # Update per-chunk feedback counts
+            # Update per-chunk feedback counts. Three explicit, mutually
+            # exclusive states — never a sign test on an integer — so a
+            # neutral vote can never land in the same bucket as a negative
+            # one. total_count includes all three states (it's "how many
+            # votes has this chunk seen"); positive_count and neutral_count
+            # are separate counters so each state is independently visible
+            # in the stored data, rather than folding neutral's "partial
+            # credit" into positive_count at write time. EA's own 0.5
+            # weighting (admin.html:570) is applied at read time instead
+            # (vector_store_pg.py's boost calculation), which is where the
+            # weighting is actually consumed.
+            if feedback > 0:
+                is_positive, is_neutral = 1, 0
+            elif feedback == 0:
+                is_positive, is_neutral = 0, 1
+            else:
+                is_positive, is_neutral = 0, 0
             now = datetime.utcnow().isoformat()
-            is_positive = 1 if feedback > 0 else 0
             for ref in refs:
                 conn.execute(
-                    """INSERT INTO chunk_feedback (chunk_ref, positive_count, total_count, last_updated)
-                       VALUES (?, ?, 1, ?)
+                    """INSERT INTO chunk_feedback
+                           (chunk_ref, positive_count, neutral_count, total_count, last_updated)
+                       VALUES (?, ?, ?, 1, ?)
                        ON CONFLICT(chunk_ref) DO UPDATE SET
                            positive_count = chunk_feedback.positive_count + ?,
+                           neutral_count = chunk_feedback.neutral_count + ?,
                            total_count = chunk_feedback.total_count + 1,
                            last_updated = ?""",
-                    (ref, is_positive, now, is_positive, now),
+                    (ref, is_positive, is_neutral, now, is_positive, is_neutral, now),
                 )
 
     def summary(self) -> dict:
@@ -215,6 +263,7 @@ class MetricsCollector:
             row = conn.execute("""
                 SELECT COUNT(*) as chunks_with_feedback,
                        SUM(positive_count) as total_positive,
+                       SUM(neutral_count) as total_neutral,
                        SUM(total_count) as total_votes
                 FROM chunk_feedback WHERE total_count > 0
             """).fetchone()

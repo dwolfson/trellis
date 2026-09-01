@@ -181,14 +181,31 @@ class MultiCollectionStore:
             import sqlite3
             db_path = self._cfg.observability.metrics_db
             conn = sqlite3.connect(db_path)
-            rows = conn.execute(
-                "SELECT chunk_ref, positive_count, total_count FROM chunk_feedback"
-            ).fetchall()
+            # neutral_count: migration-added column (metrics_collector.py's
+            # _init_schema), so a pre-migration sqlite file may not have it
+            # yet — fall back to 0 rather than erroring.
+            try:
+                rows = conn.execute(
+                    "SELECT chunk_ref, positive_count, neutral_count, total_count "
+                    "FROM chunk_feedback"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = [
+                    (ref, pos, 0, total)
+                    for ref, pos, total in conn.execute(
+                        "SELECT chunk_ref, positive_count, total_count FROM chunk_feedback"
+                    ).fetchall()
+                ]
             conn.close()
             boosts = {}
-            for ref, pos, total in rows:
+            for ref, pos, neutral, total in rows:
                 if total > 0:
-                    precision = pos / total
+                    # Neutral ("partially correct") gets half credit, same
+                    # weighting EA's satisfaction formula uses
+                    # (advisor/web/admin.html:570) — not zero credit, which
+                    # would score a partially-relevant chunk the same as a
+                    # fully negative one.
+                    precision = (pos + 0.5 * neutral) / total
                     confidence = min(total / 5.0, 1.0)  # grows with 5+ votes
                     boosts[ref] = (precision - 0.5) * confidence * 0.3
             return boosts
