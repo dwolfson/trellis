@@ -14715,7 +14715,21 @@ function renderAdminResyncPanel() {
     <div class="flex flex-wrap items-center gap-3 text-xs">
       <span class="text-slate-300">${d.total || 0} item(s) drifted</span>
       <span class="text-slate-500">·</span>
-      <span class="text-cyan-400">${d.repairable || 0} repairable</span>
+      ${(() => {
+        // Split the repairable count by whether it is TICKED. After running
+        // every cheap repair the panel still said "28 repairable", which reads
+        // as work outstanding when it is work deliberately declined — the
+        // expensive steps are unticked by default, so they persist across a
+        // re-scan by design. That number was mistaken for a failed run twice
+        // in one session before this line was split.
+        const _exp = findings.filter(f => f.repair_step && f.expensive)
+                             .reduce((n, f) => n + f.count, 0);
+        const _now = (d.repairable || 0) - _exp;
+        return `<span class="text-cyan-400">${_now} repairable</span>`
+          + (_exp ? `<span class="text-slate-500"> · </span>`
+                  + `<span class="text-amber-400/80" title="Slow repairs that write to Egeria — unticked by default, so they stay listed until you choose to run them">`
+                  + `${_exp} slow, not selected</span>` : '');
+      })()}
       <span class="text-slate-500">·</span>
       <span class="text-amber-400">${d.needs_decision || 0} need a decision</span>
       ${d.undetermined_count

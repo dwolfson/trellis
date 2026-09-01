@@ -233,18 +233,50 @@ class EgeriaResync:
         )
 
     def _scan_orphan_publish_claims(self) -> Finding:
-        """Publish claims for repos with no asset GUID behind them.
+        """Publish claims that name a report this registry no longer records.
 
-        These outlive the GUID the clearing keys on, so anything an earlier pass
-        missed becomes unreachable the moment that GUID is cleared.
+        The docstring here used to say: "These outlive the GUID the clearing
+        keys on, so anything an earlier pass missed becomes unreachable the
+        moment that GUID is cleared." It then keyed on asset absence anyway,
+        and the thing it warned about happened.
+
+        Measured 2026-08-31, right after `catalog_assets` ran: this scan
+        reported **0** while **36** orphaned claims existed. Giving the repos
+        their assets back made every one of their pre-wipe claims invisible to
+        the scan, so the card never rendered and its repair — which by then
+        could clear them — was unreachable from the panel. A finding that
+        reports zero is read as "nothing to do", which is why this failure
+        needs no error to be costly.
+
+        Keyed on the claim now, matching `_do_clear_orphan_publish_claims`:
+        a claim whose report_guid is not in `project_egeria_surveys` names a
+        report nothing stands behind, whether or not the project has an asset.
+        The asset-absence arm is kept as a second reason, for a claim that
+        carries no report guid at all and so cannot be joined.
         """
         with self._registry._conn() as conn:
             rows = conn.execute(
-                "SELECT p.slug AS slug, count(*) AS n "
-                "FROM project_published_annotation_types t "
-                "JOIN projects p ON p.slug = t.project_slug "
-                "WHERE coalesce(p.egeria_asset_guid, '') = '' "
-                "GROUP BY p.slug ORDER BY n DESC"
+                "SELECT slug, sum(n) AS n FROM ("
+                "  SELECT p.slug AS slug, count(*) AS n "
+                "  FROM project_published_annotation_types t "
+                "  JOIN projects p ON p.slug = t.project_slug "
+                "  WHERE coalesce(p.egeria_asset_guid, '') = '' "
+                "     OR (coalesce(t.egeria_report_guid, '') <> '' "
+                "         AND t.egeria_report_guid NOT IN ("
+                "           SELECT egeria_report_guid FROM project_egeria_surveys "
+                "           WHERE coalesce(egeria_report_guid, '') <> '')) "
+                "  GROUP BY p.slug "
+                "  UNION ALL "
+                "  SELECT p.slug AS slug, count(*) AS n "
+                "  FROM project_published_analyses a "
+                "  JOIN projects p ON p.slug = a.project_slug "
+                "  WHERE coalesce(p.egeria_asset_guid, '') = '' "
+                "     OR (coalesce(a.egeria_report_guid, '') <> '' "
+                "         AND a.egeria_report_guid NOT IN ("
+                "           SELECT egeria_report_guid FROM project_egeria_surveys "
+                "           WHERE coalesce(egeria_report_guid, '') <> '')) "
+                "  GROUP BY p.slug"
+                ") u GROUP BY slug ORDER BY n DESC"
             ).fetchall()
         return Finding(
             key="orphan_publish_claims",
@@ -361,7 +393,26 @@ class EgeriaResync:
                 continue
             try:
                 members = cm.get_member_list(collection_guid=collection_guid)
-                if not isinstance(members, list):
+                # pyegeria signals an EMPTY collection with the string
+                # "No members found" rather than []. That is a definite answer
+                # — zero members — and the strictness here turned it into
+                # "could not determine".
+                #
+                # Measured 2026-08-31, after catalog_assets: all three
+                # investigations returned it, because a freshly rebuilt
+                # platform is exactly the case where no member is linked yet.
+                # All three went to `undetermined`, the finding reported 0, and
+                # the relink card never rendered — so the repair was
+                # unreachable in precisely the state it exists for.
+                #
+                # This module's rule is "unreachable is never stale", and it is
+                # right; the error was classing a definite empty result as
+                # unreachable. An empty collection means every member is
+                # unlinked, which is the strongest possible reason to show the
+                # card, not a reason to hide it.
+                if isinstance(members, str) and "No members found" in members:
+                    members = []
+                elif not isinstance(members, list):
                     raise ValueError(f"get_member_list returned {members!r}, not a list")
             except Exception as exc:
                 res.undetermined.append({
@@ -554,9 +605,30 @@ class EgeriaResync:
                 "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') <> '' "
                 "ORDER BY slug").fetchall()
             for r in rows:
+                # JOINed to project_egeria_surveys, not read on its own. A row
+                # in project_published_analyses is a CLAIM that something was
+                # published; it does not stop being a row when the report it
+                # names is destroyed. After the 2026-08-31 redeploy this table
+                # held 64 rows of which 36 pointed at SurveyReports that no
+                # longer existed — a record that outlived what it described,
+                # and indistinguishable from a live one by inspection.
+                #
+                # Read raw, it excluded 5 repos from this finding on the
+                # strength of claims dated 27-31 August: the scan said "these
+                # already have survey results" about repos whose results the
+                # redeploy had destroyed. The exclusion was silent, which is
+                # the dangerous part — a repo dropping out of a worklist looks
+                # exactly like a repo that did not need to be on it.
+                #
+                # The join is the whole fix: project_egeria_surveys is cleared
+                # alongside the asset by clear_egeria_registration, so a claim
+                # whose report_guid is absent from it is one nothing stands
+                # behind.
                 published = {x["analysis_id"] for x in conn.execute(
-                    "SELECT DISTINCT analysis_id FROM project_published_analyses "
-                    "WHERE project_slug = ?", (r["slug"],)).fetchall()}
+                    "SELECT DISTINCT a.analysis_id FROM project_published_analyses a "
+                    "JOIN project_egeria_surveys s "
+                    "  ON s.egeria_report_guid = a.egeria_report_guid "
+                    "WHERE a.project_slug = ?", (r["slug"],)).fetchall()}
                 if published and not published <= REGISTRATION_ONLY_ANALYSES:
                     continue
                 items.append({
@@ -795,11 +867,43 @@ class EgeriaResync:
                 "undetermined": len(res.undetermined)}
 
     def _do_clear_orphan_publish_claims(self) -> dict:
+        """Delete publish claims that nothing stands behind.
+
+        Originally keyed on "the project has no asset", and scoped to one of
+        the two claim tables. Both limits turned out to matter after the
+        2026-08-31 redeploy:
+
+        - `project_published_analyses` was never cleaned at all, and held 36
+          rows naming SurveyReports the redeploy had destroyed.
+        - Keying on asset absence means CATALOGUING A REPO CLOSES THE WINDOW.
+          Once `catalog_assets` gives it an asset, its pre-wipe claims are
+          permanently unreachable by this repair — which is exactly what
+          happened: the claims survived precisely because the situation had
+          been half-repaired.
+
+        Keyed on the claim instead: a claim whose `egeria_report_guid` is not
+        in `project_egeria_surveys` names a report this registry no longer
+        records. That is true whether or not the project currently has an
+        asset, so it cannot be outrun by a repair that runs first.
+
+        The asset-absence delete is KEPT as well rather than replaced — it
+        catches a claim carrying no report guid at all, which the join cannot
+        see.
+        """
         with self._registry._conn() as conn:
-            deleted = conn.execute(
-                "DELETE FROM project_published_annotation_types WHERE project_slug IN ("
-                "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') = '')"
-            ).rowcount
+            deleted = 0
+            for table in ("project_published_annotation_types",
+                          "project_published_analyses"):
+                deleted += conn.execute(
+                    f"DELETE FROM {table} WHERE project_slug IN ("
+                    "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') = '')"
+                ).rowcount
+                deleted += conn.execute(
+                    f"DELETE FROM {table} WHERE coalesce(egeria_report_guid, '') <> '' "
+                    "AND egeria_report_guid NOT IN "
+                    "(SELECT egeria_report_guid FROM project_egeria_surveys "
+                    " WHERE coalesce(egeria_report_guid, '') <> '')"
+                ).rowcount
         return {"claims_deleted": deleted}
 
     def _do_clear_stale_investigations(self) -> dict:

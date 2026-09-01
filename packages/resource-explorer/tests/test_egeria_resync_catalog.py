@@ -34,7 +34,8 @@ from resource_explorer.egeria_resync import (
 )
 
 
-def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=()):
+def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(),
+              live_reports=("r-live",)):
     """A registry whose _conn() serves a real in-memory SQLite.
 
     Real SQL rather than a mocked cursor: the scans under test are mostly SQL,
@@ -49,7 +50,13 @@ def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(
         "  (entity_type TEXT, entity_slug TEXT, status TEXT);"
         "CREATE TABLE activity_log "
         "  (entity_slug TEXT, operation TEXT, status TEXT);"
-        "CREATE TABLE project_published_analyses (project_slug TEXT, analysis_id TEXT);")
+        "CREATE TABLE project_published_analyses "
+        "  (project_slug TEXT, analysis_id TEXT, egeria_report_guid TEXT);"
+        "CREATE TABLE project_egeria_surveys (egeria_report_guid TEXT);"
+        "CREATE TABLE project_published_annotation_types "
+        "  (project_slug TEXT, annotation_type TEXT, egeria_report_guid TEXT);")
+    for guid in live_reports:
+        conn.execute("INSERT INTO project_egeria_surveys VALUES (?)", (guid,))
     for slug, asset, ctx in rows:
         conn.execute("INSERT INTO projects VALUES (?,?)", (slug, asset))
         if ctx is not None:
@@ -57,8 +64,12 @@ def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(
                          (slug, ctx))
     for slug in catalogued_before:
         conn.execute("INSERT INTO activity_log VALUES (?,'catalog','ok')", (slug,))
-    for slug, aid in (published_analyses or []):
-        conn.execute("INSERT INTO project_published_analyses VALUES (?,?)", (slug, aid))
+    for entry in (published_analyses or []):
+        # (slug, analysis_id) defaults to a LIVE report; a third element names
+        # the report explicitly so a test can point a claim at a dead one.
+        slug, aid, *rest = entry
+        conn.execute("INSERT INTO project_published_analyses VALUES (?,?,?)",
+                     (slug, aid, rest[0] if rest else "r-live"))
     conn.commit()
 
     class _Ctx:
@@ -240,3 +251,158 @@ def test_registration_only_constant_names_a_real_analysis():
         REPO_ANALYSIS_STEP_MAP,
     )
     assert REGISTRATION_ONLY_ANALYSES <= set(REPO_ANALYSIS_STEP_MAP)
+
+
+class TestStaleClaimsDoNotSuppressWork:
+    """A publish claim is a claim, not a fact.
+
+    `project_published_analyses` rows do not stop existing when the report they
+    name is destroyed. After the 2026-08-31 redeploy the table held 64 rows of
+    which 36 pointed at SurveyReports that no longer existed, and reading it raw
+    excluded 5 repos from the republish worklist on the strength of claims dated
+    27-31 August. The scan said "these already have survey results" about the
+    repos whose results had just been destroyed.
+
+    Silent exclusion is the dangerous part: a repo dropping off a worklist looks
+    identical to a repo that never belonged on it.
+    """
+
+    def test_a_claim_naming_a_destroyed_report_does_not_count_as_published(self):
+        """The regression guard for the live misreport."""
+        reg = _registry(
+            [("egeria_git", "asset-1", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live"),
+                                ("egeria_git", "chaoss_metrics", "r-destroyed")],
+            live_reports=("r-live",))
+        items = EgeriaResync(registry=reg)._scan_registration_only().items
+        assert [i["slug"] for i in items] == ["egeria_git"], (
+            "a dead claim for chaoss_metrics excluded this repo from the worklist")
+
+    def test_the_check_can_actually_fail(self):
+        """Known-negative: the SAME shape with a LIVE second claim must still
+        be excluded, or the test above passes for a scan that ignores claims."""
+        reg = _registry(
+            [("egeria_git", "asset-1", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live"),
+                                ("egeria_git", "chaoss_metrics", "r-live")],
+            live_reports=("r-live",))
+        assert EgeriaResync(registry=reg)._scan_registration_only().items == []
+
+
+class TestOrphanClaimRepairCannotBeOutrun:
+    def test_it_clears_claims_for_a_repo_that_now_HAS_an_asset(self):
+        """Keying on asset-absence meant cataloguing a repo closed the window:
+        its pre-wipe claims became permanently unreachable. That is exactly
+        what happened live — the claims survived because the situation had
+        been half-repaired."""
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "chaoss_metrics", "r-destroyed")],
+            live_reports=("r-live",))
+        out = EgeriaResync(registry=reg)._do_clear_orphan_publish_claims()
+        assert out["claims_deleted"] == 1
+        with reg._conn() as c:
+            assert c.execute(
+                "SELECT count(*) FROM project_published_analyses").fetchone()[0] == 0
+
+    def test_it_leaves_a_claim_whose_report_still_exists(self):
+        """Known-negative. Without it, a repair that deletes everything passes
+        the test above."""
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live")],
+            live_reports=("r-live",))
+        out = EgeriaResync(registry=reg)._do_clear_orphan_publish_claims()
+        assert out["claims_deleted"] == 0
+        with reg._conn() as c:
+            assert c.execute(
+                "SELECT count(*) FROM project_published_analyses").fetchone()[0] == 1
+
+
+class TestOrphanClaimScanMatchesItsRepair:
+    """The scan and its repair must key on the same thing.
+
+    `_do_clear_orphan_publish_claims` was fixed to key on the claim; the scan
+    that surfaces it was left keyed on asset absence. Measured live
+    2026-08-31 after `catalog_assets`: the scan reported 0 while 36 orphaned
+    claims existed. Giving the repos assets back made their pre-wipe claims
+    invisible, the card never rendered, and the repair became unreachable from
+    the panel at the exact moment it had become able to do the job.
+
+    A finding reporting zero reads as "nothing to do", so this failure costs
+    nothing to produce and everything to miss.
+    """
+
+    def test_a_claim_naming_a_dead_report_is_found_even_when_the_repo_has_an_asset(self):
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "chaoss_metrics", "r-destroyed")],
+            live_reports=("r-live",))
+        f = EgeriaResync(registry=reg)._scan_orphan_publish_claims()
+        assert [i["slug"] for i in f.items] == ["egeria_git"]
+        assert f.repair_step == "clear_orphan_publish_claims"
+
+    def test_the_check_can_actually_fail(self):
+        """Known-negative: a live claim must NOT be reported, or the test above
+        passes for a scan that flags everything."""
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live")],
+            live_reports=("r-live",))
+        assert EgeriaResync(registry=reg)._scan_orphan_publish_claims().items == []
+
+    def test_scan_and_repair_agree_on_the_same_rows(self):
+        """The property that actually matters: whatever the card offers to fix,
+        the repair removes — and nothing else."""
+        reg = _registry(
+            [("a", "asset-1", "linked"), ("b", "asset-2", "linked")],
+            published_analyses=[("a", "chaoss_metrics", "r-destroyed"),
+                                ("b", "repository_health", "r-live")],
+            live_reports=("r-live",))
+        r = EgeriaResync(registry=reg)
+        offered = sum(i["claims"] for i in r._scan_orphan_publish_claims().items)
+        assert r._do_clear_orphan_publish_claims()["claims_deleted"] == offered
+        assert r._scan_orphan_publish_claims().items == []
+
+
+class TestEmptyCollectionIsZeroNotUnknown:
+    """pyegeria returns the STRING "No members found" for an empty collection.
+
+    That is a definite answer — zero members — and treating it as a malformed
+    response sent all three investigations to `undetermined`, so the finding
+    reported 0 and the relink card never rendered. An empty collection means
+    every member is unlinked, which is the strongest reason to show the card.
+
+    Measured live 2026-08-31: 3 investigations undetermined, 0 reported; after
+    the fix, 3 investigations with 35 linkable members between them.
+    """
+
+    def _scanner(self, member_list_return):
+        from types import SimpleNamespace
+        reg = MagicMock()
+        reg.list_investigations.return_value = [
+            {"slug": "q3", "egeria_project_guid": "proj-q3"}]
+        reg.get_or_create_working_set.return_value = {"egeria_collection_guid": "coll-1"}
+        reg.list_investigation_members.return_value = [
+            {"entity_type": "repo", "entity_slug": "kafka"}]
+        reg.get.return_value = SimpleNamespace(egeria_asset_guid="asset-kafka")
+        r = EgeriaResync(registry=reg)
+        r._clients = {"collection": MagicMock(
+            get_member_list=MagicMock(return_value=member_list_return))}
+        return r
+
+    def test_an_empty_collection_reports_its_members_as_linkable(self):
+        from resource_explorer.egeria_resync import ScanResult
+        res = ScanResult()
+        f = self._scanner("No members found")._scan_unlinked_members(res)
+        assert res.undetermined == [], "an empty collection is not an unknown one"
+        assert f.count == 1 and f.items[0]["linkable"] == 1
+
+    def test_a_genuinely_malformed_response_is_still_undetermined(self):
+        """Known-negative. The relaxation must not swallow real failures —
+        that would trade a false unknown for a false zero, which is worse."""
+        from resource_explorer.egeria_resync import ScanResult
+        res = ScanResult()
+        f = self._scanner("CLIENT_ERROR_400 something went wrong")._scan_unlinked_members(res)
+        assert len(res.undetermined) == 1
+        assert f.count == 0
