@@ -98,6 +98,19 @@ def list_rfas(
                     "analysis_name": ann.get("analysis_name", ""),
                     "count": ann.get("count", 1),
                     "summary": ann.get("summary", ""),
+                    # Carried from the annotation the summary came from
+                    # (survey_orchestrator.py's by_step grouping) — the
+                    # drawer showed only `summary` before this, and with ten
+                    # "SecurityHygieneCheck" RFAs sharing near-identical
+                    # summaries, that read as ten identical, unexplained
+                    # items. `explanation` says why it matters;
+                    # `action_requested`/`action_target_name` say what to do
+                    # and to what — RequestForActionAnnotation always carries
+                    # them (security_hygiene.py, file_size.py, etc.), they
+                    # just were never forwarded past the activity log.
+                    "explanation": ann.get("explanation", ""),
+                    "action_requested": ann.get("action_requested", ""),
+                    "action_target_name": ann.get("action_target_name", ""),
                     "status": ann.get("status", "local"),
                     "rfa_status": override["rfa_status"] if override else "open",
                     "assignee": override["assignee"] if override else "",

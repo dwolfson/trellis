@@ -3101,11 +3101,38 @@ async function _toggleSurveyResults(qualifiedName, analysisIds, slug, btn) {
     + `</div>`;
 }
 
+// facts.py's RESOURCE_STATE_SOURCES table names a "subject" for each of the
+// resource-state chat questions (e.g. "survey_definitions", "disposition",
+// "egeria_catalogue_state") so the answer envelope has an analysis_id slot
+// to report against — but most of those subjects are NOT real
+// analysis_catalog.yaml entries (only community_support and foss_scorecard
+// are; confirmed by grep against the catalog, 2026-09-01). For the rest,
+// _analysisDisplayName's catalog lookup always misses, so a chat answer for
+// "Which Survey Definition should I run...?" headed with the raw slug
+// `survey_definitions` instead of a readable label — the same defect
+// _summariseFactValue's docstring warns about, one layer up: a slug where a
+// question expects prose. Keep this list in sync with facts.py's subjects.
+const _FACT_SUBJECT_DISPLAY_NAMES = {
+  catalog_presence: 'Existing Use',
+  change_since_last_survey: 'Change Since Last Survey',
+  description: 'Description',
+  disposition: 'Disposition',
+  egeria_catalogue_state: 'Egeria Catalogue State',
+  license: 'License',
+  project_commits: 'Maintainers',
+  related_resources: 'Related Resources',
+  resource_feedback: 'Feedback',
+  survey_definitions: 'Survey Definitions',
+  survey_history: 'Survey History',
+};
+
 // Best-effort label: the catalog name when this card's panel has it loaded,
-// otherwise the id itself rather than a blank heading.
+// else facts.py's own subject-name map above, otherwise the id itself
+// rather than a blank heading.
 function _analysisDisplayName(analysisId) {
   const found = (_lastAnalysisCatalog || []).find(a => a.id === analysisId);
-  return found ? found.name : analysisId;
+  if (found) return found.name;
+  return _FACT_SUBJECT_DISPLAY_NAMES[analysisId] || analysisId;
 }
 
 async function toggleAnalysisResults(analysisId, slug, btn) {
@@ -6534,67 +6561,121 @@ function renderRfaPanel(rfas, containerId) {
         <span class="text-amber-500/70 normal-case font-normal ml-1">${totalCount} action${totalCount!==1?'s':''}</span>
       </div>
       <div class="space-y-2">`;
+
+    // Problem 3 (RFA drawer investigation, 2026-09-01): `docs` showing the
+    // same finding twice turned out to be two REAL activity entries from two
+    // real survey runs 9 hours apart (70 vs. 67 annotations — genuinely
+    // different runs, not one event double-written; confirmed against the
+    // stored entries before writing this). That is correct data, but a
+    // recurring finding across runs still reads as clutter one row per run.
+    // Group same-finding rows (same analysis_name + summary) within this
+    // entity, show only the MOST RECENT as the primary row, and put the
+    // rest behind an explicit "N earlier occurrence(s)" toggle — collapsed,
+    // never dropped, so an old occurrence stays reachable (e.g. to Complete
+    // one a newer run already fixed) instead of silently vanishing.
+    const byFinding = new Map();
     for (const rfa of g.rfas) {
-      // rfa.id (f"{entry_id}::{annotation_index}", minted by the backend —
-      // see GET /api/activity/rfas) is the stable identity PATCH targets;
-      // safeId is only a DOM-id-safe derivative for element lookups.
-      const safeId = rfa.id.replace(/[^a-zA-Z0-9]/g, '_');
-      const ts  = (rfa.ts || '').replace('T',' ').substring(0,10);
-      const countBadge = rfa.count > 1
-        ? `<span class="text-xs bg-amber-900/50 text-amber-300 px-1.5 py-0 rounded ml-1">${rfa.count}</span>` : '';
-      let detailLine = '';
-      if (rfa.rfa_status === 'deferred' && rfa.defer_until) detailLine = `Deferred until ${_esc(rfa.defer_until)}`;
-      else if (rfa.rfa_status === 'reassigned' && rfa.assignee) detailLine = `Reassigned to ${_esc(rfa.assignee)}`;
-      else if (rfa.rfa_status === 'completed') detailLine = rfa.resolution_note ? `Resolved: ${_esc(rfa.resolution_note)}` : 'Resolved';
-      const actionButtons = rfa.rfa_status === 'open'
-        ? `<button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'defer', '${containerId}')" class="text-xs text-sky-500 hover:text-sky-300 transition-colors">⏸ Defer</button>
-           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'reassign', '${containerId}')" class="text-xs text-violet-500 hover:text-violet-300 transition-colors">👤 Reassign</button>
-           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'complete', '${containerId}')" class="text-xs text-emerald-500 hover:text-emerald-300 transition-colors">✓ Complete</button>`
-        : `<button onclick="submitRfaAction('${_esc(rfa.id)}', 'open', {}, '${containerId}')" class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Reopen</button>`;
+      const fKey = `${rfa.analysis_name || ''} ${rfa.summary || ''}`;
+      if (!byFinding.has(fKey)) byFinding.set(fKey, []);
+      byFinding.get(fKey).push(rfa);
+    }
 
-      html += `<div class="rfa-row" data-rfa-id="${_esc(rfa.id)}">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex-1 min-w-0">
-            <div class="text-xs font-medium text-amber-300">
-              ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}${statusBadge[rfa.rfa_status] || ''}
-            </div>
-            <div class="text-xs text-slate-300 mt-0.5">${_esc(rfa.summary)}</div>
-            ${detailLine ? `<div class="text-xs text-slate-500 mt-0.5 italic">${detailLine}</div>` : ''}
-          </div>
-          <div class="shrink-0 text-xs text-slate-600 whitespace-nowrap">${ts}</div>
-        </div>
-
-        <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
-
-        ${rfa.notes ? `<div class="text-xs text-slate-400 mt-1 italic">📝 ${_esc(rfa.notes)}</div>` : ''}
-
-        <div class="flex gap-3 flex-wrap items-center mt-1.5">
-          ${actionButtons}
-          <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
-            class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
-            📝 ${rfa.notes ? 'Edit note' : 'Add note'}
+    for (const occurrences of byFinding.values()) {
+      // rfa.ts is ISO 8601 — lexical sort matches chronological order.
+      occurrences.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+      const [latest, ...older] = occurrences;
+      html += _renderRfaRow(latest, containerId, statusBadge);
+      if (older.length) {
+        const groupSafeId = latest.id.replace(/[^a-zA-Z0-9]/g, '_');
+        html += `<button onclick="document.getElementById('rfa-older-${groupSafeId}').classList.toggle('hidden')"
+            class="text-xs text-slate-500 hover:text-slate-300 transition-colors ml-1">
+            ▸ ${older.length} earlier occurrence${older.length!==1?'s':''}
           </button>
-        </div>
-        <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
-          <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
-            rows="2" placeholder="Add a note or context…">${_esc(rfa.notes || '')}</textarea>
-          <div class="flex gap-2 mt-1.5">
-            <button onclick="saveRfaNote('${_esc(rfa.id)}', 'rfa-ans-${safeId}', '${containerId}')"
-              class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
-              Save →
-            </button>
-            <button onclick="document.getElementById('rfa-ans-${safeId}').classList.add('hidden')"
-              class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
-              Cancel
-            </button>
-          </div>
-        </div>
-      </div>`;
+          <div id="rfa-older-${groupSafeId}" class="hidden space-y-2 pl-3 border-l border-slate-700 ml-1">
+            ${older.map(rfa => _renderRfaRow(rfa, containerId, statusBadge)).join('')}
+          </div>`;
+      }
     }
     html += `</div></div>`;
   }
   html += '</div>';
   view.innerHTML = html;
+}
+
+// One RFA row's markup — factored out of renderRfaPanel so the same-finding
+// grouping above can render a "latest" row and any collapsed older
+// occurrences identically, action buttons and all.
+function _renderRfaRow(rfa, containerId, statusBadge) {
+  // rfa.id (f"{entry_id}::{annotation_index}", minted by the backend — see
+  // GET /api/activity/rfas) is the stable identity PATCH targets; safeId is
+  // only a DOM-id-safe derivative for element lookups.
+  const safeId = rfa.id.replace(/[^a-zA-Z0-9]/g, '_');
+  const ts  = (rfa.ts || '').replace('T',' ').substring(0,10);
+  const countBadge = rfa.count > 1
+    ? `<span class="text-xs bg-amber-900/50 text-amber-300 px-1.5 py-0 rounded ml-1">${rfa.count}</span>` : '';
+  let detailLine = '';
+  if (rfa.rfa_status === 'deferred' && rfa.defer_until) detailLine = `Deferred until ${_esc(rfa.defer_until)}`;
+  else if (rfa.rfa_status === 'reassigned' && rfa.assignee) detailLine = `Reassigned to ${_esc(rfa.assignee)}`;
+  else if (rfa.rfa_status === 'completed') detailLine = rfa.resolution_note ? `Resolved: ${_esc(rfa.resolution_note)}` : 'Resolved';
+  const actionButtons = rfa.rfa_status === 'open'
+    ? `<button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'defer', '${containerId}')" class="text-xs text-sky-500 hover:text-sky-300 transition-colors">⏸ Defer</button>
+       <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'reassign', '${containerId}')" class="text-xs text-violet-500 hover:text-violet-300 transition-colors">👤 Reassign</button>
+       <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'complete', '${containerId}')" class="text-xs text-emerald-500 hover:text-emerald-300 transition-colors">✓ Complete</button>`
+    : `<button onclick="submitRfaAction('${_esc(rfa.id)}', 'open', {}, '${containerId}')" class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Reopen</button>`;
+
+  // Dan, direct feedback (2026-08-31): "there is little description... they
+  // all seem to be SecurityHygieneCheck". The annotation always carries
+  // `explanation` (why this matters) and, for a RequestForAction,
+  // `action_requested`/`action_target_name` (what to do, to what) —
+  // web/routes/activity.py now forwards them past the activity log; this is
+  // where they render. Ten items that shared a step name now also carry
+  // ten distinguishable explanations.
+  const explanationLine = rfa.explanation
+    ? `<div class="text-xs text-slate-400 mt-1">${_esc(rfa.explanation)}</div>` : '';
+  const actionRequestedLine = rfa.action_requested
+    ? `<div class="text-xs text-amber-200/80 mt-1">→ ${_esc(rfa.action_requested)}${rfa.action_target_name ? ` <span class="text-slate-500">(${_esc(rfa.action_target_name)})</span>` : ''}</div>`
+    : '';
+
+  return `<div class="rfa-row" data-rfa-id="${_esc(rfa.id)}">
+    <div class="flex items-start justify-between gap-2">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-medium text-amber-300">
+          ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}${statusBadge[rfa.rfa_status] || ''}
+        </div>
+        <div class="text-xs text-slate-300 mt-0.5">${_esc(rfa.summary)}</div>
+        ${explanationLine}
+        ${actionRequestedLine}
+        ${detailLine ? `<div class="text-xs text-slate-500 mt-0.5 italic">${detailLine}</div>` : ''}
+      </div>
+      <div class="shrink-0 text-xs text-slate-600 whitespace-nowrap">${ts}</div>
+    </div>
+
+    <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
+
+    ${rfa.notes ? `<div class="text-xs text-slate-400 mt-1 italic">📝 ${_esc(rfa.notes)}</div>` : ''}
+
+    <div class="flex gap-3 flex-wrap items-center mt-1.5">
+      ${actionButtons}
+      <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
+        class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+        📝 ${rfa.notes ? 'Edit note' : 'Add note'}
+      </button>
+    </div>
+    <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
+      <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
+        rows="2" placeholder="Add a note or context…">${_esc(rfa.notes || '')}</textarea>
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="saveRfaNote('${_esc(rfa.id)}', 'rfa-ans-${safeId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
+          Save →
+        </button>
+        <button onclick="document.getElementById('rfa-ans-${safeId}').classList.add('hidden')"
+          class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function _toggleRfaShowResolved(checked, containerId) {
@@ -9773,6 +9854,8 @@ function renderScoutingQuestions(data) {
 // fact layer and rendered here. An LLM asked the same question over raw rows
 // would happily report "no security policy" when the truth is that the step
 // never ran -- and would sound identical either way.
+let _chatAnswerSeq = 0;
+
 async function _answerQuestionInChat(question) {
   const slug = _currentSelectedSlug();
   if (!slug) { showToast('error', 'Select a resource first.', 3000); return; }
@@ -9780,15 +9863,156 @@ async function _answerQuestionInChat(question) {
   appendMessage('you', question);
   const thinking = document.getElementById('thinking');
   thinking?.classList.remove('hidden');
+  // msgId lets a Run-now button (see _renderEnvelopeMarkdown's unanswerable
+  // branch) find its way back to THIS message and replace the answer in
+  // place once the run completes, rather than appending a second message
+  // the reader has to notice is the real one.
+  const msgId = `chat-ans-${++_chatAnswerSeq}`;
   try {
     const res = await fetch(
       `/api/analyses/facts/${encodeURIComponent(slug)}/answer?question=${encodeURIComponent(question)}`);
     if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
-    appendMessage('assistant', _renderEnvelopeMarkdown(await res.json(), slug));
+    const env = await res.json();
+    appendMessage('assistant', await _renderEnvelopeMarkdown(env, slug, { question, msgId }), { id: msgId, question });
   } catch (e) {
     appendMessage('assistant', `Could not answer that: ${String(e.message || e)}`);
   } finally {
     thinking?.classList.add('hidden');
+  }
+}
+
+// Re-runs the SAME question against the SAME endpoint _answerQuestionInChat
+// used, and replaces the existing message's body in place -- called after a
+// chat Run-now button (below) completes. Dan: "the entire point is going
+// from 'I cannot answer that' to the answer; making the user retype it
+// would waste the affordance."
+async function _chatReplaceAnswer(msgId, slug) {
+  const wrap = document.getElementById(msgId);
+  const body = document.getElementById(`${msgId}-body`);
+  if (!wrap || !body) return;
+  const question = wrap.dataset.question;
+  if (!question) return;
+  try {
+    const res = await fetch(
+      `/api/analyses/facts/${encodeURIComponent(slug)}/answer?question=${encodeURIComponent(question)}`);
+    if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`);
+    const env = await res.json();
+    body.innerHTML = marked.parse(await _renderEnvelopeMarkdown(env, slug, { question, msgId }));
+    document.getElementById('messages')?.scrollTo(0, document.getElementById('messages').scrollHeight);
+  } catch (e) {
+    showToast('error', `Could not refresh the answer: ${_esc(e.message || String(e))}`, 6000);
+  }
+}
+
+// Full, unfiltered repo analysis catalog (no `intent=` param) — deliberately
+// NOT `_lastAnalysisCatalog`, which only ever holds whichever ONE intent's
+// panel was last opened (Assessment, Analysis, ...) and can be empty if none
+// has been visited this session. A chat question's `can_run` step keys can
+// belong to any intent, so this needs the whole catalog. Cached for the
+// session — the catalog is config-loaded, not per-resource, so it does not
+// go stale within one page load.
+let _fullRepoCatalogCache = null;
+async function _fullRepoCatalog() {
+  if (_fullRepoCatalogCache) return _fullRepoCatalogCache;
+  try {
+    const res = await fetch('/api/analyses/repo');
+    _fullRepoCatalogCache = res.ok ? await res.json() : [];
+  } catch { _fullRepoCatalogCache = []; }
+  return _fullRepoCatalogCache;
+}
+
+// can_run holds STEP KEYS (e.g. "repo_cve_scan"), not analysis ids
+// ("cve_scan") — the run/schedule endpoints take analysis ids. Mapped via
+// each catalog entry's own `re_analysis_steps` (analysis_catalog_reader.py's
+// to_dict(), itself derived from repo_survey_definition_adapter.py's
+// REPO_ANALYSIS_STEP_MAP) — the SAME source of truth the backend uses, not
+// a guessed naming rule. A step key with no owning, independently-runnable
+// analysis id is simply omitted (see the caller's fallback sentence) rather
+// than mapped to something that would 404.
+async function _analysisIdsForStepKeys(stepKeys) {
+  const catalog = await _fullRepoCatalog();
+  const out = [];
+  const seen = new Set();
+  for (const sk of stepKeys) {
+    const entry = catalog.find(a => (a.re_analysis_steps || []).includes(sk));
+    if (entry && !seen.has(entry.id)) { seen.add(entry.id); out.push({ id: entry.id, name: entry.name }); }
+  }
+  return out;
+}
+
+// Run-now + Schedule controls for an unanswerable chat question with a real
+// can_run step behind it. Raw HTML embedded in the markdown string — same
+// idiom the Evidence <details> block already uses (marked() has no
+// sanitizer configured, so this passes through untouched).
+function _chatRunScheduleButtons(analysisId, analysisName, slug, msgId) {
+  const safeId = `${msgId}_${String(analysisId).replace(/[^a-zA-Z0-9]/g, '_')}`;
+  return `<span class="inline-flex items-center gap-1.5 not-prose" id="chat-actions-${safeId}">
+    <button id="chat-run-${safeId}" onclick='_chatRunAnalysis(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)}, ${JSON.stringify(msgId)}, this)'
+      class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors">▶ Run ${_esc(analysisName)}</button>
+    <button onclick='_chatShowScheduleForm(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)}, ${JSON.stringify(safeId)})'
+      class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">⏱ Schedule</button>
+    <span id="chat-sched-form-${safeId}" class="hidden"></span>
+  </span>`;
+}
+
+// Runs the analysis, same background+poll pattern runAnalysisCatalogCard()
+// uses for the Assessment/Analysis/Discovery cards (POST .../run returns an
+// activity_id immediately; this polls it rather than blocking the request
+// for a possibly multi-minute run). The button IS the progress indicator —
+// same reasoning as runScheduleNow's comment on why there's no timed toast.
+async function _chatRunAnalysis(analysisId, slug, msgId, btn) {
+  const original = btn.textContent;
+  btn.disabled = true; btn.classList.add('opacity-60'); btn.textContent = 'Running…';
+  try {
+    const startRes = await fetch(
+      `/api/projects/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`,
+      { method: 'POST' });
+    const started = await startRes.json().catch(() => ({}));
+    if (!startRes.ok) throw new Error(started.detail || `HTTP ${startRes.status}`);
+    const final = await _pollActivityUntilDone(started.activity_id, {
+      onTick: (elapsedSec) => { btn.textContent = `Running… (${elapsedSec}s)`; },
+    });
+    if (final.status === 'error') {
+      showToast('error', `'${_esc(analysisId)}' failed: ${_esc(final.summary || 'run failed')}`, 8000);
+    } else {
+      showToast('success', `'${_esc(analysisId)}' complete — re-checking the answer…`, 4000);
+      // The whole point of the button: go from "I can't answer that" to the
+      // answer, in place, without the reader retyping the question.
+      if (msgId) await _chatReplaceAnswer(msgId, slug);
+    }
+  } catch (e) {
+    showToast('error', `Could not run '${_esc(analysisId)}': ${_esc(e.message || String(e))}`, 8000);
+  } finally {
+    // btn may already be detached (its message was just replaced above) —
+    // setting properties on a detached node is harmless, just a no-op paint.
+    btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original;
+  }
+}
+
+function _chatShowScheduleForm(analysisId, slug, safeId) {
+  const formEl = document.getElementById(`chat-sched-form-${safeId}`);
+  if (!formEl) return;
+  const opts = ['daily', 'weekly', 'monthly']
+    .map(o => `<option value="${o}">${o}</option>`).join('');
+  formEl.innerHTML = `<span class="inline-flex items-center gap-1 ml-1">
+    <select id="chat-sched-select-${safeId}" class="bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 px-1 py-0.5">${opts}</select>
+    <button onclick='_chatSubmitSchedule(${JSON.stringify(analysisId)}, ${JSON.stringify(slug)}, ${JSON.stringify(safeId)})'
+      class="text-xs px-2 py-0.5 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors">Save</button>
+  </span>`;
+  formEl.classList.remove('hidden');
+}
+
+async function _chatSubmitSchedule(analysisId, slug, safeId) {
+  const schedule = document.getElementById(`chat-sched-select-${safeId}`)?.value || 'daily';
+  try {
+    // Reuses the exact same backend call the analysis card's own ⏱ Schedule
+    // action makes (saveSchedule(), POST /api/schedules/repo/{slug}) — one
+    // scheduling code path, not a second one for chat.
+    await saveSchedule('repo', slug, analysisId, schedule, true);
+    showToast('success', `Scheduled '${_esc(analysisId)}' ${_esc(schedule)}.`, 4000);
+    document.getElementById(`chat-sched-form-${safeId}`)?.classList.add('hidden');
+  } catch (e) {
+    showToast('error', `Could not schedule: ${_esc(e.message || String(e))}`, 6000);
   }
 }
 
@@ -9803,17 +10027,63 @@ const _FACT_STATE_TEXT = {
   partial:         { icon: '◐', text: 'ran over part of what it covers' },
 };
 
-function _renderEnvelopeMarkdown(env, slug) {
+async function _renderEnvelopeMarkdown(env, slug, opts) {
+  // No default object literal in the signature above, and no literal brace
+  // pairs in this comment either — tests/test_fact_answer_rendering.py's
+  // _fn() helper extracts this whole function by naive brace-counting
+  // (every open/close character in the source, comments included), starting
+  // from the signature's own opening brace. An inline default value or an
+  // unbalanced brace character in a nearby comment both throw that count off
+  // and truncate or overrun the extraction. Defaulting opts in the body
+  // avoids the first; writing this note without braces avoids the second.
+  opts = opts || Object.create(null);
   const lines = [];
   if (!env.answerable) {
     // Never phrased as a negative answer about the resource. "No CVEs" and
     // "nothing can look for CVEs" are opposite claims.
     lines.push(`**I can't answer that yet.**\n\n${env.blocked_reason || ''}`);
-    if ((env.can_run || []).length) {
-      lines.push(`\nRunning \`${env.can_run.join('`, `')}\` would establish it.`);
-      lines.push(`\n_Ask me to run it, or use the Survey tab._`);
+    const canRun = env.can_run || [];
+    // Dan, direct: "If a question is unanswerable, we should suggest a
+    // survey to run and provide them a button to run or schedule it if
+    // they want." The distinction below is not optional (his framing):
+    // empty `can_run` is NOT "not run yet" -- it is "nothing we have would
+    // establish this". Measured on `amundsen`: 'What is the upgrade
+    // process?' and 'Does it fit into our monitoring infrastructure?' both
+    // have can_run=[] -- offering a Run button there would imply a remedy
+    // that does not exist.
+    if (canRun.length) {
+      // can_run holds STEP KEYS (e.g. "repo_cve_scan"); the run/schedule
+      // endpoints take analysis ids ("cve_scan") -- resolved via the full
+      // repo catalog's own re_analysis_steps, never guessed.
+      const matches = await _analysisIdsForStepKeys(canRun);
+      if (matches.length) {
+        lines.push(`\nRunning ${matches.map(m => `\`${_esc(m.name)}\``).join(', ')} would establish this.`);
+        const msgId = opts.msgId || '';
+        lines.push(`\n${matches.map(m => _chatRunScheduleButtons(m.id, m.name, slug, msgId)).join(' ')}`);
+      } else {
+        // A step key exists but no catalog entry independently runs it
+        // (e.g. it's only reachable as part of a full Survey Definition) --
+        // say so rather than rendering a button that would 404.
+        lines.push(`\n\`${canRun.join('`, `')}\` would establish this, but isn't independently runnable here — use the Survey tab.`);
+      }
+    } else {
+      lines.push(`\nNothing currently available would establish this — no analysis in the catalog covers it.`);
     }
     return lines.join('\n');
+  }
+
+  // A fact's analysis_id can be a real analysis_catalog entry (e.g.
+  // "cve_scan") rather than one of facts.py's synthetic subjects — but
+  // _lastAnalysisCatalog only ever holds whichever ONE intent panel was
+  // last opened, and chatting never opens one. Observed live 2026-09-01:
+  // asking about CVEs after running cve_scan from THIS chat headed the
+  // answer "cve_scan" (the raw id), not "Dependency Advisories (CVEs)" —
+  // the same defect the `survey_definitions` fix addressed, one layer
+  // over. Backfilling from the full catalog (already fetched for the
+  // Run-now buttons above, and cached) fixes every fact's heading, not
+  // just the ones this function happens to also render buttons for.
+  if (!_lastAnalysisCatalog || !_lastAnalysisCatalog.length) {
+    _lastAnalysisCatalog = await _fullRepoCatalog();
   }
 
   const known = (env.facts || []).filter(f => f.is_known);
@@ -9838,26 +10108,56 @@ function _renderEnvelopeMarkdown(env, slug) {
     // surveyor wrote, not raw evidence to be judged -- lead with it, and treat
     // the process framing (what ran, when) as what it is: provenance, not the
     // answer.
-    const answerText = _factAnswerText(f.value);
+    const proseAnswer = _factAnswerText(f.value);
+    const summary = _summariseFactValue(f.value);
+    // Real gap, reported 2026-09-01 (Dan: "the chat just contains the
+    // internal routing and evidence but no answer"). Measured across all 49
+    // repo questions on `amundsen` (the resource in his screenshot): only 3
+    // facts carry the `detail`-style prose `_factAnswerText` reads above --
+    // of the 27 that ARE answerable, 24 rendered nothing but the bare state
+    // line ("✓ measured"), with the only real content sitting inside a
+    // collapsed, unopened Evidence block underneath. `survey_definitions`
+    // for "quick coarse check or full deep survey?" was exactly this shape.
+    //
+    // The fix is not per-analysis prose (that would be 24 hand-written
+    // cases, and the 25th analysis added would silently join the answerless
+    // majority). `_summariseFactValue` already extracts a generic,
+    // honest reading of the value -- named field:value pairs, list-length
+    // previews -- for the Evidence block; composing the answer line FROM
+    // THAT SAME extraction, rather than writing new prose, keeps the
+    // guarantee the function's own docstring states: it states only what
+    // the value literally contains (a count stays a count) and infers,
+    // ranks or characterises nothing. Only used when no real prose exists,
+    // so a surveyor's own sentence always wins where one was written.
+    const composedAnswer = proseAnswer ? '' : summary;
+    const answerText = proseAnswer || composedAnswer;
     if (answerText) {
       lines.push(`- ${st.icon} ${heading}: ${_esc(answerText)}${caveats}`);
       lines.push(`  \n  <span class="text-slate-500">${_esc(st.text)}` +
         (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : '') + `</span>`);
     } else {
-      // Nothing the surveyor wrote as prose -- the state line is what there
+      // Nothing the surveyor wrote as prose AND nothing generic composition
+      // could state either (e.g. the value is empty, or every field is in
+      // `_summariseFactValue`'s skip set) -- the state line is what there
       // is, and it stays the visible line rather than being demoted under a
-      // sentence that doesn't exist.
+      // sentence that doesn't exist. `answerable: false` for a whole
+      // question is handled separately above; this is a single fact within
+      // an answerable question still having nothing to state.
       lines.push(`- ${st.icon} ${heading} — ${st.text}${caveats}` +
         (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
     }
-    const summary = _summariseFactValue(f.value);
     // <details>/<summary> is plain HTML passed through marked() untouched (no
     // sanitizer configured) -- the same collapsed-by-default, no-JS-state
     // idiom already used for the Survey Definition step list, not a new
     // mechanism. What differs from before: prose fields (detail/*_detail/
     // measures_disagree) are excluded here now, because they're the answer
     // shown above, not supporting evidence for it -- see _summariseFactValue.
-    if (summary) {
+    //
+    // Skipped when `summary` IS the answer line above (composedAnswer path)
+    // -- an Evidence toggle repeating the exact sentence already shown would
+    // be the "routing and evidence but no answer" complaint's mirror image:
+    // now an answer, plus a redundant toggle that adds nothing under it.
+    if (summary && summary !== composedAnswer) {
       lines.push(`  \n  <details><summary class="cursor-pointer text-slate-500">Evidence</summary>\n\n  ${summary}\n  </details>`);
     }
     if (f.note) lines.push(`  \n  _${f.note}_`);
@@ -12004,12 +12304,18 @@ async function runQuery(query, projectSlug, databaseSlug) {
 function appendMessage(role, text, opts = {}) {
   const messages = document.getElementById('messages');
   const wrap = document.createElement('div');
+  // opts.id/opts.question (2026-09-01, chat Run-now buttons): lets
+  // _chatReplaceAnswer find this exact message again after a run completes,
+  // and re-ask the same question without the reader retyping it.
+  if (opts.id) wrap.id = opts.id;
+  if (opts.question) wrap.dataset.question = opts.question;
   wrap.className = `msg-${role} pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60 ${opts.clarify ? 'clarify' : ''}`;
   const header = document.createElement('div');
   header.className = 'text-xs font-semibold mb-1 ' + (role === 'you' ? 'text-cyan-400' : opts.clarify ? 'text-amber-400' : 'text-emerald-400');
   header.textContent = role === 'you' ? 'You' : opts.clarify ? 'Assistant · clarification needed' : 'Assistant';
   wrap.appendChild(header);
   const body = document.createElement('div');
+  if (opts.id) body.id = `${opts.id}-body`;
   // prose-sm, not bare prose: prose's default spacing/heading scale assumes
   // a 1rem reading column. Bare prose (no plugin registered at all, until
   // 2026-08-31 — frontend-build/tailwind.config.js) rendered as nothing;
