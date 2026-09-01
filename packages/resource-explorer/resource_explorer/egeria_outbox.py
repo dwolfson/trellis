@@ -52,6 +52,10 @@ class OutboxClients:
 
     discovery: object | None = None
     collection_manager: object | None = None
+    #: MetadataExpert — the only client that can create a bare relationship
+    #: between two already-existing GUIDs (annotation-linking-plan Phase 2).
+    #: DataDiscovery has no create/attach endpoint for AnnotationExtension.
+    metadata_expert: object | None = None
 
     def require(self, name: str):
         client = getattr(self, name, None)
@@ -160,6 +164,42 @@ def _create_resource_list(clients: "OutboxClients", payload: dict) -> str:
     return ""
 
 
+def _create_annotation_link(clients: "OutboxClients", payload: dict) -> str:
+    """Create one `AnnotationExtension` relationship between two annotations
+    already created in the same publish run (annotation-linking-plan Phase 2,
+    Tier 1: `data_profiler.py`/`dependency.py`'s per-file/per-ecosystem
+    evidence linked to their aggregate).
+
+    Idempotency: deliberately NO lookup-then-create, and no pre-check via
+    `get_all_related_elements` either — unlike the MULTI_LINK branch the plan
+    sketched before measurement. `AnnotationExtension` was measured live
+    2026-09-01 (docs/annotation-linking-plan.md, Phase 0) as UNI_LINK: two
+    identical creates against the same ordered pair returned the SAME
+    relationship GUID, and two independent reads (`get_annotation_extensions`
+    AND `get_all_related_elements`) each showed exactly one relationship.
+    Create-blind is therefore safe and matches the precedent already used for
+    `CollectionMembership`/`ResourceList` below — a retry (or a re-publish of
+    the same run) converges on the single relationship Egeria already holds
+    rather than accumulating duplicates. Re-measure before relying on this for
+    any OTHER relationship type, including `AnnotationReview` (Phase 3, not
+    measured, not covered by this).
+
+    Direction: `metadataElement1GUID` is the SUMMARY, `metadataElement2GUID`
+    is the EVIDENCE. Phase 0's measurement confirmed no reversal happens and
+    that `get_annotation_extensions(X)`/`get_all_related_elements(X)` both
+    return whatever is at end 2 when X is end 1 — so `get_annotation_
+    extensions(summary_guid)` is the natural "what backs this summary" query
+    for a consumer walking the catalog, which is the whole point of Tier 1.
+    """
+    body = {
+        "class": "NewRelatedElementsRequestBody",
+        "typeName": "AnnotationExtension",
+        "metadataElement1GUID": payload["summary_guid"],
+        "metadataElement2GUID": payload["evidence_guid"],
+    }
+    return _guid_of(clients.require("metadata_expert").create_related_elements(body=body))
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -183,6 +223,7 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "annotation": _create_annotation,
     "collection_membership": _create_collection_membership,
     "resource_list": _create_resource_list,
+    "annotation_link": _create_annotation_link,
 }
 
 
@@ -253,7 +294,11 @@ def _default_clients():
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
     publisher = EgeriaPublisher()
-    return OutboxClients(discovery=publisher._discovery), publisher._find_element_guid
+    publisher._connect()
+    return (
+        OutboxClients(discovery=publisher._discovery, metadata_expert=publisher._metadata_expert),
+        publisher._find_element_guid,
+    )
 
 
 def enqueue_annotations(
@@ -287,6 +332,41 @@ def enqueue_annotations(
         body = build_annotation_body(ann, qualified_name, report_guid)
         row_ids.append(registry.enqueue_outbox_element(
             entity_type, entity_slug, "annotation", qualified_name, body, run_id=run_id,
+        ))
+    return row_ids
+
+
+def enqueue_annotation_links(
+    registry, entity_type: str, entity_slug: str, links: list[dict], *, run_id: str = "",
+) -> list[int]:
+    """Record one outbox row per same-run `AnnotationExtension` link.
+    Returns the row ids, in order. annotation-linking-plan Phase 2, Tier 1.
+
+    `links` are dicts with `summary_guid`/`evidence_guid` — both real Egeria
+    GUIDs already, because Tier 1 only links annotations created in THIS same
+    publish (both ends exist by the time this is called; see `_create_
+    annotation_link`'s docstring for direction). The caller (`egeria_
+    publisher.py::_create_annotations`) is responsible for filtering out any
+    pair where either GUID is missing (a failed create) BEFORE calling this —
+    enqueuing a link to a GUID that does not exist would just fail loudly
+    later for a reason this module cannot diagnose.
+
+    The qualifiedName is synthetic, same basis as `enqueue_resource_list`/
+    `enqueue_collection_members` below: `AnnotationExtension` has no
+    qualifiedName of its own, so this string exists purely as the outbox's
+    idempotency key. Replay safety comes from the relationship being uni-link
+    (see `_create_annotation_link`), not from this key resolving to anything
+    searchable in Egeria.
+    """
+    row_ids: list[int] = []
+    for link in links:
+        summary_guid = link["summary_guid"]
+        evidence_guid = link["evidence_guid"]
+        qualified_name = f"AnnotationExtension::{summary_guid}::{evidence_guid}"
+        row_ids.append(registry.enqueue_outbox_element(
+            entity_type, entity_slug, "annotation_link", qualified_name,
+            {"summary_guid": summary_guid, "evidence_guid": evidence_guid},
+            run_id=run_id,
         ))
     return row_ids
 

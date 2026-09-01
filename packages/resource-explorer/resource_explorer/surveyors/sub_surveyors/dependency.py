@@ -136,6 +136,16 @@ class DependencySurveyor(BaseSurveyor):
             for d in deps:
                 by_ecosystem[d.get("ecosystem") or "unknown"].append(d)
 
+            # The aggregate ResourceMeasureAnnotation is appended LAST, below,
+            # after every per-ecosystem DataClassAnnotation — so its index in
+            # THIS run's results list is `len(by_ecosystem)`, known up front
+            # (the dict is fully populated already). annotation-linking-plan
+            # Phase 2: each per-ecosystem annotation is evidence for that
+            # aggregate — a same-run, list-index signal, safe only because it
+            # is set here about this run's own list (see `Annotation.
+            # evidence_of`'s docstring for why cross-run reconstruction is not
+            # safe).
+            summary_index = len(by_ecosystem)
             for ecosystem, items in sorted(by_ecosystem.items()):
                 names = [d["dep_name"] for d in items]
                 dep_types = list({d.get("dep_type") or "runtime" for d in items})
@@ -154,6 +164,7 @@ class DependencySurveyor(BaseSurveyor):
                                 for d in items
                             ],
                         },
+                        evidence_of=summary_index,
                     )
                 )
 
