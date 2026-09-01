@@ -8794,7 +8794,7 @@ function _renderInvestigationsActiveTab() {
             ${i.member_count} resource(s) ·
             ${_investigationBindingLabel(i)}
             ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
-            ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
+            ${isCur && !i.egeria_project_guid ? ` · <button id="inv-promote-btn" onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
           </div>
           ${isCur ? `<div id="inv-next-steps" class="mt-2"></div>` : ''}
         </div>
@@ -8939,7 +8939,28 @@ async function _createInvestigation() {
 // link and the user needs to know which ones those are.
 async function _promoteInvestigation(slug) {
   if (!confirm('Create an Egeria Project (and working-set Collection) for this investigation?\n\nThis writes to Egeria.')) return;
-  showToast('success', 'Creating in Egeria…', 2000);
+
+  // In-progress state lives on the BUTTON, not in a timed toast. The toast here
+  // was `showToast('success', 'Creating in Egeria…', 2000)` — two seconds, for a
+  // call that creates a Project, a Collection, a ResourceList and links every
+  // member that has an asset.
+  //
+  // Reported 2026-09-01 as "I tried to promote All-Current-REpos and it didn't
+  // seem to work". It HAD worked: Project 09798650 created, folio fc0c87fa
+  // created, 26 of 58 members linked, and `unpublishable` went 32 -> 0. But with
+  // 58 members the call outlived its own progress toast by far, so the sequence
+  // on screen was: a flash, a long silence, then a result toast that is easy to
+  // miss — and the only durable evidence was an 11px label changing and a link
+  // disappearing.
+  //
+  // A success nobody can see is indistinguishable from a failure. That is the
+  // same defect as the red-toast-on-success fixed in db2bd3b, arrived at from
+  // the opposite direction: there the signal was wrong, here there was none.
+  const btn = document.getElementById('inv-promote-btn');
+  const btnHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); btn.innerHTML = 'creating in Egeria…'; }
+  const steps = document.getElementById('inv-next-steps');
+  if (steps) steps.innerHTML = `<div class="text-xs text-cyan-300">Creating the Egeria Project and linking members — this can take a minute for a large investigation. Leave this page open.</div>`;
   try {
     const res = await fetch(`/api/investigations/${encodeURIComponent(slug)}/promote`, {method: 'POST'});
     const r = await res.json();
@@ -8966,8 +8987,36 @@ async function _promoteInvestigation(slug) {
     const list = await (await fetch('/api/investigations/')).json();
     _investigations = Array.isArray(list) ? list : [];
     _refreshInvestigationLabel();
+
+    // A DURABLE outcome, not only a toast. loadInvestigationsPanel() has just
+    // re-rendered, so this is written after it and survives until the panel is
+    // reloaded — someone who looked away still finds out what happened, and
+    // what to do next.
+    //
+    // The next step is the part that was missing entirely. Promoting an
+    // investigation makes its members INHERIT an Egeria Project context, which
+    // is what lets them be catalogued — so the members that "could not be
+    // linked" are not a dead end, they are the input to Egeria Alignment's
+    // catalog step. Nothing on screen said so, and "32 could not be" reads as a
+    // failure rather than as the next action.
+    const later = document.getElementById('inv-next-steps');
+    if (later) {
+      const missedNow = (r.members_unlinkable || []).length;
+      later.innerHTML = `<div class="text-xs rounded border border-emerald-800 bg-emerald-950/40 p-2 space-y-1">
+        <div class="text-emerald-300 font-semibold">Created in Egeria.</div>
+        <div class="text-slate-300">Project <span class="font-mono">${_esc((r.project_guid || '').slice(0, 8))}</span>${r.resource_list_linked ? ' · working set linked' : ''} · ${linked} member(s) attached.</div>
+        ${missedNow ? `<div class="text-slate-400">${missedNow} member(s) have no Egeria asset yet. They now inherit this Project, so they can be catalogued: <span class="text-cyan-300">Admin → Egeria Alignment → "Repos with no Egeria asset that can be catalogued"</span>, then re-scan and relink.</div>` : ''}
+      </div>`;
+    }
   } catch (e) {
     showToast('error', `Could not create in Egeria: ${e}`, 6000);
+    const steps2 = document.getElementById('inv-next-steps');
+    if (steps2) steps2.innerHTML = `<div class="text-xs text-amber-400">Could not create in Egeria: ${_esc(String(e))}</div>`;
+  } finally {
+    // Restored in `finally` so a failure does not strand the button disabled
+    // with no way to retry — the panel may not have re-rendered.
+    const b = document.getElementById('inv-promote-btn');
+    if (b) { b.disabled = false; b.classList.remove('opacity-60'); if (btnHtml) b.innerHTML = btnHtml; }
   }
 }
 
