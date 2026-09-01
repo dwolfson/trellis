@@ -55,6 +55,45 @@ rather than its behaviour.
 
 Grouped by area. Within a group, the most actionable entries come first.
 
+### Survey execution
+
+**No conditional execution of survey steps — every selected step runs, whether or not it can say
+anything.** Raised by Dan 2026-09-01. `SurveyOrchestrator.run()` iterates
+`list(all_surveyors.items())` and runs each in turn. The only filters are the cost ceilings
+(`max_fetch_cost`/`max_compute_cost`) and an explicit `steps=` list. There is **no way for a step to
+declare a precondition on the state a previous step produced**, and no way to skip one whose input
+is absent.
+
+The consequences are already visible, and they are not crashes:
+
+- **`cve_scan` on a repo with no parsed dependencies.** It reads `project_dependencies`, finds
+  nothing, and correctly declines rather than claiming "no CVEs". Right behaviour — but it ran, was
+  timed, was published as an analysis, and contributed nothing. `security_summary` then counts it
+  among its 8 `INPUT_KINDS` as *never ran*, and below `MIN_INPUTS_FOR_VERDICT` withholds a verdict.
+  A step that cannot say anything still consumes a slot in the picture.
+- **The distinction that has to survive.** `surveyors/result_status.py` already separates
+  `NOTHING_FOUND` from `SKIPPED_BY_DESIGN` from `NEVER_RUN`. Conditional execution must produce the
+  middle one — *skipped, with a stated reason* — never silence. A step that vanishes from a report
+  is indistinguishable from one that ran and found nothing, which is the failure this codebase keeps
+  removing. `repo_classification`'s `architecture_recovery_gate` is the worked example of doing it
+  right (`docs/repo-context-and-tool-routing.md` §3): it reports `skipped_by_design`, the reason
+  travels with the skip, and `respect_gate=False` still runs it — the gate changes the default, not
+  the permission.
+
+**What is missing, concretely.** `StepInfo` declares `requires_resources` (zipball, clone) and
+`requires_views`, both about *runtime inputs*. Neither expresses "this step needs rows in
+`project_dependencies`" or "this step is pointless on a repo with no first-party code". The design
+note already proposes the shape — `requires_context` alongside `requires_resources`, checked before
+dispatch, producing a `skipped_by_design` with a reason when unmet
+(`docs/repo-context-and-tool-routing.md` §4) — but nothing is built beyond the one hand-wired gate.
+
+**Related, and deliberately kept separate:** step *ordering* is a different problem and is currently
+correct. Producers precede consumers in `STEP_REGISTRY`, verified live 2026-08-31 (one `amundsen`
+survey produced 880 dependency rows and 8 cve_scan findings in the same run) and now guarded by
+`tests/test_step_execution_order.py`. That order is positional and undeclared, so the test exists to
+stop it regressing silently; **if conditional execution is built, it should express the data
+dependency it already relies on rather than adding a second implicit mechanism beside it.**
+
 ### Test reliability
 
 **`test_local_flow_execution_fallback` failed once and has not reproduced.** Seen 2026-08-31 in a
