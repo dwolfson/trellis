@@ -1912,10 +1912,13 @@ function _assessmentSubnavHtml(active) {
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
   tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
-  // Questions/Disposition (D6, docs/survey-question-context-plan.md) — repo-only.
-  if (_qdTabsApply()) {
-    tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  }
+  // Questions/Disposition (D6, docs/survey-question-context-plan.md) —
+  // repo-only in what they *answer*, but the tab itself always renders
+  // (2026-09-01, dwolfson feedback): a tab that disappears reads as "this
+  // feature does not exist here", not "nothing to show yet". _qdTabsApply()
+  // still gates the underlying data fetch/empty-state message in
+  // loadScoutingQuestions/loadScoutingDispositionView.
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAssessmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -1929,10 +1932,12 @@ function _showAssessmentSubTab(tab) {
   // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
   // repos) — fall back to Analyses rather than show a blank/stale panel
   // when nothing (or a db/filesystem) is selected, same spirit as
-  // Scouting's own selectedProject guard in _showScoutingSubTab. Questions/
-  // Disposition share that same repo-only gate (_qdTabsApply, D6).
+  // Scouting's own selectedProject guard in _showScoutingSubTab.
+  // Questions/Disposition do NOT redirect the same way (2026-09-01) — the
+  // tab stays selected and its own view renders an honest "select a repo"
+  // empty state (_qdTabsApply, D6) instead of silently landing on Analyses,
+  // which used to look like the click did nothing.
   if (tab === 'sub-resources' && !selectedProject) tab = 'analyses';
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'analyses';
   _assessmentSubTab = tab;
   if (tab === 'analyses') showMainView('assessment-analyses');
   else if (tab === 'sub-resources') showMainView('assessment-sub-resources');
@@ -1952,8 +1957,7 @@ function showAnalysisPane() {
 function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
   tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
-  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAnalysisSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -1964,7 +1968,6 @@ function _analysisSubnavHtml(active) {
 
 function _showAnalysisSubTab(tab) {
   if (tab === 'results') { _resultsHost = 'analysis'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'catalog';
   _analysisSubTab = tab;
   if (tab === 'catalog') showMainView('analysis');
   else if (tab === 'questions') { _questionsDispositionHost = 'analysis'; _questionsPhase = 'analysis'; showMainView('scouting-questions'); }
@@ -1998,8 +2001,7 @@ function _discoverySubnavHtml(active) {
   // is reachable from at least one stage's Survey tab.
   const tabs = [{ tab: 'analyses', label: '📊 Survey' }];
   tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
-  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  if (tabs.length === 1) return '';
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showDiscoverySubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -2010,7 +2012,6 @@ function _discoverySubnavHtml(active) {
 
 function _showDiscoverySubTab(tab) {
   if (tab === 'results') { _resultsHost = 'discovery'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'analyses';
   _discoverySubTab = tab;
   // 'survey-definitions' kept as an alias rather than dropped: a bookmark,
   // a saved sub-tab or any caller still asking for it lands on the merged
@@ -2033,8 +2034,7 @@ function showEnrichmentPane() {
 function _enrichmentSubnavHtml(active) {
   const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '📊 Survey' }];  // 📊 like every other stage — same concept, same glyph.
   tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
-  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  if (tabs.length === 1) return '';
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showEnrichmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -2045,7 +2045,6 @@ function _enrichmentSubnavHtml(active) {
 
 function _showEnrichmentSubTab(tab) {
   if (tab === 'results') { _resultsHost = 'enrichment'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'context';
   _enrichmentSubTab = tab;
   if (tab === 'context') showMainView('context');
   else if (tab === 'survey') showMainView('enrichment-survey');
@@ -9483,8 +9482,15 @@ function _questionStatus(q) {
 }
 
 async function loadScoutingQuestions() {
-  if (!selectedProject) return;
   const view = document.getElementById('scouting-questions-view');
+  // Honest empty state, not a silent no-op (2026-09-01, dwolfson feedback):
+  // this must never look like "a repo is selected and it has no
+  // questions" -- that's a claim about a repo the user hasn't chosen.
+  if (!_qdTabsApply()) {
+    view.innerHTML = _qdSubnavHtml('questions') +
+      '<div class="text-slate-500 text-xs py-8 text-center">Select a repository to see its Questions.</div>';
+    return;
+  }
   view.innerHTML = _qdSubnavHtml('questions') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(selectedProject)}/scouting-questions?phase=${encodeURIComponent(_questionsPhase)}`);
@@ -9846,8 +9852,15 @@ async function _setProjectDisposition(githubUrl, disposition) {
 // directly on the Scouting overview card ("Scouting workflow redesign"
 // plan, D6). ──────────────────────────────────────────────────────────────
 async function loadScoutingDispositionView() {
-  if (!selectedProject) return;
   const view = document.getElementById('scouting-disposition-view');
+  // Same honest-empty-state reasoning as loadScoutingQuestions above: must
+  // not read like "this repo has no disposition set" when no repo is
+  // selected at all.
+  if (!_qdTabsApply()) {
+    view.innerHTML = _qdSubnavHtml('disposition') +
+      '<div class="text-slate-500 text-xs py-8 text-center">Select a repository to see its Disposition.</div>';
+    return;
+  }
   view.innerHTML = _qdSubnavHtml('disposition') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
