@@ -34,7 +34,8 @@ from resource_explorer.egeria_resync import (
 )
 
 
-def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=()):
+def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(),
+              live_reports=("r-live",)):
     """A registry whose _conn() serves a real in-memory SQLite.
 
     Real SQL rather than a mocked cursor: the scans under test are mostly SQL,
@@ -49,7 +50,13 @@ def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(
         "  (entity_type TEXT, entity_slug TEXT, status TEXT);"
         "CREATE TABLE activity_log "
         "  (entity_slug TEXT, operation TEXT, status TEXT);"
-        "CREATE TABLE project_published_analyses (project_slug TEXT, analysis_id TEXT);")
+        "CREATE TABLE project_published_analyses "
+        "  (project_slug TEXT, analysis_id TEXT, egeria_report_guid TEXT);"
+        "CREATE TABLE project_egeria_surveys (egeria_report_guid TEXT);"
+        "CREATE TABLE project_published_annotation_types "
+        "  (project_slug TEXT, annotation_type TEXT, egeria_report_guid TEXT);")
+    for guid in live_reports:
+        conn.execute("INSERT INTO project_egeria_surveys VALUES (?)", (guid,))
     for slug, asset, ctx in rows:
         conn.execute("INSERT INTO projects VALUES (?,?)", (slug, asset))
         if ctx is not None:
@@ -57,8 +64,12 @@ def _registry(rows, *, inherits=(), published_analyses=None, catalogued_before=(
                          (slug, ctx))
     for slug in catalogued_before:
         conn.execute("INSERT INTO activity_log VALUES (?,'catalog','ok')", (slug,))
-    for slug, aid in (published_analyses or []):
-        conn.execute("INSERT INTO project_published_analyses VALUES (?,?)", (slug, aid))
+    for entry in (published_analyses or []):
+        # (slug, analysis_id) defaults to a LIVE report; a third element names
+        # the report explicitly so a test can point a claim at a dead one.
+        slug, aid, *rest = entry
+        conn.execute("INSERT INTO project_published_analyses VALUES (?,?,?)",
+                     (slug, aid, rest[0] if rest else "r-live"))
     conn.commit()
 
     class _Ctx:
@@ -240,3 +251,69 @@ def test_registration_only_constant_names_a_real_analysis():
         REPO_ANALYSIS_STEP_MAP,
     )
     assert REGISTRATION_ONLY_ANALYSES <= set(REPO_ANALYSIS_STEP_MAP)
+
+
+class TestStaleClaimsDoNotSuppressWork:
+    """A publish claim is a claim, not a fact.
+
+    `project_published_analyses` rows do not stop existing when the report they
+    name is destroyed. After the 2026-08-31 redeploy the table held 64 rows of
+    which 36 pointed at SurveyReports that no longer existed, and reading it raw
+    excluded 5 repos from the republish worklist on the strength of claims dated
+    27-31 August. The scan said "these already have survey results" about the
+    repos whose results had just been destroyed.
+
+    Silent exclusion is the dangerous part: a repo dropping off a worklist looks
+    identical to a repo that never belonged on it.
+    """
+
+    def test_a_claim_naming_a_destroyed_report_does_not_count_as_published(self):
+        """The regression guard for the live misreport."""
+        reg = _registry(
+            [("egeria_git", "asset-1", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live"),
+                                ("egeria_git", "chaoss_metrics", "r-destroyed")],
+            live_reports=("r-live",))
+        items = EgeriaResync(registry=reg)._scan_registration_only().items
+        assert [i["slug"] for i in items] == ["egeria_git"], (
+            "a dead claim for chaoss_metrics excluded this repo from the worklist")
+
+    def test_the_check_can_actually_fail(self):
+        """Known-negative: the SAME shape with a LIVE second claim must still
+        be excluded, or the test above passes for a scan that ignores claims."""
+        reg = _registry(
+            [("egeria_git", "asset-1", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live"),
+                                ("egeria_git", "chaoss_metrics", "r-live")],
+            live_reports=("r-live",))
+        assert EgeriaResync(registry=reg)._scan_registration_only().items == []
+
+
+class TestOrphanClaimRepairCannotBeOutrun:
+    def test_it_clears_claims_for_a_repo_that_now_HAS_an_asset(self):
+        """Keying on asset-absence meant cataloguing a repo closed the window:
+        its pre-wipe claims became permanently unreachable. That is exactly
+        what happened live — the claims survived because the situation had
+        been half-repaired."""
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "chaoss_metrics", "r-destroyed")],
+            live_reports=("r-live",))
+        out = EgeriaResync(registry=reg)._do_clear_orphan_publish_claims()
+        assert out["claims_deleted"] == 1
+        with reg._conn() as c:
+            assert c.execute(
+                "SELECT count(*) FROM project_published_analyses").fetchone()[0] == 0
+
+    def test_it_leaves_a_claim_whose_report_still_exists(self):
+        """Known-negative. Without it, a repair that deletes everything passes
+        the test above."""
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live")],
+            live_reports=("r-live",))
+        out = EgeriaResync(registry=reg)._do_clear_orphan_publish_claims()
+        assert out["claims_deleted"] == 0
+        with reg._conn() as c:
+            assert c.execute(
+                "SELECT count(*) FROM project_published_analyses").fetchone()[0] == 1

@@ -554,9 +554,30 @@ class EgeriaResync:
                 "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') <> '' "
                 "ORDER BY slug").fetchall()
             for r in rows:
+                # JOINed to project_egeria_surveys, not read on its own. A row
+                # in project_published_analyses is a CLAIM that something was
+                # published; it does not stop being a row when the report it
+                # names is destroyed. After the 2026-08-31 redeploy this table
+                # held 64 rows of which 36 pointed at SurveyReports that no
+                # longer existed — a record that outlived what it described,
+                # and indistinguishable from a live one by inspection.
+                #
+                # Read raw, it excluded 5 repos from this finding on the
+                # strength of claims dated 27-31 August: the scan said "these
+                # already have survey results" about repos whose results the
+                # redeploy had destroyed. The exclusion was silent, which is
+                # the dangerous part — a repo dropping out of a worklist looks
+                # exactly like a repo that did not need to be on it.
+                #
+                # The join is the whole fix: project_egeria_surveys is cleared
+                # alongside the asset by clear_egeria_registration, so a claim
+                # whose report_guid is absent from it is one nothing stands
+                # behind.
                 published = {x["analysis_id"] for x in conn.execute(
-                    "SELECT DISTINCT analysis_id FROM project_published_analyses "
-                    "WHERE project_slug = ?", (r["slug"],)).fetchall()}
+                    "SELECT DISTINCT a.analysis_id FROM project_published_analyses a "
+                    "JOIN project_egeria_surveys s "
+                    "  ON s.egeria_report_guid = a.egeria_report_guid "
+                    "WHERE a.project_slug = ?", (r["slug"],)).fetchall()}
                 if published and not published <= REGISTRATION_ONLY_ANALYSES:
                     continue
                 items.append({
@@ -795,11 +816,43 @@ class EgeriaResync:
                 "undetermined": len(res.undetermined)}
 
     def _do_clear_orphan_publish_claims(self) -> dict:
+        """Delete publish claims that nothing stands behind.
+
+        Originally keyed on "the project has no asset", and scoped to one of
+        the two claim tables. Both limits turned out to matter after the
+        2026-08-31 redeploy:
+
+        - `project_published_analyses` was never cleaned at all, and held 36
+          rows naming SurveyReports the redeploy had destroyed.
+        - Keying on asset absence means CATALOGUING A REPO CLOSES THE WINDOW.
+          Once `catalog_assets` gives it an asset, its pre-wipe claims are
+          permanently unreachable by this repair — which is exactly what
+          happened: the claims survived precisely because the situation had
+          been half-repaired.
+
+        Keyed on the claim instead: a claim whose `egeria_report_guid` is not
+        in `project_egeria_surveys` names a report this registry no longer
+        records. That is true whether or not the project currently has an
+        asset, so it cannot be outrun by a repair that runs first.
+
+        The asset-absence delete is KEPT as well rather than replaced — it
+        catches a claim carrying no report guid at all, which the join cannot
+        see.
+        """
         with self._registry._conn() as conn:
-            deleted = conn.execute(
-                "DELETE FROM project_published_annotation_types WHERE project_slug IN ("
-                "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') = '')"
-            ).rowcount
+            deleted = 0
+            for table in ("project_published_annotation_types",
+                          "project_published_analyses"):
+                deleted += conn.execute(
+                    f"DELETE FROM {table} WHERE project_slug IN ("
+                    "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') = '')"
+                ).rowcount
+                deleted += conn.execute(
+                    f"DELETE FROM {table} WHERE coalesce(egeria_report_guid, '') <> '' "
+                    "AND egeria_report_guid NOT IN "
+                    "(SELECT egeria_report_guid FROM project_egeria_surveys "
+                    " WHERE coalesce(egeria_report_guid, '') <> '')"
+                ).rowcount
         return {"claims_deleted": deleted}
 
     def _do_clear_stale_investigations(self) -> dict:
