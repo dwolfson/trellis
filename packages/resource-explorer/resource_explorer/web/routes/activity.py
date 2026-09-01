@@ -38,6 +38,20 @@ class RfaNoteRequest(BaseModel):
     notes: str
 
 
+class RfaDismissRequest(BaseModel):
+    """`reason` is validated by the registry against its own vocabulary
+    (not_applicable / wont_do) rather than re-declared here — one list, so a
+    third reason added later cannot be accepted by the route and then
+    rejected by the store, or vice versa."""
+    reason: str
+    note: str = ""
+    dismissed_by: str = ""
+
+
+class RfaDismissalClearRequest(BaseModel):
+    cleared_by: str = ""
+
+
 def _registry() -> ProjectRegistry:
     return ProjectRegistry()
 
@@ -80,12 +94,30 @@ def list_rfas(
     registry = _registry()
     entries = registry.list_activity(entity_type=entity_type, entity_slug=entity_slug, limit=limit)
     overrides = registry.list_rfa_action_overrides()
+    # Dismissed RFAs are returned like every other one, carrying `dismissed`
+    # and the dismissal record — NEVER filtered out here. Dan asked for
+    # "suppress with visibility": the drawer collapses them behind an
+    # explicit "N suppressed" toggle, which it can only do if it is told
+    # they exist. A server-side filter would make a suppressed finding
+    # indistinguishable from one that never occurred, which is precisely the
+    # absence-as-answer shape this codebase keeps getting bitten by.
+    dismissals = registry.active_rfa_dismissals()
     rfas = []
     for entry in entries:
         for idx, ann in enumerate(entry.get("annotations") or []):
             if "RequestForAction" in (ann.get("annotation_type") or ""):
                 rfa_id = f"{entry['id']}::{idx}"
                 override = overrides.get(rfa_id)
+                # Content key, not rfa_id: a dismissal has to keep matching
+                # across future survey runs, which mint new entry ids (see
+                # the rfa_dismissals DDL in registry.py).
+                dismissal_key = registry.rfa_dismissal_key(
+                    entry.get("entity_type", ""),
+                    entry.get("entity_slug", ""),
+                    ann.get("analysis_name", ""),
+                    ann.get("summary", ""),
+                )
+                dismissal = dismissals.get(dismissal_key)
                 rfas.append({
                     "id": rfa_id,
                     "entry_id": entry["id"],
@@ -126,8 +158,78 @@ def list_rfas(
                     "egeria_todo_guid": override["egeria_todo_guid"] if override else "",
                     "synced_at": override["synced_at"] if override else "",
                     "sync_error": override["sync_error"] if override else "",
+                    # Suppression state (docs/rfa-dismissals.md). `dismissal`
+                    # carries the whole record — reason, note, who, when —
+                    # so the drawer can say what was decided and by whom
+                    # rather than just hiding the row.
+                    "dismissal_key": dismissal_key,
+                    "dismissed": dismissal is not None,
+                    "dismissal": dismissal,
                 })
     return rfas
+
+
+@router.get("/rfas/dismissals")
+def list_rfa_dismissals(include_cleared: bool = Query(False)) -> list[dict]:
+    """Every recorded dismissal, newest first — the review surface behind
+    Dan's "a future admin setting that allows you to reset or clear some of
+    these decisions". `include_cleared=true` adds the ones already reversed,
+    which stay in the table as history rather than being deleted."""
+    return _registry().list_rfa_dismissals(include_cleared=include_cleared)
+
+
+@router.post("/rfas/{rfa_id}/dismiss")
+def dismiss_rfa(rfa_id: str, body: RfaDismissRequest) -> dict:
+    """Suppress a finding as not-applicable / won't-do.
+
+    Takes an `rfa_id` because that is what the drawer has in hand, but
+    records against the finding's CONTENT (entity + analysis + summary),
+    resolved here from the activity entry the id points at. That asymmetry
+    is deliberate and is the whole point: the user dismisses the row in
+    front of them, and the same finding stays dismissed when the next survey
+    run produces it again under a new id."""
+    registry = _registry()
+    try:
+        entry_id, idx_str = rfa_id.rsplit("::", 1)
+        idx = int(idx_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed rfa_id — expected '{entry_id}::{annotation_index}'")
+
+    entry = registry.get_activity(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No activity entry {entry_id}")
+    annotations = entry.get("annotations") or []
+    if idx >= len(annotations):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Activity entry {entry_id} has no annotation at index {idx}",
+        )
+    ann = annotations[idx]
+
+    try:
+        row = registry.dismiss_rfa(
+            entity_type=entry.get("entity_type", ""),
+            entity_slug=entry.get("entity_slug", ""),
+            analysis_name=ann.get("analysis_name", ""),
+            summary_key=ann.get("summary", ""),
+            reason=body.reason,
+            note=body.note,
+            created_by=body.dismissed_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "success", "id": rfa_id, "dismissal": row}
+
+
+@router.post("/rfas/dismissals/{dismissal_id}/clear")
+def clear_rfa_dismissal(dismissal_id: str, body: RfaDismissalClearRequest) -> dict:
+    """Reverse a dismissal. The row survives with cleared_at/cleared_by set,
+    so "we decided this was not applicable, then changed our mind" stays
+    readable — an undelete would lose both halves of that."""
+    row = _registry().clear_rfa_dismissal(dismissal_id, cleared_by=body.cleared_by)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No dismissal {dismissal_id}")
+    return {"status": "success", "dismissal": row}
 
 
 @router.patch("/rfas/{rfa_id}")

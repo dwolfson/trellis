@@ -2122,6 +2122,18 @@ function showCuratePane() {
   showMainView('curate');
 }
 
+// The connected identity, for attributing a recorded decision.
+//
+// This is the Egeria SERVICE-ACCOUNT id, not an authenticated person —
+// there is no per-person login in this codebase (same caveat already
+// carried by repo_dispositions.decided_by). Treat what it returns as a
+// self-reported note about who was at the keyboard, never as an
+// authenticated fact, and expect '' when Egeria is unreachable rather than
+// substituting a plausible-looking name.
+function _currentUserLabel() {
+  return document.getElementById('whoami-badge')?.dataset.userId || '';
+}
+
 // ── identity indicator (read-only — see #whoami-badge's HTML comment) ──────────
 async function loadWhoami() {
   const badge = document.getElementById('whoami-badge');
@@ -2130,6 +2142,7 @@ async function loadWhoami() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const who = await res.json();
     badge.textContent = `🔑 Connected as: ${who.user_id}`;
+    badge.dataset.userId = who.user_id || '';
     badge.dataset.viewServer = who.view_server;
     badge.dataset.platformUrl = who.platform_url;
   } catch(e) {
@@ -6481,7 +6494,7 @@ async function loadRfaPanel(containerId) {
     renderRfaPanel(rfas, containerId);
     // Badge counts OPEN items only — deferred/reassigned/completed have
     // been responded to, they shouldn't keep nagging the badge.
-    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open').length);
+    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open' && !r.dismissed).length);
   } catch(e) {
     view.innerHTML = `<div class="text-red-400 text-xs p-4">Failed to load: ${e.message}</div>`;
   }
@@ -6495,7 +6508,7 @@ async function refreshRfaBadgeCount() {
     const res = await fetch('/api/activity/rfas');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rfas = await res.json();
-    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open').length);
+    _updateRfaDrawerBadge(rfas.filter(r => r.rfa_status === 'open' && !r.dismissed).length);
   } catch(e) {
     console.debug('RFA badge count fetch failed:', e.message);
   }
@@ -6555,7 +6568,15 @@ function renderRfaPanel(rfas, containerId) {
 
   for (const [entitySlug, g] of Object.entries(byEntity)) {
     const icon = entityIcon[g.type] || '•';
-    const totalCount = g.rfas.reduce((s, r) => s + (r.count || 1), 0);
+    // Dan, 2026-08-31: "suppress with visibility - do both". Dismissed items
+    // are separated here, not dropped — the count in the section header
+    // stops including them (a suppressed finding is not an outstanding
+    // action), but they are still rendered, behind an explicit toggle,
+    // saying who suppressed them and why. The backend never filters them
+    // out; see GET /api/activity/rfas.
+    const liveRfas = g.rfas.filter(r => !r.dismissed);
+    const suppressedRfas = g.rfas.filter(r => r.dismissed);
+    const totalCount = liveRfas.reduce((s, r) => s + (r.count || 1), 0);
     html += `<div class="rpt-section">
       <div class="rpt-section-title">${icon} ${_esc(g.name || entitySlug)}
         <span class="text-amber-500/70 normal-case font-normal ml-1">${totalCount} action${totalCount!==1?'s':''}</span>
@@ -6574,7 +6595,7 @@ function renderRfaPanel(rfas, containerId) {
     // never dropped, so an old occurrence stays reachable (e.g. to Complete
     // one a newer run already fixed) instead of silently vanishing.
     const byFinding = new Map();
-    for (const rfa of g.rfas) {
+    for (const rfa of liveRfas) {
       const fKey = `${rfa.analysis_name || ''} ${rfa.summary || ''}`;
       if (!byFinding.has(fKey)) byFinding.set(fKey, []);
       byFinding.get(fKey).push(rfa);
@@ -6596,10 +6617,62 @@ function renderRfaPanel(rfas, containerId) {
           </div>`;
       }
     }
+
+    // Suppressed findings for this entity — collapsed by default, never
+    // absent. Grouped the same way, so ten runs of one dismissed finding
+    // read as one line rather than ten.
+    if (suppressedRfas.length) {
+      const supGroups = new Map();
+      for (const rfa of suppressedRfas) {
+        const fKey = `${rfa.analysis_name || ''} ${rfa.summary || ''}`;
+        if (!supGroups.has(fKey)) supGroups.set(fKey, []);
+        supGroups.get(fKey).push(rfa);
+      }
+      const supId = `rfa-suppressed-${entitySlug.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      let supInner = '';
+      for (const occurrences of supGroups.values()) {
+        occurrences.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+        supInner += _renderSuppressedRfaRow(occurrences[0], occurrences.length, containerId);
+      }
+      html += `<button onclick="document.getElementById('${supId}').classList.toggle('hidden')"
+          class="text-xs text-slate-500 hover:text-slate-300 transition-colors ml-1">
+          ▸ ${supGroups.size} suppressed
+        </button>
+        <div id="${supId}" class="hidden space-y-2 pl-3 border-l border-slate-700 ml-1 mt-1">
+          ${supInner}
+        </div>`;
+    }
+
     html += `</div></div>`;
   }
   html += '</div>';
   view.innerHTML = html;
+}
+
+// A dismissed finding's row: dimmed, saying what was decided, by whom and
+// when, with the one action that applies to it — Restore. The action
+// buttons of a live row are deliberately absent: deferring or completing
+// something already marked not-applicable is a contradiction, not a choice.
+function _renderSuppressedRfaRow(rfa, occurrenceCount, containerId) {
+  const d = rfa.dismissal || {};
+  const reasonLabel = d.reason === 'not_applicable' ? 'Not applicable' : "Won't do";
+  const who = d.created_by ? ` by ${_esc(d.created_by)}` : '';
+  const when = (d.created_at || '').replace('T', ' ').substring(0, 10);
+  const occ = occurrenceCount > 1
+    ? `<span class="text-slate-600"> · ${occurrenceCount} occurrences</span>` : '';
+  return `<div class="rfa-row opacity-60">
+    <div class="text-xs font-medium text-slate-400">
+      ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}
+      <span class="text-xs bg-slate-800 text-slate-400 px-1.5 py-0 rounded ml-1">🚫 ${reasonLabel}</span>${occ}
+    </div>
+    <div class="text-xs text-slate-400 mt-0.5">${_esc(rfa.summary)}</div>
+    ${d.note ? `<div class="text-xs text-slate-500 mt-1 italic">${_esc(d.note)}</div>` : ''}
+    <div class="text-xs text-slate-600 mt-0.5">Suppressed ${_esc(when)}${who}</div>
+    <div class="flex gap-3 flex-wrap items-center mt-1.5">
+      <button onclick="restoreRfaDismissal('${_esc(d.id || '')}', '${containerId}')"
+        class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Restore</button>
+    </div>
+  </div>`;
 }
 
 // One RFA row's markup — factored out of renderRfaPanel so the same-finding
@@ -6660,6 +6733,9 @@ function _renderRfaRow(rfa, containerId, statusBadge) {
         class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
         📝 ${rfa.notes ? 'Edit note' : 'Add note'}
       </button>
+      <button onclick="_showRfaDismissForm('${_esc(rfa.id)}', '${containerId}')"
+        class="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+        title="Suppress this finding — it stays visible under 'suppressed' and can be restored">🚫 Not applicable</button>
     </div>
     <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
       <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
@@ -6676,6 +6752,69 @@ function _renderRfaRow(rfa, containerId, statusBadge) {
       </div>
     </div>
   </div>`;
+}
+
+
+// ── RFA dismissal (not applicable / won't do) ───────────────────────────
+// Distinct from Complete: Complete says "this was dealt with", dismissal
+// says "this will never be dealt with HERE" — the SECURITY.md case on a
+// repo we don't control. It is recorded against the finding's content, so
+// it keeps holding when the next survey run produces the same finding under
+// a new id (see registry.py's rfa_dismissals DDL).
+function _showRfaDismissForm(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const formEl = document.getElementById(`rfa-action-form-${safeId}`);
+  if (!formEl) return;
+  formEl.innerHTML = `
+    <div class="text-xs text-slate-400 mb-1">Suppress this finding. It stays listed under “suppressed” and can be restored.</div>
+    <select id="rfa-dismiss-reason-${safeId}"
+      class="bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-slate-400">
+      <option value="not_applicable">Not applicable — we don't control this resource</option>
+      <option value="wont_do">Won't do — acknowledged, not planned</option>
+    </select>
+    <input id="rfa-dismiss-note-${safeId}" type="text" placeholder="Why (optional, but it is what you'll read later)"
+      class="w-full mt-1.5 bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-slate-400">
+    <div class="flex gap-2 mt-1.5">
+      <button onclick="submitRfaDismiss('${rfaId}', '${containerId}')"
+        class="text-xs px-2.5 py-1 rounded bg-slate-600 hover:bg-slate-500 text-white transition-colors">Suppress →</button>
+      <button onclick="document.getElementById('rfa-action-form-${safeId}').classList.add('hidden')"
+        class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">Cancel</button>
+    </div>`;
+  formEl.classList.remove('hidden');
+}
+
+async function submitRfaDismiss(rfaId, containerId) {
+  const safeId = rfaId.replace(/[^a-zA-Z0-9]/g, '_');
+  const reason = document.getElementById(`rfa-dismiss-reason-${safeId}`)?.value || 'not_applicable';
+  const note = document.getElementById(`rfa-dismiss-note-${safeId}`)?.value || '';
+  try {
+    const res = await fetch(`/api/activity/rfas/${encodeURIComponent(rfaId)}/dismiss`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reason, note, dismissed_by: _currentUserLabel()}),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
+    showToast('success', 'Finding suppressed — see “suppressed” under this resource.', 4000);
+    loadRfaPanel(containerId);
+  } catch(e) {
+    showToast('error', `Could not suppress: ${e.message}`, 6000);
+  }
+}
+
+async function restoreRfaDismissal(dismissalId, containerId) {
+  if (!dismissalId) { showToast('error', 'This suppression has no id to restore.', 5000); return; }
+  try {
+    const res = await fetch(`/api/activity/rfas/dismissals/${encodeURIComponent(dismissalId)}/clear`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cleared_by: _currentUserLabel()}),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
+    showToast('success', 'Restored — the finding is back in the open list.', 4000);
+    loadRfaPanel(containerId);
+  } catch(e) {
+    showToast('error', `Could not restore: ${e.message}`, 6000);
+  }
 }
 
 function _toggleRfaShowResolved(checked, containerId) {
