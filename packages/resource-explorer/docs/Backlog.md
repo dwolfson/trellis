@@ -136,6 +136,153 @@ survey produced 880 dependency rows and 8 cve_scan findings in the same run) and
 stop it regressing silently; **if conditional execution is built, it should express the data
 dependency it already relies on rather than adding a second implicit mechanism beside it.**
 
+### Admin surface: Option B (separate pages), and possible Trellis-wide centralisation
+
+**Deferred by decision 2026-09-01, not dropped.** Dan: *"agree in general — do the fix recommended
+and put option B in backlog to be revisited. Its quite possible that we may need to centralize admin
+across trellis at some point — so lets not lose this in the day to day."*
+
+`docs/admin-surface-options.md` recommends **staying inline for now** and fixing the existing drift
+first. That recommendation is accepted. This entry holds what was deferred.
+
+**Option B — extract admin into separate static pages** served by the same app, following the
+`admin-feedback.html` precedent (RE has no JS bundler; a "separate site" costs about what that page
+cost, not a second app). Measured pressure at time of deferral: `index.html` is **15,774 lines** and
+the most-churned file in the package — **166 commits since 2026-08-06**, next closest
+`docs/Backlog.md` at 116, peaking at 23 in one day. But that is co-occurrence, **not proven merge
+conflicts**, and the distinction was made honestly rather than used to argue for a rewrite.
+
+**Triggers to revisit** (any one):
+- A real merge conflict in `index.html`, not just contention.
+- A pane whose operator-only content has no reason to share the analyst UI's session or
+  resource-selection context — **Prefect and Logs are closest**.
+- **The open-demo deployment** (see the entry below). That changes the calculus: EA's separate
+  `/admin` was discounted as weak precedent partly *because* it is unauthenticated, which stops being
+  a reason to dismiss the split and becomes a reason the split needs auth.
+- **Trellis-wide admin centralisation** — Dan's own flag, and the largest version of this. RE, EA and
+  Workspaces Portal each have their own admin surface with their own auth posture and their own
+  triage vocabulary; the surveys in `docs/feedback-signals-shared.md` and
+  `docs/feedback-triage-from-workspaces.md` are already evidence of three implementations converging
+  on the same needs. If admin is going to be shared, extracting RE's into pages first is a
+  prerequisite step rather than wasted work.
+
+**What must not be lost in any split** (all with line references in the options doc): Egeria
+Alignment's dry-run/confirm split, undetermined-reported-separately-from-clean, expensive repairs
+unticked by default, per-action destructive warnings, and fixed apply ordering. These took a full
+session to get right and a loose re-implementation would silently lose them.
+
+### Feedback as a signal of where the system is weak, not just of what a user disliked
+
+**Raised by Dan 2026-09-01**, and it is a different axis from triage status:
+
+> *"there is another status or point — that what is being reported indicates a gap in either training
+> data, rules, routing, or agent behavior — we would want to periodically sweep through this (and the
+> chat scores) for continuous improvement"*
+
+Triage answers *what do we do with this report*. This answers *what does this report tell us is
+missing*, and the two are independent: a report can be `not_an_issue` for the reporter and still be
+the clearest evidence available that routing is wrong.
+
+Proposed as a **second, orthogonal classification** — not more values on `triage_status`, which would
+conflate a disposition with a diagnosis. Candidate categories, from Dan's own list: **training data ·
+rules · routing · agent behaviour**, plus an explicit *not-a-system-gap* and an *unclassified* that
+is distinct from "reviewed and found to be none of these". Absence must not read as a decision — the
+same rule as everywhere else here.
+
+**The sweep is the point, not the field.** A classification nobody aggregates is a dropdown. What is
+wanted is a periodic pass over feedback AND chat scores together, looking for concentrations — three
+reports blaming routing in one area is a finding that no single report is. Scope should include:
+`feedback`, `resource_feedback`, and the chat signal (`chunk_feedback`, now trinary — see
+`docs/feedback-signals-shared.md`), since a low chat score and a written complaint may be the same
+gap seen twice.
+
+Prerequisites, in order: RE has **no way to change any feedback state today** — the gated
+`PATCH /api/feedback/{id}` exists and no UI calls it (`docs/feedback-triage-from-workspaces.md`).
+That must land first, and `/api/curate/feedback` must be gated, before adding a second field that
+also needs writing.
+
+Not scoped: whether the classification is made by a person, suggested by an agent and confirmed, or
+both; how the sweep is scheduled; and what it produces — a report, a RequestForAction, or backlog
+entries.
+
+### Auth posture when RE and EA reach the open demo environment
+
+**Dan, 2026-09-01: "RE and EA will at some point also be in the open demo environment."** Recorded
+because it puts an expiry date on reasoning committed the same day, and that reasoning is now in a
+docstring that would otherwise be read as timeless.
+
+`web/admin_auth.py` is fail-closed: absent admin configuration, every admin request is denied. Its
+stated justification is that **RE has nothing to defer to** — no multi-user authentication of its
+own, and no authenticating layer behind it. That is true of RE today and stops being true in a
+public demo.
+
+Egeria Workspaces Portal has already solved this shape, and `demo_feedback_handler.py::_is_admin()`
+is the model rather than the counter-example it was briefly mistaken for (see
+`docs/feedback-triage-from-workspaces.md` §5, framing withdrawn): **two modes — a public demo
+requiring an external identity, and a local mode relying on Egeria's own users.** RE will need the
+same distinction, and should adopt that pattern rather than reinvent one.
+
+**What this changes about work already done or planned:**
+
+- **`/api/curate/feedback` gating moves from "outstanding" to "required".** It is currently ungated,
+  and on 2026-09-01 it was widened to serve the page-level feedback store. Contact fields are
+  stripped as an interim (`cb99d72`) — that was sized as a stopgap for a single-operator local app.
+  In an open demo it is the difference between a form and a mailing list.
+- **The interim becomes insufficient, not merely redundant.** Stripping hides contact fields from a
+  listing; it does nothing about who may WRITE. Triage editing (`PATCH /api/feedback/{id}`, gated
+  today) and any future admin write must not inherit an ungated sibling.
+- **The feedback store holds real submissions with `wants_response` and `consent_to_contact`.**
+  Consent given to a local tool is not consent given to a public deployment. Whether existing rows
+  may be carried into a demo environment at all is a question for Dan, not a default.
+- **`docs/admin-surface-options.md` recommended staying inline**, partly because EA's separate
+  `/admin` is unauthenticated and therefore weak precedent. In an open demo that stops being a
+  reason to dismiss the split and becomes a reason the split needs auth — the recommendation should
+  be revisited against the demo requirement, not just against file contention.
+
+Not scoped: which identity provider, whether RE and EA share a session, whether the demo runs
+read-only, and what happens to the admin token that exists today.
+
+### Reporting levels
+
+**Improvement suggestions as a third reporting level, keyed off who is asking.** Raised by Dan
+2026-09-01 while reviewing `docs/gap-analyses-design.md`. Deliberately deferred; recorded so the
+GAP analyses are built without precluding it.
+
+An analysis can report at three levels, and today only two exist:
+
+| level | mechanism | state |
+|---|---|---|
+| overall finding / score | `project_analysis_findings.label` + `.confidence` | built, used |
+| the evidence behind it | `.detail_json`, and Egeria's `AnnotationExtension` | partly built — see below |
+| suggestions for improvement | `RequestForAction` annotation | type exists, used ONLY for internal survey errors (`base_surveyor.py:39`) |
+
+**The hook already exists and nothing reads it.** Investigations carry `purposes`, validated against
+`ProjectCharter.purposes` (`registry.py:4265-4275`): *Assess, Certify, Deploy, Explore, Learn,
+Maintain, Select, Share*. Dan's point is that a suggestion depends on whether the asker MAINTAINS
+the artifact or CONSUMES it — `Maintain` versus `Select`/`Deploy` — and that distinction is already
+modelled, validated on write, and consumed by nothing.
+
+So the item is well-formed rather than vague: **drive `RequestForAction` content off the
+investigation's declared purpose.** "Add a SECURITY.md" is advice for a maintainer; "this project
+publishes no security policy — weigh that in your selection" is the same finding for a consumer.
+Same evidence, different action, and issuing the maintainer's version to a consumer is noise.
+
+**What must be true NOW so this stays possible later**, and it is the reason this is recorded rather
+than only remembered: **the finding, its evidence and any recommendation must be separately
+addressable.** Evidence flattened into a summary string cannot be re-read by a recommender built
+later, and the alternative is re-running every survey to get it back. `AnnotationExtension`
+(`OpenMetadataType.java:6010`, model 0610 — *"Additional information to augment an annotation"*) is
+the modelled way to link a summary annotation to the evidence annotations behind it. **RE has never
+created one.**
+
+`AnnotationReview` (model 0612, `OpenMetadataType.java:6020`) is the adjacent type for a stewardship
+review of an annotation, and is the more likely home for an accepted/rejected suggestion than a
+bare RequestForAction.
+
+Not scoped: whether a purpose maps to one recommendation set or several, what happens when an
+investigation declares five purposes at once (common — one live investigation declares eight), and
+whether a recommendation is itself a finding with a lifecycle or a rendering of one.
+
 ### Test reliability
 
 #### `test_survey_definition_generator_guard.py` mutates the real docs directory, and is only safe alone
