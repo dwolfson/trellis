@@ -233,18 +233,50 @@ class EgeriaResync:
         )
 
     def _scan_orphan_publish_claims(self) -> Finding:
-        """Publish claims for repos with no asset GUID behind them.
+        """Publish claims that name a report this registry no longer records.
 
-        These outlive the GUID the clearing keys on, so anything an earlier pass
-        missed becomes unreachable the moment that GUID is cleared.
+        The docstring here used to say: "These outlive the GUID the clearing
+        keys on, so anything an earlier pass missed becomes unreachable the
+        moment that GUID is cleared." It then keyed on asset absence anyway,
+        and the thing it warned about happened.
+
+        Measured 2026-08-31, right after `catalog_assets` ran: this scan
+        reported **0** while **36** orphaned claims existed. Giving the repos
+        their assets back made every one of their pre-wipe claims invisible to
+        the scan, so the card never rendered and its repair — which by then
+        could clear them — was unreachable from the panel. A finding that
+        reports zero is read as "nothing to do", which is why this failure
+        needs no error to be costly.
+
+        Keyed on the claim now, matching `_do_clear_orphan_publish_claims`:
+        a claim whose report_guid is not in `project_egeria_surveys` names a
+        report nothing stands behind, whether or not the project has an asset.
+        The asset-absence arm is kept as a second reason, for a claim that
+        carries no report guid at all and so cannot be joined.
         """
         with self._registry._conn() as conn:
             rows = conn.execute(
-                "SELECT p.slug AS slug, count(*) AS n "
-                "FROM project_published_annotation_types t "
-                "JOIN projects p ON p.slug = t.project_slug "
-                "WHERE coalesce(p.egeria_asset_guid, '') = '' "
-                "GROUP BY p.slug ORDER BY n DESC"
+                "SELECT slug, sum(n) AS n FROM ("
+                "  SELECT p.slug AS slug, count(*) AS n "
+                "  FROM project_published_annotation_types t "
+                "  JOIN projects p ON p.slug = t.project_slug "
+                "  WHERE coalesce(p.egeria_asset_guid, '') = '' "
+                "     OR (coalesce(t.egeria_report_guid, '') <> '' "
+                "         AND t.egeria_report_guid NOT IN ("
+                "           SELECT egeria_report_guid FROM project_egeria_surveys "
+                "           WHERE coalesce(egeria_report_guid, '') <> '')) "
+                "  GROUP BY p.slug "
+                "  UNION ALL "
+                "  SELECT p.slug AS slug, count(*) AS n "
+                "  FROM project_published_analyses a "
+                "  JOIN projects p ON p.slug = a.project_slug "
+                "  WHERE coalesce(p.egeria_asset_guid, '') = '' "
+                "     OR (coalesce(a.egeria_report_guid, '') <> '' "
+                "         AND a.egeria_report_guid NOT IN ("
+                "           SELECT egeria_report_guid FROM project_egeria_surveys "
+                "           WHERE coalesce(egeria_report_guid, '') <> '')) "
+                "  GROUP BY p.slug"
+                ") u GROUP BY slug ORDER BY n DESC"
             ).fetchall()
         return Finding(
             key="orphan_publish_claims",
@@ -361,7 +393,26 @@ class EgeriaResync:
                 continue
             try:
                 members = cm.get_member_list(collection_guid=collection_guid)
-                if not isinstance(members, list):
+                # pyegeria signals an EMPTY collection with the string
+                # "No members found" rather than []. That is a definite answer
+                # — zero members — and the strictness here turned it into
+                # "could not determine".
+                #
+                # Measured 2026-08-31, after catalog_assets: all three
+                # investigations returned it, because a freshly rebuilt
+                # platform is exactly the case where no member is linked yet.
+                # All three went to `undetermined`, the finding reported 0, and
+                # the relink card never rendered — so the repair was
+                # unreachable in precisely the state it exists for.
+                #
+                # This module's rule is "unreachable is never stale", and it is
+                # right; the error was classing a definite empty result as
+                # unreachable. An empty collection means every member is
+                # unlinked, which is the strongest possible reason to show the
+                # card, not a reason to hide it.
+                if isinstance(members, str) and "No members found" in members:
+                    members = []
+                elif not isinstance(members, list):
                     raise ValueError(f"get_member_list returned {members!r}, not a list")
             except Exception as exc:
                 res.undetermined.append({

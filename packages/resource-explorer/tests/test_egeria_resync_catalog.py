@@ -317,3 +317,92 @@ class TestOrphanClaimRepairCannotBeOutrun:
         with reg._conn() as c:
             assert c.execute(
                 "SELECT count(*) FROM project_published_analyses").fetchone()[0] == 1
+
+
+class TestOrphanClaimScanMatchesItsRepair:
+    """The scan and its repair must key on the same thing.
+
+    `_do_clear_orphan_publish_claims` was fixed to key on the claim; the scan
+    that surfaces it was left keyed on asset absence. Measured live
+    2026-08-31 after `catalog_assets`: the scan reported 0 while 36 orphaned
+    claims existed. Giving the repos assets back made their pre-wipe claims
+    invisible, the card never rendered, and the repair became unreachable from
+    the panel at the exact moment it had become able to do the job.
+
+    A finding reporting zero reads as "nothing to do", so this failure costs
+    nothing to produce and everything to miss.
+    """
+
+    def test_a_claim_naming_a_dead_report_is_found_even_when_the_repo_has_an_asset(self):
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "chaoss_metrics", "r-destroyed")],
+            live_reports=("r-live",))
+        f = EgeriaResync(registry=reg)._scan_orphan_publish_claims()
+        assert [i["slug"] for i in f.items] == ["egeria_git"]
+        assert f.repair_step == "clear_orphan_publish_claims"
+
+    def test_the_check_can_actually_fail(self):
+        """Known-negative: a live claim must NOT be reported, or the test above
+        passes for a scan that flags everything."""
+        reg = _registry(
+            [("egeria_git", "asset-fresh", "linked")],
+            published_analyses=[("egeria_git", "repository_health", "r-live")],
+            live_reports=("r-live",))
+        assert EgeriaResync(registry=reg)._scan_orphan_publish_claims().items == []
+
+    def test_scan_and_repair_agree_on_the_same_rows(self):
+        """The property that actually matters: whatever the card offers to fix,
+        the repair removes — and nothing else."""
+        reg = _registry(
+            [("a", "asset-1", "linked"), ("b", "asset-2", "linked")],
+            published_analyses=[("a", "chaoss_metrics", "r-destroyed"),
+                                ("b", "repository_health", "r-live")],
+            live_reports=("r-live",))
+        r = EgeriaResync(registry=reg)
+        offered = sum(i["claims"] for i in r._scan_orphan_publish_claims().items)
+        assert r._do_clear_orphan_publish_claims()["claims_deleted"] == offered
+        assert r._scan_orphan_publish_claims().items == []
+
+
+class TestEmptyCollectionIsZeroNotUnknown:
+    """pyegeria returns the STRING "No members found" for an empty collection.
+
+    That is a definite answer — zero members — and treating it as a malformed
+    response sent all three investigations to `undetermined`, so the finding
+    reported 0 and the relink card never rendered. An empty collection means
+    every member is unlinked, which is the strongest reason to show the card.
+
+    Measured live 2026-08-31: 3 investigations undetermined, 0 reported; after
+    the fix, 3 investigations with 35 linkable members between them.
+    """
+
+    def _scanner(self, member_list_return):
+        from types import SimpleNamespace
+        reg = MagicMock()
+        reg.list_investigations.return_value = [
+            {"slug": "q3", "egeria_project_guid": "proj-q3"}]
+        reg.get_or_create_working_set.return_value = {"egeria_collection_guid": "coll-1"}
+        reg.list_investigation_members.return_value = [
+            {"entity_type": "repo", "entity_slug": "kafka"}]
+        reg.get.return_value = SimpleNamespace(egeria_asset_guid="asset-kafka")
+        r = EgeriaResync(registry=reg)
+        r._clients = {"collection": MagicMock(
+            get_member_list=MagicMock(return_value=member_list_return))}
+        return r
+
+    def test_an_empty_collection_reports_its_members_as_linkable(self):
+        from resource_explorer.egeria_resync import ScanResult
+        res = ScanResult()
+        f = self._scanner("No members found")._scan_unlinked_members(res)
+        assert res.undetermined == [], "an empty collection is not an unknown one"
+        assert f.count == 1 and f.items[0]["linkable"] == 1
+
+    def test_a_genuinely_malformed_response_is_still_undetermined(self):
+        """Known-negative. The relaxation must not swallow real failures —
+        that would trade a false unknown for a false zero, which is worse."""
+        from resource_explorer.egeria_resync import ScanResult
+        res = ScanResult()
+        f = self._scanner("CLIENT_ERROR_400 something went wrong")._scan_unlinked_members(res)
+        assert len(res.undetermined) == 1
+        assert f.count == 0
