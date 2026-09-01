@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
 log = logging.getLogger(__name__)
@@ -180,6 +181,93 @@ class SurveyDefinitionExecutor:
                 steps_report, step_outputs, errors = planned
                 pending_steps = []
 
+        # Order + guard information for the local loop below. Only built when
+        # the local loop is actually going to run something — Prefect having
+        # taken the whole definition (pending_steps == []) already evaluated
+        # guards itself, via prefect/flows.py::run_planned_step_task, and
+        # walked `survey_execution_plan`'s own topological order.
+        #
+        # docs/survey-guard-evaluation-design.md §2.5/§5: before this, the
+        # local loop walked `survey_def.steps` — the reader's flat,
+        # topologically-ordered-but-unbranched list — with no reference to
+        # `.links`/guards at all. Every step ran, always, regardless of what
+        # any upstream produced. This is the fallback docs/survey-model-and-
+        # engine-host-design.md §4.6 says must keep working indefinitely for
+        # an offline/Prefect-less run, so it has to be correct on its own,
+        # not merely "correct because every live definition today is
+        # unbranched" (true, but an accident of what's authored, not a
+        # property of this code).
+        plan_by_key: dict = {}
+        produced_guard: dict = {}
+        if pending_steps:
+            from resource_explorer.surveyors.survey_execution_plan import (
+                CyclicPlanError,
+                build_plan,
+            )
+
+            try:
+                plan = build_plan(survey_def)
+            except CyclicPlanError as exc:
+                # Same treatment as _run_via_prefect's identical guard: never
+                # run part of a survey whose steps cannot be ordered at all
+                # and call it complete.
+                raise SurveyDefinitionExecutorError(str(exc)) from exc
+
+            plan_by_key = {ps.qualified_name: ps for ps in plan.steps}
+            # Reorder pending_steps to the plan's topological order (a no-op
+            # for every definition that runs today — 4.5's own verification
+            # note: "every live definition plans to exactly its current
+            # order"). A step the plan didn't resolve (defensive only; every
+            # step in survey_def.steps came from the same survey_def the plan
+            # was built from) is appended rather than dropped, in its
+            # original position, so nothing silently vanishes from the run.
+            by_qn = {s.qualified_name: s for s in pending_steps}
+            ordered = [by_qn[ps.qualified_name] for ps in plan.steps if ps.qualified_name in by_qn]
+            seen_qns = {s.qualified_name for s in ordered}
+            ordered.extend(s for s in pending_steps if s.qualified_name not in seen_qns)
+            pending_steps = ordered
+
+        def _step_key(step) -> str:
+            """The same key `survey_execution_plan.build_plan` uses (its own
+            `key_of`, not exported): `re_analysis_step`, falling back to
+            `qualified_name`. Kept in sync deliberately — `guarded_by` dicts
+            are keyed by this, so a diverging key function here would make
+            every guard silently never match."""
+            return step.re_analysis_step or step.qualified_name or ""
+
+        def _guard_check(step) -> tuple[bool, str]:
+            """(may_run, reason). True with no reason when the step is
+            unconditional (no PlannedStep found, or an empty `guarded_by`) —
+            the overwhelmingly common case today, since authored guards are
+            held at "Any" (step_outcome.py's 2026-08-21 decision) until a
+            real branching definition exists.
+
+            Egeria fires a step if ANY ONE of its guarded incoming links is
+            satisfied (verified against EngineActionHandler.java — see
+            docs/survey-guard-evaluation-design.md §1). This instead requires
+            EVERY guarded incoming edge to match, the same simplification
+            prefect/flows.py::run_planned_step_task already makes — kept
+            consistent between the two paths rather than fixed in one and not
+            the other; §2.3 of the design doc explains why it makes no
+            observable difference to any definition that exists today.
+            `mandatoryGuard`'s join semantics are not evaluated at all: the
+            plan has nowhere to carry them (§2.2) — a gap, not a choice.
+            """
+            planned = plan_by_key.get(step.qualified_name)
+            guarded_by = getattr(planned, "guarded_by", None) if planned else None
+            if not guarded_by:
+                return True, ""
+            for upstream_key, required in guarded_by.items():
+                produced = produced_guard.get(upstream_key)
+                if produced != required:
+                    return False, (
+                        f"guard {required!r} required from {upstream_key!r} but it "
+                        + (f"produced {produced!r}" if upstream_key in produced_guard
+                           else "was never recorded — no step output in this run "
+                                "carried a 'guard' key for it")
+                    )
+            return True, ""
+
         from resource_explorer.config import get_config
         from resource_explorer.surveyors.prefect_adapter import PrefectFlowRunCancelled, run_prefect_step
 
@@ -212,6 +300,23 @@ class SurveyDefinitionExecutor:
         n = len(pending_steps)
         while i < n:
             step = pending_steps[i]
+
+            # Egeria's guard, evaluated — see docs/survey-guard-evaluation-design.md
+            # §1/§5. A step whose guard is not satisfied by what its upstream(s)
+            # produced did not happen, on this branch, in this run: emitted as
+            # SKIPPED_BY_DESIGN via result_status's own vocabulary, not as
+            # silence and not as an error (a branch not taken is not a failure).
+            may_run, guard_reason = _guard_check(step)
+            if not may_run:
+                log.info("Skipping %s — %s", step.qualified_name, guard_reason)
+                steps_report.append({
+                    "step": step.qualified_name,
+                    "status": result_status.SKIPPED_BY_DESIGN,
+                    "detail": guard_reason,
+                })
+                i += 1
+                continue
+
             use_prefect = _use_prefect(step)
 
             # D1 (docs/survey-tab-unification-plan.md) — batch a run of consecutive
@@ -236,6 +341,7 @@ class SurveyDefinitionExecutor:
                         _use_prefect(nxt)
                         or nxt.executes_at != "resource-explorer"
                         or nxt.re_analysis_step not in adapter.re_analysis_steps
+                        or not _guard_check(nxt)[0]
                     ):
                         break
                     group.append(nxt)
@@ -257,11 +363,17 @@ class SurveyDefinitionExecutor:
                         # "detail" here — not silently swallowed, just not
                         # individually attributed.
                         status = "error" if batch_errors else "ok"
+                        # One output for the whole group (`run_batch`'s point —
+                        # see its docstring), so one guard for the whole group:
+                        # the same "shared status" limitation the comment above
+                        # already names, not a new one.
+                        batch_guard = output.get("guard") if isinstance(output, dict) else None
                         for s in group:
                             entry = {"step": s.qualified_name, "status": status}
                             if batch_errors:
                                 entry["detail"] = "; ".join(batch_errors)
                             steps_report.append(entry)
+                            produced_guard[_step_key(s)] = batch_guard
                         errors.extend(batch_errors)
                     except Exception as exc:
                         msg = f"RE batch steps {step_keys} failed: {exc}"
@@ -279,6 +391,7 @@ class SurveyDefinitionExecutor:
                     output = run_prefect_step(entity_type, entity.slug, step.re_analysis_step, runner_kwargs)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "status": "ok", "engine": "prefect"})
+                    produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except PrefectFlowRunCancelled as exc:
                     # Distinct from a generic failure — this is the user
                     # actually stopping the survey (via the Admin "⚡ Prefect"
@@ -311,6 +424,7 @@ class SurveyDefinitionExecutor:
                     output = runner(entity, self.registry, **runner_kwargs)
                     step_outputs.append(output)
                     steps_report.append({"step": step.qualified_name, "status": "ok"})
+                    produced_guard[_step_key(step)] = output.get("guard") if isinstance(output, dict) else None
                 except Exception as exc:
                     msg = f"RE step '{step.re_analysis_step}' failed: {exc}"
                     log.exception(msg)
