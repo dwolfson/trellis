@@ -309,6 +309,90 @@ of this plan's deliverable).
 This phase is a hard prerequisite for Phase 2's guard design (point 4) —
 Phase 1 does not depend on its outcome and can proceed in parallel.
 
+#### Measured 2026-09-01 — RESULT: `AnnotationExtension` is UNI_LINK
+
+Both open questions above are answered. Peer sessions checked first (via
+`ListAgents`/session listing — none live/running at measurement time) per
+`coordinate-shared-writes`; the write below ran once, its own output captured
+to a file rather than the script being re-run to "check" it.
+
+**What was created**, against the live `qs-view-server` platform
+(`https://localhost:9443`):
+- Two throwaway `Annotation` elements, qualifiedName-tagged
+  `PHASE0-MEASURE-2026-09-01::annotation-A` /`::annotation-B` — GUIDs
+  `f1475b36-dfcc-461b-a247-f05525c3c75a` (A) and
+  `063593ea-21e6-42e1-8a2e-c2a18ace55d3` (B).
+- One `AnnotationExtension` relationship, `metadataElement1GUID=A`,
+  `metadataElement2GUID=B`, via `MetadataExpert.create_related_elements` —
+  returned relationship GUID `d97faaf5-9d14-46f2-8f59-e0a7ecf9fc23`.
+- The **identical** call, same body, same two GUIDs, made a second time
+  immediately after.
+
+**Result: the second create returned the exact same relationship GUID as the
+first** (`d97faaf5-9d14-46f2-8f59-e0a7ecf9fc23`, byte-identical) — it did not
+raise, and did not mint a new GUID. Read back two ways, independently of the
+write itself:
+- `DataDiscovery.get_annotation_extensions(guid_a)` — the real, existing
+  read-only call the audit already confirmed exists — returned exactly **one**
+  extension (annotation B), not two.
+- `MetadataExpert.get_all_related_elements(guid_a)` — a second, independent
+  read via a different client/endpoint — also returned exactly **one**
+  relationship in its `elementList`, matching `relationshipGUID`
+  `d97faaf5-...`.
+
+Both reads agreeing, from two different endpoints, on "one relationship, same
+GUID as both create calls" is conclusive: **`AnnotationExtension` is
+UNI_LINK** (one instance per ordered pair; a second create upserts/returns
+the existing instance rather than duplicating). This matches the precedent
+already measured for `CollectionMembership`/`ResourceList` on 2026-08-25 — the
+task brief's "assume relationships duplicate unless proven otherwise" default
+is now overridden by an actual measurement for this specific type, the same
+way it was for those two.
+
+**Also answered — point 2 (does the generic endpoint accept this type at
+all):** yes, without qualification. `create_related_elements` with
+`typeName: "AnnotationExtension"` between two `Annotation` elements succeeded
+on the first call with no end-type rejection; nothing in the "Honest-limits"
+bullet about server-side end-type validation applies to this type. Phase 2 is
+NOT blocked on this point.
+
+**Also answered — direction (Honest-limits section, "direction of
+`AnnotationExtension`'s two ends"):** `metadataElement1GUID` is end 1,
+`metadataElement2GUID` is end 2, in the straightforward order — no reversal.
+Confirmed two ways: `get_annotation_extensions(A)`'s response nests B under
+A with `relatedElementAtEnd1: true` (i.e., A — the call's own subject — is at
+end 1), and `get_all_related_elements(A)`'s response returns B with
+`elementAtEnd1: false` (B is end 2, consistent). Both API surfaces and both
+generated mermaid graphs render the arrow the same way: A —AnnotationExtension→ B.
+Phase 2's own open question ("evidence GUID to summary GUID, or the reverse")
+is therefore just a choice of which element is passed as
+`metadataElement1GUID` at call time — nothing about the type itself forces a
+direction.
+
+**What this means for Phase 2's idempotency guard, plainly:** the MULTI_LINK
+branch of point 4's design (the `get_all_related_elements`-based pre-check
+before every create) is **not needed** for `AnnotationExtension`. Phase 2 can
+follow the UNI_LINK branch instead — the same one `CollectionMembership`/
+`ResourceList` already use in `egeria_outbox.py::_create_collection_membership`/
+`_create_resource_list`: create-blind, no pre-check, replay-safe by the
+relationship's own semantics, because the server itself will not accumulate
+duplicates. This removes a real chunk of Phase 2's design complexity (the
+`{"elementList": [...]}` shape-trap guard, and its own required known-negative
+test) — worth restating explicitly since it is the answer the whole plan
+hinges on. (This measurement covers `AnnotationExtension` only —
+`AnnotationReview`, relevant only if Phase 3 is ever picked up, was not
+measured and should not be assumed to share this answer without its own
+measurement, per point 1 above.)
+
+**Cleanup:** confirmed complete. `MetadataExpert.detach_related_elements_in_store`
+removed the relationship, then `DataDiscovery.delete_annotation` (cascaded)
+removed both throwaway annotations. Verified independently (a third read, not
+a re-run of the write): a subsequent `get_all_related_elements(A)` raised
+`PyegeriaNotFoundException` — `OMRS-REPOSITORY-404-013 ... is soft-deleted in
+the open metadata repository` — confirming A no longer resolves. No test
+elements, and no `AnnotationExtension` relationships, remain from this
+measurement.
+
 ### Phase 1 — GUID capture + schema (same-run only, no relationships yet)
 
 **What changes:**

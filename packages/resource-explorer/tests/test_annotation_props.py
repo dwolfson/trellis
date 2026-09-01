@@ -122,3 +122,31 @@ class TestToStringMap:
     @pytest.mark.parametrize("cls", PUBLISHERS, ids=lambda c: c.__name__)
     def test_publishers_share_one_to_string_map(self, cls):
         assert cls._to_string_map({"a": {"b": 1}}) == to_string_map({"a": {"b": 1}})
+
+
+class TestEvidenceOfField:
+    """docs/annotation-linking-plan.md Phase 1: Annotation.evidence_of — a
+    same-run list-index signal, not a GUID (see the field's own docstring
+    for why cross-run reconstruction is unsafe)."""
+
+    def test_default_is_none_for_every_existing_annotation(self):
+        """Every annotation constructed the old way (no evidence_of kwarg)
+        must be unaffected — this is the compatibility guarantee the plan's
+        rollback section relies on."""
+        for ann in ALL_ANNOTATIONS:
+            assert ann.evidence_of is None
+
+    def test_can_be_set_to_point_at_another_annotation_in_the_same_run(self):
+        per_file = SchemaAnalysisAnnotation(summary="file 1", analysis_step="a", evidence_of=0)
+        assert per_file.evidence_of == 0
+
+    def test_known_negative_zero_is_not_falsy_none(self):
+        """0 is a legitimate index (the first annotation in the run) and must
+        not be conflated with "unset" — a naive `if ann.evidence_of:` guard
+        anywhere downstream would silently drop evidence pointing at index 0.
+        This pins the field's actual type contract (`int | None`, checked
+        with `is not None`), not just that *some* value round-trips."""
+        ann = SchemaAnalysisAnnotation(summary="s", analysis_step="a", evidence_of=0)
+        assert ann.evidence_of is not None
+        assert not (ann.evidence_of or False)  # 0 is falsy in Python...
+        assert ann.evidence_of is not None  # ...but must not be mistaken for unset

@@ -208,8 +208,23 @@ def publish_annotations(
     annotations: list,
     report_guid: str,
     qualified_name_prefix: str,
-) -> None:
+) -> list[str | None]:
     """Create one Annotation element per item in `annotations`, idempotently.
+
+    Returns one entry per input annotation, in order: the GUID (existing, if
+    adopted via the idempotency lookup, or newly created), or `None` if that
+    annotation's create failed (exception) or Egeria's create response carried
+    no `"guid"` key (see annotation-linking-plan.md Q1 — `.get("guid")` on a
+    keyless dict returns `None` with no exception, so this is a real state to
+    check for, not a "can't happen"). Added 2026-08-31 (annotation-linking-plan
+    Phase 1) — previously `discovery.create_annotation(body=body)`'s return
+    value was discarded here, on every caller of this shared function (the
+    direct/no-registry path — the outbox path, `egeria_outbox.py::
+    _create_annotation`, already captured its own copy of the same GUID via a
+    different call site and was unaffected). Callers that have nowhere to put
+    the GUID today (no registry, no per-row identity) are free to ignore the
+    return value, same as before this change; nothing about the create/lookup
+    behaviour below changed.
 
     The shared CREATE loop for EgeriaPublisher (repo), EgeriaDatabaseSurveyor
     and EgeriaFileSystemSurveyor — previously three near-identical copies, all
@@ -242,6 +257,7 @@ def publish_annotations(
     creating one annotation is logged and the loop continues rather than
     aborting the run.
     """
+    guids: list[str | None] = []
     for i, ann in enumerate(annotations):
         qualified_name = f"{qualified_name_prefix}::{i}"
 
@@ -254,13 +270,32 @@ def publish_annotations(
         if existing_guid:
             log.debug("Annotation %s already exists (GUID %s) — not re-creating",
                       qualified_name, existing_guid)
+            guids.append(existing_guid)
             continue
 
         body = build_annotation_body(ann, qualified_name, report_guid)
         try:
-            discovery.create_annotation(body=body)
+            guid = discovery.create_annotation(body=body)
         except Exception as exc:
             log.warning(
                 "Failed to create annotation %d (%s): %s",
                 i, ann.annotation_type.value, exc,
             )
+            guids.append(None)
+            continue
+
+        if not guid:
+            # Real failure would have raised (see pyegeria's
+            # _async_make_request contract, cited in the plan) — this is the
+            # "200 OK, no guid key" edge case, not a network/API error. Log it
+            # distinctly so it isn't mistaken for the exception path above.
+            log.warning(
+                "Annotation %d (%s) created (qualifiedName %s) but Egeria's "
+                "response carried no GUID",
+                i, ann.annotation_type.value, qualified_name,
+            )
+            guids.append(None)
+            continue
+
+        guids.append(guid)
+    return guids
