@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from resource_explorer.feedback_store import FeedbackStore
 from resource_explorer.registry import ProjectRegistry
 
 router = APIRouter()
@@ -76,22 +77,68 @@ class FeedbackCreate(BaseModel):
 
 
 @router.get("/feedback")
-def list_all_feedback(limit: int = 200, entity_type: str = "", category: str = "") -> dict:
-    """Every resource's feedback in one place, for Admin.
+def list_all_feedback(
+    limit: int = 200, entity_type: str = "", category: str = "", source: str = ""
+) -> dict:
+    """Every feedback item in one place, for Admin — from BOTH stores.
+
+    There are two independent feedback systems, and until 2026-09-01 this
+    route only read one of them:
+
+      * `resource_feedback` (`ProjectRegistry.add_resource_feedback`, this
+        module's `add_feedback` below) — per-resource, written from a
+        resource's Curate tab.
+      * `feedback` (`resource_explorer/feedback_store.py`) — the page-level
+        widget reachable from anywhere in the app.
+
+    A page-level submission and a per-resource one look, from the person who
+    wrote it, exactly the same: feedback that was left and never showed up
+    here. It was never dropped — the pane just never read the store it landed
+    in. Diagnosed 2026-08-31 (Dan: "I added feedback on a page and it never
+    makes it to the feedback pane of Admin").
+
+    This combines both into one list rather than merging them: the two tables
+    have genuinely different shapes (session/page/consent fields on one side,
+    entity_type/slug on the other), and a real merge is a separate, deliberate
+    task (see docs/Backlog.md) — not something to fold in as a side effect of
+    fixing visibility. Each row carries `source: "page" | "resource"` so the
+    two stay distinguishable until that task exists, and `source` is itself a
+    filter for the same reason `entity_type`/`category` are.
 
     Declared before the /{entity_type}/{slug} route below only for readability;
     they cannot collide, since that one needs two path segments.
 
-    Returns counts alongside the rows because an empty list is ambiguous on its
-    own — "nobody has left feedback" and "your filter excluded everything" look
-    identical, and the first is a fact worth stating plainly.
+    Returns per-source counts (not a combined total, which would hide a store
+    that is genuinely empty) alongside the rows, and `filtered` because an
+    empty list is ambiguous on its own — "nobody has left feedback" and "your
+    filter excluded everything" look identical, and only one of those is a
+    fact worth stating plainly.
     """
     reg = _registry()
+    resource_rows = reg.list_all_resource_feedback(
+        limit=limit, entity_type=entity_type, category=category)
+    resource_counts = reg.count_all_resource_feedback()
+
+    page_store = FeedbackStore()
+    # entity_type has no meaning for page-level feedback — it was never
+    # recorded against a resource at all. A filter on it must exclude every
+    # page row, not silently ignore the filter and show them regardless.
+    page_rows = [] if entity_type else page_store.list(category=category or None, limit=limit)
+    page_stats = page_store.stats()
+
+    combined = [dict(r, source="resource") for r in resource_rows]
+    combined += [dict(r, source="page") for r in page_rows]
+    if source:
+        combined = [r for r in combined if r["source"] == source]
+    combined.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+
     return {
-        "feedback": reg.list_all_resource_feedback(
-            limit=limit, entity_type=entity_type, category=category),
-        "counts": reg.count_all_resource_feedback(),
-        "filtered": bool(entity_type or category),
+        "feedback": combined[:limit],
+        "counts": {
+            "resource": resource_counts,
+            "page": {"total": page_stats["total"]},
+        },
+        "filtered": bool(entity_type or category or source),
     }
 
 

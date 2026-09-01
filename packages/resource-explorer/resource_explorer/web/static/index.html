@@ -625,9 +625,13 @@
            docs/repair-operations-design.md. -->
       <div id="admin-repair-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <div id="admin-outbox-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
-      <!-- Feedback view (Admin → Observe) — resource_feedback across every
-           resource. The per-resource list lives on the Curate pane; this is the
-           only place it can be read without already knowing where to look. -->
+      <!-- Feedback view (Admin → Observe) — BOTH feedback stores: resource_feedback
+           (per-resource, written from Curate) and feedback (page-level widget,
+           feedback_store.py), badged by source rather than merged — see
+           loadAdminFeedbackPanel() below and docs/Backlog.md for the eventual
+           merge. Neither store's per-origin list is otherwise reachable in one
+           place without visiting every resource, or the standalone
+           admin-feedback.html, in turn. -->
       <div id="admin-feedback-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
       <!-- Logs view (Admin → Observe) — the in-process ring buffer from
            observability/logging_setup.py. No file, nothing shipped: bounded and
@@ -9663,27 +9667,45 @@ function _renderEnvelopeMarkdown(env, slug) {
 
   const known = (env.facts || []).filter(f => f.is_known);
   const unknown = (env.facts || []).filter(f => !f.is_known);
-  lines.push(`Answering from ${known.length} measurement(s) on **${slug}**:\n`);
   known.forEach(f => {
     const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
     // _analysisDisplayName, not the raw analysis_id -- "catalog_presence" is
     // a slug, "Catalog Presence" (the catalog's own `name`) is what someone
     // asking a plain-language question can actually read.
-    lines.push(`- ${st.icon} **${_esc(_analysisDisplayName(f.analysis_id))}** — ${st.text}` +
+    const heading = `**${_esc(_analysisDisplayName(f.analysis_id))}**`;
+    const caveats =
       // Evidence informs a judgement; it is not the judgement. Phrasing it as
       // an answer would have this report "yes, it replaces X" from nothing
       // more than a shared primary language.
       (f.evidence_only ? ' _(evidence for you to judge, not an answer)_' : '') +
-      (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '') +
-      (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
+      (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '');
+    // Reported 2026-09-01: the answer was on the row all along --
+    // `concentration_detail` held a full sentence -- but the rendered line was
+    // "Answering from 1 measurement(s)..." over a bullet that said only
+    // "measured", with the sentence itself buried in a collapsed, truncated
+    // Evidence block. A fact's own `detail`/`*_detail` string IS the answer a
+    // surveyor wrote, not raw evidence to be judged -- lead with it, and treat
+    // the process framing (what ran, when) as what it is: provenance, not the
+    // answer.
+    const answerText = _factAnswerText(f.value);
+    if (answerText) {
+      lines.push(`- ${st.icon} ${heading}: ${_esc(answerText)}${caveats}`);
+      lines.push(`  \n  <span class="text-slate-500">${_esc(st.text)}` +
+        (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : '') + `</span>`);
+    } else {
+      // Nothing the surveyor wrote as prose -- the state line is what there
+      // is, and it stays the visible line rather than being demoted under a
+      // sentence that doesn't exist.
+      lines.push(`- ${st.icon} ${heading} — ${st.text}${caveats}` +
+        (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
+    }
     const summary = _summariseFactValue(f.value);
-    // Reported 2026-08-31: "registered: true · group: egeria ·
-    // siblings_in_group: 4 · ..." read as raw, not meaningful, right under
-    // the actual answer. Same fixed-wording state line above IS the answer;
-    // this is what backs it up. <details>/<summary> is plain HTML passed
-    // through marked() untouched (no sanitizer configured) -- the same
-    // collapsed-by-default, no-JS-state idiom already used for the Survey
-    // Definition step list, not a new mechanism.
+    // <details>/<summary> is plain HTML passed through marked() untouched (no
+    // sanitizer configured) -- the same collapsed-by-default, no-JS-state
+    // idiom already used for the Survey Definition step list, not a new
+    // mechanism. What differs from before: prose fields (detail/*_detail/
+    // measures_disagree) are excluded here now, because they're the answer
+    // shown above, not supporting evidence for it -- see _summariseFactValue.
     if (summary) {
       lines.push(`  \n  <details><summary class="cursor-pointer text-slate-500">Evidence</summary>\n\n  ${summary}\n  </details>`);
     }
@@ -9696,21 +9718,67 @@ function _renderEnvelopeMarkdown(env, slug) {
   if ((env.can_run || []).length) {
     lines.push(`\n_Re-run \`${env.can_run.join('`, `')}\` to refresh this._`);
   }
+  // Demoted from the lead line to a footer (2026-09-01): this is provenance
+  // about the answer ("how many things were checked"), not the answer, and
+  // leading with it read as an agent thinking out loud with nothing to show
+  // for it -- see the fact-by-fact prose promotion above.
+  lines.push(`\n_Answered from ${known.length} measurement(s) on **${_esc(slug)}**._`);
   return lines.join('\n');
 }
 
-//: A compact, honest reading of a results dict. Counts and named scalars only
+//: Which of a fact's own fields ARE its answer, not evidence about the
+//: answer. `detail`/`*_detail`/`measures_disagree` are prose a surveyor wrote
+//: itself (see resource_explorer/facts.py's `_r_community`, and
+//: `concentration_detail` on `project_commits`) -- not a narrative this layer
+//: is inventing on the value's behalf. That distinction is why this is safe:
+//: _summariseFactValue's caution ("must not invent a narrative the value does
+//: not support") is about synthesising text from scalars, and does not apply
+//: to a string the measurement already wrote.
+function _factProseKeys(value) {
+  if (!value || typeof value !== 'object') return [];
+  return Object.keys(value).filter(k => k === 'detail' || k.endsWith('_detail') || k === 'measures_disagree');
+}
+
+function _factAnswerText(value) {
+  return _factProseKeys(value)
+    .map(k => value[k])
+    .filter(v => typeof v === 'string' && v.trim())
+    .join(' ');
+}
+
+//: A compact, honest reading of a results dict's remaining fields -- the ones
+//: that are NOT the fact's own prose answer (that's `_factAnswerText`, shown
+//: above this in the chat, not here). Counts and named scalars only for those
 //: -- this must not invent a narrative the value does not support, which is
 //: what the fact layer exists to prevent one layer up.
 function _summariseFactValue(value) {
   if (!value || typeof value !== 'object') return '';
-  const skip = new Set(['_status', 'surveyed_at', 'detail', 'scoped_to', 'run_outcomes']);
+  const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes', ..._factProseKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {
     if (skip.has(k)) continue;
-    if (Array.isArray(v)) { if (v.length) parts.push(`${k}: ${v.length}`); }
+    if (Array.isArray(v)) {
+      if (v.length) {
+        // A bare count ("top_authors: 2") is strictly less informative than
+        // the array it summarises when the array is a list of named things --
+        // show who, not just how many.
+        const names = v.slice(0, 2)
+          .map(item => (item && typeof item === 'object')
+            ? (item.name ?? item.label ?? item.title ?? '')
+            : item)
+          .filter(x => x !== '' && x !== null && x !== undefined);
+        const preview = names.length ? ` (${names.join(', ')}${v.length > names.length ? ', …' : ''})` : '';
+        parts.push(`${k}: ${v.length}${preview}`);
+      }
+    }
     else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}: ${v}`);
-    else if (typeof v === 'string' && v.trim() && v.length < 60) parts.push(`${k}: ${v}`);
+    // No length cutoff here any more -- the 60-char cap used to be the other
+    // half of the bug (it silently ate `detail`/`*_detail` strings, which are
+    // exactly the long ones). Those are excluded from `skip` above and shown
+    // in full by _factAnswerText instead; whatever generic string field
+    // remains here was never the reason evidence looked empty, so nothing is
+    // lost by no longer truncating it too.
+    else if (typeof v === 'string' && v.trim()) parts.push(`${k}: ${v}`);
     if (parts.length >= 6) break;
   }
   return parts.join(' · ');
@@ -12616,12 +12684,26 @@ function _adminLogsToggleAuto(on) {
 }
 
 // ── Admin → Feedback ────────────────────────────────────────────────────────
-// resource_feedback across every resource. Until 2026-08-31 this could only be
-// read per resource, from that resource's Curate pane — so finding out whether
-// anyone had said anything meant visiting every resource in turn, and nobody
-// did. Feedback that can only be read where it was written is feedback nobody
-// reads.
-let _adminFeedbackFilter = { entity_type: '', category: '' };
+// Two independent feedback systems, shown badged rather than merged:
+//
+//   "resource" — resource_feedback, per-resource, written from a resource's
+//   Curate tab. Until 2026-08-31 this could only be read per resource, so
+//   finding out whether anyone had said anything meant visiting every
+//   resource in turn, and nobody did.
+//
+//   "page" — feedback (resource_explorer/feedback_store.py), the page-level
+//   widget reachable from anywhere in the app. Until 2026-09-01 this pane
+//   never read it at all — GET /api/curate/feedback queried resource_feedback
+//   only, so page-level feedback (Dan's: 9 rows back to 2026-08-11) rendered
+//   as "no feedback", indistinguishable from "nobody wrote any". It was never
+//   dropped, only unread from here — see /api/feedback (admin-feedback.html)
+//   for the store's own dedicated reader, which still works unchanged.
+//
+// The two are NOT merged into one row shape: they record genuinely different
+// things (session/page/consent fields vs. entity_type/slug) and a real merge
+// is a separate task (docs/Backlog.md). `source` badges each row so the two
+// stay disentangleable, and is itself a filter alongside entity_type/category.
+let _adminFeedbackFilter = { entity_type: '', category: '', source: '' };
 
 function _feedbackRatingHtml(r) {
   // A rating is optional (the column is nullable and the form allows a message
@@ -12633,6 +12715,22 @@ function _feedbackRatingHtml(r) {
   return `<span class="text-amber-400">${'★'.repeat(r)}<span class="text-slate-700">${'★'.repeat(Math.max(0, 5 - r))}</span></span>`;
 }
 
+// A column this row's SOURCE never records at all (e.g. "Resource" for a
+// page-level row) must read differently from a column that applies but was
+// left empty (e.g. an optional rating). The same "—" for both would make an
+// absent-by-design field look like a measured empty one.
+function _feedbackNA(why) {
+  return `<span class="text-slate-700 italic" title="${_esc(why)}">n/a</span>`;
+}
+
+function _feedbackSourceBadge(source) {
+  return source === 'page'
+    ? '<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-900/50 text-violet-300 border border-violet-800" title="feedback table — the page-level widget, reachable from anywhere in the app">page</span>'
+    : '<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-900/50 text-cyan-300 border border-cyan-800" title="resource_feedback table — recorded from a resource\'s Curate tab">resource</span>';
+}
+
+const _FEEDBACK_TRIAGE_COLOR = { new: 'text-amber-400', triaged: 'text-cyan-400', actioned: 'text-emerald-400' };
+
 async function loadAdminFeedbackPanel() {
   const view = document.getElementById('admin-feedback-view');
   const subnav = _adminSubnavHtml('admin-feedback');
@@ -12642,6 +12740,7 @@ async function loadAdminFeedbackPanel() {
     const qs = new URLSearchParams();
     if (_adminFeedbackFilter.entity_type) qs.set('entity_type', _adminFeedbackFilter.entity_type);
     if (_adminFeedbackFilter.category) qs.set('category', _adminFeedbackFilter.category);
+    if (_adminFeedbackFilter.source) qs.set('source', _adminFeedbackFilter.source);
     const res = await fetch(`/api/curate/feedback?${qs}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
@@ -12651,38 +12750,58 @@ async function loadAdminFeedbackPanel() {
   }
 
   const rows = data.feedback || [];
-  const counts = data.counts || { total: 0, resources: 0 };
-  const types = [...new Set(rows.map(r => r.entity_type))].sort();
+  const counts = data.counts || { resource: { total: 0, resources: 0 }, page: { total: 0 } };
+  const totalAcrossSources = (counts.resource?.total || 0) + (counts.page?.total || 0);
+  const types = [...new Set(rows.filter(r => r.source === 'resource').map(r => r.entity_type))].sort();
   const cats = [...new Set(rows.map(r => r.category).filter(Boolean))].sort();
 
-  // An empty list means two different things and they must not look alike.
-  const empty = data.filtered
-    ? '<div class="text-xs text-slate-500 py-10 text-center">No feedback matches this filter. Clear it to see all ' + counts.total + '.</div>'
-    : '<div class="text-xs text-slate-500 py-10 text-center">No feedback has been left on any resource yet.<br><span class="text-slate-600">It is recorded from a resource\'s Curate tab.</span></div>';
+  // An empty list means several different things and they must not look alike:
+  // a filter excluded everything (recoverable — clear it), vs. both stores
+  // being genuinely, unfilteredly empty (a fact, not a filter artifact).
+  let empty;
+  if (data.filtered) {
+    empty = `<div class="text-xs text-slate-500 py-10 text-center">No feedback matches this filter. Clear it to see all ${totalAcrossSources} (${counts.page?.total || 0} page, ${counts.resource?.total || 0} resource).</div>`;
+  } else if (totalAcrossSources === 0) {
+    empty = '<div class="text-xs text-slate-500 py-10 text-center">No feedback has been left anywhere yet.<br><span class="text-slate-600">Neither the page-level widget nor any resource\'s Curate tab has a row.</span></div>';
+  } else {
+    // Should not happen (unfiltered + a nonzero total implies rows), but a
+    // fallback that asserts nothing beats one that repeats "no feedback".
+    empty = '<div class="text-xs text-slate-500 py-10 text-center">Nothing rendered for this page, though feedback exists — try Refresh.</div>';
+  }
 
   const body = rows.length ? `
     <table class="w-full text-xs">
       <thead class="text-slate-500 border-b border-slate-800">
         <tr>
           <th class="px-2 py-1.5 text-left font-medium">When</th>
-          <th class="px-2 py-1.5 text-left font-medium">Resource</th>
+          <th class="px-2 py-1.5 text-left font-medium">Source</th>
+          <th class="px-2 py-1.5 text-left font-medium">Resource / Page</th>
           <th class="px-2 py-1.5 text-left font-medium">Category</th>
           <th class="px-2 py-1.5 text-left font-medium">Rating</th>
           <th class="px-2 py-1.5 text-left font-medium">Message</th>
+          <th class="px-2 py-1.5 text-left font-medium">Status</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-800">
-        ${rows.map(r => `
+        ${rows.map(r => {
+          const isPage = r.source === 'page';
+          const context = isPage
+            ? (r.page ? `<span class="text-fuchsia-400 font-mono">${_esc(r.page)}</span>` : '<span class="text-slate-700" title="No page recorded with this submission">—</span>')
+            : `<span class="text-slate-600">${_esc(r.entity_type || '')}</span> <span class="text-cyan-400 font-mono">${_esc(r.entity_slug || '')}</span>`;
+          const status = isPage
+            ? `<span class="${_FEEDBACK_TRIAGE_COLOR[r.triage_status] || 'text-slate-500'}">${_esc(r.triage_status || 'new')}</span>`
+            : _feedbackNA('resource_feedback has no triage workflow');
+          return `
           <tr class="hover:bg-slate-800/40">
             <td class="px-2 py-1.5 text-slate-500 font-mono whitespace-nowrap">${_esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
-            <td class="px-2 py-1.5 whitespace-nowrap">
-              <span class="text-slate-600">${_esc(r.entity_type || '')}</span>
-              <span class="text-cyan-400 font-mono">${_esc(r.entity_slug || '')}</span>
-            </td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${_feedbackSourceBadge(r.source)}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${context}</td>
             <td class="px-2 py-1.5 text-slate-400">${_esc(r.category || '—')}</td>
             <td class="px-2 py-1.5 whitespace-nowrap">${_feedbackRatingHtml(r.rating)}</td>
             <td class="px-2 py-1.5 text-slate-300">${_esc(r.message || '')}</td>
-          </tr>`).join('')}
+            <td class="px-2 py-1.5 whitespace-nowrap">${status}</td>
+          </tr>`;
+        }).join('')}
       </tbody>
     </table>` : empty;
 
@@ -12694,12 +12813,17 @@ async function loadAdminFeedbackPanel() {
       <div>
         <h2 class="text-sm font-semibold text-slate-200">💬 Feedback</h2>
         <p class="text-xs text-slate-500 mt-1">
-          ${counts.total} item${counts.total === 1 ? '' : 's'} across ${counts.resources} resource${counts.resources === 1 ? '' : 's'}.
-          Recorded from each resource's Curate tab; this is the only place it can be read without knowing where to look.
+          ${counts.page?.total || 0} page item${(counts.page?.total || 0) === 1 ? '' : 's'} (the widget on any page)
+          + ${counts.resource?.total || 0} resource item${(counts.resource?.total || 0) === 1 ? '' : 's'} across ${counts.resource?.resources || 0} resource${(counts.resource?.resources || 0) === 1 ? '' : 's'} (a resource's Curate tab)
+          = ${totalAcrossSources} total. Shown together, badged by origin — not merged; see the badge on each row.
         </p>
       </div>
       <div class="flex items-center gap-1.5 flex-wrap">
-        ${chip('All', 'entity_type', '')}
+        ${chip('All sources', 'source', '')}
+        ${chip('Page', 'source', 'page')}
+        ${chip('Resource', 'source', 'resource')}
+        <span class="text-slate-700 px-1">|</span>
+        ${chip('All resource types', 'entity_type', '')}
         ${types.map(t => chip(t, 'entity_type', t)).join('')}
         ${cats.length ? '<span class="text-slate-700 px-1">|</span>' : ''}
         ${cats.length ? chip('Any category', 'category', '') : ''}
@@ -12711,6 +12835,10 @@ async function loadAdminFeedbackPanel() {
 
 function _adminFeedbackSetFilter(key, val) {
   _adminFeedbackFilter[key] = val;
+  // Setting entity_type has no meaning for page-sourced rows; clearing an
+  // active page-only source filter here would silently show rows that don't
+  // support the entity_type facet at all — instead, leave source alone and
+  // let the empty state (page rows return none for entity_type) say so.
   loadAdminFeedbackPanel();
 }
 

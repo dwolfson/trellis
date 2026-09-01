@@ -128,12 +128,23 @@ class FeedbackStore:
             )
         return entry
 
-    def list(self, triage_status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    def list(
+        self,
+        triage_status: str | None = None,
+        category: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
         query = "SELECT * FROM feedback"
+        clauses: list[str] = []
         params: list[Any] = []
         if triage_status:
-            query += " WHERE triage_status = ?"
+            clauses.append("triage_status = ?")
             params.append(triage_status)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         with self._conn() as conn:
