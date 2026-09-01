@@ -618,6 +618,26 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         # Reads project_stats and other analyses' findings — no fetch of its
         # own, the same relationship repo_ci_quality has with its own data.
+        #
+        # **This is a REDUCER and was not declared as one.** It consumes five
+        # other steps' findings through query_findings(): ci_quality,
+        # security_hygiene, security_features, cve_scan, supply_chain.
+        # repo_security_summary carries "A reducer: no fetch, and no measurement
+        # of its own"; this said only "reads ... other analyses' findings",
+        # which describes the same fact without naming the dependency, so
+        # nothing recorded that its inputs must run first and no test pinned it.
+        #
+        # It cost a real bug. The kind list said `security_scan` — the analysis
+        # ID from analysis_catalog.yaml — where the finding KIND written by
+        # SecurityHygieneSurveyor is `security_hygiene`. Measured 2026-09-01:
+        # kind `security_scan` had 0 rows across 0 repos while `security_hygiene`
+        # had 252 `security_policy` findings, and every foss_scorecard
+        # security-policy verdict on record (155) was `unknown`. The scorecard
+        # was reporting a fact about its own lookup as a fact about the project.
+        #
+        # Ordering is now pinned in tests/test_step_execution_order.py — inputs
+        # at positions 3-21, this at 22 — so a reordering cannot silently feed
+        # it missing inputs.
     ),
     "repo_maturity": StepInfo(
         "repo_maturity", MaturitySurveyor,

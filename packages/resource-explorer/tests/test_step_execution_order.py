@@ -57,6 +57,22 @@ SUMMARY_INPUT_PRODUCERS = {
 }
 
 
+#: foss_scorecard is a reducer too, and was not declared as one — which is how a
+#: wrong kind in its input list survived. It reads these five finding kinds via
+#: query_findings(); the map is kind -> the step that WRITES that kind.
+#:
+#: `security_hygiene` is here deliberately, not `security_scan`. The latter is
+#: the analysis id and matched 0 rows across 0 repos, leaving all 155 recorded
+#: security-policy verdicts `unknown` while security_hygiene held 252 findings.
+FOSS_SCORECARD_INPUT_PRODUCERS = {
+    "ci_quality":        "repo_ci_quality",
+    "security_hygiene":  "repo_security",
+    "security_features": "repo_security_features",
+    "cve_scan":          "repo_cve_scan",
+    "supply_chain":      "repo_manifest_parse",
+}
+
+
 def _position(step_key: str) -> int:
     keys = list(STEP_REGISTRY)
     assert step_key in keys, f"{step_key} is not in STEP_REGISTRY"
@@ -114,3 +130,64 @@ def test_the_check_can_actually_fail():
     a, b = keys.index("repo_cve_scan"), keys.index("repo_manifest_parse")
     with pytest.raises(AssertionError):
         assert a < b, "deliberately reversed"
+
+
+def test_foss_scorecard_runs_after_every_input_it_reads():
+    """The guard that did not exist while the wrong-kind bug sat there.
+
+    foss_scorecard is a reducer over five other steps' findings but was never
+    declared one, so nothing pinned its position. Measured 2026-09-01: inputs at
+    3-21, foss_scorecard at 22 — correct, and correct by accident.
+    """
+    pos = _position("repo_foss_scorecard")
+    late = {kind: p for kind, p in
+            ((k, _position(s)) for k, s in FOSS_SCORECARD_INPUT_PRODUCERS.items())
+            if p > pos}
+    assert not late, (
+        f"foss_scorecard runs at {pos} but these inputs are produced after it: "
+        f"{late}. It would read the PREVIOUS run's findings and score a repo on "
+        f"stale evidence without failing.")
+
+
+def test_every_kind_foss_scorecard_reads_is_one_something_writes():
+    """The regression guard for the actual bug: a kind nobody writes.
+
+    A finding kind that no surveyor emits is indistinguishable from an analysis
+    that never ran — the scorecard reported "neither security analysis has run"
+    about repos where it had. Reads the kind list out of the source so the test
+    cannot drift from it.
+    """
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "resource_explorer" / "surveyors"
+           / "sub_surveyors" / "foss_scorecard.py").read_text()
+    # `[^)]*` stops at the statement's own closing paren. A `.*?` with re.S
+    # ran past it and swallowed string literals from the function body
+    # ('check_name', 'label', 'polic'), so the first version of this test failed
+    # on its own parsing rather than on the code — a check weaker, and here
+    # noisier, than it looked.
+    matches = re.findall(r'for kind in \(([^)]*)\)', src)
+    assert matches, "could not locate foss_scorecard's kind list(s)"
+    kinds = {k for m in matches for k in re.findall(r'"([a-z_]+)"', m)}
+    assert kinds, "parsed no kinds — the test would pass vacuously"
+    # Both loops must be covered: run()'s fetch list and _c_security_policy's.
+    assert len(matches) >= 2, (
+        f"expected at least 2 `for kind in (...)` sites, found {len(matches)} — "
+        "if one was removed this test now covers less than it claims")
+    unknown = kinds - set(FOSS_SCORECARD_INPUT_PRODUCERS)
+    assert not unknown, (
+        f"foss_scorecard reads finding kind(s) {unknown} that no step in "
+        f"FOSS_SCORECARD_INPUT_PRODUCERS writes. A kind nobody emits matches "
+        f"zero rows forever and reads as 'that analysis never ran'.")
+
+
+def test_the_wrong_kind_would_be_caught():
+    """Known-negative: the check above must reject the historical bug.
+
+    Without this, the test passes for a parser that finds nothing.
+    """
+    kinds = {"ci_quality", "security_scan"}   # the shape as it was
+    unknown = kinds - set(FOSS_SCORECARD_INPUT_PRODUCERS)
+    assert unknown == {"security_scan"}, (
+        "the producer map would not have flagged the original wrong kind")

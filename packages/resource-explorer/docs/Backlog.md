@@ -57,6 +57,25 @@ Grouped by area. Within a group, the most actionable entries come first.
 
 ### Survey execution
 
+> **STATUS 2026-09-01, later the same day: the precondition half of this is BUILT and this entry is
+> stale where it says otherwise.** `survey_orchestrator.py:226-241` evaluates a step's
+> `requires_context`, and on a failed precondition emits a `SKIPPED_BY_DESIGN` annotation carrying
+> the reason and records `result.skipped_steps[step_key]`. `step_preconditions.PRECONDITIONS`
+> defines `has_dependencies`, `has_versioned_dependencies`, `has_file_inventory` and
+> `has_code_symbols`, and `repo_cve_scan` declares `has_versioned_dependencies` in production.
+>
+> Caught by an agent scoping the GAP analyses, which read this entry as a statement of current
+> state and would have rebuilt the orchestrator plumbing. Verified against the source before this
+> note was written. **What remains open is the vocabulary, not the mechanism** — richer context
+> facts (`first_party_code`, `is_deployable`, `has_documentation_site`) per
+> `docs/repo-context-and-tool-routing.md` §4, and guard evaluation in the EXECUTOR, which is
+> separate and still unbuilt.
+>
+> The entry is kept rather than deleted because the reasoning below is what the built feature
+> honours, and because a backlog item that silently disappears leaves no record of why it was
+> closed. An entry that outlived what it described, in a document whose whole job is to describe
+> what is outstanding.
+
 **No conditional execution of survey steps — every selected step runs, whether or not it can say
 anything.** Raised by Dan 2026-09-01. `SurveyOrchestrator.run()` iterates
 `list(all_surveyors.items())` and runs each in turn. The only filters are the cost ceilings
