@@ -687,6 +687,35 @@ of those.** See `Backlog.md`, "No Gradle support in the dependency parser". Unti
 To see 8 of 8 after the redeploy, pick a repo with a supported manifest — `egeria_python_git`
 (pyproject.toml) is the obvious one — rather than Egeria itself.
 
+**Update 2026-09-01: Gradle support landed (`946a1b3`) and it did NOT close this. Measured, not
+assumed.** A full survey of `egeria_git` now produces **216 dependency rows** where it produced 0,
+so the parser works and the step ordering is fine (`repo_manifest_parse` is position 3,
+`repo_cve_scan` 21 — verified, and now guarded by `tests/test_step_execution_order.py`).
+
+`security_summary` still reports:
+
+    input_coverage: partial — "7 of 8 security inputs have run. Never ran: cve_scan."
+
+**The real blocker is one column: every one of the 216 rows has an empty `dep_version`.**
+
+    dep_name='ch.qos.logback:logback-classic'  dep_version=''  ecosystem='java'  source_file='build.gradle'
+
+Egeria's `build.gradle` files declare versions through a version catalog / variables rather than
+inline, so the parser recovers the coordinate but not the version. A CVE lookup needs name AND
+version, so `cve_scan` declines — correctly. Closing this needs version RESOLUTION (reading
+`gradle/libs.versions.toml`, or a dependency lockfile), which is a different and larger job than
+parsing `build.gradle`. **`Backlog.md`'s "No Gradle support in the dependency parser" is now done and
+is not the thing standing in the way.**
+
+**A second-order problem this exposes, and it is the more general one.** `cve_scan` declining writes
+no findings, and `security_summary` reads an empty `query_findings(slug, "cve_scan")` as *never ran*.
+So "declined for want of versions" and "never executed" are the same signal downstream — the
+`NOTHING_FOUND` / `NEVER_RUN` conflation that `surveyors/result_status.py` exists to prevent, in a
+place that does not use it. This is the concrete case for `Backlog.md`'s "No conditional execution of
+survey steps": a step that cannot run should record `SKIPPED_BY_DESIGN` **with its reason**, so the
+summary can say "cve_scan could not run: no dependency versions available" instead of implying nobody
+ever tried.
+
 
 ## Done 2026-08-26/27 — do not redo
 

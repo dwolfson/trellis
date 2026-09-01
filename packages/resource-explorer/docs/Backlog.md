@@ -87,6 +87,29 @@ note already proposes the shape — `requires_context` alongside `requires_resou
 dispatch, producing a `skipped_by_design` with a reason when unmet
 (`docs/repo-context-and-tool-routing.md` §4) — but nothing is built beyond the one hand-wired gate.
 
+**Egeria already has the branching half of this, and it is worth not reinventing.** Reported
+2026-09-01 by a concurrent session that read `EngineActionHandler.initiateNextEngineActions`
+(lines 2839-2945) in the Java source directly — **recorded here second-hand; not verified from the
+source by the author of this entry**, so confirm before building on it:
+
+- Each `NextGovernanceActionProcessStep` link carries a `guard` and a `mandatoryGuard`.
+- `validNextAction = (guard == null)`; otherwise the link fires only if that guard string appears in
+  the previous step's `outputGuards`.
+- A step emits guards through `recordCompletionStatus(status, outputGuards, ...)` and may emit
+  several.
+- `mandatoryGuard` is a **join, not a branch** — `runEngineActionIfReady` holds a prepared action
+  until every mandatory guard has arrived from its upstreams.
+
+So the model is "one step, several outgoing links each with a guard, follow the ones whose guard
+fired". That is a real answer to *which steps run*, and it means RE should express conditionality in
+Egeria's vocabulary rather than inventing a parallel one.
+
+**What Egeria's model does NOT give you is the part this entry is actually about.** Guards say which
+links *fire*; nothing records what therefore *did not run*, or why. A step that is simply never
+reached leaves no trace, which is precisely the silence that makes `NOTHING_FOUND` and `NEVER_RUN`
+indistinguishable downstream. Whatever is built has to add the `SKIPPED_BY_DESIGN`-with-a-reason
+record on top of guard evaluation — it will not come for free with the guards.
+
 **Related, and deliberately kept separate:** step *ordering* is a different problem and is currently
 correct. Producers precede consumers in `STEP_REGISTRY`, verified live 2026-08-31 (one `amundsen`
 survey produced 880 dependency rows and 8 cve_scan findings in the same run) and now guarded by
