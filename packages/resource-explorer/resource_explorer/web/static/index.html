@@ -6788,6 +6788,56 @@ async function loadSchedulesEditor(slug, resourceType, analyses) {
     </div>`;
 }
 
+async function runSurveyNow(slug, qualifiedName, isScheduled, btn) {
+  // Run-now is offered on EVERY survey, not only scheduled ones.
+  //
+  // The first version gated it on a schedule existing, reasoning that the
+  // endpoint runs "the schedule". Dan's framing was better and this follows it:
+  // these are surveys someone would most likely put on a cadence AND
+  // occasionally fire by hand, and on a resource with no survey schedule the
+  // column was simply empty everywhere — a feature that looked missing rather
+  // than conditional.
+  //
+  // Two routes, because they answer different questions and only one exists
+  // for an unscheduled survey:
+  //   scheduled  -> the schedules run-now, i.e. the SAME dispatch the timer
+  //                 uses, so what you see is what the cadence will do;
+  //   unscheduled-> the ordinary Survey Definition run.
+  // Same button, same result to the reader; the distinction is stated in the
+  // tooltip rather than hidden.
+  if (isScheduled) return runScheduleNow('repo', slug, qualifiedName, btn);
+
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); btn.textContent = 'Running…'; }
+  try {
+    const res = await fetch(`/api/survey-definitions/repo/${encodeURIComponent(slug)}/run`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ survey_definition_ref: qualifiedName }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast('error', `Run failed: ${_esc(body.detail || `HTTP ${res.status}`)}`, 9000);
+      return;
+    }
+    const errs = body.errors || [];
+    if (errs.length) {
+      showToast('error', `Ran with ${errs.length} error(s): ${_esc(errs.slice(0, 2).join('; '))}`, 12000);
+    } else {
+      showToast('success', 'Survey run complete. Not scheduled — use Schedule to put it on a cadence.', 8000);
+    }
+  } catch (e) {
+    showToast('error', `Could not run: ${_esc(String(e))}`, 8000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original || '▶ Run now'; }
+    try {
+      if (typeof loadAutomateSurveysPanel === 'function'
+          && document.getElementById('automate-view')?.offsetParent !== null) {
+        loadAutomateSurveysPanel();
+      }
+    } catch { /* non-fatal */ }
+  }
+}
+
 async function runScheduleNow(entityType, slug, analysisId, btn) {
   // Dan, 2026-09-01: "With schedules and Surveys in Automate, seems like there
   // should be a run now option?" There was not — schedules could only be waited
@@ -6837,6 +6887,16 @@ async function runScheduleNow(entityType, slug, analysisId, btn) {
   } catch (e) {
     showToast('error', `Could not run: ${_esc(String(e))}`, 8000);
   } finally {
+    // Refresh the Automate panel if it is what is showing, so `last run` and
+    // the outcome column reflect what just happened. A row that still says
+    // "not run yet" after a run is the same invisible-success problem as a
+    // toast nobody catches.
+    try {
+      if (typeof loadAutomateSurveysPanel === 'function'
+          && document.getElementById('automate-view')?.offsetParent !== null) {
+        loadAutomateSurveysPanel();
+      }
+    } catch { /* non-fatal */ }
     // Restored in `finally` so a failure cannot strand the button disabled with
     // no way to retry.
     if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original || 'Run now'; }
@@ -7227,7 +7287,10 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
         const sched = schedules[c.qualified_name];
         const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
         return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
-            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
+            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>${sched ? `<button id="sched-run-${safeId}"
+                onclick='runScheduleNow(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(c.qualified_name)}, this)'
+                class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap ml-1"
+                title="Run this scheduled survey now. Does not change its next scheduled run.">▶ Run now</button>` : ''}`;
       })()}
       ${(() => {
         // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
@@ -8305,6 +8368,11 @@ function renderAutomateSurveysPanel(defs, existing) {
         <select id="${selId}" class="text-xs bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200">${opts}</select>
         <button onclick="_saveSurveySchedule('${_esc(d.qualified_name)}','${selId}')"
           class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors ml-1">Schedule</button>
+        <button onclick='runSurveyNow(${JSON.stringify(selectedProject)}, ${JSON.stringify(d.qualified_name)}, ${sched ? 'true' : 'false'}, this)'
+          class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors ml-1"
+          title="${sched
+            ? 'Run this survey now, through the same dispatch the scheduler uses. Does not change the next scheduled run.'
+            : 'Run this survey now. It has no cadence — scheduling it is a separate action.'}">▶ Run now</button>
         ${sched ? `<button onclick="_deleteAutomateSchedule('repo','${_esc(selectedProject)}','${_esc(d.qualified_name)}')"
           class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors ml-1" title="Remove this schedule">🗑️</button>` : ''}
       </td>

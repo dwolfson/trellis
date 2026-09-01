@@ -133,3 +133,64 @@ class TestCacheWarmIsBestEffort:
         # request path would record it. The warm changes WHEN the lookup
         # happens, never WHAT it concludes.
         assert out["resolved"] == 1
+
+
+class TestDefinitionPrefetch:
+    """The second half of the cold cost.
+
+    Warming question GUIDs alone took a cold phase from >10s to ~1s; the
+    residual second was `_fetch_cache`, holding each definition's fetched
+    steps. Ten definitions, each paid for once by whichever phase touched it
+    first — so the delay moved rather than went away, and the first user still
+    paid it.
+    """
+
+    def test_one_unreachable_definition_does_not_stop_the_others(self):
+        """Per-item isolation, the same rule the repair paths use: nine
+        definitions warming must not depend on the tenth."""
+        from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+        r = SurveyDefinitionReader()
+        calls = []
+
+        def _guid(qname):
+            calls.append(qname)
+            if "Full" in qname:
+                raise ConnectionError("this one is unreachable")
+            return f"guid-for-{qname}"
+
+        with patch.object(SurveyDefinitionReader, "find_process_guid_by_name", side_effect=_guid), \
+             patch.object(SurveyDefinitionReader, "fetch", return_value=object()):
+            done, failed = r._warm_definition_fetches()
+
+        assert len(calls) > 1, "must attempt every definition, not stop at the first failure"
+        assert done == len(calls) - 1, "all but the failing one should be cached"
+        assert failed == 1, (
+            "a swallowed per-item failure must still be COUNTED — otherwise a "
+            "mostly-broken warm is indistinguishable from a small catalog")
+
+    def test_it_counts_what_was_CACHED_not_what_was_attempted(self):
+        """Known-negative for the count. A definition whose GUID does not
+        resolve is not warm, and reporting it as warmed would be the same class
+        of claim this codebase keeps removing — a number that overstates what
+        actually happened."""
+        from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+        r = SurveyDefinitionReader()
+        with patch.object(SurveyDefinitionReader, "find_process_guid_by_name", return_value=None), \
+             patch.object(SurveyDefinitionReader, "fetch") as fetch:
+            done, failed = r._warm_definition_fetches()
+        assert done == 0
+        assert not fetch.called, "must not fetch when there is no GUID to fetch by"
+
+    def test_listing_definitions_never_needs_egeria(self):
+        """Discovering WHAT to warm reads the local documents, so a warm can
+        begin even with the platform down — only the per-definition fetch needs
+        Egeria, and each failure there is independent."""
+        from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+        r = SurveyDefinitionReader()
+        with patch.object(SurveyDefinitionReader, "find_process_guid_by_name",
+                          side_effect=ConnectionError("platform down")):
+            done, failed = r._warm_definition_fetches()
+        assert done == 0, "no definition should be reported warm when Egeria is unreachable"

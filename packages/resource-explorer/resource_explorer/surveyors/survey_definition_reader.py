@@ -511,9 +511,82 @@ class SurveyDefinitionReader:
             return {"warmed": 0, "resolved": 0, "skipped": type(exc).__name__}
 
         resolved = sum(1 for _q, g in pairs if g)
-        log.info("survey-definition cache warmed: %d question(s) checked, %d resolved",
-                 len(questions), resolved)
-        return {"warmed": len(questions), "resolved": resolved, "skipped": ""}
+
+        # Second half of the cold cost, added after measuring the first fix.
+        #
+        # Warming question GUIDs alone took a cold phase from >10s to ~1s, and
+        # the residual second was a DIFFERENT global cache: `_fetch_cache`,
+        # which holds each definition's fetched steps. Ten definitions, each
+        # paid for once by whichever phase happens to touch it first — so the
+        # delay simply moved rather than going away, and it was still the first
+        # user who paid it.
+        #
+        # Measured 2026-09-01 on a freshly restarted server: first open of a
+        # phase 0.7-1.7s, the SAME phase again 0.14s. That gap is this.
+        definitions, definitions_failed = self._warm_definition_fetches()
+
+        # Failures logged at WARNING, not debug: a warm that silently managed
+        # three of ten leaves the delay it exists to remove, and nobody would
+        # know without being told.
+        if definitions_failed:
+            log.warning("survey-definition cache warm: %d definition(s) could NOT be "
+                        "prefetched — the first request for those will pay the cost",
+                        definitions_failed)
+        log.info("survey-definition cache warmed: %d question(s) checked, %d resolved, "
+                 "%d definition(s) prefetched, %d failed",
+                 len(questions), resolved, definitions, definitions_failed)
+        return {"warmed": len(questions), "resolved": resolved,
+                "definitions": definitions, "definitions_failed": definitions_failed,
+                "skipped": ""}
+
+    def _warm_definition_fetches(self) -> tuple[int, int]:
+        """Prefetch every authored definition into `_fetch_cache`. Never raises.
+
+        Returns **(cached, failed)**, not just a success count.
+
+        Reads the definition list LOCALLY (`documented_definitions`), the same
+        source `/api/survey-definitions/definitions` uses, so discovering what
+        to warm never depends on Egeria being reachable. Only the per-definition
+        `fetch()` does, and each failure there is independent and survivable.
+
+        `cached` counts what was actually cached, never what was attempted — a
+        definition whose GUID does not resolve is not warm, and counting it
+        would overstate what happened.
+
+        **Why a failure count rather than only a success count.** The first
+        version returned `cached` alone and `test_no_silent_success` correctly
+        flagged it: "3 warmed" and "3 warmed, 7 failed" were the same value to
+        every caller, so a mostly-broken warm was indistinguishable from a
+        small catalog. The per-item `except` is deliberate — one unreachable
+        definition must not stop the other nine — but deliberate swallowing
+        still has to leave a trace the caller can branch on. That is the
+        difference between best-effort and silent.
+        """
+        try:
+            from resource_explorer.surveyors.survey_definition_docs import (
+                _PROCESS_PREFIX, documented_definitions,
+            )
+            names = [f"{_PROCESS_PREFIX}{n}" for n in documented_definitions()]
+        except Exception as exc:
+            log.debug("definition warm: could not list definitions: %s", exc)
+            return 0, 0
+
+        done = failed = 0
+        for qname in names:
+            try:
+                guid = self.find_process_guid_by_name(qname)
+                if not guid:
+                    continue
+                self.fetch(guid)
+                done += 1
+            except Exception as exc:
+                # One unreachable or malformed definition must not stop the
+                # other nine warming — the same per-item isolation the repair
+                # paths in egeria_resync use, for the same reason. Counted, so
+                # the caller can tell a partial warm from a complete one.
+                failed += 1
+                log.debug("definition warm: %s skipped (%s)", qname, type(exc).__name__)
+        return done, failed
 
     #: Concurrency for question-GUID resolution. Small on purpose: these are
     #: reads against one Egeria server, and the goal is to stop waiting in
