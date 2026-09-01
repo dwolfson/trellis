@@ -107,6 +107,11 @@ class TestFilterByIntent:
             # evaluates against criteria (someone else's, externally held) and
             # it fetches, so neither half of Discovery's signature applies.
             "cii_badge",
+        # The four GAP analyses, added 2026-09-01. All intent: assessment —
+        # they answer "is this worth pursuing / can this be trusted", which is
+        # what the assessment tier is for, rather than "what is in this repo"
+        # (scouting) or "how is it built" (analysis).
+        "secret_scan", "telemetry_scan", "contribution_provenance", "sla_content",
         }
 
     # architecture_recovery was assigned intent: discovery 2026-08-22 (the

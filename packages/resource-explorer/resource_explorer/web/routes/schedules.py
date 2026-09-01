@@ -120,6 +120,78 @@ def delete_schedule(entity_type: str, slug: str, analysis_id: str) -> dict:
     return {"status": "success"}
 
 
+@router.post("/{entity_type}/{slug}/{analysis_id}/run")
+def run_schedule_now(entity_type: str, slug: str, analysis_id: str) -> dict:
+    """Run a scheduled analysis immediately, without waiting for its next slot.
+
+    Dan, 2026-09-01: "With schedules and Surveys in Automate, seems like there
+    should be a run now option?" There was not. Schedules had GET/POST/DELETE
+    and `scheduler._run_due()` fires on a timer with no way to trigger one — so
+    a schedule could only be WAITED for, which also made it impossible to
+    confirm a schedule worked without watching for the slot to come round.
+
+    Deliberately reuses `scheduler._execute`, the same dispatch the timer uses.
+    A second code path would let "run now" and "ran on schedule" diverge, and
+    the whole value of this is confirming what the SCHEDULE will do.
+
+    Runs SYNCHRONOUSLY, in a worker thread, and returns the outcome. Not
+    fire-and-forget: the point is to see the result. Note that some analyses are
+    genuinely slow — repo_secret_scan measured 277s on a large repository — so
+    a caller should expect this to block for as long as the analysis takes,
+    which is the honest behaviour rather than a success returned before the work
+    is done.
+
+    Does NOT advance `next_run`. This is an out-of-band run, and moving the
+    schedule because someone tested it would silently skip the next real slot —
+    a side effect nobody asked for, and one that would be invisible until an
+    expected run did not happen.
+    """
+    from fastapi import HTTPException
+
+    from resource_explorer import scheduler as _scheduler
+
+    registry = ProjectRegistry()
+    _require_resource(registry, entity_type, slug)
+
+    rows = registry.get_schedules(entity_type, slug)
+    entry = next((r for r in rows if r.get("analysis_id") == analysis_id), None)
+    if entry is None:
+        # A 404 rather than running it anyway: this endpoint runs THE SCHEDULE,
+        # and running an analysis that has none would answer a different
+        # question from the one asked. /analyses/{id}/run already exists for the
+        # unscheduled case.
+        raise HTTPException(
+            status_code=404,
+            detail=f"No schedule for analysis '{analysis_id}' on {entity_type} '{slug}'. "
+                   f"Use the resource's own analyses/{analysis_id}/run to run it unscheduled.")
+
+    target_kind = entry.get("target_kind") or TARGET_ANALYSIS
+    try:
+        name, location, errors = _scheduler._execute(
+            entity_type, slug, analysis_id, registry, target_kind=target_kind,
+        )
+    except Exception as exc:
+        # Surfaced, not swallowed. A scheduled run that fails on the timer
+        # writes its error to the activity log where someone may never look;
+        # a run the user asked for should tell them to their face.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Run failed: {type(exc).__name__}: {exc}") from exc
+
+    return {
+        "status": "ok" if not errors else "completed_with_errors",
+        "entity_type": entity_type, "entity_slug": slug,
+        "analysis_id": analysis_id, "target_kind": target_kind,
+        "entity_name": name, "entity_location": location,
+        "errors": errors,
+        # Stated explicitly so a caller cannot infer otherwise from a 200: the
+        # schedule is untouched and its next slot still stands.
+        "next_run_advanced": False,
+        "schedule": entry.get("schedule", ""),
+        "next_run": entry.get("next_run", ""),
+    }
+
+
 @router.post("/{entity_type}/{slug}")
 def save_schedule(entity_type: str, slug: str, entry: ScheduleEntry) -> dict:
     """Create or update a schedule for a specific analysis on a resource."""

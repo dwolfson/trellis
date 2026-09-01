@@ -86,6 +86,17 @@ class TestSurveyResultDashboardsRegistry:
             "cve_scan", "foss_scorecard", "cii_badge",
             # The reducer over the other eight, added 2026-08-31.
             "security_summary",
+            # The four GAP analyses, added 2026-09-01. Listed explicitly, like
+            # every other member: this test is a deliberate-decision guard, and
+            # widening it would defeat the point of having it.
+            #
+            # `sla_content` is the uncomfortable one and is recorded as such —
+            # it reports a governance/transparency property, not a security
+            # control, and its AnalysisKind carries no family="security"
+            # accordingly. It sits here because no governance dashboard exists
+            # yet, which is a placement of convenience; if one is ever added,
+            # this is the first thing that should move.
+            "secret_scan", "telemetry_scan", "contribution_provenance", "sla_content",
         }
         assert d.analysis_ids[0] == "security_summary", (
             "the summary must lead the dashboard: a reader who takes in one card "

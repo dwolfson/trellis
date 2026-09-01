@@ -418,6 +418,82 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Secret Scan
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_secret_scan
+
+### Description
+Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (222 rules, MIT, provenance recorded). Reports what it matched AND which ruleset version it matched with — never 'no secrets', only 'no matches against this ruleset in HEAD'.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_secret_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Telemetry Scan
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_telemetry_scan
+
+### Description
+Telemetry / phone-home indicators: known SDK imports and literal outbound endpoints, paired with whether the project discloses them. Never labels an ordinary API client as telemetry.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_telemetry_scan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Contribution Provenance
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_contribution_provenance
+
+### Description
+CLA/DCO provenance, kept as two separate questions: whether sign-off is STATED, and whether it is ENFORCED. Config presence alone is reported `partial`, never `pass`.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_contribution_provenance |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Sla Content
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_sla_content
+
+### Description
+Whether the project publishes support or service-level commitments. Deliberately NEUTRAL (present/absent, not pass/gap): most repositories legitimately publish none, and absence alone never raises an action.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_sla_content |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Foss Scorecard
 
 ### Qualified Name
@@ -964,6 +1040,54 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_cve_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_secret_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_secret_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_telemetry_scan
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_telemetry_scan
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_contribution_provenance
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_contribution_provenance
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_sla_content
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_sla_content
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_foss_scorecard

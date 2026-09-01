@@ -2964,6 +2964,19 @@ async function _submitSchedule(analysisId, entityType, slug) {
 // genuinely bespoke shapes handled by name in _renderCustomAnalysisResults()
 // below (dependency-by-ecosystem, data-profile summary, API structure).
 const _REPO_RESULTS_RENDER_MODE = {
+  // The four GAP analyses, added 2026-09-01. All `findings_list`, which needs
+  // no new frontend code (design D4) — the point of that render mode is that a
+  // new analysis reaching the Results tab costs a backend reader and nothing
+  // here but a line.
+  //
+  // They are listed because a backend results view with no entry in this map
+  // means the Results button never renders: the findings would be computed,
+  // stored, and unreachable. test_every_kind_with_results_has_a_render_mode
+  // exists to catch exactly that, and did.
+  secret_scan: 'findings_list',
+  telemetry_scan: 'findings_list',
+  contribution_provenance: 'findings_list',
+  sla_content: 'findings_list',
   chaoss_metrics: 'findings_list',
   cii_badge: 'findings_list',
   security_summary: 'findings_list',
@@ -6746,6 +6759,14 @@ async function loadSchedulesEditor(slug, resourceType, analyses) {
           ${enabled ? '●' : '○'}
         </button>
       </td>
+      <td class="px-2 py-1.5 text-center">
+        ${saved.analysis_id
+          ? `<button id="sched-run-${_esc(a.id)}"
+               onclick="runScheduleNow('${_esc(entityType)}','${_esc(slug)}','${_esc(a.id)}',this)"
+               class="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"
+               title="Run this scheduled analysis now. Does not change its next scheduled run.">Run now</button>`
+          : `<span class="text-slate-700" title="No schedule set — run it from the analysis card instead">—</span>`}
+      </td>
     </tr>`;
   }).join('');
 
@@ -6758,12 +6779,128 @@ async function loadSchedulesEditor(slug, resourceType, analyses) {
             <th class="px-2 py-1 text-left">Analysis</th>
             <th class="px-2 py-1 text-left w-28">Interval</th>
             <th class="px-2 py-1 text-center w-16">Enabled</th>
+            <th class="px-2 py-1 text-center w-20">Run</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800">${rows}</tbody>
       </table>
-      <div class="text-xs text-slate-700 mt-1.5">Schedules are saved. Execution runs when the scheduler thread is active.</div>
+      <div class="text-xs text-slate-700 mt-1.5">Schedules are saved. Execution runs when the scheduler thread is active — or press Run&nbsp;now, which runs it immediately and leaves the next scheduled run where it is.</div>
     </div>`;
+}
+
+async function runSurveyNow(slug, qualifiedName, isScheduled, btn) {
+  // Run-now is offered on EVERY survey, not only scheduled ones.
+  //
+  // The first version gated it on a schedule existing, reasoning that the
+  // endpoint runs "the schedule". Dan's framing was better and this follows it:
+  // these are surveys someone would most likely put on a cadence AND
+  // occasionally fire by hand, and on a resource with no survey schedule the
+  // column was simply empty everywhere — a feature that looked missing rather
+  // than conditional.
+  //
+  // Two routes, because they answer different questions and only one exists
+  // for an unscheduled survey:
+  //   scheduled  -> the schedules run-now, i.e. the SAME dispatch the timer
+  //                 uses, so what you see is what the cadence will do;
+  //   unscheduled-> the ordinary Survey Definition run.
+  // Same button, same result to the reader; the distinction is stated in the
+  // tooltip rather than hidden.
+  if (isScheduled) return runScheduleNow('repo', slug, qualifiedName, btn);
+
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); btn.textContent = 'Running…'; }
+  try {
+    const res = await fetch(`/api/survey-definitions/repo/${encodeURIComponent(slug)}/run`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ survey_definition_ref: qualifiedName }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast('error', `Run failed: ${_esc(body.detail || `HTTP ${res.status}`)}`, 9000);
+      return;
+    }
+    const errs = body.errors || [];
+    if (errs.length) {
+      showToast('error', `Ran with ${errs.length} error(s): ${_esc(errs.slice(0, 2).join('; '))}`, 12000);
+    } else {
+      showToast('success', 'Survey run complete. Not scheduled — use Schedule to put it on a cadence.', 8000);
+    }
+  } catch (e) {
+    showToast('error', `Could not run: ${_esc(String(e))}`, 8000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original || '▶ Run now'; }
+    try {
+      if (typeof loadAutomateSurveysPanel === 'function'
+          && document.getElementById('automate-view')?.offsetParent !== null) {
+        loadAutomateSurveysPanel();
+      }
+    } catch { /* non-fatal */ }
+  }
+}
+
+async function runScheduleNow(entityType, slug, analysisId, btn) {
+  // Dan, 2026-09-01: "With schedules and Surveys in Automate, seems like there
+  // should be a run now option?" There was not — schedules could only be waited
+  // for, which also made it impossible to confirm one worked without watching
+  // for its slot to come round.
+  //
+  // Runs THE SCHEDULE, through the same dispatch the timer uses, so what you
+  // see here is what the schedule will do. It does NOT advance the next
+  // scheduled run, and the toast says so — moving the schedule because someone
+  // tested it would silently skip the next real slot.
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); btn.textContent = 'Running…'; }
+
+  // No timed "started" toast. Some analyses are genuinely slow — repo_secret_scan
+  // measured 277s on a large repository — and a toast that expires mid-run
+  // leaves the same silent gap the investigation-promote button had: a flash,
+  // a long nothing, then a result that is easy to miss. The button IS the
+  // progress indicator, and it cannot expire early.
+  try {
+    const res = await fetch(
+      `/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}/run`,
+      { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+
+    if (res.status === 404) {
+      showToast('error', body.detail || 'No schedule for this analysis.', 8000);
+      return;
+    }
+    if (!res.ok) {
+      showToast('error', `Run failed: ${_esc(body.detail || `HTTP ${res.status}`)}`, 9000);
+      return;
+    }
+
+    const errs = body.errors || [];
+    // Red only for a real error. "Completed with errors" is reported as the
+    // partial result it is, with the errors named — not collapsed into either
+    // a success or a failure, both of which would be a claim the run did not
+    // make.
+    const nextNote = body.next_run
+      ? ` Next scheduled run unchanged (${_esc(String(body.next_run).slice(0, 16).replace('T', ' '))}).`
+      : ' Next scheduled run unchanged.';
+    if (errs.length) {
+      showToast('error', `Ran with ${errs.length} error(s): ${_esc(errs.slice(0, 2).join('; '))}.${nextNote}`, 12000);
+    } else {
+      showToast('success', `Ran now.${nextNote}`, 8000);
+    }
+  } catch (e) {
+    showToast('error', `Could not run: ${_esc(String(e))}`, 8000);
+  } finally {
+    // Refresh the Automate panel if it is what is showing, so `last run` and
+    // the outcome column reflect what just happened. A row that still says
+    // "not run yet" after a run is the same invisible-success problem as a
+    // toast nobody catches.
+    try {
+      if (typeof loadAutomateSurveysPanel === 'function'
+          && document.getElementById('automate-view')?.offsetParent !== null) {
+        loadAutomateSurveysPanel();
+      }
+    } catch { /* non-fatal */ }
+    // Restored in `finally` so a failure cannot strand the button disabled with
+    // no way to retry.
+    if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original || 'Run now'; }
+  }
 }
 
 async function saveSchedule(entityType, slug, analysisId, schedule, enabled) {
@@ -7150,7 +7287,10 @@ function _renderSurveyDefCandidateCard(c, allCandidates, entityType, slug, sched
         const sched = schedules[c.qualified_name];
         const label = (sched && sched.enabled && sched.schedule !== 'manual') ? `⏱ ${sched.schedule}` : '⏱ Schedule';
         return `<button id="sched-badge-${safeId}" onclick='_showScheduleForm(${JSON.stringify(c.qualified_name)}, ${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(sched ? sched.schedule : "manual")})'
-            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>`;
+            class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap">${label}</button>${sched ? `<button id="sched-run-${safeId}"
+                onclick='runScheduleNow(${JSON.stringify(entityType)}, ${JSON.stringify(slug)}, ${JSON.stringify(c.qualified_name)}, this)'
+                class="text-xs px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors whitespace-nowrap ml-1"
+                title="Run this scheduled survey now. Does not change its next scheduled run.">▶ Run now</button>` : ''}`;
       })()}
       ${(() => {
         // D4 (docs/survey-tab-unification-plan.md) — ONE generic Publish
@@ -8228,6 +8368,11 @@ function renderAutomateSurveysPanel(defs, existing) {
         <select id="${selId}" class="text-xs bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200">${opts}</select>
         <button onclick="_saveSurveySchedule('${_esc(d.qualified_name)}','${selId}')"
           class="text-xs px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white transition-colors ml-1">Schedule</button>
+        <button onclick='runSurveyNow(${JSON.stringify(selectedProject)}, ${JSON.stringify(d.qualified_name)}, ${sched ? 'true' : 'false'}, this)'
+          class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors ml-1"
+          title="${sched
+            ? 'Run this survey now, through the same dispatch the scheduler uses. Does not change the next scheduled run.'
+            : 'Run this survey now. It has no cadence — scheduling it is a separate action.'}">▶ Run now</button>
         ${sched ? `<button onclick="_deleteAutomateSchedule('repo','${_esc(selectedProject)}','${_esc(d.qualified_name)}')"
           class="text-xs px-2 py-1 rounded bg-red-900 hover:bg-red-800 text-red-200 transition-colors ml-1" title="Remove this schedule">🗑️</button>` : ''}
       </td>

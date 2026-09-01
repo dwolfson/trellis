@@ -459,6 +459,135 @@ class SurveyDefinitionReader:
         _question_guid_cache[question_display_name] = (now, guid)
         return guid
 
+    def warm_question_guid_cache(self, questions: list[str] | None = None) -> dict:
+        """Resolve question GUIDs ahead of the first request. Never raises.
+
+        The three caches in this module are plain in-process dicts, so they die
+        with the process. Yesterday's fix (83381f1) made the cold path 6.8x
+        faster by resolving GUIDs through a thread pool instead of in series —
+        it did not remove the round trips, it stopped them queueing.
+
+        So a restart still charges the FIRST person to open each phase for that
+        phase's own uncached questions. Measured 2026-09-01, from the outside:
+        every phase 0.1-0.2s once warm, and a cold phase reported by Dan at
+        over ten seconds. Phases with disjoint question sets each pay
+        separately, which is why the timings looked random — scouting quick,
+        discovery slow, assessment quick again.
+
+        Warming moves that work off the interactive path. It is the same work,
+        done once, when nobody is waiting for it.
+
+        **Best-effort by construction.** Every failure mode here is a reason to
+        stop warming, never a reason to fail: Egeria unreachable at boot is
+        normal (the platform may start after this process), and a warm that
+        raised would take the server down for an optimisation. A question that
+        does not resolve is cached as None by resolve_question_guid, exactly as
+        it would be on the request path — this changes WHEN the lookup happens,
+        never WHAT it concludes.
+        """
+        try:
+            if questions is None:
+                from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+                # Every repo question, unfiltered — 49 today. Unfiltered on
+                # purpose: warming per phase would leave whichever phase the
+                # user opens FIRST still paying, which is the behaviour being
+                # removed. resolve_question_guid dedupes via the cache anyway,
+                # so questions shared across phases cost one lookup.
+                questions = [
+                    q.get("question") or q.get("display_name") or q.get("name") or ""
+                    for q in get_questions("repo")
+                ]
+                questions = [q for q in questions if q]
+        except Exception as exc:
+            log.debug("cache warm: could not read the question catalog: %s", exc)
+            return {"warmed": 0, "resolved": 0, "skipped": "no question catalog"}
+
+        try:
+            pairs = self._resolve_question_guids(list(questions))
+        except Exception as exc:
+            log.info("cache warm skipped (%s) — the first request will resolve "
+                     "these instead, exactly as before", type(exc).__name__)
+            return {"warmed": 0, "resolved": 0, "skipped": type(exc).__name__}
+
+        resolved = sum(1 for _q, g in pairs if g)
+
+        # Second half of the cold cost, added after measuring the first fix.
+        #
+        # Warming question GUIDs alone took a cold phase from >10s to ~1s, and
+        # the residual second was a DIFFERENT global cache: `_fetch_cache`,
+        # which holds each definition's fetched steps. Ten definitions, each
+        # paid for once by whichever phase happens to touch it first — so the
+        # delay simply moved rather than going away, and it was still the first
+        # user who paid it.
+        #
+        # Measured 2026-09-01 on a freshly restarted server: first open of a
+        # phase 0.7-1.7s, the SAME phase again 0.14s. That gap is this.
+        definitions, definitions_failed = self._warm_definition_fetches()
+
+        # Failures logged at WARNING, not debug: a warm that silently managed
+        # three of ten leaves the delay it exists to remove, and nobody would
+        # know without being told.
+        if definitions_failed:
+            log.warning("survey-definition cache warm: %d definition(s) could NOT be "
+                        "prefetched — the first request for those will pay the cost",
+                        definitions_failed)
+        log.info("survey-definition cache warmed: %d question(s) checked, %d resolved, "
+                 "%d definition(s) prefetched, %d failed",
+                 len(questions), resolved, definitions, definitions_failed)
+        return {"warmed": len(questions), "resolved": resolved,
+                "definitions": definitions, "definitions_failed": definitions_failed,
+                "skipped": ""}
+
+    def _warm_definition_fetches(self) -> tuple[int, int]:
+        """Prefetch every authored definition into `_fetch_cache`. Never raises.
+
+        Returns **(cached, failed)**, not just a success count.
+
+        Reads the definition list LOCALLY (`documented_definitions`), the same
+        source `/api/survey-definitions/definitions` uses, so discovering what
+        to warm never depends on Egeria being reachable. Only the per-definition
+        `fetch()` does, and each failure there is independent and survivable.
+
+        `cached` counts what was actually cached, never what was attempted — a
+        definition whose GUID does not resolve is not warm, and counting it
+        would overstate what happened.
+
+        **Why a failure count rather than only a success count.** The first
+        version returned `cached` alone and `test_no_silent_success` correctly
+        flagged it: "3 warmed" and "3 warmed, 7 failed" were the same value to
+        every caller, so a mostly-broken warm was indistinguishable from a
+        small catalog. The per-item `except` is deliberate — one unreachable
+        definition must not stop the other nine — but deliberate swallowing
+        still has to leave a trace the caller can branch on. That is the
+        difference between best-effort and silent.
+        """
+        try:
+            from resource_explorer.surveyors.survey_definition_docs import (
+                _PROCESS_PREFIX, documented_definitions,
+            )
+            names = [f"{_PROCESS_PREFIX}{n}" for n in documented_definitions()]
+        except Exception as exc:
+            log.debug("definition warm: could not list definitions: %s", exc)
+            return 0, 0
+
+        done = failed = 0
+        for qname in names:
+            try:
+                guid = self.find_process_guid_by_name(qname)
+                if not guid:
+                    continue
+                self.fetch(guid)
+                done += 1
+            except Exception as exc:
+                # One unreachable or malformed definition must not stop the
+                # other nine warming — the same per-item isolation the repair
+                # paths in egeria_resync use, for the same reason. Counted, so
+                # the caller can tell a partial warm from a complete one.
+                failed += 1
+                log.debug("definition warm: %s skipped (%s)", qname, type(exc).__name__)
+        return done, failed
+
     #: Concurrency for question-GUID resolution. Small on purpose: these are
     #: reads against one Egeria server, and the goal is to stop waiting in
     #: series, not to load-test someone else's platform.

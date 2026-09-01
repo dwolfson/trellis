@@ -66,6 +66,35 @@ def project(registry):
     return "myproj"
 
 
+
+#: Steps that a bare fixture project legitimately does NOT run.
+#:
+#: Each declares a `requires_context` precondition, so on a project with no
+#: file inventory the orchestrator skips it and records SKIPPED_BY_DESIGN with a
+#: reason. That is the precondition mechanism working, not a gap in coverage —
+#: and the tests below assert the SKIP is recorded rather than silently
+#: excluding these, because a step that vanishes from a run is indistinguishable
+#: from one that ran and found nothing.
+def _precondition_skipped(project, registry):
+    from resource_explorer.surveyors import step_preconditions
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    # `project` is the SLUG here (what SurveyOrchestrator.run takes); the
+    # precondition evaluator wants the Project row. Resolving it rather than
+    # passing the string through is the difference between asking the real
+    # question and getting an AttributeError that looks like a test bug.
+    proj = registry.get(project) if isinstance(project, str) else project
+    out = set()
+    for key, info in STEP_REGISTRY.items():
+        ctx = getattr(info, "requires_context", None)
+        if not ctx:
+            continue
+        may_run, _name, _why = step_preconditions.evaluate(registry, proj, ctx)
+        if not may_run:
+            out.add(key)
+    return out
+
+
 def _patch_all_surveyors():
     """Patch every StepInfo.surveyor_cls in STEP_REGISTRY so .run() returns
     [] with no real filesystem/network work, while leaving us able to see
@@ -113,9 +142,20 @@ class TestStepsNone:
         mocks, patchers = _patch_all_surveyors()
         try:
             with patch("resource_explorer.surveyors.survey_orchestrator.log_survey") as mock_log:
-                SurveyOrchestrator(registry).run(project)
-                for m in mocks.values():
-                    m.return_value.run.assert_called_once()
+                result = SurveyOrchestrator(registry).run(project)
+                skipped = _precondition_skipped(project, registry)
+                for key, m in mocks.items():
+                    if key in skipped:
+                        m.return_value.run.assert_not_called()
+                    else:
+                        m.return_value.run.assert_called_once()
+                # The skip must be RECORDED, not merely not-run — otherwise a
+                # precondition miss is indistinguishable from a step that ran
+                # and found nothing, which is what result_status exists to
+                # prevent. Asserting the reason is present, not just the key.
+                for key in skipped:
+                    assert key in result.skipped_steps, f"{key} skipped without a record"
+                    assert result.skipped_steps[key], f"{key} skipped without a reason"
                 mock_log.assert_called_once()
         finally:
             for p in patchers:
@@ -280,9 +320,15 @@ class TestCostTierFilter:
         mocks, patchers = _patch_all_surveyors()
         try:
             with patch("resource_explorer.surveyors.survey_orchestrator.log_survey"):
-                SurveyOrchestrator(registry).run(project)
+                result = SurveyOrchestrator(registry).run(project)
+                skipped = _precondition_skipped(project, registry)
                 for key, m in mocks.items():
-                    m.return_value.run.assert_called_once()
+                    if key in skipped:
+                        m.return_value.run.assert_not_called()
+                    else:
+                        m.return_value.run.assert_called_once()
+                assert set(result.skipped_steps) == skipped, (
+                    "every precondition miss must be recorded, and nothing else")
         finally:
             for p in patchers:
                 p.stop()
@@ -334,6 +380,15 @@ class TestCostTierFilter:
                     # repo_arch_detect/repo_arch_coupling (Phase 1 plan §4.2) —
                     # a zipball and a real git clone respectively, both downloads.
                     "repo_arch_detect", "repo_arch_coupling",
+                    # The four GAP analyses (2026-09-01). All fetch_cost=
+                    # "download": each reads repository CONTENT, and they share
+                    # the one extraction resolve_resources already dedupes, so
+                    # they add no download beyond the zipball steps above.
+                    # Listed rather than the assertion being widened — a step
+                    # acquiring a fetch cost is a real change and this test
+                    # exists to make it argued for.
+                    "repo_secret_scan", "repo_telemetry_scan",
+                    "repo_contribution_provenance", "repo_sla_content",
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()
@@ -377,6 +432,17 @@ class TestCostTierFilter:
                     # repo_file_inventory (0.0-0.6s across 359-5,763 files), not
                     # like the medium steps. It was "medium" on a guess for a
                     # few hours; see its StepInfo comment for the numbers.
+                    # Two of the four GAP analyses (2026-09-01), and only two:
+                    # repo_secret_scan and repo_telemetry_scan declare
+                    # compute_cost="medium" (regex scanning over file content),
+                    # while repo_contribution_provenance and repo_sla_content
+                    # are "low" — they read a handful of named documents. The
+                    # asymmetry is the point: had all four been added here, the
+                    # tiers would have been copied rather than measured, which
+                    # is how repo_data_profiling sat at "medium" for months on
+                    # a guess. Both are flagged VERIFY against
+                    # step_cost_observer once they have real runs behind them.
+                    "repo_secret_scan", "repo_telemetry_scan",
                 }
                 for key in excluded:
                     mocks[key].return_value.run.assert_not_called()

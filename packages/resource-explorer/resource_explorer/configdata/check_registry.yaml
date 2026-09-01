@@ -144,6 +144,55 @@ analyses:
       - ci_config
       - license
 
+  # ── The four GAP analyses (docs/gap-analyses-design.md), 2026-09-01 ────────
+  #
+  # `findings_kind` is stated on every one and is NOT the analysis id. That
+  # confusion has caused two real bugs here — security_summary (fixed) and
+  # foss_scorecard, which read kind `security_scan` (an id nothing writes),
+  # matched 0 rows across 0 repos, and left 155 verdicts at `unknown`. The kinds
+  # below are `<id>_findings` and visibly non-homographic for that reason.
+  #
+  # Checks listed are the FIXED ones each analysis always emits. Per-match rows
+  # (`secret_pattern`, `telemetry_call_site`, `sla_content_evidence`) are
+  # instance-keyed evidence — one per hit, unbounded — and are deliberately not
+  # listed as checks: a check is a question always asked, and an absent instance
+  # row means "nothing matched", not "this check did not run".
+  secret_scan:
+    findings_kind: secret_scan_findings
+    source: surveyors/sub_surveyors/secret_scan.py
+    checks:
+      - scan_summary
+      - ruleset_available
+      - ruleset_freshness
+
+  telemetry_scan:
+    findings_kind: telemetry_scan_findings
+    source: surveyors/sub_surveyors/telemetry_scan.py
+    checks:
+      - scan_summary
+      - disclosure_document
+
+  contribution_provenance:
+    findings_kind: contribution_provenance_findings
+    source: surveyors/sub_surveyors/contribution_provenance.py
+    checks:
+      - scan_summary
+      # STATED and ENFORCED are separate checks on purpose — conflating them is
+      # how "there is a CONTRIBUTING file" becomes "sign-off is enforced".
+      # `cla_dco_enforced` currently cannot reach a gap verdict at all, because
+      # branch-protection data is not fetched anywhere in RE; it reports
+      # UNVERIFIED rather than inventing one.
+      - cla_dco_stated
+      - cla_dco_enforced
+      - cla_dco_provenance
+
+  sla_content:
+    findings_kind: sla_content_findings
+    source: surveyors/sub_surveyors/sla_content.py
+    checks:
+      - scan_summary
+      - sla_content
+
   security_features:
     findings_kind: security_features
     source: surveyors/sub_surveyors/security_features.py:32-36

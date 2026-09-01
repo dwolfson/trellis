@@ -60,6 +60,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     ChaossMetricsSurveyor,
     CiiBadgeSurveyor,
     CommunitySupportSurveyor,
+    ContributionProvenanceSurveyor,
     CveScanSurveyor,
     InterfaceSurfaceSurveyor,
     DataProfilerSurveyor,
@@ -82,6 +83,9 @@ from resource_explorer.surveyors.sub_surveyors import (
     MaturitySurveyor,
     RagIngestionSurveyor,
     RepoConventionsSurveyor,
+    SecretScanSurveyor,
+    SlaContentSurveyor,
+    TelemetryScanSurveyor,
     SecurityFeaturesSurveyor,
     SecurityHygieneSurveyor,
     SubResourceSurveyor,
@@ -609,6 +613,120 @@ STEP_REGISTRY: dict[str, StepInfo] = {
                 "alone are not enough",
         },
     ),
+    # ── The four GAP analyses (docs/gap-analyses-design.md) ──────────────
+    #
+    # Registered 2026-09-01. The modules were built standalone and deliberately
+    # left unregistered, because this file was contended across several
+    # concurrent sessions and `git add` is per-FILE: two sessions editing one
+    # StepInfo block cannot be split by `git add -p`, which happened here once
+    # already. Registration was serialised through the coordinating session.
+    #
+    # **Analysis id vs finding kind is stated on every entry**, per the design's
+    # §0. That confusion has produced two real bugs — security_summary (fixed)
+    # and foss_scorecard, which read kind `security_scan` (an analysis ID that
+    # nothing writes), matched 0 rows across 0 repos, and left all 155
+    # security-policy verdicts at `unknown`. The ids and kinds below are
+    # visibly non-homographic for that reason.
+    #
+    # All four declare `has_file_inventory`: they read repository CONTENT, and
+    # an inventory-less repo must be SKIPPED_BY_DESIGN with a reason rather than
+    # scanned to a confident empty result.
+    "repo_secret_scan": StepInfo(
+        "repo_secret_scan", SecretScanSurveyor,
+        "Committed-credential scan over HEAD content, using a VENDORED gitleaks "
+        "ruleset (222 rules, MIT, provenance recorded). Reports what it matched "
+        "AND which ruleset version it matched with — never 'no secrets', only "
+        "'no matches against this ruleset in HEAD'.",
+        ["ClassificationAnnotation", "RequestForActionAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
+        requires_context={
+            "has_file_inventory":
+                "the scan reads file content; with no inventory it would report "
+                "a clean repo it never opened",
+        },
+        # Writes finding kind `secret_scan_findings` (NOT the analysis id
+        # `secret_scan`). Known-positive is the ruleset's own shipped fixtures,
+        # not a scanned-file count — a count cannot tell a working scanner from
+        # a neutered one.
+        fetch_cost="download",
+        # VERIFIED and RAISED, 2026-09-01 — this shipped as `medium` with a
+        # VERIFY flag, and the first real run settled it: **277.3s on
+        # egeria_git**, the slowest step in that repo by a factor of five,
+        # against `medium`'s 60s ceiling. 4.6x over is an order-of-magnitude
+        # class error, not the 1.4-1.6x noise that left repo_cve_scan and
+        # repo_arch_detect deliberately unchanged earlier today.
+        #
+        # 222 regex rules over every tracked file is genuinely expensive on a
+        # large repository, and `medium` was admitting it to runs that had
+        # budgeted a minute. Raised rather than optimised: the cost is real, and
+        # declaring it honestly is the fix for the wrong tier. Making the scan
+        # faster is a separate question from telling callers what it costs.
+        compute_cost="high",
+    ),
+    "repo_telemetry_scan": StepInfo(
+        "repo_telemetry_scan", TelemetryScanSurveyor,
+        "Telemetry / phone-home indicators: known SDK imports and literal "
+        "outbound endpoints, paired with whether the project discloses them. "
+        "Never labels an ordinary API client as telemetry.",
+        ["ClassificationAnnotation", "RequestForActionAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
+        requires_context={
+            "has_file_inventory":
+                "scans source content; without it, absence of a finding would "
+                "mean absence of a scan",
+        },
+        # Writes `telemetry_scan_findings`. Known-positive is
+        # source_files_considered > 0 — stronger than inventory presence alone,
+        # since it also catches a data-only repo with nothing to scan.
+        fetch_cost="download",
+        compute_cost="medium",   # VERIFY
+    ),
+    "repo_contribution_provenance": StepInfo(
+        "repo_contribution_provenance", ContributionProvenanceSurveyor,
+        "CLA/DCO provenance, kept as two separate questions: whether sign-off is "
+        "STATED, and whether it is ENFORCED. Config presence alone is reported "
+        "`partial`, never `pass`.",
+        ["ClassificationAnnotation", "RequestForActionAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
+        requires_context={
+            "has_file_inventory":
+                "reads CONTRIBUTING and enforcement config; a filename alone is "
+                "not evidence of what it says",
+        },
+        # Writes `contribution_provenance_findings`. NOTE a disclosed design
+        # gap: `cla_dco_enforced` cannot currently reach `gap`, because
+        # branch-protection data is absent from stats_fetcher/security_features
+        # (grepped, zero hits). It reports UNVERIFIED rather than inventing a
+        # verdict, and the design's "stated but not enforced -> RFA" path is
+        # unreachable until that data is fetched.
+        fetch_cost="download",
+        compute_cost="low",      # VERIFY
+    ),
+    "repo_sla_content": StepInfo(
+        "repo_sla_content", SlaContentSurveyor,
+        "Whether the project publishes support or service-level commitments. "
+        "Deliberately NEUTRAL (present/absent, not pass/gap): most repositories "
+        "legitimately publish none, and absence alone never raises an action.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        requires_resources={"zipball_root": "local_path"},
+        requires_views={"zipball_root": VIEW_SOURCE},
+        requires_context={
+            "has_file_inventory":
+                "checks candidate SLA paths before reading them",
+        },
+        # Writes `sla_content_findings`. Known-positive is the list of candidate
+        # paths actually checked — recorded even on the absent branch, so
+        # "looked and found none" is distinguishable from "never looked".
+        fetch_cost="download",
+        compute_cost="low",      # VERIFY
+    ),
     "repo_foss_scorecard": StepInfo(
         "repo_foss_scorecard", FossScorecardSurveyor,
         "OpenSSF-Scorecard-shaped checks computed from data already held — an "
@@ -1111,6 +1229,58 @@ def _documentation_results(registry, slug: str) -> dict:
     quality = next((r for r in rows if r["check_name"] == "quality_score"), None)
     return attach_status({"findings": findings},
                          _as_detail(quality.get("detail_json")) if quality else None)
+
+
+def _gap_analysis_results(registry, slug: str, kind: str) -> dict:
+    """Results reader for the four GAP analyses — the uniform `findings_list` shape.
+
+    Added 2026-09-01 because `test_every_findings_producing_analysis_has_a
+    _dashboard` failed, and it was RIGHT. Registration originally shipped these
+    four with `results=None`, reasoning that a results view was separate work and
+    a half-built one would render an absence as an answer.
+
+    That reasoning was backwards. An analysis that WRITES findings and has no
+    dashboard does not show a cautious nothing — it shows nothing at all, and the
+    findings are write-only: computed, stored, unreachable. That is the same
+    defect the annotation-linking audit named as the codebase's strongest
+    evidence-loss case, where cve_scan reduced per-CVE detail to bare counts
+    before anything could read it.
+
+    `findings_list` needs no new frontend code (D4), so doing this properly cost
+    a reader per kind, not a view.
+
+    Status comes from the `scan_summary` row, which each of the four writes and
+    which is where the outcome vocabulary lands — SKIPPED_BY_DESIGN with a reason
+    when a precondition is unmet, NO_SIGNAL with `known_positive` when the scan
+    ran and matched nothing. Reading status from there rather than inferring it
+    from an empty list is the point: "no individual findings" and "did not run"
+    are different statements.
+    """
+    rows = registry.query_findings(slug, kind)
+    findings = [
+        {"check_name": r["check_name"], "label": r["label"],
+         "summary": r["summary"], "confidence": r["confidence"]}
+        for r in rows
+    ]
+    summary = next((r for r in rows if r["check_name"] == "scan_summary"), None)
+    return attach_status({"findings": findings},
+                         _as_detail(summary.get("detail_json")) if summary else None)
+
+
+def _secret_scan_results(registry, slug: str) -> dict:
+    return _gap_analysis_results(registry, slug, "secret_scan_findings")
+
+
+def _telemetry_scan_results(registry, slug: str) -> dict:
+    return _gap_analysis_results(registry, slug, "telemetry_scan_findings")
+
+
+def _contribution_provenance_results(registry, slug: str) -> dict:
+    return _gap_analysis_results(registry, slug, "contribution_provenance_findings")
+
+
+def _sla_content_results(registry, slug: str) -> dict:
+    return _gap_analysis_results(registry, slug, "sla_content_findings")
 
 
 def _license_results(registry, slug: str) -> dict:
@@ -2426,6 +2596,29 @@ def _documentation_headline(registry, slug: str) -> dict | None:
     return _generic_findings_headline(_documentation_results(registry, slug), noun="doc signal")
 
 
+# The four GAP analyses. `noun` is chosen so the headline reads honestly when the
+# count is ZERO, which for these is the common and CORRECT case: "0 secret
+# matches" is a real result, whereas a noun like "issue" would make an absence
+# sound like a clean bill of health it is not entitled to give. The status the
+# reader attaches — from each scan's `scan_summary` row — is what distinguishes
+# "scanned and matched nothing" from "never scanned".
+def _secret_scan_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_secret_scan_results(registry, slug), noun="secret match")
+
+
+def _telemetry_scan_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_telemetry_scan_results(registry, slug), noun="telemetry signal")
+
+
+def _contribution_provenance_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(
+        _contribution_provenance_results(registry, slug), noun="provenance check")
+
+
+def _sla_content_headline(registry, slug: str) -> dict | None:
+    return _generic_findings_headline(_sla_content_results(registry, slug), noun="support signal")
+
+
 def _security_features_headline(registry, slug: str) -> dict | None:
     return _generic_findings_headline(_security_features_results(registry, slug), noun="feature")
 
@@ -2640,6 +2833,47 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         results=AnalysisKindResults(
             _file_classification_results, _file_classification_trend, "custom",
             headline_reader=_file_classification_headline,
+        ),
+    ),
+    # The four GAP analyses. No `results=` yet: each is registered so it can be
+    # RUN and scheduled, but none has a results view — that is a separate,
+    # deliberate piece of work, and a half-built view would render an absence as
+    # an answer, which is the failure this whole family of analyses exists to
+    # avoid. `family="security"` groups the three that belong to it, per the
+    # convention reserved for exactly this when the analysis-kind registry was
+    # designed.
+    #
+    # The finding kinds they write are `<id>_findings` in every case — stated on
+    # each StepInfo above, and non-homographic with the id on purpose.
+    "secret_scan": AnalysisKind(
+        "secret_scan", ["repo_secret_scan"], family="security",
+        results=AnalysisKindResults(
+            _secret_scan_results, None, "findings_list",
+            headline_reader=_secret_scan_headline,
+        ),
+    ),
+    "telemetry_scan": AnalysisKind(
+        "telemetry_scan", ["repo_telemetry_scan"], family="security",
+        results=AnalysisKindResults(
+            _telemetry_scan_results, None, "findings_list",
+            headline_reader=_telemetry_scan_headline,
+        ),
+    ),
+    "contribution_provenance": AnalysisKind(
+        "contribution_provenance", ["repo_contribution_provenance"], family="security",
+        results=AnalysisKindResults(
+            _contribution_provenance_results, None, "findings_list",
+            headline_reader=_contribution_provenance_headline,
+        ),
+    ),
+    # NOT family="security": publishing a support commitment is a governance and
+    # transparency property, not a security control, and filing it under security
+    # would make `WHERE family='security'` overstate what has been assessed.
+    "sla_content": AnalysisKind(
+        "sla_content", ["repo_sla_content"],
+        results=AnalysisKindResults(
+            _sla_content_results, None, "findings_list",
+            headline_reader=_sla_content_headline,
         ),
     ),
     "repository_health": AnalysisKind(
@@ -3003,7 +3237,15 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         # coverage and staleness rather than an arbitrary input.
         ["security_summary",
          "security_scan", "security_features", "ci_quality", "license_classification",
-         "repo_conventions", "cve_scan", "foss_scorecard", "cii_badge"],
+         "repo_conventions", "cve_scan", "foss_scorecard", "cii_badge",
+         # The four GAP analyses (2026-09-01). Three genuinely belong to this
+         # "is this trustworthy" question; sla_content is here because it has
+         # nowhere better and NOT because it is a security signal — it reports a
+         # governance/transparency property, and its AnalysisKind deliberately
+         # carries no family="security" for that reason. Worth revisiting if a
+         # governance dashboard ever exists; parked rather than mis-filed
+         # silently.
+         "secret_scan", "telemetry_scan", "contribution_provenance", "sla_content"],
         render="custom", custom_renderer="renderSecurityOverviewDashboard",
     ),
     # community_support/chaoss_metrics added 2026-08-31, same Backlog entry —

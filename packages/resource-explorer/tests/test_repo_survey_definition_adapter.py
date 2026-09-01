@@ -54,6 +54,15 @@ def test_all_step_keys_are_registered():
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
         "repo_foss_scorecard", "repo_cve_scan", "repo_community_support", "repo_interface_surface",
         "repo_chaoss_metrics", "repo_cii_badge", "repo_security_summary",
+        # The four GAP analyses, registered 2026-09-01
+        # (docs/gap-analyses-design.md). Listed explicitly rather than the
+        # assertion being loosened: this test is exhaustive ON PURPOSE, because
+        # a step without a runner surfaces only as a Survey Definition that
+        # silently does less than it claims — and "does less than it claims"
+        # with no error is the failure mode this whole family of analyses was
+        # commissioned to remove.
+        "repo_secret_scan", "repo_telemetry_scan",
+        "repo_contribution_provenance", "repo_sla_content",
         "repo_refresh_plan",
         "repo_arch_detect", "repo_arch_coupling", "repo_arch_lens", "repo_arch_summary",
         "repo_manifest_parse", "repo_classification",
@@ -156,6 +165,20 @@ class TestStepCostTiers:
             # workflow content and convention signals from the SAME extraction
             # the steps above share, so it adds no download of its own.
             "repo_manifest_parse",
+            # The four GAP analyses (2026-09-01). All read repository CONTENT —
+            # committed-credential patterns, telemetry call sites, CONTRIBUTING
+            # text, SLA documents — so each genuinely needs the extraction, and
+            # each shares the SAME one: resolve_resources dedupes zipball_root
+            # across every selected step, so adding four members here costs no
+            # additional download.
+            #
+            # Listed rather than the assertion being widened. A step quietly
+            # acquiring a download is a real cost change, and this test exists
+            # so it has to be argued for — the same reason the high-compute
+            # guard stayed an equality assertion when repo_arch_coupling joined
+            # it earlier today.
+            "repo_secret_scan", "repo_telemetry_scan",
+            "repo_contribution_provenance", "repo_sla_content",
         }
 
     def test_arch_coupling_needs_BOTH_a_source_tree_and_git_history(self):
@@ -193,6 +216,16 @@ class TestStepCostTiers:
           the trustworthy direction of that counter, so the git-history walk is
           real compute rather than network wait, and `medium` was admitting it
           to runs that had budgeted a minute.
+        - repo_secret_scan — shipped `medium` with a VERIFY flag on 2026-09-01
+          and its FIRST real run settled it: 277.3s on egeria_git, the slowest
+          step in that repo by a factor of five, against the same 60s ceiling.
+          4.6x over. Raised the same day it was measured, which is the whole
+          point of shipping a tier flagged VERIFY rather than guessing quietly
+          and never revisiting.
+
+          Note this test caught it. The tier was changed in the adapter and this
+          guard failed, forcing the addition to be argued here rather than
+          absorbed — its third catch, after repo_arch_coupling this morning.
 
         Deliberately still an equality assertion. A `<=` or a membership check
         would let a fourth step in silently, which is the whole failure this
@@ -201,7 +234,8 @@ class TestStepCostTiers:
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 
         high_compute = {k for k, info in STEP_REGISTRY.items() if info.compute_cost == "high"}
-        assert high_compute == {"repo_rag_ingestion", "repo_arch_coupling"}
+        assert high_compute == {"repo_rag_ingestion", "repo_arch_coupling",
+                                "repo_secret_scan"}
 
     def test_git_statistics_is_the_measured_api_heavy_baseline(self):
         """D4: the 430s-against-odpi/egeria measurement this whole plan is
