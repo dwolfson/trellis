@@ -568,7 +568,34 @@ it.
       reproduction signature.
 
 
-## 7. Before/after the redeploy + database wipe — 2026-08-31
+## 7. The redeploy + database wipe — DONE, verified 2026-08-31
+
+**Outcome: the wipe happened, bootstrap healed it, and everything published that day came back
+correctly.** Verified independently and read-only, against live Egeria rather than against RE's
+registry:
+
+    QUESTIONS              49/49 resolve
+    RepoAssessmentSurvey   10 steps · repo_security_summary after all 8 inputs · terminal
+    RepoFullSurvey         35 steps · repo_security_summary after all 8 inputs · rag_ingestion last
+    reconciler --dry-run   0 duplicate / 0 stale across all EIGHT definitions
+
+No manual re-authoring was needed. The recovery sections below are kept as the runbook for next
+time, not as outstanding work.
+
+**One measurement error worth keeping, because it is this file's own subject matter.** "Has Egeria
+been wiped?" was first answered by counting `projects` (60) and `project_analysis_findings`
+(68,215) — tables in **RE's own registry**, which an Egeria wipe does not touch by design. Those
+counts read identically either side of the event and cannot distinguish the two states at all. The
+question is only answerable by something that exists on one side of it:
+
+    projects holding an egeria_asset_guid:  0 of 60   (non-zero before the wipe)
+    project_egeria_surveys rows:            0
+
+A correct count of the wrong population. Reach for the field the event actually changes.
+
+---
+
+## 7a. Recovery runbook — kept for next time
 
 **Everything authored into Egeria today is destroyed by a redeploy.** The quickstart platform does
 not persist custom-authored elements across restarts (`repo_survey_types.csv` row 2 records a
