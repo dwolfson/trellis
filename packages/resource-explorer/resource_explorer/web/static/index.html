@@ -10268,8 +10268,31 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
     // the value literally contains (a count stays a count) and infers,
     // ranks or characterises nothing. Only used when no real prose exists,
     // so a surveyor's own sentence always wins where one was written.
-    const composedAnswer = proseAnswer ? '' : summary;
-    const answerText = proseAnswer || composedAnswer;
+    // Second report of the same complaint, 2026-09-01 (Dan, on "Is this
+    // repository actively maintained?"): the reply read "FOSS Scorecard:
+    // 389 commit(s) in the last 90 days" — a measurement, with the verdict
+    // nowhere on screen.
+    //
+    // `||` was the bug. When a fact carries BOTH prose and scalars, the
+    // prose won outright and the scalars went into the collapsed Evidence
+    // block — but for these facts the scalars ARE the answer and the prose
+    // is its justification. `_r_maintained` returns
+    // {maintained: true, verdict: "pass", detail: "389 commit(s)..."}: the
+    // literal answer to a yes/no question sat behind a toggle while the
+    // supporting statistic was displayed as the answer.
+    //
+    // Measured across all 14 fact resolvers on egeria_python_git before
+    // changing this: 2 carry both prose and scalars (`maintained`,
+    // `community`) and both were answering with the wrong half. The other
+    // 12 carry no prose, so `summary` already reached the answer line —
+    // which is exactly why this looked fixed after the first pass.
+    //
+    // Joining rather than choosing means neither half can hide, and it
+    // needs no per-fact prose (the trap named in the comment above: 24
+    // hand-written cases, and the 25th analysis joins the answerless
+    // majority). Scalars lead because they are what was measured; the
+    // prose follows as the reason.
+    const answerText = [summary, proseAnswer].filter(Boolean).join(' — ');
     if (answerText) {
       lines.push(`- ${st.icon} ${heading}: ${_esc(answerText)}${caveats}`);
       lines.push(`  \n  <span class="text-slate-500">${_esc(st.text)}` +
@@ -10285,20 +10308,22 @@ async function _renderEnvelopeMarkdown(env, slug, opts) {
       lines.push(`- ${st.icon} ${heading} — ${st.text}${caveats}` +
         (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
     }
-    // <details>/<summary> is plain HTML passed through marked() untouched (no
-    // sanitizer configured) -- the same collapsed-by-default, no-JS-state
-    // idiom already used for the Survey Definition step list, not a new
-    // mechanism. What differs from before: prose fields (detail/*_detail/
-    // measures_disagree) are excluded here now, because they're the answer
-    // shown above, not supporting evidence for it -- see _summariseFactValue.
+    // Findings arrays expand under the answer line, one bullet each. They
+    // are excluded from `summary` above, so this is the only place they
+    // render -- no count on the answer line AND a list beneath it.
+    _factFindingLines(f.value).forEach(l => lines.push(l));
+
+    // No Evidence toggle any more. Both halves of the value — the scalars
+    // and the prose — are now on the answer line, so anything this block
+    // could contain would repeat what is already visible. It is removed
+    // rather than left empty because a collapsed tier beside an answer is
+    // where the answer kept ending up: twice now, the content was present
+    // in the data and filed as evidence about itself.
     //
-    // Skipped when `summary` IS the answer line above (composedAnswer path)
-    // -- an Evidence toggle repeating the exact sentence already shown would
-    // be the "routing and evidence but no answer" complaint's mirror image:
-    // now an answer, plus a redundant toggle that adds nothing under it.
-    if (summary && summary !== composedAnswer) {
-      lines.push(`  \n  <details><summary class="cursor-pointer text-slate-500">Evidence</summary>\n\n  ${summary}\n  </details>`);
-    }
+    // Nothing becomes unreachable. `_summariseFactValue` caps at 6 fields
+    // and always did, so the toggle never showed more than the answer line
+    // now does; a fact needing a genuine detail tier would need that cap
+    // lifted first, which is a separate change with its own reason.
     if (f.note) lines.push(`  \n  _${f.note}_`);
   });
   if (unknown.length) {
@@ -10341,9 +10366,62 @@ function _factAnswerText(value) {
 //: above this in the chat, not here). Counts and named scalars only for those
 //: -- this must not invent a narrative the value does not support, which is
 //: what the fact layer exists to prevent one layer up.
+//: An array field whose items carry their own `summary` sentence -- a list
+//: of findings, not a list of names. Identified in one place because two
+//: readers must agree about it: _summariseFactValue skips these (so they are
+//: not ALSO collapsed to "findings: 5" on the answer line) and
+//: _factFindingLines expands them underneath. If the two disagreed, a
+//: findings array would either appear twice or vanish entirely.
+function _factFindingArrayKeys(value) {
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value)
+    .filter(([, v]) => Array.isArray(v) && v.length &&
+      v.some(x => x && typeof x === 'object' && typeof x.summary === 'string' && x.summary.trim()))
+    .map(([k]) => k);
+}
+
+//: Cap on how many findings render under one fact. Chosen to be larger than
+//: every observed array (the largest measured is 5, on chaoss_metrics) so it
+//: does not bite today, and to exist at all because an uncapped list is what
+//: put 48,581 rows into a panel on 2026-09-01. When it does bite it SAYS so
+//: -- a silently truncated list reads as a complete one, which is the same
+//: defect in a different surface.
+const _FINDING_LINE_CAP = 12;
+
+//: One markdown sub-bullet per finding: its label and the sentence the
+//: surveyor itself wrote. Not synthesised -- `summary` is prose the analysis
+//: already produced, the same reason _factAnswerText is allowed to show
+//: `detail` verbatim.
+//:
+//: Added 2026-09-01 after measuring all 53 questions on egeria_python_git:
+//: three facts (chaoss_metrics, repo_classification, interface_surface)
+//: answered with "findings: 5 (growing, sole, …)" -- a count and two labels
+//: -- while five full explanatory sentences went unshown ("1 organization
+//: identifiable across 93% of commits: pdr-associates.com", "5 releases,
+//: roughly every 150 days"). Same complaint as the verdict-behind-a-toggle
+//: bug, different mechanism: nothing was hidden, the reading was just
+//: thinner than what had been measured.
+function _factFindingLines(value) {
+  const out = [];
+  for (const k of _factFindingArrayKeys(value)) {
+    const arr = value[k];
+    for (const item of arr.slice(0, _FINDING_LINE_CAP)) {
+      const label = item.label ?? item.check_name ?? item.name ?? '';
+      const text = String(item.summary || '').trim();
+      if (!text && !label) continue;
+      out.push(`  - ${label ? `**${_esc(String(label))}** — ` : ''}${_esc(text)}`);
+    }
+    if (arr.length > _FINDING_LINE_CAP) {
+      out.push(`  - _${arr.length - _FINDING_LINE_CAP} more not shown (${arr.length} in total)._`);
+    }
+  }
+  return out;
+}
+
 function _summariseFactValue(value) {
   if (!value || typeof value !== 'object') return '';
-  const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes', ..._factProseKeys(value)]);
+  const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes',
+    ..._factProseKeys(value), ..._factFindingArrayKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {
     if (skip.has(k)) continue;

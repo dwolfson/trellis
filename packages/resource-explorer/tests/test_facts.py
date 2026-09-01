@@ -223,18 +223,46 @@ class TestQuestionsTabWiring:
         know what that analysis measures. Fixed WITHOUT routing this path
         through an LLM -- that would violate
         test_a_question_click_resolves_rather_than_prompting's whole point --
-        by using the catalog's own display name and moving the raw evidence
-        behind a plain <details> dropdown, same idiom the Survey Definition
-        step list already uses."""
+        by using the catalog's own display name.
+
+        **The <details> half of that fix was removed on 2026-09-01**, and
+        this test's assertion on it with it. Not because collapsing evidence
+        was a bad idea, but because measuring showed it almost never
+        happened, and where it did it was hiding the answer:
+
+        The old renderer computed `composedAnswer = proseAnswer ? '' :
+        summary` and then showed the toggle only `if (summary !==
+        composedAnswer)`. For a fact with no prose the two were equal, so
+        the toggle was skipped and the key:value line rendered inline
+        anyway. Measured across all 53 questions on egeria_python_git: 20 of
+        23 facts were scalar-only, so the inline dump this test guards
+        against was already the majority behaviour, and the <details> block
+        was reachable for exactly 3 facts -- `foss_scorecard`,
+        `project_commits`, `community_support`. Those 3 are precisely the
+        ones carrying a verdict, so the one thing the toggle reliably hid
+        was the answer ("Is this repository actively maintained?" replied
+        "389 commit(s) in the last 90 days", with `verdict: pass` behind the
+        toggle).
+
+        So the mechanism was collapsing answers, not evidence. Both halves
+        of a fact's value now render on the visible line; see
+        tests/test_fact_answer_rendering.py, which executes the renderer's
+        own expression rather than grepping for it.
+
+        What this test still pins is the half that was right and is kept:
+        the display name.
+        """
         html = self._html()
         fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
         assert "_analysisDisplayName(f.analysis_id)" in fn, (
             "the raw analysis_id should read as a display name, not a slug"
         )
-        assert "<details>" in fn and "<summary" in fn, (
-            "raw evidence should be collapsible, not dumped inline under the answer"
+        assert "<details>" not in fn, (
+            "the Evidence toggle is deliberately gone -- it was reachable "
+            "only for the three verdict-carrying facts, whose verdicts it "
+            "hid. If a genuine detail tier is reintroduced, it must not be "
+            "the only place a fact's scalars appear."
         )
-        assert ">Evidence<" in fn
 
 
 class TestToolsDoNotAssertAbsence:
