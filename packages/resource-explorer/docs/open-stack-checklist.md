@@ -389,9 +389,9 @@ Everything below came out of one session. Design reasoning lives in
 
 ### Direct asks, not started
 
-- [ ] **Results → Dashboard rename.** 5 label strings in `index.html`; the 24 internal ids
-      (`'results'`, `stage-results`, `_resultsHost`) stay. The placement comment calls it "where a
-      run's results naturally get looked for" — that is the conflation being fixed.
+- [x] **Results → Dashboard rename** — done 2026-08-31 (`33d0034`). 5 label strings; the 24
+      internal ids kept. The placement comment had called it "where a run's results naturally get
+      looked for", which was the conflation stated as a rationale.
 - [x] **Admin → Observe → 💬 Feedback** built 2026-08-31. `GET /api/curate/feedback` plus
       `list_all_resource_feedback` / `count_all_resource_feedback`; filter chips by entity type and
       category. Three deliberate choices, each pinned by a test: `entity_type` defaults to empty
@@ -537,12 +537,19 @@ it.
 
 ### From the design note — nothing built
 
-- [ ] Discovery **Security Survey**: `security_scan`, `security_features`, `ci_quality`,
-      `license_classification`, `repo_conventions`, `foss_scorecard`, `cii_badge` — all fast/inline.
-- [ ] **`Security_Assessment`** survey: the above + `cve_scan` (minutes/queued, excluded from
-      Discovery by rule 17) + the GAP steps below.
-- [ ] **Reducer steps and a topic-summary annotation.** `foss_scorecard` is already a reducer;
-      it needs naming as one. Optional and possibly several per survey.
+- [~] **Discovery Security Survey and `Security_Assessment` — investigated and deliberately NOT
+      built** (2026-08-31). All seven proposed steps already run: five in the Assessment Survey,
+      two in Discovery — and the Assessment Survey already carries `cve_scan` too, so it *is*
+      substantially the `Security_Assessment` the note proposed, minus the name. A new survey would
+      have added a fourth copy of steps that already run, against a batch documented as
+      non-idempotent. The design note's §1/§1b are wrong in the same direction as the earlier
+      "retire security_scan" call: both reasoned from the analysis layer without checking what the
+      survey layer already does. **Reopen only with a reason the existing surveys cannot serve.**
+- [x] **Reducer step and topic-summary annotation** — built and published 2026-08-31 (`368cbe5`).
+      `repo_security_summary` runs last in `RepoAssessmentSurvey` (10 steps) and after all its
+      inputs in `RepoFullSurvey` (35). Carries coverage and the age of its oldest input, refuses a
+      verdict below four inputs, and applies declared precedence. `foss_scorecard` is still an
+      undeclared reducer — naming it as one remains open.
 - [ ] **Four GAP questions with no analysis at all**: secret handling, telemetry/phone-home
       detection, CLA/DCO provenance, SLA/availability content. Secret scanning is what
       "Security Scan" claimed to do all along.
