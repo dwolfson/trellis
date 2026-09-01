@@ -281,3 +281,61 @@ def test_the_source_filter_is_reachable_from_the_pane():
     fn = html[html.index("function loadAdminFeedbackPanel"):]
     fn = fn[:fn.index("\nfunction _adminFeedbackSetFilter")]
     assert "'source', 'page'" in fn and "'source', 'resource'" in fn
+
+
+class TestUngatedRouteDoesNotServeContactFields:
+    """`/api/curate/feedback` has no admin gate; `/api/feedback` does.
+
+    On 2026-09-01 this route was widened to serve the page-level store so the
+    Admin pane would stop showing an empty list. Correct fix, wrong scope: it
+    routed data the GATED endpoint protects through an UNGATED one.
+    `admin_auth.is_admin_request` is fail-closed by design and an admin token is
+    configured, so the gate was real and being bypassed rather than aspirational.
+
+    Nothing leaked — no stored row carries an email — but the store has
+    `wants_response` and `consent_to_contact` columns, so emails are expected.
+    This pins the interim fix until the route is properly gated.
+    """
+
+    def test_contact_fields_are_absent_from_page_rows(self, client, feedback_store):
+        from resource_explorer.feedback_store import FeedbackEntry
+
+        feedback_store.add(FeedbackEntry(
+            page="/scouting", rating=5, message="please reply",
+            email="someone@example.com", wants_response=True,
+            consent_to_contact=True))
+        rows = client.get("/api/curate/feedback").json()["feedback"]
+        page = [r for r in rows if r["source"] == "page"]
+        assert page, "no page rows — this test would pass vacuously"
+        for field in ("email", "session_id", "user_agent", "viewport", "locale"):
+            assert all(field not in r for r in page), (
+                f"{field} served by an ungated route")
+
+    def test_the_feedback_itself_survives_stripping(self, client, feedback_store):
+        """Known-negative for over-stripping: a filter that removed everything
+        would pass the test above. The pane exists to show these."""
+        from resource_explorer.feedback_store import FeedbackEntry
+
+        feedback_store.add(FeedbackEntry(
+            page="/scouting", rating=5, message="the actual feedback",
+            category="suggestion", email="someone@example.com"))
+        rows = client.get("/api/curate/feedback").json()["feedback"]
+        page = [r for r in rows if r["source"] == "page"]
+        assert page
+        # Only fields this test actually SET — asserting on a field the entry
+        # never carried would fail for the wrong reason, which the first version
+        # of this test did.
+        for key in ("message", "category", "created_at"):
+            assert any((r.get(key) or "") != "" for r in page), (
+                f"{key} was stripped too — the pane would show nothing useful")
+
+    def test_keys_are_removed_not_blanked(self):
+        """A blank email is indistinguishable from an author who left none.
+        Removing the key means a caller cannot mistake absence for a measured
+        empty — the distinction this codebase keeps having to restore."""
+        from resource_explorer.web.routes.curate import _without_contact_fields
+
+        out = _without_contact_fields(
+            {"email": "a@b.c", "message": "hi", "session_id": "s1"})
+        assert "email" not in out and "session_id" not in out
+        assert out["message"] == "hi"
