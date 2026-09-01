@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-63 documents, grouped by what they *are* rather than what they are about — the
+64 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -38,6 +38,9 @@ Decisions and models. Cited from source where a comment cannot restate them.
   Proposal / Design Options
 - **[egeria-pyegeria-issues.md](egeria-pyegeria-issues.md)** — 2026-08-27  
   Open, unresolved. No workaround exists in RE — this fails the operation outright; RE catches the
+- **[recovery-and-resync-manual.md](recovery-and-resync-manual.md)** — 2026-09-01  
+  START HERE for any recovery. Routes between the five flavours, covers the Alignment
+  panel, and states what counts as evidence a recovery worked.
 - **[egeria-reset-recovery.md](egeria-reset-recovery.md)** — 2026-08-26  
   written 2026-08-21, from an actual reset rather than from theory. Every
 - **[microflow-survey-funnel-model.md](microflow-survey-funnel-model.md)** — 2026-08-16  
