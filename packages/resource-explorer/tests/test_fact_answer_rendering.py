@@ -26,7 +26,11 @@ below for the transcript.
 """
 from __future__ import annotations
 
+import glob
+import os
 from pathlib import Path
+
+import pytest
 
 INDEX = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html"
 
@@ -73,14 +77,51 @@ def test_the_envelope_renderer_promotes_prose_to_the_visible_line():
         "the renderer never calls _factAnswerText, so a fact's own prose "
         "answer is never promoted to the visible line"
     )
-    # The promoted answer must land in a line pushed BEFORE the <details>
-    # block, not only inside it.
-    answer_push_idx = fn.index("answerText")
-    details_idx = fn.index("<details>")
-    assert answer_push_idx < details_idx, (
-        "answerText is referenced only at or after the <details> block — "
-        "it must be used to build the visible (non-collapsed) line first"
+
+
+def test_the_answer_line_carries_both_halves_of_the_value():
+    """Reported twice. The second time (2026-09-01, "Is this repository
+    actively maintained?") the reply was "389 commit(s) in the last 90
+    days" — the justification, with the verdict nowhere on screen.
+
+    `_r_maintained` returns {maintained, verdict, detail}. The renderer
+    used `proseAnswer || summary`, so prose won outright and the scalars —
+    the literal answer to a yes/no question — went into a collapsed
+    Evidence block. Joining rather than choosing is the fix.
+
+    Asserted by EXECUTING the extracted functions, not by grepping the
+    source. The previous version of this test grepped for "<details>" and
+    kept passing after that block was deleted, because a nearby COMMENT
+    still mentioned it — a test satisfied by prose rather than behaviour.
+    """
+    node = _node_or_skip()
+    out = _run_js(node, INDEX.read_text(), {
+        "maintained": True, "verdict": "pass",
+        "detail": "389 commit(s) in the last 90 days.",
+    })
+    assert "verdict: pass" in out, (
+        f"the verdict is missing from the answer line: {out!r}"
     )
+    assert "maintained: true" in out
+    assert "389 commit(s)" in out, (
+        f"the supporting prose was dropped instead: {out!r}"
+    )
+
+
+def test_a_fact_with_no_prose_is_unaffected():
+    """12 of the 14 resolvers carry no prose at all, so `summary` already
+    reached the answer line — which is why the bug looked fixed after the
+    first pass. Joining must not change them."""
+    node = _node_or_skip()
+    assert _run_js(node, INDEX.read_text(), {"catalogued": True}) == "catalogued: true"
+
+
+def test_an_empty_value_still_yields_no_answer(): 
+    """The no-answer path stays reachable: joining two empty halves must
+    produce an empty string, not a stray separator, so the caller still
+    falls through to the state line."""
+    node = _node_or_skip()
+    assert _run_js(node, INDEX.read_text(), {}) == ""
 
 
 def test_the_process_framing_is_a_footer_not_the_lead():
@@ -149,6 +190,92 @@ def test_the_no_answer_path_is_unchanged():
     assert "never run here" in state_text
 
 
+
+def _node_or_skip() -> str:
+    """A node new enough to parse this file's JS, or skip.
+
+    The functions under test are plain ES2020, but index.html at large uses
+    `||=`, so a stale `node` on PATH can fail to parse a probe that embeds
+    more than the extracted functions. Probing for capability rather than
+    version keeps this honest about what it needs.
+    """
+    import shutil
+    import subprocess
+
+    candidates = [shutil.which("node")] + sorted(
+        glob.glob("/opt/homebrew/opt/node@*/bin/node"), reverse=True
+    )
+    for exe in candidates:
+        if not exe:
+            continue
+        probe = subprocess.run(
+            [exe, "-e", "let a={}; a.x ??= 1; console.log('ok')"],
+            capture_output=True, text=True,
+        )
+        if probe.returncode == 0 and "ok" in probe.stdout:
+            return exe
+    pytest.skip("no node available to execute the extracted renderer functions")
+
+
+def _js_preamble(html: str) -> list[str]:
+    """Every renderer function the answer line depends on.
+
+    Built in one place because the first version had two runners each with
+    their own list; adding _factFindingArrayKeys as a dependency of
+    _summariseFactValue broke the runner that had not been updated. A shared
+    preamble makes that drift impossible rather than merely unlikely.
+    """
+    return [
+        "function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');}",
+        _fn(html, "_factProseKeys"),
+        _fn(html, "_factAnswerText"),
+        _fn(html, "_factFindingArrayKeys"),
+        _const(html, "_FINDING_LINE_CAP"),
+        _fn(html, "_factFindingLines"),
+        _fn(html, "_summariseFactValue"),
+    ]
+
+
+def _answer_expression(html: str) -> str:
+    """The `const answerText = ...;` line as _renderEnvelopeMarkdown writes
+    it, so the test runs the app's rule rather than a restatement of it."""
+    fn = _fn(html, "_renderEnvelopeMarkdown")
+    for line in fn.splitlines():
+        if line.strip().startswith("const answerText"):
+            return line.strip()
+    raise AssertionError("no `const answerText = ...` line in _renderEnvelopeMarkdown")
+
+
+def _run_js(node: str, html: str, value: dict) -> str:
+    """Build the answer line the renderer would build for `value`, by
+    running the real extracted functions."""
+    import json
+    import subprocess
+    import tempfile
+
+    src = "\n".join([
+        *_js_preamble(html),
+        f"const value = {json.dumps(value)};",
+        "const proseAnswer = _factAnswerText(value);",
+        "const summary = _summariseFactValue(value);",
+        # The renderer's OWN expression, lifted from its source -- not a
+        # copy of it. A copy is how the first version of this test kept
+        # passing when the renderer was reverted to `proseAnswer ||
+        # summary`: it exercised the helpers and the test's own
+        # transcription of the rule, never the rule the app runs.
+        _answer_expression(html),
+        "console.log(answerText);",
+    ])
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+        fh.write(src)
+        path = fh.name
+    try:
+        res = subprocess.run([node, path], capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        return res.stdout.strip()
+    finally:
+        os.unlink(path)
+
 def _fn_const(html: str, name: str) -> str:
     start = html.index(f"const {name}")
     end = html.index("};", start) + 2
@@ -198,3 +325,97 @@ def _fn_const(html: str, name: str) -> str:
 #     _Re-run `security_scan` to refresh this._
 #
 #     _Answered from 0 measurement(s) on **some_repo**._
+
+
+def _run_findings_js(node: str, html: str, value: dict) -> list[str]:
+    """The sub-bullets _factFindingLines produces for `value`, plus the
+    answer line, by running the real extracted functions."""
+    import json
+    import subprocess
+    import tempfile
+
+    src = "\n".join([
+        *_js_preamble(html),
+        f"const value = {json.dumps(value)};",
+        "const proseAnswer = _factAnswerText(value);",
+        "const summary = _summariseFactValue(value);",
+        _answer_expression(html),
+        "console.log(JSON.stringify([answerText, ..._factFindingLines(value)]));",
+    ])
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+        fh.write(src)
+        path = fh.name
+    try:
+        res = subprocess.run([node, path], capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        return json.loads(res.stdout.strip())
+    finally:
+        os.unlink(path)
+
+
+def _const(html: str, name: str) -> str:
+    start = html.index(f"const {name}")
+    return html[start:html.index("\n", start)]
+
+
+_CHAOSS = {"findings": [
+    {"check_name": "elephant_factor", "label": "sole",
+     "summary": "One contributor accounts for half of all commits."},
+    {"check_name": "organizational_diversity", "label": "single",
+     "summary": "1 organization(s) identifiable across 93% of commits."},
+]}
+
+
+class TestFindingsArrays:
+    """A fact whose payload is a list of findings answered with its length.
+
+    Measured across all 53 questions on egeria_python_git (2026-09-01):
+    `chaoss_metrics`, `repo_classification` and `interface_surface` rendered
+    "findings: 5 (growing, sole, …)" -- a count and two labels -- while the
+    per-finding sentences the surveyors wrote went unshown. Not the
+    verdict-behind-a-toggle bug (nothing was hidden; there was no toggle),
+    but the same complaint: the reading was thinner than the measurement.
+    """
+
+    def test_each_finding_gets_its_own_sentence(self):
+        node = _node_or_skip()
+        out = _run_findings_js(node, INDEX.read_text(), _CHAOSS)
+        body = " ".join(out)
+        assert "One contributor accounts for half of all commits." in body
+        assert "1 organization(s) identifiable across 93% of commits." in body
+        assert "**sole**" in body and "**single**" in body
+
+    def test_the_array_is_not_also_collapsed_to_a_count(self):
+        """The two readers must agree. If _summariseFactValue did not skip
+        these keys, the answer line would say "findings: 2" AND the same two
+        findings would be listed underneath."""
+        node = _node_or_skip()
+        answer = _run_findings_js(node, INDEX.read_text(), _CHAOSS)[0]
+        assert "findings: 2" not in answer, (
+            f"the array is counted on the answer line as well as expanded: {answer!r}"
+        )
+
+    def test_an_array_of_plain_names_is_not_treated_as_findings(self):
+        """`top_authors` is a list of names, not findings -- it must keep its
+        existing count-plus-preview rendering, not become sub-bullets."""
+        node = _node_or_skip()
+        value = {"top_authors": [{"name": "Dan Wolfson"}, {"name": "Peter Coldicott"}]}
+        out = _run_findings_js(node, INDEX.read_text(), value)
+        assert "top_authors: 2 (Dan Wolfson, Peter Coldicott)" in out[0]
+        assert len(out) == 1, f"a name list must not expand into bullets: {out!r}"
+
+    def test_truncation_says_so(self):
+        """The lesson from the 48,581-row secret scan the same day: a
+        silently truncated list reads as a complete one. Known-negative --
+        drop the "more not shown" line and this fails."""
+        node = _node_or_skip()
+        html = INDEX.read_text()
+        cap = int(_const(html, "_FINDING_LINE_CAP").split("=")[1].strip(" ;"))
+        many = {"findings": [
+            {"label": f"f{i}", "summary": f"finding {i}"} for i in range(cap + 3)
+        ]}
+        out = _run_findings_js(node, html, many)
+        assert any("3 more not shown" in line and f"{cap + 3} in total" in line
+                   for line in out), (
+            f"a truncated findings list must state what it omitted: {out!r}"
+        )
