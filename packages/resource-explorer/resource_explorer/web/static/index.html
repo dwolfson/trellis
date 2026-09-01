@@ -12750,6 +12750,53 @@ function _feedbackSourceBadge(source) {
 
 const _FEEDBACK_TRIAGE_COLOR = { new: 'text-amber-400', triaged: 'text-cyan-400', actioned: 'text-emerald-400' };
 
+
+//: The admin credential, shared with the standalone /admin/feedback page.
+//:
+//: Same sessionStorage key (`re_admin_token`) on purpose: entering the token in
+//: either surface authenticates both, which is the point of repairing the drift
+//: rather than building a second mechanism beside the first.
+//:
+//: sessionStorage, not localStorage — matching admin-feedback.html. The token
+//: dies with the tab rather than persisting on disk.
+const _ADMIN_TOKEN_KEY = 're_admin_token';
+
+function _adminAuthHeaders() {
+  const t = sessionStorage.getItem(_ADMIN_TOKEN_KEY) || '';
+  return t ? { 'X-Admin-Token': t } : {};
+}
+
+function _setAdminToken(value, reloadFn) {
+  const t = (value || '').trim();
+  if (!t) return;
+  sessionStorage.setItem(_ADMIN_TOKEN_KEY, t);
+  if (reloadFn && window[reloadFn]) window[reloadFn]();
+}
+
+//: Shown on 403. States WHY the pane is empty rather than showing an empty
+//: list — an unauthenticated view and a genuinely empty store must not look
+//: alike, which is the distinction this codebase keeps having to restore.
+function _adminTokenGateHtml(reloadFn) {
+  return `<div class="p-6 max-w-lg space-y-3">
+    <div class="text-sm text-slate-200 font-semibold">Admin credential required</div>
+    <div class="text-xs text-slate-400">
+      This view reads submitted feedback, which can include contact details, so it
+      is gated. <span class="text-slate-300">This is not an empty list</span> — it
+      is a view you are not yet authenticated for.
+    </div>
+    <div class="flex gap-2">
+      <input id="admin-token-input" type="password" placeholder="Admin token"
+        class="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+      <button onclick="_setAdminToken(document.getElementById('admin-token-input').value, '${_esc(reloadFn)}')"
+        class="text-xs px-3 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white">Connect</button>
+    </div>
+    <div class="text-[11px] text-slate-500">
+      Held in sessionStorage for this tab only, and shared with
+      <a href="/admin/feedback" class="text-cyan-500 hover:underline">/admin/feedback</a>.
+    </div>
+  </div>`;
+}
+
 async function loadAdminFeedbackPanel() {
   const view = document.getElementById('admin-feedback-view');
   const subnav = _adminSubnavHtml('admin-feedback');
@@ -12760,7 +12807,21 @@ async function loadAdminFeedbackPanel() {
     if (_adminFeedbackFilter.entity_type) qs.set('entity_type', _adminFeedbackFilter.entity_type);
     if (_adminFeedbackFilter.category) qs.set('category', _adminFeedbackFilter.category);
     if (_adminFeedbackFilter.source) qs.set('source', _adminFeedbackFilter.source);
-    const res = await fetch(`/api/curate/feedback?${qs}`);
+    // Same admin credential, same storage key, as the standalone
+    // /admin/feedback page. Those were two implementations of one feature
+    // against two endpoints with two auth postures — one gated, one not — and
+    // docs/admin-surface-options.md names repairing that drift as the
+    // prerequisite before any further admin surface is extracted.
+    const res = await fetch(`/api/curate/feedback?${qs}`, { headers: _adminAuthHeaders() });
+    if (res.status === 403) {
+      // NOT an empty list, and not a generic error. "You are not authenticated"
+      // and "there is no feedback" are different facts, and rendering the first
+      // as the second is exactly the bug that started this whole thread — Dan's
+      // feedback appeared to have been dropped when the pane was simply reading
+      // the wrong store.
+      view.innerHTML = subnav + _adminTokenGateHtml('loadAdminFeedbackPanel');
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
   } catch (e) {

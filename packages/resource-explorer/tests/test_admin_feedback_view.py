@@ -39,6 +39,21 @@ def feedback_store(tmp_path):
     return FeedbackStore(db_path=str(tmp_path / "test_feedback.db"))
 
 
+#: A configured admin token, plus the header that presents it.
+#:
+#: `admin_auth.is_admin_request` is FAIL-CLOSED: with neither admin_token nor
+#: admin_users configured it denies everything, so a test that did not set one
+#: would see 403 for the right value and the wrong reason, and the
+#: known-negative below (a valid credential is ADMITTED) could never pass.
+@pytest.fixture
+def admin_headers(monkeypatch):
+    from resource_explorer import config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod.get_config().feedback, "admin_token", "test-token",
+                        raising=False)
+    return {"X-Admin-Token": "test-token"}
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path, feedback_store):
     """An isolated SQLite registry AND an isolated page-feedback store, so this
@@ -95,24 +110,24 @@ def test_counts_distinguish_volume_from_reach(tmp_path):
     assert counts == {"total": 5, "resources": 2}, counts
 
 
-def test_the_route_says_whether_an_empty_list_was_filtered(client):
+def test_the_route_says_whether_an_empty_list_was_filtered(client, admin_headers):
     """An empty list is ambiguous on its own: "nobody has left feedback" and
     "your filter excluded everything" look identical, and only the first is a
     fact about the world."""
-    unfiltered = client.get("/api/curate/feedback")
+    unfiltered = client.get("/api/curate/feedback", headers=admin_headers)
     assert unfiltered.status_code == 200, unfiltered.text
     assert unfiltered.json()["filtered"] is False
 
-    filtered = client.get("/api/curate/feedback?category=nonexistent-category")
+    filtered = client.get("/api/curate/feedback?category=nonexistent-category", headers=admin_headers)
     assert filtered.status_code == 200
     assert filtered.json()["filtered"] is True
     assert filtered.json()["feedback"] == []
 
 
-def test_both_stores_are_genuinely_empty_and_both_counts_say_so(client):
+def test_both_stores_are_genuinely_empty_and_both_counts_say_so(client, admin_headers):
     """Neither store has a row. The response must make that a stated fact for
     EACH source, not one combined total that hides which store is empty."""
-    resp = client.get("/api/curate/feedback")
+    resp = client.get("/api/curate/feedback", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["feedback"] == []
@@ -123,7 +138,7 @@ def test_both_stores_are_genuinely_empty_and_both_counts_say_so(client):
     }
 
 
-def test_the_route_combines_both_sources_badged_by_origin(client, tmp_path, feedback_store):
+def test_the_route_combines_both_sources_badged_by_origin(client, tmp_path, feedback_store, admin_headers):
     """The bug, verbatim: a page-level submission (`feedback` table) must show
     up here at all, alongside resource_feedback — and each row must say which
     store it came from, since the two are deliberately not merged."""
@@ -133,7 +148,7 @@ def test_the_route_combines_both_sources_badged_by_origin(client, tmp_path, feed
     reg.add_resource_feedback("repo", "some-repo", 4, "quality", "from Curate")
     feedback_store.add(FeedbackEntry(page="/scouting", rating=5, message="from the page widget"))
 
-    resp = client.get("/api/curate/feedback")
+    resp = client.get("/api/curate/feedback", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert len(data["feedback"]) == 2, data["feedback"]
@@ -159,7 +174,7 @@ def test_the_route_combines_both_sources_badged_by_origin(client, tmp_path, feed
     assert "triage_status" not in resource_row
 
 
-def test_source_is_itself_a_filter(client, tmp_path, feedback_store):
+def test_source_is_itself_a_filter(client, tmp_path, feedback_store, admin_headers):
     """Badging exists so the two stores can be told apart later; filtering by
     source is the same capability exercised from the query string."""
     from resource_explorer.feedback_store import FeedbackEntry
@@ -168,19 +183,19 @@ def test_source_is_itself_a_filter(client, tmp_path, feedback_store):
     reg.add_resource_feedback("repo", "some-repo", 4, "quality", "from Curate")
     feedback_store.add(FeedbackEntry(page="/scouting", rating=5, message="from the page widget"))
 
-    only_page = client.get("/api/curate/feedback?source=page").json()
+    only_page = client.get("/api/curate/feedback?source=page", headers=admin_headers).json()
     assert len(only_page["feedback"]) == 1
     assert only_page["feedback"][0]["source"] == "page"
     assert only_page["filtered"] is True
 
-    only_resource = client.get("/api/curate/feedback?source=resource").json()
+    only_resource = client.get("/api/curate/feedback?source=resource", headers=admin_headers).json()
     assert len(only_resource["feedback"]) == 1
     assert only_resource["feedback"][0]["source"] == "resource"
 
 
 def test_an_entity_type_filter_excludes_page_rows_rather_than_ignoring_them(
     client, tmp_path, feedback_store
-):
+, admin_headers):
     """entity_type has no meaning for page-level feedback — it was never
     recorded against a resource. Filtering by it must exclude every page row,
     not silently show them anyway because the filter doesn't apply to them."""
@@ -190,10 +205,10 @@ def test_an_entity_type_filter_excludes_page_rows_rather_than_ignoring_them(
     reg.add_resource_feedback("repo", "some-repo", 4, "quality", "from Curate")
     feedback_store.add(FeedbackEntry(page="/scouting", rating=5, message="from the page widget"))
 
-    filtered = client.get("/api/curate/feedback?entity_type=repo").json()
+    filtered = client.get("/api/curate/feedback?entity_type=repo", headers=admin_headers).json()
     assert {r["source"] for r in filtered["feedback"]} == {"resource"}
 
-    filtered_other = client.get("/api/curate/feedback?entity_type=database").json()
+    filtered_other = client.get("/api/curate/feedback?entity_type=database", headers=admin_headers).json()
     assert filtered_other["feedback"] == []
 
 
@@ -283,59 +298,91 @@ def test_the_source_filter_is_reachable_from_the_pane():
     assert "'source', 'page'" in fn and "'source', 'resource'" in fn
 
 
-class TestUngatedRouteDoesNotServeContactFields:
-    """`/api/curate/feedback` has no admin gate; `/api/feedback` does.
+class TestContactFieldStrippingHelperIsKept:
+    """`_without_contact_fields` is no longer applied by the listing route.
 
-    On 2026-09-01 this route was widened to serve the page-level store so the
-    Admin pane would stop showing an empty list. Correct fix, wrong scope: it
-    routed data the GATED endpoint protects through an UNGATED one.
-    `admin_auth.is_admin_request` is fail-closed by design and an admin token is
-    configured, so the gate was real and being bypassed rather than aspirational.
+    It was the INTERIM fix (cb99d72) while `/api/curate/feedback` was ungated.
+    The route is gated now and serves the full row, matching the equally-gated
+    `/api/feedback` — two gated views of one store disagreeing about its
+    contents would be a new drift replacing the one just closed.
 
-    Nothing leaked — no stored row carries an email — but the store has
-    `wants_response` and `consent_to_contact` columns, so emails are expected.
-    This pins the interim fix until the route is properly gated.
+    The helper is kept and tested rather than deleted: the shape it encodes —
+    REMOVE a key rather than blank it, so absence cannot be mistaken for a
+    measured empty — is worth keeping available if an ungated caller ever
+    exists again.
     """
 
-    def test_contact_fields_are_absent_from_page_rows(self, client, feedback_store):
-        from resource_explorer.feedback_store import FeedbackEntry
-
-        feedback_store.add(FeedbackEntry(
-            page="/scouting", rating=5, message="please reply",
-            email="someone@example.com", wants_response=True,
-            consent_to_contact=True))
-        rows = client.get("/api/curate/feedback").json()["feedback"]
-        page = [r for r in rows if r["source"] == "page"]
-        assert page, "no page rows — this test would pass vacuously"
-        for field in ("email", "session_id", "user_agent", "viewport", "locale"):
-            assert all(field not in r for r in page), (
-                f"{field} served by an ungated route")
-
-    def test_the_feedback_itself_survives_stripping(self, client, feedback_store):
-        """Known-negative for over-stripping: a filter that removed everything
-        would pass the test above. The pane exists to show these."""
-        from resource_explorer.feedback_store import FeedbackEntry
-
-        feedback_store.add(FeedbackEntry(
-            page="/scouting", rating=5, message="the actual feedback",
-            category="suggestion", email="someone@example.com"))
-        rows = client.get("/api/curate/feedback").json()["feedback"]
-        page = [r for r in rows if r["source"] == "page"]
-        assert page
-        # Only fields this test actually SET — asserting on a field the entry
-        # never carried would fail for the wrong reason, which the first version
-        # of this test did.
-        for key in ("message", "category", "created_at"):
-            assert any((r.get(key) or "") != "" for r in page), (
-                f"{key} was stripped too — the pane would show nothing useful")
-
     def test_keys_are_removed_not_blanked(self):
-        """A blank email is indistinguishable from an author who left none.
-        Removing the key means a caller cannot mistake absence for a measured
-        empty — the distinction this codebase keeps having to restore."""
         from resource_explorer.web.routes.curate import _without_contact_fields
 
         out = _without_contact_fields(
             {"email": "a@b.c", "message": "hi", "session_id": "s1"})
         assert "email" not in out and "session_id" not in out
         assert out["message"] == "hi"
+
+    def test_it_keeps_the_feedback_itself(self):
+        """Known-negative: a helper that removed everything would satisfy the
+        assertion above."""
+        from resource_explorer.web.routes.curate import _without_contact_fields
+
+        out = _without_contact_fields(
+            {"email": "a@b.c", "message": "hi", "category": "bug", "rating": 5})
+        assert out == {"message": "hi", "category": "bug", "rating": 5}
+
+
+class TestTheListingIsGated:
+    """`/api/curate/feedback` and `/api/feedback` are two views of one store.
+
+    Until 2026-09-01 one was gated and the other was not, and the ungated one
+    had just been widened to serve the page-level feedback store. That is the
+    drift `docs/admin-surface-options.md` names as the prerequisite before any
+    further admin surface is extracted — the one place RE already split a
+    surface produced duplicated logic and divergent auth.
+
+    `admin_auth.is_admin_request` is fail-closed AND an admin token is
+    configured, so the gate was real and being bypassed, not aspirational.
+    """
+
+    def test_without_a_credential_the_listing_is_refused(self, client, feedback_store):
+        from resource_explorer.feedback_store import FeedbackEntry
+
+        feedback_store.add(FeedbackEntry(page="/scouting", rating=5, message="hi"))
+        resp = client.get("/api/curate/feedback")
+        assert resp.status_code == 403, (
+            "an ungated listing of submitted feedback, which can carry contact "
+            "details, is the drift this closes")
+
+    def test_a_refusal_is_not_an_empty_list(self, client):
+        """403, never 200-with-nothing.
+
+        A 200 carrying an empty list would be read as 'there is no feedback' —
+        which is how this whole thread started: Dan's feedback looked dropped
+        when the pane was simply reading the wrong store. Unauthenticated and
+        empty must not look alike.
+        """
+        # NO credential on purpose — this test is about the refusal. A bulk
+        # edit added `headers=admin_headers` here and it silently became a test
+        # of the authenticated path instead, passing for the wrong reason.
+        resp = client.get("/api/curate/feedback")
+        assert resp.status_code != 200, "a refusal must not masquerade as an empty result"
+        assert "feedback" not in resp.json(), "a refusal must not carry a rows key at all"
+
+    def test_with_a_valid_credential_the_full_row_is_served(self, client, feedback_store, admin_headers):
+        """The known-negative for the gate: it must ADMIT a valid credential.
+
+        Without this, a route that refused everyone unconditionally would pass
+        both tests above. Also pins that a gated caller gets the FULL row —
+        stripping was the interim while the route was ungated, and keeping it
+        would leave two equally-gated views of one store disagreeing.
+        """
+        from resource_explorer.feedback_store import FeedbackEntry
+
+        feedback_store.add(FeedbackEntry(
+            page="/scouting", rating=5, message="hi", email="a@b.c"))
+        resp = client.get("/api/curate/feedback", headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        page = [r for r in resp.json()["feedback"] if r["source"] == "page"]
+        assert page, "no page rows — this test would pass vacuously"
+        assert any("email" in r for r in page), (
+            "a gated caller should see the same row the equally-gated "
+            "/api/feedback serves")

@@ -12,11 +12,40 @@ oversight. See docs/curate-followups.md.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from resource_explorer.feedback_store import FeedbackStore
 from resource_explorer.registry import ProjectRegistry
+
+from resource_explorer.config import get_config
+from resource_explorer.web.admin_auth import is_admin_request
+
+
+def _require_admin(request: Request) -> None:
+    """Gate an admin listing, matching routes/feedback.py's `_require_admin`.
+
+    Added 2026-09-01 to close a real drift: this module's `/feedback` listing
+    and `routes/feedback.py`'s were two implementations of one feature against
+    two endpoints with two auth postures — one gated, one not — and on
+    2026-09-01 the ungated one was widened to serve the page-level store as
+    well. `admin_auth.is_admin_request` is fail-closed AND an admin token is
+    configured here, so the gate was real and being bypassed rather than
+    aspirational.
+
+    `docs/admin-surface-options.md` names fixing this drift as the prerequisite
+    before any further admin extraction: the one place RE already split a
+    surface produced duplicated logic and divergent auth, which is an argument
+    against repeating the split at larger scale until it is repaired.
+
+    It also stops being optional once RE reaches the open demo environment
+    (`docs/Backlog.md`, "Auth posture ..."), where the difference between a
+    gated and an ungated feedback listing is the difference between a form and
+    a mailing list.
+    """
+    if not is_admin_request(request, get_config().feedback):
+        raise HTTPException(status_code=403, detail="Admin credential required")
+
 
 router = APIRouter()
 
@@ -115,6 +144,7 @@ def _without_contact_fields(row: dict) -> dict:
 
 @router.get("/feedback")
 def list_all_feedback(
+    request: Request,
     limit: int = 200, entity_type: str = "", category: str = "", source: str = ""
 ) -> dict:
     """Every feedback item in one place, for Admin — from BOTH stores.
@@ -151,6 +181,8 @@ def list_all_feedback(
     filter excluded everything" look identical, and only one of those is a
     fact worth stating plainly.
     """
+    _require_admin(request)
+
     reg = _registry()
     resource_rows = reg.list_all_resource_feedback(
         limit=limit, entity_type=entity_type, category=category)
@@ -164,7 +196,12 @@ def list_all_feedback(
     page_stats = page_store.stats()
 
     combined = [dict(r, source="resource") for r in resource_rows]
-    combined += [_without_contact_fields(dict(r, source="page")) for r in page_rows]
+    # Full rows now. `_without_contact_fields` was the INTERIM fix while this
+    # route was ungated (cb99d72); with the gate in place, stripping would leave
+    # two equally-gated views of one store disagreeing about what it contains —
+    # which is the drift this change exists to end. The helper is kept and
+    # tested, since an ungated caller may exist again.
+    combined += [dict(r, source="page") for r in page_rows]
     if source:
         combined = [r for r in combined if r["source"] == source]
     combined.sort(key=lambda r: r.get("created_at") or "", reverse=True)
