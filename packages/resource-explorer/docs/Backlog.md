@@ -16,12 +16,17 @@ Marked at the end of the architecture-recovery thread. Findings 96–119 in
 `scripts/arch-spike/README.md` are that thread's record; this is what is left and
 what is deliberately not.
 
-**1. Phase 2 — Egeria projection of recovered architecture.** The stated end goal, and the
-only major piece unbuilt: **nothing from architecture recovery reaches Egeria.** Its one
-remaining prerequisite is **outbox/retry publishing** (design §8.4) — a blueprint writes far
-more elements per run than anything currently published, and the design is blunt that *"a
-half-published blueprint is worse than none."* Its other prerequisite is now done: projection
-has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
+**1. Phase 2 — Egeria projection of recovered architecture.** Still the largest unbuilt piece,
+but **"nothing from architecture recovery reaches Egeria" stopped being true on 2026-08-30** —
+`arch_recovery/materializer.py`'s `ComponentMaterializer` writes a real `SolutionComponent` when
+a curator accepts a proposed component. That path is deliberately narrow: accepted verdicts
+only, a bare component with no blueprint or relationships, and no retraction if a verdict is
+later reversed. So the *blueprint* projection is unbuilt; a single-component projection is not.
+
+Its one remaining prerequisite is **outbox/retry publishing** (design §8.4, still design-only) —
+a blueprint writes far more elements per run than anything currently published, and the design
+is blunt that *"a half-published blueprint is worse than none."* Its other prerequisite is done:
+projection has a hierarchy to collapse (finding 117, milvus 204-at-every-depth → 82/142/216/221).
 
 **2. `security_features` should report `skipped_by_design`.** GitHub returns
 `security_and_analysis` only to repository admins, so the analysis is **structurally impossible
@@ -49,6 +54,303 @@ rather than its behaviour.
 ## Open items
 
 Grouped by area. Within a group, the most actionable entries come first.
+
+### Survey execution
+
+> **STATUS 2026-09-01, later the same day: the precondition half of this is BUILT and this entry is
+> stale where it says otherwise.** `survey_orchestrator.py:226-241` evaluates a step's
+> `requires_context`, and on a failed precondition emits a `SKIPPED_BY_DESIGN` annotation carrying
+> the reason and records `result.skipped_steps[step_key]`. `step_preconditions.PRECONDITIONS`
+> defines `has_dependencies`, `has_versioned_dependencies`, `has_file_inventory` and
+> `has_code_symbols`, and `repo_cve_scan` declares `has_versioned_dependencies` in production.
+>
+> Caught by an agent scoping the GAP analyses, which read this entry as a statement of current
+> state and would have rebuilt the orchestrator plumbing. Verified against the source before this
+> note was written. **What remains open is the vocabulary, not the mechanism** — richer context
+> facts (`first_party_code`, `is_deployable`, `has_documentation_site`) per
+> `docs/repo-context-and-tool-routing.md` §4, and guard evaluation in the EXECUTOR, which is
+> separate and still unbuilt.
+>
+> The entry is kept rather than deleted because the reasoning below is what the built feature
+> honours, and because a backlog item that silently disappears leaves no record of why it was
+> closed. An entry that outlived what it described, in a document whose whole job is to describe
+> what is outstanding.
+
+**No conditional execution of survey steps — every selected step runs, whether or not it can say
+anything.** Raised by Dan 2026-09-01. `SurveyOrchestrator.run()` iterates
+`list(all_surveyors.items())` and runs each in turn. The only filters are the cost ceilings
+(`max_fetch_cost`/`max_compute_cost`) and an explicit `steps=` list. There is **no way for a step to
+declare a precondition on the state a previous step produced**, and no way to skip one whose input
+is absent.
+
+The consequences are already visible, and they are not crashes:
+
+- **`cve_scan` on a repo with no parsed dependencies.** It reads `project_dependencies`, finds
+  nothing, and correctly declines rather than claiming "no CVEs". Right behaviour — but it ran, was
+  timed, was published as an analysis, and contributed nothing. `security_summary` then counts it
+  among its 8 `INPUT_KINDS` as *never ran*, and below `MIN_INPUTS_FOR_VERDICT` withholds a verdict.
+  A step that cannot say anything still consumes a slot in the picture.
+- **The distinction that has to survive.** `surveyors/result_status.py` already separates
+  `NOTHING_FOUND` from `SKIPPED_BY_DESIGN` from `NEVER_RUN`. Conditional execution must produce the
+  middle one — *skipped, with a stated reason* — never silence. A step that vanishes from a report
+  is indistinguishable from one that ran and found nothing, which is the failure this codebase keeps
+  removing. `repo_classification`'s `architecture_recovery_gate` is the worked example of doing it
+  right (`docs/repo-context-and-tool-routing.md` §3): it reports `skipped_by_design`, the reason
+  travels with the skip, and `respect_gate=False` still runs it — the gate changes the default, not
+  the permission.
+
+**What is missing, concretely.** `StepInfo` declares `requires_resources` (zipball, clone) and
+`requires_views`, both about *runtime inputs*. Neither expresses "this step needs rows in
+`project_dependencies`" or "this step is pointless on a repo with no first-party code". The design
+note already proposes the shape — `requires_context` alongside `requires_resources`, checked before
+dispatch, producing a `skipped_by_design` with a reason when unmet
+(`docs/repo-context-and-tool-routing.md` §4) — but nothing is built beyond the one hand-wired gate.
+
+**Egeria already has the branching half of this, and it is worth not reinventing.** Reported
+2026-09-01 by a concurrent session that read `EngineActionHandler.initiateNextEngineActions`
+(lines 2839-2945) in the Java source directly — **recorded here second-hand; not verified from the
+source by the author of this entry**, so confirm before building on it:
+
+- Each `NextGovernanceActionProcessStep` link carries a `guard` and a `mandatoryGuard`.
+- `validNextAction = (guard == null)`; otherwise the link fires only if that guard string appears in
+  the previous step's `outputGuards`.
+- A step emits guards through `recordCompletionStatus(status, outputGuards, ...)` and may emit
+  several.
+- `mandatoryGuard` is a **join, not a branch** — `runEngineActionIfReady` holds a prepared action
+  until every mandatory guard has arrived from its upstreams.
+
+So the model is "one step, several outgoing links each with a guard, follow the ones whose guard
+fired". That is a real answer to *which steps run*, and it means RE should express conditionality in
+Egeria's vocabulary rather than inventing a parallel one.
+
+**What Egeria's model does NOT give you is the part this entry is actually about.** Guards say which
+links *fire*; nothing records what therefore *did not run*, or why. A step that is simply never
+reached leaves no trace, which is precisely the silence that makes `NOTHING_FOUND` and `NEVER_RUN`
+indistinguishable downstream. Whatever is built has to add the `SKIPPED_BY_DESIGN`-with-a-reason
+record on top of guard evaluation — it will not come for free with the guards.
+
+**Related, and deliberately kept separate:** step *ordering* is a different problem and is currently
+correct. Producers precede consumers in `STEP_REGISTRY`, verified live 2026-08-31 (one `amundsen`
+survey produced 880 dependency rows and 8 cve_scan findings in the same run) and now guarded by
+`tests/test_step_execution_order.py`. That order is positional and undeclared, so the test exists to
+stop it regressing silently; **if conditional execution is built, it should express the data
+dependency it already relies on rather than adding a second implicit mechanism beside it.**
+
+### Admin surface: Option B (separate pages), and possible Trellis-wide centralisation
+
+**Deferred by decision 2026-09-01, not dropped.** Dan: *"agree in general — do the fix recommended
+and put option B in backlog to be revisited. Its quite possible that we may need to centralize admin
+across trellis at some point — so lets not lose this in the day to day."*
+
+`docs/admin-surface-options.md` recommends **staying inline for now** and fixing the existing drift
+first. That recommendation is accepted. This entry holds what was deferred.
+
+**Option B — extract admin into separate static pages** served by the same app, following the
+`admin-feedback.html` precedent (RE has no JS bundler; a "separate site" costs about what that page
+cost, not a second app). Measured pressure at time of deferral: `index.html` is **15,774 lines** and
+the most-churned file in the package — **166 commits since 2026-08-06**, next closest
+`docs/Backlog.md` at 116, peaking at 23 in one day. But that is co-occurrence, **not proven merge
+conflicts**, and the distinction was made honestly rather than used to argue for a rewrite.
+
+**Triggers to revisit** (any one):
+- A real merge conflict in `index.html`, not just contention.
+- A pane whose operator-only content has no reason to share the analyst UI's session or
+  resource-selection context — **Prefect and Logs are closest**.
+- **The open-demo deployment** (see the entry below). That changes the calculus: EA's separate
+  `/admin` was discounted as weak precedent partly *because* it is unauthenticated, which stops being
+  a reason to dismiss the split and becomes a reason the split needs auth.
+- **Trellis-wide admin centralisation** — Dan's own flag, and the largest version of this. RE, EA and
+  Workspaces Portal each have their own admin surface with their own auth posture and their own
+  triage vocabulary; the surveys in `docs/feedback-signals-shared.md` and
+  `docs/feedback-triage-from-workspaces.md` are already evidence of three implementations converging
+  on the same needs. If admin is going to be shared, extracting RE's into pages first is a
+  prerequisite step rather than wasted work.
+
+**What must not be lost in any split** (all with line references in the options doc): Egeria
+Alignment's dry-run/confirm split, undetermined-reported-separately-from-clean, expensive repairs
+unticked by default, per-action destructive warnings, and fixed apply ordering. These took a full
+session to get right and a loose re-implementation would silently lose them.
+
+### Feedback as a signal of where the system is weak, not just of what a user disliked
+
+**Raised by Dan 2026-09-01**, and it is a different axis from triage status:
+
+> *"there is another status or point — that what is being reported indicates a gap in either training
+> data, rules, routing, or agent behavior — we would want to periodically sweep through this (and the
+> chat scores) for continuous improvement"*
+
+Triage answers *what do we do with this report*. This answers *what does this report tell us is
+missing*, and the two are independent: a report can be `not_an_issue` for the reporter and still be
+the clearest evidence available that routing is wrong.
+
+Proposed as a **second, orthogonal classification** — not more values on `triage_status`, which would
+conflate a disposition with a diagnosis. Candidate categories, from Dan's own list: **training data ·
+rules · routing · agent behaviour**, plus an explicit *not-a-system-gap* and an *unclassified* that
+is distinct from "reviewed and found to be none of these". Absence must not read as a decision — the
+same rule as everywhere else here.
+
+**The sweep is the point, not the field.** A classification nobody aggregates is a dropdown. What is
+wanted is a periodic pass over feedback AND chat scores together, looking for concentrations — three
+reports blaming routing in one area is a finding that no single report is. Scope should include:
+`feedback`, `resource_feedback`, and the chat signal (`chunk_feedback`, now trinary — see
+`docs/feedback-signals-shared.md`), since a low chat score and a written complaint may be the same
+gap seen twice.
+
+Prerequisites, in order: RE has **no way to change any feedback state today** — the gated
+`PATCH /api/feedback/{id}` exists and no UI calls it (`docs/feedback-triage-from-workspaces.md`).
+That must land first, and `/api/curate/feedback` must be gated, before adding a second field that
+also needs writing.
+
+Not scoped: whether the classification is made by a person, suggested by an agent and confirmed, or
+both; how the sweep is scheduled; and what it produces — a report, a RequestForAction, or backlog
+entries.
+
+### Auth posture when RE and EA reach the open demo environment
+
+**Dan, 2026-09-01: "RE and EA will at some point also be in the open demo environment."** Recorded
+because it puts an expiry date on reasoning committed the same day, and that reasoning is now in a
+docstring that would otherwise be read as timeless.
+
+`web/admin_auth.py` is fail-closed: absent admin configuration, every admin request is denied. Its
+stated justification is that **RE has nothing to defer to** — no multi-user authentication of its
+own, and no authenticating layer behind it. That is true of RE today and stops being true in a
+public demo.
+
+Egeria Workspaces Portal has already solved this shape, and `demo_feedback_handler.py::_is_admin()`
+is the model rather than the counter-example it was briefly mistaken for (see
+`docs/feedback-triage-from-workspaces.md` §5, framing withdrawn): **two modes — a public demo
+requiring an external identity, and a local mode relying on Egeria's own users.** RE will need the
+same distinction, and should adopt that pattern rather than reinvent one.
+
+**What this changes about work already done or planned:**
+
+- **`/api/curate/feedback` gating moves from "outstanding" to "required".** It is currently ungated,
+  and on 2026-09-01 it was widened to serve the page-level feedback store. Contact fields are
+  stripped as an interim (`cb99d72`) — that was sized as a stopgap for a single-operator local app.
+  In an open demo it is the difference between a form and a mailing list.
+- **The interim becomes insufficient, not merely redundant.** Stripping hides contact fields from a
+  listing; it does nothing about who may WRITE. Triage editing (`PATCH /api/feedback/{id}`, gated
+  today) and any future admin write must not inherit an ungated sibling.
+- **The feedback store holds real submissions with `wants_response` and `consent_to_contact`.**
+  Consent given to a local tool is not consent given to a public deployment. Whether existing rows
+  may be carried into a demo environment at all is a question for Dan, not a default.
+- **`docs/admin-surface-options.md` recommended staying inline**, partly because EA's separate
+  `/admin` is unauthenticated and therefore weak precedent. In an open demo that stops being a
+  reason to dismiss the split and becomes a reason the split needs auth — the recommendation should
+  be revisited against the demo requirement, not just against file contention.
+
+Not scoped: which identity provider, whether RE and EA share a session, whether the demo runs
+read-only, and what happens to the admin token that exists today.
+
+### Reporting levels
+
+**Improvement suggestions as a third reporting level, keyed off who is asking.** Raised by Dan
+2026-09-01 while reviewing `docs/gap-analyses-design.md`. Deliberately deferred; recorded so the
+GAP analyses are built without precluding it.
+
+An analysis can report at three levels, and today only two exist:
+
+| level | mechanism | state |
+|---|---|---|
+| overall finding / score | `project_analysis_findings.label` + `.confidence` | built, used |
+| the evidence behind it | `.detail_json`, and Egeria's `AnnotationExtension` | partly built — see below |
+| suggestions for improvement | `RequestForAction` annotation | type exists, used ONLY for internal survey errors (`base_surveyor.py:39`) |
+
+**The hook already exists and nothing reads it.** Investigations carry `purposes`, validated against
+`ProjectCharter.purposes` (`registry.py:4265-4275`): *Assess, Certify, Deploy, Explore, Learn,
+Maintain, Select, Share*. Dan's point is that a suggestion depends on whether the asker MAINTAINS
+the artifact or CONSUMES it — `Maintain` versus `Select`/`Deploy` — and that distinction is already
+modelled, validated on write, and consumed by nothing.
+
+So the item is well-formed rather than vague: **drive `RequestForAction` content off the
+investigation's declared purpose.** "Add a SECURITY.md" is advice for a maintainer; "this project
+publishes no security policy — weigh that in your selection" is the same finding for a consumer.
+Same evidence, different action, and issuing the maintainer's version to a consumer is noise.
+
+**What must be true NOW so this stays possible later**, and it is the reason this is recorded rather
+than only remembered: **the finding, its evidence and any recommendation must be separately
+addressable.** Evidence flattened into a summary string cannot be re-read by a recommender built
+later, and the alternative is re-running every survey to get it back. `AnnotationExtension`
+(`OpenMetadataType.java:6010`, model 0610 — *"Additional information to augment an annotation"*) is
+the modelled way to link a summary annotation to the evidence annotations behind it. **RE has never
+created one.**
+
+`AnnotationReview` (model 0612, `OpenMetadataType.java:6020`) is the adjacent type for a stewardship
+review of an annotation, and is the more likely home for an accepted/rejected suggestion than a
+bare RequestForAction.
+
+Not scoped: whether a purpose maps to one recommendation set or several, what happens when an
+investigation declares five purposes at once (common — one live investigation declares eight), and
+whether a recommendation is itself a finding with a lifecycle or a rendering of one.
+
+### Test reliability
+
+#### `test_survey_definition_generator_guard.py` mutates the real docs directory, and is only safe alone
+
+Found 2026-09-01, in the working tree rather than by a failing test — `git status` showed
+`.generated.json` **deleted** and `repo-survey-definition-assessment.md` carrying a mechanical
+`"Assessment Survey"` -> `"Assessment Survey X"` rename that nobody had made.
+
+Both come from the test file itself. It operates on the **real**
+`docs/dr-egeria/survey-definitions/` directory, not a `tmp_path` copy:
+
+    DEFS = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "survey-definitions"
+    target.write_text(original.replace("Assessment Survey", "Assessment Survey X"))   # :91
+    PROVENANCE.unlink(missing_ok=True)                                                 # :108
+
+Its `restore` fixture snapshots every document plus the sidecar and puts them back, and **is correct
+in isolation**. The failure needs two runs: session A snapshots, session B snapshots *A's mutated
+state*, A restores, B restores what it captured — and the tree keeps a snapshot of a half-mutated
+directory. With the sidecar gone, every definition then looks hand-edited, so the guard tests fail
+for a reason that has nothing to do with the code under test.
+
+**It is not a flaky test. It is a test whose correctness depends on being the only one running**,
+and nothing declares that property. Three sessions running suites in one shared checkout is now
+routine, so this will recur.
+
+Fixes, roughly by cost:
+
+1. **Copy the directory to `tmp_path`** and point the generator at it — the generator already takes
+   paths, so this is mostly fixture work, and it removes the shared-state dependency entirely.
+2. **A file lock** around the module, so concurrent runs serialise rather than interleave. Cheaper,
+   and leaves the tree mutated while it runs — a `git status` mid-suite still lies.
+3. **Leave it and document it.** Current state: correct alone, silently wrong concurrently.
+
+Recovering from an occurrence is `git checkout --` on the two paths, after reading `git status` for
+them — the damage is confined to that directory and is always the same shape.
+
+
+
+**`test_local_flow_execution_fallback` failed once and has not reproduced.** Seen 2026-08-31 in a
+full run on `c650df6`: 3075 passed / 1 failed. An immediate rerun of the same command, same commit,
+same `-p no:randomly`, gave 3076 passed / 0 failed. The test passes alone (8.3s) and passes as a
+whole file.
+
+**Status: open, cause unknown, one observation.** Recorded rather than closed because a fix that
+did not reproduce the failure cannot be shown to have fixed it.
+
+What has been ruled out, so nobody re-walks it:
+
+- **Not port contention.** The test is pure mocks and binds nothing. The port in the Prefect noise
+  comes from Prefect's own `prefect_test_harness`, not from our code.
+- **Not "a non-opted-in module poisons Prefect's cached client first."** This was the leading
+  hypothesis and it explained every symptom — passes alone, passes per-file, fails in the suite.
+  It was falsified: first-wins on a fixed sequence predicts a *deterministic* failure, and two
+  fixed-order runs disagreed. The mechanism it described is real (the fallback at
+  `prefect_adapter.py:153` calls the real `re_survey_flow`, using Prefect's own client rather than
+  the patched one) — it just is not what happened.
+- **Not a Prefect server left running by a concurrent session.** Reported as evidence and then
+  withdrawn: the "prefect processes" were `ps | grep "[p]refect"` matching the reporting session's
+  own `zsh -c` wrapper line. The bracket idiom stops grep matching itself; it does nothing about the
+  shell carrying the pattern as an argument.
+
+Do **not** read `Stopping temporary server on http://127.0.0.1:<port>` or `ValueError: I/O
+operation on closed file` as a reproduction signature. Both appear in runs where this test passes;
+they are Prefect teardown noise.
+
+If it recurs, capture the assertion text — not a `tail` of the run, which buries the summary under
+Prefect's teardown logging.
+
 
 ### Architecture recovery
 
@@ -2081,6 +2383,128 @@ produced a finding for `dependabot_security_updates: enabled` and silently didn'
 ---
 
 ### Platform & orchestration
+
+#### Gradle versions come from the BOM, so CVE scanning still cannot answer for Egeria
+
+Follow-on from the entry below, which is now fixed: Gradle *is* parsed (2026-08-31), and
+`egeria_git` went from 0 dependency rows to 85. But **84 of those 85 have no version**, because
+Egeria resolves them through a BOM (`bom/build.gradle`) rather than inline. Measured, not assumed.
+
+`cve_scan` handles that honestly — an empty version lands in `unqueryable` with "no pinned version
+to query", never as clean — so the summary is now 8 of 8 inputs where the eighth says *cannot
+answer*. That is a better state than "never ran", and it is not CVE coverage.
+
+To get real advisories for a BOM-based project, something has to resolve `group:artifact` to a
+version. Options, roughly by cost:
+
+1. **Parse the BOM file itself.** Egeria's `bom/build.gradle` carries the versions, many as
+   `${jacksonVersion}`-style variables defined in the same file or in `gradle.properties`. A
+   two-pass read — collect variable definitions, then substitute — would resolve most of them
+   without running anything. Cheapest, and covers the common single-BOM case.
+2. **Version catalogs** (`gradle/libs.versions.toml`) are a data format and would parse directly.
+   Egeria does not use one, but many modern Gradle projects do.
+3. **Run `gradle dependencies`.** Complete and correct, needs a JVM and a working build per repo,
+   and is far outside what a survey step should do.
+
+Option 1 is the one that matches this codebase's existing shape — the same "cheap structural signal,
+not full understanding" the manifest and convention parsers already are.
+
+**Whatever is built, the reporting rule from the Gradle entry still applies:** a version resolved by
+substitution should be distinguishable from one declared inline, because a wrong substitution
+produces a *confident* CVE answer about the wrong version — which is worse than the current
+"cannot answer".
+
+#### No Gradle support in the dependency parser — Egeria itself has zero dependency data, so CVE scanning cannot run on it
+
+Found 2026-08-31 while trying to take `egeria_git`'s security summary from 7 of 8 inputs to 8.
+
+`ingestion/dependency_parser.py` globs for six manifest kinds: `pyproject.toml`,
+`requirements*.txt`, `setup.py`, `package.json`, `go.mod`, `pom.xml`. **Gradle is not among them** —
+no `build.gradle`, no `build.gradle.kts`.
+
+Measured on the live registry:
+
+    egeria_git manifests in project_file_inventory:  build.gradle x239, and nothing else
+    egeria_git rows in project_dependencies:         0
+
+So `manifest_parse` runs, completes, publishes 4 annotations and 0 errors, and produces no
+dependency rows — because there is nothing it can read. Everything downstream of dependency data
+is then unreachable for the project this tool is built around:
+
+- `dependency_analysis` has nothing to report.
+- **`cve_scan` can never run**, because it scans dependencies already parsed.
+- `security_summary` is permanently capped at 7 of 8 inputs for any Gradle repo.
+
+**The vocabulary behaved correctly and that is the point.** `cve_scan` did not claim "no CVEs" — it
+declined to report, exactly as its own comment intends ("No dependencies RECORDED is not no
+dependencies"). The step is right. The gap is coverage, and the risk is one layer up: for a Java
+project the answer is *always* "not assessed", and any surface that renders that beside a genuine
+"assessed, nothing found" turns a whole ecosystem's blind spot into an apparent clean bill of
+health. `security_summary` names `cve_scan` in its missing list specifically so this cannot happen
+silently there.
+
+Scope worth checking before estimating: Gradle is Java/Kotlin/Android's dominant build tool, so this
+is not one project's quirk. `repo_conventions_parser` already recognises `build.gradle` and
+`build.gradle.kts` for its `automated_build` check, so the *filenames* are known to the codebase —
+only dependency extraction is missing.
+
+Harder than the other five parsers, and the estimate should say so: `build.gradle` is Groovy (or
+Kotlin) **code**, not a data format, so `dependencies { implementation 'g:a:v' }` can be built from
+variables, version catalogs (`libs.versions.toml`), `ext` properties or plugins. Options range from
+a regex over literal coordinate strings (cheap, partial, and honest if it reports what it skipped)
+to invoking `gradle dependencies` (complete, needs a JVM and a working build). A partial parser is
+defensible **only** if what it could not resolve is reported rather than dropped — a dependency list
+silently missing its version-catalog entries is worse than none, because it looks complete.
+
+#### `--reload` and the source cache cannot both be right — a survey of any large repo cannot finish
+
+Found 2026-08-31 while trying to get `cve_scan` onto `egeria_git`.
+
+`SourceCache.DEFAULT_CACHE_DIR` is `Path("data/source-cache")` — **relative**, so it resolves
+against the process cwd. The server runs from the repo root, so every acquired zipball and
+treeless clone extracts *inside the directory uvicorn watches*. Extracting Egeria's zipball
+produced, in the server's own log:
+
+    INFO watchfiles.main: 485 changes detected
+    INFO watchfiles.main:  92 changes detected
+    INFO watchfiles.main:  17 changes detected
+
+Each one restarts the server and kills the in-flight survey. `manifest_parse` on `egeria_git`
+ran for **ten minutes and wrote zero dependency rows** — no error, no timeout, just repeatedly
+killed and restarted. It completed normally on a server started without `--reload`.
+
+**Neither side is careless, which is why this survived.** The cache location is a considered
+choice, and its comment says so: under `data/` beside the registry databases, so a checkout
+stays self-contained and `rm -rf data/source-cache` is a complete, safe reset. Auto-reload on
+save is equally reasonable for development. The two are individually right and jointly fatal.
+
+**It is silent from every angle a person would look.**
+
+- The run endpoint returns `{"status":"started"}` and the activity log gets its entry, so the
+  caller sees a successful launch.
+- `data/` is gitignored, so 44 MB of extracted source never appears in `git status`.
+- `watchfiles` does **not** read `.gitignore` for its exclusions, so being ignored buys nothing.
+- The only visible trace is `watchfiles.main` at INFO — which was **discarded entirely** before
+  logging was wired earlier the same day. This was findable for the first time this morning.
+
+**Directly upstream of the entry below.** That one fixed the *symptom* of a restart mid-survey
+(an `activity_log` row stuck at `running` forever) and treats restarts as an occasional event —
+"restarting the web server to pick up a git pull". This makes them routine and self-inflicted:
+every large survey triggers its own.
+
+Options, none chosen:
+
+1. **Absolute cache dir outside the tree** (`~/.cache/resource-explorer/source-cache`, or
+   `$RE_SOURCE_CACHE_DIR`). Fixes it everywhere, and costs the self-contained-checkout property
+   the current comment is defending.
+2. **`--reload-exclude data/*`** on the `uvicorn.run()` call in `cli/main.py`. Keeps both
+   properties; only helps the one entry point, and anyone running uvicorn directly still hits it.
+3. **Do not pass `--reload` while surveying.** Free, and relies on remembering — the kind of rule
+   that gets routed around because nothing enforces it.
+
+Whichever is chosen, the silence deserves its own fix: a survey killed mid-flight should be
+distinguishable from one that ran and found nothing, which is this codebase's most-repeated bug
+class and is exactly what the entry below already built the machinery for.
 
 #### FIXED — a server restart mid-survey left activity_log rows stuck at 'running' forever
 

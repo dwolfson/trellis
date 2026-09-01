@@ -133,8 +133,19 @@ repo_analyses:
       native_process_ref: null
 
   - id: security_scan
-    name: "Security Scan"
-    description: "Detect hardcoded secrets, insecure patterns, and missing security artifacts (SECURITY.md, signed commits)."
+    name: "Security Hygiene"
+    # Renamed from "Security Scan" 2026-08-31, and the description rewritten,
+    # because both claimed work this step has never done. It checked -- and
+    # still checks -- exactly three file-presence facts. It does NOT detect
+    # hardcoded secrets, insecure patterns, signed commits, CVEs or anything
+    # requiring SAST. The Python class was renamed SecuritySurveyor ->
+    # SecurityHygieneSurveyor for precisely this reason; that honesty stopped
+    # at the class and never reached the two fields a user actually reads, so
+    # "Security Scan: passing" on a published repo meant "has three files".
+    # The id stays `security_scan` deliberately: it keys existing schedules
+    # and stored findings. Real scanning belongs in new entries under the
+    # same `family="security"`, not by widening this one's claims again.
+    description: "Presence of three security-hygiene artifacts: a security policy (SECURITY.md), a CI configuration, and a licence. File presence only -- this does not scan code, detect secrets, or check CVEs. For GitHub's actual security toggles see Security Features."
     resource_types: ["repo"]
     intent: assessment  # true scoring against criteria — unchanged
     perspectives: ["Security", "Steward"]
@@ -151,7 +162,18 @@ repo_analyses:
 
   - id: documentation_coverage
     name: "Documentation Coverage"
-    description: "Assess README completeness, CHANGELOG, API docs, and inline comment coverage."
+    # Description rewritten 2026-08-31. It previously claimed to "assess README
+    # completeness... and inline comment coverage". Neither is measured: nothing
+    # here reads a line of source, computes a ratio, or judges whether a README
+    # is complete. Same defect as security_scan's, found in the same pass.
+    #
+    # The half worth stating explicitly is that `collection_present` reads
+    # `project.collections` -- OUR pgvector collections -- so it reports what we
+    # ingested, not what the project wrote. A well-documented repo we never
+    # ingested scores low, and that is a fact about us. Kept separate in the
+    # wording for the reason cii_badge keeps "unreachable" apart from
+    # "not registered".
+    description: "Which documentation signals are present: the doc collection types actually ingested for this repo (markdown, web docs, API reference, examples, PDFs, release notes) and which hygiene files exist (README, CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, AUTHORS, CODEOWNERS), banded into a quality score from the count of signals found. Presence, not depth -- no file content is read, no ratio is computed, and the collection half reflects what has been ingested here rather than what the project published."
     resource_types: ["repo"]
     intent: assessment  # scores completeness against a checklist — unchanged
     perspectives: ["Steward", "all"]
@@ -254,7 +276,7 @@ repo_analyses:
 
   - id: cii_badge
     name: "OpenSSF Best Practices Badge"
-    description: "The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level together with the age of the self-assessment behind it — odpi/egeria holds a silver badge whose record was last updated in 2022, and the level alone would carry the badge's authority with none of its staleness. Keeps three outcomes apart: badged, not registered (a fact about the project), and could not be looked up (a fact about us)."
+    description: "The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level together with the age of the self-assessment behind it: a badge level is a dated claim, and the level alone would carry the badge's authority with none of its age. Keeps three outcomes apart: badged, not registered (a fact about the project), and could not be looked up (a fact about us)."
     resource_types: ["repo"]
     intent: assessment
     perspectives: ["Security", "Governance", "Steward", "Consumer"]
@@ -263,6 +285,57 @@ repo_analyses:
     run_time: fast
     availability: inline
     target_shape: whole_resource_only
+
+  - id: refresh_plan
+    name: "Refresh Plan"
+    # A PLANNER (docs/survey-composition-and-topic-summary-design.md §2b) — the
+    # mirror of a reducer: it reads stored STATE at the front of a survey rather
+    # than stored findings at the end. `availability: queued` because it makes a
+    # GitHub call for the head commit; `run_time: fast` because that is all it
+    # does. ADVISORY: the survey executor runs every step in the graph
+    # regardless, so this records the decision rather than enforcing it.
+    description: "What a refresh would actually need to do, per target: which have never run, which are stale against the current head commit, and which are current. Judged per target rather than once for the whole survey, because 'unchanged' and 'complete' are different questions — a target that never ran needs work whatever the commit says. A head commit that cannot be read is reported as unknown, never as unchanged."
+    resource_types: ["repo"]
+    # `analysis`, not `automate`, and the distinction is the point. `automate`
+    # deliberately has ZERO catalog entries (CLAUDE.md rule 17) — it is served by
+    # automate.py's own subscriptions table, not by analyses. What lives in
+    # Automate is the *survey* (survey_kind `refresh`, which the Automate tab
+    # lists); the analysis itself is tagged for the tier its work belongs to,
+    # alongside `manifest_parse` and `rag_ingestion`, which are the things it
+    # plans. Tagging it `automate` broke that invariant and its test caught it.
+    intent: analysis
+    perspectives: ["Steward", "Admin"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: security_summary
+    name: "Security Summary"
+    # A REDUCER (docs/survey-composition-and-topic-summary-design.md §2): it
+    # measures nothing itself and reads what the other security steps wrote, so
+    # it must run LAST in any survey containing them. `availability: queued`
+    # despite being trivially fast — a compiler running this inline would
+    # summarise whatever happened to be stored at that instant, which is the
+    # "packer must never trigger a survey" rule seen from the other side.
+    description: "One security verdict reduced from the other security analyses, with the two things a verdict usually loses: how many of its inputs actually ran, and the age of the oldest result it rests on. Summarises the latest sighting of each input rather than one survey run, so its own timestamp is newer than some of its evidence. Refuses to give a verdict at all below four inputs — a grade over three of eight would be a judgement about absence, not about the repository."
+    resource_types: ["repo"]
+    intent: assessment
+    perspectives: ["Security", "Steward", "Governance"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
 
   - id: foss_scorecard
     name: FOSS Scorecard
@@ -346,7 +419,12 @@ repo_analyses:
 
   - id: data_file_profiling
     name: "Data File Profiling"
-    description: "Profile CSV, Excel, Parquet, and other tabular data files for schema, row counts, and null statistics."
+    # Reworded 2026-08-31 alongside a real fix. The old text promised "schema,
+    # row counts, and null statistics" flatly, and the columnar path was
+    # emitting null_pct: 0.0 without measuring anything -- an unmeasured value
+    # rendered as a confident measurement. Now null_pct is None there and the
+    # description says which formats get which.
+    description: "Profile tabular data files found in the file inventory. CSV, TSV and Excel are read to give schema, row counts and null rates. Parquet, Feather and Arrow are read from file metadata instead: schema and row count, but no null rates, which metadata does not carry. Files over 50 MB in the text formats are reported as too large rather than profiled — so a missing null rate means not applicable, too large, or never run, and these are kept apart rather than shown as zero."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural profiling, baseline for change-detection
     perspectives: ["Data Expert", "Steward"]
@@ -388,7 +466,17 @@ repo_analyses:
 
   - id: api_structure
     name: "API & Symbol Extraction"
-    description: "Extract public functions, classes, and API endpoints from Python, JavaScript, and OpenAPI source."
+    # Description rewritten 2026-08-31, wrong on three counts. It said "extract
+    # ... from Python, JavaScript, and OpenAPI source":
+    #   - it extracts nothing. Symbols are extracted earlier, inline during
+    #     ingestion (IngestionPipeline._ingest_code); this step READS
+    #     project_code_symbols and project_code_relationships. So on a repo that
+    #     was never ingested it reports nothing, and that is a fact about us.
+    #   - the languages were wrong in both directions: Java and Go were missing
+    #     (java_symbol_extractor.py, go_symbol_extractor.py, both tree-sitter).
+    #   - OpenAPI was never handled at all. No match for it anywhere in
+    #     ingestion/ or api_structure.py.
+    description: "Summarise the public API surface already extracted for this repo — module tree, public symbol counts, complexity and inheritance depth per language, plus total symbol and relationship counts. Reads the symbols captured during ingestion (Python, Java, JavaScript/TypeScript, Go) rather than parsing source itself, so it reports nothing for a repo that has not been ingested."
     resource_types: ["repo"]
     intent: analysis  # was 'assessment' — structural extraction, not evaluative
     perspectives: ["Data Expert", "all"]

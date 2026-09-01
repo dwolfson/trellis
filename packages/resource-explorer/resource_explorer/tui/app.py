@@ -324,7 +324,7 @@ class ProjectExplorerApp(App):
         if not self.last_query_hash:
             self._set_status("No query to give feedback on yet.")
             return
-        self._set_status("Feedback: y=👍  n=👎  (press key)")
+        self._set_status("Feedback: y=👍  p=😐 partially correct  n=👎  (press key)")
         self._awaiting_feedback = True
 
     def on_key(self, event) -> None:
@@ -334,6 +334,9 @@ class ProjectExplorerApp(App):
             if event.key == "y":
                 MetricsCollector().record_feedback(self.last_query_hash, 1)
                 self._set_status("👍 Feedback recorded — thanks!")
+            elif event.key == "p":
+                MetricsCollector().record_feedback(self.last_query_hash, 0)
+                self._set_status("😐 Feedback recorded — partially correct.")
             elif event.key == "n":
                 MetricsCollector().record_feedback(self.last_query_hash, -1)
                 self._set_status("👎 Feedback recorded.")

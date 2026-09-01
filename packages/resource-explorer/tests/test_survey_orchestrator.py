@@ -42,12 +42,27 @@ def registry(tmp_path):
 
 @pytest.fixture
 def project(registry):
+    # A dependency row, so `repo_cve_scan`'s `requires_context` precondition is
+    # satisfied and it dispatches like every other step. These tests are about
+    # "all selected steps run", not about preconditions — without this they fail
+    # on a step that is correctly SKIPPED rather than on a dispatch bug, which
+    # would make them report the wrong thing. Precondition behaviour has its own
+    # file: tests/test_step_preconditions.py.
     registry.add(Project(
         slug="myproj",
         display_name="My Project",
         github_url="https://github.com/test/myproj",
         description="",
     ))
+    with registry._conn() as conn:
+        conn.execute(
+            "INSERT INTO project_dependencies "
+            "(project_slug, dep_name, dep_version, dep_type, ecosystem, "
+            " source_file, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("myproj", "example:lib", "1.0", "runtime", "java", "pom.xml",
+             "2026-09-01T00:00:00"),
+        )
     return "myproj"
 
 
@@ -336,13 +351,26 @@ class TestCostTierFilter:
                 SurveyOrchestrator(registry).run(project, max_compute_cost="low")
                 excluded = {k for k, info in STEP_REGISTRY.items() if info.compute_cost != "low"}
                 assert excluded == {
-                    "repo_data_profiling", "repo_symbol_extraction", "repo_rag_ingestion",
+                    "repo_symbol_extraction", "repo_rag_ingestion",
+                    # repo_data_profiling was here until 2026-09-01, when it was
+                    # re-declared low on measurement. Raw it shows 0.01s median
+                    # over 85 runs — a number that cannot separate "cheap" from
+                    # "never reached its input". Restricted to the 26
+                    # INTERPRETABLE observations (non-zero annotations, no
+                    # `unverified` outcome, so the run provably had work): median
+                    # 39 annotations at 0.10s, p90 0.76s, max 1.41s — well inside
+                    # low's 5s ceiling WITH proof it was working. Over-declaring
+                    # had excluded it from the cheap tier it suits.
                     # repo_website_ingestion (2026-08-20) — embeds the project's
                     # external site. medium rather than rag_ingestion's high: one
                     # page, not a whole repo.
                     "repo_website_ingestion",
                     # repo_arch_coupling — classify_subtree/cohesion computation
-                    # over the whole import graph, medium not low.
+                    # over the whole import graph. Raised medium -> HIGH on
+                    # 2026-09-01: 32 runs give p90 132s against the 60s medium
+                    # ceiling (max 600s) with median 0 socket connects, so it is
+                    # real compute rather than network wait. Still excluded here
+                    # either way; the tier changed, not the outcome.
                     "repo_arch_coupling",
                     # repo_manifest_parse is deliberately NOT here: it declares
                     # compute_cost="low" because it measures like

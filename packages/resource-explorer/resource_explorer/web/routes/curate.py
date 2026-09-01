@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from resource_explorer.feedback_store import FeedbackStore
 from resource_explorer.registry import ProjectRegistry
 
 router = APIRouter()
@@ -73,6 +74,109 @@ class FeedbackCreate(BaseModel):
     rating: int | None = None
     category: str = ""
     message: str
+
+
+
+#: Fields the page-level feedback store records that this route must NOT serve.
+#:
+#: `/api/feedback` (routes/feedback.py) gates on `admin_auth.is_admin_request`,
+#: which is fail-closed by design — its docstring says it exists "only to gate
+#: the feedback-triage admin endpoints", written to invert an Egeria Workspaces
+#: bug where the equivalent check failed OPEN.
+#:
+#: **This route has no such gate**, and on 2026-09-01 it was widened to serve the
+#: page-level store so the Admin pane would stop showing an empty list. That fix
+#: was right and its scope was not: it routed data the gated endpoint protects
+#: through an ungated one. Nothing was exposed in practice — no row carries an
+#: email today — but the store has `wants_response` and `consent_to_contact`
+#: columns, so emails are expected, and the next one would have been served to
+#: anyone who could reach the port.
+#:
+#: Stripping is the INTERIM fix, agreed with Dan: it closes the exposure now
+#: without emptying the pane, which gating would do until the frontend sends
+#: `X-Admin-Token`. Gating this route properly is the real fix and is still
+#: outstanding — when it lands, this stripping becomes redundant rather than
+#: wrong, and the gated route can serve the full row.
+#:
+#: `message`, `rating`, `category`, `page`, `triage_status` and `created_at`
+#: stay: they are the feedback itself, which is the point of the pane.
+_CONTACT_FIELDS = ("email", "session_id", "user_agent", "viewport", "locale")
+
+
+def _without_contact_fields(row: dict) -> dict:
+    """A page-feedback row with contact/identifying fields removed.
+
+    Removes the keys rather than blanking them. A blank `email` is
+    indistinguishable from a row whose author left none — the absence-looks-like
+    -a-value shape this codebase keeps removing — and a caller that sees no key
+    at all cannot mistake it for a measured empty.
+    """
+    return {k: v for k, v in row.items() if k not in _CONTACT_FIELDS}
+
+@router.get("/feedback")
+def list_all_feedback(
+    limit: int = 200, entity_type: str = "", category: str = "", source: str = ""
+) -> dict:
+    """Every feedback item in one place, for Admin — from BOTH stores.
+
+    There are two independent feedback systems, and until 2026-09-01 this
+    route only read one of them:
+
+      * `resource_feedback` (`ProjectRegistry.add_resource_feedback`, this
+        module's `add_feedback` below) — per-resource, written from a
+        resource's Curate tab.
+      * `feedback` (`resource_explorer/feedback_store.py`) — the page-level
+        widget reachable from anywhere in the app.
+
+    A page-level submission and a per-resource one look, from the person who
+    wrote it, exactly the same: feedback that was left and never showed up
+    here. It was never dropped — the pane just never read the store it landed
+    in. Diagnosed 2026-08-31 (Dan: "I added feedback on a page and it never
+    makes it to the feedback pane of Admin").
+
+    This combines both into one list rather than merging them: the two tables
+    have genuinely different shapes (session/page/consent fields on one side,
+    entity_type/slug on the other), and a real merge is a separate, deliberate
+    task (see docs/Backlog.md) — not something to fold in as a side effect of
+    fixing visibility. Each row carries `source: "page" | "resource"` so the
+    two stay distinguishable until that task exists, and `source` is itself a
+    filter for the same reason `entity_type`/`category` are.
+
+    Declared before the /{entity_type}/{slug} route below only for readability;
+    they cannot collide, since that one needs two path segments.
+
+    Returns per-source counts (not a combined total, which would hide a store
+    that is genuinely empty) alongside the rows, and `filtered` because an
+    empty list is ambiguous on its own — "nobody has left feedback" and "your
+    filter excluded everything" look identical, and only one of those is a
+    fact worth stating plainly.
+    """
+    reg = _registry()
+    resource_rows = reg.list_all_resource_feedback(
+        limit=limit, entity_type=entity_type, category=category)
+    resource_counts = reg.count_all_resource_feedback()
+
+    page_store = FeedbackStore()
+    # entity_type has no meaning for page-level feedback — it was never
+    # recorded against a resource at all. A filter on it must exclude every
+    # page row, not silently ignore the filter and show them regardless.
+    page_rows = [] if entity_type else page_store.list(category=category or None, limit=limit)
+    page_stats = page_store.stats()
+
+    combined = [dict(r, source="resource") for r in resource_rows]
+    combined += [_without_contact_fields(dict(r, source="page")) for r in page_rows]
+    if source:
+        combined = [r for r in combined if r["source"] == source]
+    combined.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+
+    return {
+        "feedback": combined[:limit],
+        "counts": {
+            "resource": resource_counts,
+            "page": {"total": page_stats["total"]},
+        },
+        "filtered": bool(entity_type or category or source),
+    }
 
 
 @router.get("/feedback/{entity_type}/{slug}")

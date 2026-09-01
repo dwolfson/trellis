@@ -258,7 +258,7 @@ def pg_registry(pg_test_schema):
     return ProjectRegistry(database_url=url)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def ephemeral_prefect(monkeypatch):
     """Force Prefect to run flows in-process, ignoring any configured server.
 
@@ -272,8 +272,33 @@ def ephemeral_prefect(monkeypatch):
     and failed in another, on ambient environment alone. Both the flow tests
     and the older integration tests depended on it.
 
-    Modules opt in with:
-        pytestmark = pytest.mark.usefixtures("ephemeral_prefect")
+    This is `autouse` deliberately. It was opt-in until 2026-08-31, via
+    `pytestmark = pytest.mark.usefixtures("ephemeral_prefect")` per module — and
+    four Prefect-touching modules never opted in (`test_prefect_dispatch`,
+    `test_prefect_status_routes`, `test_survey_card_parity`,
+    `test_no_silent_success`). A guard that only works when every future module
+    remembers to ask for it is the same shape as the orphaned-slug ratchet: it
+    reports safety it is not providing. Autouse removes the opt-in step rather
+    than asking people to remember it.
+
+    The surviving `pytestmark` lines are redundant now, not wrong; they are left
+    so that `git log -S` on them still leads here.
+
+    **The `prefect` import below is load-bearing in a way its position hides.**
+    It sits in the fixture body, and autouse means every test in the suite now
+    imports Prefect — including the ~2,900 with nothing to do with it. That is
+    free today, since `prefect` is a declared dependency and always installed.
+    It stops being free in a slimmer environment: a subset run without Prefect
+    installed would fail in *every* test rather than only the Prefect ones, and
+    the traceback would not obviously point at an autouse fixture. If that ever
+    happens, this is why. Raised in review of the autouse change.
+
+    Note what this does NOT fix: an intermittent failure of
+    `test_prefect_integration.py::...::test_local_flow_execution_fallback`
+    observed once on 2026-08-31 and not reproduced on rerun. The leading
+    hypothesis — that a non-opted-in module poisons Prefect's cached client
+    first — was tested and falsified: it predicts a deterministic failure under
+    `-p no:randomly`, and two fixed-order runs disagreed. See Backlog.
     """
     from prefect.settings import PREFECT_API_URL, temporary_settings
 

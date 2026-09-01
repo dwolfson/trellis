@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-63 documents, grouped by what they *are* rather than what they are about — the
+69 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -38,6 +38,23 @@ Decisions and models. Cited from source where a comment cannot restate them.
   Proposal / Design Options
 - **[egeria-pyegeria-issues.md](egeria-pyegeria-issues.md)** — 2026-08-27  
   Open, unresolved. No workaround exists in RE — this fails the operation outright; RE catches the
+- **[gap-analyses-design.md](gap-analyses-design.md)** — 2026-09-01  
+  Four new analyses — secret handling, telemetry, CLA/DCO, SLA — plus one general vendored-provider
+  concept the existing three external-standard analyses adopt. Approved; modules built in 33aef6c.
+- **[annotation-linking-plan.md](annotation-linking-plan.md)** — 2026-09-01  
+  How to link a summary annotation to its evidence via Egeria's AnnotationExtension. Phased; Phase 0
+  measures whether the relationship dedupes before anything writes one.
+- **[annotation-linking-audit.md](annotation-linking-audit.md)** — 2026-09-01  
+  WHERE summary-to-evidence linking belongs, ranked, with candidates ruled out. Its feasibility read
+  is superseded by the plan above.
+- **[feedback-signals-shared.md](feedback-signals-shared.md)** — 2026-09-01  
+  EA's third feedback signal, what to share as Trellis code, and how RE's three stores reconcile.
+- **[admin-surface-options.md](admin-surface-options.md)** — 2026-09-01  
+  Inline vs separate admin pages vs a separate app, measured. Recommends staying inline for now;
+  Option B and its triggers are in Backlog.md.
+- **[recovery-and-resync-manual.md](recovery-and-resync-manual.md)** — 2026-09-01  
+  START HERE for any recovery. Routes between the five flavours, covers the Alignment
+  panel, and states what counts as evidence a recovery worked.
 - **[egeria-reset-recovery.md](egeria-reset-recovery.md)** — 2026-08-26  
   written 2026-08-21, from an actual reset rather than from theory. Every
 - **[microflow-survey-funnel-model.md](microflow-survey-funnel-model.md)** — 2026-08-16  

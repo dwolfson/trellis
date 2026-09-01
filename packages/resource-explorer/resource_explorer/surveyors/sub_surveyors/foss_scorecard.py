@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, QualityScoreAnnotation
 
 log = logging.getLogger(__name__)
@@ -111,7 +112,13 @@ def _c_ci_tests(stats, findings, paths) -> tuple:
 
 
 def _c_security_policy(stats, findings, paths) -> tuple:
-    for kind in ("security_scan", "security_features"):
+    # See the kind list in run(): `security_hygiene` is the finding kind,
+    # `security_scan` was the analysis id and matched nothing. The failure was
+    # not a wrong score — this function correctly returned UNKNOWN with a
+    # reason. The reason was FALSE: it said "neither security analysis has run"
+    # about repos where security_hygiene had run and written findings. A fact
+    # about our own lookup, rendered as a fact about the project.
+    for kind in ("security_hygiene", "security_features"):
         for r in findings.get(kind) or []:
             if "polic" in (r.get("check_name") or "").lower():
                 label = (r.get("label") or "").lower()
@@ -330,7 +337,20 @@ class FossScorecardSurveyor(BaseSurveyor):
             stats = self.registry.get_latest_project_stats(slug) or {}
             findings = {
                 kind: (self.registry.query_findings(slug, kind) or [])
-                for kind in ("ci_quality", "security_scan", "security_features",
+                # `security_hygiene`, NOT `security_scan`. `security_scan` is the
+                # analysis ID in analysis_catalog.yaml; the finding KIND that
+                # SecurityHygieneSurveyor writes is `security_hygiene`. Reading
+                # the id here matched nothing, forever.
+                #
+                # Measured 2026-09-01: kind `security_scan` has 0 rows across 0
+                # repos, while `security_hygiene` has 252 `security_policy`
+                # findings. Every foss_scorecard security-policy verdict on
+                # record — 155 of them — was `unknown`.
+                #
+                # security_summary hit this exact mistake and fixed it; its own
+                # comment says "this pair had the same `security_scan` mistake".
+                # The fix did not travel to this file.
+                for kind in ("ci_quality", "security_hygiene", "security_features",
                              "cve_scan", "supply_chain")
             }
             # None, not [], when nothing is recorded: "no inventory" and "an
@@ -392,6 +412,17 @@ class FossScorecardSurveyor(BaseSurveyor):
                 json_properties={
                     **agg,
                     "checks": {r["check_name"]: r["label"] for r in results},
+                    # `checks_evaluated` is the known-positive the aggregate
+                    # already computes: a scorecard with a score evaluated real
+                    # checks; one with none evaluated looked at nothing, and
+                    # "No scorecard check could be evaluated" is a statement
+                    # about our inputs, not about the project's practices.
+                    **(StepOutcome("recovered",
+                                   detail={"checks_evaluated": agg["checks_evaluated"]})
+                       if agg["score"] is not None else
+                       no_signal("no scorecard check could be evaluated from the data held",
+                                 known_positive=bool(agg["checks_evaluated"]),
+                                 checks_total=agg["checks_total"])).as_row(),
                 },
             ))
         except Exception as exc:

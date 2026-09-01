@@ -30,6 +30,7 @@ import re
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -234,6 +235,26 @@ summary=_NOTHING_TO_ASSESS,
             summary += (f" Read from {len(paths)} recorded file(s) and "
                         f"{len(deps)} declared dependenc(ies).")
 
+            # A zero here has two very different meanings and they were
+            # reported identically. Detection reads the recorded file inventory
+            # and the DECLARED dependencies, so "no interface signals" means
+            # either this repo genuinely exposes nothing, or there was nothing
+            # to read — an empty inventory and no parsed manifests produce the
+            # same reassuring sentence as a thoroughly-examined library.
+            #
+            # The inputs are the known-positive: having read real files and
+            # real dependencies and still found no interface is a provable
+            # zero. Having read neither is not a finding about the repo.
+            examined = len(paths) + len(deps)
+            if specified or implied or published:
+                outcome = StepOutcome("recovered", detail={
+                    "files_read": len(paths), "dependencies_read": len(deps)})
+            else:
+                outcome = no_signal(
+                    "no interface signals in the recorded inventory or declared dependencies",
+                    known_positive=examined > 0,
+                    files_read=len(paths), dependencies_read=len(deps),
+                )
             out.append(ClassificationAnnotation(
                 summary=summary, analysis_step=STEP,
                 candidate_classifications=specified + implied,
@@ -241,7 +262,8 @@ summary=_NOTHING_TO_ASSESS,
                 json_properties={"specified": specified, "implied": implied,
                                  "published_spec": published["label"] if published else "",
                                  "files_read": len(paths),
-                                 "dependencies_read": len(deps)},
+                                 "dependencies_read": len(deps),
+                                 **outcome.as_row()},
             ))
         except Exception as exc:
             log.exception("InterfaceSurfaceSurveyor failed for %s", self.project.slug)

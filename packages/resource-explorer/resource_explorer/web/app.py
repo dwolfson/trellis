@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.bootstrap import start_scheduler as start_bootstrap_monitor, stop_scheduler as stop_bootstrap_monitor
 from resource_explorer.scheduler import start_scheduler
-from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, prefect_status, project_context, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
+from resource_explorer.web.routes import activity, aliases, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, curate, databases, db_servers as db_servers_routes, diagrams, discovery, egeria, feedback, investigations, logs as logs_routes, prefect_status, project_context, outbox, projects, query, repair, schedules, stats, webhook, filesystems, survey_definitions
 
 
 log = logging.getLogger(__name__)
@@ -59,6 +59,13 @@ async def _lifespan(app: FastAPI):
     stop_bootstrap_monitor()
 
 
+# Configure logging at import, so `uvicorn resource_explorer.web.app:app` run
+# directly gets the same setup as `resource-explorer web`. Idempotent, so the
+# CLI calling it first makes this a no-op rather than a second set of handlers.
+from resource_explorer.observability.logging_setup import configure_logging as _configure_logging
+
+_configure_logging()
+
 app = FastAPI(
     title="Resource Explorer",
     description="Multi-agent RAG assistant for GitHub projects and databases",
@@ -88,11 +95,13 @@ app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["schedules"])
 app.include_router(prefect_status.router, prefix="/api/prefect", tags=["prefect"])
 app.include_router(survey_definitions.router, prefix="/api/survey-definitions", tags=["survey-definitions"])
+app.include_router(outbox.router, prefix="/api/outbox", tags=["outbox"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(discovery.router, prefix="/api/discovery", tags=["discovery"])
 app.include_router(diagrams.router, prefix="/api/diagrams", tags=["diagrams"])
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
+app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")

@@ -106,6 +106,10 @@ def _scheduler_loop() -> None:
             _reconcile_rfa_actions()
         except Exception:
             log.exception("RFA reconciliation iteration failed")
+        try:
+            _drain_egeria_outbox()
+        except Exception:
+            log.exception("Egeria outbox drain iteration failed")
 
 
 def _reconcile_rfa_actions() -> None:
@@ -118,6 +122,38 @@ def _reconcile_rfa_actions() -> None:
 
     registry = ProjectRegistry()
     reconcile_rfa_actions(registry)
+
+
+def _drain_egeria_outbox() -> None:
+    """docs/outbox-publishing-design.md §5 — reuses this same background loop
+    rather than starting a second one, exactly as RFA reconciliation above
+    does, and for the same reason: this loop already runs everywhere publishes
+    originate, so a retry layer driven from it sits under BOTH survey-launch
+    paths automatically (design §6, note on step 4).
+
+    Runs every iteration regardless of whether any analysis is due — a pending
+    Egeria write is independent of scheduled-analysis dispatch, and is in fact
+    most likely to exist precisely when nothing new is being scheduled."""
+    from resource_explorer.egeria_outbox import drain_outbox
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    summary = drain_outbox(registry)
+    if summary.get("claimed"):
+        log.info("Egeria outbox drain: %s", summary)
+
+    # Retention. Only completed rows, and only ones past the window — dead rows
+    # still need a human and pending rows are live work. Driven from here rather
+    # than left to the API route, because retention that has to be invoked by
+    # hand is not retention: one proposal publish is ~2,100 rows at the largest
+    # run observed, and nothing would ever call it in time.
+    try:
+        removed = registry.purge_outbox_completed()
+        if removed:
+            log.info("Egeria outbox: purged %d completed row(s) past retention", removed)
+    except Exception:
+        # Housekeeping must never break the drain that precedes it.
+        log.exception("Egeria outbox: retention purge failed")
 
 
 def _coalesce_repo_surveys(due: list[dict], registry) -> dict[tuple[str, str], list[str]]:

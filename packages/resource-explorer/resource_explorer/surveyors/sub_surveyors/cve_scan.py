@@ -33,6 +33,7 @@ import urllib.request
 from datetime import datetime
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import (
     Annotation,
     RequestForActionAnnotation,
@@ -265,7 +266,15 @@ class CveScanSurveyor(BaseSurveyor):
                              "Run the dependency analysis first."),
                     analysis_step=STEP,
                     json_properties={"checked": 0, "unqueryable": 0, "advisories": 0,
-                                     "scanned": False},
+                                     "scanned": False,
+                                     # The prose already says this is not a
+                                     # finding of "no vulnerabilities"; this
+                                     # makes the same statement machine-
+                                     # readable, so it reaches the tool-fit
+                                     # query rather than only a human reader.
+                                     **StepOutcome(
+                                         "unverified", cause="no dependencies recorded",
+                                         detail={"recorded": 0}).as_row()},
                 ))
                 return out
 
@@ -277,7 +286,10 @@ class CveScanSurveyor(BaseSurveyor):
                     summary=f"Advisory lookup failed ({error}). Nothing was concluded.",
                     analysis_step=STEP,
                     json_properties={"error": error, "scanned": False,
-                                     "checked": 0, "unqueryable": len(unqueryable)},
+                                     "checked": 0, "unqueryable": len(unqueryable),
+                                     **StepOutcome(
+                                         "unverified", cause="advisory lookup failed",
+                                         detail={"error": error}).as_row()},
                 ))
                 return out
 
@@ -311,6 +323,16 @@ class CveScanSurveyor(BaseSurveyor):
                     "confidence": 100,
                     "detail": {"package": dep.get("dep_name"),
                                "version": dep.get("dep_version"),
+                               # Where the version came from — "declared" (the
+                               # manifest said so at this dependency's own
+                               # declaration site) vs. resolved from elsewhere
+                               # ("variable_interpolation", "version_catalog").
+                               # A CVE finding is a claim about a specific
+                               # version; carrying this through means a reader
+                               # can tell "the manifest pinned this" from "we
+                               # substituted this from a BOM variable" without
+                               # having to go back to the parser.
+                               "version_source": dep.get("dep_version_source") or "unknown",
                                "ecosystem": dep.get("ecosystem"),
                                "advisory_ids": ids,
                                "severity": worst,
@@ -356,9 +378,29 @@ class CveScanSurveyor(BaseSurveyor):
                 f"dependencies ({', '.join(ecosystems)}){shortfall}. "
                 "Declared dependencies only — transitive ones are not covered."
             )
+            # A clean scan and an unrun scan were already distinguished in the
+            # prose — three separate paths, each careful. What they had in
+            # common was that none of it was expressible in the shared
+            # vocabulary, so the distinction stopped at the human reader and
+            # never reached "which tools work for which repos".
+            #
+            # `len(pairs)` is the known-positive: dependencies that were
+            # actually queryable and actually queried. Zero advisories across
+            # real queried packages is a provable clean result; zero across
+            # nothing queryable is not a result at all.
+            if advisory_count:
+                outcome = StepOutcome("recovered", detail={"checked": len(pairs),
+                                                           "advisories": advisory_count})
+            else:
+                outcome = no_signal(
+                    "no advisories for the dependencies that could be queried",
+                    known_positive=len(pairs) > 0,
+                    checked=len(pairs), unqueryable=len(unqueryable),
+                )
             annotation = (RequestForActionAnnotation if findings else ResourceMeasureAnnotation)
             out.append(annotation(
-                summary=summary, analysis_step=STEP, json_properties=coverage,
+                summary=summary, analysis_step=STEP,
+                json_properties={**coverage, **outcome.as_row()},
             ))
         except Exception as exc:
             log.exception("CveScanSurveyor failed for %s", self.project.slug)

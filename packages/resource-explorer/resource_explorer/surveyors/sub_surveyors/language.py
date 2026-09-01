@@ -6,6 +6,7 @@ import logging
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -55,13 +56,34 @@ class LanguageSurveyor(BaseSurveyor):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-            # Primary language
+            # Primary language.
+            #
+            # "Unknown" was reported at confidence 95 — a 95%-confident
+            # non-answer, which is the confident-wrong-answer shape in one
+            # line. GitHub not reporting a primary language is a real state
+            # and it is now labelled as one.
+            #
+            # The known-positive is the byte breakdown: if GitHub returned
+            # per-language byte counts and still no primary, the zero is about
+            # this repo. If it returned neither, nothing was examined and the
+            # honest label is `unverified`, not a provable absence.
+            known = primary != "Unknown"
+            if known:
+                lang_outcome = StepOutcome("recovered",
+                                           detail={"languages_reported": len(breakdown)})
+            else:
+                lang_outcome = no_signal(
+                    "GitHub reported no primary language for this repo",
+                    known_positive=bool(breakdown),
+                    languages_reported=len(breakdown),
+                )
             results.append(
                 ClassificationAnnotation(
                     summary=f"Primary language: {primary}",
                     analysis_step=STEP,
-                    candidate_classifications=[primary],
-                    confidence=95,
+                    candidate_classifications=[primary] if known else [],
+                    confidence=95 if known else 0,
+                    json_properties=lang_outcome.as_row(),
                 )
             )
 

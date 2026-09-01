@@ -85,6 +85,10 @@ class TestFilterByIntent:
         ids = {a["id"] for a in analyses}
         assert ids == {
             "security_scan", "documentation_coverage", "security_features", "ci_quality",
+            # A reducer over the other security analyses (2026-08-31). Assessment
+            # because a verdict against criteria is what it produces — it is the
+            # only entry here that measures nothing itself.
+            "security_summary",
             # Moved here 2026-08-28. Both report dimensions separately rather
             # than averaging, so neither produces a single score — but each
             # renders a judgement against a named external rubric (CHAOSS; the

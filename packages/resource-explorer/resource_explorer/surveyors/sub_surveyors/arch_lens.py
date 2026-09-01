@@ -32,6 +32,7 @@ import logging
 
 from resource_explorer.github import architecture_doc as ad
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.result_status import dependency_not_satisfied
 from resource_explorer.surveyors.survey_report import (
     Annotation,
@@ -203,6 +204,7 @@ class ArchLensSurveyor(BaseSurveyor):
 
         self._persist(slug, components, lens)
         self._record_run(slug, len(lens.documented), lens.outcome, lens.evidence)
+        self._persist_undetected(slug, lens)
 
         return [ClassificationAnnotation(
             summary=(f"{len(lens.documented)} of {len(components)} component(s) named "
@@ -239,6 +241,16 @@ class ArchLensSurveyor(BaseSurveyor):
                     "overview rather than a corpus of design documents"),
                 "notes": lens.notes,
                 "produced_guard": GUARD_CONSULTED,
+                # `documented` is the known-positive: a document was read AND
+                # components existed to match against, so naming none of them
+                # is a real disagreement between doc and code — which §7 of the
+                # lens design calls one of the more useful things this system
+                # can say, and which a bare zero hid.
+                **(StepOutcome("recovered", detail={"documented": len(lens.documented)})
+                   if lens.documented else
+                   no_signal("the document named none of the proposed components",
+                             known_positive=bool(components),
+                             terms=len(lens.terms or []))).as_row(),
             },
         )]
 
@@ -322,6 +334,72 @@ class ArchLensSurveyor(BaseSurveyor):
         except Exception:
             log.exception("%s: could not record the doc-lens run", slug)
 
+    def _persist_undetected(self, slug: str, lens) -> None:
+        """Every term the document emphasises that nothing proposed — durable,
+        uncapped, under its own check_name.
+
+        `docs/architecture-recovery-docs-as-source.md` §9 step 1. Until now this
+        population existed only as `undetected[:50]` inside one annotation's
+        `json_properties`, and only when `undetected_usable` was true, while
+        `_record_run` persisted nothing but counts. So the terms a document
+        names that the code pipeline never proposed — `OMAS`, `OMVS`,
+        `View Server`, the genuinely LOGICAL structure a human wrote down —
+        were computed and thrown away every run.
+
+        That is the population §5 has to be measured against before anything is
+        allowed to *propose* from documentation, and §9 is explicit that
+        persisting it "costs nothing, is reversible, and is the only way to
+        measure section 5 at all".
+
+        **Persisted regardless of `undetected_usable`, deliberately.** That gate
+        decides whether these terms are worth a human's attention *now*; the
+        measurement needs the cases it excludes just as much — Milvus's 506
+        section headings from 25 design documents are the corpus case §5's three
+        proposing tests must learn to separate from an overview. The gate's own
+        verdict is stored alongside, so a reader can filter by it rather than
+        having the filtering already done to them irreversibly.
+
+        This does NOT make documentation a source. Nothing here proposes a
+        component; §7's rule stands — a document that disagrees with the code is
+        a finding, not a correction.
+        """
+        terms = list(lens.undetected or [])
+        if not terms:
+            return
+        try:
+            self.registry.upsert_finding(
+                slug, LENS_KIND,
+                [{
+                    "check_name": "undetected_term",
+                    "label": lens.outcome or "not-consulted",
+                    "summary": f"documented term not proposed by any detector: {term}",
+                    "confidence": 0,   # an observation about the document, not a claim
+                    "detail": {
+                        "term": term,
+                        "evidence": lens.evidence,
+                        "doc_date": lens.date,
+                        # The gate's verdict, carried rather than applied — see
+                        # the docstring. "usable" means "worth attention now",
+                        # not "true".
+                        "undetected_usable": bool(lens.undetected_usable),
+                        "undetected_reason": lens.undetected_reason,
+                        "terms_extracted": len(lens.terms or []),
+                        # §5's FIRST proposing test — "one document, not a
+                        # corpus" — measured directly. `evidence` names only the
+                        # first source that read; terms are extracted from ALL
+                        # of them concatenated, so a single evidence string can
+                        # front a 25-document corpus. This is the count that
+                        # separates Milvus's 1140 terms from an overview page.
+                        "sources_read": len(lens.read_sources or []),
+                        "sources_read_list": [list(x) for x in (lens.read_sources or [])][:25],
+                        "kind": "doc-undetected-term",
+                    },
+                } for term in terms],
+                surveyed_at=self._surveyed_at,
+            )
+        except Exception:
+            log.exception("%s: could not persist undetected documentation terms", slug)
+
     def _persist(self, slug: str, components: list, lens) -> None:
         """One finding per documented component, on that component's own scope.
 
@@ -373,6 +451,11 @@ class ArchLensSurveyor(BaseSurveyor):
                 "produced_guard": guard,
                 "result_status": dependency_not_satisfied(reason,
                                                           depends_on=SOURCE_KIND),
+                # The lens is structurally downstream of detect and coupling —
+                # its own guard says "no components to label: the lens ran, the
+                # step it annotates has not". So its zero is upstream absence,
+                # never a finding about the documentation.
+                **StepOutcome("unverified", cause=reason).as_row(),
             },
         )
 

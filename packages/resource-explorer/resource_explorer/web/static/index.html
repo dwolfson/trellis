@@ -624,6 +624,19 @@
            membership repoint/drop. See resource_explorer/repair.py and
            docs/repair-operations-design.md. -->
       <div id="admin-repair-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <div id="admin-outbox-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Feedback view (Admin → Observe) — BOTH feedback stores: resource_feedback
+           (per-resource, written from Curate) and feedback (page-level widget,
+           feedback_store.py), badged by source rather than merged — see
+           loadAdminFeedbackPanel() below and docs/Backlog.md for the eventual
+           merge. Neither store's per-origin list is otherwise reachable in one
+           place without visiting every resource, or the standalone
+           admin-feedback.html, in turn. -->
+      <div id="admin-feedback-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
+      <!-- Logs view (Admin → Observe) — the in-process ring buffer from
+           observability/logging_setup.py. No file, nothing shipped: bounded and
+           gone on restart, which the pane states rather than implying. -->
+      <div id="admin-logs-view" class="flex-1 overflow-y-auto hidden flex flex-col bg-slate-900"></div>
 
       <!-- Curate view — tags, resource-level feedback, curator notes
            (discoverability/reuse-readiness for a resource — see loadCuratePanel()) -->
@@ -1799,7 +1812,13 @@ function _scoutingSubnavHtml(active) {
   const tabs = [
     { tab: 'discover',    label: '🔍 Search' },  // "Search" (was "Discover") — collided visually/textually with the top-level "🔎 Discovery" nav intent; renamed to what it actually does (search GitHub, or run a saved source)
     { tab: 'survey',      label: '📊 Survey' },
-    { tab: 'results',     label: '📈 Results' },  // Survey Results dashboard (docs/survey-results-dashboard-plan.md) — repo-wide, cross-stage, next to Survey since that's where a run's results naturally get looked for
+    { tab: 'results',     label: '📈 Dashboard' },  // docs/survey-results-dashboard-plan.md — repo-wide, cross-stage.
+    // Labelled "Dashboard", not "Results" (2026-08-31). It sits beside Survey, and the old label
+    // plus that placement read as "this is what the run just produced". It is not: each analysis
+    // is read at MAX(surveyed_at) for its own kind, so this is the latest sighting of each, which
+    // can span runs days apart. A run's results are an event; this is a state. Internal ids stay
+    // 'results'/'stage-results'/_resultsHost — they key routing, not the claim.
+    // See docs/survey-composition-and-topic-summary-design.md.
     { tab: 'questions',   label: '❓ Questions' },
     { tab: 'disposition', label: '🧭 Disposition' },
   ];
@@ -1892,11 +1911,14 @@ function _assessmentSubnavHtml(active) {
     { tab: 'analyses',      label: '📊 Survey' },
     { tab: 'sub-resources', label: '🗂 Sub-Resources' },
   ];
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
-  // Questions/Disposition (D6, docs/survey-question-context-plan.md) — repo-only.
-  if (_qdTabsApply()) {
-    tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  }
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
+  // Questions/Disposition (D6, docs/survey-question-context-plan.md) —
+  // repo-only in what they *answer*, but the tab itself always renders
+  // (2026-09-01, dwolfson feedback): a tab that disappears reads as "this
+  // feature does not exist here", not "nothing to show yet". _qdTabsApply()
+  // still gates the underlying data fetch/empty-state message in
+  // loadScoutingQuestions/loadScoutingDispositionView.
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAssessmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -1910,10 +1932,12 @@ function _showAssessmentSubTab(tab) {
   // Sub-Resources is repo-specific (SubResourceSurveyor only exists for
   // repos) — fall back to Analyses rather than show a blank/stale panel
   // when nothing (or a db/filesystem) is selected, same spirit as
-  // Scouting's own selectedProject guard in _showScoutingSubTab. Questions/
-  // Disposition share that same repo-only gate (_qdTabsApply, D6).
+  // Scouting's own selectedProject guard in _showScoutingSubTab.
+  // Questions/Disposition do NOT redirect the same way (2026-09-01) — the
+  // tab stays selected and its own view renders an honest "select a repo"
+  // empty state (_qdTabsApply, D6) instead of silently landing on Analyses,
+  // which used to look like the click did nothing.
   if (tab === 'sub-resources' && !selectedProject) tab = 'analyses';
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'analyses';
   _assessmentSubTab = tab;
   if (tab === 'analyses') showMainView('assessment-analyses');
   else if (tab === 'sub-resources') showMainView('assessment-sub-resources');
@@ -1932,9 +1956,8 @@ function showAnalysisPane() {
 
 function _analysisSubnavHtml(active) {
   const tabs = [{ tab: 'catalog', label: '📊 Survey' }];  // "Survey", not "Analyses" or "Catalog". Survey is the container; an analysis is a STEP inside one, and a survey type may do ingestion instead of or as well as analysis. Naming the tab after one kind of step misdescribes everything else it can run. Scouting and Enrichment already had this right.
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
-  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  if (tabs.length === 1) return '';  // no repo selected — nothing to switch between, don't show a 1-tab bar
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showAnalysisSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -1945,7 +1968,6 @@ function _analysisSubnavHtml(active) {
 
 function _showAnalysisSubTab(tab) {
   if (tab === 'results') { _resultsHost = 'analysis'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'catalog';
   _analysisSubTab = tab;
   if (tab === 'catalog') showMainView('analysis');
   else if (tab === 'questions') { _questionsDispositionHost = 'analysis'; _questionsPhase = 'analysis'; showMainView('scouting-questions'); }
@@ -1978,9 +2000,8 @@ function _discoverySubnavHtml(active) {
   // same tab. Verified before removal — every definition the unscoped tab listed
   // is reachable from at least one stage's Survey tab.
   const tabs = [{ tab: 'analyses', label: '📊 Survey' }];
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
-  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  if (tabs.length === 1) return '';
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showDiscoverySubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -1991,7 +2012,6 @@ function _discoverySubnavHtml(active) {
 
 function _showDiscoverySubTab(tab) {
   if (tab === 'results') { _resultsHost = 'discovery'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'analyses';
   _discoverySubTab = tab;
   // 'survey-definitions' kept as an alias rather than dropped: a bookmark,
   // a saved sub-tab or any caller still asking for it lands on the merged
@@ -2013,9 +2033,8 @@ function showEnrichmentPane() {
 
 function _enrichmentSubnavHtml(active) {
   const tabs = [{ tab: 'context', label: '📝 Context' }, { tab: 'survey', label: '📊 Survey' }];  // 📊 like every other stage — same concept, same glyph.
-  tabs.push({ tab: 'results', label: '📈 Results' });  // every stage shows what it derived
-  if (_qdTabsApply()) tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });
-  if (tabs.length === 1) return '';
+  tabs.push({ tab: 'results', label: '📈 Dashboard' });  // every stage shows what it derived
+  tabs.push({ tab: 'questions', label: '❓ Questions' }, { tab: 'disposition', label: '🧭 Disposition' });  // always rendered — see Assessment's identical comment
   return `<div class="subnav-bar flex items-center gap-1.5 mb-3 pb-3 border-b border-slate-800">
     ${tabs.map(t => `<button onclick="_showEnrichmentSubTab('${t.tab}')"
         class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
@@ -2026,7 +2045,6 @@ function _enrichmentSubnavHtml(active) {
 
 function _showEnrichmentSubTab(tab) {
   if (tab === 'results') { _resultsHost = 'enrichment'; showMainView('stage-results'); return; }
-  if ((tab === 'questions' || tab === 'disposition') && !_qdTabsApply()) tab = 'context';
   _enrichmentSubTab = tab;
   if (tab === 'context') showMainView('context');
   else if (tab === 'survey') showMainView('enrichment-survey');
@@ -2606,14 +2624,29 @@ async function _loadAnalysisCatalogPanel(intent, viewId, title, subnavHtml = '')
         // Cross-stage definitions (survey_kind=automate_full — "Full Survey (all
         // steps)") belong to no single stage and would otherwise vanish from the
         // UI entirely, so they are fetched separately and appended.
+        // Issued CONCURRENTLY (2026-08-31). These two requests are independent —
+        // the second exists only to append cross-stage definitions the first
+        // cannot return — and awaiting the first before starting the second
+        // made a stage load pay both round trips end to end. Each is a live
+        // Egeria lookup, so on a cold cache that was the difference between
+        // ~12s and ~24s before the server-side fix, and it is free to remove.
+        //
+        // allSettled, not all: the cross-stage fetch was already non-fatal
+        // (its failure must not take the stage's own surveys down with it), and
+        // `all` would reject the pair as soon as either failed.
         const _candParams = { phase: intent, survey_kind: intent };
-        const candRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(_candParams)}`);
-        if (candRes.ok) candidates = (await candRes.json()).candidates || [];
+        const _candUrl = p => `/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams(p)}`;
+        const [_stageRes, _fullRes] = await Promise.allSettled([
+          fetch(_candUrl(_candParams)),
+          fetch(_candUrl({ survey_kind: 'automate_full' })),
+        ]);
+        if (_stageRes.status === 'fulfilled' && _stageRes.value.ok) {
+          candidates = (await _stageRes.value.json()).candidates || [];
+        }
         try {
-          const fullRes = await fetch(`/api/survey-definitions/${resourceType}/${encodeURIComponent(slug)}/candidates?${new URLSearchParams({ survey_kind: 'automate_full' })}`);
-          if (fullRes.ok) {
+          if (_fullRes.status === 'fulfilled' && _fullRes.value.ok) {
             const seen = new Set(candidates.map(c => c.qualified_name));
-            for (const c of (await fullRes.json()).candidates || []) {
+            for (const c of (await _fullRes.value.json()).candidates || []) {
               if (!seen.has(c.qualified_name)) candidates.push(c);
             }
           }
@@ -2933,6 +2966,8 @@ async function _submitSchedule(analysisId, entityType, slug) {
 const _REPO_RESULTS_RENDER_MODE = {
   chaoss_metrics: 'findings_list',
   cii_badge: 'findings_list',
+  security_summary: 'findings_list',
+  refresh_plan: 'findings_list',
   interface_surface: 'findings_list',
   community_support: 'findings_list',
   cve_scan: 'findings_list',
@@ -6295,8 +6330,25 @@ function renderActivityLog() {
       ? op.detail.split('\n').map(line => `<div>${hiGuid(_esc(line))}</div>`).join('')
       : '';
 
-    // Structured cataloged-items table
-    const itemsHtml = (op.items && op.items.length)
+    // An entry may point at a fuller record elsewhere. The activity log is an
+    // audit trail — one line per operation — so detail that would swamp it
+    // lives in its own surface and is linked, not inlined. Today the only
+    // such pointer is the publish queue; the shape is general so the next one
+    // does not need a second mechanism.
+    const linkItems = (op.items || []).filter(it => it.link);
+    const linksHtml = linkItems.length
+      ? `<div class="mt-1 flex flex-wrap gap-1.5">${linkItems.map(it => {
+          const runArg = it.run_id ? `'${_esc(it.run_id).replace(/'/g, "\\'")}'` : "''";
+          return `<button onclick="showMainView('${_esc(it.link)}'); loadAdminOutboxPanel('', ${runArg});"
+            class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300">
+            View publish log →</button>`;
+        }).join('')}</div>`
+      : '';
+
+    // Structured cataloged-items table (link-only pointers are rendered above,
+    // not as empty rows in a Type/Name/GUID table they have no values for).
+    const tableItems = (op.items || []).filter(it => !it.link);
+    const itemsHtml = (tableItems.length)
       ? `<table class="w-full text-xs mt-2 border-collapse">
           <thead><tr class="text-slate-600">
             <th class="text-left font-normal pb-0.5 w-28">Type</th>
@@ -6304,7 +6356,7 @@ function renderActivityLog() {
             <th class="text-left font-normal pb-0.5 w-36">GUID</th>
           </tr></thead>
           <tbody class="divide-y divide-slate-800">
-          ${op.items.map(it => `<tr>
+          ${tableItems.map(it => `<tr>
             <td class="py-0.5 text-slate-500 pr-2">${_esc(it.kind || '')}</td>
             <td class="py-0.5 text-slate-300 pr-2 font-mono truncate max-w-[12rem]" title="${_esc(it.name || '')}">${_esc(it.name || '—')}</td>
             <td class="py-0.5">${it.guid
@@ -6338,6 +6390,7 @@ function renderActivityLog() {
         ${hasDetail ? `<span class="op-row-toggle" onclick="toggleOpRow('${detailId}',this)" title="Show detail">▶</span>` : ''}
       </div>
       <div class="text-slate-400 mt-0.5">${_esc(op.summary)}</div>
+      ${linksHtml}
       <div class="text-slate-700 text-xs mt-0.5">${ts}</div>
       ${hasDetail ? `<div class="op-row-detail" id="${detailId}">
         ${annHtml}
@@ -7249,10 +7302,10 @@ async function _loadSurveyResultsPanel(entityType, slug, viewElId, subnavHtml, s
     // repo-only for now — question_catalog_reader (the Perspective-derivation
     // join) has no db/filesystem entries today, same graceful degrade as the
     // Survey panel's own Perspective row (D4).
-    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Survey Results dashboards are repo-only for now.</div>';
+    view.innerHTML = subnavHtml + '<div class="text-slate-600 text-xs text-center py-12">Dashboards are repo-only for now.</div>';
     return;
   }
-  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading Survey Results…</div>';
+  view.innerHTML = subnavHtml + '<div class="text-slate-500 text-xs py-8 text-center">Loading dashboards…</div>';
   try {
     // stage= asks the server for only this stage's cards; the server also
     // drops cards with no stored results, so an unsurveyed repo shows an empty
@@ -8744,7 +8797,7 @@ function _renderInvestigationsActiveTab() {
             ${i.member_count} resource(s) ·
             ${_investigationBindingLabel(i)}
             ${isCur ? ` · <button onclick="_openInvestigationEgeriaPicker()" class="text-cyan-500 hover:underline">${i.egeria_project_guid ? 'change binding' : 'bind existing'}</button>` : ''}
-            ${isCur && !i.egeria_project_guid ? ` · <button onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
+            ${isCur && !i.egeria_project_guid ? ` · <button id="inv-promote-btn" onclick="_promoteInvestigation('${_esc(i.slug)}')" class="text-emerald-400 hover:underline">create in Egeria →</button>` : ''}
           </div>
           ${isCur ? `<div id="inv-next-steps" class="mt-2"></div>` : ''}
         </div>
@@ -8889,7 +8942,28 @@ async function _createInvestigation() {
 // link and the user needs to know which ones those are.
 async function _promoteInvestigation(slug) {
   if (!confirm('Create an Egeria Project (and working-set Collection) for this investigation?\n\nThis writes to Egeria.')) return;
-  showToast('success', 'Creating in Egeria…', 2000);
+
+  // In-progress state lives on the BUTTON, not in a timed toast. The toast here
+  // was `showToast('success', 'Creating in Egeria…', 2000)` — two seconds, for a
+  // call that creates a Project, a Collection, a ResourceList and links every
+  // member that has an asset.
+  //
+  // Reported 2026-09-01 as "I tried to promote All-Current-REpos and it didn't
+  // seem to work". It HAD worked: Project 09798650 created, folio fc0c87fa
+  // created, 26 of 58 members linked, and `unpublishable` went 32 -> 0. But with
+  // 58 members the call outlived its own progress toast by far, so the sequence
+  // on screen was: a flash, a long silence, then a result toast that is easy to
+  // miss — and the only durable evidence was an 11px label changing and a link
+  // disappearing.
+  //
+  // A success nobody can see is indistinguishable from a failure. That is the
+  // same defect as the red-toast-on-success fixed in db2bd3b, arrived at from
+  // the opposite direction: there the signal was wrong, here there was none.
+  const btn = document.getElementById('inv-promote-btn');
+  const btnHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); btn.innerHTML = 'creating in Egeria…'; }
+  const steps = document.getElementById('inv-next-steps');
+  if (steps) steps.innerHTML = `<div class="text-xs text-cyan-300">Creating the Egeria Project and linking members — this can take a minute for a large investigation. Leave this page open.</div>`;
   try {
     const res = await fetch(`/api/investigations/${encodeURIComponent(slug)}/promote`, {method: 'POST'});
     const r = await res.json();
@@ -8900,14 +8974,52 @@ async function _promoteInvestigation(slug) {
     const linked = (r.members_linked || []).length;
     const missed = (r.members_unlinkable || []).length;
     let msg = `Egeria Project created${r.resource_list_linked ? ' with its working set' : ''}. ${linked} resource(s) linked`;
-    if (missed) msg += `, ${missed} could not be — publish those repos to Egeria first`;
-    showToast(missed || r.errors?.length ? 'error' : 'success', msg, 8000);
+    if (missed) msg += `, ${missed} could not be yet — publish those repos to Egeria, then use Relink members`;
+    // Red ONLY for a real error. A member with no asset GUID is not a failure:
+    // its repo has not been published, which on a freshly rebuilt platform is
+    // true of EVERY member of EVERY investigation, so the expected outcome of a
+    // correct promotion was being rendered as a failed one.
+    //
+    // Found 2026-08-31 after a redeploy: the Project, the Folio and the
+    // ResourceList were all created, five members were correctly reported
+    // unlinkable, and the red toast read as "it failed" — which stopped the
+    // remaining two promotions and sent someone hunting a log entry that could
+    // not exist, because nothing had gone wrong.
+    showToast(r.errors?.length ? 'error' : 'success', msg, 8000);
     await loadInvestigationsPanel();
     const list = await (await fetch('/api/investigations/')).json();
     _investigations = Array.isArray(list) ? list : [];
     _refreshInvestigationLabel();
+
+    // A DURABLE outcome, not only a toast. loadInvestigationsPanel() has just
+    // re-rendered, so this is written after it and survives until the panel is
+    // reloaded — someone who looked away still finds out what happened, and
+    // what to do next.
+    //
+    // The next step is the part that was missing entirely. Promoting an
+    // investigation makes its members INHERIT an Egeria Project context, which
+    // is what lets them be catalogued — so the members that "could not be
+    // linked" are not a dead end, they are the input to Egeria Alignment's
+    // catalog step. Nothing on screen said so, and "32 could not be" reads as a
+    // failure rather than as the next action.
+    const later = document.getElementById('inv-next-steps');
+    if (later) {
+      const missedNow = (r.members_unlinkable || []).length;
+      later.innerHTML = `<div class="text-xs rounded border border-emerald-800 bg-emerald-950/40 p-2 space-y-1">
+        <div class="text-emerald-300 font-semibold">Created in Egeria.</div>
+        <div class="text-slate-300">Project <span class="font-mono">${_esc((r.project_guid || '').slice(0, 8))}</span>${r.resource_list_linked ? ' · working set linked' : ''} · ${linked} member(s) attached.</div>
+        ${missedNow ? `<div class="text-slate-400">${missedNow} member(s) have no Egeria asset yet. They now inherit this Project, so they can be catalogued: <span class="text-cyan-300">Admin → Egeria Alignment → "Repos with no Egeria asset that can be catalogued"</span>, then re-scan and relink.</div>` : ''}
+      </div>`;
+    }
   } catch (e) {
     showToast('error', `Could not create in Egeria: ${e}`, 6000);
+    const steps2 = document.getElementById('inv-next-steps');
+    if (steps2) steps2.innerHTML = `<div class="text-xs text-amber-400">Could not create in Egeria: ${_esc(String(e))}</div>`;
+  } finally {
+    // Restored in `finally` so a failure does not strand the button disabled
+    // with no way to retry — the panel may not have re-rendered.
+    const b = document.getElementById('inv-promote-btn');
+    if (b) { b.disabled = false; b.classList.remove('opacity-60'); if (btnHtml) b.innerHTML = btnHtml; }
   }
 }
 
@@ -9003,11 +9115,14 @@ function showMainView(tab) {
   const adminQuestionCatalogView = document.getElementById('admin-question-catalog-view');
   const adminPrefectView = document.getElementById('admin-prefect-view');
   const adminRepairView = document.getElementById('admin-repair-view');
+  const adminOutboxView = document.getElementById('admin-outbox-view');
+  const adminFeedbackView = document.getElementById('admin-feedback-view');
+  const adminLogsView = document.getElementById('admin-logs-view');
   const curateView    = document.getElementById('curate-view');
   const automateView  = document.getElementById('automate-view');
   const navActivity   = document.getElementById('nav-activity');
 
-  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
+  [placeholderView, assessmentView, analysisView, discoveryAnalysesView, understandingView, scoutingOverviewView, scoutingResultsView, stageResultsView, scoutingDiscoverView, scoutingDispositionView, scoutingQuestionsView, assessmentSubResourcesView, reportView, dbSurveyView, fsSurveyView, activityView, contextView, enrichmentSurveyView, surveyDefsView, annotationTypesView, adminGroupsView, adminDiscoverySourcesView, adminEgeriaLinksView, adminQuestionCatalogView, adminPrefectView, document.getElementById('admin-resync-view'), adminRepairView, adminOutboxView, adminFeedbackView, adminLogsView, curateView, automateView, investigationsView].forEach(v => v?.classList.add('hidden'));
   // The header Perspective row used to be hidden on the Questions tab, which
   // had its own filter over a different vocabulary. Both vocabularies are
   // Egeria's twelve now and the in-tab rows are gone: one vocabulary, one
@@ -9125,6 +9240,18 @@ function showMainView(tab) {
     adminRepairView.classList.remove('hidden');
     document.getElementById('nav-admin-hdr')?.classList.add('active');
     loadAdminRepairPanel();
+  } else if (tab === 'admin-outbox') {
+    document.getElementById('admin-outbox-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminOutboxPanel();
+  } else if (tab === 'admin-feedback') {
+    document.getElementById('admin-feedback-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminFeedbackPanel();
+  } else if (tab === 'admin-logs') {
+    document.getElementById('admin-logs-view').classList.remove('hidden');
+    document.getElementById('nav-admin-hdr')?.classList.add('active');
+    loadAdminLogsPanel();
   } else if (tab === 'curate') {
     curateView.classList.remove('hidden');
     loadCuratePanel();
@@ -9355,8 +9482,15 @@ function _questionStatus(q) {
 }
 
 async function loadScoutingQuestions() {
-  if (!selectedProject) return;
   const view = document.getElementById('scouting-questions-view');
+  // Honest empty state, not a silent no-op (2026-09-01, dwolfson feedback):
+  // this must never look like "a repo is selected and it has no
+  // questions" -- that's a claim about a repo the user hasn't chosen.
+  if (!_qdTabsApply()) {
+    view.innerHTML = _qdSubnavHtml('questions') +
+      '<div class="text-slate-500 text-xs py-8 text-center">Select a repository to see its Questions.</div>';
+    return;
+  }
   view.innerHTML = _qdSubnavHtml('questions') + '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(selectedProject)}/scouting-questions?phase=${encodeURIComponent(_questionsPhase)}`);
@@ -9539,27 +9673,45 @@ function _renderEnvelopeMarkdown(env, slug) {
 
   const known = (env.facts || []).filter(f => f.is_known);
   const unknown = (env.facts || []).filter(f => !f.is_known);
-  lines.push(`Answering from ${known.length} measurement(s) on **${slug}**:\n`);
   known.forEach(f => {
     const st = _FACT_STATE_TEXT[f.state] || { icon: '•', text: f.state };
     // _analysisDisplayName, not the raw analysis_id -- "catalog_presence" is
     // a slug, "Catalog Presence" (the catalog's own `name`) is what someone
     // asking a plain-language question can actually read.
-    lines.push(`- ${st.icon} **${_esc(_analysisDisplayName(f.analysis_id))}** — ${st.text}` +
+    const heading = `**${_esc(_analysisDisplayName(f.analysis_id))}**`;
+    const caveats =
       // Evidence informs a judgement; it is not the judgement. Phrasing it as
       // an answer would have this report "yes, it replaces X" from nothing
       // more than a shared primary language.
       (f.evidence_only ? ' _(evidence for you to judge, not an answer)_' : '') +
-      (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '') +
-      (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
+      (f.provenance === 'recovered' ? ' _(proposed by a detector, not yet validated)_' : '');
+    // Reported 2026-09-01: the answer was on the row all along --
+    // `concentration_detail` held a full sentence -- but the rendered line was
+    // "Answering from 1 measurement(s)..." over a bullet that said only
+    // "measured", with the sentence itself buried in a collapsed, truncated
+    // Evidence block. A fact's own `detail`/`*_detail` string IS the answer a
+    // surveyor wrote, not raw evidence to be judged -- lead with it, and treat
+    // the process framing (what ran, when) as what it is: provenance, not the
+    // answer.
+    const answerText = _factAnswerText(f.value);
+    if (answerText) {
+      lines.push(`- ${st.icon} ${heading}: ${_esc(answerText)}${caveats}`);
+      lines.push(`  \n  <span class="text-slate-500">${_esc(st.text)}` +
+        (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : '') + `</span>`);
+    } else {
+      // Nothing the surveyor wrote as prose -- the state line is what there
+      // is, and it stays the visible line rather than being demoted under a
+      // sentence that doesn't exist.
+      lines.push(`- ${st.icon} ${heading} — ${st.text}${caveats}` +
+        (f.last_run_at ? ` · ${_relTime(f.last_run_at)}` : ''));
+    }
     const summary = _summariseFactValue(f.value);
-    // Reported 2026-08-31: "registered: true · group: egeria ·
-    // siblings_in_group: 4 · ..." read as raw, not meaningful, right under
-    // the actual answer. Same fixed-wording state line above IS the answer;
-    // this is what backs it up. <details>/<summary> is plain HTML passed
-    // through marked() untouched (no sanitizer configured) -- the same
-    // collapsed-by-default, no-JS-state idiom already used for the Survey
-    // Definition step list, not a new mechanism.
+    // <details>/<summary> is plain HTML passed through marked() untouched (no
+    // sanitizer configured) -- the same collapsed-by-default, no-JS-state
+    // idiom already used for the Survey Definition step list, not a new
+    // mechanism. What differs from before: prose fields (detail/*_detail/
+    // measures_disagree) are excluded here now, because they're the answer
+    // shown above, not supporting evidence for it -- see _summariseFactValue.
     if (summary) {
       lines.push(`  \n  <details><summary class="cursor-pointer text-slate-500">Evidence</summary>\n\n  ${summary}\n  </details>`);
     }
@@ -9572,21 +9724,67 @@ function _renderEnvelopeMarkdown(env, slug) {
   if ((env.can_run || []).length) {
     lines.push(`\n_Re-run \`${env.can_run.join('`, `')}\` to refresh this._`);
   }
+  // Demoted from the lead line to a footer (2026-09-01): this is provenance
+  // about the answer ("how many things were checked"), not the answer, and
+  // leading with it read as an agent thinking out loud with nothing to show
+  // for it -- see the fact-by-fact prose promotion above.
+  lines.push(`\n_Answered from ${known.length} measurement(s) on **${_esc(slug)}**._`);
   return lines.join('\n');
 }
 
-//: A compact, honest reading of a results dict. Counts and named scalars only
+//: Which of a fact's own fields ARE its answer, not evidence about the
+//: answer. `detail`/`*_detail`/`measures_disagree` are prose a surveyor wrote
+//: itself (see resource_explorer/facts.py's `_r_community`, and
+//: `concentration_detail` on `project_commits`) -- not a narrative this layer
+//: is inventing on the value's behalf. That distinction is why this is safe:
+//: _summariseFactValue's caution ("must not invent a narrative the value does
+//: not support") is about synthesising text from scalars, and does not apply
+//: to a string the measurement already wrote.
+function _factProseKeys(value) {
+  if (!value || typeof value !== 'object') return [];
+  return Object.keys(value).filter(k => k === 'detail' || k.endsWith('_detail') || k === 'measures_disagree');
+}
+
+function _factAnswerText(value) {
+  return _factProseKeys(value)
+    .map(k => value[k])
+    .filter(v => typeof v === 'string' && v.trim())
+    .join(' ');
+}
+
+//: A compact, honest reading of a results dict's remaining fields -- the ones
+//: that are NOT the fact's own prose answer (that's `_factAnswerText`, shown
+//: above this in the chat, not here). Counts and named scalars only for those
 //: -- this must not invent a narrative the value does not support, which is
 //: what the fact layer exists to prevent one layer up.
 function _summariseFactValue(value) {
   if (!value || typeof value !== 'object') return '';
-  const skip = new Set(['_status', 'surveyed_at', 'detail', 'scoped_to', 'run_outcomes']);
+  const skip = new Set(['_status', 'surveyed_at', 'scoped_to', 'run_outcomes', ..._factProseKeys(value)]);
   const parts = [];
   for (const [k, v] of Object.entries(value)) {
     if (skip.has(k)) continue;
-    if (Array.isArray(v)) { if (v.length) parts.push(`${k}: ${v.length}`); }
+    if (Array.isArray(v)) {
+      if (v.length) {
+        // A bare count ("top_authors: 2") is strictly less informative than
+        // the array it summarises when the array is a list of named things --
+        // show who, not just how many.
+        const names = v.slice(0, 2)
+          .map(item => (item && typeof item === 'object')
+            ? (item.name ?? item.label ?? item.title ?? '')
+            : item)
+          .filter(x => x !== '' && x !== null && x !== undefined);
+        const preview = names.length ? ` (${names.join(', ')}${v.length > names.length ? ', …' : ''})` : '';
+        parts.push(`${k}: ${v.length}${preview}`);
+      }
+    }
     else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}: ${v}`);
-    else if (typeof v === 'string' && v.trim() && v.length < 60) parts.push(`${k}: ${v}`);
+    // No length cutoff here any more -- the 60-char cap used to be the other
+    // half of the bug (it silently ate `detail`/`*_detail` strings, which are
+    // exactly the long ones). Those are excluded from `skip` above and shown
+    // in full by _factAnswerText instead; whatever generic string field
+    // remains here was never the reason evidence looked empty, so nothing is
+    // lost by no longer truncating it too.
+    else if (typeof v === 'string' && v.trim()) parts.push(`${k}: ${v}`);
     if (parts.length >= 6) break;
   }
   return parts.join(' · ');
@@ -9654,8 +9852,15 @@ async function _setProjectDisposition(githubUrl, disposition) {
 // directly on the Scouting overview card ("Scouting workflow redesign"
 // plan, D6). ──────────────────────────────────────────────────────────────
 async function loadScoutingDispositionView() {
-  if (!selectedProject) return;
   const view = document.getElementById('scouting-disposition-view');
+  // Same honest-empty-state reasoning as loadScoutingQuestions above: must
+  // not read like "this repo has no disposition set" when no repo is
+  // selected at all.
+  if (!_qdTabsApply()) {
+    view.innerHTML = _qdSubnavHtml('disposition') +
+      '<div class="text-slate-500 text-xs py-8 text-center">Select a repository to see its Disposition.</div>';
+    return;
+  }
   view.innerHTML = _qdSubnavHtml('disposition') +
     '<div class="text-slate-500 text-xs py-8 text-center">Loading…</div>';
   try {
@@ -10269,7 +10474,7 @@ function renderSurveyReport(data) {
           return `<span class="inline-flex items-center gap-1 text-xs bg-slate-800 rounded px-1.5 py-0.5">
             <span class="text-slate-200">${_esc(c.name)}</span>
             <span class="${nullBadge}">${_esc(c.dtype)}</span>
-            ${c.null_pct > 0 ? `<span class="text-slate-600">${c.null_pct}%∅</span>` : ''}
+            ${c.null_pct == null ? `<span class="text-slate-700" title="Null rate not measured">—</span>` : c.null_pct > 0 ? `<span class="text-slate-600">${c.null_pct}%∅</span>` : ''}
           </span>`;
         }).join('');
         html += `<div class="rounded bg-slate-800 px-3 py-2 space-y-1">
@@ -11635,8 +11840,9 @@ async function runQuery(query, projectSlug, databaseSlug) {
             const fb = document.createElement('div');
             fb.className = 'mt-1.5 flex gap-2';
             fb.innerHTML = `
-              <button onclick="recordFeedback('${event.hash}', 1, this)" class="text-xs text-slate-500 hover:text-green-400 transition-colors">👍</button>
-              <button onclick="recordFeedback('${event.hash}', -1, this)" class="text-xs text-slate-500 hover:text-red-400 transition-colors">👎</button>`;
+              <button onclick="recordFeedback('${event.hash}', 1, this)" title="Helpful" class="text-xs text-slate-500 hover:text-green-400 transition-colors">👍</button>
+              <button onclick="recordFeedback('${event.hash}', 0, this)" title="Partially correct — right idea, but incomplete or partly off" class="text-xs text-slate-500 hover:text-amber-400 transition-colors">😐</button>
+              <button onclick="recordFeedback('${event.hash}', -1, this)" title="Not helpful" class="text-xs text-slate-500 hover:text-red-400 transition-colors">👎</button>`;
             wrap.appendChild(fb);
           }
           messages.scrollTop = messages.scrollHeight;
@@ -11678,8 +11884,13 @@ async function recordFeedback(hash, vote, btn) {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ query_hash: hash, vote }),
   });
+  // Three explicit states, matching the three buttons -- vote is one of
+  // +1/0/-1 (0 = "partially correct", not "no vote yet"; see
+  // FeedbackRequest.vote in routes/query.py).
   btn.parentElement.innerHTML = vote > 0
     ? '<span class="text-xs text-green-400">👍 Thanks!</span>'
+    : vote === 0
+    ? '<span class="text-xs text-amber-400">😐 Noted — partially correct.</span>'
     : '<span class="text-xs text-red-400">👎 Noted.</span>';
 }
 
@@ -12227,7 +12438,12 @@ function renderFilesystemSurveyReport(fs, surveys) {
                       <tr>
                         <td class="px-2 py-1 text-slate-200 font-mono font-medium">${_esc(c.name)}</td>
                         <td class="px-2 py-1 text-slate-400 font-mono">${_esc(c.dtype)}</td>
-                        <td class="px-2 py-1 ${c.null_pct > 0 ? 'text-amber-400' : 'text-slate-500'} font-mono">${(c.null_pct ?? 0).toFixed(1)}%</td>
+                        <!-- null_pct == null means "not measured" (columnar formats are
+                             profiled from file metadata, which carries no null rates). It must
+                             not render as 0.0% — that is an unmeasured value shown as a
+                             measurement. `?? 0` did exactly that until 2026-08-31. -->
+                        <td class="px-2 py-1 ${c.null_pct == null ? 'text-slate-600' : c.null_pct > 0 ? 'text-amber-400' : 'text-slate-500'} font-mono"
+                            ${c.null_pct == null ? 'title="Not measured — read from file metadata, which does not carry null rates"' : ''}>${c.null_pct == null ? '—' : c.null_pct.toFixed(1) + '%'}</td>
                       </tr>
                     `).join('')}
                   </tbody>
@@ -12336,22 +12552,347 @@ function selectAnnotationType(typeName) {
 // system/catalog configuration, not something a user does to curate a
 // specific resource (that's the real Curate intent — see showCuratePane()
 // below). Reachable from the header's ⚙ Admin button, not #intent-nav. ────
-function _adminSubnavHtml(active) {
-  const tabs = [
-    { tab: 'annotations',       label: '📝 Annotation Types' },
-    { tab: 'admin-groups',     label: '🗂 Groups' },
+//: Admin's panes, grouped by what a person came to do (2026-08-31). It was a
+//: flat row of nine and read as nine unrelated errands.
+//:
+//: The axis is the question being asked, not the subsystem being touched:
+//:   Configure   — declare how the system behaves. Read-mostly, no side effects
+//:                 on resources.
+//:   Reconcile   — the catalog and reality disagree; make them agree. Every one
+//:                 of these exists because a publish can fail or drift.
+//:   Observe     — what is the system doing, and what did people say about it.
+//:
+//: Prefect sits alone under Observe today. That is deliberate rather than an
+//: oversight: it is the home for the two panes Admin is missing (resource
+//: feedback has no cross-resource view at all, and there is no log viewer —
+//: see docs/open-stack-checklist.md §6). A group of one that names a gap is
+//: more useful than folding it somewhere it does not belong.
+//:
+//: Groups are visual only. Every button still calls showMainView() directly
+//: with the same tab id, so routing, the single-active-pane architecture and
+//: #nav-admin-hdr's highlight are all untouched.
+const _ADMIN_GROUPS = [
+  { name: 'Configure', tabs: [
+    { tab: 'annotations',             label: '📝 Annotation Types' },
+    { tab: 'admin-groups',            label: '🗂 Groups' },
     { tab: 'admin-discovery-sources', label: '🔍 Discovery Sources' },
-    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
     { tab: 'admin-question-catalog',  label: '❓ Question Catalog' },
-    { tab: 'admin-prefect',           label: '⚡ Prefect' },
+  ]},
+  { name: 'Reconcile', tabs: [
     { tab: 'admin-resync',            label: '🔄 Egeria Alignment' },
+    { tab: 'admin-egeria-links',      label: '🔗 Egeria Links' },
+    { tab: 'admin-outbox',            label: '📤 Publish Queue' },
     { tab: 'admin-repair',            label: '🔧 Repair' },
-  ];
-  return `<div class="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
-    ${tabs.map(t => `<button onclick="showMainView('${t.tab}')"
-        class="text-xs px-2.5 py-1 rounded transition-colors ${t.tab === active ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">
-        ${t.label}
-      </button>`).join('')}
+  ]},
+  { name: 'Observe', tabs: [
+    { tab: 'admin-prefect',           label: '⚡ Prefect' },
+    { tab: 'admin-feedback',          label: '💬 Feedback' },
+    { tab: 'admin-logs',              label: '📜 Logs' },
+  ]},
+];
+
+// ── Admin → Logs ────────────────────────────────────────────────────────────
+// The in-process ring buffer from observability/logging_setup.py. Deliberately
+// states what it is: bounded, in-memory, empty after a restart. A viewer that
+// renders "nothing has been logged", "the buffer was cleared by a restart" and
+// "your filter excluded everything" identically would be the absence-as-answer
+// failure this codebase keeps finding — so each says its own sentence.
+let _adminLogsFilter = { level: '', logger: '' };
+let _adminLogsAuto = false;
+let _adminLogsTimer = null;
+
+const _LOG_LEVEL_CLASS = {
+  DEBUG: 'text-slate-500', INFO: 'text-slate-300', WARNING: 'text-amber-400',
+  ERROR: 'text-red-400', CRITICAL: 'text-red-300 font-semibold',
+};
+
+async function loadAdminLogsPanel() {
+  const view = document.getElementById('admin-logs-view');
+  const subnav = _adminSubnavHtml('admin-logs');
+  let data;
+  try {
+    const qs = new URLSearchParams({ limit: '300' });
+    if (_adminLogsFilter.level) qs.set('level', _adminLogsFilter.level);
+    if (_adminLogsFilter.logger) qs.set('logger', _adminLogsFilter.logger);
+    const res = await fetch(`/api/logs/?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    view.innerHTML = subnav + `<div class="p-6 text-xs text-red-400">Could not load logs: ${_esc(String(e))}</div>`;
+    return;
+  }
+
+  const rows = data.records || [];
+  const buf = data.buffer || {};
+
+  // Three different empties, three different sentences.
+  const empty = _adminLogsFilter.level || _adminLogsFilter.logger
+    ? `<div class="text-xs text-slate-500 py-10 text-center">No records match this filter.
+         ${buf.held} record${buf.held === 1 ? '' : 's'} held in total — clear the filter to see them.</div>`
+    : buf.held === 0
+      ? `<div class="text-xs text-slate-500 py-10 text-center">The buffer is empty.<br>
+           <span class="text-slate-600">It is in-memory and starts empty on every restart, so this is
+           not evidence that nothing has happened.</span></div>`
+      : '<div class="text-xs text-slate-500 py-10 text-center">No records to show.</div>';
+
+  const body = rows.length ? `
+    <table class="w-full text-xs font-mono">
+      <tbody class="divide-y divide-slate-800/60">
+        ${rows.map(r => `
+          <tr class="hover:bg-slate-800/40 align-top">
+            <td class="px-2 py-1 text-slate-600 whitespace-nowrap">${_esc(r.ts || '')}</td>
+            <td class="px-2 py-1 whitespace-nowrap ${_LOG_LEVEL_CLASS[r.level] || 'text-slate-400'}">${_esc(r.level || '')}</td>
+            <td class="px-2 py-1 text-cyan-500 whitespace-nowrap">${_esc(r.logger || '')}</td>
+            <!-- whitespace-pre-wrap on the MESSAGE too, not just the traceback.
+                 A multi-line message (a rendered table, a diff, anything with
+                 embedded newlines) was collapsed to one line by default table
+                 cell whitespace handling — the record held the newlines and the
+                 view threw them away. -->
+            <td class="px-2 py-1 text-slate-300 break-words whitespace-pre-wrap">${_esc(r.message || '')}${
+              r.exc ? `<pre class="mt-1 text-[10px] text-red-300 whitespace-pre-wrap break-words">${_esc(r.exc)}</pre>` : ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : empty;
+
+  const chip = (label, val) => `<button onclick="_adminLogsSetLevel('${_esc(val)}')"
+      class="text-xs px-2 py-0.5 rounded ${_adminLogsFilter.level === val ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${_esc(label)}</button>`;
+
+  view.innerHTML = subnav + `
+    <div class="p-6 space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-200">📜 Logs</h2>
+        <p class="text-xs text-slate-500 mt-1">
+          ${buf.held} of ${buf.capacity} records held${buf.full ? ' — <span class="text-amber-500">buffer full, oldest are being dropped</span>' : ''}.
+          Root level ${_esc(data.root_level || '')}.
+        </p>
+        <p class="text-[11px] text-slate-600 mt-1">${_esc(buf.note || '')}</p>
+      </div>
+      <div class="flex items-center gap-1.5 flex-wrap">
+        ${chip('All', '')}
+        ${(data.levels || []).map(l => chip(l, l)).join('')}
+        <span class="text-slate-700 px-1">|</span>
+        <input id="admin-logs-logger" value="${_esc(_adminLogsFilter.logger)}"
+               placeholder="logger name prefix"
+               onchange="_adminLogsSetLogger(this.value)"
+               class="bg-slate-950 border border-slate-800 rounded px-2 py-0.5 text-xs text-slate-300 w-56">
+        <button onclick="loadAdminLogsPanel()" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻ Refresh</button>
+        <label class="text-xs text-slate-500 flex items-center gap-1">
+          <input type="checkbox" ${_adminLogsAuto ? 'checked' : ''} onchange="_adminLogsToggleAuto(this.checked)"> auto
+        </label>
+      </div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">${body}</div>
+    </div>`;
+}
+
+function _adminLogsSetLevel(v) { _adminLogsFilter.level = v; loadAdminLogsPanel(); }
+function _adminLogsSetLogger(v) { _adminLogsFilter.logger = (v || '').trim(); loadAdminLogsPanel(); }
+
+function _adminLogsToggleAuto(on) {
+  _adminLogsAuto = on;
+  if (_adminLogsTimer) { clearInterval(_adminLogsTimer); _adminLogsTimer = null; }
+  if (!on) return;
+  // Stops itself when the pane is no longer visible, so leaving auto on and
+  // navigating away does not poll for the rest of the session.
+  _adminLogsTimer = setInterval(() => {
+    const v = document.getElementById('admin-logs-view');
+    if (!v || v.classList.contains('hidden')) {
+      clearInterval(_adminLogsTimer); _adminLogsTimer = null; _adminLogsAuto = false; return;
+    }
+    loadAdminLogsPanel();
+  }, 5000);
+}
+
+// ── Admin → Feedback ────────────────────────────────────────────────────────
+// Two independent feedback systems, shown badged rather than merged:
+//
+//   "resource" — resource_feedback, per-resource, written from a resource's
+//   Curate tab. Until 2026-08-31 this could only be read per resource, so
+//   finding out whether anyone had said anything meant visiting every
+//   resource in turn, and nobody did.
+//
+//   "page" — feedback (resource_explorer/feedback_store.py), the page-level
+//   widget reachable from anywhere in the app. Until 2026-09-01 this pane
+//   never read it at all — GET /api/curate/feedback queried resource_feedback
+//   only, so page-level feedback (Dan's: 9 rows back to 2026-08-11) rendered
+//   as "no feedback", indistinguishable from "nobody wrote any". It was never
+//   dropped, only unread from here — see /api/feedback (admin-feedback.html)
+//   for the store's own dedicated reader, which still works unchanged.
+//
+// The two are NOT merged into one row shape: they record genuinely different
+// things (session/page/consent fields vs. entity_type/slug) and a real merge
+// is a separate task (docs/Backlog.md). `source` badges each row so the two
+// stay disentangleable, and is itself a filter alongside entity_type/category.
+let _adminFeedbackFilter = { entity_type: '', category: '', source: '' };
+
+function _feedbackRatingHtml(r) {
+  // A rating is optional (the column is nullable and the form allows a message
+  // with no score). Absent must not render as zero stars — "no rating given"
+  // and "rated 0" are different, and only one of them is a judgement.
+  if (r === null || r === undefined) {
+    return '<span class="text-slate-700" title="No rating given">—</span>';
+  }
+  return `<span class="text-amber-400">${'★'.repeat(r)}<span class="text-slate-700">${'★'.repeat(Math.max(0, 5 - r))}</span></span>`;
+}
+
+// A column this row's SOURCE never records at all (e.g. "Resource" for a
+// page-level row) must read differently from a column that applies but was
+// left empty (e.g. an optional rating). The same "—" for both would make an
+// absent-by-design field look like a measured empty one.
+function _feedbackNA(why) {
+  return `<span class="text-slate-700 italic" title="${_esc(why)}">n/a</span>`;
+}
+
+function _feedbackSourceBadge(source) {
+  return source === 'page'
+    ? '<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-900/50 text-violet-300 border border-violet-800" title="feedback table — the page-level widget, reachable from anywhere in the app">page</span>'
+    : '<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-900/50 text-cyan-300 border border-cyan-800" title="resource_feedback table — recorded from a resource\'s Curate tab">resource</span>';
+}
+
+const _FEEDBACK_TRIAGE_COLOR = { new: 'text-amber-400', triaged: 'text-cyan-400', actioned: 'text-emerald-400' };
+
+async function loadAdminFeedbackPanel() {
+  const view = document.getElementById('admin-feedback-view');
+  const subnav = _adminSubnavHtml('admin-feedback');
+  view.innerHTML = subnav + '<div class="text-slate-500 text-xs py-8 text-center">Loading feedback…</div>';
+  let data;
+  try {
+    const qs = new URLSearchParams();
+    if (_adminFeedbackFilter.entity_type) qs.set('entity_type', _adminFeedbackFilter.entity_type);
+    if (_adminFeedbackFilter.category) qs.set('category', _adminFeedbackFilter.category);
+    if (_adminFeedbackFilter.source) qs.set('source', _adminFeedbackFilter.source);
+    const res = await fetch(`/api/curate/feedback?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    view.innerHTML = subnav + `<div class="p-6 text-xs text-red-400">Could not load feedback: ${_esc(String(e))}</div>`;
+    return;
+  }
+
+  const rows = data.feedback || [];
+  const counts = data.counts || { resource: { total: 0, resources: 0 }, page: { total: 0 } };
+  const totalAcrossSources = (counts.resource?.total || 0) + (counts.page?.total || 0);
+  const types = [...new Set(rows.filter(r => r.source === 'resource').map(r => r.entity_type))].sort();
+  const cats = [...new Set(rows.map(r => r.category).filter(Boolean))].sort();
+
+  // An empty list means several different things and they must not look alike:
+  // a filter excluded everything (recoverable — clear it), vs. both stores
+  // being genuinely, unfilteredly empty (a fact, not a filter artifact).
+  let empty;
+  if (data.filtered) {
+    empty = `<div class="text-xs text-slate-500 py-10 text-center">No feedback matches this filter. Clear it to see all ${totalAcrossSources} (${counts.page?.total || 0} page, ${counts.resource?.total || 0} resource).</div>`;
+  } else if (totalAcrossSources === 0) {
+    empty = '<div class="text-xs text-slate-500 py-10 text-center">No feedback has been left anywhere yet.<br><span class="text-slate-600">Neither the page-level widget nor any resource\'s Curate tab has a row.</span></div>';
+  } else {
+    // Should not happen (unfiltered + a nonzero total implies rows), but a
+    // fallback that asserts nothing beats one that repeats "no feedback".
+    empty = '<div class="text-xs text-slate-500 py-10 text-center">Nothing rendered for this page, though feedback exists — try Refresh.</div>';
+  }
+
+  const body = rows.length ? `
+    <table class="w-full text-xs">
+      <thead class="text-slate-500 border-b border-slate-800">
+        <tr>
+          <th class="px-2 py-1.5 text-left font-medium">When</th>
+          <th class="px-2 py-1.5 text-left font-medium">Source</th>
+          <th class="px-2 py-1.5 text-left font-medium">Resource / Page</th>
+          <th class="px-2 py-1.5 text-left font-medium">Category</th>
+          <th class="px-2 py-1.5 text-left font-medium">Rating</th>
+          <th class="px-2 py-1.5 text-left font-medium">Message</th>
+          <th class="px-2 py-1.5 text-left font-medium">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800">
+        ${rows.map(r => {
+          const isPage = r.source === 'page';
+          const context = isPage
+            ? (r.page ? `<span class="text-fuchsia-400 font-mono">${_esc(r.page)}</span>` : '<span class="text-slate-700" title="No page recorded with this submission">—</span>')
+            : `<span class="text-slate-600">${_esc(r.entity_type || '')}</span> <span class="text-cyan-400 font-mono">${_esc(r.entity_slug || '')}</span>`;
+          const status = isPage
+            ? `<span class="${_FEEDBACK_TRIAGE_COLOR[r.triage_status] || 'text-slate-500'}">${_esc(r.triage_status || 'new')}</span>`
+            : _feedbackNA('resource_feedback has no triage workflow');
+          return `
+          <tr class="hover:bg-slate-800/40">
+            <td class="px-2 py-1.5 text-slate-500 font-mono whitespace-nowrap">${_esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${_feedbackSourceBadge(r.source)}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${context}</td>
+            <td class="px-2 py-1.5 text-slate-400">${_esc(r.category || '—')}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${_feedbackRatingHtml(r.rating)}</td>
+            <td class="px-2 py-1.5 text-slate-300">${_esc(r.message || '')}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${status}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>` : empty;
+
+  const chip = (label, key, val) => `<button onclick="_adminFeedbackSetFilter('${key}', '${_esc(val)}')"
+      class="text-xs px-2 py-0.5 rounded ${_adminFeedbackFilter[key] === val ? 'bg-cyan-700 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}">${_esc(label)}</button>`;
+
+  view.innerHTML = subnav + `
+    <div class="p-6 space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-200">💬 Feedback</h2>
+        <p class="text-xs text-slate-500 mt-1">
+          ${counts.page?.total || 0} page item${(counts.page?.total || 0) === 1 ? '' : 's'} (the widget on any page)
+          + ${counts.resource?.total || 0} resource item${(counts.resource?.total || 0) === 1 ? '' : 's'} across ${counts.resource?.resources || 0} resource${(counts.resource?.resources || 0) === 1 ? '' : 's'} (a resource's Curate tab)
+          = ${totalAcrossSources} total. Shown together, badged by origin — not merged; see the badge on each row.
+        </p>
+      </div>
+      <div class="flex items-center gap-1.5 flex-wrap">
+        ${chip('All sources', 'source', '')}
+        ${chip('Page', 'source', 'page')}
+        ${chip('Resource', 'source', 'resource')}
+        <span class="text-slate-700 px-1">|</span>
+        ${chip('All resource types', 'entity_type', '')}
+        ${types.map(t => chip(t, 'entity_type', t)).join('')}
+        ${cats.length ? '<span class="text-slate-700 px-1">|</span>' : ''}
+        ${cats.length ? chip('Any category', 'category', '') : ''}
+        ${cats.map(c => chip(c, 'category', c)).join('')}
+      </div>
+      <div class="bg-slate-950 border border-slate-800 rounded overflow-x-auto">${body}</div>
+    </div>`;
+}
+
+function _adminFeedbackSetFilter(key, val) {
+  _adminFeedbackFilter[key] = val;
+  // Setting entity_type has no meaning for page-sourced rows; clearing an
+  // active page-only source filter here would silently show rows that don't
+  // support the entity_type facet at all — instead, leave source alone and
+  // let the empty state (page rows return none for entity_type) say so.
+  loadAdminFeedbackPanel();
+}
+
+function _adminSubnavHtml(active) {
+  // Three dropdowns, one per group, rather than a row of buttons.
+  //
+  // The button row was tried first (2026-08-31) and did not survive contact
+  // with eleven panes: it wrapped to two lines, and a wrapped line put a group
+  // label in the middle of the row where it read as a stray word rather than a
+  // heading. Grouping only helps if the group is visibly whole, and eleven
+  // buttons plus three labels will not stay on one line at any realistic width.
+  //
+  // Native <select>, matching the two dozen already in this file — no custom
+  // menu, no outside-click handling, keyboard and screen-reader behaviour for
+  // free. The group holding the current pane shows it as the selection and is
+  // highlighted; the others show their own name as a disabled placeholder, so
+  // every group still reads as a heading with a list under it.
+  const groupHtml = (g) => {
+    const holdsActive = g.tabs.some(t => t.tab === active);
+    const activeLabel = (g.tabs.find(t => t.tab === active) || {}).label || '';
+    return `<label class="flex items-center gap-1.5">
+      <span class="text-[10px] uppercase tracking-wide ${holdsActive ? 'text-cyan-500' : 'text-slate-600'}">${g.name}</span>
+      <select onchange="if (this.value) showMainView(this.value);"
+        title="${_esc(g.name)}${holdsActive ? ' — showing ' + _esc(activeLabel) : ''}"
+        class="text-xs rounded px-2 py-1 border transition-colors cursor-pointer
+               ${holdsActive
+                 ? 'bg-cyan-700 text-white border-cyan-600'
+                 : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'}">
+        <option value="" ${holdsActive ? '' : 'selected'} disabled>${_esc(g.name)}…</option>
+        ${g.tabs.map(t => `<option value="${t.tab}" ${t.tab === active ? 'selected' : ''}>${t.label}</option>`).join('')}
+      </select>
+    </label>`;
+  };
+  return `<div class="flex items-center gap-4 px-4 py-2 border-b border-slate-800 bg-slate-950/40 shrink-0">
+    ${_ADMIN_GROUPS.map(groupHtml).join('')}
   </div>`;
 }
 
@@ -13387,6 +13928,121 @@ async function deleteAdminGroup(slug) {
 // slug-embeds-collection-name problem rename exists for. ───────────────────
 let _repairRepos = [];          // [{slug, display_name}] from GET /api/projects/
 let _repairInvestigations = []; // [{slug, display_name}] from GET /api/investigations/
+// ── Admin → Publish Queue (📤) ─────────────────────────────────────────────
+// The detailed record behind an activity-log summary. The activity entry says
+// "3 elements dead-lettered"; this says WHICH three, their qualifiedNames,
+// how many attempts each took and what Egeria actually said. Reached from the
+// Admin subnav, or by the "View publish log" link on an activity entry.
+let _outboxRows = [];
+let _outboxCounts = {};
+let _outboxMaxAttempts = 8;
+let _outboxFilter = { status: '', run_id: '' };
+
+async function loadAdminOutboxPanel(status, runId) {
+  if (status !== undefined) _outboxFilter.status = status || '';
+  if (runId !== undefined) _outboxFilter.run_id = runId || '';
+  const view = document.getElementById('admin-outbox-view');
+  view.innerHTML = _adminSubnavHtml('admin-outbox') +
+    '<div class="text-slate-500 text-xs py-8 text-center">Loading publish queue…</div>';
+  try {
+    const qs = new URLSearchParams();
+    if (_outboxFilter.status) qs.set('status', _outboxFilter.status);
+    if (_outboxFilter.run_id) qs.set('run_id', _outboxFilter.run_id);
+    const res = await fetch('/api/outbox/?' + qs.toString());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    _outboxRows = body.rows || [];
+    _outboxCounts = body.counts || {};
+    _outboxMaxAttempts = body.max_attempts || 8;
+    renderAdminOutboxPanel();
+  } catch (e) {
+    view.innerHTML = _adminSubnavHtml('admin-outbox') +
+      `<div class="text-red-400 text-xs p-4">Failed to load publish queue: ${_esc(e.message)}</div>`;
+  }
+}
+
+async function retryOutboxElement(id) {
+  try {
+    const res = await fetch(`/api/outbox/${id}/retry`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(body.detail || `HTTP ${res.status}`, 'error'); return; }
+    showToast(`Element ${id} re-queued — it will be retried on the next drain.`, 'success');
+    loadAdminOutboxPanel();
+  } catch (e) { showToast(`Retry failed: ${e.message}`, 'error'); }
+}
+
+function renderAdminOutboxPanel() {
+  const view = document.getElementById('admin-outbox-view');
+  // Counts are over the whole table, never the filtered page — a panel showing
+  // "2 dead" while filtered to pending must still say 2 dead, or the filter
+  // silently becomes a claim about the system.
+  const order = ['dead', 'failed', 'pending', 'done'];
+  const tone = { dead: 'text-red-400', failed: 'text-amber-400', pending: 'text-slate-300', done: 'text-emerald-400' };
+  const chips = order.map(st => {
+    const n = _outboxCounts[st] || 0;
+    const on = _outboxFilter.status === st;
+    return `<button onclick="loadAdminOutboxPanel('${on ? '' : st}', '')"
+      class="text-xs px-2.5 py-1 rounded border ${on ? 'border-cyan-500 bg-cyan-900/40' : 'border-slate-700 bg-slate-800 hover:bg-slate-700'}">
+      <span class="${tone[st]} font-medium">${n}</span> <span class="text-slate-400">${st}</span></button>`;
+  }).join('');
+
+  const empty = _outboxRows.length === 0;
+  const rows = _outboxRows.map(r => {
+    const stale = r.status === 'dead';
+    const err = r.last_error || '';
+    return `<tr class="align-top">
+      <td class="py-1 pr-2"><span class="${tone[r.status] || 'text-slate-400'} text-xs">${_esc(r.status)}</span></td>
+      <td class="py-1 pr-2 text-slate-400 text-xs">${_esc(r.entity_slug || '')}</td>
+      <td class="py-1 pr-2 text-slate-500 text-xs">${_esc(r.element_kind || '')}</td>
+      <td class="py-1 pr-2 font-mono text-xs text-slate-300 break-all max-w-[24rem]">${_esc(r.qualified_name || '')}</td>
+      <td class="py-1 pr-2 text-xs ${r.attempts >= _outboxMaxAttempts ? 'text-red-400' : 'text-slate-400'}">${r.attempts}/${_outboxMaxAttempts}</td>
+      <td class="py-1 pr-2 text-xs text-slate-500">${_esc((r.next_attempt_at || '').replace('T', ' ').substring(0, 19)) || '—'}</td>
+      <td class="py-1 pr-2 text-xs text-red-300 break-all max-w-[20rem]">${_esc(err) || '<span class="text-slate-700">—</span>'}</td>
+      <td class="py-1">${stale
+        ? `<button onclick="retryOutboxElement(${r.id})" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Re-queue</button>`
+        : '<span class="text-slate-700 text-xs">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  view.innerHTML = _adminSubnavHtml('admin-outbox') + `
+    <div class="p-4 space-y-3">
+      <div>
+        <h2 class="text-slate-200 font-medium">📤 Publish Queue</h2>
+        <p class="text-slate-500 text-xs mt-1 max-w-3xl">
+          Every element write bound for Egeria — one row per asset, report or annotation.
+          A failed write is retried with exponential backoff; after ${_outboxMaxAttempts} attempts it is
+          <span class="text-red-400">dead-lettered</span> and left for a human rather than retried
+          silently forever. This is the detailed record that the Activity tab's summary links to.
+        </p>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        ${chips}
+        ${_outboxFilter.run_id ? `<span class="text-xs text-slate-500">run <span class="font-mono text-slate-400">${_esc(_outboxFilter.run_id)}</span></span>
+          <button onclick="loadAdminOutboxPanel('', '')" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Clear filter</button>` : ''}
+        <button onclick="loadAdminOutboxPanel()" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 ml-auto">Refresh</button>
+      </div>
+      ${empty
+        ? `<div class="text-slate-600 text-xs py-10 text-center">${
+            (_outboxFilter.status || _outboxFilter.run_id)
+              ? 'No elements match this filter.'
+              : 'Nothing queued. Elements appear here while a publish is in flight, and stay only if a write fails.'
+          }</div>`
+        : `<div class="overflow-x-auto"><table class="w-full text-left border-collapse">
+            <thead><tr class="text-slate-600 text-xs border-b border-slate-800">
+              <th class="font-normal pb-1 pr-2">Status</th>
+              <th class="font-normal pb-1 pr-2">Resource</th>
+              <th class="font-normal pb-1 pr-2">Kind</th>
+              <th class="font-normal pb-1 pr-2">Qualified name</th>
+              <th class="font-normal pb-1 pr-2">Attempts</th>
+              <th class="font-normal pb-1 pr-2">Next attempt</th>
+              <th class="font-normal pb-1 pr-2">Last error</th>
+              <th class="font-normal pb-1"></th>
+            </tr></thead>
+            <tbody class="divide-y divide-slate-800">${rows}</tbody>
+          </table></div>`}
+    </div>`;
+}
+
 let _repairSelectedSlug = '';
 let _repairDrift = [];
 let _repairMemberships = [];
@@ -14226,8 +14882,10 @@ function renderAdminResyncPanel() {
         <div class="text-xs text-slate-400 mt-0.5">${_esc(f.detail)}</div>
       </div>
       ${f.repair_step
-        ? `<label class="shrink-0 text-xs text-slate-300 flex items-center gap-1.5">
-             <input type="checkbox" class="resync-step" value="${_esc(f.repair_step)}" checked> fix
+        ? `<label class="shrink-0 text-xs text-slate-300 flex items-center gap-1.5"
+                  title="${f.expensive ? 'Writes to Egeria and can take minutes — tick it deliberately' : ''}">
+             <input type="checkbox" class="resync-step" value="${_esc(f.repair_step)}"${f.expensive ? '' : ' checked'}> fix
+             ${f.expensive ? `<span class="text-[10px] uppercase tracking-wide text-amber-400/80">slow</span>` : ''}
            </label>`
         : `<span class="shrink-0 text-[10px] uppercase tracking-wide text-amber-400/80" title="No single repair is correct here — see the description">your call</span>`}
     </div>
@@ -14253,7 +14911,21 @@ function renderAdminResyncPanel() {
     <div class="flex flex-wrap items-center gap-3 text-xs">
       <span class="text-slate-300">${d.total || 0} item(s) drifted</span>
       <span class="text-slate-500">·</span>
-      <span class="text-cyan-400">${d.repairable || 0} repairable</span>
+      ${(() => {
+        // Split the repairable count by whether it is TICKED. After running
+        // every cheap repair the panel still said "28 repairable", which reads
+        // as work outstanding when it is work deliberately declined — the
+        // expensive steps are unticked by default, so they persist across a
+        // re-scan by design. That number was mistaken for a failed run twice
+        // in one session before this line was split.
+        const _exp = findings.filter(f => f.repair_step && f.expensive)
+                             .reduce((n, f) => n + f.count, 0);
+        const _now = (d.repairable || 0) - _exp;
+        return `<span class="text-cyan-400">${_now} repairable</span>`
+          + (_exp ? `<span class="text-slate-500"> · </span>`
+                  + `<span class="text-amber-400/80" title="Slow repairs that write to Egeria — unticked by default, so they stay listed until you choose to run them">`
+                  + `${_exp} slow, not selected</span>` : '');
+      })()}
       <span class="text-slate-500">·</span>
       <span class="text-amber-400">${d.needs_decision || 0} need a decision</span>
       ${d.undetermined_count
@@ -14297,14 +14969,28 @@ async function _applyResync() {
   // re-authoring executes Dr.Egeria documents and WRITES to Egeria. Saying
   // "this clears local records" while re-authoring the catalog would be the
   // dialog lying about the one thing a dialog exists to disclose.
-  const writes = steps.includes('reauthor_survey_definitions');
+  // Each clause describes a DIFFERENT thing being done to a different system.
+  // One sentence cannot honestly cover them: clearing touches only local
+  // records, cataloguing creates assets in Egeria, and a full republish also
+  // downloads repository archives. A dialog that summarised all three as
+  // "applies repairs" would omit the one fact a dialog exists to disclose.
+  const _clearing = steps.filter(s => s.startsWith('clear_'));
   const what = [
-    steps.some(s => s !== 'reauthor_survey_definitions')
+    _clearing.length
       ? 'Clears local records that claim things about Egeria which are no longer true.' : '',
-    writes
+    steps.includes('reauthor_survey_definitions')
       ? 'Re-authors the Survey Definitions IN EGERIA by re-running their Dr.Egeria '
         + 'documents, then reconciles their step links. This writes to the catalog '
         + 'and can take a few minutes — leave the page open.' : '',
+    steps.includes('catalog_assets')
+      ? 'CREATES AN ASSET IN EGERIA for each uncatalogued repo, publishing only the '
+        + 'repository-health step. No repository archives are downloaded.' : '',
+    steps.includes('republish_survey_results')
+      ? 'Runs the FULL survey for each catalogued repo and publishes the results to '
+        + 'Egeria. This DOWNLOADS REPOSITORY ARCHIVES — across a large corpus expect '
+        + 'minutes and real GitHub API budget. Leave the page open.' : '',
+    steps.includes('relink_investigation_members')
+      ? 'Attaches investigation members to their Egeria assets.' : '',
   ].filter(Boolean).join('\n\n');
   if (!confirm(`Apply ${steps.length} repair step(s)?\n\n${steps.join('\n')}\n\n${what}`)) return;
 

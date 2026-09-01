@@ -48,6 +48,7 @@ import logging
 from collections import Counter
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.result_status import dependency_not_satisfied
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
@@ -308,6 +309,19 @@ class ArchSummarySurveyor(BaseSurveyor):
                 # Observable degradation, not a silent partial result.
                 "unread_scopes": unread_scopes,
                 "interfaces_unread": interfaces_unread,
+                # And now labelled: this step already tracked its own
+                # incompleteness and said so in the summary ("INCOMPLETE, could
+                # not read ..."). `partial` is the word for exactly that —
+                # produced something, knowingly incomplete — so the label now
+                # agrees with the prose instead of leaving a reader to notice.
+                **(StepOutcome("partial",
+                               cause="some component scopes or interface findings "
+                                     "could not be read",
+                               detail={"unread_scopes": unread_scopes,
+                                       "interfaces_unread": interfaces_unread})
+                   if (unread_scopes or interfaces_unread) else
+                   StepOutcome("recovered",
+                               detail={"components": sum(types.values())})).as_row(),
                 "complete": unread_scopes == 0 and not interfaces_unread,
             },
         )]
@@ -425,5 +439,12 @@ class ArchSummarySurveyor(BaseSurveyor):
             analysis_step=self.step_name,
             explanation=reason,
             json_properties={"depth": self._depth, "source_kind": SOURCE_KIND,
-                             "result_status": dependency_not_satisfied(reason, depends_on=SOURCE_KIND)},
+                             "result_status": dependency_not_satisfied(reason, depends_on=SOURCE_KIND),
+                             # Both vocabularies, and they say different things:
+                             # the READER is told a dependency has not run, the
+                             # RUN reports it could establish nothing. A summary
+                             # of nothing is never a provable zero — the absence
+                             # is upstream, not in the repo.
+                             **StepOutcome("unverified",
+                                           cause=f"{SOURCE_KIND} has not run").as_row()},
         )

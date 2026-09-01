@@ -51,6 +51,29 @@ Before committing, read `git status` and confirm every staged path is yours. An 
 a signal that another session is mid-write, not something to sweep in. If naming paths is tedious,
 it is because the change is large, not because the rule is wrong.
 
+**But a named path is per-FILE, not per-hunk — and that gap is invisible.** `git add <path>` stages
+*everything* in that file, including hunks another session wrote and has not committed. The file is
+legitimately yours to edit; the rule is satisfied; `git status` shows nothing unexpected, because the
+path IS one of yours.
+
+Happened 2026-08-31, to a session that had spent the day telling other sessions to name their paths.
+`3ce1254` added a 15-line cross-reference to `docs/egeria-reset-recovery.md` and carried 19 further
+lines — another session's `## 3a. The outbox does NOT restore anything`, written and not yet
+committed — into the same commit under the wrong author's message and sign-off. Nothing was lost and
+the content was correct, so it was only noticed because its author went to commit, found nothing
+staged, and used `git log -S` instead of assuming they had lost it.
+
+For a file several sessions write to — `CLAUDE.md`, the backlogs, the checklists, the runbooks —
+naming the path is not enough. Look at what you are about to stage:
+
+```
+git diff --stat -- <path>     # more changed than you changed?
+git add -p -- <path>          # stage your hunks, not the file
+```
+
+`git diff --stat` is the cheap version and catches the common case: if the line count is bigger than
+your edit, someone else is in there with you.
+
 **2. Never `git commit` while a merge is in progress unless the merge is yours.**
 
 This is the case where rule 1's advice does not merely weaken — it does not apply. `git commit`
@@ -107,6 +130,46 @@ precisely so they can work across trellis, egeria-python, egeria-workspaces and 
 place, and rooting a session in one repo gives that up.
 
 Absent that, **rules 1 and 2 are the only controls that actually operate.** Treat them accordingly.
+
+**If you do work in a worktree, fast-forward this checkout when you are done.**
+
+A worktree is real isolation, and that is exactly the problem: **the running app serves from THIS
+checkout** (`/Users/dwolfson/localGit/egeria-v6/trellis` — `resource-explorer web --reload`, port
+8810), not from yours. Pushing to `origin/main` does not move it. Nothing pulls it.
+
+Found the hard way on 2026-08-31: a session built six user-visible changes in a worktree, pushed
+each to `origin/main`, and reported each as shipped. Dan restarted the server, hard-refreshed, and
+saw none of them — this checkout was three commits behind, so he was looking at an earlier version
+of the same feature and reasonably concluded the fix had not worked. The work was fine; the
+delivery was not.
+
+So the last step of a change is not the push:
+
+```
+git -C /Users/dwolfson/localGit/egeria-v6/trellis fetch origin
+git -C /Users/dwolfson/localGit/egeria-v6/trellis status --porcelain   # someone else mid-write?
+git -C /Users/dwolfson/localGit/egeria-v6/trellis merge --ff-only origin/main
+```
+
+`--ff-only` is doing more work than it looks. **It refuses rather than clobbers**, on both counts:
+
+- If a locally-modified file would be overwritten it stops with *"Your local changes to the
+  following files would be overwritten by merge"* and changes nothing. Verified directly on
+  2026-08-31 rather than assumed. So a fast-forward **cannot** destroy another session's
+  uncommitted work — a dirty checkout is not by itself a reason to hold off.
+- If it will not fast-forward at all, this checkout has commits of its own and someone needs to
+  look at them, not be merged past.
+
+**Stop when it refuses. Do not force it, do not stash to get past it, do not `checkout --` the
+path.** Those are the operations rules 1 and 2 are about, and the refusal is the signal to ask
+whoever is active rather than to work around it. Check for a merge in progress too
+(`git rev-parse -q --verify MERGE_HEAD`) — rule 2 applies here whoever is driving.
+
+*This paragraph originally said "stop if it is dirty". That was over-strict, and the session that
+wrote it then broke it twice within the hour on a checkout that had three of someone else's files
+modified — safely both times, because `--ff-only` was doing the protecting rather than the rule. A
+rule people route around teaches them to route around rules; the accurate one is narrower and
+actually load-bearing.*
 
 **Before committing, read `git status` and confirm every staged path is yours.** An unexpected file
 is a signal that another session is mid-write, not something to sweep in.

@@ -169,6 +169,25 @@ The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather 
 
 ___
 
+## Create Governance Action Process Step
+### Display Name
+Assessment Survey — Repo Security Summary
+
+### Qualified Name
+GovActionProcessStep::RepoAssessmentSurvey::repo_security_summary
+
+### Description
+Reduces the security family's stored findings to one topic summary. Measures nothing itself — it reads what the other security steps wrote, so it belongs LAST in any survey that runs them. Reports coverage and the age of its oldest input alongside the verdict, and refuses a verdict at all below four inputs.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_security_summary |
+
+___
+
 ## Create Governance Action Process
 ### Display Name
 Assessment Survey
@@ -286,6 +305,18 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoAssessmentSurvey::repo_security_summary
 
 ### Guard
 Any

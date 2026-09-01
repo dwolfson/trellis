@@ -39,6 +39,19 @@ class Annotation:
     json_properties: dict[str, Any] = field(default_factory=dict)
     additional_properties: dict[str, Any] = field(default_factory=dict)
     source: str = "local"                   # 'local' | 'egeria' | 'pending'
+    #: Index, within this same run()'s returned annotations list, of the
+    #: annotation this one is evidence *for* — e.g. a per-file
+    #: SchemaAnalysisAnnotation's evidence_of points at the index of its
+    #: sub-surveyor's aggregate ResourceMeasureAnnotation. `None` (default)
+    #: means "not evidence of anything in this run" — every existing
+    #: annotation, unchanged. A same-run, list-index signal, not a GUID: the
+    #: GUID does not exist until after publish, and append order is NOT safe
+    #: to reconstruct blind, cross-run, after the fact (see
+    #: docs/annotation-linking-plan.md Q3) — this field is safe only because
+    #: the sub-surveyor sets it deliberately, about its own list, in the same
+    #: run that produces it. Consumed by Phase 2 (not implemented yet); Phase 1
+    #: only adds the field so sub-surveyors can start setting it.
+    evidence_of: int | None = None
 
 
 @dataclass
@@ -118,6 +131,14 @@ class SurveyResult:
     #: moment a second analysis produced a QualityScoreAnnotation — after which
     #: no analysis could earn an attributable publish at all.
     steps_run: list[str] = field(default_factory=list)
+    #: {step_key: reason} for steps a precondition declined to dispatch, kept
+    #: SEPARATE from `steps_run` and from `step_errors` because a skip is neither.
+    #: A skipped step did not run, so it is not in steps_run; it did not fail, so
+    #: it is not an error. Folding it into either would recreate the ambiguity
+    #: `result_status.SKIPPED_BY_DESIGN` exists to remove — and the reason travels
+    #: with it, because a skip without one is indistinguishable from a failure on
+    #: a screen. See surveyors/step_preconditions.py.
+    skipped_steps: dict[str, str] = field(default_factory=dict)
     # Same failures as `errors`, keyed by the step that raised. Needed because a
     # single run can now carry steps belonging to several different scheduled
     # analyses (scheduler.py coalesces same-repo due schedules into one run so

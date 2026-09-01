@@ -84,7 +84,14 @@ class TestSurveyResultDashboardsRegistry:
             "security_scan", "security_features", "ci_quality",
             "license_classification", "repo_conventions",
             "cve_scan", "foss_scorecard", "cii_badge",
+            # The reducer over the other eight, added 2026-08-31.
+            "security_summary",
         }
+        assert d.analysis_ids[0] == "security_summary", (
+            "the summary must lead the dashboard: a reader who takes in one card "
+            "should get the one that states its own coverage and staleness, not "
+            "whichever input happens to be first"
+        )
 
 
 class TestGetDashboardPerspectives:

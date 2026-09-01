@@ -199,14 +199,41 @@ def test_a_repo_with_no_project_decided_is_marked_not_publish_ready(pg_registry)
 
     scanner = object.__new__(R.EgeriaResync)
     scanner._registry = registry
-    finding = R.EgeriaResync.__dict__["_scan_unpublished_but_expected"](scanner)
-    by_slug = {i["slug"]: i for i in finding.items}
 
-    assert by_slug["decided"]["publish_ready"] is True
-    assert by_slug["decided"]["blocked_reason"] == ""
-    assert by_slug["undecided"]["publish_ready"] is False
-    assert "428" in by_slug["undecided"]["blocked_reason"]
-    assert "1 awaiting a Project" in finding.title
-    # Assigning a Project is the ENTRY condition, not the exit — say so, since
-    # a reader who assigns one and sees no change will otherwise assume a bug.
-    assert "does NOT clear this" in finding.detail
+    # The two now live in SEPARATE findings rather than one list with a
+    # per-item flag. That split is what lets the repairable finding carry a
+    # "fix" button honestly: every row under it is one the repair can complete,
+    # where a mixed list would put a tick over rows guaranteed to 428.
+    #
+    # Every assertion this test made still holds — `undecided` is still not
+    # publish-ready and still says 428, because with no investigation in play
+    # there is nothing for it to inherit. Only where it is reported changed.
+    ready = R.EgeriaResync.__dict__["_scan_unpublished_but_expected"](scanner)
+    blocked = R.EgeriaResync.__dict__["_scan_unpublishable"](scanner)
+
+    # Membership, not list equality. `pg_test_schema` is session-scoped, so
+    # every pg_registry test shares one schema and projects accumulate across
+    # the run. The old scan hid that behind an INNER JOIN on the context table
+    # — it could only ever see repos some test had given a context row. This
+    # scan deliberately covers repos with no context row at all (that is the
+    # `egeria_trellis` case it was widened for), so it sees the siblings too.
+    # Asserting the whole list would be asserting the order of the test suite.
+    ready_by = {i["slug"]: i for i in ready.items}
+    blocked_by = {i["slug"]: i for i in blocked.items}
+
+    assert ready_by["decided"]["publish_ready"] is True
+    assert "decided" not in blocked_by
+    assert ready.repair_step == "catalog_assets"
+
+    undecided = blocked_by["undecided"]
+    assert undecided["publish_ready"] is False
+    assert "428" in undecided["blocked_reason"]
+    assert "undecided" not in ready_by
+    # No button on the blocked one: RE does not know which Project it should
+    # join, and guessing writes a plausible answer into the catalog.
+    assert blocked.repair_step == "" and blocked.needs_decision
+
+    # Assigning a Project is the ENTRY condition for the repairable list, not
+    # the exit — a reader who assigns one and sees the repo move rather than
+    # vanish should find that explained.
+    assert "inheritance" in blocked.detail or "inherit" in blocked.detail

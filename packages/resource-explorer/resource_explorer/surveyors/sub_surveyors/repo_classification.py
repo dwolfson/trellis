@@ -51,6 +51,7 @@ from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -136,6 +137,22 @@ class RepoClassificationSurveyor(BaseSurveyor):
                 "recovery_gate": report.gate,
                 "recovery_gate_reason": report.gate_reason,
                 **({"result_status": gate_status} if gate_status else {}),
+                # The two vocabularies side by side, which this module's own
+                # docstring is the place that settled: `result_status` above is
+                # about the GATE — what a reader should do about a skipped
+                # architecture recovery — while this is about THIS run, which
+                # either classified the repo or could not.
+                #
+                # A classification with no roles is never a provable zero: the
+                # role set is derived from located artifacts, so finding none
+                # means we saw nothing to classify, not that the repo is
+                # role-less. There is no known-positive available.
+                **(StepOutcome("recovered",
+                               detail={"roles": len(roles),
+                                       "located": len(report.found)})
+                   if roles else
+                   StepOutcome("unverified",
+                               cause="no artifacts located to classify from")).as_row(),
                 "located": [{"kind": i.kind, "outcome": i.outcome,
                              "evidence": i.evidence, "date": i.date} for i in report.found],
                 "absent_but_expected": [{"kind": i.kind} for i in report.missing],

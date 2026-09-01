@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -84,23 +85,42 @@ class MaturitySurveyor(BaseSurveyor):
                 except ValueError:
                     age_days = None
 
+            # This step can never legitimately report a provable zero, and that
+            # is worth stating rather than leaving to be re-derived. Every repo
+            # HAS a creation date; an age we could not establish is always a
+            # gap in what we hold — no stats row, no `repo_created_at`, or a
+            # date that would not parse — and never a fact about the project.
+            # So the honest label for every age_days-is-None path is
+            # `unverified`, and there is no known-positive that could raise it.
             if age_days is None:
                 tier = "unknown"
-                summary = _TIER_LABELS[tier]
+                summary = (f"{_TIER_LABELS[tier]} — the repository's creation date is not "
+                           f"held, so its age could not be established")
+                outcome = StepOutcome(
+                    "unverified",
+                    cause=("no project_stats row" if not stats else
+                           "no repo_created_at in stats" if not created_at else
+                           "repo_created_at could not be parsed"),
+                    detail={"repo_created_at": created_at})
             else:
                 tier = _classify_age(age_days)
                 years = age_days / 365.25
                 summary = f"{years:.1f} years old — {_TIER_LABELS[tier]}"
+                outcome = StepOutcome("recovered", detail={"age_days": age_days})
 
-            confidence = 90 if age_days is not None else 40
+            # 40 read as "we have a weak answer". There is no answer.
+            confidence = 90 if age_days is not None else 0
 
             results.append(
                 ClassificationAnnotation(
                     summary=summary,
                     analysis_step=STEP,
-                    candidate_classifications=[tier],
+                    # "unknown" is not a maturity tier and must not be offered
+                    # as a candidate classification alongside real ones.
+                    candidate_classifications=[tier] if age_days is not None else [],
                     confidence=confidence,
-                    json_properties={"repo_created_at": created_at, "age_days": age_days, "maturity_tier": tier},
+                    json_properties={"repo_created_at": created_at, "age_days": age_days,
+                                     "maturity_tier": tier, **outcome.as_row()},
                 )
             )
 

@@ -50,6 +50,7 @@ from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
 log = logging.getLogger(__name__)
@@ -137,6 +138,10 @@ class RagIngestionSurveyor(BaseSurveyor):
                         + (f" Ingestion error: {error}" if error else "")
                     ),
                     resource_properties=properties,
+                    json_properties=StepOutcome(
+                        "unverified",
+                        cause="pgvector collections could not be refreshed or read",
+                        detail={"error": error or ""}).as_row(),
                 )
             ]
 
@@ -158,5 +163,22 @@ class RagIngestionSurveyor(BaseSurveyor):
                        "the previous ingestion." if not ingested else "")
                 ),
                 resource_properties=properties,
+                # step_outcome.py's docstring opens with this step's own bug:
+                # "repo_website_ingestion reported success having embedded one
+                # chunk, then 0 chunks from 1 page". A refresh that succeeded
+                # and indexed nothing is exactly that shape, so zero chunks is
+                # never `recovered` however cleanly the run completed — and
+                # serving the previous ingestion's counts after a failed
+                # refresh is `partial`: a real answer about an older moment.
+                json_properties=(
+                    StepOutcome("recovered", detail={"chunks": total_chunks})
+                    if ingested and total_chunks else
+                    StepOutcome("partial", cause="refresh failed; counts from the previous "
+                                                 "ingestion",
+                                detail={"error": error or ""})
+                    if not ingested else
+                    StepOutcome("unverified",
+                                cause="refresh succeeded but indexed no chunks")
+                ).as_row(),
             )
         ]

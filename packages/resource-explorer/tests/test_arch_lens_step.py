@@ -39,7 +39,8 @@ class _Reg:
 
     def upsert_finding(self, slug, kind, findings, surveyed_at=None, scope_locator=""):
         self.writes.append({"kind": kind, "scope": scope_locator,
-                            "checks": [f["check_name"] for f in findings]})
+                            "checks": [f["check_name"] for f in findings],
+                            "findings": [dict(f) for f in findings]})
 
 
 class _Lens:
@@ -315,3 +316,85 @@ class TestUnknownIsNotNotAttempted:
         ]
         for reg in cases:
             assert AL.ingestion_status(reg, "x")[0] in AL.ING_STATES
+
+
+class TestTheUndetectedPopulationSurvivesTheRun:
+    """docs/architecture-recovery-docs-as-source.md §9 step 1.
+
+    The terms a document emphasises that no detector proposed are the only
+    genuinely LOGICAL-perspective signal in the pipeline — `OMAS`, `OMVS`,
+    `View Server`, the names a human wrote down. They were computed every run
+    and thrown away: `undetected[:50]` reached one annotation's json_properties
+    and only when `undetected_usable`, while `_record_run` persisted counts.
+
+    §5 cannot be measured against a population that does not survive the run,
+    and §9 will not let a doc *proposer* be built until §5 has a number.
+    """
+
+    def _lens_with(self, undetected, usable, terms=None):
+        lens = _Lens(documented={"a": "x"}, terms=terms or ["proxy", "OMAS"])
+        lens.undetected = list(undetected)
+        lens.undetected_usable = usable
+        lens.undetected_reason = "measured"
+        return lens
+
+    def _undetected_writes(self, reg):
+        return [f for w in reg.writes for f in w.get("findings", [])
+                if f["check_name"] == "undetected_term"]
+
+    def test_every_undetected_term_is_persisted(self, monkeypatch):
+        reg = _Reg(scopes=["a"])
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k:
+                            self._lens_with(["OMAS", "OMVS", "View Server"], usable=True))
+        AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
+
+        rows = self._undetected_writes(reg)
+        assert {r["detail"]["term"] for r in rows} == {"OMAS", "OMVS", "View Server"}
+
+    def test_it_is_uncapped(self, monkeypatch):
+        # The old path published undetected[:50]. A cap on the measurement
+        # population silently answers the question §5 is trying to ask.
+        terms = [f"term-{i}" for i in range(140)]
+        reg = _Reg(scopes=["a"])
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k: self._lens_with(terms, usable=True))
+        AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
+        assert len(self._undetected_writes(reg)) == 140
+
+    def test_it_persists_even_when_the_gate_says_not_usable(self, monkeypatch):
+        # The corpus case — Milvus's 506 section headings from 25 design
+        # documents — is precisely what §5's three proposing tests must learn to
+        # separate from an overview. Filtering it out here would discard the
+        # negative examples the measurement needs.
+        reg = _Reg(scopes=["a"])
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k:
+                            self._lens_with(["heading one", "heading two"], usable=False))
+        AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
+
+        rows = self._undetected_writes(reg)
+        assert len(rows) == 2
+        assert all(r["detail"]["undetected_usable"] is False for r in rows), (
+            "the gate's verdict must be carried, not applied — a reader filters, "
+            "the store does not filter for them irreversibly"
+        )
+
+    def test_nothing_undetected_writes_nothing(self, monkeypatch):
+        reg = _Reg(scopes=["a"])
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k: self._lens_with([], usable=True))
+        AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
+        assert self._undetected_writes(reg) == []
+
+    def test_a_persisted_term_is_not_a_proposed_component(self, monkeypatch):
+        # §7: a document that disagrees with the code is a FINDING, not a
+        # correction. Persisting the population must not start adopting it.
+        reg = _Reg(scopes=["a"])
+        monkeypatch.setattr(AL.ad, "apply", lambda *a, **k:
+                            self._lens_with(["OMAS"], usable=True))
+        AL.ArchLensSurveyor(_Proj(), reg, surveyed_at="t").run()
+
+        row = self._undetected_writes(reg)[0]
+        assert row["confidence"] == 0, "an observation about the document, not a claim"
+        assert row["check_name"] != "component"
+        assert all(w["scope"] == "" for w in reg.writes
+                   if "undetected_term" in w["checks"]), (
+            "a documented term has no scope_locator — that is §3's whole point"
+        )

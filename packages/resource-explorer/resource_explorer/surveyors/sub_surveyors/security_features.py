@@ -21,6 +21,8 @@ from datetime import datetime
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome
+from resource_explorer.surveyors import result_status
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -63,6 +65,40 @@ class SecurityFeaturesSurveyor(BaseSurveyor):
             except (TypeError, ValueError):
                 features = {}
 
+            if not features:
+                # The common case, not an edge one: GitHub returns
+                # security_and_analysis only to repository admins, so for 54 of
+                # 60 catalogued repos this loop `continue`d on every feature
+                # and the step emitted NOTHING. Silence made "we are not
+                # allowed to see this" identical to "this step did not run",
+                # and contributed nothing to which-tools-suit-which-repos.
+                #
+                # Both vocabularies apply here and neither replaces the other,
+                # which is exactly the split repo_classification's docstring
+                # settled: the RUN could not establish anything (`unverified`,
+                # for the tool-fit query), and the READER should be told this
+                # is by design rather than a failure (`result_status.skipped`,
+                # for the card). A run asks "is my zero provable?"; a reader
+                # asks "what should I do about it?".
+                return [ClassificationAnnotation(
+                    summary=("Security feature settings are not visible for this "
+                             "repository — GitHub returns them only to repository "
+                             "admins. Not a finding that they are disabled."),
+                    analysis_step=STEP,
+                    candidate_classifications=[],
+                    confidence=0,
+                    json_properties={
+                        **StepOutcome(
+                            "unverified",
+                            cause="security_and_analysis withheld — not a repo admin",
+                        ).as_row(),
+                        "result_status": result_status.skipped(
+                            "GitHub returns security feature settings only to repository "
+                            "admins, so these are invisible for a repo you do not own.",
+                            gate="github_admin_only"),
+                    },
+                )]
+
             findings = []
             for name in _FEATURE_NAMES:
                 status = features.get(name)
@@ -76,7 +112,8 @@ class SecurityFeaturesSurveyor(BaseSurveyor):
                         analysis_step=STEP,
                         candidate_classifications=[label],
                         confidence=100,
-                        json_properties={"feature": name, "status": status},
+                        json_properties={"feature": name, "status": status,
+                                         **StepOutcome("recovered").as_row()},
                     )
                 )
                 findings.append({

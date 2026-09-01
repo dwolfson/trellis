@@ -174,3 +174,58 @@ class TestEachPublisherWiredThroughSharedImplementation:
         assert surveyor._discovery.create_annotation.call_count == 2
         first_qn = surveyor._discovery.create_annotation.call_args_list[0].kwargs["body"]["properties"]["qualifiedName"]
         assert first_qn == "Annotation::FileSystem::myfs::2026-08-29T12:00:00::0"
+
+
+class TestGuidCapture:
+    """docs/annotation-linking-plan.md Phase 1: publish_annotations() must
+    stop discarding create_annotation's return value on the direct/
+    no-registry path — see the module's own docstring history and Q1 of the
+    plan. These exercise the real function, not a mock's own book-keeping."""
+
+    def test_returns_the_new_guid_in_order(self):
+        discovery = MagicMock()
+        discovery.create_annotation.side_effect = ["guid-0", "guid-1"]
+        find_guid = MagicMock(return_value="")
+
+        guids = publish_annotations(discovery, find_guid, ANNOTATIONS, "report-1", "Annotation::proj::ts")
+
+        assert guids == ["guid-0", "guid-1"]
+
+    def test_returns_the_existing_guid_when_adopted(self):
+        """The idempotency-lookup branch must also surface its GUID — a
+        caller storing "the GUID for this annotation" needs it whether the
+        annotation was just created or already existed."""
+        discovery = MagicMock()
+        find_guid = MagicMock(return_value="existing-guid-123")
+
+        guids = publish_annotations(discovery, find_guid, ANNOTATIONS[:1], "report-1", "Annotation::proj::ts")
+
+        assert guids == ["existing-guid-123"]
+
+    def test_known_negative_failed_create_returns_none_not_a_fake_guid(self):
+        """The other half of the guard: a create that raises must show up as
+        None in the returned list, not silently vanish (a caller zipping
+        annotations with guids by position would otherwise misalign) and
+        never as a fabricated/blank string that could pass a truthiness
+        check for "published"."""
+        discovery = MagicMock()
+        discovery.create_annotation.side_effect = [RuntimeError("boom"), "guid-1"]
+        find_guid = MagicMock(return_value="")
+
+        guids = publish_annotations(discovery, find_guid, ANNOTATIONS, "report-1", "Annotation::proj::ts")
+
+        assert guids == [None, "guid-1"]
+
+    def test_known_negative_empty_guid_response_returns_none(self):
+        """Q1's documented edge case: a 200 OK whose body has no "guid" key
+        makes pyegeria's create_annotation return None with no exception —
+        distinct code path from the exception case above, and must ALSO
+        surface as None rather than being mistaken for a real (falsy-looking)
+        guid."""
+        discovery = MagicMock()
+        discovery.create_annotation.return_value = None
+        find_guid = MagicMock(return_value="")
+
+        guids = publish_annotations(discovery, find_guid, ANNOTATIONS[:1], "report-1", "Annotation::proj::ts")
+
+        assert guids == [None]

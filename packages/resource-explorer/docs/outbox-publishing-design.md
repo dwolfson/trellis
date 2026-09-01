@@ -1,6 +1,9 @@
 # Outbox / retry publishing — design
 
-**Status:** design, not built. Written 2026-08-28 to unblock `architecture-recovery-design.md`
+**Status:** steps 1-4 are BUILT for the **repo** path — which is all Phase 2 needs (§6 step 4's
+own scoping). **D1 settled: per element** (Dan, 2026-08-31). Database, filesystem and
+investigation publishers still call Egeria directly. Written 2026-08-28 to unblock
+`architecture-recovery-design.md`
 §8.4, which names this as the sole remaining prerequisite for Phase 2 (Egeria projection of
 recovered architecture) and is blunt about why: *"a half-published blueprint is worse than none."*
 
@@ -98,7 +101,7 @@ unrelated.
 
 ## 4. Two decisions needed — Dan
 
-### D1. Outbox granularity: per publish, or per element?
+### D1. Outbox granularity — SETTLED 2026-08-31: per element
 
 *Per publish* — one row per `publish()` call, retried whole. Simple, few rows, and matches how
 callers already think. But retrying the whole call re-creates elements that already succeeded,
@@ -110,9 +113,26 @@ about elements, not calls. Given `_create_annotations` currently swallows failur
 failure granularity that already exists is per-element.
 
 **Recommendation: per element.** It is the granularity the failure mode already has, and it is the
-only one that makes "half-published" observable rather than inferred. Cost is row volume — a
-blueprint publish on `egeria_git` (945 recovery finding scopes) could be tens of thousands of rows
-per run, so the table needs a retention policy from day one, not later.
+only one that makes "half-published" observable rather than inferred.
+
+**Volume, measured 2026-08-31 rather than estimated.** Two very different regimes:
+
+| | rows |
+|---|---|
+| All 68 publishes ever performed, per-element (627 annotations + ~3 structural each) | **831 total** |
+| One future proposal publish on `egeria_git` — largest single run observed | **~2,100 per run** |
+| All scoped recovery findings ever stored for `egeria_git` (14 runs) | 13,813 total |
+
+So per-element is free for everything publishing today and costs real volume only for the
+proposal case.
+
+**Corrected 2026-08-31 (second measurement).** This table first said ~14,000 per run. That was
+`egeria_git`'s **all-history** scoped-finding count read as a single run's; it is spread over 14
+runs. One run's proposal is 466 (latest) to 2,092 (largest observed) recovery findings, plus ~67
+candidate blueprints and ~18 interfaces. Still one to two orders of magnitude above today's
+largest publish of 136 annotations, so retention and bounded drain batches remain right — the
+justification simply is not the number originally given. Caught by re-deriving ("over how many
+runs?") rather than re-measuring, which reproduces the same correct-but-mislabelled figure.
 
 ### D2. Annotation identity — CORRECTED 2026-08-29, and it is much smaller than this section first said
 
@@ -210,15 +230,165 @@ and there the stored payload replays an identical qualifiedName.
 
 ## 6. Sequencing
 
-1. **Generalise lookup-then-create to annotations** (D2, settled) — search by qualifiedName before
-   creating, mirroring `_find_or_create_asset`. Fold in the deduplication of the three publishers'
-   near-identical `_create_annotations` while there.
-2. Generalise `_find_or_create_asset`'s lookup-then-create into one helper the three publishers
-   share, collapsing the duplicated `_create_annotations` at the same time.
-3. `egeria_outbox` table + drain on the existing scheduler loop, with backoff and dead-lettering.
-4. Migrate publishers to enqueue rather than call directly — repo first, since Phase 2 needs only
-   that path; database/filesystem/investigation follow.
-5. Only then Phase 2 (§10 of the recovery design).
+1. ~~**Generalise lookup-then-create to annotations** (D2, settled)~~ — **DONE**, `c7e99f6`.
+   `surveyors/annotation_props.py`'s `publish_annotations()` looks up `find_element_guid(qn)`
+   before creating and skips on a hit.
+2. ~~Generalise into one helper the three publishers share, collapsing the duplicated
+   `_create_annotations`~~ — **DONE**, same commit. All three publishers' `_create_annotations`
+   are now thin wrappers that build their own qualifiedName prefix and delegate; each is kept as
+   a method only because tests reach for it by name.
+
+   **Still open from §2, deliberately:** `publish_annotations` retains the per-element swallow —
+   a failed annotation is logged and the loop continues. That is the hole the outbox closes, and
+   it was left alone rather than changed to raise, because raising without a retry layer would
+   turn a partial publish into a failed survey.
+3. ~~`egeria_outbox` table + drain on the existing scheduler loop, with backoff and
+   dead-lettering.~~ — **DONE**. `registry.py` owns the rows (`enqueue_outbox_element`,
+   `claim_due_outbox_elements`, `mark_outbox_done`/`_failed`, `list_dead_outbox_elements`,
+   `outbox_counts`, `purge_outbox_completed`); `egeria_outbox.py` owns the apply side and the
+   drain; `scheduler.py`'s existing loop drives it alongside `reconcile_rfa_actions()`.
+
+   Behaviour worth knowing before step 4 builds on it:
+
+   - **Ordering is enforced, not advisory.** A row with `depends_on_id` is not returned by
+     `claim_due_outbox_elements` until its dependency is `done` — a *failed* dependency keeps
+     blocking. A partial drain therefore leaves a coherent prefix, never an annotation whose
+     report was never written.
+   - **Backoff** is exponential from 60s, capped at a day; **dead-letter** at 8 attempts.
+   - **Retention runs on that same loop** (close-out pass, 2026-08-31) —
+     `purge_outbox_completed()` drops `done` rows past 14 days. Retention reachable only from an
+     API route is not retention: nothing would have called it before a ~2,100-row proposal run.
+   - **An unreachable platform is not a failed write.** The drain leaves every row untouched and
+     reports `skipped` rather than burning an attempt, so an outage cannot dead-letter a
+     perfectly good write.
+   - **An unregistered `element_kind` raises** rather than quietly succeeding. `annotation`,
+     `collection_membership` and `resource_list` have creators; `asset` and `report` deliberately
+     do not, because both publishers create those synchronously for their GUIDs.
+
+   **Logging was not a surface — measured 2026-08-31, and since fixed.** Nothing in the package
+   configured logging and `uvicorn.run()` was called without a `log_config`, so application records
+   fell through to Python's `lastResort` handler: WARNING and ERROR reached the server's stderr
+   bare, and **INFO was discarded outright** — silently including the drain summary as first
+   written. That measurement prompted `observability/logging_setup.py` (2026-08-31), so logs now
+   surface properly.
+
+   **`record_drain_outcome` stays, and for a better reason than the original.** A log line is not
+   an *actionable* surface even when it is a visible one: a stuck publish needs somewhere a person
+   returns to and can act from. Failures go to the **activity log**, which the Activity tab reads,
+   and a dead letter raises an RFA. A clean pass writes nothing: an entry every quarter-hour saying
+   nothing was wrong is how a log stops being read.
+
+   **The detail surface: Admin → Publish Queue** (`web/routes/outbox.py`, 2026-08-31). The
+   activity log is an audit trail — one line per operation — so it carries the *summary* ("3
+   elements dead-lettered") and a link, while the per-element record lives with the rows that
+   own it: qualifiedName, attempt count against the ceiling, next attempt, and Egeria's own
+   error, with a **Re-queue** action for dead rows. Status counts there are always over the whole
+   table, never the filtered page, so a panel filtered to `pending` still reports the dead rows —
+   otherwise the filter silently becomes a claim that nothing is stuck.
+
+   Re-queueing is restricted to `dead`: on a merely-backing-off row it would discard the backoff,
+   and on a completed row it would re-apply a write that already succeeded. Both return 409
+   rather than being absorbed.
+
+   **A dead row now raises an RFA** (close-out pass, 2026-08-31). It will never be retried on
+   its own, so it is a request for human action rather than a status line, and it goes to the RFA
+   drawer — the surface people actually watch. One entry, not two: `log_rfa` writes an activity
+   entry as well, so also calling `log_catalog` would double-report a single event. A
+   *retrying* failure stays an audit line, because the scheduler is already handling it and
+   asking a person to act on it would make the drawer noise.
+
+   `log_rfa` gained an optional `items` parameter so the RFA carries the same Publish Queue link
+   an ordinary entry does — "3 publishes are stuck" is only actionable if it also says which. `rfa_actions` rows hang off an `activity_log` entry
+   (`entry_id`, `annotation_index`), so raising one from a dead outbox row is its own small
+   integration rather than a line of code.
+4. **Repo publisher migrated — DONE.** `EgeriaPublisher._create_annotations` now enqueues one
+   outbox row per annotation and drains inline, instead of calling `publish_annotations`
+   directly.
+
+   **The asset and the SurveyReport stay synchronous, deliberately.** `publish()` returns the
+   report GUID and callers record it, so those two cannot become deferred work without breaking
+   that contract — and they do not need to. They are single elements whose failure aborts the
+   publish outright; annotations are the plural part, the part that swallowed failures per
+   element, and therefore the part where "half-published" actually happened.
+
+   **The happy path is byte-for-byte unchanged.** Rows are enqueued and drained within the same
+   call, so a successful publish still writes everything before returning. What changed is the
+   unhappy path: a failed annotation is now a durable row the scheduler retries with backoff,
+   rather than a warning in a log nobody reads. `_create_annotations` still does not raise —
+   `publish()`'s contract that a publish problem must not turn a successful survey into a
+   reported error is unchanged. The difference is that the work is no longer *lost* when it is
+   swallowed.
+
+   **The inline drain is scoped by `run_id`.** An unscoped claim takes the oldest due rows in
+   the table, which could be an entirely different resource's backlog — the publisher would then
+   return believing it had published while having drained someone else's queue. Found while
+   writing this, not in production; `TestRunScoping` pins it.
+
+   Falls back to the direct path when the publisher has no registry, since there is then nowhere
+   to record a row and silently skipping the annotations would be worse.
+
+   **Remaining:** database, filesystem and investigation publishers. Each needs its own
+   `element_kind` creators registered (`asset`, `report`, `relationship`) and is where
+   `depends_on_id` starts earning its place — those paths queue the report itself, so ordering
+   stops being trivially satisfied.
+5. **Investigation publisher — DONE 2026-08-31.** `_link_members` enqueues one
+   `collection_membership` row per linkable member and drains inline, so `promote()` and
+   `relink_members()` both go through the outbox. `collection_membership` and `resource_list`
+   creators are registered; `_CREATORS` now takes an `OutboxClients` bundle rather than a lone
+   `DataDiscovery`, because these kinds reach `CollectionManager` instead. A row whose required
+   client was not supplied raises — reporting `done` for a write that never happened is the
+   failure this subsystem exists to remove.
+
+   **Idempotency here is not lookup-then-create.** A CollectionMembership has no qualifiedName to
+   search for, so the stored `qualified_name` is purely the outbox's own identity key. Replay
+   safety rests instead on the relationship being **uni-link**, measured live 2026-08-25:
+   `add_to_collection` and `attach_collection` both return `None`, and repeating either leaves
+   one attachment. That measurement is load-bearing — a multi-link relationship would accumulate
+   one silent duplicate per retry, with no error anywhere. **The return value is the test;
+   re-measure if pyegeria changes those signatures.**
+
+   **Two outcomes stay distinct, and this is the point.** A member with no asset GUID is not a
+   failed write — its repo was never published, so there is nothing to attach. It is reported as
+   unlinkable and never queued, because retrying it would be retrying a fact about the catalog.
+   A member whose attach *failed* is now a durable row rather than a note in `members_unlinkable`
+   that nothing ever acted on.
+
+   Per-member results are read back from what the drain actually did, not from what was enqueued
+   — an enqueued row is a promise, not a result.
+
+   **The ResourceList attach is queued too** (close-out pass, 2026-08-31), which is what gives
+   the `resource_list` creator a producer. Its failure previously went into
+   `PromotionResult.errors` and was forgotten, leaving a Project and a Collection that both exist
+   and are not linked, with nothing to notice.
+
+   The Project and the Collection stay synchronous for the same reason the repo path's asset and
+   report do: their GUIDs are needed by the steps that follow and are returned in the
+   `PromotionResult`.
+
+**5b. Filesystem and database — scoped 2026-08-31, deliberately not built.**
+
+   **These are NOT the same problem as the repo and investigation paths, and this is the part to
+   get right before building either** (Dan, 2026-08-31). Both adapters declare
+   `other_engine_handlers={"egeria": _trigger_egeria_native_survey}`, so a step tagged
+   `executes_at: egeria` is not executed by RE at all — RE asks Egeria's own native survey engine
+   to run it, and **Egeria writes the results itself**. An outbox under RE's publishers cannot
+   cover those writes, because RE never makes them. Three consequences:
+
+   - The outbox covers only the *locally-executed* portion of a filesystem or database survey —
+     `HybridDatabaseSurveyor`'s immediate local scan, and any `executes_at: resource-explorer`
+     step. That is a real subset, not the whole survey, and the UI must not imply otherwise.
+   - "Did the Egeria-executed half succeed?" is a different question with a different answer
+     shape: it is a poll of Egeria's own engine-action status, not a row in our queue. Modelling
+     it as a queue row would be a claim we cannot substantiate — exactly the confident-wrong-
+     answer this subsystem exists to remove.
+   - Whether the trigger *itself* belongs in the outbox is a genuine open question. Triggering is
+     an RE write and can fail like any other, so a retryable row is defensible — but a retried
+     trigger may start a second native survey rather than converging, and no qualifiedName
+     identifies "the request", only its eventual result. Settle that before building, not during.
+
+   The engine-host work is separately blocked on ISSUE-79 anyway, so there is no rush to guess.
+
+6. Only then Phase 2 (§10 of the recovery design).
 
 **Note for step 4:** the two survey-launch paths still diverge on five axes (current-state doc
 §1.2, confirmed still true), so a retry layer must sit under *both* — putting it under the

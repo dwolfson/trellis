@@ -1,12 +1,13 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from resource_explorer.surveyors import survey_definition_executor as sde_module
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     SurveyDefinitionExecutor,
     SurveyDefinitionExecutorError,
     register_adapter,
 )
-from resource_explorer.surveyors.survey_definition_reader import SurveyDefinition, SurveyStep
+from resource_explorer.surveyors.survey_definition_reader import SurveyDefinition, StepLink, SurveyStep
 
 
 def _fake_reader(survey_def, candidates=None):
@@ -414,3 +415,140 @@ class TestPublishGatedOnAssignedEgeriaProject:
 
         assert result["published"] is False
         assert any("egeria down" in e for e in result["errors"])
+
+
+def _guarded_survey_def(entity_type: str, upstream_guard: str, required_guard: str):
+    """Two RE-side steps, `upstream` -> `downstream`, linked with a real
+    (non-"Any") guard. `upstream_guard` is what the fake `upstream_runner`
+    below is told to return as its output's "guard" key; `required_guard` is
+    what the link demands. Equal -> downstream runs; different -> it doesn't."""
+    return SurveyDefinition(
+        process_guid="proc-guard",
+        display_name="Guarded Survey",
+        qualified_name="GovActionProcess::Guarded",
+        supported_technology_type="Guard Tech",
+        steps=[
+            SurveyStep(
+                guid="up", display_name="Upstream", qualified_name="Step::Upstream",
+                executes_at="resource-explorer", re_analysis_step="upstream_step",
+            ),
+            SurveyStep(
+                guid="down", display_name="Downstream", qualified_name="Step::Downstream",
+                executes_at="resource-explorer", re_analysis_step="downstream_step",
+            ),
+        ],
+        links=[
+            StepLink(previous_guid="up", next_guid="down", guard=required_guard,
+                      mandatory_guard=False),
+        ],
+    )
+
+
+class TestGuardEvaluationInTheLocalLoop:
+    """docs/survey-guard-evaluation-design.md §5 — the local (non-Prefect) loop
+    now honours a real (non-"Any") guard on a step link instead of running
+    every step in the definition regardless. Prefect is forced off so these
+    exercise the fallback loop specifically, deterministically, regardless of
+    whether a Prefect server happens to be reachable on the machine running
+    the suite."""
+
+    def _run_guarded(self, upstream_guard, required_guard, upstream_side_effect=None):
+        upstream_runner = MagicMock(
+            side_effect=upstream_side_effect,
+            return_value=({"guard": upstream_guard} if upstream_guard is not None else {}),
+        )
+        downstream_runner = MagicMock(return_value={"ok": True})
+        adapter = ResourceTypeAdapter(
+            entity_type="guardfake",
+            technology_type="Guard Tech",
+            re_analysis_steps={
+                "upstream_step": upstream_runner,
+                "downstream_step": downstream_runner,
+            },
+            get_entity=lambda registry, slug: object(),
+            publish=MagicMock(return_value="report-guid-guard"),
+        )
+        register_adapter(adapter)
+
+        survey_def = _guarded_survey_def("guardfake", upstream_guard, required_guard)
+        registry = _fake_registry()
+        registry.has_assigned_egeria_project.return_value = False
+        reader = _fake_reader(survey_def, candidates=[
+            {"guid": "proc-guard", "qualified_name": "GovActionProcess::Guarded",
+             "display_name": "Guarded"},
+        ])
+        executor = SurveyDefinitionExecutor(registry, reader=reader)
+
+        with patch.object(sde_module, "_prefect_orchestration_enabled", return_value=False):
+            result = executor.run(entity_type="guardfake", slug="my-guardfake")
+
+        return result, upstream_runner, downstream_runner
+
+    def test_an_unsatisfied_guard_skips_the_step_without_running_it(self):
+        """The regression this guards: a test that only inspected the report
+        dict would still pass if the guard branch silently fell through and
+        ran the downstream step anyway. Asserting `downstream_runner.assert_not_called()`
+        is what actually exercises the skip — not just its label."""
+        result, upstream_runner, downstream_runner = self._run_guarded(
+            upstream_guard="good_enough", required_guard="needs_deep")
+
+        upstream_runner.assert_called_once()
+        downstream_runner.assert_not_called()
+
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Upstream"]["status"] == "ok"
+        assert statuses["Step::Downstream"]["status"] == "skipped_by_design"
+        assert "needs_deep" in statuses["Step::Downstream"]["detail"]
+        assert "good_enough" in statuses["Step::Downstream"]["detail"]
+        # A skip is not a failure — must not appear in errors.
+        assert result["errors"] == []
+
+    def test_no_guard_emitted_at_all_also_skips_a_guarded_step(self):
+        """Today's real situation (docs/survey-guard-evaluation-design.md
+        §2.4): no RE step runner returns a "guard" key at all. A guarded
+        downstream step must not be silently run just because nothing said
+        no — absence of a matching guard is what "not satisfied" means."""
+        result, upstream_runner, downstream_runner = self._run_guarded(
+            upstream_guard=None, required_guard="needs_deep")
+
+        downstream_runner.assert_not_called()
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Downstream"]["status"] == "skipped_by_design"
+        # Upstream DID run and explicitly produced no guard (its output had
+        # no "guard" key at all) — distinct from an upstream that never ran,
+        # which is the "never recorded" wording, exercised below.
+        assert "produced None" in statuses["Step::Downstream"]["detail"]
+
+    def test_an_upstream_that_never_ran_reads_differently_from_one_that_ran_with_no_guard(self):
+        """Distinguishes 'upstream ran, said nothing' from 'upstream never
+        ran at all' — see `_guard_check`'s two reason strings. Forced by
+        making the upstream raise, so it is recorded as an error and never
+        reaches `produced_guard`."""
+        result, upstream_runner, downstream_runner = self._run_guarded(
+            upstream_guard=None, required_guard="needs_deep",
+            upstream_side_effect=RuntimeError("upstream blew up"))
+
+        downstream_runner.assert_not_called()
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Upstream"]["status"] == "error"
+        assert statuses["Step::Downstream"]["status"] == "skipped_by_design"
+        assert "never recorded" in statuses["Step::Downstream"]["detail"]
+
+    def test_a_satisfied_guard_lets_the_step_run(self):
+        result, upstream_runner, downstream_runner = self._run_guarded(
+            upstream_guard="needs_deep", required_guard="needs_deep")
+
+        downstream_runner.assert_called_once()
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Downstream"]["status"] == "ok"
+
+    def test_an_unconditional_link_is_unaffected(self):
+        """guard="Any" (the default for every definition that exists today,
+        per step_outcome.py's 2026-08-21 decision) must keep running
+        regardless — this change must be a no-op for the common case."""
+        result, upstream_runner, downstream_runner = self._run_guarded(
+            upstream_guard=None, required_guard="Any")
+
+        downstream_runner.assert_called_once()
+        statuses = {s["step"]: s for s in result["steps"]}
+        assert statuses["Step::Downstream"]["status"] == "ok"

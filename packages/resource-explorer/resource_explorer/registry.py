@@ -8,7 +8,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -755,6 +755,32 @@ class ProjectRegistry:
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            # Migration: add dep_version_source if not present (existing databases).
+            #
+            # This is the provenance for `dep_version`, added 2026-09-01 alongside
+            # DependencyParser's Gradle version resolution — see
+            # ingestion/dependency_parser.py's `_dep()` docstring for the full
+            # rationale. Vocabulary:
+            #   "declared"               — the manifest wrote this version at the
+            #                              dependency's own declaration site.
+            #   "variable_interpolation" — substituted from a same-file variable
+            #                              (Gradle `ext { xVersion = '...' }`).
+            #   "version_catalog"        — substituted from `gradle/libs.versions.toml`.
+            #   ""                       — either no version was recorded at all
+            #                              (dep_version is also '') or, for rows
+            #                              written before this column existed,
+            #                              unknown provenance for a version that
+            #                              IS present. Never treat '' + a non-empty
+            #                              dep_version as "declared" — that is
+            #                              exactly the substituted-reused-as-
+            #                              declared confusion this column exists
+            #                              to prevent. A backfill would need to
+            #                              re-run the parser, not guess.
+            existing_deps = self._get_table_columns(conn, "project_dependencies")
+            if "dep_version_source" not in existing_deps:
+                conn.execute(
+                    "ALTER TABLE project_dependencies ADD COLUMN dep_version_source TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deps_slug "
                 "ON project_dependencies(project_slug)"
@@ -908,82 +934,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_data_profiles_slug "
                 "ON project_data_profiles(project_slug)"
             )
-            # Phase B: per-analysis-type history tables, all copying
-            # project_file_type_counts's proven append pattern (no UNIQUE
-            # constraint, one index on project_slug — every run just adds
-            # new rows tagged with a shared surveyed_at).
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_data_profile_snapshots (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug        TEXT NOT NULL,
-                    surveyed_at         TEXT NOT NULL,
-                    total_files         INTEGER NOT NULL,
-                    total_size_bytes    INTEGER NOT NULL,
-                    format_breakdown_json TEXT DEFAULT NULL,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_data_profile_snapshots_slug "
-                "ON project_data_profile_snapshots(project_slug)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_security_findings (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug  TEXT NOT NULL,
-                    surveyed_at   TEXT NOT NULL,
-                    check_name    TEXT NOT NULL,
-                    status        TEXT NOT NULL,
-                    summary       TEXT NOT NULL,
-                    detail_json   TEXT DEFAULT NULL,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_security_findings_slug "
-                "ON project_security_findings(project_slug)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_documentation_findings (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug  TEXT NOT NULL,
-                    surveyed_at   TEXT NOT NULL,
-                    finding_type  TEXT NOT NULL,
-                    label         TEXT NOT NULL,
-                    confidence    INTEGER DEFAULT 100,
-                    detail_json   TEXT DEFAULT NULL,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documentation_findings_slug "
-                "ON project_documentation_findings(project_slug)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS project_api_structure_snapshots (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_slug        TEXT NOT NULL,
-                    surveyed_at         TEXT NOT NULL,
-                    symbol_count        INTEGER NOT NULL,
-                    by_language_json    TEXT DEFAULT NULL,
-                    relationship_count  INTEGER DEFAULT 0,
-                    FOREIGN KEY (project_slug) REFERENCES projects(slug)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_api_structure_snapshots_slug "
-                "ON project_api_structure_snapshots(project_slug)"
-            )
-            # Analysis-kind extensibility redesign: the four tables above
-            # (project_security_findings, project_documentation_findings,
-            # project_data_profile_snapshots, project_api_structure_snapshots)
-            # reduce to exactly two real shapes — "list of typed findings"
-            # and "aggregate snapshot metric(s)" — so new analysis kinds
-            # (more security-family checks, etc.) register into ONE of these
-            # two generic tables via a `kind` discriminator instead of
-            # getting their own bespoke table each time. The four old
-            # tables/functions above are kept, DEPRECATED (not dropped) —
-            # see the one-time migration below — for a soak period.
+            # Analysis results reduce to exactly two real shapes — "list of
+            # typed findings" and "aggregate snapshot metric(s)" — so every
+            # analysis kind registers into ONE of these two generic tables
+            # via a `kind` discriminator instead of getting its own bespoke
+            # table. Four per-kind tables (project_security_findings,
+            # project_documentation_findings, project_data_profile_snapshots,
+            # project_api_structure_snapshots) preceded them; their rows were
+            # migrated forward on 2026-08-08 and the tables were dropped on
+            # 2026-08-31 after a soak period.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_analysis_findings (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1007,6 +966,28 @@ class ProjectRegistry:
             if "scope_locator" not in existing_findings_cols:
                 conn.execute(
                     "ALTER TABLE project_analysis_findings ADD COLUMN scope_locator TEXT DEFAULT ''"
+                )
+            # Migration: add egeria_annotation_guid for
+            # docs/annotation-linking-plan.md Phase 1 — the Egeria Annotation
+            # GUID this finding row was published as, when known.
+            #
+            # DEFAULT NULL, not '': every pre-existing row (~68,000 measured
+            # 2026-08-31) gets NULL, same as a brand-new row that has not been
+            # published yet — both genuinely mean "no known GUID" (plan Q3)
+            # and this migration does not claim to know more than that. NULL
+            # is used rather than '' specifically so this column never writes
+            # an empty string as if it were a real (if empty) capture attempt
+            # — see mark_finding_guid's docstring for why a failed publish
+            # must not look like a completed one here. This mirrors the
+            # existing `projects.egeria_asset_guid TEXT DEFAULT NULL` column
+            # above (line ~486), not the `TEXT DEFAULT ''` convention used for
+            # scope_locator, deliberately: scope_locator's '' is itself a
+            # meaningful value ("whole resource"); this column has no such
+            # meaningful empty state.
+            if "egeria_annotation_guid" not in existing_findings_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_findings "
+                    "ADD COLUMN egeria_annotation_guid TEXT DEFAULT NULL"
                 )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_findings_slug_kind "
@@ -1042,74 +1023,6 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_metrics_scope "
                 "ON project_analysis_metrics(project_slug, kind, metric_name, scope_locator)"
             )
-            # One-time forward migration, guarded on "the new table is still
-            # empty" rather than a per-row check — correct because after the
-            # first successful migration, any real analysis run writes
-            # directly into the new tables via upsert_finding()/
-            # upsert_metric(), so they're never empty again afterward. Old
-            # tables are left untouched either way (soak period, not deleted).
-            findings_empty = conn.execute(
-                "SELECT COUNT(*) FROM project_analysis_findings"
-            ).fetchone()[0] == 0
-            if findings_empty:
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, check_name, status, summary, detail_json "
-                    "FROM project_security_findings"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_findings "
-                        "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
-                        "VALUES (?, 'security_hygiene', ?, ?, ?, ?, 100, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["check_name"],
-                         row["status"], row["summary"], row["detail_json"]),
-                    )
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, finding_type, label, confidence, detail_json "
-                    "FROM project_documentation_findings"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_findings "
-                        "(project_slug, kind, surveyed_at, check_name, label, summary, confidence, detail_json) "
-                        "VALUES (?, 'documentation', ?, ?, ?, '', ?, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["finding_type"],
-                         row["label"], row["confidence"], row["detail_json"]),
-                    )
-            metrics_empty = conn.execute(
-                "SELECT COUNT(*) FROM project_analysis_metrics"
-            ).fetchone()[0] == 0
-            if metrics_empty:
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, total_files, total_size_bytes, format_breakdown_json "
-                    "FROM project_data_profile_snapshots"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'data_profile', ?, 'total_files', ?, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["total_files"], row["format_breakdown_json"]),
-                    )
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'data_profile', ?, 'total_size_bytes', ?, NULL)",
-                        (row["project_slug"], row["surveyed_at"], row["total_size_bytes"]),
-                    )
-                for row in conn.execute(
-                    "SELECT project_slug, surveyed_at, symbol_count, by_language_json, relationship_count "
-                    "FROM project_api_structure_snapshots"
-                ).fetchall():
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'api_structure', ?, 'symbol_count', ?, ?)",
-                        (row["project_slug"], row["surveyed_at"], row["symbol_count"], row["by_language_json"]),
-                    )
-                    conn.execute(
-                        "INSERT INTO project_analysis_metrics "
-                        "(project_slug, kind, surveyed_at, metric_name, metric_value, detail_json) "
-                        "VALUES (?, 'api_structure', ?, 'relationship_count', ?, NULL)",
-                        (row["project_slug"], row["surveyed_at"], row["relationship_count"]),
-                    )
             # One-time repair for project_dependencies rows written before
             # this Phase B change: upsert_dependencies() used to compute
             # datetime.utcnow() inside its per-row list comprehension, so
@@ -1479,6 +1392,69 @@ class ProjectRegistry:
                     PRIMARY KEY (entity_type, entity_slug)
                 )
             """)
+            # Pending Egeria writes, one row per ELEMENT (asset, report,
+            # each annotation, each relationship) — docs/outbox-publishing-
+            # design.md, D1, settled per-element 2026-08-31.
+            #
+            # Why per element and not per publish() call: the failure
+            # granularity that already exists IS per element. annotation_props
+            # .publish_annotations() logs a failed annotation and continues, so
+            # a SurveyReport is reported published even when every annotation
+            # under it failed to write. One row per call could only record
+            # "that publish failed", never how far it got — and "no half-
+            # published blueprint" is a claim about elements, not calls.
+            #
+            # qualified_name is the idempotency key and is NOT NULL: the apply
+            # step looks it up before creating (the behaviour
+            # _find_or_create_asset and publish_annotations already have) so a
+            # replay after a crash between Egeria's write and our recording of
+            # it adopts the existing element instead of duplicating it.
+            # egeria_guid, once recorded, is the primary identity and makes
+            # even that search unnecessary on later retries.
+            #
+            # depends_on_id is what makes ordering enforceable rather than
+            # aspirational: a row is eligible only when its dependency is
+            # 'done', so annotations cannot be attempted before their report.
+            #
+            # Volume, measured 2026-08-31: every publish ever performed comes
+            # to 831 rows at this granularity. One future proposal publish on
+            # egeria_git is ~2,100 rows at the largest run observed (the
+            # 13,813 scoped findings that figure was first taken from are
+            # ALL-history, over 14 runs — a correct count of the wrong
+            # population) — which is why purge_outbox_completed() exists rather
+            # than being left for later, and why scheduler.py calls it on the
+            # same loop that drains: retention nobody invokes is not retention.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS egeria_outbox (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type     TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    run_id          TEXT NOT NULL DEFAULT '',
+                    element_kind    TEXT NOT NULL,
+                    qualified_name  TEXT NOT NULL,
+                    payload_json    TEXT NOT NULL,
+                    depends_on_id   INTEGER DEFAULT NULL,
+                    status          TEXT NOT NULL DEFAULT 'pending',
+                    attempts        INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT NOT NULL DEFAULT '',
+                    last_error      TEXT DEFAULT '',
+                    egeria_guid     TEXT DEFAULT '',
+                    created_at      TEXT NOT NULL,
+                    completed_at    TEXT DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_due "
+                "ON egeria_outbox(status, next_attempt_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_run "
+                "ON egeria_outbox(run_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_egeria_outbox_entity "
+                "ON egeria_outbox(entity_type, entity_slug)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rfa_actions (
                     id                TEXT PRIMARY KEY,
@@ -2062,6 +2038,51 @@ class ProjectRegistry:
                 (entity_type, entity_slug),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_all_resource_feedback(self, limit: int = 200,
+                                   entity_type: str = "",
+                                   category: str = "") -> list[dict]:
+        """Feedback across every resource, newest first.
+
+        The per-resource reader (`list_resource_feedback`) answers "what did
+        people say about this one", which is the right question from a resource
+        page and the wrong one from Admin: nobody visits sixty resource pages to
+        find out whether anything has been said at all. Feedback that can only
+        be read where it was written is feedback nobody reads.
+
+        `entity_type` deliberately defaults to empty rather than "repo".
+        Feedback is recorded against databases and filesystems too, and a
+        default that quietly showed one kind would make the other two look like
+        they had none.
+        """
+        clauses, params = [], []
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM resource_feedback{where} "
+                "ORDER BY created_at DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_all_resource_feedback(self) -> dict:
+        """Totals for the Admin header: how much feedback exists, and on how
+        many distinct resources. Both, because "40 items" and "40 items across
+        3 resources" say different things about whether anyone is using it."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "COUNT(DISTINCT entity_type || ':' || entity_slug) AS resources "
+                "FROM resource_feedback"
+            ).fetchone()
+        return {"total": row["total"] or 0, "resources": row["resources"] or 0}
 
     def add_curator_note(self, entity_type: str, entity_slug: str, note: str) -> dict:
         """Ongoing curator commentary (discoverability, quality, readiness) —
@@ -2711,10 +2732,6 @@ class ProjectRegistry:
             # hold data (measured 2026-08-23: 6 security-finding rows, 4
             # documentation-finding rows, 2 api-structure snapshots). Deprecated
             # is not gone: while the table exists, remove() has to clear it.
-            conn.execute("DELETE FROM project_security_findings WHERE project_slug = ?", (normalized,))
-            conn.execute("DELETE FROM project_documentation_findings WHERE project_slug = ?", (normalized,))
-            conn.execute("DELETE FROM project_data_profile_snapshots WHERE project_slug = ?", (normalized,))
-            conn.execute("DELETE FROM project_api_structure_snapshots WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM projects WHERE slug = ?", (normalized,))
 
     # Every table with a project_slug column, in the order the FK-declared
@@ -2736,9 +2753,7 @@ class ProjectRegistry:
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",
-        "project_data_profiles", "project_data_profile_snapshots",
-        "project_security_findings", "project_documentation_findings",
-        "project_api_structure_snapshots", "project_analysis_findings",
+        "project_data_profiles", "project_analysis_findings",
         "project_analysis_metrics",
     )
 
@@ -3092,196 +3107,6 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    # ── DEPRECATED (Phase B): per-analysis-type snapshot/finding tables ────
-    # Superseded by the generic project_analysis_findings/
-    # project_analysis_metrics tables + upsert_finding()/query_findings()/
-    # query_findings_history_raw() and upsert_metric()/query_metrics()/
-    # query_metrics_history() below (analysis-kind extensibility redesign) —
-    # new analysis kinds should use those, not these. Kept, unused by new
-    # code, for a soak period (matches the AST-ownership-transfer plan's D8
-    # precedent) — not removed, and their data was already migrated forward
-    # by _init_schema()'s one-time migration.
-
-    def store_data_profile_snapshot(
-        self, slug: str, total_files: int, total_size_bytes: int,
-        format_breakdown: dict | None = None, surveyed_at: str | None = None,
-    ) -> None:
-        """One aggregate row per DataProfilerSurveyor run, for trending —
-        separate from project_data_profiles (per-file latest detail,
-        unchanged) since converting that table to history would require
-        dropping its UNIQUE(project_slug, file_path) constraint."""
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO project_data_profile_snapshots "
-                "(project_slug, surveyed_at, total_files, total_size_bytes, format_breakdown_json) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (slug, surveyed_at, total_files, total_size_bytes,
-                 json.dumps(format_breakdown) if format_breakdown else None),
-            )
-
-    def query_data_profile_history(self, slug: str) -> list[dict]:
-        """One row per DataProfilerSurveyor run, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, total_files, total_size_bytes "
-                "FROM project_data_profile_snapshots WHERE project_slug = ? "
-                "ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def upsert_security_findings(self, slug: str, findings: list[dict], surveyed_at: str | None = None) -> None:
-        """Append one SecuritySurveyor run's findings. findings: list of
-        {check_name, status, summary, detail: dict|None}."""
-        if not findings:
-            return
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.executemany(
-                "INSERT INTO project_security_findings "
-                "(project_slug, surveyed_at, check_name, status, summary, detail_json) "
-                "VALUES (:project_slug, :surveyed_at, :check_name, :status, :summary, :detail_json)",
-                [
-                    {
-                        "project_slug": slug, "surveyed_at": surveyed_at,
-                        "check_name": f["check_name"], "status": f["status"], "summary": f["summary"],
-                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
-                    }
-                    for f in findings
-                ],
-            )
-
-    def query_security_findings(self, slug: str) -> list[dict]:
-        """Return the most recent SecuritySurveyor run's findings."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_security_findings WHERE project_slug = ?",
-                (slug,),
-            ).fetchone()[0]
-            if not latest_ts:
-                return []
-            rows = conn.execute(
-                "SELECT check_name, status, summary, detail_json, surveyed_at "
-                "FROM project_security_findings WHERE project_slug = ? AND surveyed_at = ? "
-                "ORDER BY check_name",
-                (slug, latest_ts),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def query_security_findings_history(self, slug: str) -> list[dict]:
-        """One row per SecuritySurveyor run: count of 'gap' findings, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, "
-                "SUM(CASE WHEN status = 'gap' THEN 1 ELSE 0 END) as gap_count, "
-                "COUNT(*) as total_checks "
-                "FROM project_security_findings WHERE project_slug = ? "
-                "GROUP BY surveyed_at ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def upsert_documentation_findings(self, slug: str, findings: list[dict], surveyed_at: str | None = None) -> None:
-        """Append one DocumentationSurveyor run's findings. findings: list of
-        {finding_type, label, confidence, detail: dict|None}."""
-        if not findings:
-            return
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.executemany(
-                "INSERT INTO project_documentation_findings "
-                "(project_slug, surveyed_at, finding_type, label, confidence, detail_json) "
-                "VALUES (:project_slug, :surveyed_at, :finding_type, :label, :confidence, :detail_json)",
-                [
-                    {
-                        "project_slug": slug, "surveyed_at": surveyed_at,
-                        "finding_type": f["finding_type"], "label": f["label"],
-                        "confidence": f.get("confidence", 100),
-                        "detail_json": json.dumps(f["detail"]) if f.get("detail") else None,
-                    }
-                    for f in findings
-                ],
-            )
-
-    def query_documentation_findings(self, slug: str) -> list[dict]:
-        """Return the most recent DocumentationSurveyor run's findings."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            latest_ts = conn.execute(
-                "SELECT MAX(surveyed_at) FROM project_documentation_findings WHERE project_slug = ?",
-                (slug,),
-            ).fetchone()[0]
-            if not latest_ts:
-                return []
-            rows = conn.execute(
-                "SELECT finding_type, label, confidence, detail_json, surveyed_at "
-                "FROM project_documentation_findings WHERE project_slug = ? AND surveyed_at = ? "
-                "ORDER BY finding_type, label",
-                (slug, latest_ts),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    # Ranks documentation quality labels for trending — DocumentationSurveyor's
-    # own vocabulary (surveyors/sub_surveyors/documentation.py); kept here
-    # rather than imported to avoid a registry->surveyors import (registry is
-    # the lower layer).
-    _DOC_QUALITY_RANK = {"Minimal": 1, "Partial": 2, "Comprehensive": 3}
-
-    def query_documentation_findings_history(self, slug: str) -> list[dict]:
-        """One row per DocumentationSurveyor run: the overall quality label
-        and its numeric rank, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, label FROM project_documentation_findings "
-                "WHERE project_slug = ? AND finding_type = 'quality_score' "
-                "ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [
-            {"surveyed_at": r["surveyed_at"], "quality": r["label"],
-             "quality_rank": self._DOC_QUALITY_RANK.get(r["label"], 0)}
-            for r in rows
-        ]
-
-    def store_api_structure_snapshot(
-        self, slug: str, symbol_count: int, by_language: dict | None = None,
-        relationship_count: int = 0, surveyed_at: str | None = None,
-    ) -> None:
-        """One aggregate row per ApiStructureSurveyor run, for trending —
-        the "latest results" view reads live from project_code_symbols/
-        project_code_relationships instead (always current, no snapshot
-        needed for that)."""
-        slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO project_api_structure_snapshots "
-                "(project_slug, surveyed_at, symbol_count, by_language_json, relationship_count) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (slug, surveyed_at, symbol_count,
-                 json.dumps(by_language) if by_language else None, relationship_count),
-            )
-
-    def query_api_structure_history(self, slug: str) -> list[dict]:
-        """One row per ApiStructureSurveyor run, for trending."""
-        slug = self._normalize_slug(slug)
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT surveyed_at, symbol_count, relationship_count "
-                "FROM project_api_structure_snapshots WHERE project_slug = ? "
-                "ORDER BY surveyed_at ASC",
-                (slug,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
     # ── Generic per-analysis-kind findings/metrics storage ─────────────────
     # The two tables every NEW analysis kind should use — see the
     # analysis-kind extensibility redesign. `kind` is the discriminator
@@ -3344,6 +3169,46 @@ class ProjectRegistry:
                     }
                     for f in findings
                 ],
+            )
+
+    def mark_finding_guid(self, finding_id: int, guid: str) -> None:
+        """Record the Egeria Annotation GUID one finding row was published as.
+
+        docs/annotation-linking-plan.md Phase 1. `upsert_finding` stays
+        insert-only; this is a separate, narrow write used only after a
+        successful publish of the annotation that corresponds to this row.
+
+        Deliberately a no-op on a falsy `guid` — this is the guard the plan's
+        own Phase 1 verification names explicitly: a create that raised, or
+        that returned a 200 with no `"guid"` key (see
+        `annotation_props.publish_annotations`'s Q1 handling), must leave the
+        row exactly as it was, not record an empty string that would then
+        read as "we tried and got nothing" — indistinguishable from a real
+        (if bafflingly empty) capture. The column's NULL default already
+        means "no known GUID" for both a never-published row and a
+        pre-migration one (see the migration's own comment); calling this
+        with an empty guid would only add a third, pointless way to spell the
+        same thing.
+
+        What this method does NOT do: distinguish "never published" from
+        "published, but the create failed" for a given row. That
+        distinction is not stored on `project_analysis_findings` at all — for
+        annotations published through the outbox, it lives on the
+        corresponding `egeria_outbox` row's own `status`/`attempts`/
+        `last_error` (a failed create there stays `pending`/`failed`/`dead`,
+        never silently advances to `done`); the direct/no-registry publish
+        path has no per-row failure record today (a failure there is logged
+        and the loop continues — see `publish_annotations`), so for that path
+        specifically "not yet published" and "published but failed" are
+        genuinely indistinguishable after the fact. That gap is real,
+        pre-existing to this method, and out of Phase 1's scope to close.
+        """
+        if not guid:
+            return
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE project_analysis_findings SET egeria_annotation_guid = ? WHERE id = ?",
+                (guid, finding_id),
             )
 
     def query_findings(self, slug: str, kind: str, scope_locator: str = "") -> list[dict]:
@@ -3688,6 +3553,229 @@ class ProjectRegistry:
             )
         return cur.rowcount > 0
 
+    # ── Egeria outbox — pending element writes ─────────────────────────────
+    # docs/outbox-publishing-design.md §5. The apply side lives in
+    # egeria_outbox.py; this class owns only the rows.
+
+    #: A row that has failed this many times is dead-lettered rather than
+    #: retried forever — the gap the rfa_actions precedent has, named in §3.
+    OUTBOX_MAX_ATTEMPTS = 8
+
+    #: Terminal states. 'done' succeeded; 'dead' exhausted its attempts and
+    #: needs a human. Neither is ever picked up again by the drain.
+    OUTBOX_TERMINAL = ("done", "dead")
+
+    def enqueue_outbox_element(
+        self, entity_type: str, entity_slug: str, element_kind: str,
+        qualified_name: str, payload: dict, *, run_id: str = "",
+        depends_on_id: int | None = None,
+    ) -> int:
+        """Record one pending Egeria element write. Returns its row id.
+
+        Callers enqueue inside the same local transaction that records the
+        survey, then drain — so a crash between "we recorded the survey" and
+        "we told Egeria" is impossible, which is the per-process hole in §2.
+
+        qualified_name must be the SAME string the apply step will search for
+        and create with. For annotations that means the caller's own run
+        timestamp is already baked in (see annotation_props.publish_annotations)
+        — a retry replays the stored payload and therefore produces a
+        byte-identical qualifiedName, which is what makes the replay converge
+        instead of duplicating.
+        """
+        if not qualified_name:
+            raise ValueError("qualified_name is the idempotency key and cannot be empty")
+        now = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO egeria_outbox "
+                "(entity_type, entity_slug, run_id, element_kind, qualified_name, "
+                " payload_json, depends_on_id, status, attempts, next_attempt_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
+                (entity_type, entity_slug, run_id, element_kind, qualified_name,
+                 json.dumps(payload), depends_on_id, now, now),
+            )
+            row_id = getattr(cur, "lastrowid", None)
+            if row_id is None:
+                row_id = conn.execute(
+                    "SELECT id FROM egeria_outbox WHERE qualified_name=? "
+                    "ORDER BY id DESC LIMIT 1", (qualified_name,),
+                ).fetchone()["id"]
+        return int(row_id)
+
+    def claim_due_outbox_elements(
+        self, limit: int = 200, now: str | None = None, run_id: str | None = None,
+    ) -> list[dict]:
+        """Rows ready to attempt, oldest first.
+
+        A row is due when it is pending/failed, its backoff has elapsed, AND
+        its dependency (if any) is 'done'. That last clause is the whole point
+        of depends_on_id: annotations cannot be attempted before the report
+        they hang off, so a partial drain leaves a coherent prefix rather than
+        orphans.
+
+        `run_id` scopes the claim to one publish's rows. A publisher that
+        enqueues and then drains inline needs its OWN annotations written
+        before it returns; an unscoped claim takes the oldest due rows in the
+        table, which could be another resource's backlog entirely — leaving
+        the caller believing it had published when it had in fact drained
+        someone else's queue.
+
+        Reads only — the drain marks each row in flight as it takes it, so this
+        stays a plain query and the caller decides its own concurrency.
+        """
+        now = now or datetime.utcnow().isoformat()
+        sql = (
+            "SELECT o.* FROM egeria_outbox o "
+            "LEFT JOIN egeria_outbox dep ON dep.id = o.depends_on_id "
+            "WHERE o.status IN ('pending', 'failed') "
+            "  AND o.next_attempt_at <= ? "
+            "  AND (o.depends_on_id IS NULL OR dep.status = 'done') "
+        )
+        params: list = [now]
+        if run_id is not None:
+            sql += "  AND o.run_id = ? "
+            params.append(run_id)
+        sql += "ORDER BY o.id ASC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_outbox_done(self, row_id: int, egeria_guid: str = "") -> None:
+        """Record the element as written, with the GUID it resolved to.
+
+        Once egeria_guid is set, a later retry of this row needs no
+        qualifiedName search at all — the GUID is Egeria's primary identity,
+        and the search is only how a row that never recorded one discovers it
+        nonetheless landed.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE egeria_outbox SET status='done', egeria_guid=?, "
+                "completed_at=?, last_error='' WHERE id=?",
+                (egeria_guid, datetime.utcnow().isoformat(), row_id),
+            )
+
+    def mark_outbox_failed(
+        self, row_id: int, error: str, *, max_attempts: int | None = None,
+        base_delay_seconds: int = 60, now: datetime | None = None,
+    ) -> str:
+        """Record a failed attempt and schedule the next one. Returns the new
+        status — 'failed' (will retry) or 'dead' (exhausted).
+
+        Exponential backoff, capped at a day: 1m, 2m, 4m ... The rfa_actions
+        precedent retries every pass forever with no backoff and no ceiling,
+        which is exactly how a permanently-broken write becomes invisible
+        noise instead of a signal.
+        """
+        max_attempts = self.OUTBOX_MAX_ATTEMPTS if max_attempts is None else max_attempts
+        now = now or datetime.utcnow()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT attempts FROM egeria_outbox WHERE id=?", (row_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No outbox row {row_id}")
+            attempts = int(row["attempts"]) + 1
+            if attempts >= max_attempts:
+                status, next_at = "dead", ""
+            else:
+                delay = min(base_delay_seconds * (2 ** (attempts - 1)), 86400)
+                status = "failed"
+                next_at = (now + timedelta(seconds=delay)).isoformat()
+            conn.execute(
+                "UPDATE egeria_outbox SET status=?, attempts=?, next_attempt_at=?, "
+                "last_error=? WHERE id=?",
+                (status, attempts, next_at, error[:2000], row_id),
+            )
+        return status
+
+    def list_dead_outbox_elements(self, limit: int = 100) -> list[dict]:
+        """Rows that exhausted their attempts — a stuck publish, visible to a
+        human instead of retrying silently forever."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM egeria_outbox WHERE status='dead' "
+                "ORDER BY id DESC LIMIT ?", (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_outbox_elements(
+        self, status: str | None = None, run_id: str | None = None,
+        entity_slug: str | None = None, limit: int = 200,
+    ) -> list[dict]:
+        """The detailed publish record behind an activity-log summary.
+
+        The activity entry says "3 elements dead-lettered"; this is the list of
+        which three, their qualifiedNames, how many attempts each took and what
+        Egeria actually said. Newest first, because a stuck publish is read
+        from the most recent failure backwards.
+        """
+        sql = "SELECT * FROM egeria_outbox"
+        filters: list[str] = []
+        params: list = []
+        if status:
+            filters.append("status = ?")
+            params.append(status)
+        if run_id:
+            filters.append("run_id = ?")
+            params.append(run_id)
+        if entity_slug:
+            filters.append("entity_slug = ?")
+            params.append(entity_slug)
+        if filters:
+            sql += " WHERE " + " AND ".join(filters)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def retry_outbox_element(self, row_id: int) -> bool:
+        """Return a dead row to the queue, attempts reset. Returns whether it
+        was actually revived.
+
+        Dead-lettering is deliberately terminal — the drain will never pick the
+        row up again on its own — so there has to be a way back for the common
+        case where the cause was fixed outside RE (a permission granted, a
+        server restarted). Restricted to 'dead': re-queueing a row that is
+        merely backing off would discard the backoff, and re-queueing a 'done'
+        row would re-apply a completed write.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status='pending', attempts=0, "
+                "next_attempt_at=?, last_error='' WHERE id=? AND status='dead'",
+                (datetime.utcnow().isoformat(), row_id),
+            )
+        return (cur.rowcount or 0) > 0
+
+    def outbox_counts(self) -> dict[str, int]:
+        """Row count per status — what a health endpoint or the drain's own
+        log line reports."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM egeria_outbox GROUP BY status"
+            ).fetchall()
+        return {r["status"]: int(r["n"]) for r in rows}
+
+    def purge_outbox_completed(self, older_than_days: int = 14) -> int:
+        """Drop 'done' rows past the retention window. Returns rows removed.
+
+        Only 'done' — 'dead' rows are the ones a human still has to look at,
+        and failed/pending rows are live work. Retention exists from day one
+        because one proposal publish on egeria_git is ~2,100 rows at the
+        largest run observed, not because today's 831-row total needs it.
+        """
+        cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM egeria_outbox WHERE status='done' AND completed_at <> '' "
+                "AND completed_at < ?", (cutoff,),
+            )
+        return cur.rowcount or 0
+
     def clear_egeria_registration(self, slug: str) -> dict:
         """Clear the cached Egeria GUID and all published survey records for a project.
 
@@ -3888,9 +3976,16 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_dependencies "
-                "(project_slug, dep_name, dep_version, dep_type, ecosystem, source_file, indexed_at) "
-                "VALUES (:project_slug, :dep_name, :dep_version, :dep_type, :ecosystem, :source_file, :indexed_at)",
-                [{**d, "project_slug": slug, "indexed_at": indexed_at} for d in deps],
+                "(project_slug, dep_name, dep_version, dep_version_source, dep_type, "
+                "ecosystem, source_file, indexed_at) "
+                "VALUES (:project_slug, :dep_name, :dep_version, :dep_version_source, :dep_type, "
+                ":ecosystem, :source_file, :indexed_at)",
+                # .get(..., "") because not every caller (older tests, hand-built
+                # dicts) sets dep_version_source — absence means "provenance not
+                # stated", the same '' a row with no version at all gets, never
+                # a guess at what it would have been.
+                [{**d, "dep_version_source": d.get("dep_version_source", ""),
+                  "project_slug": slug, "indexed_at": indexed_at} for d in deps],
             )
 
     def query_dependencies(
@@ -3921,7 +4016,7 @@ class ProjectRegistry:
                 params.append(ecosystem)
             where = " AND ".join(filters)
             rows = conn.execute(
-                f"SELECT dep_name, dep_version, dep_type, ecosystem, source_file "  # noqa: S608
+                f"SELECT dep_name, dep_version, dep_version_source, dep_type, ecosystem, source_file "  # noqa: S608
                 f"FROM project_dependencies WHERE {where} ORDER BY ecosystem, dep_type, dep_name",
                 params,
             ).fetchall()

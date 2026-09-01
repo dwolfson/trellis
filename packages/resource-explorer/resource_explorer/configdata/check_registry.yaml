@@ -63,6 +63,30 @@ analyses:
       - badge_freshness
       - criteria_coverage
 
+  refresh_plan:
+    findings_kind: refresh_plan
+    source: surveyors/sub_surveyors/refresh_plan.py:plan
+    # One check per refresh target plus the overall verdict. The per-target names
+    # are STEP keys deliberately — the finding is about that step's data being
+    # stale, so naming it anything else would need a second mapping to read back.
+    checks:
+      - repo_file_inventory
+      - repo_manifest_parse
+      - repo_rag_ingestion
+      - repo_website_ingestion
+      - refresh_needed
+
+  security_summary:
+    findings_kind: security_summary
+    source: surveyors/sub_surveyors/security_summary.py:findings_for
+    # A reducer: these three describe the SUMMARY, not the repository. Coverage
+    # and freshness are checks in their own right because a verdict without them
+    # is the thing the step exists to avoid.
+    checks:
+      - security_posture
+      - input_coverage
+      - summary_freshness
+
   community_support:
     findings_kind: community_support
     source: surveyors/sub_surveyors/community_support.py:assess

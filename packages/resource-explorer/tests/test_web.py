@@ -264,6 +264,34 @@ class TestQueryRouter:
         rag_mock.query.assert_called_once_with("what is this project?", resource_slug="myproj")
 
 
+class TestQueryFeedbackRouter:
+    """POST /api/query/feedback — vote is trinary (+1/0/-1), 0 being the
+    neutral/"partially correct" vote (see docs/feedback-signals-shared.md).
+    The route itself is a two-line delegate to MetricsCollector.record_feedback;
+    what matters here is that vote=0 survives the request round-trip rather
+    than being coerced or dropped (e.g. by a falsy-value check)."""
+
+    def test_neutral_vote_passed_through_unmodified(self, client):
+        with patch(
+            "resource_explorer.observability.metrics_collector.MetricsCollector"
+        ) as mock_cls:
+            resp = client.post("/api/query/feedback", json={
+                "query_hash": "abc123", "vote": 0,
+            })
+        assert resp.status_code == 200
+        assert resp.json() == {"recorded": True}
+        mock_cls.return_value.record_feedback.assert_called_once_with("abc123", 0)
+
+    def test_positive_and_negative_votes_still_pass_through(self, client):
+        with patch(
+            "resource_explorer.observability.metrics_collector.MetricsCollector"
+        ) as mock_cls:
+            client.post("/api/query/feedback", json={"query_hash": "h", "vote": 1})
+            client.post("/api/query/feedback", json={"query_hash": "h", "vote": -1})
+        calls = [c.args for c in mock_cls.return_value.record_feedback.call_args_list]
+        assert calls == [("h", 1), ("h", -1)]
+
+
 # ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────
 
 def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_annotations=None):

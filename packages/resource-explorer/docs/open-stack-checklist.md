@@ -4,7 +4,7 @@
 survives a context reset. Short entries with a pointer; the reasoning lives in
 the design docs. Delete an entry when it is done — this is not a history.
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-31 (redeploy prep)
 
 ---
 
@@ -248,7 +248,7 @@ fetches Survey Definition candidates. So the change hides Full Survey
 everywhere and gives it nowhere to appear, which is what the original
 "appended to every stage" comment was avoiding.
 
-- [ ] Give Automate a survey list (a third sub-tab beside 🔔 Subscriptions and
+- [x] **Automate has a survey list** — built 2026-08-30 (`fd63eed`). Third sub-tab beside 🔔 Subscriptions and
       ⏱ Schedules), then restrict the append to that intent. Both halves, or
       neither — the filter alone loses the feature.
 
@@ -318,7 +318,11 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       "lost an asset" kind and all blocked on a Project decision — so the
       remaining count is now exactly the blocked set, which is what the
       publish_ready field was added to make visible.
-- [ ] **The remaining three "lost" repos cannot use that call.** Measured
+- [x] **Resolved 2026-08-30.** All three were assigned to the RE Test Project (contexts
+      materialised from the investigation they already belonged to) and published:
+      `docling_eval` `5eb02266`, `openlineage` `88a2a70e`, `openmetadata` `940abe1f`.
+      `needs_republish` is now EMPTY — the whole finding went 7 → 0 on 2026-08-30.
+      Originally measured
       2026-08-28: `docling_eval`, `openlineage` and `openmetadata` all carry
       an Egeria Project context of `unset`, and the publish route's Part 5
       gate returns 428 for `unset` unless an investigation supplies one by
@@ -329,7 +333,7 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       `enterprise_rag`, `genaicomps`), which are `linked` — the inverse of
       what the wording implies. Either the finding names the gate, or the
       gate's 428 body carries the remedy; deciding which is the work.
-- [ ] The decision the gate actually wants is which Egeria Project each of
+- [x] Answered 2026-08-30 — RE Test Project, for all three. Originally: which Egeria Project each of
       the three belongs to. That names a real catalog object and stays a
       human call.
 - [x] **Question catalog wired to the analyses that answer it** — 2026-08-28
@@ -371,6 +375,388 @@ Design: `docs/survey-model-and-engine-host-design.md` §2.
       end to end on real data.
 
 ---
+
+## 6. Raised 2026-08-31 — the security/survey thread
+
+Everything below came out of one session. Design reasoning lives in
+`survey-composition-and-topic-summary-design.md` (98608f1); this is the do-list.
+
+### Done, do not redo
+- [x] `security_scan` renamed **Security Hygiene** with an honest description (98608f1). Id unchanged.
+- [x] `cii_badge` SSH-remote false negative — `git@github.com:...` reported a silver badge as
+      `not_registered` (3c71785).
+- [x] `ephemeral_prefect` autouse + the import note (a8dd281, e44300e).
+
+### Direct asks, not started
+
+- [x] **Results → Dashboard rename** — done 2026-08-31 (`33d0034`). 5 label strings; the 24
+      internal ids kept. The placement comment had called it "where a run's results naturally get
+      looked for", which was the conflation stated as a rationale.
+- [x] **Admin → Observe → 💬 Feedback** built 2026-08-31. `GET /api/curate/feedback` plus
+      `list_all_resource_feedback` / `count_all_resource_feedback`; filter chips by entity type and
+      category. Three deliberate choices, each pinned by a test: `entity_type` defaults to empty
+      rather than `"repo"` (feedback exists on databases and filesystems too, and a repo default
+      would make those look unused); the route returns `filtered` so an empty list can say which
+      empty it is; and an absent rating renders `—` rather than zero stars, since the column is
+      nullable and "no rating given" is not a judgement of zero.
+
+      Observe is no longer a group of one. The log viewer is the remaining occupant.
+- [x] **Admin regrouped** 2026-08-31 — **Configure** (Annotation Types, Groups, Discovery Sources,
+      Question Catalog) · **Reconcile** (Egeria Alignment, Egeria Links, Publish Queue, Repair) ·
+      **Observe** (Prefect). Grouped by the question a person is asking, not by subsystem: grouping
+      by subsystem would put Egeria Alignment beside Annotation Types, which is a taxonomy of the
+      code rather than of the errand. Visual only — every button still calls `showMainView()` with
+      the same tab id, so routing and the single-active-pane architecture are untouched.
+      `test_admin_subnav_grouping.py` guards that no pane is dropped, duplicated, or invented — a
+      pane left out of a group does not error, it silently becomes unreachable.
+
+      **Observe holds only Prefect on purpose**: it is the home for the two panes below, and a
+      group of one that names a gap beats folding it somewhere it does not belong.
+
+      **Layout corrected same day, from the running app.** The first version was a single row of
+      buttons with inline group labels. With eleven panes it wrapped, and a wrapped row left a group
+      label stranded mid-line reading as a stray word rather than a heading — grouping only helps if
+      the group is visibly whole. Now one native `<select>` per group, matching the two dozen
+      already in this file: width no longer scales with the number of panes, the group holding the
+      current pane is highlighted and shows it as its selection, and the others show their own name
+      as a disabled placeholder. No custom menu, so keyboard and screen-reader behaviour come free.
+- [x] **Logging wired** 2026-08-31 — `observability/logging_setup.py`. Root now has a formatted
+      console handler (timestamp, level, logger name) plus a bounded in-memory `RingBufferHandler`;
+      level from `$RE_LOG_LEVEL`, default INFO. `configure_logging()` is idempotent and called from
+      both the CLI and the web app's import, and `uvicorn.run()` is given a matching `log_config`.
+
+      The trap found while writing it, now guarded by a test: `dictConfig` **replaces** root's
+      handler list when a `root` key is present, and uvicorn applies its `log_config` *after* our
+      setup — so declaring `root` there would tear out the ring buffer, and the viewer would be
+      empty under the server and full under the CLI.
+
+- [x] **Log viewer built** 2026-08-31 — Admin → Observe → 📜 Logs, `GET /api/logs/` over the ring
+      buffer. Level chips, logger-name prefix filter, opt-in 5s auto-refresh that stops itself when
+      the pane is hidden. The three empties say three different sentences: filtered-out (naming the
+      total held), genuinely empty (saying the buffer starts empty on restart, so it is not evidence
+      nothing happened), and no-records. Levels are a fixed list rather than derived from the
+      buffer — deriving them would hide ERROR from the filter exactly when no error has occurred.
+
+      Not durable, by design. If logs need to survive a restart or leave the process, that is a
+      different feature (file handler or OTEL export) and this pane should not be mistaken for it.
+### Refresh as a survey, not a button
+
+Reframed 2026-08-31: refresh wants to be a **schedulable survey in Automate** that decides whether
+a refresh is needed and whether delta or full is cheaper — not a button. Design in
+`survey-composition-and-topic-summary-design.md` §2b (planner step).
+
+Already built, and this is mostly assembly:
+- Four refresh steps, all `queued` and independently schedulable: `repo_profile_refresh`
+  (scouting), `manifest_parse`, `rag_ingestion`, `website_ingestion` (analysis).
+- The Automate surface to hang it off — survey list beside Subscriptions and Schedules
+  (`fd63eed`, 2026-08-30). This was §4a's blocker; it is gone.
+- `POST /api/projects/{slug}/refresh` — delta RAG ingestion + query-cache invalidation. Nothing in
+  the UI calls it (the `/refresh` hits in `index.html` are Discovery Sources).
+
+Missing:
+- [ ] A **Refresh Survey Definition** bundling the four.
+- [ ] The **planner step** at the front of it: last SHA vs live head, which tables are populated,
+      how stale each is → decide per-step what runs.
+- [ ] A **per-step "still current?" check.** Only `IncrementalIndexer.refresh` SHA-gates today; the
+      other three redo their work regardless.
+
+Two traps, both already visible in the code:
+- **The gate cannot be survey-wide.** `IncrementalIndexer.refresh`'s no-change path still profiles
+  data files if that was never run. Unchanged ≠ complete; a survey-level skip would skip work never
+  done.
+- **Cheap acquisition ≠ cheap compute.** `SourceCache` is keyed on (repo, SHA), so an ungated step
+  costs 1.28s warm rather than 22.6s cold — which *hides* a missing gate instead of replacing it.
+  The parse/profile/embed work still repeats in full. (Not clearing `SourceCache` on refresh remains
+  correct: a stale hit is impossible.)
+
+### The ~30s stage load — fixed 2026-08-31
+
+Two independent causes, neither of which was work — both were waiting.
+
+- [x] **Server: one Egeria round trip per question, in series.**
+      `find_candidate_process_guids_by_questions` resolved each question's GUID one after another.
+      Ten questions for a stage, **49** for the unscoped `automate_full` lookup (no `phase` means
+      every cataloged question), so the two calls together made ~59 serial round trips. Now resolved
+      through a small thread pool, order-preserving. Measured on a deterministic harness — 49
+      lookups at a fixed 0.2s: **9.8s → 1.4s, 6.8×**.
+- [x] **Client: the two fetches were awaited one after the other.** Now `Promise.allSettled`, not
+      `all` — the cross-stage fetch was already non-fatal and `all` would let its failure take the
+      stage's own surveys down.
+
+`test_candidate_lookup_concurrency.py` pins the properties rather than the timings: input order
+preserved, unresolvable questions dropped rather than paired with `None`, the client warmed on the
+calling thread, no `await` between the two fetches, and both filters still sent.
+
+**Two things worth keeping from doing it.** The `no_silent_success` ratchet caught a `try/except:
+pass` I added to pre-warm the client, and the fix was better than the code it rejected: warm by
+resolving the first question on the calling thread, through `resolve_question_guid`'s existing
+error handling, so no new silent-failure site exists at all. And the live before/after measurement
+had to be abandoned — Egeria became far slower mid-session than when the 24s was measured, so the
+deterministic harness is the honest number and the 24s is not comparable to anything measured after
+it.
+
+### Catalog honesty — one instance fixed, the class open
+
+- [x] **`documentation_coverage` description fixed** 2026-08-31. It claimed "README completeness…
+      inline comment coverage"; it checks which doc collections were ingested plus a hygiene-file
+      list, banded by signal count. Name left as-is — see below.
+- [ ] **Is "Documentation *Coverage*" still an overclaim?** "Coverage" implies a measured ratio and
+      nothing computes one. Weaker than `security_scan`'s case, so not renamed unilaterally; decide
+      deliberately rather than leaving it unexamined.
+- [x] **Terse descriptions audited** 2026-08-31 — all 15 of the under-200-char repo entries, against
+      their implementations. Result: **3 overclaims in 15**, all now fixed (`security_scan`,
+      `documentation_coverage`, `api_structure`). The discursive half was not re-audited; every
+      entry sampled there states its own limits.
+
+      `api_structure` was the worst of the three: it claimed to *extract* from "Python, JavaScript,
+      and OpenAPI". It extracts nothing (it reads `project_code_symbols`, populated during
+      ingestion), the language list omitted Java and Go, and **no OpenAPI handling exists anywhere**.
+
+      Judged honest, no change: `license_classification` (tiers match the code exactly),
+      `rag_ingestion`, `repo_profile_refresh`, `repository_health`, `language_file_classification`,
+      `repo_classification`, `sub_resource_survey`, `egeria_publish`, `ci_quality`,
+      `security_features`, `repo_conventions`.
+
+- [x] **`data_file_profiling` — was a real defect, not the nuance it was logged as.** Fixed
+      2026-08-31. The columnar paths emitted `null_pct: 0.0` for every column of every
+      Parquet/Feather/Arrow file — an unmeasured value rendered as a confident measurement, since
+      file metadata carries no null rates. Both UI consumers showed it as a real zero, and one
+      (`c.null_pct ?? 0`) would have kept doing so after the profiler was fixed. Now `None`, with
+      a `null_summary` saying why, `—` in both UI surfaces, an honest description, and
+      `test_data_profiler_absence.py` pinning it in both directions.
+
+      Correcting the earlier entry: row counts are NOT missing for columnar formats — pyarrow reads
+      them from metadata. Only null rates were, and the earlier note had that wrong.
+
+- [ ] **Pattern worth acting on: "reads what something else produced" is the recurring lie.**
+      Two of the three (`documentation_coverage`, `api_structure`) describe work done during
+      ingestion as if this step did it, which also makes an un-ingested repo look like a deficient
+      one. That is the same fact-about-us/fact-about-them distinction `cii_badge` keeps explicit.
+- [ ] **Consider a ratchet** — an allowlist of audited entries that fails when a new one appears,
+      in the shape of the orphaned-slug fix. Claim-verb detection is probably too fuzzy.
+
+### From the design note — nothing built
+
+- [~] **Discovery Security Survey and `Security_Assessment` — investigated and deliberately NOT
+      built** (2026-08-31). All seven proposed steps already run: five in the Assessment Survey,
+      two in Discovery — and the Assessment Survey already carries `cve_scan` too, so it *is*
+      substantially the `Security_Assessment` the note proposed, minus the name. A new survey would
+      have added a fourth copy of steps that already run, against a batch documented as
+      non-idempotent. The design note's §1/§1b are wrong in the same direction as the earlier
+      "retire security_scan" call: both reasoned from the analysis layer without checking what the
+      survey layer already does. **Reopen only with a reason the existing surveys cannot serve.**
+- [x] **Reducer step and topic-summary annotation** — built and published 2026-08-31 (`368cbe5`).
+      `repo_security_summary` runs last in `RepoAssessmentSurvey` (10 steps) and after all its
+      inputs in `RepoFullSurvey` (35). Carries coverage and the age of its oldest input, refuses a
+      verdict below four inputs, and applies declared precedence. `foss_scorecard` is still an
+      undeclared reducer — naming it as one remains open.
+- [ ] **Four GAP questions with no analysis at all**: secret handling, telemetry/phone-home
+      detection, CLA/DCO provenance, SLA/availability content. Secret scanning is what
+      "Security Scan" claimed to do all along.
+- [ ] **Per-stage summary dashboards** — deferred by decision, 2026-08-31. Stage *filtering* already
+      works (`get_dashboard_stages`, membership not equality); summarising across stages does not.
+      Open when defining it: derived membership double-counts, since `security_overview` belongs to
+      both Discovery and Assessment.
+- [ ] **Do findings need a run identifier?** `project_analysis_findings` has no run column. A run is
+      identifiable only by a shared `surveyed_at`, by convention, and `query_findings` does not use
+      it that way. Blocks "summarise this run" being a real query. See open question 5.
+
+### Carried, not from today
+- [ ] `UNVERIFIED` is computed and never persisted, so query time cannot reach it.
+- [ ] `test_local_flow_execution_fallback` failed once on 2026-08-31 and did not reproduce — see
+      Backlog "Test reliability" for what is ruled out. Do not treat Prefect teardown noise as a
+      reproduction signature.
+
+
+## 7. The redeploy + database wipe — DONE, verified 2026-08-31
+
+**Outcome: the wipe happened, bootstrap healed it, and everything published that day came back
+correctly.** Verified independently and read-only, against live Egeria rather than against RE's
+registry:
+
+    QUESTIONS              49/49 resolve
+    RepoAssessmentSurvey   10 steps · repo_security_summary after all 8 inputs · terminal
+    RepoFullSurvey         35 steps · repo_security_summary after all 8 inputs · rag_ingestion last
+    reconciler --dry-run   0 duplicate / 0 stale across all EIGHT definitions
+
+No manual re-authoring was needed. The recovery sections below are kept as the runbook for next
+time, not as outstanding work.
+
+**One measurement error worth keeping, because it is this file's own subject matter.** "Has Egeria
+been wiped?" was first answered by counting `projects` (60) and `project_analysis_findings`
+(68,215) — tables in **RE's own registry**, which an Egeria wipe does not touch by design. Those
+counts read identically either side of the event and cannot distinguish the two states at all. The
+question is only answerable by something that exists on one side of it:
+
+    projects holding an egeria_asset_guid:  0 of 60   (non-zero before the wipe)
+    project_egeria_surveys rows:            0
+
+A correct count of the wrong population. Reach for the field the event actually changes.
+
+---
+
+## 7a. Recovery runbook — kept for next time
+
+**Everything authored into Egeria today is destroyed by a redeploy.** The quickstart platform does
+not persist custom-authored elements across restarts (`repo_survey_types.csv` row 2 records a
+previous instance of exactly this). Nothing below is a code change — the code is committed and
+safe. These are *deployments* that have to happen again.
+
+### What has to come back, and in this order
+
+`_folder_order.json` encodes the order and it is load-bearing: a Survey Definition's
+`Link Element To Scope` commands bind to Question terms **by name**, so running definitions before
+questions succeeds silently while creating no ScopedBy links at all.
+
+1. **foundations** — glossary, perspectives, funnel stages.
+2. **questions** — all 49 from `resource_questions.csv` via `questions/scouting-questions.md`.
+3. **survey-definitions** — all 8 documents, including `repo_security_summary` in both
+   `RepoAssessmentSurvey` (10 steps) and `RepoFullSurvey` (35 steps).
+4. **`scripts/reconcile_survey_definition_links.py`** — always, after step 3.
+
+`resource_explorer/bootstrap.py`'s `check_and_heal()` does 1–3 by canary and then the post-heal
+reconcile, so a wiped platform should self-heal on startup. **Verify rather than assume it did** —
+the canary proves a batch *ran*, not that every element inside it exists. That is precisely how 8
+of 49 questions went missing today.
+
+### Run the FULL questions document after a wipe, not the subset
+
+`questions/missing-questions-2026-08-31.md` exists because 41 of 49 terms already existed and
+re-running the whole document would have re-fired 168 `Link Perspective to Question` commands
+against them, with **no reconciler** to clean up after. After a wipe that reasoning inverts: nothing
+exists, so nothing can be duplicated, and the full document is both correct and required — the
+subset would leave 41 questions missing. **Delete the subset file once the full document has run
+against the wiped platform**; keeping it is how someone runs the wrong one.
+
+### Verification after the redeploy — the checks, not the impressions
+
+```
+# 49 of 49 questions resolve
+uv run python -c "import csv; from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader as R, clear_caches; clear_caches(); r=R(); qs=[x['Question'] for x in csv.DictReader(open('docs/dr-egeria/resource_questions.csv'))]; m=[q for q in qs if not r.resolve_question_guid(q)]; print(f'{len(qs)-len(m)}/{len(qs)} resolve'); [print('  MISSING:', q[:70]) for q in m]"
+
+# 0 duplicate / 0 stale on all 8 definitions
+uv run python scripts/reconcile_survey_definition_links.py --dry-run
+
+# both surveys load, reducer after its inputs
+uv run pytest tests/test_egeria_live_smoke.py tests/test_survey_definition_graph_walk.py tests/test_security_summary.py -q
+
+# the 12 perspectives exist — added 2026-08-31; the three checks above never looked
+uv run python scripts/verify_perspectives.py
+```
+
+The perspective check was missing until 2026-08-31. Perspectives are authored by
+`foundations.md` in the same batch as the glossary and funnel stages, so they fail the
+same way 8 of 49 questions did — a heal reports success and some elements are simply
+not there. It compares against `foundations.md` rather than
+`egeria-redeploy-baseline-2026-08-26.json`; the two were verified identical that day, so
+the snapshot adds nothing the repo does not already hold, and a generator says what
+*should* exist where a snapshot only says what once did.
+
+**It exits 2, not 1, when Egeria is unreachable**, and prints that this says nothing
+about whether the perspectives exist. Written while the platform was down for this very
+redeploy, so its lookup path has never run against a live server — the first real
+exercise is your post-redeploy verification. A check that could not tell "not answering"
+from "gone" would report 0/12 at exactly the moment that reads as catastrophe.
+
+### What the wipe also destroys, and what it does not
+
+- **Destroyed:** every `project_analysis_findings` row, so every analysis reverts to *never ran* —
+  including today's `security_summary` result on `egeria_git`. Also the registry's projects,
+  activity log, and pgvector collections.
+- **NOT destroyed:** `data/source-cache` (on disk, keyed by commit SHA), and all code, tests and
+  documents, which are committed and pushed.
+- **In flight and lost:** a `manifest_parse` on `egeria_git` was running to populate dependencies so
+  `cve_scan` could run and take the summary from 7/8 to 8/8. Abandoned — see below.
+
+### Unfinished: the security summary is 7 of 8
+
+`cve_scan` has never run on `egeria_git` because the repo has **0 dependency rows**, and cve_scan
+scans dependencies already parsed. It correctly declined to report rather than claiming "no CVEs" —
+that is the intended behaviour, not a failure. The chain to close it is
+`manifest_parse` → `cve_scan` → `security_summary`.
+
+**It cannot be closed out on Egeria at all, and the reason is not the one first assumed.** The
+`--reload` bug was real and blocked `manifest_parse` from finishing — fixed by running without it,
+after which the parse completed, published 4 annotations, and still produced **0 dependency rows**.
+
+The actual cause is coverage: `dependency_parser.py` reads `pyproject.toml`, `requirements*.txt`,
+`setup.py`, `package.json`, `go.mod` and `pom.xml`. **Egeria ships 239 `build.gradle` files and none
+of those.** See `Backlog.md`, "No Gradle support in the dependency parser". Until Gradle is parsed,
+`cve_scan` cannot run on any Gradle project and `security_summary` is capped at 7 of 8 there.
+
+To see 8 of 8 after the redeploy, pick a repo with a supported manifest — `egeria_python_git`
+(pyproject.toml) is the obvious one — rather than Egeria itself.
+
+**Update 2026-09-01: Gradle support landed (`946a1b3`) and it did NOT close this. Measured, not
+assumed.** A full survey of `egeria_git` now produces **216 dependency rows** where it produced 0,
+so the parser works and the step ordering is fine (`repo_manifest_parse` is position 3,
+`repo_cve_scan` 21 — verified, and now guarded by `tests/test_step_execution_order.py`).
+
+`security_summary` still reports:
+
+    input_coverage: partial — "7 of 8 security inputs have run. Never ran: cve_scan."
+
+**The real blocker is one column: every one of the 216 rows has an empty `dep_version`.**
+
+    dep_name='ch.qos.logback:logback-classic'  dep_version=''  ecosystem='java'  source_file='build.gradle'
+
+Egeria's `build.gradle` files declare versions through a version catalog / variables rather than
+inline, so the parser recovers the coordinate but not the version. A CVE lookup needs name AND
+version, so `cve_scan` declines — correctly. Closing this needs version RESOLUTION (reading
+`gradle/libs.versions.toml`, or a dependency lockfile), which is a different and larger job than
+parsing `build.gradle`. **`Backlog.md`'s "No Gradle support in the dependency parser" is now done and
+is not the thing standing in the way.**
+
+**A second-order problem this exposes, and it is the more general one.** `cve_scan` declining writes
+no findings, and `security_summary` reads an empty `query_findings(slug, "cve_scan")` as *never ran*.
+So "declined for want of versions" and "never executed" are the same signal downstream — the
+`NOTHING_FOUND` / `NEVER_RUN` conflation that `surveyors/result_status.py` exists to prevent, in a
+place that does not use it. This is the concrete case for `Backlog.md`'s "No conditional execution of
+survey steps": a step that cannot run should record `SKIPPED_BY_DESIGN` **with its reason**, so the
+summary can say "cve_scan could not run: no dependency versions available" instead of implying nobody
+ever tried.
+
+**Update 2026-09-01 (later same day): version resolution landed, and `security_summary` is now
+8 of 8 on `egeria_git`, measured.** `dependency_parser.py`'s Gradle path now resolves a version from
+two places, cheapest first, tagging each resolved row with WHERE it came from
+(`dep_version_source`, a new `project_dependencies` column) rather than folding it into the same
+bucket as a version the manifest wrote literally — that provenance was the actual constraint on this
+work, not the resolution itself: a wrongly-substituted version feeding a confident CVE answer is
+worse than declining:
+
+  * a same-file `ext { xVersion = '...' }` / Kotlin `val` variable, tagged `"variable_interpolation"`
+  * `gradle/libs.versions.toml`, tagged `"version_catalog"`
+
+Egeria's own shape turned out to be case 2 dressed as case 3: `bom/build.gradle` looked like a BOM
+worth punting on, but reading it shows every one of its ~90 `constraints { api("g:a:${xVersion}") }`
+lines resolves through a same-file `ext` variable — no actual external BOM/platform artifact, no
+Gradle invocation needed. Re-measured on the same checkout:
+
+    latest batch: 85 java dependency rows, 81 with a resolved dep_version
+    dep_version_source counts: variable_interpolation=80, declared=1, ''=4 (unresolved)
+
+(85, not 216/288 — the earlier counts were summed across every historical ingestion batch this
+project ever had, not the current one; `query_dependencies()` already filters to the latest
+`indexed_at` batch, which is what `cve_scan` reads.) Running `CveScanSurveyor` against that gave:
+
+    68 advisories across 14 package(s), from 81 of 85 recorded dependencies (java);
+    4 dependenc(ies) could not be checked (no pinned version to query)
+
+and `SecuritySummarySurveyor` immediately after:
+
+    Security: concerns — 9 finding(s) of concern, 15 clear, 24 not established,
+    across 8 of 8 inputs. Every input has run.
+
+Version-catalog resolution (BOM/platform imports proper, and `gradle/libs.versions.toml`) is
+implemented and unit-tested (`tests/test_gradle_dependency_parsing.py`) but unexercised by Egeria
+itself — it uses no version catalog (measured: zero `libs.` references across all 229
+`build.gradle` files) and no real external BOM artifact once `bom/build.gradle`'s own constraints are
+read. A dependency lockfile path was not implemented; none was found in this checkout, and no
+project surveyed here has needed it yet.
+
+The `NOTHING_FOUND`/`NEVER_RUN` conflation two paragraphs up is still real and still unaddressed —
+this closed the one path that was blocking it on Gradle projects, not the general problem.
+
 
 ## Done 2026-08-26/27 — do not redo
 

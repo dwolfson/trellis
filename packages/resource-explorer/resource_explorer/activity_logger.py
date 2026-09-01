@@ -144,8 +144,13 @@ def log_rfa(
     summary: str,
     detail: str = "",
     analysis_name: str = "",
+    items: list[dict] | None = None,
 ) -> str:
     """Write an RFA and make sure it actually reaches the RFA drawer.
+
+    `items` carries the same structured pointers an ordinary activity entry can
+    (see renderActivityLog's link handling) — an RFA that says "3 publishes are
+    stuck" is only actionable if it can also say where to look at them.
 
     The drawer is fed by GET /api/activity/rfas, which flattens activity entries
     and keeps only *annotations* whose annotation_type contains
@@ -177,6 +182,7 @@ def log_rfa(
         status=status,
         summary=summary,
         detail=detail,
+        items=items or [],
         annotations=[{
             # The exact type string GET /api/activity/rfas substring-matches on,
             # and the same one EgeriaPublisher uses for a published RFA.

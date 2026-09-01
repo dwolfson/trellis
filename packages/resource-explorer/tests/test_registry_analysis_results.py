@@ -111,93 +111,120 @@ class TestDependencyLegacyTimestampRepair:
         assert deps[0]["dep_name"] == "only-dep"
 
 
-class TestDataProfileSnapshots:
-    def test_store_and_query_history(self, db, sample_project):
-        db.store_data_profile_snapshot("test-project", total_files=3, total_size_bytes=1000, format_breakdown={"csv": 3})
-        db.store_data_profile_snapshot("test-project", total_files=5, total_size_bytes=2000)
-        history = db.query_data_profile_history("test-project")
-        assert len(history) == 2
-        assert history[0]["total_files"] == 3
-        assert history[1]["total_files"] == 5
+class TestFindingEgeriaGuid:
+    """docs/annotation-linking-plan.md Phase 1: egeria_annotation_guid column
+    + mark_finding_guid(). New tests, not read-source assertions — every one
+    below executes the real migration/update path against a real (SQLite)
+    connection."""
 
-    def test_does_not_touch_project_data_profiles(self, db, sample_project):
-        # store_data_profile_snapshot is a separate aggregate table (D3) —
-        # must not write to the unchanged per-file project_data_profiles table.
-        db.store_data_profile_snapshot("test-project", total_files=3, total_size_bytes=1000)
-        assert db.get_data_profiles("test-project") == []
-
-
-class TestSecurityFindings:
-    def test_upsert_and_query_latest(self, db, sample_project):
-        db.upsert_security_findings("test-project", [
-            {"check_name": "license", "status": "pass", "summary": "License: MIT"},
-            {"check_name": "ci_config", "status": "gap", "summary": "No CI"},
+    def _finding_id(self, db, slug="test-project", kind="security_hygiene"):
+        db.upsert_finding(slug, kind, [
+            {"check_name": "has_ci", "label": "pass", "summary": "", "confidence": 100, "detail": None},
         ])
-        findings = db.query_security_findings("test-project")
-        assert len(findings) == 2
-        statuses = {f["check_name"]: f["status"] for f in findings}
-        assert statuses == {"license": "pass", "ci_config": "gap"}
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM project_analysis_findings WHERE project_slug = ? AND kind = ?",
+                ("test_project", kind),
+            ).fetchone()
+        return row["id"]
 
-    def test_second_run_does_not_mix_with_first(self, db, sample_project):
-        db.upsert_security_findings("test-project", [{"check_name": "license", "status": "gap", "summary": "No license"}], surveyed_at="2026-01-01T00:00:00")
-        db.upsert_security_findings("test-project", [{"check_name": "license", "status": "pass", "summary": "License added"}], surveyed_at="2026-01-02T00:00:00")
-        findings = db.query_security_findings("test-project")
-        assert len(findings) == 1
-        assert findings[0]["status"] == "pass"
+    def test_new_column_defaults_to_null_not_empty_string(self, db, sample_project):
+        """A freshly inserted finding row — never touched by mark_finding_guid
+        — must read back NULL, not '', so it is not confusable with a
+        deliberately-recorded empty value."""
+        finding_id = self._finding_id(db, sample_project.slug)
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] is None
 
-    def test_history_tracks_gap_count_per_run(self, db, sample_project):
-        db.upsert_security_findings("test-project", [
-            {"check_name": "license", "status": "gap", "summary": ""},
-            {"check_name": "ci_config", "status": "gap", "summary": ""},
-        ], surveyed_at="2026-01-01T00:00:00")
-        db.upsert_security_findings("test-project", [
-            {"check_name": "license", "status": "pass", "summary": ""},
-            {"check_name": "ci_config", "status": "gap", "summary": ""},
-        ], surveyed_at="2026-01-02T00:00:00")
-        history = db.query_security_findings_history("test-project")
-        assert len(history) == 2
-        assert history[0]["gap_count"] == 2
-        assert history[1]["gap_count"] == 1
+    def test_existing_rows_survive_migration_untouched(self, db, sample_project):
+        """Re-running the migration block (as every ProjectRegistry() startup
+        does) against a table that already has real rows must not error and
+        must not disturb them — the ~68,000-row concern, exercised at small
+        scale."""
+        finding_id = self._finding_id(db, sample_project.slug)
+        db.mark_finding_guid(finding_id, "guid-before-migration")
+        db._init_schema()  # re-run the migration block explicitly
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] == "guid-before-migration"
 
-    def test_empty_findings_is_a_noop(self, db, sample_project):
-        db.upsert_security_findings("test-project", [])
-        assert db.query_security_findings("test-project") == []
+    def test_mark_finding_guid_writes_the_guid(self, db, sample_project):
+        finding_id = self._finding_id(db, sample_project.slug)
+        db.mark_finding_guid(finding_id, "real-annotation-guid-123")
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] == "real-annotation-guid-123"
 
-
-class TestDocumentationFindings:
-    def test_upsert_and_query_latest(self, db, sample_project):
-        db.upsert_documentation_findings("test-project", [
-            {"finding_type": "quality_score", "label": "Comprehensive", "confidence": 70},
+    def test_mark_finding_guid_only_touches_the_named_row(self, db, sample_project):
+        """A second finding row in the same batch must not pick up the first
+        row's GUID — the UPDATE is keyed by id, not by kind/slug."""
+        db.upsert_finding(sample_project.slug, "security_hygiene", [
+            {"check_name": "has_ci", "label": "pass", "summary": "", "confidence": 100, "detail": None},
+            {"check_name": "has_tests", "label": "pass", "summary": "", "confidence": 100, "detail": None},
         ])
-        findings = db.query_documentation_findings("test-project")
-        assert len(findings) == 1
-        assert findings[0]["label"] == "Comprehensive"
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, check_name FROM project_analysis_findings "
+                "WHERE project_slug = ? ORDER BY check_name",
+                ("test_project",),
+            ).fetchall()
+        ci_id = next(r["id"] for r in rows if r["check_name"] == "has_ci")
+        tests_id = next(r["id"] for r in rows if r["check_name"] == "has_tests")
 
-    def test_quality_history_ranks_labels(self, db, sample_project):
-        db.upsert_documentation_findings("test-project", [{"finding_type": "quality_score", "label": "Minimal"}], surveyed_at="2026-01-01T00:00:00")
-        db.upsert_documentation_findings("test-project", [{"finding_type": "quality_score", "label": "Comprehensive"}], surveyed_at="2026-01-02T00:00:00")
-        history = db.query_documentation_findings_history("test-project")
-        assert len(history) == 2
-        assert history[0]["quality"] == "Minimal"
-        assert history[0]["quality_rank"] == 1
-        assert history[1]["quality"] == "Comprehensive"
-        assert history[1]["quality_rank"] == 3
+        db.mark_finding_guid(ci_id, "ci-guid")
 
-    def test_non_quality_findings_excluded_from_history(self, db, sample_project):
-        db.upsert_documentation_findings("test-project", [
-            {"finding_type": "collection_present", "label": "markdown_docs"},
-            {"finding_type": "quality_score", "label": "Partial"},
-        ])
-        history = db.query_documentation_findings_history("test-project")
-        assert len(history) == 1  # only the quality_score row
+        with db._conn() as conn:
+            ci_row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?", (ci_id,)
+            ).fetchone()
+            tests_row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?", (tests_id,)
+            ).fetchone()
+        assert ci_row["egeria_annotation_guid"] == "ci-guid"
+        assert tests_row["egeria_annotation_guid"] is None
 
+    def test_known_negative_empty_guid_is_not_recorded(self, db, sample_project):
+        """The guard this whole column exists to prove: calling
+        mark_finding_guid with a falsy GUID (the "create succeeded but Egeria
+        returned no guid key" case, or a caller passing through a failed
+        create's None) must NOT overwrite the column with '' — it must be a
+        no-op, leaving the row exactly as unpublished-looking as before.
+        Proven by first showing the call DOES write for a real GUID (so this
+        isn't a no-op that "passes" only because nothing ran), then showing it
+        does NOT write for an empty one."""
+        finding_id = self._finding_id(db, sample_project.slug)
 
-class TestApiStructureSnapshots:
-    def test_store_and_query_history(self, db, sample_project):
-        db.store_api_structure_snapshot("test-project", symbol_count=10, by_language={"python": 10}, relationship_count=2)
-        db.store_api_structure_snapshot("test-project", symbol_count=15, by_language={"python": 15}, relationship_count=3)
-        history = db.query_api_structure_history("test-project")
-        assert len(history) == 2
-        assert history[0]["symbol_count"] == 10
-        assert history[1]["symbol_count"] == 15
-        assert history[1]["relationship_count"] == 3
+        # Positive control: a real GUID is recorded.
+        db.mark_finding_guid(finding_id, "guid-that-should-stick")
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] == "guid-that-should-stick"
+
+        # Known-negative: an empty-string GUID (simulating a failed/empty
+        # create) must not clobber it — and, tested independently on a fresh
+        # row, must not write '' at all.
+        finding_id_2 = self._finding_id(db, sample_project.slug, kind="ci_quality")
+        db.mark_finding_guid(finding_id_2, "")
+        with db._conn() as conn:
+            row2 = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id_2,),
+            ).fetchone()
+        assert row2["egeria_annotation_guid"] is None, (
+            "mark_finding_guid('') must leave the row NULL — writing '' would "
+            "make a failed/empty create indistinguishable from a real, if "
+            "empty, one"
+        )

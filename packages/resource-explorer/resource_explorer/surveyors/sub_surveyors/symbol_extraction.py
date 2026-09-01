@@ -31,6 +31,7 @@ from pathlib import Path
 from resource_explorer.configdata.collection_config import COLLECTION_TYPES
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,15 @@ class SymbolExtractionSurveyor(BaseSurveyor):
             extractor = CodeSymbolExtractor()
             counts_by_language: dict[str, int] = {}
 
+            # How many candidate source files were actually READ, not just how
+            # many symbols came out. Without this the step cannot tell "this
+            # code declares no symbols" from "there was no code here" — and the
+            # second is a real, observed failure: step_outcome.py's own
+            # docstring records a run that read from a --no-checkout clone
+            # whose root holds only `.git`, scanned an empty tree, and reported
+            # its zero as though it were a finding.
+            files_scanned = 0
+
             for ctype_name, language in _LANGUAGE_CTYPES.items():
                 ctype = COLLECTION_TYPES.get(ctype_name)
                 if ctype is None:
@@ -111,6 +121,7 @@ class SymbolExtractionSurveyor(BaseSurveyor):
                 self.registry.clear_code_symbols(slug, language)
                 symbols = []
                 for path, content in _local_files(local_root, ctype.file_extensions):
+                    files_scanned += 1
                     symbols.extend(extractor.extract(path, content, slug, language))
                 if symbols:
                     self.registry.upsert_code_symbols(slug, symbols)
@@ -118,17 +129,36 @@ class SymbolExtractionSurveyor(BaseSurveyor):
 
             total = sum(counts_by_language.values())
             relationships = self.registry.get_code_relationships(slug)
+            # Files read are the known-positive: having parsed real source
+            # files and found no symbols is a fact about this code. Having
+            # parsed none is a fact about the checkout, and claiming the first
+            # when only the second is true is what makes a broken extraction
+            # read as a repo with nothing in it.
+            if total:
+                outcome = StepOutcome("recovered", detail={"files_scanned": files_scanned})
+            else:
+                outcome = no_signal(
+                    "no symbols extracted from the files scanned",
+                    known_positive=files_scanned > 0,
+                    files_scanned=files_scanned,
+                )
             results.append(
                 ResourceMeasureAnnotation(
                     summary=(
                         f"Extracted {total} symbol(s) across {len(counts_by_language)} "
                         f"language(s), {len(relationships)} inheritance relationship(s)"
+                        + ("" if files_scanned else
+                           " — no source files were read, so this zero is about the "
+                           "checkout, not the code")
                     ),
                     analysis_step=STEP,
+                    confidence=100 if files_scanned else 0,
                     resource_properties={
                         "symbol_counts_by_language": counts_by_language,
                         "relationship_count": len(relationships),
+                        "files_scanned": files_scanned,
                     },
+                    json_properties=outcome.as_row(),
                 )
             )
 

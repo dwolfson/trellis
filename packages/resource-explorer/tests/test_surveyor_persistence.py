@@ -264,9 +264,28 @@ class TestSecurityFeaturesSurveyorPersistence:
                 (slug, "2026-01-01T00:00:00", features_json),
             )
 
-    def test_no_stats_row_yields_no_findings(self, registry, project):
+    def test_invisible_settings_are_stated_not_silent(self, registry, project):
+        """Changed 2026-08-31; this asserted `annotations == []`.
+
+        GitHub returns security_and_analysis only to repository admins, so this
+        path is the COMMON case — measured across the catalogue, 54 of 60 repos
+        hit it. Emitting nothing meant the survey report and the catalog were
+        silent about security for 90% of the corpus, and silence about security
+        reads as "nothing to report" rather than "we were not allowed to look".
+
+        The annotation says which it is. No FINDINGS are written — that part of
+        the original assertion is unchanged and still checked below, because a
+        feature we cannot see is not a gap and must not be recorded as one.
+        """
         annotations = SecurityFeaturesSurveyor(project, registry).run()
-        assert annotations == []
+        assert len(annotations) == 1
+        assert annotations[0].confidence == 0
+        assert "Not a finding that they are disabled" in annotations[0].summary
+        # Both vocabularies, deliberately: the RUN could establish nothing, and
+        # the READER should be told this is by design. See repo_classification's
+        # docstring for why these are not the same question.
+        assert annotations[0].json_properties["outcome"] == "unverified"
+        assert annotations[0].json_properties["result_status"]["state"] == "skipped_by_design"
         assert registry.query_findings("myproj", "security_features") == []
 
     def test_none_status_features_are_skipped_not_gaps(self, registry, project):
@@ -303,8 +322,24 @@ class TestCiQualitySurveyorPersistence:
     DependencySurveyor has with project_dependencies) — it just re-emits
     whatever IngestionPipeline._parse_ci_workflows() last wrote."""
 
-    def test_no_findings_yields_no_annotations(self, registry, project):
-        assert CiQualitySurveyor(project, registry).run() == []
+    def test_no_findings_says_so_rather_than_going_silent(self, registry, project):
+        """Changed 2026-08-31; this asserted `== []`.
+
+        Silence made "ran and found nothing" identical to "never ran", and for
+        a pass-through step the empty case usually means the UPSTREAM step has
+        not run — so the survey report simply had no CI-quality section, which
+        reads as "no issues" at least as easily as "not assessed".
+
+        `cve_scan` already made this exact choice for the same relationship:
+        it emits "No dependencies are recorded for this resource, so nothing
+        could be checked" rather than returning nothing. This follows that
+        precedent rather than inventing one.
+        """
+        annotations = CiQualitySurveyor(project, registry).run()
+        assert len(annotations) == 1
+        assert annotations[0].confidence == 0
+        assert "not a finding that the repo has none" in annotations[0].summary
+        assert annotations[0].json_properties["outcome"] == "unverified"
 
     def test_reemits_persisted_findings_as_annotations(self, registry, project):
         registry.upsert_finding(
@@ -338,8 +373,14 @@ class TestRepoConventionsSurveyorPersistence:
     """RepoConventionsSurveyor is read-only at survey time, same relationship
     CiQualitySurveyor has with IngestionPipeline._parse_repo_conventions()."""
 
-    def test_no_findings_yields_no_annotations(self, registry, project):
-        assert RepoConventionsSurveyor(project, registry).run() == []
+    def test_no_findings_says_so_rather_than_going_silent(self, registry, project):
+        """Changed 2026-08-31 — see the CiQuality twin above for the reasoning;
+        these two steps have the same pass-through shape and had the same
+        silence."""
+        annotations = RepoConventionsSurveyor(project, registry).run()
+        assert len(annotations) == 1
+        assert annotations[0].confidence == 0
+        assert annotations[0].json_properties["outcome"] == "unverified"
 
     def test_reemits_persisted_findings_as_annotations(self, registry, project):
         registry.upsert_finding(
@@ -378,7 +419,25 @@ class TestMaturitySurveyorPersistence:
     def test_no_created_at_is_unknown(self, registry, project):
         annotations = MaturitySurveyor(project, registry).run()
         assert len(annotations) == 1
-        assert annotations[0].candidate_classifications == ["unknown"]
+        # NOT ["unknown"], as this asserted until 2026-08-31.
+        #
+        # candidate_classifications is what `annotation_props` publishes to
+        # Egeria, so offering "unknown" there tells the catalog we classify
+        # this repo AS unknown. It is not a maturity tier; it is the absence of
+        # one. Same correction as language.py's "Primary language: Unknown",
+        # and `file_classifier_surveyor` already uses an empty list this way.
+        #
+        # The finding below deliberately still carries "unknown": that is RE's
+        # own record, `_maturity_results` reads it, and the UI wants to show
+        # the tier as undetermined rather than show nothing.
+        assert annotations[0].candidate_classifications == []
+        assert annotations[0].confidence == 0, (
+            "40 read as a weak answer; there is no answer"
+        )
+        assert annotations[0].json_properties["outcome"] == "unverified", (
+            "every age-not-established path is a gap in what we hold — a repo "
+            "always HAS a creation date, so this can never be a provable zero"
+        )
         findings = registry.query_findings("myproj", "maturity")
         assert findings[0]["label"] == "unknown"
 

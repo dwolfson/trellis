@@ -5,11 +5,25 @@ Slice 1 plan). This is deliberately NOT a general auth system — it exists
 only to gate the feedback-triage admin endpoints, and is the seam a real
 auth system should replace later.
 
-It inverts a real bug found in Egeria Workspaces Portal's
-demo_feedback_handler.py::_is_admin(), which returned True unconditionally
-whenever neither DEMO_MODE nor SERVER_MANAGED_AUTH was configured — i.e.
-it failed OPEN with no auth at all in the simple/local case. Here, absence
-of any admin configuration means every admin request is denied.
+It takes the OPPOSITE default from Egeria Workspaces Portal's
+demo_feedback_handler.py::_is_admin(), which returns True when neither
+DEMO_MODE nor SERVER_MANAGED_AUTH is set.
+
+**That is a deliberate design there, not a bug, and an earlier version of this
+docstring called it one.** Corrected 2026-09-01 by Dan, who owns both: the
+Portal has two modes — a public demo requiring an external identity, and a
+local mode that relies on Egeria's own users for authentication. Permitting
+the request in the unconfigured case is that local mode working as intended,
+because the authentication happens in Egeria rather than in the handler.
+
+RE chooses the other default because it has no equivalent: no multi-user
+authentication, and nothing behind it that authenticates on its behalf. With
+nothing to defer to, absence of admin configuration must deny rather than
+permit — the same reasoning reaching the opposite conclusion from different
+surroundings, not a correction of anyone.
+
+Recorded at length because the original claim was wrong ABOUT ANOTHER PROJECT
+and would have long outlived the conversation that produced it.
 """
 from __future__ import annotations
 

@@ -17,11 +17,17 @@ project has no badge" would be a claim about someone's project derived from our
 own connectivity, and it is the single most likely way this module could lie.
 
 **A badge level is a self-assessment with a date on it, and the date is part of
-the finding.** Measured 2026-08-26: odpi/egeria holds a *silver* badge whose
-record was last updated 2022-12-20 — a claim made about a codebase nearly four
-years ago, still displayed as current. Reporting "silver" alone would carry the
-authority of the badge and none of its staleness, so the age rides in the
-summary and drives its own finding once past the threshold below.
+the finding.** Reporting "silver" alone would carry the authority of the badge
+and none of its staleness, so the age rides in the summary and drives its own
+finding once past the threshold below.
+
+The worked example this module was built on: on 2026-08-26, odpi/egeria held a
+silver badge whose record had last been updated 2022-12-20 — a claim made about
+a codebase nearly four years earlier, still displayed as current. **That is no
+longer the state of that record.** It was refreshed 2026-08-28 and now reads as
+current, which is the outcome the finding is for. The example is kept because
+the reasoning does not depend on any project staying stale; a badge is a dated
+claim whether or not today's example happens to be old.
 
 **"Met" and "?" are not the same, in their record either.** Of egeria's 196
 criteria fields, 115 are Met, 66 are unanswered, 13 N/A and 1 Unmet. The
@@ -31,12 +37,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -50,9 +58,26 @@ _TIMEOUT = 20
 _LEVELS = ("in_progress", "passing", "silver", "gold")
 
 #: Past this, the badge is reported as stale in its own right. Two years is
-#: generous — the measured example is nearly four — and deliberately so: the
-#: finding should be unarguable, not a matter of taste about cadence.
+#: deliberately generous: the finding should be unarguable, not a matter of
+#: taste about cadence.
 _STALE_DAYS = 730
+
+
+#: `git@host:owner/repo` and `ssh://git@host/owner/repo` — the SSH remote forms.
+_SSH_SCP_RE = re.compile(r"^(?:ssh://)?git@(?P<host>[^:/]+)[:/](?P<path>.+)$")
+
+
+def _to_https(raw: str) -> str:
+    """An SSH remote as the https URL naming the same repository, else unchanged.
+
+    The badge API only knows https URLs. An SSH remote is not a different
+    project, it is the same project written the way you clone it over SSH, so
+    it should be *translated* rather than asked-and-missed.
+    """
+    m = _SSH_SCP_RE.match(raw)
+    if not m:
+        return raw
+    return f"https://{m.group('host')}/{m.group('path')}"
 
 
 def url_variants(repo_url: str) -> list:
@@ -65,6 +90,14 @@ def url_variants(repo_url: str) -> list:
     the stored string would have reported "no badge" for a silver-badged
     project, which is the wrong-but-plausible answer in its purest form.
 
+    SSH remotes are translated to https first (2026-08-31). Before that,
+    `git@github.com:odpi/egeria.git` was sent to the API verbatim, matched
+    nothing, and — because "matched nothing" is indistinguishable from "this
+    project is not registered" — was reported as `not_registered`: a confident
+    false negative about a silver-badged project, produced by the URL form
+    alone. That is the exact lie this module's header says it exists to
+    prevent, arriving through a variant it did not anticipate.
+
     Only forms that mean the same repository are tried, and only until one
     hits, so a genuinely unregistered project still costs a single request per
     distinct variant and lands on the honest answer.
@@ -72,13 +105,15 @@ def url_variants(repo_url: str) -> list:
     raw = (repo_url or "").strip()
     if not raw:
         return []
-    trimmed = raw.rstrip("/")
+    canonical = _to_https(raw)
+    trimmed = canonical.rstrip("/")
     if trimmed.endswith(".git"):
         trimmed = trimmed[: -len(".git")]
     out = [trimmed]
-    if raw != trimmed:
-        out.append(raw)
-    return out
+    for form in (canonical, raw):
+        if form not in out:
+            out.append(form)
+    return [u for u in out if u.startswith(("http://", "https://"))]
 
 
 def _query_one(url: str, timeout: int) -> tuple:
@@ -111,7 +146,12 @@ def fetch_badge(repo_url: str, *, timeout: int = _TIMEOUT) -> tuple:
     """
     variants = url_variants(repo_url)
     if not variants:
-        return None, "no repository URL is recorded"
+        raw = (repo_url or "").strip()
+        # An unusable URL is a fact about US, never about the project. Falling
+        # through to `(None, "")` here would render as `not_registered`.
+        return None, ("no repository URL is recorded" if not raw else
+                      f"the recorded repository URL is not one the badge API can be "
+                      f"asked about ({raw[:60]!r})")
     first_error = ""
     for url in variants:
         record, error = _query_one(url, timeout)
@@ -234,6 +274,21 @@ def headline(findings: list) -> str:
         " (self-assessment is stale)" if stale else "")
 
 
+def _badge_outcome(level):
+    """recovered / no_signal / unverified for one badge lookup.
+
+    Deliberately mirrors `headline()`'s own three branches rather than
+    inventing a fourth reading: if these two ever disagree, the summary a human
+    reads and the label a query reads would be describing different runs.
+    """
+    if not level or not level["detail"]["known"]:
+        return StepOutcome("unverified", cause="badge lookup could not be completed")
+    if level["label"] == "not_registered":
+        return no_signal("the badge API answered and this project has no badge",
+                         known_positive=True)
+    return StepOutcome("recovered", detail={"badge_level": level["label"]})
+
+
 class CiiBadgeSurveyor(BaseSurveyor):
     """The real OpenSSF Best Practices badge, read rather than estimated."""
 
@@ -261,7 +316,17 @@ class CiiBadgeSurveyor(BaseSurveyor):
                 candidate_classifications=[
                     f["label"] for f in findings if f["detail"]["known"] and f["label"]],
                 confidence=100 if (level and level["detail"]["known"]) else 0,
-                json_properties={f["check_name"]: f["label"] for f in findings},
+                json_properties={
+                    **{f["check_name"]: f["label"] for f in findings},
+                    # Three states this step has always kept apart in prose —
+                    # "not_registered  a FACT about the project" versus
+                    # "unreachable  we could not ask. Never rendered as
+                    # not_registered" — and which the shared vocabulary could
+                    # not see. `known` is the lookup having succeeded, which is
+                    # exactly the known-positive: the badge API answering about
+                    # this project and saying "no badge" is a provable absence.
+                    **_badge_outcome(level).as_row(),
+                },
             ))
         except Exception as exc:
             log.exception("CiiBadgeSurveyor failed for %s", self.project.slug)

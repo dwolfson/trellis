@@ -47,6 +47,7 @@ from pathlib import Path
 
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ResourceMeasureAnnotation
 
 log = logging.getLogger(__name__)
@@ -116,6 +117,17 @@ class FileInventorySurveyor(BaseSurveyor):
                         "file_count": file_count,
                         "surveyed_at": self._surveyed_at,
                     },
+                    # A zipball that extracted to zero files is not a repo with
+                    # no files — it is an extraction that produced nothing, and
+                    # every step downstream reads this inventory. There is no
+                    # known-positive available here: the count IS the
+                    # measurement, so a zero cannot be shown to be real.
+                    json_properties=(
+                        StepOutcome("recovered", detail={"file_count": file_count})
+                        if file_count else
+                        StepOutcome("unverified",
+                                    cause="zipball extraction inventoried no files")
+                    ).as_row(),
                 )
             )
         except Exception as exc:
@@ -133,6 +145,8 @@ class FileInventorySurveyor(BaseSurveyor):
                         "inventory in this run report against the previously stored contents."
                     ),
                     resource_properties={"file_count": 0, "error": str(exc)},
+                    json_properties=StepOutcome("unverified", cause="file inventory refresh failed",
+                                              detail={"error": str(exc)}).as_row(),
                 )
             )
         return results

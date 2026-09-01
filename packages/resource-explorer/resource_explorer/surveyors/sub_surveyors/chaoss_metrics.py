@@ -54,6 +54,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
+from resource_explorer.step_outcome import StepOutcome, no_signal
 from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
 
 log = logging.getLogger(__name__)
@@ -327,10 +328,16 @@ class ChaossMetricsSurveyor(BaseSurveyor):
                     surveyed_at=self._surveyed_at,
                 )
                 out.append(ClassificationAnnotation(
-summary=_NOTHING_TO_ASSESS,
+                    summary=_NOTHING_TO_ASSESS,
                     analysis_step=STEP,
                     candidate_classifications=["not_established"],
                     confidence=0,
+                    # The reasoning here was already right — confidence 0 and a
+                    # `not_established` label. What it could not do was reach
+                    # the "which tools suit which repos" query, which reads the
+                    # step-outcome label and nothing else.
+                    json_properties=StepOutcome(
+                        "unverified", cause="no commit history to assess").as_row(),
                 ))
                 return out
 
@@ -351,7 +358,19 @@ summary=_NOTHING_TO_ASSESS,
                 candidate_classifications=[
                     m["label"] for m in metrics if m["detail"]["known"] and m["label"]],
                 confidence=80,
-                json_properties={m["check_name"]: m["label"] for m in metrics},
+                json_properties={
+                    **{m["check_name"]: m["label"] for m in metrics},
+                    # `known` is the per-metric known-positive the assessor
+                    # already computes: a metric it could establish is one it
+                    # had the data for. None established over real rows is a
+                    # provable zero; none established over nothing is not.
+                    **(StepOutcome("recovered", detail={"metrics": len(metrics)})
+                       if any(m["detail"]["known"] for m in metrics)
+                       else no_signal("no CHAOSS metric could be established from the "
+                                      "commit history read",
+                                      known_positive=bool(rows),
+                                      rows_read=len(rows))).as_row(),
+                },
             ))
         except Exception as exc:
             log.exception("ChaossMetricsSurveyor failed for %s", self.project.slug)

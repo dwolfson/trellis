@@ -631,12 +631,18 @@ def query_dependencies(resource_slug: str, dep_type: str = "all") -> str:
             return _absence(slug, "dependency_analysis", "dependencies")
         lines = [
             f"Dependencies for **{slug}** (filter: {dep_type}):", "",
-            "| Package | Version | Type | Ecosystem | Source |",
-            "|---------|---------|------|-----------|--------|",
+            # "Version From" is provenance for the Version column — "declared"
+            # means the manifest wrote that version at this dependency's own
+            # declaration site; "variable_interpolation"/"version_catalog" mean
+            # it was resolved from elsewhere (a Gradle `ext` variable or a
+            # version catalog) and is not what the coordinate literally said.
+            "| Package | Version | Version From | Type | Ecosystem | Source |",
+            "|---------|---------|--------------|------|-----------|--------|",
         ]
         for d in deps:
             lines.append(
                 f"| {d['dep_name']} | {d['dep_version'] or '—'} | "
+                f"{d.get('dep_version_source') or '—'} | "
                 f"{d['dep_type']} | {d['ecosystem']} | {d['source_file']} |"
             )
         return "\n".join(lines)

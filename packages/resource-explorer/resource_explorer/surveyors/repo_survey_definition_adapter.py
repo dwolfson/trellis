@@ -66,6 +66,8 @@ from resource_explorer.surveyors.sub_surveyors import (
     DependencySurveyor,
     DocumentationSurveyor,
     FossScorecardSurveyor,
+    SecuritySummarySurveyor,
+    RefreshPlanSurveyor,
     FileInventorySurveyor,
     GitStatisticsSurveyor,
     WebsiteIngestionSurveyor,
@@ -169,6 +171,15 @@ class StepInfo:
     # once per SurveyOrchestrator.run() call, deduped across every step
     # selected in that run, via trellis_microflow.resolve_resources — see
     # RESOURCE_PROVIDERS below for what "zipball_root" actually does.
+    #: Preconditions on STORED DATA, checked before dispatch — names from
+    #: `step_preconditions.PRECONDITIONS`, mapped to this step's own reason for
+    #: needing them. Distinct from `requires_resources` (a zipball, a clone),
+    #: which is about runtime inputs: this is "another step's output is absent,
+    #: so there is nothing here to work on". Unmet produces a
+    #: `skipped_by_design` annotation carrying the reason, never silence — a step
+    #: that vanishes from a report is indistinguishable from one that ran and
+    #: found nothing.
+    requires_context: dict[str, str] = field(default_factory=dict)
     requires_resources: dict[str, str] = field(default_factory=dict)
     # {resource_name: view} — what this step actually READS from that
     # resource. Checked against the provider's `provides` at import by
@@ -276,6 +287,21 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # file_inventory is early — STEP_REGISTRY order is "Repo Full Survey" order,
     # so a refresh placed after its readers leaves them on the previous run's
     # numbers. API-only, no zipball, so it costs nothing to put first.
+    # FIRST, and the position is load-bearing. A planner reads stored state to
+    # say what a run needs, which is only useful BEFORE the run does it —
+    # placed next to the other reducer it landed at index 34 of 36 in "Repo
+    # Full Survey", planning a run that had already happened. Full Survey is
+    # generated from the "*" sentinel, so position in this dict IS position in
+    # that chain. The mirror of repo_security_summary, which must be last.
+    "repo_refresh_plan": StepInfo(
+        "repo_refresh_plan", RefreshPlanSurveyor,
+        "What a refresh would actually need to do: which targets have never run, "
+        "which are stale against the current head commit, and which are current. "
+        "One GitHub call, no archive download. ADVISORY — the executor runs every "
+        "step regardless, so this records the decision rather than enforcing it.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+    ),
     "repo_git_statistics": StepInfo(
         "repo_git_statistics", GitStatisticsSurveyor,
         "Refreshes project_stats (stars, forks, contributors, commit activity, "
@@ -567,6 +593,21 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # One batched call to a public advisory database — no repo download,
         # and nothing fetched about the repo itself.
         fetch_cost="api",
+        # Left at the implicit default `low` after measuring, 2026-09-01.
+        # 13 runs give median 0.02s and p90 8.1s — over the 5s ceiling, but
+        # only 1.6x, and step_cost_observer's ceilings are "generous on
+        # purpose ... to catch order-of-magnitude errors, not to police
+        # seconds". A 1.6x p90 on n=13 with a 0.02s median is not that.
+        # Raising it would also have taken RepoAssessmentSurvey out of its
+        # all-low shape, which is a statement about MEMBERSHIP, not a number
+        # to bump — see test_analysis_survey_carries_the_expensive_steps.
+
+        requires_context={
+            "has_versioned_dependencies":
+                "cve_scan queries OSV by (package, VERSION), so a dependency with "
+                "no resolved version cannot be asked about — parsed coordinates "
+                "alone are not enough",
+        },
     ),
     "repo_foss_scorecard": StepInfo(
         "repo_foss_scorecard", FossScorecardSurveyor,
@@ -577,6 +618,26 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         accepts_surveyed_at=True,
         # Reads project_stats and other analyses' findings — no fetch of its
         # own, the same relationship repo_ci_quality has with its own data.
+        #
+        # **This is a REDUCER and was not declared as one.** It consumes five
+        # other steps' findings through query_findings(): ci_quality,
+        # security_hygiene, security_features, cve_scan, supply_chain.
+        # repo_security_summary carries "A reducer: no fetch, and no measurement
+        # of its own"; this said only "reads ... other analyses' findings",
+        # which describes the same fact without naming the dependency, so
+        # nothing recorded that its inputs must run first and no test pinned it.
+        #
+        # It cost a real bug. The kind list said `security_scan` — the analysis
+        # ID from analysis_catalog.yaml — where the finding KIND written by
+        # SecurityHygieneSurveyor is `security_hygiene`. Measured 2026-09-01:
+        # kind `security_scan` had 0 rows across 0 repos while `security_hygiene`
+        # had 252 `security_policy` findings, and every foss_scorecard
+        # security-policy verdict on record (155) was `unknown`. The scorecard
+        # was reporting a fact about its own lookup as a fact about the project.
+        #
+        # Ordering is now pinned in tests/test_step_execution_order.py — inputs
+        # at positions 3-21, this at 22 — so a reordering cannot silently feed
+        # it missing inputs.
     ),
     "repo_maturity": StepInfo(
         "repo_maturity", MaturitySurveyor,
@@ -624,11 +685,27 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # silent.
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
-        # One of the 4 zipball steps. compute_cost="medium", not "low":
-        # Tier 2 profiles every readable data file's rows/columns/dtypes/
-        # null-rate with pandas, real per-file work beyond a table read.
+        # One of the 4 zipball steps. It declared compute_cost="medium" on the
+        # reasoning that Tier 2 profiles every readable data file's rows/columns/
+        # dtypes/null-rate with pandas — real per-file work beyond a table read.
+        #
+        # Measurement disagrees, and the evidence had to be narrowed before it
+        # meant anything. Raw, this step shows 0.01s median across 85 runs — a
+        # number that cannot distinguish "cheap" from "never reached its input",
+        # which is the absence-looks-like-zero shape relocated into the measuring
+        # instrument (step_cost_observer.Observation.interpretable exists for
+        # exactly this, and names this step in its own comment).
+        #
+        # Restricted to the 26 INTERPRETABLE observations — non-zero annotation
+        # count, no `unverified` outcome, so the run provably had work to do:
+        # median 39 annotations, elapsed median 0.10s, p90 0.76s, max 1.41s.
+        # Comfortably inside `low`'s 5s ceiling WITH proof it was working, which
+        # the raw median could never have supported.
+        #
+        # Over-declaring is not harmless: it excluded this step from
+        # max_compute_cost="low" runs — the cheap tier it is well suited to.
         fetch_cost="download",
-        compute_cost="medium",
+        compute_cost="low",
     ),
     "repo_file_classification": StepInfo(
         "repo_file_classification", FileClassifierSurveyor,
@@ -681,6 +758,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # findings.md §1): 5.3s per repo for the whole toolchain, so "fast"
         # is honest rather than optimistic.
         fetch_cost="download",
+        # Measured 2026-09-01, left at `low`: 147 runs, median 1.3s, p90 7.1s.
+        # Over the 5s ceiling by 1.4x, which is inside the noise the ceilings
+        # were deliberately made generous to tolerate. Recorded rather than
+        # acted on, so the next person does not re-derive it.
         compute_cost="low",
     ),
     "repo_arch_coupling": StepInfo(
@@ -698,7 +779,11 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         requires_views={"zipball_root": VIEW_SOURCE,
                         "git_clone_root": VIEW_HISTORY},
         fetch_cost="download",
-        compute_cost="medium",
+        # Re-declared 2026-09-01 from 32 measured runs: p90 132s against the
+        # 60s `medium` ceiling, median 0 connects. The git-history walk is
+        # real compute, and calling it medium admitted it to runs that had
+        # budgeted a minute.
+        compute_cost="high",
     ),
     "repo_arch_lens": StepInfo(
         "repo_arch_lens", ArchLensSurveyor,
@@ -783,6 +868,32 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # zipball_root would force a download on every run including the common
     # no-op case. The resource-sharing win doesn't apply to a step whose common
     # case is fetching nothing at all.
+    # Placed after every security step it reads, and BEFORE
+    # repo_rag_ingestion, which has its own invariant: it is the most
+    # expensive step and nothing downstream reads it, so it stays last
+    # and must not delay the cheap signals a survey exists to produce
+    # (test_rag_ingestion_runs_last).
+    #
+    # Position here is load-bearing: "Repo Full Survey" is generated from
+    # the "*" sentinel — every STEP_REGISTRY step in this dict's order —
+    # so where this entry sits IS its position in that chain. Written
+    # first next to the other security steps, it landed at index 21 of 34,
+    # ahead of foss_scorecard and cve_scan, and would have reduced over
+    # inputs that had not run yet. Moving it to the very end then
+    # displaced rag_ingestion and broke that invariant instead. The
+    # requirement is "after its inputs", not "last" — the two only looked
+    # the same in the Assessment Survey, where nothing follows it anyway.
+    "repo_security_summary": StepInfo(
+        "repo_security_summary", SecuritySummarySurveyor,
+        "Reduces the security family's stored findings to one topic summary. "
+        "Measures nothing itself — it reads what the other security steps wrote, "
+        "so it belongs LAST in any survey that runs them. Reports coverage and "
+        "the age of its oldest input alongside the verdict, and refuses a verdict "
+        "at all below four inputs.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+        # A reducer: no fetch, and no measurement of its own.
+    ),
     "repo_rag_ingestion": StepInfo(
         "repo_rag_ingestion", RagIngestionSurveyor,
         "Refreshes the project's pgvector collections via IncrementalIndexer — "
@@ -1299,6 +1410,76 @@ def _cve_scan_headline(registry, slug: str) -> dict | None:
     # A clean result never states itself without its coverage.
     return {"label": f"none in {checked} of {recorded} declared dependenc(ies)",
             "tone": "good" if checked == recorded else "warn"}
+
+
+def _refresh_plan_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "refresh_plan")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"],
+         "confidence": r["confidence"], "detail": _json_or_empty(r.get("detail_json")),
+         "surveyed_at": r["surveyed_at"]}
+        for r in rows
+    ]}
+
+
+def _refresh_plan_headline(registry, slug: str) -> dict | None:
+    """States that it is advisory, because a plan read as an action is the whole
+    risk here — "nothing to refresh" must not be mistaken for "nothing ran"."""
+    rows = _refresh_plan_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    overall = next((r for r in rows if r["check_name"] == "refresh_needed"), None)
+    if not overall:
+        return None
+    if overall["label"] == "unknown":
+        return {"label": "refresh need unknown — head commit unreadable", "tone": "neutral"}
+    d = overall["detail"]
+    if overall["label"] == "no":
+        return {"label": f"nothing stale ({d.get('total')} targets current)", "tone": "good"}
+    return {"label": f"{d.get('needed')} of {d.get('total')} targets need refreshing",
+            "tone": "warn"}
+
+
+def _security_summary_results(registry, slug: str) -> dict:
+    """The reduced topic summary. Findings only — the interesting values
+    (coverage, oldest input) already ride in each finding's detail, and
+    duplicating them at the top would give two places to disagree."""
+    rows = registry.query_findings(slug, "security_summary")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"],
+         "confidence": r["confidence"], "detail": _json_or_empty(r.get("detail_json")),
+         "surveyed_at": r["surveyed_at"]}
+        for r in rows
+    ]}
+
+
+def _security_summary_headline(registry, slug: str) -> dict | None:
+    """Coverage and staleness are part of the headline, not a detail below it.
+
+    A one-word verdict is the whole risk of a topic summary: "clean" over four
+    of eight inputs, resting on month-old evidence, reads identically to "clean"
+    over all eight measured this morning. If the tile has room for one line, that
+    line has to carry both.
+    """
+    rows = _security_summary_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    posture = next((r for r in rows if r["check_name"] == "security_posture"), None)
+    coverage = next((r for r in rows if r["check_name"] == "input_coverage"), None)
+    fresh = next((r for r in rows if r["check_name"] == "summary_freshness"), None)
+    if not posture or not posture["detail"].get("known"):
+        return {"label": "not enough inputs to summarise", "tone": "neutral"}
+
+    cov = coverage["detail"] if coverage else {}
+    bits = [f"security: {posture['label']}"]
+    if cov.get("total"):
+        bits.append(f"{cov.get('covered')}/{cov.get('total')} inputs")
+    if fresh and fresh["label"] == "stale":
+        bits.append("evidence is stale")
+    tone = ("bad" if posture["label"] == "concerns"
+            else "warn" if (fresh and fresh["label"] == "stale") or cov.get("missing")
+            else "good")
+    return {"label": " · ".join(bits), "tone": tone}
 
 
 def _foss_scorecard_results(registry, slug: str) -> dict:
@@ -2583,6 +2764,21 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             headline_reader=_foss_scorecard_headline,
         ),
     ),
+    "refresh_plan": AnalysisKind(
+        "refresh_plan", ["repo_refresh_plan"],
+        results=AnalysisKindResults(
+            _refresh_plan_results, None, "findings_list",
+            headline_reader=_refresh_plan_headline,
+        ),
+    ),
+    "security_summary": AnalysisKind(
+        "security_summary", ["repo_security_summary"],
+        family="security",
+        results=AnalysisKindResults(
+            _security_summary_results, None, "findings_list",
+            headline_reader=_security_summary_headline,
+        ),
+    ),
     "maturity": AnalysisKind(
         "maturity", ["repo_maturity"],
         results=AnalysisKindResults(_maturity_results, None, "findings_list", headline_reader=_maturity_headline),
@@ -2802,7 +2998,11 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         "security picture in one place, not five separate cards. Also gathers the three "
         "externally-sourced trust signals (CVE advisories, OpenSSF Scorecard, OpenSSF Best "
         "Practices badge) that ask the same question from outside the repo.",
-        ["security_scan", "security_features", "ci_quality", "license_classification",
+        # security_summary FIRST: it is the reduction of the other eight, and a
+        # reader who stops after one card should get the one that names its own
+        # coverage and staleness rather than an arbitrary input.
+        ["security_summary",
+         "security_scan", "security_features", "ci_quality", "license_classification",
          "repo_conventions", "cve_scan", "foss_scorecard", "cii_badge"],
         render="custom", custom_renderer="renderSecurityOverviewDashboard",
     ),
@@ -2878,11 +3078,15 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         ["repo_classification"],
     ),
     "manifest_refresh": SurveyResultDashboard(
-        "manifest_refresh", "Manifest Refresh",
-        "The last dependency/CI-workflow/repo-convention refresh from a fresh zipball — what "
-        "changed, not a fourth view of dependency_analysis/ci_quality/repo_conventions' own "
-        "data (those are the dashboards for that; this reports the refresh itself).",
-        ["manifest_parse"],
+        "manifest_refresh", "Refresh",
+        "Whether this repo's derived data is current, and the last refresh of it. The plan comes "
+        "first: which targets are stale, which never ran, and which are already current — judged "
+        "per target, since a target that never ran needs work whatever the commit says. Then the "
+        "manifest refresh itself. Not a fourth view of dependency_analysis/ci_quality/"
+        "repo_conventions' own data (those are the dashboards for that); this reports the refresh.",
+        # refresh_plan first: it is the one card that says whether anything here
+        # needed doing, which is the question a reader arrives with.
+        ["refresh_plan", "manifest_parse"],
     ),
 }
 

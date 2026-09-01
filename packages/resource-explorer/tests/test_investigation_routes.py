@@ -904,3 +904,97 @@ def test_list_investigations_default_view_includes_suspended_but_not_closed(clie
     all_slugs = {i["slug"] for i in client.get("/api/investigations/?include_closed=true").json()}
     assert suspended_inv["slug"] in all_slugs
     assert closed_inv["slug"] in all_slugs
+
+
+class _FailingCM(_StubCM):
+    """Attaches the Collection fine, but every membership write fails —
+    the shape of a real permissions or transient-server problem."""
+
+    def add_to_collection(self, collection_guid, element_guid, body=None):
+        raise RuntimeError("Egeria said no")
+
+
+def test_a_failed_membership_becomes_a_retryable_row_not_a_forgotten_note(made, monkeypatch):
+    """The gap the outbox closes for investigations.
+
+    Before this, a member whose add_to_collection failed was appended to
+    members_unlinkable and forgotten — the promotion reported partial success
+    and nothing ever tried again. Now the failure is a durable row the
+    scheduler retries.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Failing Members")
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "published-repo")
+    monkeypatch.setattr(EgeriaInvestigationPublisher, "_asset_guid",
+                        lambda self, et, es: "asset-guid-1")
+
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=_StubPM(), collection_manager=_FailingCM(),
+    ).promote(inv["slug"])
+
+    # Reported honestly to the caller...
+    assert res.members_linked == []
+    assert len(res.members_unlinkable) == 1
+    assert "queued for retry" in res.members_unlinkable[0]["reason"]
+
+    # ...AND still queued, which is the actual change.
+    queued = [r for r in reg.list_outbox_elements(entity_slug=inv["slug"], limit=50)
+              if r["element_kind"] == "collection_membership" and r["status"] != "done"]
+    assert len(queued) == 1
+    assert queued[0]["entity_type"] == "investigation"
+    assert "Egeria said no" in queued[0]["last_error"]
+
+
+def test_a_member_with_no_asset_is_never_queued(made):
+    """The two outcomes stay distinct. No asset GUID is a fact about the
+    catalog, not a failed write — queueing it would retry a fact forever."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Unpublished Member")
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "definitely-not-published-abc")
+
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=_StubPM(), collection_manager=_StubCM(),
+    ).promote(inv["slug"])
+
+    assert "not published to Egeria yet" in res.members_unlinkable[0]["reason"]
+    # Scoped to THIS investigation: the registry is shared across tests in this
+    # module, so an unscoped assertion would pass or fail on what ran before it.
+    assert [r for r in reg.list_outbox_elements(entity_slug=inv["slug"], limit=50)
+            if r["element_kind"] == "collection_membership"] == []
+
+
+def test_a_successful_membership_still_links_before_promote_returns(made, monkeypatch):
+    """The happy path is unchanged: enqueue and drain happen inline, so a
+    caller sees the same result it saw before the outbox existed."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    inv = made(display_name="Happy Members")
+    reg = ProjectRegistry()
+    ws = reg.get_or_create_working_set(inv["slug"])
+    reg.add_working_set_member(ws["slug"], "repo", "published-repo")
+    monkeypatch.setattr(EgeriaInvestigationPublisher, "_asset_guid",
+                        lambda self, et, es: "asset-guid-1")
+
+    cm = _StubCM()
+    res = EgeriaInvestigationPublisher(
+        reg, project_manager=_StubPM(), collection_manager=cm,
+    ).promote(inv["slug"])
+
+    assert res.members_linked == ["published-repo"]
+    assert res.members_unlinkable == []
+    assert cm.members == [("coll-1", "asset-guid-1")]

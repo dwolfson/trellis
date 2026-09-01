@@ -112,7 +112,11 @@ def _compiled_payload(agent) -> dict | None:
 
 class FeedbackRequest(BaseModel):
     query_hash: str
-    vote: int  # +1 or -1
+    # +1 positive, 0 neutral/"partially correct", -1 negative -- same
+    # convention EA uses (advisor/web/app.py:131-135). record_feedback()
+    # scores these as three explicit states, not a sign test -- see
+    # metrics_collector.py's record_feedback docstring.
+    vote: int
 
 
 def _pick_chart(query: str, intent: str, resource_slug: str) -> dict | None:
