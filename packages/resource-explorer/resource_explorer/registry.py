@@ -1,6 +1,7 @@
 """Project Registry — SQLite-backed store for registered GitHub projects and databases."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -1513,6 +1514,72 @@ class ProjectRegistry:
                 conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes_synced_value TEXT DEFAULT ''")
             if "notes_sync_error" not in existing_rfa:
                 conn.execute("ALTER TABLE rfa_actions ADD COLUMN notes_sync_error TEXT DEFAULT ''")
+            # RFA dismissals — "this finding is not actionable here", recorded
+            # as a ROW, never as a deletion.
+            #
+            # Dan, direct feedback (2026-08-31): "it seems that another option
+            # should be Ignore (or Not Applicable) because the user, generally
+            # can't do something about no SECURITY.md file found on repos they
+            # don't control". Followed by: "suppress with visibility - do both -
+            # there may be a future admin setting that allows you to reset or
+            # clear some of these decisions in the future (for example, you
+            # become a maintainer)". Hence `cleared_at`/`cleared_by`: reversing
+            # a dismissal is an UPDATE that leaves the original judgement
+            # legible, not an undelete of something that was thrown away.
+            #
+            # Why this is NOT a new rfa_status on rfa_actions, which already
+            # carries open/deferred/reassigned/completed:
+            #
+            #  1. rfa_actions is keyed by rfa_id = "{entry_id}::{index}" — an
+            #     identity for ONE OCCURRENCE in ONE activity-log entry. Every
+            #     survey run writes a new entry, so a dismissal recorded there
+            #     would be forgotten the next time the same survey ran. The
+            #     whole point of "not applicable" is that the finding WILL
+            #     recur (nobody is going to add SECURITY.md to a repo they
+            #     don't own) and must stay suppressed when it does. So the key
+            #     has to be the finding's CONTENT, not its occurrence.
+            #  2. rfa_actions rows sync to real Egeria ToDos
+            #     (rfa_egeria_sync.sync_rfa_action). "We are not going to act
+            #     on this" is a local judgement about our own view, not a
+            #     governance task for anyone to carry out — putting it in that
+            #     table would push a ToDo into Egeria for every dismissal.
+            #
+            # The content key is (entity_type, entity_slug, analysis_name,
+            # summary_key), deliberately the SAME tuple the drawer already
+            # groups same-finding occurrences by (index.html's `byFinding`
+            # map, analysis_name + summary within an entity) — one dismissal
+            # therefore suppresses exactly one rendered group, including the
+            # occurrences a future run has not produced yet.
+            #
+            # Known limit, disclosed rather than designed around: a summary
+            # carrying a changing measurement ("...: 209.7 MB across 699
+            # files") produces a different key each run, so a dismissal
+            # against it stops matching. That is correct behaviour for a
+            # measurement — the number changed, so the judgement may need
+            # revisiting — and wrong-feeling for a finding that is really the
+            # same one. Real RFA summaries measured 2026-09-01 are stable
+            # text ("No SECURITY.md found"), so this bites nothing today; if a
+            # measurement-bearing RFA appears later, the fix is a normalised
+            # key on that annotation, not a looser match here.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS rfa_dismissals (
+                    id            TEXT PRIMARY KEY,
+                    entity_type   TEXT NOT NULL DEFAULT '',
+                    entity_slug   TEXT NOT NULL,
+                    analysis_name TEXT NOT NULL DEFAULT '',
+                    summary_key   TEXT NOT NULL DEFAULT '',
+                    reason        TEXT NOT NULL,
+                    note          TEXT DEFAULT '',
+                    created_by    TEXT DEFAULT '',
+                    created_at    TEXT NOT NULL,
+                    cleared_at    TEXT DEFAULT '',
+                    cleared_by    TEXT DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rfa_dismissals_entity "
+                "ON rfa_dismissals(entity_slug)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS annotation_types (
                     annotation_type TEXT PRIMARY KEY,
@@ -5762,6 +5829,131 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM rfa_actions").fetchall()
         return {r["id"]: dict(r) for r in rows}
+
+    # ── RFA dismissals ──────────────────────────────────────────────────
+    # See the rfa_dismissals DDL above for why this is a content-keyed table
+    # of its own rather than another rfa_status on rfa_actions.
+
+    RFA_DISMISSAL_REASONS = ("not_applicable", "wont_do")
+
+    @staticmethod
+    def rfa_dismissal_key(
+        entity_type: str, entity_slug: str, analysis_name: str, summary_key: str
+    ) -> str:
+        """The one place the content key is derived.
+
+        Both the write path (dismiss_rfa) and the read path
+        (active_rfa_dismissals) call this — a dismissal that hashed
+        differently from the lookup that has to find it would suppress
+        nothing, silently, with no error anywhere. One function, so the two
+        cannot drift apart.
+
+        Whitespace-normalised and case-folded so a summary that gains a
+        trailing space between runs still matches; NOT otherwise fuzzy (see
+        the known limit in the DDL comment)."""
+        parts = [
+            (entity_type or "").strip().lower(),
+            (entity_slug or "").strip().lower(),
+            (analysis_name or "").strip().lower(),
+            " ".join((summary_key or "").split()).lower(),
+        ]
+        return hashlib.sha256("\u001f".join(parts).encode("utf-8")).hexdigest()[:32]
+
+    def dismiss_rfa(
+        self,
+        entity_type: str,
+        entity_slug: str,
+        analysis_name: str,
+        summary_key: str,
+        reason: str,
+        note: str = "",
+        created_by: str = "",
+    ) -> dict:
+        """Record that a finding is not going to be acted on here.
+
+        Re-dismissing a previously cleared dismissal reinstates it in place
+        (same row, cleared_at/cleared_by blanked, created_at restamped)
+        rather than accumulating a second row for the same finding — the
+        table answers "is this suppressed right now", and one finding has one
+        answer.
+
+        Raises ValueError on an unknown reason: an unrecognised value would
+        otherwise be stored and then never match any filter, which is the
+        silent-no-op shape this whole table exists to avoid."""
+        if reason not in self.RFA_DISMISSAL_REASONS:
+            raise ValueError(
+                f"Unknown dismissal reason {reason!r} — expected one of "
+                f"{', '.join(self.RFA_DISMISSAL_REASONS)}"
+            )
+        if not (entity_slug or "").strip():
+            raise ValueError("entity_slug is required — a dismissal with no subject matches everything")
+        did = self.rfa_dismissal_key(entity_type, entity_slug, analysis_name, summary_key)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO rfa_dismissals
+                       (id, entity_type, entity_slug, analysis_name, summary_key,
+                        reason, note, created_by, created_at, cleared_at, cleared_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')
+                   ON CONFLICT(id) DO UPDATE SET
+                       reason = excluded.reason,
+                       note = excluded.note,
+                       created_by = excluded.created_by,
+                       created_at = excluded.created_at,
+                       cleared_at = '',
+                       cleared_by = ''""",
+                (did, entity_type, entity_slug, analysis_name, summary_key,
+                 reason, note, created_by, now),
+            )
+            row = conn.execute("SELECT * FROM rfa_dismissals WHERE id = ?", (did,)).fetchone()
+        return dict(row)
+
+    def clear_rfa_dismissal(self, dismissal_id: str, cleared_by: str = "") -> dict | None:
+        """Reverse a dismissal, keeping the record.
+
+        Returns the updated row, or None if no such dismissal exists —
+        distinguishable by the caller from "cleared it", so a stale id
+        reports as not-found instead of as success. Clearing an
+        already-cleared dismissal is a no-op that still returns the row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM rfa_dismissals WHERE id = ?", (dismissal_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            if not (row["cleared_at"] or ""):
+                conn.execute(
+                    "UPDATE rfa_dismissals SET cleared_at = ?, cleared_by = ? WHERE id = ?",
+                    (now, cleared_by, dismissal_id),
+                )
+                row = conn.execute(
+                    "SELECT * FROM rfa_dismissals WHERE id = ?", (dismissal_id,)
+                ).fetchone()
+        return dict(row)
+
+    def active_rfa_dismissals(self) -> dict[str, dict]:
+        """Currently-suppressing dismissals, keyed by content key.
+
+        Only rows with an empty cleared_at — a cleared dismissal stays in the
+        table as history and must not go on suppressing anything."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rfa_dismissals WHERE COALESCE(cleared_at, '') = ''"
+            ).fetchall()
+        return {r["id"]: dict(r) for r in rows}
+
+    def list_rfa_dismissals(self, include_cleared: bool = False) -> list[dict]:
+        """Every dismissal, newest first — the listing a future admin surface
+        reads to review and reverse past decisions. Cleared ones are excluded
+        by default so the common read is "what is suppressed now"."""
+        sql = "SELECT * FROM rfa_dismissals"
+        if not include_cleared:
+            sql += " WHERE COALESCE(cleared_at, '') = ''"
+        sql += " ORDER BY created_at DESC"
+        with self._conn() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [dict(r) for r in rows]
 
     def mark_rfa_synced(self, rfa_id: str, egeria_todo_guid: str) -> None:
         """Record a successful Egeria ToDo sync — clears any prior
