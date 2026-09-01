@@ -8949,8 +8949,18 @@ async function _promoteInvestigation(slug) {
     const linked = (r.members_linked || []).length;
     const missed = (r.members_unlinkable || []).length;
     let msg = `Egeria Project created${r.resource_list_linked ? ' with its working set' : ''}. ${linked} resource(s) linked`;
-    if (missed) msg += `, ${missed} could not be — publish those repos to Egeria first`;
-    showToast(missed || r.errors?.length ? 'error' : 'success', msg, 8000);
+    if (missed) msg += `, ${missed} could not be yet — publish those repos to Egeria, then use Relink members`;
+    // Red ONLY for a real error. A member with no asset GUID is not a failure:
+    // its repo has not been published, which on a freshly rebuilt platform is
+    // true of EVERY member of EVERY investigation, so the expected outcome of a
+    // correct promotion was being rendered as a failed one.
+    //
+    // Found 2026-08-31 after a redeploy: the Project, the Folio and the
+    // ResourceList were all created, five members were correctly reported
+    // unlinkable, and the red toast read as "it failed" — which stopped the
+    // remaining two promotions and sent someone hunting a log entry that could
+    // not exist, because nothing had gone wrong.
+    showToast(r.errors?.length ? 'error' : 'success', msg, 8000);
     await loadInvestigationsPanel();
     const list = await (await fetch('/api/investigations/')).json();
     _investigations = Array.isArray(list) ? list : [];
