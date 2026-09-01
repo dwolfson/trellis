@@ -41,8 +41,31 @@ REPAIR_STEPS = (
     "clear_orphan_publish_claims",
     "clear_stale_investigations",
     "clear_stale_contexts",
+    "catalog_assets",
+    "republish_survey_results",
     "relink_investigation_members",
 )
+
+#: Steps that WRITE to Egeria and cost real time, so the UI leaves them
+#: unticked. Everything else here either clears a local record or is cheap
+#: enough that ticking it by default is not a decision made on the user's
+#: behalf. `catalog_assets` is deliberately NOT in this set: it publishes only
+#: `repo_health`, which fetches no archives, and without an asset the relink
+#: step below it has nothing to attach to — leaving it off by default would
+#: make the ordered pass silently do half its job.
+EXPENSIVE_STEPS = frozenset({"reauthor_survey_definitions", "republish_survey_results"})
+
+#: What `catalog_assets` publishes. One step, chosen because it registers the
+#: asset without any `fetch_cost="download"` work — the whole point of having a
+#: cheap tier is that re-cataloguing a corpus does not re-download it.
+CATALOG_STEPS = ("repo_health",)
+
+#: The analysis ids a registration-only publish can leave behind. A repo whose
+#: published analyses are a subset of this has an asset but no real survey
+#: report, which is what `republish_survey_results` exists to fill in. Defined
+#: as a set membership rather than a row count: "fewer than N analyses" would
+#: be a number whose meaning drifts the moment the catalog gains an entry.
+REGISTRATION_ONLY_ANALYSES = frozenset({"repository_health"})
 
 
 @dataclass
@@ -65,6 +88,12 @@ class Finding:
             "count": self.count, "items": self.items[:50],
             "truncated": max(0, self.count - 50),
             "repair_step": self.repair_step, "needs_decision": self.needs_decision,
+            # Surfaced so the UI can leave a costly repair unticked WITHOUT
+            # keeping its own list of which those are. A second copy in the
+            # frontend would be one more thing to forget when a step is added,
+            # and the failure mode of forgetting is silent: a slow, catalog-
+            # writing repair that runs because it defaulted to on.
+            "expensive": self.repair_step in EXPENSIVE_STEPS,
         }
 
 
@@ -153,6 +182,8 @@ class EgeriaResync:
         res.findings.append(self._scan_contexts(res))
         res.findings.append(self._scan_unlinked_members(res))
         res.findings.append(self._scan_unpublished_but_expected())
+        res.findings.append(self._scan_unpublishable())
+        res.findings.append(self._scan_registration_only())
         res.findings.append(self._scan_local_investigations())
         res.findings.append(self._scan_definition_drift(res))
         res.findings.append(self._scan_specification_gap())
@@ -354,78 +385,195 @@ class EgeriaResync:
             items=items, repair_step="relink_investigation_members",
         )
 
-    def _scan_unpublished_but_expected(self) -> Finding:
-        """Repos with an Egeria Project context but no asset — two causes, kept apart.
+    def _publish_readiness(self) -> list[dict]:
+        """Every unpublished repo, with the SAME readiness question the gate asks.
 
-        This reported them all as "previously catalogued that Egeria no longer
-        holds", which is true of only some. Measured 2026-08-27: of seven, four
-        really had been published (2026-08-24/25) and lost the asset to the
-        redeploy, while three — `docs`, `enterprise_rag`, `genaicomps` — carry
-        only a scout import from 2026-08-21 and were never catalogued at all.
+        The publish route (`web/routes/egeria.py`, Part 5 gate) accepts a repo
+        when its own context is anything but `unset` **or** when an investigation
+        it is in scope for supplies one by inheritance. An earlier version of
+        this scan answered only the first half — `publish_ready = status !=
+        "unset"` — and the two answers agreed right up until they did not.
 
-        Telling a reader they lost something they never had sends them looking
-        for a fault that does not exist, and the two need different actions:
-        one is re-registering a known asset, the other is a first publish.
+        Measured 2026-08-31, straight after the three investigations were
+        promoted: 25 of 27 repos carried `unset` and were reported blocked,
+        while all 27 inherited a context and would have published. The field was
+        a correct reading of the context row and a wrong answer to the question
+        it was labelled with, and it went wrong at the moment the user fixed the
+        underlying problem — the panel said the work was blocked precisely
+        because it had just been unblocked.
+
+        So this asks the registry the same question the route asks, rather than
+        a cheaper one that usually matches.
+
+        Population is also wider than the old scan's: that one joined
+        `entity_egeria_project_context`, so a repo with no context row at all
+        was invisible even when an investigation would supply one. `egeria_trellis`
+        was exactly that — needed by a promoted investigation, publishable, and
+        absent from the panel.
         """
-        items = []
+        out = []
         with self._registry._conn() as conn:
             rows = conn.execute(
-                "SELECT c.entity_slug AS slug, c.status AS status "
-                "FROM entity_egeria_project_context c "
-                "JOIN projects p ON p.slug = c.entity_slug "
-                "WHERE c.entity_type = 'repo' AND coalesce(p.egeria_asset_guid, '') = '' "
-                "ORDER BY c.entity_slug"
+                "SELECT p.slug AS slug, coalesce(c.status, '') AS status "
+                "FROM projects p "
+                "LEFT JOIN entity_egeria_project_context c "
+                "  ON c.entity_type = 'repo' AND c.entity_slug = p.slug "
+                "WHERE coalesce(p.egeria_asset_guid, '') = '' "
+                "ORDER BY p.slug"
             ).fetchall()
             for r in rows:
-                # A completed catalog/publish in the activity log is the
-                # evidence that an asset once existed. Absent it, nothing was
-                # lost — this repo has simply never been published.
                 published_before = conn.execute(
                     "SELECT 1 FROM activity_log WHERE entity_slug = ? "
                     "AND operation = 'catalog' AND status = 'ok' LIMIT 1",
                     (r["slug"],),
                 ).fetchone() is not None
-                # Whether the publish route will actually accept the call
-                # this finding recommends. Its Part 5 gate rejects an `unset`
-                # context with 428, so for those repos the advice is refused
-                # by the very endpoint it names. Measured 2026-08-28: the
-                # three repos that could NOT publish were the three "lost"
-                # ones, while the never-catalogued ones could — the inverse of
-                # what the wording implies, which is exactly why this is a
-                # field rather than a sentence.
-                publish_ready = r["status"] != "unset"
-                items.append({
-                    "slug": r["slug"],
-                    "context": r["status"],
+                out.append({
+                    "slug": r["slug"], "context": r["status"] or "none",
                     "was_published": published_before,
-                    "publish_ready": publish_ready,
+                    # Kept per-item, not only in the finding title. The title
+                    # says "4 lost an asset, 3 never had one"; only this says
+                    # WHICH, and the expanded item list is where someone checks
+                    # whether the repo they care about is the one that lost
+                    # something. Dropping it while preserving the counts was a
+                    # regression caught by the test written for the original
+                    # distinction — the counts alone cannot tell a reader that
+                    # the repo in front of them never had an asset to lose.
                     "cause": ("asset lost — it was catalogued before"
                               if published_before else
-                              "never catalogued — a context was set but no publish ran"),
-                    "blocked_reason": ("" if publish_ready else
-                                       "no Egeria Project decided yet — publishing is "
-                                       "refused (428) until one is set"),
+                              "never catalogued — no publish has run for it"),
                 })
+
+        # Inheritance is asked OUTSIDE the connection above: it opens its own.
+        for item in out:
+            if item["context"] not in ("", "none", "unset"):
+                item["publish_ready"] = True
+                item["ready_via"] = f"context '{item['context']}'"
+                continue
+            try:
+                inherited = self._registry.inherited_egeria_project_context(
+                    "repo", item["slug"])
+            except Exception as exc:
+                # Could not ask is never "not ready" — the same rule the rest of
+                # this module runs on. A repo we cannot answer for is offered no
+                # button and says why.
+                item["publish_ready"] = None
+                item["ready_via"] = f"undetermined ({type(exc).__name__})"
+                continue
+            item["publish_ready"] = bool(inherited)
+            item["ready_via"] = (
+                f"inherits from '{inherited['_inherited_from_name']}'"
+                if inherited else "")
+        return out
+
+    def _scan_unpublished_but_expected(self) -> Finding:
+        """Repos with no Egeria asset that CAN be catalogued now.
+
+        Two causes are kept apart in the wording, because they need different
+        reassurance even though the call is identical. Measured 2026-08-27: of
+        seven, four really had been published and lost the asset to the
+        redeploy, while three carried only a scout import and were never
+        catalogued at all. Telling a reader they lost something they never had
+        sends them looking for a fault that does not exist.
+
+        The repair is offered here — unlike the earlier version of this scan,
+        which set `repair_step=""` on the grounds that "publishing is a write
+        and can be slow, so it is never done for you". That reasoning held for a
+        full survey. It does not hold for `CATALOG_STEPS`, which publishes one
+        API-only step, downloads nothing, and is the thing
+        `relink_investigation_members` needs to exist before it can attach
+        anything. Withholding it did not protect anyone from a cost; it left the
+        ordered pass unable to finish, and left the user to run 27 publishes by
+        hand.
+        """
+        items = [i for i in self._publish_readiness() if i["publish_ready"] is True]
         lost = sum(1 for i in items if i["was_published"])
-        blocked = sum(1 for i in items if not i["publish_ready"])
         return Finding(
-            key="needs_republish",
-            title=(f"Repos with an Egeria Project context but no asset "
-                   f"({lost} lost an asset, {len(items) - lost} never had one; "
-                   f"{blocked} awaiting a Project before publishing is possible)"),
-            detail=("Assigning an Egeria Project does NOT clear this — it is what "
-                    "puts a repo here. Having a Project and having an asset are "
+            key="needs_catalog",
+            title=(f"Repos with no Egeria asset that can be catalogued "
+                   f"({lost} lost an asset, {len(items) - lost} never had one)"),
+            detail=("Publishes " + "/".join(CATALOG_STEPS) + " for each — enough to "
+                    "register the asset, and deliberately nothing that downloads an "
+                    "archive. Having an Egeria Project and having an asset are "
                     "different things, and only publishing produces the asset.\n\n"
-                    "Publishing is a write and can be slow, so it is never done for "
-                    "you. Scope it to one cheap step to register the asset: "
-                    "POST /api/egeria/{slug}/publish with steps ['repo_health']. "
-                    "The call is the same either way, but the situations are not: "
-                    "one restores something Egeria lost, the other catalogues a "
-                    "repo for the first time.\n\n"
-                    "A repo whose context is still `unset` cannot use that call at "
-                    "all — the route rejects it with 428 until a Project is chosen. "
-                    "Those carry a blocked_reason."),
+                    "Run this before relinking investigation members: a member with "
+                    "no asset behind it cannot be attached, which is why a promotion "
+                    "on a freshly rebuilt platform reports every member unlinkable.\n\n"
+                    "Full survey results are a separate, slower step — this one does "
+                    "not fetch repository archives."),
+            items=items, repair_step="catalog_assets",
+        )
+
+    def _scan_unpublishable(self) -> Finding:
+        """Repos that cannot be catalogued until someone answers a question.
+
+        Split out from the repairable finding above so the button's population
+        and the button's action agree: every item under a repair step is one
+        that step can actually complete. A mixed list would put a "fix" tick
+        over rows the fix is guaranteed to fail on.
+
+        `publish_ready is None` — the lookup failed — lands here too, and is
+        counted as undetermined rather than blocked.
+        """
+        rows = self._publish_readiness()
+        items = [i for i in rows if i["publish_ready"] is not True]
+        for i in items:
+            i["blocked_reason"] = (
+                "could not determine whether an Egeria Project applies"
+                if i["publish_ready"] is None else
+                "no Egeria Project decided, and no investigation supplies one — "
+                "publishing is refused (428) until one is set")
+        return Finding(
+            key="unpublishable",
+            title=f"Repos with no Egeria asset and no Project to publish under",
+            detail=("Assign an Egeria Project to these, or add them to the working "
+                    "set of an investigation that has one — membership of a bound "
+                    "investigation supplies the binding by inheritance, which is why "
+                    "promoting an investigation can move a repo out of this list "
+                    "without anyone touching the repo itself.\n\n"
+                    "No button: RE does not know which Project these should join, "
+                    "and picking one would be a plausible guess written into the "
+                    "catalog as though it were a decision."),
             items=items, repair_step="", needs_decision=True,
+        )
+
+    def _scan_registration_only(self) -> Finding:
+        """Assets that exist but carry no real survey report.
+
+        The sequel to `catalog_assets`: cataloguing registers the asset with one
+        cheap step, which is the right trade when the goal is to make relinking
+        possible, but it leaves the catalog holding an asset and almost nothing
+        about it. This finds those and offers the full survey publish.
+
+        Membership is a subset test against `REGISTRATION_ONLY_ANALYSES`, not a
+        row count. "Fewer than N published analyses" would be a threshold whose
+        meaning changes silently the next time the analysis catalog grows.
+        """
+        items = []
+        with self._registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT slug FROM projects WHERE coalesce(egeria_asset_guid, '') <> '' "
+                "ORDER BY slug").fetchall()
+            for r in rows:
+                published = {x["analysis_id"] for x in conn.execute(
+                    "SELECT DISTINCT analysis_id FROM project_published_analyses "
+                    "WHERE project_slug = ?", (r["slug"],)).fetchall()}
+                if published and not published <= REGISTRATION_ONLY_ANALYSES:
+                    continue
+                items.append({
+                    "slug": r["slug"],
+                    "published_analyses": ", ".join(sorted(published)) or "none",
+                })
+        return Finding(
+            key="registration_only",
+            title=("Catalogued assets with no survey results published"),
+            detail=("Runs the FULL survey for each and publishes it as a SurveyReport. "
+                    "This is the slow path: it includes steps that download the "
+                    "repository archive, so across a large corpus it is minutes and "
+                    "real GitHub API budget, not seconds.\n\n"
+                    "Left unticked for that reason. The assets are already registered "
+                    "and investigation members can already be attached to them — this "
+                    "adds what is known ABOUT each repo, and nothing depends on it."),
+            items=items, repair_step="republish_survey_results",
         )
 
     def _scan_local_investigations(self) -> Finding:
@@ -686,6 +834,90 @@ class EgeriaResync:
                     "WHERE entity_type = ? AND entity_slug = ?", (etype, eslug))
         return {"contexts_cleared": len(finding.items),
                 "undetermined": len(res.undetermined)}
+
+    def _publish_one(self, slug: str, steps) -> dict:
+        """Survey then publish one repo, mirroring the publish route's own order.
+
+        Deliberately reimplements the route's sequence rather than calling it:
+        the route is an async FastAPI handler that returns HTTP responses, and
+        importing it here to get at its body would couple a repair to a
+        transport. What IS shared is the thing that must not drift — the Part 5
+        context gate, including its inheritance write, reproduced below.
+
+        The inherited context is WRITTEN, not merely used, exactly as the route
+        writes it. An inheritance that left no row would make the resource's
+        context depend on working-set membership at read time, so removing it
+        from the set later would silently un-answer a settled question.
+        """
+        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+        reg = self._registry
+        context = reg.get_project_context("repo", slug)
+        if not context or context.get("status") == "unset":
+            inherited = reg.inherited_egeria_project_context("repo", slug)
+            if not inherited:
+                # The scan promised this would not happen — say so plainly
+                # rather than raising, so one repo that drifted between scan and
+                # apply cannot abort the other twenty-six.
+                return {"slug": slug, "ok": False,
+                        "error": "no Egeria Project context (428) — re-scan"}
+            reg.set_project_context(
+                "repo", slug, status="linked",
+                egeria_project_guid=inherited["egeria_project_guid"],
+                egeria_project_qualified_name=inherited["egeria_project_qualified_name"],
+                free_text_name=(f"inherited from investigation "
+                                f"'{inherited['_inherited_from_name']}'"))
+
+        try:
+            survey = SurveyOrchestrator(registry=reg).run(
+                slug, steps=list(steps) if steps else None)
+        except Exception as exc:
+            return {"slug": slug, "ok": False, "error": f"survey failed: {exc}"}
+
+        # pyegeria's sync wrappers call asyncio.get_event_loop(); give this
+        # thread one, the same way the publish route does.
+        import asyncio as _aio
+        loop = _aio.new_event_loop()
+        _aio.set_event_loop(loop)
+        try:
+            guid = EgeriaPublisher(registry=reg).publish(survey)
+        except Exception as exc:
+            return {"slug": slug, "ok": False, "error": f"publish failed: {exc}"}
+        finally:
+            loop.close()
+            _aio.set_event_loop(None)
+        return {"slug": slug, "ok": True, "report_guid": guid,
+                "annotations": len(survey.annotations)}
+
+    def _publish_many(self, slugs, steps) -> dict:
+        """Publish each, one at a time, isolating failures.
+
+        Per-repo try/except rather than one batch transaction: a corpus-wide
+        repair that aborts on repo nine leaves the catalog half-written with no
+        record of where it stopped. Every outcome is reported, and `ok` counts
+        only what actually succeeded — a repair that says it did 27 when it did
+        9 is the exact class of claim this module exists to stop making.
+        """
+        results = [self._publish_one(s, steps) for s in slugs]
+        failed = [r for r in results if not r["ok"]]
+        return {
+            "attempted": len(results),
+            "published": len(results) - len(failed),
+            "failed": len(failed),
+            "steps": list(steps) if steps else "full survey",
+            "errors": [{"slug": r["slug"], "error": r["error"]} for r in failed][:20],
+        }
+
+    def _do_catalog_assets(self) -> dict:
+        """Register an Egeria asset for every repo that can have one now."""
+        finding = self._scan_unpublished_but_expected()
+        return self._publish_many([i["slug"] for i in finding.items], CATALOG_STEPS)
+
+    def _do_republish_survey_results(self) -> dict:
+        """Full survey publish for assets that carry no survey results yet."""
+        finding = self._scan_registration_only()
+        return self._publish_many([i["slug"] for i in finding.items], None)
 
     def _do_relink_investigation_members(self) -> dict:
         from resource_explorer.surveyors.egeria_investigation_publisher import (

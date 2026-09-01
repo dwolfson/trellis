@@ -14685,8 +14685,10 @@ function renderAdminResyncPanel() {
         <div class="text-xs text-slate-400 mt-0.5">${_esc(f.detail)}</div>
       </div>
       ${f.repair_step
-        ? `<label class="shrink-0 text-xs text-slate-300 flex items-center gap-1.5">
-             <input type="checkbox" class="resync-step" value="${_esc(f.repair_step)}" checked> fix
+        ? `<label class="shrink-0 text-xs text-slate-300 flex items-center gap-1.5"
+                  title="${f.expensive ? 'Writes to Egeria and can take minutes — tick it deliberately' : ''}">
+             <input type="checkbox" class="resync-step" value="${_esc(f.repair_step)}"${f.expensive ? '' : ' checked'}> fix
+             ${f.expensive ? `<span class="text-[10px] uppercase tracking-wide text-amber-400/80">slow</span>` : ''}
            </label>`
         : `<span class="shrink-0 text-[10px] uppercase tracking-wide text-amber-400/80" title="No single repair is correct here — see the description">your call</span>`}
     </div>
@@ -14756,14 +14758,28 @@ async function _applyResync() {
   // re-authoring executes Dr.Egeria documents and WRITES to Egeria. Saying
   // "this clears local records" while re-authoring the catalog would be the
   // dialog lying about the one thing a dialog exists to disclose.
-  const writes = steps.includes('reauthor_survey_definitions');
+  // Each clause describes a DIFFERENT thing being done to a different system.
+  // One sentence cannot honestly cover them: clearing touches only local
+  // records, cataloguing creates assets in Egeria, and a full republish also
+  // downloads repository archives. A dialog that summarised all three as
+  // "applies repairs" would omit the one fact a dialog exists to disclose.
+  const _clearing = steps.filter(s => s.startsWith('clear_'));
   const what = [
-    steps.some(s => s !== 'reauthor_survey_definitions')
+    _clearing.length
       ? 'Clears local records that claim things about Egeria which are no longer true.' : '',
-    writes
+    steps.includes('reauthor_survey_definitions')
       ? 'Re-authors the Survey Definitions IN EGERIA by re-running their Dr.Egeria '
         + 'documents, then reconciles their step links. This writes to the catalog '
         + 'and can take a few minutes — leave the page open.' : '',
+    steps.includes('catalog_assets')
+      ? 'CREATES AN ASSET IN EGERIA for each uncatalogued repo, publishing only the '
+        + 'repository-health step. No repository archives are downloaded.' : '',
+    steps.includes('republish_survey_results')
+      ? 'Runs the FULL survey for each catalogued repo and publishes the results to '
+        + 'Egeria. This DOWNLOADS REPOSITORY ARCHIVES — across a large corpus expect '
+        + 'minutes and real GitHub API budget. Leave the page open.' : '',
+    steps.includes('relink_investigation_members')
+      ? 'Attaches investigation members to their Egeria assets.' : '',
   ].filter(Boolean).join('\n\n');
   if (!confirm(`Apply ${steps.length} repair step(s)?\n\n${steps.join('\n')}\n\n${what}`)) return;
 
