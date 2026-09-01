@@ -216,6 +216,16 @@ class TestStepCostTiers:
           the trustworthy direction of that counter, so the git-history walk is
           real compute rather than network wait, and `medium` was admitting it
           to runs that had budgeted a minute.
+        - repo_secret_scan — shipped `medium` with a VERIFY flag on 2026-09-01
+          and its FIRST real run settled it: 277.3s on egeria_git, the slowest
+          step in that repo by a factor of five, against the same 60s ceiling.
+          4.6x over. Raised the same day it was measured, which is the whole
+          point of shipping a tier flagged VERIFY rather than guessing quietly
+          and never revisiting.
+
+          Note this test caught it. The tier was changed in the adapter and this
+          guard failed, forcing the addition to be argued here rather than
+          absorbed — its third catch, after repo_arch_coupling this morning.
 
         Deliberately still an equality assertion. A `<=` or a membership check
         would let a fourth step in silently, which is the whole failure this
@@ -224,7 +234,8 @@ class TestStepCostTiers:
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 
         high_compute = {k for k, info in STEP_REGISTRY.items() if info.compute_cost == "high"}
-        assert high_compute == {"repo_rag_ingestion", "repo_arch_coupling"}
+        assert high_compute == {"repo_rag_ingestion", "repo_arch_coupling",
+                                "repo_secret_scan"}
 
     def test_git_statistics_is_the_measured_api_heavy_baseline(self):
         """D4: the 430s-against-odpi/egeria measurement this whole plan is

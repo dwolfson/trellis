@@ -459,6 +459,62 @@ class SurveyDefinitionReader:
         _question_guid_cache[question_display_name] = (now, guid)
         return guid
 
+    def warm_question_guid_cache(self, questions: list[str] | None = None) -> dict:
+        """Resolve question GUIDs ahead of the first request. Never raises.
+
+        The three caches in this module are plain in-process dicts, so they die
+        with the process. Yesterday's fix (83381f1) made the cold path 6.8x
+        faster by resolving GUIDs through a thread pool instead of in series —
+        it did not remove the round trips, it stopped them queueing.
+
+        So a restart still charges the FIRST person to open each phase for that
+        phase's own uncached questions. Measured 2026-09-01, from the outside:
+        every phase 0.1-0.2s once warm, and a cold phase reported by Dan at
+        over ten seconds. Phases with disjoint question sets each pay
+        separately, which is why the timings looked random — scouting quick,
+        discovery slow, assessment quick again.
+
+        Warming moves that work off the interactive path. It is the same work,
+        done once, when nobody is waiting for it.
+
+        **Best-effort by construction.** Every failure mode here is a reason to
+        stop warming, never a reason to fail: Egeria unreachable at boot is
+        normal (the platform may start after this process), and a warm that
+        raised would take the server down for an optimisation. A question that
+        does not resolve is cached as None by resolve_question_guid, exactly as
+        it would be on the request path — this changes WHEN the lookup happens,
+        never WHAT it concludes.
+        """
+        try:
+            if questions is None:
+                from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+                # Every repo question, unfiltered — 49 today. Unfiltered on
+                # purpose: warming per phase would leave whichever phase the
+                # user opens FIRST still paying, which is the behaviour being
+                # removed. resolve_question_guid dedupes via the cache anyway,
+                # so questions shared across phases cost one lookup.
+                questions = [
+                    q.get("question") or q.get("display_name") or q.get("name") or ""
+                    for q in get_questions("repo")
+                ]
+                questions = [q for q in questions if q]
+        except Exception as exc:
+            log.debug("cache warm: could not read the question catalog: %s", exc)
+            return {"warmed": 0, "resolved": 0, "skipped": "no question catalog"}
+
+        try:
+            pairs = self._resolve_question_guids(list(questions))
+        except Exception as exc:
+            log.info("cache warm skipped (%s) — the first request will resolve "
+                     "these instead, exactly as before", type(exc).__name__)
+            return {"warmed": 0, "resolved": 0, "skipped": type(exc).__name__}
+
+        resolved = sum(1 for _q, g in pairs if g)
+        log.info("survey-definition cache warmed: %d question(s) checked, %d resolved",
+                 len(questions), resolved)
+        return {"warmed": len(questions), "resolved": resolved, "skipped": ""}
+
     #: Concurrency for question-GUID resolution. Small on purpose: these are
     #: reads against one Egeria server, and the goal is to stop waiting in
     #: series, not to load-test someone else's platform.

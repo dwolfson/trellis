@@ -32,6 +32,42 @@ def _reconcile_orphaned_runs() -> None:
 
 
 @asynccontextmanager
+def _warm_survey_definition_cache() -> None:
+    """Resolve question GUIDs in the background, so the first click does not.
+
+    survey_definition_reader's caches are in-process dicts that die with the
+    process, so after every restart the FIRST person to open a survey phase pays
+    to resolve that phase's questions against Egeria. Measured 2026-09-01: every
+    phase 0.1-0.2s warm, and Dan reported a cold phase at over ten seconds —
+    with the timings looking random precisely because phases with disjoint
+    question sets each pay separately.
+
+    83381f1 made that cold path 6.8x faster by resolving through a thread pool
+    rather than in series. It stopped the round trips queueing; it did not stop
+    them happening. This moves them off the interactive path entirely.
+
+    In a DAEMON THREAD, never awaited: startup must not wait on Egeria, which
+    may legitimately not be up yet — the platform often starts after this
+    process. The thread's own failures are swallowed by warm_question_guid_cache,
+    which is best-effort by construction; if the warm does not happen, the first
+    request resolves exactly as it does today. This changes WHEN the lookup
+    happens, never WHAT it concludes.
+    """
+    import threading
+
+    def _run() -> None:
+        try:
+            from resource_explorer.surveyors.survey_definition_reader import (
+                SurveyDefinitionReader,
+            )
+
+            SurveyDefinitionReader().warm_question_guid_cache()
+        except Exception as exc:  # never let an optimisation take the server down
+            log.debug("survey-definition cache warm skipped: %s", exc)
+
+    threading.Thread(target=_run, name="survey-cache-warm", daemon=True).start()
+
+
 async def _lifespan(app: FastAPI):
     # A Survey Definition run lives in a daemon thread in THIS process, so a
     # restart kills it with no chance to write a terminal status and its
@@ -55,6 +91,7 @@ async def _lifespan(app: FastAPI):
     # happens inside the monitor thread, and it fails open when Egeria is
     # unreachable — see resource_explorer/bootstrap.py.
     start_bootstrap_monitor()
+    _warm_survey_definition_cache()
     yield
     stop_bootstrap_monitor()
 

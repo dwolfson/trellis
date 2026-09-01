@@ -6759,6 +6759,14 @@ async function loadSchedulesEditor(slug, resourceType, analyses) {
           ${enabled ? '●' : '○'}
         </button>
       </td>
+      <td class="px-2 py-1.5 text-center">
+        ${saved.analysis_id
+          ? `<button id="sched-run-${_esc(a.id)}"
+               onclick="runScheduleNow('${_esc(entityType)}','${_esc(slug)}','${_esc(a.id)}',this)"
+               class="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"
+               title="Run this scheduled analysis now. Does not change its next scheduled run.">Run now</button>`
+          : `<span class="text-slate-700" title="No schedule set — run it from the analysis card instead">—</span>`}
+      </td>
     </tr>`;
   }).join('');
 
@@ -6771,12 +6779,68 @@ async function loadSchedulesEditor(slug, resourceType, analyses) {
             <th class="px-2 py-1 text-left">Analysis</th>
             <th class="px-2 py-1 text-left w-28">Interval</th>
             <th class="px-2 py-1 text-center w-16">Enabled</th>
+            <th class="px-2 py-1 text-center w-20">Run</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800">${rows}</tbody>
       </table>
-      <div class="text-xs text-slate-700 mt-1.5">Schedules are saved. Execution runs when the scheduler thread is active.</div>
+      <div class="text-xs text-slate-700 mt-1.5">Schedules are saved. Execution runs when the scheduler thread is active — or press Run&nbsp;now, which runs it immediately and leaves the next scheduled run where it is.</div>
     </div>`;
+}
+
+async function runScheduleNow(entityType, slug, analysisId, btn) {
+  // Dan, 2026-09-01: "With schedules and Surveys in Automate, seems like there
+  // should be a run now option?" There was not — schedules could only be waited
+  // for, which also made it impossible to confirm one worked without watching
+  // for its slot to come round.
+  //
+  // Runs THE SCHEDULE, through the same dispatch the timer uses, so what you
+  // see here is what the schedule will do. It does NOT advance the next
+  // scheduled run, and the toast says so — moving the schedule because someone
+  // tested it would silently skip the next real slot.
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); btn.textContent = 'Running…'; }
+
+  // No timed "started" toast. Some analyses are genuinely slow — repo_secret_scan
+  // measured 277s on a large repository — and a toast that expires mid-run
+  // leaves the same silent gap the investigation-promote button had: a flash,
+  // a long nothing, then a result that is easy to miss. The button IS the
+  // progress indicator, and it cannot expire early.
+  try {
+    const res = await fetch(
+      `/api/schedules/${entityType}/${encodeURIComponent(slug)}/${encodeURIComponent(analysisId)}/run`,
+      { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+
+    if (res.status === 404) {
+      showToast('error', body.detail || 'No schedule for this analysis.', 8000);
+      return;
+    }
+    if (!res.ok) {
+      showToast('error', `Run failed: ${_esc(body.detail || `HTTP ${res.status}`)}`, 9000);
+      return;
+    }
+
+    const errs = body.errors || [];
+    // Red only for a real error. "Completed with errors" is reported as the
+    // partial result it is, with the errors named — not collapsed into either
+    // a success or a failure, both of which would be a claim the run did not
+    // make.
+    const nextNote = body.next_run
+      ? ` Next scheduled run unchanged (${_esc(String(body.next_run).slice(0, 16).replace('T', ' '))}).`
+      : ' Next scheduled run unchanged.';
+    if (errs.length) {
+      showToast('error', `Ran with ${errs.length} error(s): ${_esc(errs.slice(0, 2).join('; '))}.${nextNote}`, 12000);
+    } else {
+      showToast('success', `Ran now.${nextNote}`, 8000);
+    }
+  } catch (e) {
+    showToast('error', `Could not run: ${_esc(String(e))}`, 8000);
+  } finally {
+    // Restored in `finally` so a failure cannot strand the button disabled with
+    // no way to retry.
+    if (btn) { btn.disabled = false; btn.classList.remove('opacity-60'); btn.textContent = original || 'Run now'; }
+  }
 }
 
 async function saveSchedule(entityType, slug, analysisId, schedule, enabled) {

@@ -651,7 +651,19 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # not a scanned-file count — a count cannot tell a working scanner from
         # a neutered one.
         fetch_cost="download",
-        compute_cost="medium",   # VERIFY against step_cost_observer after first runs
+        # VERIFIED and RAISED, 2026-09-01 — this shipped as `medium` with a
+        # VERIFY flag, and the first real run settled it: **277.3s on
+        # egeria_git**, the slowest step in that repo by a factor of five,
+        # against `medium`'s 60s ceiling. 4.6x over is an order-of-magnitude
+        # class error, not the 1.4-1.6x noise that left repo_cve_scan and
+        # repo_arch_detect deliberately unchanged earlier today.
+        #
+        # 222 regex rules over every tracked file is genuinely expensive on a
+        # large repository, and `medium` was admitting it to runs that had
+        # budgeted a minute. Raised rather than optimised: the cost is real, and
+        # declaring it honestly is the fix for the wrong tier. Making the scan
+        # faster is a separate question from telling callers what it costs.
+        compute_cost="high",
     ),
     "repo_telemetry_scan": StepInfo(
         "repo_telemetry_scan", TelemetryScanSurveyor,
