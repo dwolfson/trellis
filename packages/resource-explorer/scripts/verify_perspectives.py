@@ -72,28 +72,34 @@ def main() -> int:
     missing: list[str] = []
     undetermined: list[str] = []
     for name in expected:
-        found = None
-        errors = 0
-        # qualifiedName first: `Perspective::<name>` is the pattern
-        # foundations.md authors, and display names are not guaranteed unique
-        # across types. Display name is the fallback, not the primary.
-        for prop, value in (("qualifiedName", f"Perspective::{name}"),
-                            ("displayName", name)):
-            try:
-                got = client.get_guid_for_name(value, property_name=[prop])
-            except Exception:
-                errors += 1
-                continue
-            text = str(got or "")
-            if text and "No elements" not in text and "not found" not in text.lower():
-                found = text
-                break
-        if found:
-            print(f"  ok       {name}")
-        elif errors == 2:
-            # Both lookups raised: cannot distinguish absent from unaskable.
+        # qualifiedName ONLY. `Perspective::<name>` is what foundations.md
+        # authors for all 12, and it is unique by construction.
+        #
+        # The first version also fell back to displayName, and on its first
+        # live run (2026-08-31, straight after the redeploy) that fallback
+        # produced three FALSE OKs: `Community`, `Privacy` and `Steward`
+        # resolved to elements of some other type that merely share a name,
+        # while no perspective existed at all. It reported "9 of 12 missing"
+        # when the answer was 12 — under-reporting an absence is the one
+        # direction this check must never fail in, since it is read as
+        # permission to stop looking.
+        #
+        # displayName is not unique across types, so it can only ever add false
+        # positives here. Removed rather than narrowed.
+        try:
+            got = client.get_guid_for_name(f"Perspective::{name}",
+                                           property_name=["qualifiedName"])
+        except Exception as exc:
+            # An exception is "could not ask", never "not there" — `Security`
+            # raised CLIENT_ERROR_400 on the displayName probe, and the first
+            # version turned that into MISSING because only one of its two
+            # probes had raised.
             undetermined.append(name)
-            print(f"  ?        {name}  (lookup failed — not counted as missing)")
+            print(f"  ?        {name}  ({type(exc).__name__} — not counted as missing)")
+            continue
+        text = str(got or "")
+        if text and "No elements" not in text and "not found" not in text.lower():
+            print(f"  ok       {name}")
         else:
             missing.append(name)
             print(f"  MISSING  {name}")
