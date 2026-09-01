@@ -360,6 +360,15 @@ class DataProfilerSurveyor(BaseSurveyor):
                         "file_size": _fmt_size(p["file_size_bytes"]),
                         "profiled_at": p["profiled_at"],
                     },
+                    # annotation-linking-plan Phase 2: this per-file schema
+                    # annotation is evidence for the Tier-1 aggregate
+                    # ResourceMeasureAnnotation `_tier1_summary` appends at
+                    # index 0 of THIS run's results list — always index 0,
+                    # since `run()` calls `_tier1_summary` before either tier-2
+                    # path. Safe as a same-run, list-index signal (see
+                    # `Annotation.evidence_of`'s own docstring for why this is
+                    # NOT safe to reconstruct cross-run).
+                    evidence_of=0,
                 )
             )
 
@@ -415,6 +424,9 @@ class DataProfilerSurveyor(BaseSurveyor):
                             schema_type=f["_format"],
                             explanation=profile.get("null_summary", ""),
                             json_properties=profile,
+                            # Same basis as _tier2_stored above — the aggregate
+                            # is always index 0 of this run's results.
+                            evidence_of=0,
                         )
                     )
             except Exception as exc:

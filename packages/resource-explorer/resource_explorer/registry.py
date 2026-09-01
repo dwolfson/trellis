@@ -3657,6 +3657,34 @@ class ProjectRegistry:
                 (egeria_guid, datetime.utcnow().isoformat(), row_id),
             )
 
+    def get_outbox_guids(self, row_ids: list[int]) -> dict[int, str]:
+        """Map row id -> the GUID it resolved to, for rows that reached
+        'done'. A row absent from the returned dict is 'not done' — pending,
+        failed, or dead-lettered — the caller must not treat a missing key as
+        an empty-string GUID; they mean different things (see
+        `annotation_props.publish_annotations`'s own "guid vs. no guid" note).
+
+        annotation-linking-plan Phase 2's own reason to exist: after
+        `enqueue_annotations` + `drain_outbox` create this run's annotations,
+        `egeria_publisher.py::_create_annotations` needs each one's actual
+        GUID, by row id, to build its second `AnnotationExtension`-linking
+        pass — the same-run in-memory GUIDs the plan's Phase 2 section
+        describes, sourced from the outbox rows rather than threaded back
+        through `drain_outbox`'s own return value (a summary count, not a
+        per-row result, and changing that shape would ripple into every other
+        caller of `drain_outbox`).
+        """
+        if not row_ids:
+            return {}
+        placeholders = ",".join("?" for _ in row_ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT id, egeria_guid FROM egeria_outbox "
+                f"WHERE id IN ({placeholders}) AND status='done'",
+                tuple(row_ids),
+            ).fetchall()
+        return {int(r["id"]): r["egeria_guid"] for r in rows if r["egeria_guid"]}
+
     def mark_outbox_failed(
         self, row_id: int, error: str, *, max_attempts: int | None = None,
         base_delay_seconds: int = 60, now: datetime | None = None,

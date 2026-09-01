@@ -88,6 +88,7 @@ class EgeriaPublisher:
         self._discovery = None
         self._automated_curation = None
         self._external_references = None
+        self._metadata_expert = None
         # Zone names: caller-supplied > config default > []
         if zone_names is not None:
             self.zone_names = zone_names
@@ -130,7 +131,7 @@ class EgeriaPublisher:
             # Best-effort and deliberately not fatal — see the method's docstring.
             self._publish_homepage_reference(result, asset_guid)
             report_guid = self._create_survey_report(result, asset_guid)
-            self._create_annotations(result, report_guid)
+            link_counts = self._create_annotations(result, report_guid)
         # Best-effort, deliberately outside the guard_linkage block above —
         # this is local bookkeeping for the Survey Results dashboards'
         # per-card "last published" badge (get_last_published_annotation_
@@ -163,6 +164,21 @@ class EgeriaPublisher:
             except Exception as exc:
                 annotation_types_warning = f" (⚠ last-published tracking not recorded: {exc})"
                 log.warning("record_published_annotation_types failed (non-fatal): %s", exc)
+
+        # annotation-linking-plan Phase 2: partial link failure must stay
+        # visible to a reader of the same summary a person actually looks
+        # at, not only to an operator who thinks to check Admin → Publish
+        # Queue. `links_created`/`links_failed`/`links_skipped` come back
+        # from `_create_annotations` above regardless of failure — this is
+        # additive to the summary text, never gating it (the survey report
+        # and every annotation are already durable by this point).
+        link_warning = ""
+        failed_or_skipped = link_counts.get("links_failed", 0) + link_counts.get("links_skipped", 0)
+        if failed_or_skipped:
+            link_warning = (
+                f" (⚠ {link_counts['links_created']}/{link_counts['links_attempted'] + link_counts['links_skipped']}"
+                f" evidence link(s) created)"
+            )
         log.info(
             "Published survey for %s → SurveyReport GUID %s (%d annotations)",
             result.resource_slug,
@@ -182,7 +198,8 @@ class EgeriaPublisher:
                     status="ok",
                     summary=(
                         f"Published to Egeria: {len(result.annotations)} annotations"
-                        f" → {(report_guid or 'no-guid')[:12]}…{annotation_types_warning}"
+                        f" → {(report_guid or 'no-guid')[:12]}…"
+                        f"{annotation_types_warning}{link_warning}"
                     ),
                     items=[
                         {
@@ -239,6 +256,7 @@ class EgeriaPublisher:
         try:
             from pyegeria import AssetMaker, AutomatedCuration, ExternalReferences
             from pyegeria.omvs.data_discovery import DataDiscovery
+            from pyegeria.omvs.metadata_expert import MetadataExpert
 
             self._asset_maker = AssetMaker(
                 self.view_server, self.platform_url, self.user_id, self.user_password
@@ -263,6 +281,16 @@ class EgeriaPublisher:
                 self.view_server, self.platform_url, self.user_id, self.user_password
             )
             self._external_references.create_egeria_bearer_token(self.user_id, self.user_password)
+
+            # Used only by the annotation-linking-plan Phase 2 second pass in
+            # _create_annotations() — the only client that can create a bare
+            # relationship (AnnotationExtension) between two already-existing
+            # GUIDs. DataDiscovery has no create/attach endpoint for it (see
+            # docs/annotation-linking-plan.md, discovery finding #2).
+            self._metadata_expert = MetadataExpert(
+                self.view_server, self.platform_url, self.user_id, self.user_password
+            )
+            self._metadata_expert.create_egeria_bearer_token(self.user_id, self.user_password)
         except ImportError as exc:
             raise EgeriaConnectionError(
                 "pyegeria is not installed. Add it to your dependencies."
@@ -529,8 +557,12 @@ class EgeriaPublisher:
 
     # ── annotations ───────────────────────────────────────────────────────────
 
-    def _create_annotations(self, result: SurveyResult, report_guid: str) -> None:
-        """Write this run's annotations to Egeria, through the outbox.
+    def _create_annotations(self, result: SurveyResult, report_guid: str) -> dict:
+        """Write this run's annotations to Egeria, through the outbox, then
+        (annotation-linking-plan Phase 2) link every annotation whose
+        `evidence_of` is set to its aggregate — both created in this same
+        call, so both GUIDs are in hand with no cross-run GUID resolution
+        needed (that is Phase 3's unsolved problem, not attempted here).
 
         The qualifiedName prefix built here — and specifically
         `result.surveyed_at.isoformat()`, this run's own timestamp, NOT
@@ -553,11 +585,20 @@ class EgeriaPublisher:
         changes is the unhappy path — a failure is now a row the scheduler
         will retry with backoff, not a warning in a log nobody reads.
 
-        This method still does not raise on a failed annotation. That is
-        deliberate and unchanged: `publish()`'s contract is that a publish
-        problem must not turn an otherwise-successful survey into a reported
-        error. The difference is that the work is no longer lost when it is
-        swallowed.
+        This method still does not raise on a failed annotation, or a failed
+        link. That is deliberate and unchanged: `publish()`'s contract is that
+        a publish problem must not turn an otherwise-successful survey into a
+        reported error. The difference is that the work is no longer lost
+        when it is swallowed, AND (new here) this now returns a dict —
+        `links_attempted`/`links_created`/`links_failed`/`links_skipped` — so
+        `publish()` can fold a partial link failure into what a reader
+        actually sees (the Activity tab entry), rather than that being
+        visible only to an operator who thinks to check Admin → Publish
+        Queue. `links_skipped` counts a link whose evidence or summary
+        annotation itself failed to publish — not a link-creation failure of
+        its own (that annotation's own failure is already visible via its own
+        outbox row), but still a link that did not happen, so it is still
+        counted, not folded silently into `links_failed`.
 
         Falls back to the direct path when there is no registry — an
         EgeriaPublisher built without one has nowhere to record an outbox row,
@@ -565,21 +606,26 @@ class EgeriaPublisher:
         the old way.
         """
         qualified_name_prefix = f"Annotation::{result.resource_slug}::{result.surveyed_at.isoformat()}"
+        link_pairs = [
+            (i, ann.evidence_of)
+            for i, ann in enumerate(result.annotations)
+            if ann.evidence_of is not None
+        ]
 
         if self._registry is None:
             from resource_explorer.surveyors.annotation_props import publish_annotations
 
-            publish_annotations(
+            guids = publish_annotations(
                 self._discovery, self._find_element_guid,
                 result.annotations, report_guid, qualified_name_prefix,
             )
-            return
+            return self._link_evidence_direct(guids, link_pairs)
 
         from resource_explorer.egeria_outbox import (
             OutboxClients, drain_outbox, enqueue_annotations,
         )
 
-        enqueue_annotations(
+        row_ids = enqueue_annotations(
             self._registry, "repo", result.resource_slug, result.annotations,
             report_guid, qualified_name_prefix, run_id=qualified_name_prefix,
         )
@@ -587,6 +633,101 @@ class EgeriaPublisher:
             self._registry, OutboxClients(discovery=self._discovery), self._find_element_guid,
             limit=max(len(result.annotations), 1), run_id=qualified_name_prefix,
         )
+        return self._link_evidence_outbox(
+            result, row_ids, link_pairs, qualified_name_prefix,
+        )
+
+    # ── evidence linking (annotation-linking-plan Phase 2, Tier 1) ─────────────
+
+    _LINK_COUNTS_ZERO = {
+        "links_attempted": 0, "links_created": 0, "links_failed": 0, "links_skipped": 0,
+    }
+
+    def _link_evidence_direct(self, guids: list, link_pairs: list[tuple[int, int]]) -> dict:
+        """No-registry path: create every same-run evidence link directly via
+        MetadataExpert, no outbox row, same as `publish_annotations` above
+        writes annotations directly for this same code path.
+        """
+        counts = dict(self._LINK_COUNTS_ZERO)
+        if not link_pairs:
+            return counts
+
+        links = []
+        for evidence_idx, summary_idx in link_pairs:
+            evidence_guid = guids[evidence_idx] if evidence_idx < len(guids) else None
+            summary_guid = guids[summary_idx] if summary_idx < len(guids) else None
+            if not evidence_guid or not summary_guid:
+                counts["links_skipped"] += 1
+                continue
+            links.append({"summary_guid": summary_guid, "evidence_guid": evidence_guid})
+        counts["links_attempted"] = len(links)
+        if not links:
+            return counts
+
+        from resource_explorer.surveyors.annotation_props import publish_annotation_links
+
+        link_guids = publish_annotation_links(self._metadata_expert, links)
+        counts["links_created"] = sum(1 for g in link_guids if g)
+        counts["links_failed"] = sum(1 for g in link_guids if not g)
+        return counts
+
+    def _link_evidence_outbox(
+        self, result: SurveyResult, row_ids: list[int],
+        link_pairs: list[tuple[int, int]], qualified_name_prefix: str,
+    ) -> dict:
+        """Registry path: resolve each same-run annotation's real GUID from
+        the outbox rows `_create_annotations` just enqueued and drained
+        (`registry.get_outbox_guids`), then enqueue+drain the
+        `AnnotationExtension` links through the SAME outbox mechanism — one
+        more `element_kind`, no new failure-visibility surface to build,
+        because dead-letter/retry/activity-log observability already exists
+        for every other outbox kind and this reuses it verbatim (see
+        `_create_annotation_link`'s docstring for why create-blind is safe
+        here specifically).
+
+        A distinct run_id (`::links` suffix) rather than reusing
+        `qualified_name_prefix` — so this second `drain_outbox` call claims
+        only the link rows it just enqueued, not any annotation row still
+        retrying under the same run_id, which would double-count into
+        `links_created` and misattribute an annotation's own retry outcome to
+        the linking pass.
+        """
+        counts = dict(self._LINK_COUNTS_ZERO)
+        if not link_pairs:
+            return counts
+
+        guid_by_row = self._registry.get_outbox_guids(row_ids)
+        links = []
+        for evidence_idx, summary_idx in link_pairs:
+            evidence_guid = guid_by_row.get(row_ids[evidence_idx], "")
+            summary_guid = guid_by_row.get(row_ids[summary_idx], "")
+            if not evidence_guid or not summary_guid:
+                # The annotation itself did not publish — already visible via
+                # its own outbox row (failed/dead); not a link failure of its
+                # own, but still a link that did not happen, so still counted.
+                counts["links_skipped"] += 1
+                continue
+            links.append({"summary_guid": summary_guid, "evidence_guid": evidence_guid})
+        counts["links_attempted"] = len(links)
+        if not links:
+            return counts
+
+        from resource_explorer.egeria_outbox import (
+            OutboxClients, drain_outbox, enqueue_annotation_links,
+        )
+
+        link_run_id = f"{qualified_name_prefix}::links"
+        enqueue_annotation_links(
+            self._registry, "repo", result.resource_slug, links, run_id=link_run_id,
+        )
+        summary = drain_outbox(
+            self._registry,
+            OutboxClients(discovery=self._discovery, metadata_expert=self._metadata_expert),
+            self._find_element_guid, limit=max(len(links), 1), run_id=link_run_id,
+        )
+        counts["links_created"] = summary.get("done", 0)
+        counts["links_failed"] = summary.get("failed", 0) + summary.get("dead", 0)
+        return counts
 
     # ── sub-resource cataloging (repo scope-narrowing funnel doc, D2/D3) ────
 

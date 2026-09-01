@@ -299,3 +299,67 @@ def publish_annotations(
 
         guids.append(guid)
     return guids
+
+
+def publish_annotation_links(metadata_expert, links: list[dict]) -> list[str | None]:
+    """Create one `AnnotationExtension` relationship per link, direct path
+    (no registry, no outbox — this is `EgeriaPublisher`'s fallback for
+    instances built without a registry, mirroring `publish_annotations`
+    above which writes THIS run's annotations the same way for the same
+    reason). annotation-linking-plan Phase 2, Tier 1.
+
+    `links` are dicts with `summary_guid`/`evidence_guid` — both real Egeria
+    GUIDs already, from annotations created earlier in this same call by
+    `publish_annotations`. `evidence_guid` is `metadataElement2GUID`,
+    `summary_guid` is `metadataElement1GUID` — Phase 0's live measurement
+    (2026-09-01) confirmed no reversal and that `get_annotation_extensions`/
+    `get_all_related_elements` called on the element at end 1 return whatever
+    is at end 2, so this direction makes `get_annotation_extensions(summary_
+    guid)` the natural "what backs this summary" query for a consumer.
+
+    Deliberately create-blind — no lookup-then-create, no `get_all_related_
+    elements` pre-check. `AnnotationExtension` was measured live as UNI_LINK
+    (docs/annotation-linking-plan.md, Phase 0): two identical creates against
+    the same ordered pair returned the SAME relationship GUID, confirmed by
+    two independent reads showing exactly one relationship. A relationship
+    has no qualifiedName to search for in the first place (point 4 of the
+    plan's discovery findings) — this is the situation `egeria_outbox.py`'s
+    own comment on `CollectionMembership` describes, applied here without an
+    outbox row to back it.
+
+    Returns one entry per input link, in order: the new relationship's GUID,
+    or `None` if that create failed (exception, or a 200 response with no
+    `"guid"` key — same "not a can't-happen" reasoning as `publish_
+    annotations` above). A caller with nowhere to persist a per-row outbox
+    record still needs a per-item signal, not a single count that can't say
+    which pair failed.
+    """
+    guids: list[str | None] = []
+    for link in links:
+        body = {
+            "class": "NewRelatedElementsRequestBody",
+            "typeName": "AnnotationExtension",
+            "metadataElement1GUID": link["summary_guid"],
+            "metadataElement2GUID": link["evidence_guid"],
+        }
+        try:
+            guid = metadata_expert.create_related_elements(body=body)
+        except Exception as exc:
+            log.warning(
+                "Failed to create AnnotationExtension link (summary %s -> evidence %s): %s",
+                link["summary_guid"], link["evidence_guid"], exc,
+            )
+            guids.append(None)
+            continue
+
+        if not guid:
+            log.warning(
+                "AnnotationExtension link created (summary %s -> evidence %s) but "
+                "Egeria's response carried no GUID",
+                link["summary_guid"], link["evidence_guid"],
+            )
+            guids.append(None)
+            continue
+
+        guids.append(guid)
+    return guids
