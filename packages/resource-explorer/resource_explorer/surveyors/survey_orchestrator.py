@@ -325,18 +325,59 @@ class SurveyOrchestrator:
         # repo_survey_definition_adapter.py's Survey Definition executor) —
         # logging here too would double-log every such run.
         if steps is None:
-            # Group annotations by analysis_step+type for a compact activity log entry
-            by_step: dict[str, dict] = defaultdict(lambda: {"annotation_type": "", "count": 0, "summary": ""})
+            # Group annotations by (analysis_step, annotation_type) for a
+            # compact activity log entry — NOT by step alone.
+            #
+            # Real bug, fixed 2026-09-01: the group key used to be just
+            # `step`, so every annotation a single sub-surveyor produced in
+            # one run — e.g. SecurityHygieneSurveyor's PASSING
+            # ClassificationAnnotation("Security policy file present")
+            # alongside its FAILING RequestForActionAnnotation("No CI
+            # configuration detected") — collapsed into one dict. `summary`
+            # kept the FIRST annotation seen (first-wins), but
+            # `annotation_type` kept overwriting to the LAST one seen
+            # (last-wins) — two different "which one won" rules on the same
+            # group, which is how a passing check's summary ended up wearing
+            # a RequestForAction label. GET /api/activity/rfas
+            # (web/routes/activity.py) substring-matches on "RequestForAction"
+            # in `annotation_type`, so every such mislabeled group surfaced
+            # in the RFA drawer as a request for action nobody could act on,
+            # because there was nothing to act on — the check had passed.
+            #
+            # Keying by (step, annotation_type) keeps a passing
+            # ClassificationAnnotation and a failing RequestForActionAnnotation
+            # from the same step in separate groups, so neither's summary or
+            # type can leak into the other's row. Confirmed against live data
+            # before this fix: two stored `docs` activity entries each carried
+            # a RequestForAction-typed annotation summarised "Security policy
+            # file present" — the passing check's own words, wearing the
+            # failing check's label.
+            by_step: dict[tuple[str, str], dict] = defaultdict(
+                lambda: {"count": 0, "summary": "", "explanation": "",
+                         "action_requested": "", "action_target_name": ""})
             for a in result.annotations:
                 step = getattr(a, "analysis_step", None) or a.annotation_type.value
-                by_step[step]["annotation_type"] = a.annotation_type.value
-                by_step[step]["count"] += 1
-                if not by_step[step]["summary"]:
-                    by_step[step]["summary"] = (a.summary or "")[:200]
+                key = (step, a.annotation_type.value)
+                group = by_step[key]
+                group["count"] += 1
+                if not group["summary"]:
+                    group["summary"] = (a.summary or "")[:200]
+                    # Carried from the SAME annotation that donated the
+                    # summary, not independently first-wins per field — so a
+                    # drawer row's explanation always describes the finding
+                    # its summary names, never a different annotation in the
+                    # same group (see rule above: two independent "first/last
+                    # wins" fields is exactly the shape that broke this once).
+                    group["explanation"] = getattr(a, "explanation", "") or ""
+                    group["action_requested"] = getattr(a, "action_requested", "") or ""
+                    group["action_target_name"] = getattr(a, "action_target_name", "") or ""
             ann_summary = [
-                {"analysis_name": step, "annotation_type": v["annotation_type"],
-                 "count": v["count"], "status": "local", "summary": v["summary"]}
-                for step, v in list(by_step.items())[:20]
+                {"analysis_name": step, "annotation_type": ann_type,
+                 "count": v["count"], "status": "local", "summary": v["summary"],
+                 "explanation": v["explanation"],
+                 "action_requested": v["action_requested"],
+                 "action_target_name": v["action_target_name"]}
+                for (step, ann_type), v in list(by_step.items())[:20]
             ]
 
             try:

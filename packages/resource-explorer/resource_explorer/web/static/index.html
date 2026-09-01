@@ -6534,67 +6534,121 @@ function renderRfaPanel(rfas, containerId) {
         <span class="text-amber-500/70 normal-case font-normal ml-1">${totalCount} action${totalCount!==1?'s':''}</span>
       </div>
       <div class="space-y-2">`;
+
+    // Problem 3 (RFA drawer investigation, 2026-09-01): `docs` showing the
+    // same finding twice turned out to be two REAL activity entries from two
+    // real survey runs 9 hours apart (70 vs. 67 annotations — genuinely
+    // different runs, not one event double-written; confirmed against the
+    // stored entries before writing this). That is correct data, but a
+    // recurring finding across runs still reads as clutter one row per run.
+    // Group same-finding rows (same analysis_name + summary) within this
+    // entity, show only the MOST RECENT as the primary row, and put the
+    // rest behind an explicit "N earlier occurrence(s)" toggle — collapsed,
+    // never dropped, so an old occurrence stays reachable (e.g. to Complete
+    // one a newer run already fixed) instead of silently vanishing.
+    const byFinding = new Map();
     for (const rfa of g.rfas) {
-      // rfa.id (f"{entry_id}::{annotation_index}", minted by the backend —
-      // see GET /api/activity/rfas) is the stable identity PATCH targets;
-      // safeId is only a DOM-id-safe derivative for element lookups.
-      const safeId = rfa.id.replace(/[^a-zA-Z0-9]/g, '_');
-      const ts  = (rfa.ts || '').replace('T',' ').substring(0,10);
-      const countBadge = rfa.count > 1
-        ? `<span class="text-xs bg-amber-900/50 text-amber-300 px-1.5 py-0 rounded ml-1">${rfa.count}</span>` : '';
-      let detailLine = '';
-      if (rfa.rfa_status === 'deferred' && rfa.defer_until) detailLine = `Deferred until ${_esc(rfa.defer_until)}`;
-      else if (rfa.rfa_status === 'reassigned' && rfa.assignee) detailLine = `Reassigned to ${_esc(rfa.assignee)}`;
-      else if (rfa.rfa_status === 'completed') detailLine = rfa.resolution_note ? `Resolved: ${_esc(rfa.resolution_note)}` : 'Resolved';
-      const actionButtons = rfa.rfa_status === 'open'
-        ? `<button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'defer', '${containerId}')" class="text-xs text-sky-500 hover:text-sky-300 transition-colors">⏸ Defer</button>
-           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'reassign', '${containerId}')" class="text-xs text-violet-500 hover:text-violet-300 transition-colors">👤 Reassign</button>
-           <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'complete', '${containerId}')" class="text-xs text-emerald-500 hover:text-emerald-300 transition-colors">✓ Complete</button>`
-        : `<button onclick="submitRfaAction('${_esc(rfa.id)}', 'open', {}, '${containerId}')" class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Reopen</button>`;
+      const fKey = `${rfa.analysis_name || ''} ${rfa.summary || ''}`;
+      if (!byFinding.has(fKey)) byFinding.set(fKey, []);
+      byFinding.get(fKey).push(rfa);
+    }
 
-      html += `<div class="rfa-row" data-rfa-id="${_esc(rfa.id)}">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex-1 min-w-0">
-            <div class="text-xs font-medium text-amber-300">
-              ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}${statusBadge[rfa.rfa_status] || ''}
-            </div>
-            <div class="text-xs text-slate-300 mt-0.5">${_esc(rfa.summary)}</div>
-            ${detailLine ? `<div class="text-xs text-slate-500 mt-0.5 italic">${detailLine}</div>` : ''}
-          </div>
-          <div class="shrink-0 text-xs text-slate-600 whitespace-nowrap">${ts}</div>
-        </div>
-
-        <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
-
-        ${rfa.notes ? `<div class="text-xs text-slate-400 mt-1 italic">📝 ${_esc(rfa.notes)}</div>` : ''}
-
-        <div class="flex gap-3 flex-wrap items-center mt-1.5">
-          ${actionButtons}
-          <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
-            class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
-            📝 ${rfa.notes ? 'Edit note' : 'Add note'}
+    for (const occurrences of byFinding.values()) {
+      // rfa.ts is ISO 8601 — lexical sort matches chronological order.
+      occurrences.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+      const [latest, ...older] = occurrences;
+      html += _renderRfaRow(latest, containerId, statusBadge);
+      if (older.length) {
+        const groupSafeId = latest.id.replace(/[^a-zA-Z0-9]/g, '_');
+        html += `<button onclick="document.getElementById('rfa-older-${groupSafeId}').classList.toggle('hidden')"
+            class="text-xs text-slate-500 hover:text-slate-300 transition-colors ml-1">
+            ▸ ${older.length} earlier occurrence${older.length!==1?'s':''}
           </button>
-        </div>
-        <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
-          <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
-            rows="2" placeholder="Add a note or context…">${_esc(rfa.notes || '')}</textarea>
-          <div class="flex gap-2 mt-1.5">
-            <button onclick="saveRfaNote('${_esc(rfa.id)}', 'rfa-ans-${safeId}', '${containerId}')"
-              class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
-              Save →
-            </button>
-            <button onclick="document.getElementById('rfa-ans-${safeId}').classList.add('hidden')"
-              class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
-              Cancel
-            </button>
-          </div>
-        </div>
-      </div>`;
+          <div id="rfa-older-${groupSafeId}" class="hidden space-y-2 pl-3 border-l border-slate-700 ml-1">
+            ${older.map(rfa => _renderRfaRow(rfa, containerId, statusBadge)).join('')}
+          </div>`;
+      }
     }
     html += `</div></div>`;
   }
   html += '</div>';
   view.innerHTML = html;
+}
+
+// One RFA row's markup — factored out of renderRfaPanel so the same-finding
+// grouping above can render a "latest" row and any collapsed older
+// occurrences identically, action buttons and all.
+function _renderRfaRow(rfa, containerId, statusBadge) {
+  // rfa.id (f"{entry_id}::{annotation_index}", minted by the backend — see
+  // GET /api/activity/rfas) is the stable identity PATCH targets; safeId is
+  // only a DOM-id-safe derivative for element lookups.
+  const safeId = rfa.id.replace(/[^a-zA-Z0-9]/g, '_');
+  const ts  = (rfa.ts || '').replace('T',' ').substring(0,10);
+  const countBadge = rfa.count > 1
+    ? `<span class="text-xs bg-amber-900/50 text-amber-300 px-1.5 py-0 rounded ml-1">${rfa.count}</span>` : '';
+  let detailLine = '';
+  if (rfa.rfa_status === 'deferred' && rfa.defer_until) detailLine = `Deferred until ${_esc(rfa.defer_until)}`;
+  else if (rfa.rfa_status === 'reassigned' && rfa.assignee) detailLine = `Reassigned to ${_esc(rfa.assignee)}`;
+  else if (rfa.rfa_status === 'completed') detailLine = rfa.resolution_note ? `Resolved: ${_esc(rfa.resolution_note)}` : 'Resolved';
+  const actionButtons = rfa.rfa_status === 'open'
+    ? `<button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'defer', '${containerId}')" class="text-xs text-sky-500 hover:text-sky-300 transition-colors">⏸ Defer</button>
+       <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'reassign', '${containerId}')" class="text-xs text-violet-500 hover:text-violet-300 transition-colors">👤 Reassign</button>
+       <button onclick="_showRfaActionForm('${_esc(rfa.id)}', 'complete', '${containerId}')" class="text-xs text-emerald-500 hover:text-emerald-300 transition-colors">✓ Complete</button>`
+    : `<button onclick="submitRfaAction('${_esc(rfa.id)}', 'open', {}, '${containerId}')" class="text-xs text-amber-500 hover:text-amber-300 transition-colors">↺ Reopen</button>`;
+
+  // Dan, direct feedback (2026-08-31): "there is little description... they
+  // all seem to be SecurityHygieneCheck". The annotation always carries
+  // `explanation` (why this matters) and, for a RequestForAction,
+  // `action_requested`/`action_target_name` (what to do, to what) —
+  // web/routes/activity.py now forwards them past the activity log; this is
+  // where they render. Ten items that shared a step name now also carry
+  // ten distinguishable explanations.
+  const explanationLine = rfa.explanation
+    ? `<div class="text-xs text-slate-400 mt-1">${_esc(rfa.explanation)}</div>` : '';
+  const actionRequestedLine = rfa.action_requested
+    ? `<div class="text-xs text-amber-200/80 mt-1">→ ${_esc(rfa.action_requested)}${rfa.action_target_name ? ` <span class="text-slate-500">(${_esc(rfa.action_target_name)})</span>` : ''}</div>`
+    : '';
+
+  return `<div class="rfa-row" data-rfa-id="${_esc(rfa.id)}">
+    <div class="flex items-start justify-between gap-2">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-medium text-amber-300">
+          ${_esc(rfa.analysis_name || rfa.annotation_type || 'RFA')}${countBadge}${statusBadge[rfa.rfa_status] || ''}
+        </div>
+        <div class="text-xs text-slate-300 mt-0.5">${_esc(rfa.summary)}</div>
+        ${explanationLine}
+        ${actionRequestedLine}
+        ${detailLine ? `<div class="text-xs text-slate-500 mt-0.5 italic">${detailLine}</div>` : ''}
+      </div>
+      <div class="shrink-0 text-xs text-slate-600 whitespace-nowrap">${ts}</div>
+    </div>
+
+    <div id="rfa-action-form-${safeId}" class="rfa-answer-form hidden"></div>
+
+    ${rfa.notes ? `<div class="text-xs text-slate-400 mt-1 italic">📝 ${_esc(rfa.notes)}</div>` : ''}
+
+    <div class="flex gap-3 flex-wrap items-center mt-1.5">
+      ${actionButtons}
+      <button onclick="document.getElementById('rfa-ans-${safeId}').classList.toggle('hidden')"
+        class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+        📝 ${rfa.notes ? 'Edit note' : 'Add note'}
+      </button>
+    </div>
+    <div id="rfa-ans-${safeId}" class="rfa-answer-form hidden">
+      <textarea class="w-full bg-slate-700 text-slate-100 rounded px-2 py-1 text-xs border border-slate-600 focus:outline-none focus:border-amber-400 resize-none"
+        rows="2" placeholder="Add a note or context…">${_esc(rfa.notes || '')}</textarea>
+      <div class="flex gap-2 mt-1.5">
+        <button onclick="saveRfaNote('${_esc(rfa.id)}', 'rfa-ans-${safeId}', '${containerId}')"
+          class="text-xs px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white transition-colors">
+          Save →
+        </button>
+        <button onclick="document.getElementById('rfa-ans-${safeId}').classList.add('hidden')"
+          class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function _toggleRfaShowResolved(checked, containerId) {
