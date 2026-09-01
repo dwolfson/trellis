@@ -323,6 +323,16 @@ class CveScanSurveyor(BaseSurveyor):
                     "confidence": 100,
                     "detail": {"package": dep.get("dep_name"),
                                "version": dep.get("dep_version"),
+                               # Where the version came from — "declared" (the
+                               # manifest said so at this dependency's own
+                               # declaration site) vs. resolved from elsewhere
+                               # ("variable_interpolation", "version_catalog").
+                               # A CVE finding is a claim about a specific
+                               # version; carrying this through means a reader
+                               # can tell "the manifest pinned this" from "we
+                               # substituted this from a BOM variable" without
+                               # having to go back to the parser.
+                               "version_source": dep.get("dep_version_source") or "unknown",
                                "ecosystem": dep.get("ecosystem"),
                                "advisory_ids": ids,
                                "severity": worst,

@@ -716,6 +716,47 @@ survey steps": a step that cannot run should record `SKIPPED_BY_DESIGN` **with i
 summary can say "cve_scan could not run: no dependency versions available" instead of implying nobody
 ever tried.
 
+**Update 2026-09-01 (later same day): version resolution landed, and `security_summary` is now
+8 of 8 on `egeria_git`, measured.** `dependency_parser.py`'s Gradle path now resolves a version from
+two places, cheapest first, tagging each resolved row with WHERE it came from
+(`dep_version_source`, a new `project_dependencies` column) rather than folding it into the same
+bucket as a version the manifest wrote literally — that provenance was the actual constraint on this
+work, not the resolution itself: a wrongly-substituted version feeding a confident CVE answer is
+worse than declining:
+
+  * a same-file `ext { xVersion = '...' }` / Kotlin `val` variable, tagged `"variable_interpolation"`
+  * `gradle/libs.versions.toml`, tagged `"version_catalog"`
+
+Egeria's own shape turned out to be case 2 dressed as case 3: `bom/build.gradle` looked like a BOM
+worth punting on, but reading it shows every one of its ~90 `constraints { api("g:a:${xVersion}") }`
+lines resolves through a same-file `ext` variable — no actual external BOM/platform artifact, no
+Gradle invocation needed. Re-measured on the same checkout:
+
+    latest batch: 85 java dependency rows, 81 with a resolved dep_version
+    dep_version_source counts: variable_interpolation=80, declared=1, ''=4 (unresolved)
+
+(85, not 216/288 — the earlier counts were summed across every historical ingestion batch this
+project ever had, not the current one; `query_dependencies()` already filters to the latest
+`indexed_at` batch, which is what `cve_scan` reads.) Running `CveScanSurveyor` against that gave:
+
+    68 advisories across 14 package(s), from 81 of 85 recorded dependencies (java);
+    4 dependenc(ies) could not be checked (no pinned version to query)
+
+and `SecuritySummarySurveyor` immediately after:
+
+    Security: concerns — 9 finding(s) of concern, 15 clear, 24 not established,
+    across 8 of 8 inputs. Every input has run.
+
+Version-catalog resolution (BOM/platform imports proper, and `gradle/libs.versions.toml`) is
+implemented and unit-tested (`tests/test_gradle_dependency_parsing.py`) but unexercised by Egeria
+itself — it uses no version catalog (measured: zero `libs.` references across all 229
+`build.gradle` files) and no real external BOM artifact once `bom/build.gradle`'s own constraints are
+read. A dependency lockfile path was not implemented; none was found in this checkout, and no
+project surveyed here has needed it yet.
+
+The `NOTHING_FOUND`/`NEVER_RUN` conflation two paragraphs up is still real and still unaddressed —
+this closed the one path that was blocking it on Gradle projects, not the general problem.
+
 
 ## Done 2026-08-26/27 — do not redo
 

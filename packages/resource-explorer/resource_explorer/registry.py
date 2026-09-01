@@ -755,6 +755,32 @@ class ProjectRegistry:
                     FOREIGN KEY (project_slug) REFERENCES projects(slug)
                 )
             """)
+            # Migration: add dep_version_source if not present (existing databases).
+            #
+            # This is the provenance for `dep_version`, added 2026-09-01 alongside
+            # DependencyParser's Gradle version resolution — see
+            # ingestion/dependency_parser.py's `_dep()` docstring for the full
+            # rationale. Vocabulary:
+            #   "declared"               — the manifest wrote this version at the
+            #                              dependency's own declaration site.
+            #   "variable_interpolation" — substituted from a same-file variable
+            #                              (Gradle `ext { xVersion = '...' }`).
+            #   "version_catalog"        — substituted from `gradle/libs.versions.toml`.
+            #   ""                       — either no version was recorded at all
+            #                              (dep_version is also '') or, for rows
+            #                              written before this column existed,
+            #                              unknown provenance for a version that
+            #                              IS present. Never treat '' + a non-empty
+            #                              dep_version as "declared" — that is
+            #                              exactly the substituted-reused-as-
+            #                              declared confusion this column exists
+            #                              to prevent. A backfill would need to
+            #                              re-run the parser, not guess.
+            existing_deps = self._get_table_columns(conn, "project_dependencies")
+            if "dep_version_source" not in existing_deps:
+                conn.execute(
+                    "ALTER TABLE project_dependencies ADD COLUMN dep_version_source TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deps_slug "
                 "ON project_dependencies(project_slug)"
@@ -3888,9 +3914,16 @@ class ProjectRegistry:
         with self._conn() as conn:
             conn.executemany(
                 "INSERT INTO project_dependencies "
-                "(project_slug, dep_name, dep_version, dep_type, ecosystem, source_file, indexed_at) "
-                "VALUES (:project_slug, :dep_name, :dep_version, :dep_type, :ecosystem, :source_file, :indexed_at)",
-                [{**d, "project_slug": slug, "indexed_at": indexed_at} for d in deps],
+                "(project_slug, dep_name, dep_version, dep_version_source, dep_type, "
+                "ecosystem, source_file, indexed_at) "
+                "VALUES (:project_slug, :dep_name, :dep_version, :dep_version_source, :dep_type, "
+                ":ecosystem, :source_file, :indexed_at)",
+                # .get(..., "") because not every caller (older tests, hand-built
+                # dicts) sets dep_version_source — absence means "provenance not
+                # stated", the same '' a row with no version at all gets, never
+                # a guess at what it would have been.
+                [{**d, "dep_version_source": d.get("dep_version_source", ""),
+                  "project_slug": slug, "indexed_at": indexed_at} for d in deps],
             )
 
     def query_dependencies(
@@ -3921,7 +3954,7 @@ class ProjectRegistry:
                 params.append(ecosystem)
             where = " AND ".join(filters)
             rows = conn.execute(
-                f"SELECT dep_name, dep_version, dep_type, ecosystem, source_file "  # noqa: S608
+                f"SELECT dep_name, dep_version, dep_version_source, dep_type, ecosystem, source_file "  # noqa: S608
                 f"FROM project_dependencies WHERE {where} ORDER BY ecosystem, dep_type, dep_name",
                 params,
             ).fetchall()

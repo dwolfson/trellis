@@ -6,12 +6,21 @@ was Gradle, so Egeria — 239 `build.gradle` files — had **zero** dependency r
 which capped `security_summary` at 7 of 8 inputs for the project this tool is
 built around.
 
-`build.gradle` is Groovy (or Kotlin) *code*, not a data format, so this reads the
-literal forms and cannot resolve version catalogs, `ext` properties or plugins.
-That is acceptable only because of what it does with what it cannot resolve, and
-that is what these tests pin: an unresolvable version becomes **empty**, never a
-guess and never the raw variable, and internal module references are **excluded**
-rather than recorded as packages that exist in no registry.
+`build.gradle` is Groovy (or Kotlin) *code*, not a data format, so this reads
+literal forms plus two specific, cheap-to-resolve indirections: a same-file
+`ext`/`val` variable, and a `gradle/libs.versions.toml` version catalog. It
+still cannot run Gradle, so a BOM/platform-managed version (the common Egeria
+case) stays unresolved. That is acceptable only because of what it does with
+what it cannot resolve: an unresolvable version becomes **empty**, never a
+guess and never the raw variable/accessor text; internal module references are
+**excluded** rather than recorded as packages that exist in no registry; and a
+version that WAS resolved from a variable or a catalog carries a
+`dep_version_source` that says so, distinct from `"declared"` (the manifest
+wrote it there literally) — see `_dep()`'s docstring in dependency_parser.py.
+That distinction is the point of this whole module: a substituted version
+reused as though it were declared is a worse bug than no version at all,
+because it produces a confident CVE answer about a version nobody actually
+pinned.
 """
 from __future__ import annotations
 
@@ -22,10 +31,10 @@ import pytest
 from resource_explorer.ingestion.dependency_parser import DependencyParser
 
 
-def _parse(tmp_path, body: str, name: str = "build.gradle"):
+def _parse(tmp_path, body: str, name: str = "build.gradle", catalog=None):
     p = tmp_path / name
     p.write_text(textwrap.dedent(body))
-    return DependencyParser()._parse_gradle(p)
+    return DependencyParser()._parse_gradle(p, catalog)
 
 
 def test_a_pinned_coordinate_keeps_its_version(tmp_path):
@@ -38,6 +47,10 @@ def test_a_pinned_coordinate_keeps_its_version(tmp_path):
     assert got[0]["dep_name"] == "org.slf4j:slf4j-api"
     assert got[0]["dep_version"] == "2.0.13"
     assert got[0]["ecosystem"] == "java"
+    # A version literally written at the dependency's own declaration site is
+    # "declared" — the baseline case every other provenance tag is judged
+    # against.
+    assert got[0]["dep_version_source"] == "declared"
 
 
 def test_a_coordinate_with_no_version_is_recorded_not_dropped(tmp_path):
@@ -155,6 +168,153 @@ def test_comments_and_unrelated_lines_are_ignored(tmp_path):
     assert [d["dep_name"] for d in got] == ["real:dep"], got
 
 
+def test_a_same_file_variable_resolves_the_version(tmp_path):
+    """The Egeria worked example: `bom/build.gradle` declares its constraints
+    entirely as `ext { xVersion = '1.2.3' }` plus `api("g:a:${xVersion}")`.
+    """
+    got = _parse(tmp_path, """
+        ext {
+            jacksonVersion = '2.15.0'
+        }
+        dependencies {
+            implementation 'com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}'
+        }
+    """)
+    assert len(got) == 1, got
+    assert got[0]["dep_version"] == "2.15.0"
+    assert got[0]["dep_version_source"] == "variable_interpolation"
+
+
+def test_a_variable_reference_with_no_matching_definition_stays_empty(tmp_path):
+    """Known-negative for the variable-resolution path: a `${...}` reference
+    to a name never assigned anywhere in the file must NOT resolve — proving
+    the substitution can actually fail rather than always finding something.
+    """
+    got = _parse(tmp_path, """
+        dependencies {
+            implementation 'com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}'
+        }
+    """)
+    assert len(got) == 1, got
+    assert got[0]["dep_version"] == ""
+    assert got[0]["dep_version_source"] == ""
+
+
+def test_variable_substitution_requires_the_whole_field(tmp_path):
+    """`${xVersion}-SNAPSHOT` is a partial interpolation. Splicing the resolved
+    fragment into the surrounding text would be a guess about the rest of the
+    string, not a resolution — this must stay empty rather than invent
+    "2.15.0-SNAPSHOT", which nothing actually declared.
+    """
+    got = _parse(tmp_path, """
+        ext {
+            jacksonVersion = '2.15.0'
+        }
+        dependencies {
+            implementation 'com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}-SNAPSHOT'
+        }
+    """)
+    assert len(got) == 1, got
+    assert got[0]["dep_version"] == "", got[0]
+    assert got[0]["dep_version_source"] == ""
+
+
+def test_a_non_version_named_variable_is_never_captured(tmp_path):
+    """`description = '...'` must not become a substitutable "variable" just
+    because it is an assignment — only names ending in Version are eligible,
+    which is the real Gradle convention and the guard against an unrelated
+    string leaking into `dep_version` by coincidence of name collision.
+    """
+    got = _parse(tmp_path, """
+        description = 'jacksonVersion'
+        dependencies {
+            implementation 'com.fasterxml.jackson.core:jackson-databind:${description}'
+        }
+    """)
+    assert len(got) == 1, got
+    assert got[0]["dep_version"] == ""
+
+
+def test_version_catalog_resolves_a_whole_dependency_line(tmp_path):
+    """`implementation(libs.alias)` — no quotes at all, so it needs its own
+    regex; the catalog supplies both the coordinate and the version."""
+    catalog_toml = tmp_path / "gradle"
+    catalog_toml.mkdir()
+    (catalog_toml / "libs.versions.toml").write_text(textwrap.dedent("""
+        [versions]
+        jackson = "2.17.0"
+
+        [libraries]
+        jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+    """))
+    catalog = DependencyParser()._load_gradle_version_catalog(tmp_path)
+    assert catalog["libraries"]["jackson-databind"]["version"] == "2.17.0"
+
+    got = _parse(tmp_path, """
+        dependencies {
+            implementation(libs.jackson.databind)
+        }
+    """, catalog=catalog)
+    assert len(got) == 1, got
+    assert got[0]["dep_name"] == "com.fasterxml.jackson.core:jackson-databind"
+    assert got[0]["dep_version"] == "2.17.0"
+    assert got[0]["dep_version_source"] == "version_catalog"
+
+
+def test_version_catalog_resolves_an_inline_version_reference(tmp_path):
+    """`"g:a:${libs.versions.x.get()}"` — the catalog supplies only the
+    version; the coordinate is still written literally."""
+    catalog = {"versions": {"jackson": "2.17.0"}, "libraries": {}}
+    got = _parse(tmp_path, """
+        dependencies {
+            implementation 'com.fasterxml.jackson.core:jackson-databind:${libs.versions.jackson.get()}'
+        }
+    """, catalog=catalog)
+    assert len(got) == 1, got
+    assert got[0]["dep_version"] == "2.17.0"
+    assert got[0]["dep_version_source"] == "version_catalog"
+
+
+def test_an_unknown_catalog_accessor_records_nothing(tmp_path):
+    """Known-negative for the catalog path: an alias absent from the catalog
+    (or a build file read with no catalog loaded at all) must not fabricate a
+    dependency from the accessor text — there is no coordinate to record.
+    """
+    got = _parse(tmp_path, """
+        dependencies {
+            implementation(libs.does.not.exist)
+        }
+    """, catalog={"versions": {}, "libraries": {}})
+    assert got == [], got
+
+
+def test_dedup_prefers_a_resolved_version_over_an_empty_one(tmp_path):
+    """The real Egeria shape: a downstream module declares `g:a` with no
+    version (BOM-managed) while the BOM's own file resolves `g:a`'s version
+    via a same-file variable. Both end up keyed identically for dedup
+    (`source_file` is just the filename, not the path), so whichever is
+    recorded must be the resolved one — not whichever `rglob` happened to
+    visit first, which is not a real ordering guarantee.
+    """
+    (tmp_path / "module").mkdir()
+    (tmp_path / "module" / "build.gradle").write_text(textwrap.dedent("""
+        dependencies {
+            implementation 'org.slf4j:slf4j-api'
+        }
+    """))
+    (tmp_path / "bom").mkdir()
+    (tmp_path / "bom" / "build.gradle").write_text(textwrap.dedent("""
+        ext { slf4jVersion = '2.0.13' }
+        dependencies {
+            api("org.slf4j:slf4j-api:${slf4jVersion}")
+        }
+    """))
+    got = DependencyParser().parse(tmp_path, "test_project")
+    by_name = {d["dep_name"]: d for d in got}
+    assert by_name["org.slf4j:slf4j-api"]["dep_version"] == "2.0.13"
+    assert by_name["org.slf4j:slf4j-api"]["dep_version_source"] == "variable_interpolation"
+
+
 def test_the_real_egeria_checkout_yields_dependencies(tmp_path):
     """Non-vacuity against the actual project this was written for.
 
@@ -173,3 +333,19 @@ def test_the_real_egeria_checkout_yields_dependencies(tmp_path):
     assert all(not d["dep_name"].startswith(":") for d in deps), "project() refs leaked in"
     assert all("$" not in d["dep_version"] for d in deps), "an unresolved variable reached dep_version"
     assert all(d["ecosystem"] == "java" for d in deps)
+
+    # Egeria's real shape (measured 2026-09-01): the BOM's `ext` variables
+    # resolve the overwhelming majority of its own literal coordinates, so
+    # this must no longer be zero-with-a-good-excuse — that was true before
+    # variable resolution existed and would now be a regression.
+    versioned = [d for d in deps if d["dep_version"]]
+    assert len(versioned) > 50, (
+        f"only {len(versioned)} of {len(deps)} gradle dependencies resolved a "
+        "version — same-file ext-variable resolution appears to have regressed"
+    )
+    # Every resolved version must carry provenance other than "declared" or
+    # "declared" itself — never empty next to a non-empty dep_version, which
+    # would be indistinguishable from a version this code invented.
+    assert all(d["dep_version_source"] for d in versioned), (
+        "a resolved dep_version with no recorded dep_version_source"
+    )
