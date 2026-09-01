@@ -39,6 +39,19 @@ class Annotation:
     json_properties: dict[str, Any] = field(default_factory=dict)
     additional_properties: dict[str, Any] = field(default_factory=dict)
     source: str = "local"                   # 'local' | 'egeria' | 'pending'
+    #: Index, within this same run()'s returned annotations list, of the
+    #: annotation this one is evidence *for* — e.g. a per-file
+    #: SchemaAnalysisAnnotation's evidence_of points at the index of its
+    #: sub-surveyor's aggregate ResourceMeasureAnnotation. `None` (default)
+    #: means "not evidence of anything in this run" — every existing
+    #: annotation, unchanged. A same-run, list-index signal, not a GUID: the
+    #: GUID does not exist until after publish, and append order is NOT safe
+    #: to reconstruct blind, cross-run, after the fact (see
+    #: docs/annotation-linking-plan.md Q3) — this field is safe only because
+    #: the sub-surveyor sets it deliberately, about its own list, in the same
+    #: run that produces it. Consumed by Phase 2 (not implemented yet); Phase 1
+    #: only adds the field so sub-surveyors can start setting it.
+    evidence_of: int | None = None
 
 
 @dataclass

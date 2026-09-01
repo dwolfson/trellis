@@ -109,3 +109,122 @@ class TestDependencyLegacyTimestampRepair:
         deps = db.query_dependencies("test-project")
         assert len(deps) == 1
         assert deps[0]["dep_name"] == "only-dep"
+
+
+class TestFindingEgeriaGuid:
+    """docs/annotation-linking-plan.md Phase 1: egeria_annotation_guid column
+    + mark_finding_guid(). New tests, not read-source assertions — every one
+    below executes the real migration/update path against a real (SQLite)
+    connection."""
+
+    def _finding_id(self, db, slug="test-project", kind="security_hygiene"):
+        db.upsert_finding(slug, kind, [
+            {"check_name": "has_ci", "label": "pass", "summary": "", "confidence": 100, "detail": None},
+        ])
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM project_analysis_findings WHERE project_slug = ? AND kind = ?",
+                ("test_project", kind),
+            ).fetchone()
+        return row["id"]
+
+    def test_new_column_defaults_to_null_not_empty_string(self, db, sample_project):
+        """A freshly inserted finding row — never touched by mark_finding_guid
+        — must read back NULL, not '', so it is not confusable with a
+        deliberately-recorded empty value."""
+        finding_id = self._finding_id(db, sample_project.slug)
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] is None
+
+    def test_existing_rows_survive_migration_untouched(self, db, sample_project):
+        """Re-running the migration block (as every ProjectRegistry() startup
+        does) against a table that already has real rows must not error and
+        must not disturb them — the ~68,000-row concern, exercised at small
+        scale."""
+        finding_id = self._finding_id(db, sample_project.slug)
+        db.mark_finding_guid(finding_id, "guid-before-migration")
+        db._init_schema()  # re-run the migration block explicitly
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] == "guid-before-migration"
+
+    def test_mark_finding_guid_writes_the_guid(self, db, sample_project):
+        finding_id = self._finding_id(db, sample_project.slug)
+        db.mark_finding_guid(finding_id, "real-annotation-guid-123")
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] == "real-annotation-guid-123"
+
+    def test_mark_finding_guid_only_touches_the_named_row(self, db, sample_project):
+        """A second finding row in the same batch must not pick up the first
+        row's GUID — the UPDATE is keyed by id, not by kind/slug."""
+        db.upsert_finding(sample_project.slug, "security_hygiene", [
+            {"check_name": "has_ci", "label": "pass", "summary": "", "confidence": 100, "detail": None},
+            {"check_name": "has_tests", "label": "pass", "summary": "", "confidence": 100, "detail": None},
+        ])
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, check_name FROM project_analysis_findings "
+                "WHERE project_slug = ? ORDER BY check_name",
+                ("test_project",),
+            ).fetchall()
+        ci_id = next(r["id"] for r in rows if r["check_name"] == "has_ci")
+        tests_id = next(r["id"] for r in rows if r["check_name"] == "has_tests")
+
+        db.mark_finding_guid(ci_id, "ci-guid")
+
+        with db._conn() as conn:
+            ci_row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?", (ci_id,)
+            ).fetchone()
+            tests_row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?", (tests_id,)
+            ).fetchone()
+        assert ci_row["egeria_annotation_guid"] == "ci-guid"
+        assert tests_row["egeria_annotation_guid"] is None
+
+    def test_known_negative_empty_guid_is_not_recorded(self, db, sample_project):
+        """The guard this whole column exists to prove: calling
+        mark_finding_guid with a falsy GUID (the "create succeeded but Egeria
+        returned no guid key" case, or a caller passing through a failed
+        create's None) must NOT overwrite the column with '' — it must be a
+        no-op, leaving the row exactly as unpublished-looking as before.
+        Proven by first showing the call DOES write for a real GUID (so this
+        isn't a no-op that "passes" only because nothing ran), then showing it
+        does NOT write for an empty one."""
+        finding_id = self._finding_id(db, sample_project.slug)
+
+        # Positive control: a real GUID is recorded.
+        db.mark_finding_guid(finding_id, "guid-that-should-stick")
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id,),
+            ).fetchone()
+        assert row["egeria_annotation_guid"] == "guid-that-should-stick"
+
+        # Known-negative: an empty-string GUID (simulating a failed/empty
+        # create) must not clobber it — and, tested independently on a fresh
+        # row, must not write '' at all.
+        finding_id_2 = self._finding_id(db, sample_project.slug, kind="ci_quality")
+        db.mark_finding_guid(finding_id_2, "")
+        with db._conn() as conn:
+            row2 = conn.execute(
+                "SELECT egeria_annotation_guid FROM project_analysis_findings WHERE id = ?",
+                (finding_id_2,),
+            ).fetchone()
+        assert row2["egeria_annotation_guid"] is None, (
+            "mark_finding_guid('') must leave the row NULL — writing '' would "
+            "make a failed/empty create indistinguishable from a real, if "
+            "empty, one"
+        )

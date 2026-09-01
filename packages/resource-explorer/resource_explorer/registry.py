@@ -967,6 +967,28 @@ class ProjectRegistry:
                 conn.execute(
                     "ALTER TABLE project_analysis_findings ADD COLUMN scope_locator TEXT DEFAULT ''"
                 )
+            # Migration: add egeria_annotation_guid for
+            # docs/annotation-linking-plan.md Phase 1 — the Egeria Annotation
+            # GUID this finding row was published as, when known.
+            #
+            # DEFAULT NULL, not '': every pre-existing row (~68,000 measured
+            # 2026-08-31) gets NULL, same as a brand-new row that has not been
+            # published yet — both genuinely mean "no known GUID" (plan Q3)
+            # and this migration does not claim to know more than that. NULL
+            # is used rather than '' specifically so this column never writes
+            # an empty string as if it were a real (if empty) capture attempt
+            # — see mark_finding_guid's docstring for why a failed publish
+            # must not look like a completed one here. This mirrors the
+            # existing `projects.egeria_asset_guid TEXT DEFAULT NULL` column
+            # above (line ~486), not the `TEXT DEFAULT ''` convention used for
+            # scope_locator, deliberately: scope_locator's '' is itself a
+            # meaningful value ("whole resource"); this column has no such
+            # meaningful empty state.
+            if "egeria_annotation_guid" not in existing_findings_cols:
+                conn.execute(
+                    "ALTER TABLE project_analysis_findings "
+                    "ADD COLUMN egeria_annotation_guid TEXT DEFAULT NULL"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_findings_slug_kind "
                 "ON project_analysis_findings(project_slug, kind)"
@@ -3147,6 +3169,46 @@ class ProjectRegistry:
                     }
                     for f in findings
                 ],
+            )
+
+    def mark_finding_guid(self, finding_id: int, guid: str) -> None:
+        """Record the Egeria Annotation GUID one finding row was published as.
+
+        docs/annotation-linking-plan.md Phase 1. `upsert_finding` stays
+        insert-only; this is a separate, narrow write used only after a
+        successful publish of the annotation that corresponds to this row.
+
+        Deliberately a no-op on a falsy `guid` — this is the guard the plan's
+        own Phase 1 verification names explicitly: a create that raised, or
+        that returned a 200 with no `"guid"` key (see
+        `annotation_props.publish_annotations`'s Q1 handling), must leave the
+        row exactly as it was, not record an empty string that would then
+        read as "we tried and got nothing" — indistinguishable from a real
+        (if bafflingly empty) capture. The column's NULL default already
+        means "no known GUID" for both a never-published row and a
+        pre-migration one (see the migration's own comment); calling this
+        with an empty guid would only add a third, pointless way to spell the
+        same thing.
+
+        What this method does NOT do: distinguish "never published" from
+        "published, but the create failed" for a given row. That
+        distinction is not stored on `project_analysis_findings` at all — for
+        annotations published through the outbox, it lives on the
+        corresponding `egeria_outbox` row's own `status`/`attempts`/
+        `last_error` (a failed create there stays `pending`/`failed`/`dead`,
+        never silently advances to `done`); the direct/no-registry publish
+        path has no per-row failure record today (a failure there is logged
+        and the loop continues — see `publish_annotations`), so for that path
+        specifically "not yet published" and "published but failed" are
+        genuinely indistinguishable after the fact. That gap is real,
+        pre-existing to this method, and out of Phase 1's scope to close.
+        """
+        if not guid:
+            return
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE project_analysis_findings SET egeria_annotation_guid = ? WHERE id = ?",
+                (guid, finding_id),
             )
 
     def query_findings(self, slug: str, kind: str, scope_locator: str = "") -> list[dict]:
