@@ -2120,6 +2120,36 @@ produced a finding for `dependabot_security_updates: enabled` and silently didn'
 
 ### Platform & orchestration
 
+#### Gradle versions come from the BOM, so CVE scanning still cannot answer for Egeria
+
+Follow-on from the entry below, which is now fixed: Gradle *is* parsed (2026-08-31), and
+`egeria_git` went from 0 dependency rows to 85. But **84 of those 85 have no version**, because
+Egeria resolves them through a BOM (`bom/build.gradle`) rather than inline. Measured, not assumed.
+
+`cve_scan` handles that honestly — an empty version lands in `unqueryable` with "no pinned version
+to query", never as clean — so the summary is now 8 of 8 inputs where the eighth says *cannot
+answer*. That is a better state than "never ran", and it is not CVE coverage.
+
+To get real advisories for a BOM-based project, something has to resolve `group:artifact` to a
+version. Options, roughly by cost:
+
+1. **Parse the BOM file itself.** Egeria's `bom/build.gradle` carries the versions, many as
+   `${jacksonVersion}`-style variables defined in the same file or in `gradle.properties`. A
+   two-pass read — collect variable definitions, then substitute — would resolve most of them
+   without running anything. Cheapest, and covers the common single-BOM case.
+2. **Version catalogs** (`gradle/libs.versions.toml`) are a data format and would parse directly.
+   Egeria does not use one, but many modern Gradle projects do.
+3. **Run `gradle dependencies`.** Complete and correct, needs a JVM and a working build per repo,
+   and is far outside what a survey step should do.
+
+Option 1 is the one that matches this codebase's existing shape — the same "cheap structural signal,
+not full understanding" the manifest and convention parsers already are.
+
+**Whatever is built, the reporting rule from the Gradle entry still applies:** a version resolved by
+substitution should be distinguishable from one declared inline, because a wrong substitution
+produces a *confident* CVE answer about the wrong version — which is worse than the current
+"cannot answer".
+
 #### No Gradle support in the dependency parser — Egeria itself has zero dependency data, so CVE scanning cannot run on it
 
 Found 2026-08-31 while trying to take `egeria_git`'s security summary from 7 of 8 inputs to 8.

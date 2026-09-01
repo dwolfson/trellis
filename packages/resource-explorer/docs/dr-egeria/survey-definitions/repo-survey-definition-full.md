@@ -1,5 +1,24 @@
 ## Create Governance Action Process Step
 ### Display Name
+Full Survey (all steps) — Repo Refresh Plan
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_refresh_plan
+
+### Description
+What a refresh would actually need to do: which targets have never run, which are stale against the current head commit, and which are current. One GitHub call, no archive download. ADVISORY — the executor runs every step regardless, so this records the decision rather than enforcing it.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_refresh_plan |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
 Full Survey (all steps) — Repo Git Statistics
 
 ### Qualified Name
@@ -686,7 +705,19 @@ ___
 GovActionProcess::RepoFullSurvey
 
 ### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_refresh_plan
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_refresh_plan
+
+### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_git_statistics
+
+### Guard
+Any
 
 ___
 

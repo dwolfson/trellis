@@ -67,6 +67,7 @@ from resource_explorer.surveyors.sub_surveyors import (
     DocumentationSurveyor,
     FossScorecardSurveyor,
     SecuritySummarySurveyor,
+    RefreshPlanSurveyor,
     FileInventorySurveyor,
     GitStatisticsSurveyor,
     WebsiteIngestionSurveyor,
@@ -277,6 +278,21 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     # file_inventory is early — STEP_REGISTRY order is "Repo Full Survey" order,
     # so a refresh placed after its readers leaves them on the previous run's
     # numbers. API-only, no zipball, so it costs nothing to put first.
+    # FIRST, and the position is load-bearing. A planner reads stored state to
+    # say what a run needs, which is only useful BEFORE the run does it —
+    # placed next to the other reducer it landed at index 34 of 36 in "Repo
+    # Full Survey", planning a run that had already happened. Full Survey is
+    # generated from the "*" sentinel, so position in this dict IS position in
+    # that chain. The mirror of repo_security_summary, which must be last.
+    "repo_refresh_plan": StepInfo(
+        "repo_refresh_plan", RefreshPlanSurveyor,
+        "What a refresh would actually need to do: which targets have never run, "
+        "which are stale against the current head commit, and which are current. "
+        "One GitHub call, no archive download. ADVISORY — the executor runs every "
+        "step regardless, so this records the decision rather than enforcing it.",
+        ["ClassificationAnnotation"],
+        accepts_surveyed_at=True,
+    ),
     "repo_git_statistics": StepInfo(
         "repo_git_statistics", GitStatisticsSurveyor,
         "Refreshes project_stats (stars, forks, contributors, commit activity, "
@@ -1326,6 +1342,34 @@ def _cve_scan_headline(registry, slug: str) -> dict | None:
     # A clean result never states itself without its coverage.
     return {"label": f"none in {checked} of {recorded} declared dependenc(ies)",
             "tone": "good" if checked == recorded else "warn"}
+
+
+def _refresh_plan_results(registry, slug: str) -> dict:
+    rows = registry.query_findings(slug, "refresh_plan")
+    return {"findings": [
+        {"check_name": r["check_name"], "label": r["label"], "summary": r["summary"],
+         "confidence": r["confidence"], "detail": _json_or_empty(r.get("detail_json")),
+         "surveyed_at": r["surveyed_at"]}
+        for r in rows
+    ]}
+
+
+def _refresh_plan_headline(registry, slug: str) -> dict | None:
+    """States that it is advisory, because a plan read as an action is the whole
+    risk here — "nothing to refresh" must not be mistaken for "nothing ran"."""
+    rows = _refresh_plan_results(registry, slug)["findings"]
+    if not rows:
+        return None
+    overall = next((r for r in rows if r["check_name"] == "refresh_needed"), None)
+    if not overall:
+        return None
+    if overall["label"] == "unknown":
+        return {"label": "refresh need unknown — head commit unreadable", "tone": "neutral"}
+    d = overall["detail"]
+    if overall["label"] == "no":
+        return {"label": f"nothing stale ({d.get('total')} targets current)", "tone": "good"}
+    return {"label": f"{d.get('needed')} of {d.get('total')} targets need refreshing",
+            "tone": "warn"}
 
 
 def _security_summary_results(registry, slug: str) -> dict:
@@ -2652,6 +2696,13 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
             headline_reader=_foss_scorecard_headline,
         ),
     ),
+    "refresh_plan": AnalysisKind(
+        "refresh_plan", ["repo_refresh_plan"],
+        results=AnalysisKindResults(
+            _refresh_plan_results, None, "findings_list",
+            headline_reader=_refresh_plan_headline,
+        ),
+    ),
     "security_summary": AnalysisKind(
         "security_summary", ["repo_security_summary"],
         family="security",
@@ -2959,11 +3010,15 @@ SURVEY_RESULT_DASHBOARDS: dict[str, SurveyResultDashboard] = {
         ["repo_classification"],
     ),
     "manifest_refresh": SurveyResultDashboard(
-        "manifest_refresh", "Manifest Refresh",
-        "The last dependency/CI-workflow/repo-convention refresh from a fresh zipball — what "
-        "changed, not a fourth view of dependency_analysis/ci_quality/repo_conventions' own "
-        "data (those are the dashboards for that; this reports the refresh itself).",
-        ["manifest_parse"],
+        "manifest_refresh", "Refresh",
+        "Whether this repo's derived data is current, and the last refresh of it. The plan comes "
+        "first: which targets are stale, which never ran, and which are already current — judged "
+        "per target, since a target that never ran needs work whatever the commit says. Then the "
+        "manifest refresh itself. Not a fourth view of dependency_analysis/ci_quality/"
+        "repo_conventions' own data (those are the dashboards for that); this reports the refresh.",
+        # refresh_plan first: it is the one card that says whether anything here
+        # needed doing, which is the question a reader arrives with.
+        ["refresh_plan", "manifest_parse"],
     ),
 }
 

@@ -54,6 +54,7 @@ def test_all_step_keys_are_registered():
         "repo_conventions", "repo_symbol_extraction", "repo_rag_ingestion",
         "repo_foss_scorecard", "repo_cve_scan", "repo_community_support", "repo_interface_surface",
         "repo_chaoss_metrics", "repo_cii_badge", "repo_security_summary",
+        "repo_refresh_plan",
         "repo_arch_detect", "repo_arch_coupling", "repo_arch_lens", "repo_arch_summary",
         "repo_manifest_parse", "repo_classification",
     }

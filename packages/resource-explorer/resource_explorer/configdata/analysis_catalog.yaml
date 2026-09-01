@@ -286,6 +286,35 @@ repo_analyses:
     availability: inline
     target_shape: whole_resource_only
 
+  - id: refresh_plan
+    name: "Refresh Plan"
+    # A PLANNER (docs/survey-composition-and-topic-summary-design.md §2b) — the
+    # mirror of a reducer: it reads stored STATE at the front of a survey rather
+    # than stored findings at the end. `availability: queued` because it makes a
+    # GitHub call for the head commit; `run_time: fast` because that is all it
+    # does. ADVISORY: the survey executor runs every step in the graph
+    # regardless, so this records the decision rather than enforcing it.
+    description: "What a refresh would actually need to do, per target: which have never run, which are stale against the current head commit, and which are current. Judged per target rather than once for the whole survey, because 'unchanged' and 'complete' are different questions — a target that never ran needs work whatever the commit says. A head commit that cannot be read is reported as unknown, never as unchanged."
+    resource_types: ["repo"]
+    # `analysis`, not `automate`, and the distinction is the point. `automate`
+    # deliberately has ZERO catalog entries (CLAUDE.md rule 17) — it is served by
+    # automate.py's own subscriptions table, not by analyses. What lives in
+    # Automate is the *survey* (survey_kind `refresh`, which the Automate tab
+    # lists); the analysis itself is tagged for the tier its work belongs to,
+    # alongside `manifest_parse` and `rag_ingestion`, which are the things it
+    # plans. Tagging it `automate` broke that invariant and its test caught it.
+    intent: analysis
+    perspectives: ["Steward", "Admin"]
+    annotation_types: ["ClassificationAnnotation"]
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: security_summary
     name: "Security Summary"
     # A REDUCER (docs/survey-composition-and-topic-summary-design.md §2): it
