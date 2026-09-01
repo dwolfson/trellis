@@ -886,3 +886,42 @@ repo_questions:
     checks: []
     note: chaoss_metrics
   answering_mechanism: Git Statistics
+- question: How much code is there? How complex?
+  stage: Assessment
+  perspectives:
+  - App/AI Builder
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Maintain
+  answering:
+    kind: gap
+    analysis_ids:
+    - api_structure
+    checks: []
+    note: 'GAP: no code/comment line counts exist; ingestion_lines_of_code is all text lines, not code
+      (14% accurate on egeria-python). Complexity is computed by api_structure but never persisted as
+      a metric.'
+  answering_mechanism: Gap
+- question: What are the public interfaces?
+  stage: Discovery
+  perspectives:
+  - App/AI Builder
+  - Privacy
+  - Security
+  - Architecture
+  - Admin
+  purposes:
+  - Assess
+  - Deploy
+  - Explore
+  - Learn
+  answering:
+    kind: analysis
+    analysis_ids:
+    - interface_surface
+    checks: []
+    note: interface_surface
+  answering_mechanism: Code Analysis
