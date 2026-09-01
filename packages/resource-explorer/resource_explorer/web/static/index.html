@@ -11827,8 +11827,9 @@ async function runQuery(query, projectSlug, databaseSlug) {
             const fb = document.createElement('div');
             fb.className = 'mt-1.5 flex gap-2';
             fb.innerHTML = `
-              <button onclick="recordFeedback('${event.hash}', 1, this)" class="text-xs text-slate-500 hover:text-green-400 transition-colors">👍</button>
-              <button onclick="recordFeedback('${event.hash}', -1, this)" class="text-xs text-slate-500 hover:text-red-400 transition-colors">👎</button>`;
+              <button onclick="recordFeedback('${event.hash}', 1, this)" title="Helpful" class="text-xs text-slate-500 hover:text-green-400 transition-colors">👍</button>
+              <button onclick="recordFeedback('${event.hash}', 0, this)" title="Partially correct — right idea, but incomplete or partly off" class="text-xs text-slate-500 hover:text-amber-400 transition-colors">😐</button>
+              <button onclick="recordFeedback('${event.hash}', -1, this)" title="Not helpful" class="text-xs text-slate-500 hover:text-red-400 transition-colors">👎</button>`;
             wrap.appendChild(fb);
           }
           messages.scrollTop = messages.scrollHeight;
@@ -11870,8 +11871,13 @@ async function recordFeedback(hash, vote, btn) {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ query_hash: hash, vote }),
   });
+  // Three explicit states, matching the three buttons -- vote is one of
+  // +1/0/-1 (0 = "partially correct", not "no vote yet"; see
+  // FeedbackRequest.vote in routes/query.py).
   btn.parentElement.innerHTML = vote > 0
     ? '<span class="text-xs text-green-400">👍 Thanks!</span>'
+    : vote === 0
+    ? '<span class="text-xs text-amber-400">😐 Noted — partially correct.</span>'
     : '<span class="text-xs text-red-400">👎 Noted.</span>';
 }
 
