@@ -11,7 +11,8 @@ from trellis_microflow import resolve_resources
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.surveyors import step_cost_observer
-from resource_explorer.surveyors.survey_report import SurveyResult
+from resource_explorer.surveyors import result_status, step_preconditions
+from resource_explorer.surveyors.survey_report import ClassificationAnnotation, SurveyResult
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +151,8 @@ class SurveyOrchestrator:
         # Recorded AFTER the cost-tier narrowing, so it is what actually ran
         # rather than what was asked for — a publish attributing an analysis
         # that a cost ceiling excluded would be the same false claim in a new
-        # place.
+        # place. Precondition skips are subtracted after the dispatch loop below,
+        # for the same reason: they are not known until each step is reached.
         result.steps_run = sorted(step_keys_to_run)
 
         # D6 (docs/unified-survey-execution-model-plan.md): resolve every
@@ -211,6 +213,34 @@ class SurveyOrchestrator:
                 selected = [(key, all_surveyors[key]) for key in steps if key in all_surveyors]
 
             for step_key, surveyor in selected:
+                # Preconditions on stored data, before dispatch. A step whose
+                # input another step produces is absent cannot say anything, and
+                # running it anyway costs a slot in every downstream picture —
+                # `security_summary` counts such a step among its inputs as
+                # "never ran" and withholds a verdict below its floor.
+                #
+                # The skip is EMITTED, not omitted. `result_status.skipped()`
+                # requires a reason for the same purpose it does everywhere else:
+                # a step that simply disappears from a report is indistinguishable
+                # from one that ran and found nothing.
+                _info = STEP_REGISTRY.get(step_key)
+                _ctx = getattr(_info, "requires_context", None)
+                if _ctx:
+                    may_run, precondition, why = step_preconditions.evaluate(
+                        self._registry, project, _ctx)
+                    if not may_run:
+                        log.info("Skipping %s for %s — %s",
+                                 surveyor.step_name, project.slug, why)
+                        result.add(ClassificationAnnotation(
+                            summary=f"Skipped: {why}",
+                            analysis_step=surveyor.step_name,
+                            candidate_classifications=[result_status.SKIPPED_BY_DESIGN],
+                            confidence=0,
+                            json_properties=step_preconditions.skip_status(precondition, why),
+                        ))
+                        result.skipped_steps[step_key] = why
+                        continue
+
                 log.info("Running %s for %s …", surveyor.step_name, project.slug)
                 # Measure what the step actually costs, against what its
                 # StepInfo declares. Three mis-declarations surfaced in one week
@@ -248,6 +278,7 @@ class SurveyOrchestrator:
                     # the absence-looks-like-zero shape inside the instrument.
                     _observed[0].annotations, _observed[0].outcomes = (
                         step_cost_observer.describe_work(locals().get("annotations")))
+
                     _observed[0].disagreement = step_cost_observer._disagreement(_observed[0])
                     recorded = step_cost_observer.record(
                         self._registry, project.slug, _observed[0], surveyed_at)
@@ -257,6 +288,21 @@ class SurveyOrchestrator:
                         result.add_error(
                             f"step cost for {step_key} could not be recorded — "
                             "its cost observation is missing, not zero")
+
+        # A skipped step did not run, so it must not stay in steps_run — which a
+        # publish reads to say WHICH analyses it published. Leaving it there
+        # would attribute an analysis to a step that produced nothing: the same
+        # false claim the cost-ceiling comment above describes, arriving by a new
+        # route. Subtracted here rather than up front because a precondition is
+        # only evaluated when its step is reached.
+        #
+        # Caught by test_a_skip_actually_executes_end_to_end_through_the_orchestrator:
+        # the annotation and skipped_steps were both already correct while
+        # steps_run still said the step had run. Reading the dispatch site would
+        # not have found it — only running the branch did.
+        if result.skipped_steps:
+            result.steps_run = sorted(
+                set(result.steps_run) - set(result.skipped_steps))
 
         log.info(
             "Survey complete for %s: %d annotation(s), %d error(s)",

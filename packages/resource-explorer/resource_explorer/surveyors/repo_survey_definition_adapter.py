@@ -171,6 +171,15 @@ class StepInfo:
     # once per SurveyOrchestrator.run() call, deduped across every step
     # selected in that run, via trellis_microflow.resolve_resources — see
     # RESOURCE_PROVIDERS below for what "zipball_root" actually does.
+    #: Preconditions on STORED DATA, checked before dispatch — names from
+    #: `step_preconditions.PRECONDITIONS`, mapped to this step's own reason for
+    #: needing them. Distinct from `requires_resources` (a zipball, a clone),
+    #: which is about runtime inputs: this is "another step's output is absent,
+    #: so there is nothing here to work on". Unmet produces a
+    #: `skipped_by_design` annotation carrying the reason, never silence — a step
+    #: that vanishes from a report is indistinguishable from one that ran and
+    #: found nothing.
+    requires_context: dict[str, str] = field(default_factory=dict)
     requires_resources: dict[str, str] = field(default_factory=dict)
     # {resource_name: view} — what this step actually READS from that
     # resource. Checked against the provider's `provides` at import by
@@ -584,6 +593,21 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # One batched call to a public advisory database — no repo download,
         # and nothing fetched about the repo itself.
         fetch_cost="api",
+        # Left at the implicit default `low` after measuring, 2026-09-01.
+        # 13 runs give median 0.02s and p90 8.1s — over the 5s ceiling, but
+        # only 1.6x, and step_cost_observer's ceilings are "generous on
+        # purpose ... to catch order-of-magnitude errors, not to police
+        # seconds". A 1.6x p90 on n=13 with a 0.02s median is not that.
+        # Raising it would also have taken RepoAssessmentSurvey out of its
+        # all-low shape, which is a statement about MEMBERSHIP, not a number
+        # to bump — see test_analysis_survey_carries_the_expensive_steps.
+
+        requires_context={
+            "has_versioned_dependencies":
+                "cve_scan queries OSV by (package, VERSION), so a dependency with "
+                "no resolved version cannot be asked about — parsed coordinates "
+                "alone are not enough",
+        },
     ),
     "repo_foss_scorecard": StepInfo(
         "repo_foss_scorecard", FossScorecardSurveyor,
@@ -641,11 +665,27 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # silent.
         requires_resources={"zipball_root": "local_path"},
         requires_views={"zipball_root": VIEW_SOURCE},
-        # One of the 4 zipball steps. compute_cost="medium", not "low":
-        # Tier 2 profiles every readable data file's rows/columns/dtypes/
-        # null-rate with pandas, real per-file work beyond a table read.
+        # One of the 4 zipball steps. It declared compute_cost="medium" on the
+        # reasoning that Tier 2 profiles every readable data file's rows/columns/
+        # dtypes/null-rate with pandas — real per-file work beyond a table read.
+        #
+        # Measurement disagrees, and the evidence had to be narrowed before it
+        # meant anything. Raw, this step shows 0.01s median across 85 runs — a
+        # number that cannot distinguish "cheap" from "never reached its input",
+        # which is the absence-looks-like-zero shape relocated into the measuring
+        # instrument (step_cost_observer.Observation.interpretable exists for
+        # exactly this, and names this step in its own comment).
+        #
+        # Restricted to the 26 INTERPRETABLE observations — non-zero annotation
+        # count, no `unverified` outcome, so the run provably had work to do:
+        # median 39 annotations, elapsed median 0.10s, p90 0.76s, max 1.41s.
+        # Comfortably inside `low`'s 5s ceiling WITH proof it was working, which
+        # the raw median could never have supported.
+        #
+        # Over-declaring is not harmless: it excluded this step from
+        # max_compute_cost="low" runs — the cheap tier it is well suited to.
         fetch_cost="download",
-        compute_cost="medium",
+        compute_cost="low",
     ),
     "repo_file_classification": StepInfo(
         "repo_file_classification", FileClassifierSurveyor,
@@ -698,6 +738,10 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # findings.md §1): 5.3s per repo for the whole toolchain, so "fast"
         # is honest rather than optimistic.
         fetch_cost="download",
+        # Measured 2026-09-01, left at `low`: 147 runs, median 1.3s, p90 7.1s.
+        # Over the 5s ceiling by 1.4x, which is inside the noise the ceilings
+        # were deliberately made generous to tolerate. Recorded rather than
+        # acted on, so the next person does not re-derive it.
         compute_cost="low",
     ),
     "repo_arch_coupling": StepInfo(
@@ -715,7 +759,11 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         requires_views={"zipball_root": VIEW_SOURCE,
                         "git_clone_root": VIEW_HISTORY},
         fetch_cost="download",
-        compute_cost="medium",
+        # Re-declared 2026-09-01 from 32 measured runs: p90 132s against the
+        # 60s `medium` ceiling, median 0 connects. The git-history walk is
+        # real compute, and calling it medium admitted it to runs that had
+        # budgeted a minute.
+        compute_cost="high",
     ),
     "repo_arch_lens": StepInfo(
         "repo_arch_lens", ArchLensSurveyor,

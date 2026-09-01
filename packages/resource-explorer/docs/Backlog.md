@@ -119,6 +119,42 @@ dependency it already relies on rather than adding a second implicit mechanism b
 
 ### Test reliability
 
+#### `test_survey_definition_generator_guard.py` mutates the real docs directory, and is only safe alone
+
+Found 2026-09-01, in the working tree rather than by a failing test — `git status` showed
+`.generated.json` **deleted** and `repo-survey-definition-assessment.md` carrying a mechanical
+`"Assessment Survey"` -> `"Assessment Survey X"` rename that nobody had made.
+
+Both come from the test file itself. It operates on the **real**
+`docs/dr-egeria/survey-definitions/` directory, not a `tmp_path` copy:
+
+    DEFS = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "survey-definitions"
+    target.write_text(original.replace("Assessment Survey", "Assessment Survey X"))   # :91
+    PROVENANCE.unlink(missing_ok=True)                                                 # :108
+
+Its `restore` fixture snapshots every document plus the sidecar and puts them back, and **is correct
+in isolation**. The failure needs two runs: session A snapshots, session B snapshots *A's mutated
+state*, A restores, B restores what it captured — and the tree keeps a snapshot of a half-mutated
+directory. With the sidecar gone, every definition then looks hand-edited, so the guard tests fail
+for a reason that has nothing to do with the code under test.
+
+**It is not a flaky test. It is a test whose correctness depends on being the only one running**,
+and nothing declares that property. Three sessions running suites in one shared checkout is now
+routine, so this will recur.
+
+Fixes, roughly by cost:
+
+1. **Copy the directory to `tmp_path`** and point the generator at it — the generator already takes
+   paths, so this is mostly fixture work, and it removes the shared-state dependency entirely.
+2. **A file lock** around the module, so concurrent runs serialise rather than interleave. Cheaper,
+   and leaves the tree mutated while it runs — a `git status` mid-suite still lies.
+3. **Leave it and document it.** Current state: correct alone, silently wrong concurrently.
+
+Recovering from an occurrence is `git checkout --` on the two paths, after reading `git status` for
+them — the damage is confined to that directory and is always the same shape.
+
+
+
 **`test_local_flow_execution_fallback` failed once and has not reproduced.** Seen 2026-08-31 in a
 full run on `c650df6`: 3075 passed / 1 failed. An immediate rerun of the same command, same commit,
 same `-p no:randomly`, gave 3076 passed / 0 failed. The test passes alone (8.3s) and passes as a

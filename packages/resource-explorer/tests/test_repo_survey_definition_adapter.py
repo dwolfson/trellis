@@ -179,14 +179,29 @@ class TestStepCostTiers:
             "git_clone_root": "history_path",
         }
 
-    def test_rag_ingestion_is_the_only_high_compute_cost_step(self):
-        """D4: compute_cost="high" (embeds the repo) is explicitly called
-        out for exactly this one step — a second "high" step should be a
-        deliberate decision, not something this test lets slip by."""
+    def test_high_compute_cost_is_a_short_deliberate_list(self):
+        """D4: compute_cost="high" must stay a decision, not a drift.
+
+        Was `== {"repo_rag_ingestion"}`, and it did its job: it caught
+        repo_arch_coupling being raised on 2026-09-01 and forced the change to
+        be argued rather than absorbed. Both members are listed with the
+        evidence, so a third addition has to come here and say why.
+
+        - repo_rag_ingestion — embeds the repo (the original D4 member).
+        - repo_arch_coupling — measured 32 runs: p90 132s against the 60s
+          `medium` ceiling, max 600s, median 0 socket connects. Zero connects is
+          the trustworthy direction of that counter, so the git-history walk is
+          real compute rather than network wait, and `medium` was admitting it
+          to runs that had budgeted a minute.
+
+        Deliberately still an equality assertion. A `<=` or a membership check
+        would let a fourth step in silently, which is the whole failure this
+        guards.
+        """
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
 
         high_compute = {k for k, info in STEP_REGISTRY.items() if info.compute_cost == "high"}
-        assert high_compute == {"repo_rag_ingestion"}
+        assert high_compute == {"repo_rag_ingestion", "repo_arch_coupling"}
 
     def test_git_statistics_is_the_measured_api_heavy_baseline(self):
         """D4: the 430s-against-odpi/egeria measurement this whole plan is
