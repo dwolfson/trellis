@@ -470,6 +470,15 @@ ___
 Compliance Survey
 
 ### Scope Reference
+Does the repository publish a clear process for reporting security vulnerabilities?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
 What explicit license does the repository use, and are there non-standard or copyleft terms?
 
 ___
@@ -489,6 +498,42 @@ Compliance Survey
 
 ### Scope Reference
 Are there outstanding CVEs?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+How does the repository handle secrets, credentials, and sensitive configurations?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+Is intellectual property (IP) provenance managed via CLA or DCO?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+How is it supported?
 
 ___
 

@@ -1348,6 +1348,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+Does the repository publish a clear process for reporting security vulnerabilities?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 What kind of thing is this repository — a library, an application, a tool, or samples?
 
 ___
@@ -1367,6 +1376,15 @@ Full Survey (all steps)
 
 ### Scope Reference
 Is there a validation / deployment test for it?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+Does the repository have automated build tooling in place?
 
 ___
 
@@ -1429,6 +1447,33 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+How does the repository handle secrets, credentials, and sensitive configurations?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+Does the software contain telemetry, phone-home mechanisms, or external metrics tracking?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+Is intellectual property (IP) provenance managed via CLA or DCO?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 How does it score against OpenSSF Scorecard-style criteria?
 
 ___
@@ -1448,24 +1493,6 @@ Full Survey (all steps)
 
 ### Scope Reference
 What deployment styles does this support?
-
-___
-
-## Link Element To Scope
-### Target Element
-Full Survey (all steps)
-
-### Scope Reference
-Does the repository publish a clear process for reporting security vulnerabilities?
-
-___
-
-## Link Element To Scope
-### Target Element
-Full Survey (all steps)
-
-### Scope Reference
-Does the repository have automated build tooling in place?
 
 ___
 
