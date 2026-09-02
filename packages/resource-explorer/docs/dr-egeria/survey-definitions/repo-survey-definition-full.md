@@ -1384,6 +1384,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+What are the public interfaces?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 How concentrated is authorship — would the project survive losing its top contributors?
 
 ___
@@ -1457,6 +1466,15 @@ Full Survey (all steps)
 
 ### Scope Reference
 Is this repository already self-described for an enterprise catalog (e.g. Backstage catalog-info.yaml)?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+How much code is there? How complex?
 
 ___
 

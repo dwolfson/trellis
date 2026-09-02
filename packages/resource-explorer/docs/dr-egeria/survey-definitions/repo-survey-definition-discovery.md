@@ -314,3 +314,12 @@ Repo Discovery Survey
 ### Scope Reference
 What APIs and code symbols does it expose to callers?
 
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+What are the public interfaces?
+

@@ -132,6 +132,21 @@ The full chain, and where each link lives:
 | 4 | Each `analysis_id` → a value | `FactLayer.fact()` via `REPO_ANALYSIS_RESULTS_MAP` |
 | 5 | Value → the visible answer | `_renderEnvelopeMarkdown` in `index.html` |
 
+**Regenerate the Survey Definitions too.** `scripts/generate_repo_survey_definition.py`
+derives each definition's Question scope-links from `question_catalog.yaml`, so a
+new question makes the committed markdown under `docs/dr-egeria/survey-definitions/`
+stale. `tests/test_survey_definition_generator_guard.py::test_a_clean_tree_regenerates_to_nothing`
+fails until you run it — which is how this step was found, after being left out of
+the first draft of this section:
+
+```bash
+uv run python scripts/generate_repo_survey_definition.py
+```
+
+Commit the regenerated `.md` files and `.generated.json` alongside the CSV and the
+question catalog. Three artifacts move together; leaving one behind is a silent
+drift the guard catches only on the next full test run.
+
 **Restart the web server after regenerating.** The catalog loader is
 `@functools.lru_cache(maxsize=1)` (`surveyors/question_catalog_reader.py`),
 so a running server keeps serving the old catalog and your new question
