@@ -173,7 +173,35 @@ was internally inconsistent; only comparing them showed it. A fresh run on
 `workshops` (real gaps in all three checks) now stores 90/85/90, matching its
 annotations exactly.
 
-19 surveyors remain. Nothing changes on publish for them until they set
-`check_name` — an annotation without one still falls back to the positional
-name, deliberately, so the migration can proceed one surveyor at a time
-rather than as a flag day.
+**Step 4's prerequisite is now also done.** All 118 annotation sites on the
+repo path declare a `check_name`; 16 declare an `item_key`. FS and DB stay
+deferred and are excluded by name in `test_annotation_check_names.py` rather
+than silently missed.
+
+Two defects surfaced only by running real surveys, and both are worth
+recording because static analysis had already declared the work finished:
+
+- **A colliding qualifiedName on `egeria_trellis`.** Two `generic-api-key`
+  matches at `doc_sections.json:24201` — one long JSON line, two hits of the
+  same rule. `item_key` was `path:line:rule_id`, which assumed that triple
+  identifies a match. `SecretMatch` now carries the regex byte offset. Three
+  of four repos were clean; only the fourth had a file shaped to expose it.
+- **A scanner blind to its own subject.** `cve_scan` binds its annotation
+  class to a variable before calling it, so a scan matching literal
+  constructor names reported "118/118 named" while one was not. A survey of
+  `workshops` found it. The check now resolves variable-bound classes, and
+  the improvement is demonstrable: with the defect restored, the new scan
+  fails and the old one passes.
+
+The general lesson for the remaining migration work (FS, DB): **the static
+check tells you the shape of the code, and only a run tells you the shape of
+the data.** Both defects here were invisible to the first and immediate to
+the second.
+
+## What the guard is worth
+
+`assert_unique_qualified_names` earned its cost on the first real use. A
+colliding name does not fail on its own — Egeria rejects the duplicate,
+`apply_element` adopts the existing GUID, and the run reports success having
+written one element where two were produced. Refusing before writing turned a
+silent loss into a message naming both indices and what to do about it.
