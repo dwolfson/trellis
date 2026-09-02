@@ -7,11 +7,29 @@ from datetime import datetime
 from resource_explorer.registry import Project, ProjectRegistry
 from resource_explorer.step_outcome import UNVERIFIED, from_upstream_table
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
-from resource_explorer.surveyors.survey_report import Annotation, ClassificationAnnotation
+from resource_explorer.surveyors.survey_report import (
+    Annotation, ClassificationAnnotation, ResourceMeasureAnnotation)
 
 log = logging.getLogger(__name__)
 
 STEP = "DocumentationAnalysis"
+
+#: Languages whose symbol extractor actually captures documentation.
+#:
+#: go_symbol_extractor.py and js_symbol_extractor.py hardcode `docstring=""`
+#: at every assignment site (3 and 4 respectively). Measured 2026-09-01 over
+#: the whole symbol table: go 0 of 70,955, javascript 0 of 48,533 — against
+#: java 60,437 of 203,521 and python 54,985 of 114,055.
+#:
+#: Go has doc comments and JavaScript has JSDoc. Both exist in the language;
+#: neither is extracted. So a coverage figure for those languages would be a
+#: fact about OUR extractor wearing the clothes of a fact about THEIR code —
+#: and it would come out as 0%, the most alarming value available, not the
+#: quietest. Refusing to report is the only honest option until the
+#: extractors are taught to read them.
+_DOCSTRING_CAPABLE_LANGUAGES = frozenset({"python", "java"})
+
+
 
 # Collection types that indicate documentation was indexed
 _DOC_COLLECTIONS = {
@@ -135,6 +153,98 @@ class DocumentationSurveyor(BaseSurveyor):
                     "confidence": 95, "detail": {"files": found_hygiene},
                 })
 
+            # ── API documentation coverage ────────────────────────────────────
+            # Dan, 2026-09-01, having written most of egeria-python:
+            # "the documentation I put in was where I thought it was most
+            # useful... quantity is not the same as usefulness."
+            #
+            # So this is a ResourceMeasureAnnotation and NOT a
+            # ClassificationAnnotation, it does NOT feed `score` below, and it
+            # raises no RequestForAction. It states how much of the public
+            # surface carries a docstring. It does not claim that number
+            # should be higher — nobody here knows which symbol deserved a
+            # docstring, and the person best placed to know has said the
+            # distribution was deliberate.
+            #
+            # See docs/code-volume-and-doc-coverage-design.md D2a.
+            per_language = self._docstring_coverage(slug)
+            measurable = {
+                lang: c for lang, c in per_language.items()
+                if lang in _DOCSTRING_CAPABLE_LANGUAGES
+            }
+            unmeasurable = sorted(set(per_language) - set(measurable))
+            if measurable:
+                pub = sum(c["public"] for c in measurable.values())
+                documented = sum(c["public_documented"] for c in measurable.values())
+                pct = (documented / pub * 100) if pub else 0.0
+                langs = ", ".join(sorted(measurable))
+                note = ""
+                if unmeasurable:
+                    # Named, not silently omitted: a percentage over 2 of 4
+                    # languages must not read like one over all 4.
+                    note = (f" Not counted for {', '.join(unmeasurable)} — "
+                            f"their extractors do not capture documentation, "
+                            f"so absence there says nothing about the code.")
+                results.append(
+                    ResourceMeasureAnnotation(
+                        summary=(f"{documented:,} of {pub:,} public symbols carry a "
+                                 f"docstring ({pct:.1f}%), measured over {langs}."
+                                 f"{note}"),
+                        analysis_step=STEP,
+                        resource_properties={
+                            "public_symbols": pub,
+                            "public_documented": documented,
+                            "coverage_pct": round(pct, 1),
+                            "by_language": measurable,
+                            "languages_not_measured": unmeasurable,
+                        },
+                        json_properties={
+                            "source": "project_code_symbols",
+                            # The reader three months from now should not have
+                            # to find the design doc to learn this.
+                            "interpretation": (
+                                "Presence, not usefulness. A lower figure may reflect "
+                                "a deliberate choice about where documentation is worth "
+                                "writing, not a defect. This measure does not contribute "
+                                "to the documentation quality label."
+                            ),
+                        },
+                    )
+                )
+                findings.append({
+                    "finding_type": "api_docstring_coverage",
+                    "label": f"{pct:.1f}%",
+                    "summary": (f"{documented:,} of {pub:,} public symbols carry a "
+                                f"docstring ({pct:.1f}%), measured over {langs}."),
+                    "confidence": 100,
+                    "detail": {
+                        "public_symbols": pub, "public_documented": documented,
+                        "coverage_pct": round(pct, 1), "by_language": measurable,
+                        "languages_not_measured": unmeasurable,
+                        "is_quality_verdict": False,
+                    },
+                })
+            elif per_language:
+                # Symbols exist, but in no language whose docs we can read.
+                # This is the Go/JS case and it must never render as 0%.
+                results.append(
+                    ResourceMeasureAnnotation(
+                        summary=(f"API docstring coverage not established for "
+                                 f"{', '.join(sorted(per_language))} — this survey's "
+                                 f"symbol extractors do not capture documentation for "
+                                 f"those languages."),
+                        analysis_step=STEP,
+                        resource_properties={"languages_not_measured": sorted(per_language)},
+                        json_properties={
+                            "source": "project_code_symbols",
+                            "interpretation": (
+                                "A gap in our extraction, not in their code. Go doc "
+                                "comments and JSDoc both exist and are not read."
+                            ),
+                        },
+                    )
+                )
+
             # ── overall quality label ─────────────────────────────────────────
             # Half of `score` comes from the file inventory. With an empty
             # inventory the hygiene half is not zero, it is unmeasured — and the
@@ -234,3 +344,32 @@ class DocumentationSurveyor(BaseSurveyor):
             self._warn(results, str(exc))
 
         return results
+
+    def _docstring_coverage(self, slug: str) -> dict:
+        """Public-symbol docstring counts per language, from data already
+        stored at ingestion. No new extraction.
+
+        Public only: `is_private` is a 0/1 integer column, and COALESCE keeps
+        a NULL (never classified) counted as public rather than dropped —
+        undercounting the denominator would inflate the percentage, which is
+        the direction that flatters."""
+        with self.registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT language, "
+                "COUNT(*) AS total, "
+                "SUM(CASE WHEN COALESCE(is_private, 0) = 0 THEN 1 ELSE 0 END) AS public, "
+                "SUM(CASE WHEN COALESCE(is_private, 0) = 0 "
+                "         AND docstring IS NOT NULL AND docstring <> '' "
+                "    THEN 1 ELSE 0 END) AS public_documented "
+                "FROM project_code_symbols WHERE project_slug = ? "
+                "GROUP BY language",
+                (slug,),
+            ).fetchall()
+        return {
+            (r["language"] or "unknown"): {
+                "total": int(r["total"] or 0),
+                "public": int(r["public"] or 0),
+                "public_documented": int(r["public_documented"] or 0),
+            }
+            for r in rows if (r["total"] or 0) > 0
+        }
