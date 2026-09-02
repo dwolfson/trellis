@@ -280,29 +280,61 @@ in a distant literal. That removes the two-places-to-edit problem entirely and
 is how this normally scales. It costs import-time discovery and makes the full
 list harder to read in one place.
 
-### 2. Step elements are duplicated per survey definition in Egeria
+### 2. Step elements are duplicated per survey definition — and that may be right
 
 Measured 2026-09-02 across the ten committed definitions:
 
     109 distinct GovernanceActionProcessStep elements
      40 distinct step_keys
-    2.7x duplication
+    2.7x
 
 `repo_file_inventory` exists as **seven separate Egeria elements**, one per
 process that uses it, each with its own qualified name
 (`GovActionProcessStep::{Process}::{step_key}`).
 
-At 40 steps and 10 bundles that is untidy. At several hundred steps across
-several resource types it is a catalog-scale problem: every step's description
-is stored N times, and correcting one means correcting N.
+An earlier draft of this section called that redundancy. Dan confirmed
+2026-09-02 that **one step CAN belong to multiple `GovernanceActionProcess`es**
+— so the duplication is our generator's choice, not a limit of the model. But
+looking at how the generator actually chains steps changes the conclusion
+rather than confirming it.
 
-**The open question is whether Egeria's model supports it** — can a single
-`GovernanceActionProcessStep` belong to more than one
-`GovernanceActionProcess`, or is the per-process element intrinsic to how
-chaining works? That is a question for the Egeria type model and has not been
-verified here. It should be answered *before* the database and filesystem step
-sets are authored, because the answer determines whether the current shape is
-a mild redundancy or a multiplier.
+Ordering is expressed as `NextGovernanceActionProcessStep`, **step to step**:
+
+    GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
+      -> GovActionProcessStep::RepoCoarseProfile::repo_manifest_parse
+      Guard: Any
+
+If `repo_file_inventory` were a single shared element, all seven processes'
+"next" relationships would hang off **that one element**. Traversing from it
+would show seven possible successors, and the only discriminator available on
+that relationship is the **Guard** — which is a runtime condition, not a
+structural one. Encoding "which process am I in" as a guard would conflate the
+two.
+
+So the trade is:
+
+| | membership | unambiguous linear chain |
+|---|---|---|
+| shared step elements | yes | no — successors ambiguous across processes |
+| per-process elements (today) | yes | yes |
+
+**The 2.7x is plausibly the price of unambiguous chaining rather than waste**,
+and the multiplier grows with bundles, not with resource types — adding
+database and filesystem steps adds elements linearly, not multiplicatively,
+because those steps appear in their own bundles.
+
+What is still worth fixing is narrower: the **description is copied into every
+duplicate**, so correcting one means correcting N. That is a generator
+concern, not a model one.
+
+Two things to confirm with the Egeria side before treating any of this as
+settled, neither verified here:
+
+1. Is `NextGovernanceActionProcessStep` the only ordering mechanism, or does
+   the process-to-step link carry order independently? If the latter, shared
+   steps chain cleanly and the duplication really is avoidable.
+2. Is `Guard` intended to carry process identity? The reading above says no,
+   but that is inference from the type name, not from the specification.
 
 ### 3. What is worth exposing, and what is not
 
