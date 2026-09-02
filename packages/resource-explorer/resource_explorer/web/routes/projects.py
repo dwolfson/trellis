@@ -700,7 +700,23 @@ def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool, step
             summary += f" (⚠ auto-publish to Egeria failed: {exc})"
             log.warning("Auto-publish failed for %s/%s: %s", slug, analysis_id, exc)
 
-    return {"status": "ok", "summary": summary, "published": published}
+    # Carried out of here so the background function can write them onto
+    # the activity entry. Without this the RFA drawer never saw a single
+    # annotation from an Analyses-card run — see
+    # registry.update_activity_status() for the measurement.
+    from resource_explorer.surveyors.survey_report import summarise_annotations
+
+    # Belt and braces with summarise_annotations' own skip: a run that
+    # produced and stored real findings must never be reported as failed
+    # because the sentence describing it could not be built.
+    try:
+        ann_summary = summarise_annotations(result.annotations)
+    except Exception as exc:
+        log.warning("Could not summarise annotations for %s/%s: %s", slug, analysis_id, exc)
+        ann_summary = []
+
+    return {"status": "ok", "summary": summary, "published": published,
+            "annotations": ann_summary}
 
 
 def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str) -> None:
@@ -743,7 +759,10 @@ def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: st
         detail["error"] = result.get("error", summary)
     else:
         detail["message"] = summary
-    registry.update_activity_status(activity_id, status, summary=summary, detail=json.dumps(detail))
+    registry.update_activity_status(
+        activity_id, status, summary=summary, detail=json.dumps(detail),
+        annotations=result.get("annotations"),
+    )
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run")

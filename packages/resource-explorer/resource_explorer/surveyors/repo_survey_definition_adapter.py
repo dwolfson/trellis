@@ -1471,7 +1471,15 @@ def _chaoss_metrics_headline(registry, slug: str) -> dict | None:
     if not ef or ef["label"] == "not_established":
         return {"label": "authorship concentration unknown", "tone": "neutral"}
     tone = {"sole": "warn", "narrow": "warn"}.get(ef["label"], "ok")
-    return {"label": f"elephant factor: {ef['label']}", "tone": tone}
+    # The CHAOSS term stays, after the plain reading rather than instead of
+    # it: "elephant factor: sole" led with jargon and left a reader to look
+    # it up before knowing whether it was good news.
+    plain = {
+        "sole": "one contributor writes most of the code",
+        "narrow": "a handful of contributors write most of the code",
+        "broad": "authorship is spread across many contributors",
+    }.get(ef["label"], f"authorship concentration: {ef['label']}")
+    return {"label": f"{plain} (CHAOSS elephant factor: {ef['label']})", "tone": tone}
 
 
 def _cii_badge_results(registry, slug: str) -> dict:
@@ -1528,10 +1536,17 @@ def _community_support_headline(registry, slug: str) -> dict | None:
     if by_name.get("attention_exceeds_participation") == "yes":
         return {"label": "widely used, narrowly maintained", "tone": "warn"}
     participation = by_name.get("participation") or ""
+    plain = {
+        "sole_maintainer": "maintained by one person",
+        "small_team": "maintained by a small team",
+        "team": "maintained by a team",
+        "broad": "maintained by a broad community",
+    }
     if participation in ("sole_maintainer", "small_team"):
-        return {"label": participation.replace("_", " "), "tone": "warn"}
+        return {"label": plain[participation], "tone": "warn"}
     if participation:
-        return {"label": f"{participation} participation", "tone": "good"}
+        return {"label": plain.get(participation, f"{participation} participation"),
+                "tone": "good"}
     return {"label": "participation not established", "tone": "warn"}
 
 
@@ -1575,7 +1590,8 @@ def _cve_scan_headline(registry, slug: str) -> dict | None:
     recorded = int(data.get("recorded") or checked)
     if advisories:
         return {"label": f"{advisories} advisor{'y' if advisories == 1 else 'ies'} "
-                         f"across {int(data.get('packages_affected') or 0)} package(s)",
+                         f"across {int(data.get('packages_affected') or 0)} "
+                         f"{_plural('package', int(data.get('packages_affected') or 0))}",
                 "tone": "bad"}
     # A clean result never states itself without its coverage.
     return {"label": f"none in {checked} of {recorded} declared dependenc(ies)",
@@ -1687,7 +1703,7 @@ def _foss_scorecard_headline(registry, slug: str) -> dict | None:
     evaluated = int(data.get("checks_evaluated") or 0)
     unknown = int(data.get("checks_unknown") or 0)
     return {
-        "label": f"{score}/10 over {evaluated} check(s)"
+        "label": f"{score}/10 over {evaluated} {_plural('check', evaluated)}"
                  + (f", {unknown} not evaluable" if unknown else ""),
         "tone": "good" if score >= 7 else "warn" if score >= 4 else "bad",
     }
@@ -1817,7 +1833,50 @@ def _api_structure_results(registry, slug: str) -> dict:
     for r in rows:
         by_language.setdefault(r["language"], {})[r["kind"]] = r["c"]
     relationships = registry.get_code_relationships(slug)
-    return {"by_language": by_language, "relationship_count": len(relationships)}
+
+    # Complexity, live from the same table (design doc D3).
+    #
+    # It was persisted into the api_structure METRIC and stopped there: the
+    # fact layer answers questions through THIS reader, so "How complex?"
+    # rendered `relationship_count: 437` — the one scalar that happened to be
+    # here — while the complexity summary sat in a metric nobody on this path
+    # reads. Verifying the metric is not verifying the answer.
+    #
+    # Same language guard as the surveyor: go and javascript store 0 for
+    # every symbol because their extractors never compute it, so an average
+    # spanning them is dragged toward zero (0.32 vs 2.69 on milvus).
+    from resource_explorer.surveyors.sub_surveyors.api_structure import (
+        _COMPLEXITY_CAPABLE_LANGUAGES)
+
+    with registry._conn() as conn:
+        crows = conn.execute(
+            "SELECT language, COUNT(*) AS n, MAX(complexity) AS mx, "
+            "AVG(complexity) AS av FROM project_code_symbols "
+            "WHERE project_slug = ? AND kind IN ('function', 'method') "
+            "GROUP BY language",
+            (slug,),
+        ).fetchall()
+    complexity = {
+        r["language"]: {
+            "max": int(r["mx"] or 0),
+            "avg": round(float(r["av"] or 0), 1),
+            "measured_over": int(r["n"] or 0),
+        }
+        for r in crows
+        if r["language"] in _COMPLEXITY_CAPABLE_LANGUAGES and (r["n"] or 0)
+    }
+    not_measured = sorted(
+        {r["language"] for r in crows} - set(complexity)
+    )
+
+    symbol_count = sum(sum(k.values()) for k in by_language.values())
+    return {
+        "symbol_count": symbol_count,
+        "by_language": by_language,
+        "relationship_count": len(relationships),
+        "complexity_by_language": complexity,
+        "complexity_languages_not_measured": not_measured,
+    }
 
 
 def _api_structure_trend(registry, slug: str) -> list[dict]:
@@ -2173,10 +2232,10 @@ def _architecture_summary_headline(registry, slug: str) -> dict | None:
         # A summary that lost half its input still reads as a confident answer,
         # which is why partial-ness has to survive into the one line every
         # caller sees.
-        return {"label": f"Summary incomplete — {n} candidate(s), some unread",
+        return {"label": f"Summary incomplete — {n} {_plural('candidate', n)}, some unread",
                 "status": "warn"}
-    return {"label": (f"{doc} documented of {n} candidate component(s)" if doc
-                      else f"{n} candidate component(s), none documented"),
+    return {"label": (f"{doc} documented of {n} candidate {_plural('component', n)}" if doc
+                      else f"{n} candidate {_plural('component', n)}, none documented"),
             "status": "info" if doc else "warn"}
 
 
@@ -2185,7 +2244,7 @@ def _architecture_doc_lens_headline(registry, slug: str) -> dict | None:
     if r.get("state"):
         return None
     n = r.get("count", 0)
-    return {"label": f"{n} component(s) named by the project's own documentation",
+    return {"label": f"{n} {_plural('component', n)} named by the project's own documentation",
             "status": "info"}
 
 
@@ -2531,7 +2590,7 @@ def _architecture_recovery_headline(registry, slug: str) -> dict | None:
         return {"label": f"Unverified — {', '.join(result['unverified'])} could not read this repo",
                 "status": "warn"}
     n = result["component_count"]
-    return {"label": f"{n} component(s) recovered", "status": "info" if n else "warn"}
+    return {"label": f"{n} {_plural('component', n)} recovered", "status": "info" if n else "warn"}
 
 
 def _website_ingestion_headline(registry, slug: str) -> dict | None:
@@ -2566,8 +2625,27 @@ def _website_ingestion_headline(registry, slug: str) -> dict | None:
         if results.get("pages_failed") and not results.get("pages_fetched"):
             return {"label": "Documentation site unreachable", "status": "warn"}
         return {"label": "Nothing ingested from site", "status": "warn"}
-    return {"label": f"{chunks} chunk(s) from {results.get('pages_fetched', 0)} page(s)",
+    return {"label": f"{chunks} {_plural('chunk', chunks)} from {results.get('pages_fetched', 0)} {_plural('page', results.get('pages_fetched', 0))}",
             "status": "ok"}
+
+
+#: Finding labels whose polarity _generic_findings_headline can rely on.
+#: Anything outside both sets leaves polarity unknown, and the headline then
+#: reports a count rather than a verdict — see that function for what
+#: guessing cost.
+_NEGATIVE_LABELS = frozenset({"gap", "absent", "fail", "missing", "no"})
+_POSITIVE_LABELS = frozenset({"pass", "present", "ok", "yes", "found"})
+
+
+def _plural(noun: str, n: int) -> str:
+    """"1 check", "3 checks" — not "3 check(s)".
+
+    The parenthetical plural read as machine output in every headline that
+    used it, which undercut the one line meant to read like an answer.
+    """
+    if n == 1:
+        return noun
+    return noun + ("es" if noun.endswith(("s", "x", "ch", "sh")) else "s")
 
 
 def _generic_findings_headline(results: dict, *, noun: str = "check") -> dict | None:
@@ -2580,12 +2658,32 @@ def _generic_findings_headline(results: dict, *, noun: str = "check") -> dict | 
     findings = results.get("findings")
     if not findings:
         return None
-    negatives = [f for f in findings if f.get("label") in ("gap", "absent", "fail")]
-    if not negatives:
-        return {"label": f"{len(findings)} {noun}(s) passing", "status": "ok"}
-    if len(negatives) < len(findings):
-        return {"label": f"{len(negatives)} of {len(findings)} {noun}(s) gap", "status": "warn"}
-    return {"label": f"{len(negatives)} {noun}(s) gap", "status": "gap"}
+
+    negatives = [f for f in findings if f.get("label") in _NEGATIVE_LABELS]
+    positives = [f for f in findings if f.get("label") in _POSITIVE_LABELS]
+    n = len(findings)
+
+    if negatives:
+        if len(negatives) < n:
+            return {"label": f"{len(negatives)} of {n} {_plural(noun, n)} need attention",
+                    "status": "warn"}
+        return {"label": f"all {n} {_plural(noun, n)} need attention", "status": "gap"}
+
+    if positives and len(positives) == n:
+        return {"label": f"all {n} {_plural(noun, n)} pass", "status": "ok"}
+
+    # Neither vocabulary matched, so polarity is UNKNOWN — state the count and
+    # nothing more.
+    #
+    # This branch used to say "N {noun}(s) passing" for anything it did not
+    # recognise as a negative, which produced "7 secret match(s) passing" for
+    # a repo with seven committed-secret matches. secret_scan labels its
+    # findings by RULE NAME (generic-api-key, jwt, hashicorp-tf-password), so
+    # none matched the negative set and every one of them counted as a pass.
+    # For that noun more is worse, and this helper cannot know that — so it
+    # must not assert a verdict it has no basis for. Counting is honest;
+    # "passing" was not.
+    return {"label": f"{n} {_plural(noun, n)}", "status": "info"}
 
 
 def _security_headline(registry, slug: str) -> dict | None:
@@ -2593,7 +2691,23 @@ def _security_headline(registry, slug: str) -> dict | None:
 
 
 def _documentation_headline(registry, slug: str) -> dict | None:
-    return _generic_findings_headline(_documentation_results(registry, slug), noun="doc signal")
+    results = _documentation_results(registry, slug)
+    findings = results.get("findings") or []
+    # Lead with the two things a reader asked about — the overall label the
+    # surveyor assigned, and how much of the API carries a docstring — rather
+    # than a count of heterogeneous "signals", which told them nothing about
+    # documentation at all.
+    quality = next((f for f in findings if f.get("check_name") == "quality_score"), None)
+    coverage = next((f for f in findings
+                     if f.get("check_name") == "api_docstring_coverage"), None)
+    if not quality and not coverage:
+        return _generic_findings_headline(results, noun="doc signal")
+    parts = []
+    if quality:
+        parts.append(f"{quality.get('label')} documentation artifacts")
+    if coverage:
+        parts.append(f"{coverage.get('label')} of the public API documented")
+    return {"label": ", ".join(parts), "status": "info"}
 
 
 # The four GAP analyses. `noun` is chosen so the headline reads honestly when the
@@ -2683,7 +2797,8 @@ def _data_profile_headline(registry, slug: str) -> dict | None:
     result = _data_profile_results(registry, slug)
     if not result.get("total"):
         return None
-    return {"label": f"{result['total']} data file(s) profiled", "status": "info"}
+    n = int(result["total"])
+    return {"label": f"{n:,} data {_plural('file', n)} profiled", "status": "info"}
 
 
 def _health_results(registry, slug: str) -> dict:
@@ -2733,22 +2848,32 @@ def _api_structure_headline(registry, slug: str) -> dict | None:
     symbol_count = sum(sum(kinds.values()) for kinds in result.get("by_language", {}).values())
     if not symbol_count:
         return None
-    return {"label": f"{symbol_count} symbol(s) across {len(result.get('by_language', {}))} language(s)", "status": "info"}
+    return {"label": f"{symbol_count:,} {_plural('symbol', symbol_count)} across "
+            f"{len(result.get('by_language', {}))} {_plural('language', len(result.get('by_language', {})))}", "status": "info"}
 
 
 def _symbol_extraction_headline(registry, slug: str) -> dict | None:
     result = _symbol_extraction_results(registry, slug)
     if not result.get("symbol_count"):
         return None
-    return {"label": f"{result['symbol_count']} symbol(s) extracted", "status": "info"}
+    n = int(result["symbol_count"])
+    return {"label": f"{n:,} {_plural('symbol', n)} extracted from the code",
+            "status": "info"}
 
 
 def _manifest_parse_headline(registry, slug: str) -> dict | None:
     result = _manifest_parse_results(registry, slug)
     if not result.get("surveyed_at"):
         return None
-    total = result["dependency_count"] + result["ci_quality_count"] + result["conventions_count"]
-    return {"label": f"{total} finding(s)/dependency(s) across 3 tables", "status": "info"}
+    deps = int(result["dependency_count"])
+    ci = int(result["ci_quality_count"])
+    conv = int(result["conventions_count"])
+    # Named parts rather than one summed total across three unlike things:
+    # "40 finding(s)/dependency(s) across 3 tables" told a reader neither what
+    # was found nor of what.
+    return {"label": f"{deps:,} {_plural('dependency', deps).replace('dependencys', 'dependencies')}, "
+                     f"{ci} CI {_plural('check', ci)}, {conv} {_plural('convention', conv)}",
+            "status": "info"}
 
 
 def _rag_ingestion_headline(registry, slug: str) -> dict | None:
@@ -2759,7 +2884,9 @@ def _rag_ingestion_headline(registry, slug: str) -> dict | None:
         # real finding — nothing is indexed, so Chat has nothing to answer from.
         return {"label": "Nothing indexed for chat", "status": "gap"}
     return {
-        "label": f"{total} chunk(s) across {result.get('collections', 0)} collection(s)",
+        "label": f"{int(total):,} indexed {_plural('chunk', int(total))} across "
+                 f"{int(result.get('collections') or 0)} "
+                 f"{_plural('collection', int(result.get('collections') or 0))}",
         "status": "ok",
     }
 
@@ -2768,7 +2895,7 @@ def _file_classification_headline(registry, slug: str) -> dict | None:
     result = _file_classification_results(registry, slug)
     if not result.get("total_files"):
         return None
-    return {"label": f"{result['total_files']} file(s) classified", "status": "info"}
+    return {"label": f"{result['total_files']} {_plural('file', result['total_files'])} classified", "status": "info"}
 
 
 def _sub_resource_survey_headline(registry, slug: str) -> dict | None:
@@ -2777,7 +2904,9 @@ def _sub_resource_survey_headline(registry, slug: str) -> dict | None:
     if not findings:
         return None
     worthy = sum(1 for f in findings if f.get("label") == "worthy")
-    return {"label": f"{worthy} of {len(findings)} sub-resource(s) worth cataloging", "status": "info"}
+    n = len(findings)
+    return {"label": f"{worthy} of {n} {_plural('sub-resource', n)} worth cataloging",
+            "status": "info"}
 
 
 @dataclass

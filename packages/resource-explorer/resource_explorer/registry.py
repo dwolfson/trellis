@@ -5701,14 +5701,41 @@ class ProjectRegistry:
         status: str,
         summary: str = "",
         detail: str = "",
+        annotations: list[dict] | None = None,
     ) -> None:
+        """Finalise a 'running' activity entry.
+
+        `annotations` added 2026-09-02. Without it, every Analyses-card run
+        wrote its entry with an empty annotations list while its summary said
+        "N annotation(s)" — so GET /api/activity/rfas, which flattens
+        entry["annotations"] and keeps the RequestForAction ones, could not
+        see a single RFA produced by that path. Measured on `workshops`: the
+        run produced 3 RequestForAction annotations ("No SECURITY.md found",
+        "No CI configuration detected", "No license file detected") and the
+        drawer count stayed at 1, where the 1 came from an older full survey.
+        Two of the three had never been visible at all.
+
+        Same defect tests/test_rfa_visibility.py documents for log_rfa, in a
+        different writer — which is why that test did not catch it.
+
+        An empty list is NOT written over an existing value: a caller with
+        nothing to add must not erase what the entry already carried.
+        """
+        # default=str, not bare dumps: a single unserialisable field in one
+        # annotation would otherwise raise here and lose the ENTIRE activity
+        # update — status, summary and all — turning a successful run into a
+        # crash report. Degrading one field to its repr is strictly better
+        # than losing the record of what ran.
+        anns_json = json.dumps(annotations, default=str) if annotations else ""
         with self._conn() as conn:
             conn.execute(
                 "UPDATE activity_log SET status = ?, "
                 "summary = CASE WHEN ? != '' THEN ? ELSE summary END, "
-                "detail  = CASE WHEN ? != '' THEN ? ELSE detail  END "
+                "detail  = CASE WHEN ? != '' THEN ? ELSE detail  END, "
+                "annotations_json = CASE WHEN ? != '' THEN ? ELSE annotations_json END "
                 "WHERE id = ?",
-                (status, summary, summary, detail, detail, entry_id),
+                (status, summary, summary, detail, detail,
+                 anns_json, anns_json, entry_id),
             )
 
     # reconcile_orphaned_running_activity() lived here briefly (2026-08-26) —

@@ -12,7 +12,7 @@ from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.surveyors import step_cost_observer
 from resource_explorer.surveyors import result_status, step_preconditions
-from resource_explorer.surveyors.survey_report import ClassificationAnnotation, SurveyResult
+from resource_explorer.surveyors.survey_report import summarise_annotations, ClassificationAnnotation, SurveyResult
 
 log = logging.getLogger(__name__)
 
@@ -352,33 +352,10 @@ class SurveyOrchestrator:
             # a RequestForAction-typed annotation summarised "Security policy
             # file present" — the passing check's own words, wearing the
             # failing check's label.
-            by_step: dict[tuple[str, str], dict] = defaultdict(
-                lambda: {"count": 0, "summary": "", "explanation": "",
-                         "action_requested": "", "action_target_name": ""})
-            for a in result.annotations:
-                step = getattr(a, "analysis_step", None) or a.annotation_type.value
-                key = (step, a.annotation_type.value)
-                group = by_step[key]
-                group["count"] += 1
-                if not group["summary"]:
-                    group["summary"] = (a.summary or "")[:200]
-                    # Carried from the SAME annotation that donated the
-                    # summary, not independently first-wins per field — so a
-                    # drawer row's explanation always describes the finding
-                    # its summary names, never a different annotation in the
-                    # same group (see rule above: two independent "first/last
-                    # wins" fields is exactly the shape that broke this once).
-                    group["explanation"] = getattr(a, "explanation", "") or ""
-                    group["action_requested"] = getattr(a, "action_requested", "") or ""
-                    group["action_target_name"] = getattr(a, "action_target_name", "") or ""
-            ann_summary = [
-                {"analysis_name": step, "annotation_type": ann_type,
-                 "count": v["count"], "status": "local", "summary": v["summary"],
-                 "explanation": v["explanation"],
-                 "action_requested": v["action_requested"],
-                 "action_target_name": v["action_target_name"]}
-                for (step, ann_type), v in list(by_step.items())[:20]
-            ]
+            # One grouping rule, shared with the Analyses-card path —
+            # see summarise_annotations() for why keying on
+            # (step, annotation_type) matters and what it fixed.
+            ann_summary = summarise_annotations(result.annotations)
 
             try:
                 log_survey(

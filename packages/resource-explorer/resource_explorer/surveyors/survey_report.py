@@ -217,3 +217,57 @@ ANNOTATION_TYPES_REGISTRY = [
         "python_class": "RequestForActionAnnotation",
     }
 ]
+
+
+def summarise_annotations(annotations, limit: int = 20) -> list[dict]:
+    """Group a run's annotations for the activity log, by (step, type).
+
+    Extracted 2026-09-02 so there is ONE grouping rule rather than two. It
+    lived inline in SurveyOrchestrator.run(); the Analyses-card path
+    (projects.py::run_single_analysis) needed the same shape, and copying it
+    is how the original defect would have been reintroduced in a second
+    place.
+
+    Keying on (step, annotation_type) rather than step alone: a sub-surveyor
+    emitting several annotation kinds in one run — a passing
+    ClassificationAnnotation beside a failing RequestForActionAnnotation —
+    used to collapse into one dict where `summary` kept the FIRST seen and
+    `annotation_type` kept overwriting to the LAST, so a passing check's
+    words wore a RequestForAction label in the drawer.
+
+    `explanation`/`action_requested`/`action_target_name` are taken from the
+    SAME annotation that donated the summary, never a different member of the
+    group — two independent first/last-wins fields on one group is precisely
+    the shape that broke this once.
+    """
+    from collections import defaultdict
+
+    by_step: dict[tuple[str, str], dict] = defaultdict(
+        lambda: {"count": 0, "summary": "", "explanation": "",
+                 "action_requested": "", "action_target_name": ""})
+    for a in annotations:
+        # Skip anything that is not shaped like an annotation rather than
+        # raising. This function builds a DISPLAY summary; letting it throw
+        # took down the whole analysis run — the background thread crashed
+        # and a survey whose findings were computed and stored reported
+        # "crashed" to the user, because a summary of it could not be built.
+        ann_type = getattr(a, "annotation_type", None)
+        value = getattr(ann_type, "value", None)
+        if not value:
+            continue
+        step = getattr(a, "analysis_step", None) or value
+        group = by_step[(step, value)]
+        group["count"] += 1
+        if not group["summary"]:
+            group["summary"] = (getattr(a, "summary", "") or "")[:200]
+            group["explanation"] = getattr(a, "explanation", "") or ""
+            group["action_requested"] = getattr(a, "action_requested", "") or ""
+            group["action_target_name"] = getattr(a, "action_target_name", "") or ""
+    return [
+        {"analysis_name": step, "annotation_type": ann_type,
+         "count": v["count"], "status": "local", "summary": v["summary"],
+         "explanation": v["explanation"],
+         "action_requested": v["action_requested"],
+         "action_target_name": v["action_target_name"]}
+        for (step, ann_type), v in list(by_step.items())[:limit]
+    ]

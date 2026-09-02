@@ -113,7 +113,7 @@ def test_a_fact_with_no_prose_is_unaffected():
     reached the answer line — which is why the bug looked fixed after the
     first pass. Joining must not change them."""
     node = _node_or_skip()
-    assert _run_js(node, INDEX.read_text(), {"catalogued": True}) == "catalogued: true"
+    assert _run_js(node, INDEX.read_text(), {"catalogued": True}) == "- catalogued: true"
 
 
 def test_an_empty_value_still_yields_no_answer(): 
@@ -233,6 +233,7 @@ def _js_preamble(html: str) -> list[str]:
         _const(html, "_FINDING_LINE_CAP"),
         _fn(html, "_factFindingLines"),
         _fn(html, "_summariseFactValue"),
+        _fn(html, "_factValueLines"),
     ]
 
 
@@ -246,7 +247,7 @@ def _answer_expression(html: str) -> str:
     raise AssertionError("no `const answerText = ...` line in _renderEnvelopeMarkdown")
 
 
-def _run_js(node: str, html: str, value: dict) -> str:
+def _run_js(node: str, html: str, value: dict, headline: str = "") -> str:
     """Build the answer line the renderer would build for `value`, by
     running the real extracted functions."""
     import json
@@ -256,6 +257,7 @@ def _run_js(node: str, html: str, value: dict) -> str:
     src = "\n".join([
         *_js_preamble(html),
         f"const value = {json.dumps(value)};",
+        f"const f = {{value: value, headline: {json.dumps(headline)}}};",
         "const proseAnswer = _factAnswerText(value);",
         "const summary = _summariseFactValue(value);",
         # The renderer's OWN expression, lifted from its source -- not a
@@ -264,7 +266,13 @@ def _run_js(node: str, html: str, value: dict) -> str:
         # summary`: it exercised the helpers and the test's own
         # transcription of the rule, never the rule the app runs.
         _answer_expression(html),
-        "console.log(answerText);",
+        # The rendered BLOCK, not just the answer line: since 2026-09-02 the
+        # values render as bullets under the sentence rather than joined onto
+        # it, so asserting they share one line would pin the old shape. What
+        # must hold is that neither half is lost.
+        "const _lines = []; if (answerText) _lines.push(answerText);",
+        "_factValueLines(value).forEach(l => _lines.push('- ' + l));",
+        "console.log(_lines.join('\\n'));",
     ])
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
         fh.write(src)
@@ -337,10 +345,11 @@ def _run_findings_js(node: str, html: str, value: dict) -> list[str]:
     src = "\n".join([
         *_js_preamble(html),
         f"const value = {json.dumps(value)};",
+        "const f = {value: value, headline: ''};",
         "const proseAnswer = _factAnswerText(value);",
         "const summary = _summariseFactValue(value);",
         _answer_expression(html),
-        "console.log(JSON.stringify([answerText, ..._factFindingLines(value)]));",
+        "console.log(JSON.stringify([_summariseFactValue(value), ..._factFindingLines(value)]));",
     ])
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
         fh.write(src)
@@ -364,6 +373,42 @@ _CHAOSS = {"findings": [
     {"check_name": "organizational_diversity", "label": "single",
      "summary": "1 organization(s) identifiable across 93% of commits."},
 ]}
+
+
+class TestNestedObjects:
+    """A value the renderer cannot shape is not a value that is not there.
+
+    _summariseFactValue handled arrays, numbers, booleans and strings. A
+    plain object matched none of them and fell through to nothing — silently.
+
+    Found 2026-09-02 from the live app: "How much code is there? How
+    complex?" answered `relationship_count: 437`. That was the only scalar in
+    the value; `by_language` and `complexity_by_language` — the two fields
+    that actually answer the question — were dropped on the floor. The
+    complexity number had been persisted, verified in the metric, and
+    reported as done. Verifying the metric was not verifying the answer.
+    """
+
+    def test_a_nested_object_is_rendered_not_dropped(self):
+        node = _node_or_skip()
+        out = _run_js(node, INDEX.read_text(), {
+            "complexity_by_language": {"python": {"max": 120, "avg": 3.0}},
+            "relationship_count": 437,
+        })
+        assert "python" in out and "max 120" in out, (
+            f"the nested object was dropped; only scalars survived: {out!r}"
+        )
+
+    def test_a_dict_of_scalars_renders_its_keys(self):
+        node = _node_or_skip()
+        out = _run_js(node, INDEX.read_text(), {"by_language": {"python": 8632, "go": 22}})
+        assert "python: 8632" in out
+
+    def test_an_empty_object_adds_nothing(self):
+        """An empty dict must not produce a stray `k: ` with nothing after
+        it — absence renders as absence, not as a colon."""
+        node = _node_or_skip()
+        assert _run_js(node, INDEX.read_text(), {"complexity_by_language": {}}) == ""
 
 
 class TestFindingsArrays:
@@ -419,3 +464,99 @@ class TestFindingsArrays:
                    for line in out), (
             f"a truncated findings list must state what it omitted: {out!r}"
         )
+
+
+class TestHeadlineLeadsTheAnswer:
+    """A summary sentence, then the facts under it.
+
+    Dan, 2026-09-02, shown a `·`-joined field dump:
+    "that is not a good answer - should be a summary sentence and maybe some
+    bullet points with the facts."
+
+    The sentence was not invented for this. Every one of the 33 analyses with
+    a results reader already defines a `headline_reader` — `api_structure`'s
+    returns "8654 symbol(s) across 2 language(s)" — and NOTHING on the fact
+    path called any of them. The chat rendered "relationship_count: 437"
+    while a written sentence sat one function away.
+
+    Order of preference, pinned here: a surveyor's own prose beats the
+    analysis's generic headline, and both beat a bare field list.
+    """
+
+    def test_every_analysis_with_results_defines_a_headline(self):
+        """The premise. If this ever stops holding, the renderer falls back
+        to a field list for that analysis and someone should know why."""
+        from resource_explorer.surveyors.repo_survey_definition_adapter import (
+            ANALYSIS_KINDS)
+        missing = [
+            k for k, v in ANALYSIS_KINDS.items()
+            if getattr(v, "results", None)
+            and not getattr(v.results, "headline_reader", None)
+        ]
+        assert missing == [], f"analyses with results but no headline: {missing}"
+
+    def test_the_fact_layer_reads_it(self):
+        """Known-negative for the actual defect: the mechanism existed and
+        was never called."""
+        import inspect
+
+        from resource_explorer import facts as facts_mod
+        src = inspect.getsource(facts_mod.FactLayer)
+        assert "headline_reader" in src, (
+            "FactLayer never reads headline_reader, so the analysis's own "
+            "summary sentence cannot reach the answer"
+        )
+
+    def test_prose_still_beats_the_headline(self):
+        """A surveyor that wrote its own sentence must not be overridden by
+        the generic one."""
+        html = INDEX.read_text()
+        fn = _fn(html, "_renderEnvelopeMarkdown")
+        line = next(l for l in fn.splitlines() if "const answerText" in l)
+        assert line.index("proseAnswer") < line.index("f.headline"), (
+            f"headline must be the fallback, not the winner: {line.strip()!r}"
+        )
+
+    def test_the_values_render_as_separate_lines(self):
+        """The bullets. _factValueLines splits the same extraction rather
+        than re-parsing it — one extraction, two presentations."""
+        node = _node_or_skip()
+        html = INDEX.read_text()
+        block = _run_js(node, html, {"a": 1, "b": 2})
+        assert block.splitlines() == ["- a: 1", "- b: 2"], (
+            f"each measured field belongs on its own line: {block!r}"
+        )
+        fn = _fn(html, "_factValueLines")
+        assert "_summariseFactValue" in fn, (
+            "_factValueLines must reuse _summariseFactValue rather than "
+            "growing a second parser that can drift from it"
+        )
+
+
+class TestSummaryFailureCannotFailARun:
+    """Building the display summary must never sink the run it describes.
+
+    Found by the full suite, 2026-09-02. summarise_annotations did
+    `a.annotation_type.value` unguarded; a malformed entry raised, the
+    Analyses-card background thread crashed, and a run whose findings were
+    computed and STORED reported "crashed" to the user. The work succeeded
+    and the sentence about it did not — and the sentence won.
+    """
+
+    def test_malformed_entries_are_skipped_not_raised(self):
+        from resource_explorer.surveyors.survey_report import summarise_annotations
+
+        class _Ann:
+            def __init__(self):
+                self.annotation_type = type("T", (), {"value": "ClassificationAnnotation"})()
+                self.analysis_step = "Step"
+                self.summary = "a real one"
+
+        out = summarise_annotations(["a string", None, 42, _Ann()])
+        assert len(out) == 1, f"malformed entries must be skipped, not raised on: {out}"
+        assert out[0]["summary"] == "a real one"
+
+    def test_an_all_malformed_list_yields_nothing_rather_than_raising(self):
+        from resource_explorer.surveyors.survey_report import summarise_annotations
+
+        assert summarise_annotations(["a", "b"]) == []
